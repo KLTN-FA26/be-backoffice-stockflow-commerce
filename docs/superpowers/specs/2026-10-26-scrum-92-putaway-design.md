@@ -145,8 +145,9 @@ single-SKU bins, volume. BR-SLT-003 is enforced at bin level only; the spec of S
    item's storage class (`LOCATION_STORAGE_CLASS_MISMATCH`), and within capacity and weight after the putaway
    (`LOCATION_CAPACITY_EXCEEDED`). A bin outside the suggestions is allowed (BR-SLT-002's reason waits for
    round B).
-5. **Move**, lock order **task → SKU advisory lock → carton → stock rows by id**, the order picking keeps (pick
-   row first, stock after):
+5. **Move**, lock order **task → bin advisory lock → SKU advisory lock → carton → stock rows by id**, the order
+   picking keeps (pick row first, stock after). The bin lock is taken before the bin's occupancy is read; only
+   putaway checks capacity, so it serialises putaways into a bin, not other moves into it:
    - carton: `relocatePackages(target = AVAILABLE)` — the carton and its rows move whole, keep their ids and
      stay unopened; rows must be INBOUND (`STOCK_STATUS_MISMATCH`), the carton IN_STOCK
      (`INVALID_STOCK_PACKAGE_TRANSITION`). It moves from wherever it stands now in the warehouse (it may have

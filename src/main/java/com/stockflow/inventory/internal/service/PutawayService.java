@@ -61,6 +61,10 @@ import java.util.stream.Collectors;
  * task's own bookkeeping and last the event. Everything a bin must satisfy is checked here again for a bin the
  * clerk picked by hand, because the suggestions are only advice.</p>
  *
+ * <p>Lock order of {@link #confirm}: task row, then the target bin's advisory lock (taken before the bin's occupancy
+ * is read: occupancy is bin-wide across SKUs, so only a lock on the bin serialises two putaways of different SKUs
+ * into it), then the SKU advisory lock, the carton row and the stock rows by id, as in the move itself.</p>
+ *
  * <p>Suggestions are computed on {@link #get} only, from the bins and the stock of this moment, and never stored: a
  * suggestion is stale as soon as someone else puts goods away.</p>
  *
@@ -269,6 +273,8 @@ public class PutawayService {
                                 bin.locationCode() + " is not a putaway target"));
         String lot = (task.stockPackageId() != null ? receiptLine(task.goodsReceiptLineId(), reads)
                 : looseReceiptLine(task.goodsReceiptLineId(), reads)).map(StockMovement::lotNumber).orElse(null);
+        // Before the occupancy is read, so two putaways into one bin cannot both see it as it was.
+        occupancy.lockBin(bin.locationCode());
         Occupancy occupied = occupancy.occupancyOf(List.of(bin.locationCode()), task.sku(), lot)
                 .getOrDefault(bin.locationCode(), Occupancy.EMPTY);
         if (!PutawayRanker.fits(new Need(units, unitWeightOf(item)),

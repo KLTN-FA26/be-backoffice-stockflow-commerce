@@ -27,6 +27,15 @@ public class BinOccupancyQuery {
     }
 
     /**
+     * A transaction-scoped advisory lock on a bin, for the putaways into it. Occupancy is bin-wide across SKUs, so
+     * the SKU locks cannot serialise two putaways of different SKUs into one bin; this one does. Only putaway checks
+     * a bin's capacity, so it serialises putaways, not other moves.
+     */
+    public void lockBin(String locationCode) {
+        jdbc.query("select pg_advisory_xact_lock(hashtext(?))", rs -> {}, "putaway-bin:" + locationCode);
+    }
+
+    /**
      * The occupancy of each of these bins; a bin holding nothing is absent, which the ranker reads as empty.
      * {@code holdsSku} / {@code holdsLot} refer to the SKU (and lot number) being put away.
      */

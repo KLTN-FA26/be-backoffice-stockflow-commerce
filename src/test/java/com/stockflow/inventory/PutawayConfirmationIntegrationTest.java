@@ -27,6 +27,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -394,5 +400,35 @@ class PutawayConfirmationIntegrationTest {
         assertThat(putaway.get(cartonTask).left()).isZero();
         assertThat(putaway.get(cartonTask).suggestions()).isEmpty();
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, bin)).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    @DisplayName("two putaways into one bin cannot both pass its capacity: the bin lock serialises them")
+    void concurrentPutawaysCannotOverfillABin() throws Exception {
+        String bin = bin(warehouse, "A01", "NORMAL", 25, 500, "ACTIVE");   // 20 loose + 10 in a carton do not both fit
+        UUID otherCarton = taskOf(lpn2);
+        CountDownLatch go = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<ErrorCode> loose = pool.submit(() -> attempt(go, () -> confirmLoose(bin, 20)));
+            Future<ErrorCode> carton = pool.submit(() -> attempt(go, () -> confirmCarton(otherCarton, lpn2, bin)));
+            go.countDown();
+            List<ErrorCode> outcomes = Arrays.asList(loose.get(60, TimeUnit.SECONDS), carton.get(60, TimeUnit.SECONDS));
+
+            assertThat(outcomes).containsExactlyInAnyOrder(null, ErrorCode.LOCATION_CAPACITY_EXCEEDED);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /** The refusal a confirmation ends in, or null when it went through. */
+    private static ErrorCode attempt(CountDownLatch go, Runnable confirm) throws InterruptedException {
+        go.await(10, TimeUnit.SECONDS);
+        try {
+            confirm.run();
+            return null;
+        } catch (BusinessException e) {
+            return e.errorCode();
+        }
     }
 }
