@@ -9,8 +9,10 @@ import java.util.UUID;
 /**
  * What the operator now says is on a goods-receipt line's pallet, carton by carton (SCRUM-473), while the receipt is
  * still a draft. The whole list each time: a carton named by its LPN is recounted, an entry without one is a new
- * carton to label, and a still-receiving carton of the line left out is voided - so a retried request converges on
- * the same cartons instead of labelling a second set.
+ * carton to label, and a still-receiving carton of the line left out is voided. Entries naming LPNs converge when
+ * repeated; entries without one do not - a retry labels a new set and voids the first, whose labels may already be
+ * printed. A client retrying a count it is not sure went through sends the same {@code Idempotency-Key}, which
+ * answers the first count again instead of running it twice.
  *
  * @param receiptLineId   the goods-receipt line the cartons arrived on
  * @param uomConversionId the packing unit every carton of the line is in; null only when {@code packages} is empty,
@@ -28,8 +30,12 @@ public record CountReceivingPackagesCommand(
         UUID actorId
 ) {
 
-    /** One carton: an existing one by its LPN, or {@code lpn} null for a new one. */
+    /** One carton: an existing one by its LPN, in either case ({@link StockPackageView#normalLpn}); null for a new one. */
     public record PackageCount(String lpn, int quantity) {
+
+        public PackageCount {
+            lpn = StockPackageView.normalLpn(lpn);
+        }
     }
 
     public CountReceivingPackagesCommand {

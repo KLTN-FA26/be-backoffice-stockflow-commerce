@@ -1,5 +1,6 @@
 package com.stockflow.inventory.api;
 
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -29,4 +30,13 @@ public record StockPackageView(
         String status,
         boolean unopened
 ) {
+
+    /**
+     * The form an LPN is stored and matched in: trimmed and upper-cased, as it is printed - a scanner or a person
+     * typing it may send it in either case. Blank is absent (null). Every command naming a carton by LPN goes
+     * through this, and so does anything comparing a client's LPN with a stored one.
+     */
+    public static String normalLpn(String lpn) {
+        return lpn == null || lpn.isBlank() ? null : lpn.strip().toUpperCase(Locale.ROOT);
+    }
 }

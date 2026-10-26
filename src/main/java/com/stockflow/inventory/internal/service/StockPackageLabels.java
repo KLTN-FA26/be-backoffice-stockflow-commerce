@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
@@ -12,8 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -61,7 +62,6 @@ public class StockPackageLabels {
         if (cartons.size() > MAX_LABELS) {
             throw tooMany(cartons.size());
         }
-        cartons.forEach(carton -> WarehouseScope.requireLocation(carton.location().code()));
 
         Map<UUID, UomConversion> unitsById = units.findAll(cartons.stream().map(StockPackage::uomConversionId)
                         .distinct().toList()).stream()
@@ -73,15 +73,23 @@ public class StockPackageLabels {
     }
 
     private List<StockPackage> liveCartonsOf(UUID receiptLineId) {
-        return stockPackages.findByReceiptLines(List.of(receiptLineId)).stream()
+        List<StockPackage> live = stockPackages.findByReceiptLines(List.of(receiptLineId)).stream()
                 .filter(carton -> !carton.status().isClosed()).toList();
+        live.forEach(carton -> WarehouseScope.requireLocation(carton.location().code()));
+        return live;
     }
 
+    /**
+     * The named cartons, each checked in the order named: an unknown LPN is {@code STOCK_PACKAGE_NOT_FOUND}; a
+     * known one in a warehouse the caller is not assigned to is 403 before anything else is said about it - its
+     * status included, which would tell an outsider that the carton exists and what became of it.
+     */
     private List<StockPackage> named(List<String> lpns) {
         if (lpns == null || lpns.isEmpty()) {
             return List.of();
         }
-        List<String> distinct = lpns.stream().map(lpn -> lpn.trim().toUpperCase(Locale.ROOT)).distinct().toList();
+        List<String> distinct = lpns.stream().map(StockPackageView::normalLpn).filter(Objects::nonNull).distinct()
+                .toList();
         // Refused before the read: 501 names is a mistake, not something to look up.
         if (distinct.size() > MAX_LABELS) {
             throw tooMany(distinct.size());
@@ -93,6 +101,7 @@ public class StockPackageLabels {
             if (carton == null) {
                 throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No carton " + lpn);
             }
+            WarehouseScope.requireLocation(carton.location().code());
             if (carton.status().isClosed()) {
                 throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                         "%s is %s; a closed carton has no label to print".formatted(lpn, carton.status()));

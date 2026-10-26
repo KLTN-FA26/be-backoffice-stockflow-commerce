@@ -216,7 +216,7 @@ class StockPackageLabelHttpTest {
     }
 
     @Test
-    @DisplayName("cartons in a warehouse the caller is not assigned to: 403")
+    @DisplayName("cartons in a warehouse the caller is not assigned to: 403, a VOID one too - not 409 telling its status")
     void aCartonInAnotherWarehouseIsOutOfScope() throws Exception {
         UUID elsewhere = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
@@ -231,6 +231,13 @@ class StockPackageLabelHttpTest {
                 .andExpect(status().isForbidden());
         print(Role.WAREHOUSE_STAFF, outsider,
                 "{\"format\":\"THERMAL_ROLL\",\"lpns\":" + quoted(List.of(lpns.get(0))) + "}")
+                .andExpect(status().isForbidden());
+
+        String voided = lpns.get(1);
+        // In tx: the pool runs with auto-commit off, so a bare jdbc write is rolled back when its connection returns.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "update inventory.stock_package set status = 'VOID', closed_at = NOW() where lpn = ?", voided));
+        print(Role.WAREHOUSE_STAFF, outsider, "{\"format\":\"THERMAL_ROLL\",\"lpns\":" + quoted(List.of(voided)) + "}")
                 .andExpect(status().isForbidden());
     }
 }

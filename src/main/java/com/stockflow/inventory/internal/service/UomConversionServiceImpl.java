@@ -74,7 +74,8 @@ class UomConversionServiceImpl implements UomConversionService {
         if (unitOfMeasure == null || unitOfMeasure.isBlank()) {
             return java.util.Optional.empty();
         }
-        return conversions.find(sku.code(), unitOfMeasure.trim());
+        // Unit codes are stored upper-case (ck_uom_conversions_unit); a client's "carton" means CARTON.
+        return conversions.find(sku.code(), unitOfMeasure.trim().toUpperCase(java.util.Locale.ROOT));
     }
 
     @Override

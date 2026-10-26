@@ -23,7 +23,7 @@ public record MoveStockPackageCommand(
 ) {
 
     public MoveStockPackageCommand {
-        Objects.requireNonNull(lpn, "lpn");
+        lpn = Objects.requireNonNull(StockPackageView.normalLpn(lpn), "lpn");
         Objects.requireNonNull(toLocationCode, "toLocationCode");
         Objects.requireNonNull(reference, "reference");
         Objects.requireNonNull(referenceId, "referenceId");

@@ -25,7 +25,7 @@ public record ReclassifyStockPackageCommand(
 ) {
 
     public ReclassifyStockPackageCommand {
-        Objects.requireNonNull(lpn, "lpn");
+        lpn = Objects.requireNonNull(StockPackageView.normalLpn(lpn), "lpn");
         Objects.requireNonNull(toLocationCode, "toLocationCode");
         Objects.requireNonNull(disposition, "disposition");
         Objects.requireNonNull(reference, "reference");
