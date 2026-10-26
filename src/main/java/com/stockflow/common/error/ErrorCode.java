@@ -216,7 +216,12 @@ public enum ErrorCode {
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
     RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
-    /** Cartons were labelled on the line (SCRUM-473): void or recount them before the line is dropped. */
+    /**
+     * SCRUM-473: a receipt line that has ever had labelled cartons - VOID ones too, which still point at it
+     * ({@code fk_stock_package_receipt_line}) - keeps its PO line and lot and cannot be removed from the draft, and
+     * its unit cannot change while it keeps cartons in the old one. A lot or PO line on such a line is corrected by
+     * cancelling the receipt and counting it again.
+     */
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),

@@ -339,8 +339,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     }
 
     /**
-     * A draft line that cartons were labelled on is not dropped from the count: the cartons point at it with a
-     * restricting foreign key (V20261020000100), which would otherwise refuse the save as a bare 409 naming no line.
+     * A draft line that cartons were ever labelled on - VOID ones included - is not dropped from the count: the
+     * cartons point at it with a restricting foreign key (V20261020000100), which would otherwise refuse the save as a
+     * bare 409 naming no line. Since a line is keyed by its PO line and lot, this is also what refuses correcting the
+     * lot or PO line of such a line: the corrected line is a new one and the old one would be dropped. The way to
+     * correct it is to cancel the receipt and count it again.
      */
     private void requireNoCartonsOnDroppedLines(GoodsReceipt receipt, List<ReceiptLine> counted) {
         Set<UUID> kept = new HashSet<>();
@@ -352,8 +355,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Set<UUID> labelled = inventory.receiptLinesWithStockPackages(dropped);
         if (!labelled.isEmpty()) {
             throw new BusinessException(ErrorCode.RECEIPT_LINE_HAS_PACKAGES,
-                    "Receipt %s: %d line(s) left out of the count have labelled cartons; void or recount those first"
-                            .formatted(receipt.number(), labelled.size()));
+                    ("Receipt %s: %d line(s) left out of the count have had labelled cartons; such a line keeps its"
+                            + " PO line and lot and stays on the draft - to correct its lot or PO line, cancel the"
+                            + " receipt and count it again").formatted(receipt.number(), labelled.size()));
         }
     }
 

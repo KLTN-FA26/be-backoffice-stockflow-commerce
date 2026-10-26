@@ -108,12 +108,17 @@ class GoodsReceiptController {
                     packing unit they are in; without, it is absent or the item's base unit. The response gives \
                     each line's `packages` with their LPNs, to print the labels from, and its `looseQuantity`.
 
+                    A line is its PO line and lot. A line that has ever had labelled cartons keeps both: sent under \
+                    another lot or PO line it would be a new line with the old one left out, which is refused. To \
+                    correct the lot or PO line of such a line, cancel the receipt and count it again.
+
                     Every line is checked before anything is refused; `fieldErrors` names each field at fault \
                     (`lines[i].unitOfMeasure`, `lines[i].packages`, ...). Codes: `RECEIPT_LINE_UNIT_INVALID` (422: \
                     cartons in the base unit or a retired one, a packing unit without cartons), \
                     `UOM_CONVERSION_NOT_FOUND` (404: not a unit of the item), `RECEIPT_PACKAGES_EXCEED_LINE` (422), \
                     `RECEIPT_PACKAGES_NOT_SUPPORTED` (409: a subcontract receipt), `RECEIPT_LINE_HAS_PACKAGES` (409: \
-                    the unit changed while a carton of the old one is kept, or a line with cartons left out), \
+                    the unit changed while a carton of the old one is kept, or a line that has ever had cartons - \
+                    voided ones too - left out), \
                     `STOCK_PACKAGE_NOT_FOUND` (404: an LPN not of this line), `INVALID_STOCK_PACKAGE_TRANSITION` \
                     (409: a voided carton named again), `VALIDATION_FAILED` (cartons without a unit, an LPN listed \
                     twice, a carton under 1 unit).""")

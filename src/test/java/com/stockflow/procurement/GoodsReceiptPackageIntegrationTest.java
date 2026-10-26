@@ -124,7 +124,11 @@ class GoodsReceiptPackageIntegrationTest {
     }
 
     private GoodsReceipts.NewLine line(int quantity, String unit, String at, NewPackage... packages) {
-        return new GoodsReceipts.NewLine(poLine, quantity, null, null, at, null, unit, List.of(packages));
+        return lotLine(null, quantity, unit, at, packages);
+    }
+
+    private GoodsReceipts.NewLine lotLine(String lot, int quantity, String unit, String at, NewPackage... packages) {
+        return new GoodsReceipts.NewLine(poLine, quantity, lot, null, at, null, unit, List.of(packages));
     }
 
     private GoodsReceipts.LineView count(GoodsReceipts.NewLine line) {
@@ -239,6 +243,55 @@ class GoodsReceiptPackageIntegrationTest {
         assertThat(statuses(changed.id())).filteredOn("VOID"::equals).hasSize(5);
         assertThat(jdbc.queryForObject("select uom_conversion_id from procurement.goods_receipt_lines where id = ?",
                 UUID.class, changed.id())).isEqualTo(box);
+    }
+
+    @Test
+    @DisplayName("an LPN and a unit typed in lower case, with spaces, name the stored carton and unit: recounted, not voided")
+    void lowerCaseLpnRecounts() {
+        List<GoodsReceipts.PackageView> first = fiveCartons().packages();
+
+        GoodsReceipts.LineView again = count(line(4990, "carton", area, first.stream()
+                .map(p -> new NewPackage(" " + p.lpn().toLowerCase(Locale.ROOT) + " ", p.quantity()))
+                .toArray(NewPackage[]::new)));
+
+        assertThat(again.unitOfMeasure()).isEqualTo("CARTON");
+        assertThat(again.packages()).extracting(GoodsReceipts.PackageView::lpn)
+                .containsExactlyElementsOf(first.stream().map(GoodsReceipts.PackageView::lpn).toList());
+        assertThat(statuses(again.id())).as("the same five, none voided").hasSize(5).containsOnly("RECEIVING");
+    }
+
+    @Test
+    @DisplayName("a line that has had cartons keeps its lot: counted under another lot it is refused, its cartons live"
+            + " or all voided, and nothing changes")
+    void lotChangeOnACartonLineIsRefused() {
+        tx.executeWithoutResult(s -> jdbc.update(
+                "update inventory.inventory_items set lot_tracked = true where sku = ?", sku));
+        UUID lineId = count(lotLine("L1", 4990, "CARTON", area, new NewPackage(null, 1000),
+                new NewPackage(null, 980))).id();
+
+        Throwable live = catchThrowable(() -> count(lotLine("L2", 4990, "CARTON", area, new NewPackage(null, 1000),
+                new NewPackage(null, 980))));
+
+        assertThat(code(live)).isEqualTo(ErrorCode.RECEIPT_LINE_HAS_PACKAGES);
+        assertThat(statuses(lineId)).as("the cartons are untouched").hasSize(2).containsOnly("RECEIVING");
+        assertThat(onlyLine()).as("no new line, the old one as it was").isEqualTo(lineId + ":L1");
+
+        count(lotLine("L1", 4990, null, area));   // the line counted loose: both its cartons are voided
+        assertThat(statuses(lineId)).hasSize(2).containsOnly("VOID");
+
+        Throwable voided = catchThrowable(() -> count(lotLine("L2", 4990, null, area)));
+
+        assertThat(code(voided)).as("a VOID carton still points at the line")
+                .isEqualTo(ErrorCode.RECEIPT_LINE_HAS_PACKAGES);
+        assertThat(statuses(lineId)).hasSize(2).containsOnly("VOID");
+        assertThat(onlyLine()).isEqualTo(lineId + ":L1");
+    }
+
+    /** "id:lot" of the receipt's one line; queryForObject fails if there is another. */
+    private String onlyLine() {
+        return jdbc.queryForObject(
+                "select id || ':' || lot_number from procurement.goods_receipt_lines where receipt_id = ?",
+                String.class, receiptId);
     }
 
     @Test
