@@ -191,6 +191,19 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public Map<UUID, String> looseInboundLocationByLot(Collection<UUID> lotIds) {
+        if (lotIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, String> first = new HashMap<>();
+        // Ordered by id, so the first row met for a lot is its lowest.
+        for (Object[] row : jpa.findLooseInboundLocations(lotIds)) {
+            first.putIfAbsent((UUID) row[0], (String) row[1]);
+        }
+        return first;
+    }
+
+    @Override
     public List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit) {
         return jpa.findStockItemIdsWithExpiredReservations(cutoff, PageRequest.of(0, limit)).stream()
                 .map(jpa::findByIdWithReservations)

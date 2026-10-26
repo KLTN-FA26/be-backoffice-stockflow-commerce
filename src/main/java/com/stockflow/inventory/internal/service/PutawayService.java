@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
@@ -32,6 +31,7 @@ import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -52,11 +52,12 @@ import java.util.stream.Collectors;
  * <p>Suggestions are computed on {@link #get} only, from the bins and the stock of this moment, and never stored: a
  * suggestion is stale as soon as someone else puts goods away.</p>
  *
- * <p>Sources are read in batches by kind: one read of the cartons of all the lines, and for each loose task's receipt
- * line one ledger read and one stock read (there is no batch read of the ledger by reference, and adding one for this
- * screen would be a second way to read the same lines). A warehouse's list resolves the source of every open task to
- * filter by warehouse, so its cost grows with the open loose tasks, not with the page; lots, remaining quantities and
- * target codes are read for the requested page only.</p>
+ * <p>Sources are read in a constant number of queries however many tasks there are: one read of the cartons of all
+ * the lines, one ledger read of the loose RECEIPT lines of all the lines, one read of where each lot's loose INBOUND
+ * rows wait (a projection that loads no reservations), and one for the locations of the warehouse filter. A loose
+ * task whose lot has no INBOUND units left (it is done) stands at its latest target; failing that, where the loose
+ * RECEIPT ledger line says the goods arrived ({@code to}). Lots, remaining quantities of tasks in progress and target
+ * codes are read for the returned page only, one read per task in progress and one per distinct target.</p>
  */
 @Service
 public class PutawayService {
@@ -221,6 +222,15 @@ public class PutawayService {
     }
 
     private Map<UUID, Source> locate(List<PutawayTaskView> found, Reads reads) {
+        List<UUID> looseLines = found.stream().filter(task -> task.stockPackageId() == null)
+                .map(PutawayTaskView::goodsReceiptLineId).filter(line -> !reads.looseReceiptLine.containsKey(line))
+                .distinct().toList();
+        Map<UUID, StockMovement> looseReceipts = ledger.findLooseByReferences(MovementType.RECEIPT,
+                ReferenceType.GOODS_RECEIPT_LINE, looseLines);
+        looseLines.forEach(line -> reads.looseReceiptLine.put(line, Optional.ofNullable(looseReceipts.get(line))));
+        Map<UUID, String> waiting = stockItems.looseInboundLocationByLot(looseReceipts.values().stream()
+                .map(StockMovement::lotId).filter(Objects::nonNull).distinct().toList());
+
         Map<UUID, StockPackage> cartons = stockPackages.findByReceiptLines(found.stream()
                         .filter(task -> task.stockPackageId() != null).map(PutawayTaskView::goodsReceiptLineId)
                         .distinct().toList()).stream()
@@ -237,11 +247,7 @@ public class PutawayService {
                 continue;
             }
             StockMovement receipt = looseReceiptLine(task.goodsReceiptLineId(), reads).orElse(null);
-            String location = null;
-            if (receipt != null && receipt.lotId() != null) {
-                location = stockItems.findLooseInboundByLot(new Sku(task.sku()), receipt.lotId()).stream()
-                        .findFirst().map(row -> row.location().code()).orElse(null);
-            }
+            String location = receipt == null || receipt.lotId() == null ? null : waiting.get(receipt.lotId());
             if (location == null && task.targetLocationId() != null) {
                 location = locationCodeOf(task.targetLocationId(), reads);
             }

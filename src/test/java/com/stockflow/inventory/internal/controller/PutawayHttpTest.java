@@ -60,6 +60,18 @@ class PutawayHttpTest {
     void setUp() {
         mvc = new SecuredMvc(mockMvc, decoder);
         clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
+        Received received = receive();
+        receiptId = received.receiptId();
+        cartonTask = received.cartonTask();
+        looseTask = received.looseTask();
+    }
+
+    /** What one confirmed receipt of the fixture opened. */
+    private record Received(UUID receiptId, UUID cartonTask, UUID looseTask) {
+    }
+
+    /** A confirmed two-step receipt line into HCM: two cartons and a loose remainder, with their tasks opened. */
+    private Received receive() {
         String sku = "PH-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         UUID po = Identifiers.newId();
         UUID revision = Identifiers.newId();
@@ -95,16 +107,16 @@ class PutawayHttpTest {
                         ordered_qty, unit_price, version, created_at) VALUES (?, ?, ?, 1, ?, 2000, 1000, 0, NOW())""",
                     poLine, po, revision, item);
         });
-        receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PH", null), clerk).id();
+        UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PH", null), clerk).id();
         receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 40, null, null, RECEIVING, null,
                 "CARTON", List.of(new NewPackage(null, 20), new NewPackage(null, 15)))));
         receipts.confirm(receiptId, clerk);
         Await.until("three putaway tasks", Duration.ofSeconds(20),
                 () -> putawayTasks.tasksOfReceipt(receiptId).size() >= 3);
-        cartonTask = putawayTasks.tasksOfReceipt(receiptId).stream()
-                .filter(t -> t.stockPackageId() != null && t.quantity() == 20).findFirst().orElseThrow().id();
-        looseTask = putawayTasks.tasksOfReceipt(receiptId).stream().filter(t -> t.stockPackageId() == null)
-                .findFirst().orElseThrow().id();
+        return new Received(receiptId, putawayTasks.tasksOfReceipt(receiptId).stream()
+                .filter(t -> t.stockPackageId() != null && t.quantity() == 20).findFirst().orElseThrow().id(),
+                putawayTasks.tasksOfReceipt(receiptId).stream().filter(t -> t.stockPackageId() == null)
+                        .findFirst().orElseThrow().id());
     }
 
     /** A real account with this role, assigned to these warehouses. */
@@ -177,6 +189,21 @@ class PutawayHttpTest {
                         .param("size", "200"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + cartonTask + "')]").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("the warehouse list resolves the sources of loose tasks of several receipts in one batch")
+    void listByWarehouseResolvesLooseTasksOfTwoReceipts() throws Exception {
+        Received second = receive();
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("warehouseId", WAREHOUSE_HCM.toString())
+                        .param("size", "200"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + looseTask + "')].sourceLocationCode")
+                        .value(Matchers.contains(RECEIVING)))
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + second.looseTask() + "')].sourceLocationCode")
+                        .value(Matchers.contains(RECEIVING)))
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + second.cartonTask() + "')].lpn")
+                        .value(Matchers.contains(Matchers.notNullValue())));
     }
 
     @Test

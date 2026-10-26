@@ -80,6 +80,16 @@ class PickConsumptionServiceTest {
         }
 
         @Override
+        public java.util.Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
+                StockMovement.ReferenceType referenceType, java.util.Collection<UUID> referenceIds) {
+            java.util.Map<UUID, StockMovement> first = new java.util.HashMap<>();
+            for (UUID id : referenceIds) {
+                findLooseByReference(type, referenceType, id).ifPresent(row -> first.put(id, row));
+            }
+            return first;
+        }
+
+        @Override
         public int sumQuantityByReference(StockMovement.MovementType type,
                                           StockMovement.ReferenceType referenceType, UUID referenceId) {
             return ledgerRows.stream().filter(row -> row.type() == type && row.referenceType() == referenceType

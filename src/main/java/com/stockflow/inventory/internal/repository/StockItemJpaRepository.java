@@ -141,6 +141,14 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<StockItemJpaEntity> findLooseInboundByLot(@Param("sku") String sku, @Param("lotId") UUID lotId);
 
+    @Query("""
+            select s.lotId, s.locationCode from StockItemJpaEntity s
+            where s.lotId in :lotIds and s.stockPackageId is null and s.onHand > 0
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.INBOUND
+            order by s.id
+            """)
+    List<Object[]> findLooseInboundLocations(@Param("lotIds") Collection<UUID> lotIds);
+
     /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
     @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
     List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);

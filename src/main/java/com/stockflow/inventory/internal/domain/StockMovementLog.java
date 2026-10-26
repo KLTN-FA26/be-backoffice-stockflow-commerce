@@ -32,6 +32,14 @@ public interface StockMovementLog {
      * IN_PRODUCTION to AVAILABLE). Tells printed goods in a packing area from free stock somebody moved there.
      */
     /**
+     * {@link #findLooseByReference} for many documents at once: for each reference id that has a loose line, its
+     * first (lowest id); one query. A reference with none is absent.
+     */
+    java.util.Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
+                                                             StockMovement.ReferenceType referenceType,
+                                                             java.util.Collection<UUID> referenceIds);
+
+    /**
      * Units a document's ledger lines add up to, 0 when it has none: how much of a putaway task has been put away,
      * counting every part, loose or in a carton.
      */
