@@ -1,4 +1,4 @@
-package com.stockflow.warehouse.internal.service;
+package com.stockflow.common.label;
 
 /**
  * The two kinds of label stock a location label is printed on (SCRUM-97). Both draw the same label;

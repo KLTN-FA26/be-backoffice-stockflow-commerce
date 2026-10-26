@@ -1,4 +1,4 @@
-package com.stockflow.warehouse.internal.service;
+package com.stockflow.common.label;
 
 import org.apache.fontbox.ttf.CmapLookup;
 import org.apache.fontbox.ttf.TTFParser;
@@ -31,7 +31,7 @@ import java.util.Set;
  * rebuilt font keeps every glyph the Unicode cmap reaches, and its outlines and metrics unchanged.</p>
  */
 @Component
-class LabelFonts {
+public class LabelFonts {
 
     /**
      * Everything a TrueType font needs to draw and to be embedded again, and nothing else. Named
@@ -45,22 +45,22 @@ class LabelFonts {
     /** Code points both fonts have a glyph for; anything else would make PDFBox throw mid-render. */
     private final BitSet drawable = new BitSet();
 
-    LabelFonts() {
+    public LabelFonts() {
         BitSet regularCoverage = new BitSet();
         this.regular = withoutGsub("fonts/NotoSans-Regular.ttf", regularCoverage);
         this.bold = withoutGsub("fonts/NotoSans-Bold.ttf", drawable);
         drawable.and(regularCoverage);
     }
 
-    byte[] regular() {
+    public byte[] regular() {
         return regular;
     }
 
-    byte[] bold() {
+    public byte[] bold() {
         return bold;
     }
 
-    boolean canDraw(int codePoint) {
+    public boolean canDraw(int codePoint) {
         return codePoint >= 0 && drawable.get(codePoint);
     }
 
