@@ -261,6 +261,20 @@ adjustments are decided. A slot with a pending `COUNT_VARIANCE` adjustment is bu
 short picks, which reuse the count holding it (`CycleCountRepositoryAdapter.BUSY`, one predicate for
 `claim` and `findHolding`).
 
+### Receiving into cartons (SCRUM-473)
+
+Cartons are labelled while a DRAFT receipt is counted: `GoodsReceiptServiceImpl.replaceLines` →
+`InventoryService.countReceivingPackages`, which reconciles the line's RECEIVING cartons through the pure
+`ReceivingPackagePlan` (new → LPN, listed → recount, missing → VOID). `receive` puts each carton's count in one
+INBOUND row inside it (carton → IN_STOCK, unopened) and only the remainder loose. QC moves and reclassifies
+cartons whole: `moveStockPackage` / `reclassifyStockPackage`. Lock order everywhere: **SKU advisory lock →
+`stock_package FOR UPDATE` → stock rows by id**.
+
+In `moveToQc` and `inspect` the loose part goes **before** the cartons: the loose `move` / `reclassify` treats a
+MOVE ledger row with its reference as its own earlier attempt, and written after the cartons it would find theirs
+and silently skip. `LpnSequence.next` is `REQUIRES_NEW`: one count labels several SKUs under their advisory locks,
+and a sequence row held until commit would deadlock two receipts on it. Gaps in LPNs are the accepted price.
+
 ---
 
 ## 5. Known traps — do not reintroduce these
