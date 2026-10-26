@@ -89,7 +89,7 @@ final class StockItemPersistenceMapper {
      * {@code reserved} in lockstep with the children by construction.
      */
     static void applyToEntity(StockItem item, StockItemJpaEntity entity) {
-        entity.apply(item.onHand().value(), item.reserved().value(), item.status());
+        entity.apply(item.onHand().value(), item.reserved().value(), item.status(), item.location().code());
         entity.replaceReservations(toEntities(item));
     }
 

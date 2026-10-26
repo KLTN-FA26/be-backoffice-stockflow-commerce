@@ -465,4 +465,79 @@ class StockItemTest {
                     .isInstanceOf(IllegalArgumentException.class);
         }
     }
+
+    @Nested
+    @DisplayName("rows in a carton")
+    class InCartons {
+
+        private final StockPackageId carton = new StockPackageId(UUID.randomUUID());
+        private final LocationId destination = new LocationId("HCM-QC01");
+
+        private StockItem cartonRow(StockStatus status, List<Reservation> holds) {
+            return new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", null, Quantity.of(10), status, holds, 0L,
+                    NOW, null, UUID.randomUUID(), carton);
+        }
+
+        @Test
+        @DisplayName("received into a carton: INBOUND, at the receiving location, carrying its carton")
+        void receiveInboundIntoKeepsTheCarton() {
+            UUID lot = UUID.randomUUID();
+
+            StockItem item = StockItem.receiveInboundInto(carton, SKU, LOCATION, "LOT-1", null, Quantity.of(980),
+                    NOW, lot);
+
+            assertThat(item.stockPackageId()).isEqualTo(carton);
+            assertThat(item.isLoose()).isFalse();
+            assertThat(item.status()).isEqualTo(StockStatus.INBOUND);
+            assertThat(item.location()).isEqualTo(LOCATION);
+            assertThat(item.lotId()).isEqualTo(lot);
+            assertThat(item.onHand()).isEqualTo(Quantity.of(980));
+        }
+
+        @Test
+        @DisplayName("a carton row follows its carton in place; a loose row never does")
+        void followPackageMovesOnlyCartonRows() {
+            StockItem row = cartonRow(StockStatus.INBOUND, List.of());
+            StockItemId id = row.id();
+
+            row.followPackageTo(destination);
+
+            assertThat(row.location()).isEqualTo(destination);
+            assertThat(row.id()).isEqualTo(id);
+            assertThat(row.status()).isEqualTo(StockStatus.INBOUND);
+            assertThat(row.stockPackageId()).isEqualTo(carton);
+            assertThatThrownBy(() -> availableWith(5).followPackageTo(destination))
+                    .isInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        @DisplayName("an INBOUND carton row can be put in quarantine or blocked, in place")
+        void reclassifyInPackageQuarantinesInbound() {
+            StockItem row = cartonRow(StockStatus.INBOUND, List.of());
+
+            row.reclassifyInPackage(StockStatus.QUARANTINE);
+            assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
+
+            row.reclassifyInPackage(StockStatus.BLOCKED);
+            assertThat(row.status()).isEqualTo(StockStatus.BLOCKED);
+            assertThatThrownBy(() -> row.reclassifyInPackage(StockStatus.QUARANTINE))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> cartonRow(StockStatus.INBOUND, List.of())
+                    .reclassifyInPackage(StockStatus.AVAILABLE)).isInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        @DisplayName("a row with live holds is not reclassified under them")
+        void reclassifyInPackageRefusesReservedUnits() {
+            UUID order = UUID.randomUUID();
+            Reservation hold = new Reservation(new ReservationId(UUID.randomUUID()), order, UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(3), NOW, NOW.plus(Duration.ofMinutes(30)), ReservationStatus.HELD,
+                    null, null);
+            StockItem row = cartonRow(StockStatus.QUARANTINE, List.of(hold));
+
+            assertThatThrownBy(() -> row.reclassifyInPackage(StockStatus.BLOCKED))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
+        }
+    }
 }

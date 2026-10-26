@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
+import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
@@ -9,13 +10,16 @@ import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.LowStockItem;
 import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.OrderHold;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
@@ -182,8 +186,29 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command) {
+        return operations.countReceivingPackages(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
+        return operations.receivingPackagesOf(receiptLineIds);
+    }
+
+    @Override
     public StockMove reclassify(ReclassifyStockCommand command) {
         return operations.reclassify(command);
+    }
+
+    @Override
+    public List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command) {
+        return operations.moveStockPackages(command);
+    }
+
+    @Override
+    public List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command) {
+        return operations.reclassifyStockPackages(command);
     }
 
     @Override

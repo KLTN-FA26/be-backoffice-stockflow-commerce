@@ -99,13 +99,37 @@ class GoodsReceiptController {
     }
 
     @PutMapping("/{receiptId}/lines")
-    @Operation(summary = "Replace the count of a DRAFT receipt (tolerance BR-02, lot/expiry BR-03, RECEIVING areas)")
+    @Operation(summary = "Replace the count of a DRAFT receipt (tolerance BR-02, lot/expiry BR-03, RECEIVING areas)",
+            description = """
+                    The whole count each time. `quantity` is a line's total in base units. A line may carry \
+                    `packages`, its labelled cartons (SCRUM-473): an entry with an `lpn` recounts that carton, one \
+                    without labels a new one, a carton of the line left out is voided; the cartons hold at most \
+                    `quantity` together and the rest is loose. With `packages`, `unitOfMeasure` is the active \
+                    packing unit they are in; without, it is absent or the item's base unit. The response gives \
+                    each line's `packages` with their LPNs, to print the labels from, and its `looseQuantity`.
+
+                    A line is its PO line and lot. A line that has ever had labelled cartons keeps both: sent under \
+                    another lot or PO line it would be a new line with the old one left out, which is refused. To \
+                    correct the lot or PO line of such a line, cancel the receipt and count it again.
+
+                    Every line is checked before anything is refused; `fieldErrors` names each field at fault \
+                    (`lines[i].unitOfMeasure`, `lines[i].packages`, ...). Codes: `RECEIPT_LINE_UNIT_INVALID` (422: \
+                    cartons in the base unit or a retired one, a packing unit without cartons), \
+                    `UOM_CONVERSION_NOT_FOUND` (404: not a unit of the item), `RECEIPT_PACKAGES_EXCEED_LINE` (422), \
+                    `RECEIPT_PACKAGES_NOT_SUPPORTED` (409: a subcontract receipt), `RECEIPT_LINE_HAS_PACKAGES` (409: \
+                    the unit changed while a carton of the old one is kept, or a line that has ever had cartons - \
+                    voided ones too - left out), \
+                    `STOCK_PACKAGE_NOT_FOUND` (404: an LPN not of this line), `INVALID_STOCK_PACKAGE_TRANSITION` \
+                    (409: a voided carton named again), `VALIDATION_FAILED` (cartons without a unit, an LPN listed \
+                    twice, a carton under 1 unit).""")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> replaceLines(@PathVariable UUID receiptId,
                                                           @Valid @RequestBody ReceiptLinesRequest request) {
         return ApiResponse.ok(mapper.toResponse(receipts.replaceLines(receiptId, request.lines().stream()
                 .map(l -> new GoodsReceipts.NewLine(l.purchaseOrderLineId(), l.quantity(), l.lotNumber(),
-                        l.expiryDate(), l.locationCode(), l.note()))
+                        l.expiryDate(), l.locationCode(), l.note(), l.unitOfMeasure(),
+                        l.packages() == null ? List.of() : l.packages().stream()
+                                .map(p -> new GoodsReceipts.NewPackage(p.lpn(), p.quantity())).toList()))
                 .toList())));
     }
 
@@ -125,7 +149,8 @@ class GoodsReceiptController {
     }
 
     @PostMapping("/{receiptId}/lines/{lineId}/qc-transfer")
-    @Operation(summary = "The goods of a QC-required line were moved to a QUALITY_CONTROL area")
+    @Operation(summary = "The goods of a QC-required line were moved to a QUALITY_CONTROL area: its cartons whole,"
+            + " its loose units")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> moveToQc(@PathVariable UUID receiptId, @PathVariable UUID lineId,
                                                       @Valid @RequestBody MoveToQcRequest request,
@@ -135,7 +160,13 @@ class GoodsReceiptController {
     }
 
     @PostMapping("/{receiptId}/lines/{lineId}/inspection")
-    @Operation(summary = "Record the QC decision on a line: accepted, quarantined, rejected (must add up, BR-08)")
+    @Operation(summary = "Record the QC decision on a line: accepted, quarantined, rejected (must add up, BR-08)",
+            description = "A quarantined or rejected part is its loose `quantity` plus the line's cartons it names in"
+                    + " `packages` (LPNs), each going whole at what was counted into it (SCRUM-473). A named carton is"
+                    + " one of this line's (STOCK_PACKAGE_NOT_FOUND), named once (VALIDATION_FAILED), in stock"
+                    + " (INVALID_STOCK_PACKAGE_TRANSITION) at the line's QC area (STOCK_PACKAGE_WRONG_LOCATION)."
+                    + " `accepted` is every unit no part takes; the loose parts may not exceed the line's"
+                    + " `looseQuantity` (QC_QUANTITY_MISMATCH).")
     @RequiresPermission(resource = PurchaseOrderResources.QC_TASKS, action = Action.APPROVE)
     public ApiResponse<GoodsReceiptResponse> inspect(@PathVariable UUID receiptId, @PathVariable UUID lineId,
                                                      @Valid @RequestBody QcDecisionRequest request,
@@ -145,6 +176,7 @@ class GoodsReceiptController {
     }
 
     private static GoodsReceipts.Part part(QcDecisionRequest.Part part) {
-        return part == null ? null : new GoodsReceipts.Part(part.quantity(), part.locationCode(), part.reason());
+        return part == null ? null
+                : new GoodsReceipts.Part(part.quantity(), part.locationCode(), part.reason(), part.packages());
     }
 }

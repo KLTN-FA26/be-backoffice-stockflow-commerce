@@ -93,6 +93,12 @@ public interface StockItemRepository {
     /** The ids of the stock rows of a stock package (its contents), read without locking (SCRUM-287 PR T, LP2-8). */
     List<StockItemId> findIdsInStockPackage(StockPackageId stockPackageId);
 
+    /**
+     * The ids of the rows of several stock packages, in id order - the order rows are locked in - read without
+     * locking, in one query: what moving a line's cartons together locks (SCRUM-473).
+     */
+    List<StockItemId> findIdsInStockPackages(Collection<StockPackageId> stockPackageIds);
+
     /** Every stock item holding at least one reservation that expired before {@code cutoff}. */
     List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit);
 
