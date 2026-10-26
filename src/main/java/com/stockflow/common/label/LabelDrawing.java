@@ -11,9 +11,9 @@ import org.apache.pdfbox.pdmodel.font.PDFont;
 import java.io.IOException;
 
 /**
- * The drawing primitives every printed label shares: a Code 128 barcode, a QR code, fitted text and
- * the millimetre/point conversion. Location labels (SCRUM-97) and carton labels (SCRUM-473) lay these
- * out differently but must draw a symbol identically, so a scanner tuned on one reads the other.
+ * The drawing primitives of {@link CodeLabelSheet}: a Code 128 barcode, a QR code, fitted text and the
+ * millimetre/point conversion. Location labels (SCRUM-97) and carton labels (SCRUM-473) both go through
+ * that one layout, so a scanner tuned on one reads the other.
  *
  * <p>Every bar and every QR module is a filled vector rectangle rather than a raster image, so a
  * label is as sharp on a 203 dpi thermal printer as on a 600 dpi office printer.</p>
@@ -21,7 +21,7 @@ import java.io.IOException;
  * <p>Positions are millimetres from the page's top-left corner, which is how label stock is specified;
  * PDF measures from the bottom-left, and {@link Cell#y} converts.</p>
  */
-public final class LabelDrawing {
+final class LabelDrawing {
 
     private static final float POINTS_PER_MM = 72f / 25.4f;
 

@@ -1,8 +1,9 @@
 package com.stockflow.common.label;
 
 /**
- * The two kinds of label stock a location label is printed on (SCRUM-97). Both draw the same label;
- * they differ only in how labels are laid onto pages.
+ * The two kinds of label stock location labels (SCRUM-97) and carton labels (SCRUM-473) are printed on:
+ * one printer setup serves both. The two formats draw the same label; they differ only in how labels are
+ * laid onto pages.
  *
  * <p>All lengths are millimetres: label stock is sold by its millimetre size, and a printer driver
  * that scales "to fit" ruins a barcode, so the PDF page is the physical page.</p>
