@@ -21,11 +21,11 @@ import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockCommand;
-import com.stockflow.inventory.api.MoveStockPackageCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReceiptOrigin;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
-import com.stockflow.inventory.api.ReclassifyStockPackageCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
@@ -56,11 +56,13 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -178,6 +180,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         // The cartons labelled so far, read once: rule 7, and which lines inventory must count again.
         Map<UUID, List<StockPackageView>> labelled = receipt.lines().isEmpty() ? Map.of()
                 : inventory.receivingPackagesOf(receipt.lines().stream().map(ReceiptLine::id).toList());
+        // Every unit of every item a line names a unit of, in one query: a lookup per line was a query per line.
+        Map<UUID, InventoryItemPolicy> items = new HashMap<>();
+        List<Sku> unitSkus = newLines.stream()
+                .filter(in -> blankToNull(in.unitOfMeasure()) != null)
+                .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
+                .map(poLine -> new Sku(items.computeIfAbsent(poLine.inventoryItemId(), this::policy).sku()))
+                .distinct().toList();
+        Map<String, List<UomConversion>> unitsBySku = unitSkus.isEmpty() ? Map.of() : units.conversionsOf(unitSkus);
 
         LineErrors errors = new LineErrors();
         List<ReceiptLine> counted = new ArrayList<>();
@@ -199,7 +209,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                         "Line %d of %s is %s".formatted(poLine.lineNo(), order.number(), poLine.status()));
                 continue;
             }
-            InventoryItemPolicy item = policy(poLine.inventoryItemId());
+            InventoryItemPolicy item = items.computeIfAbsent(poLine.inventoryItemId(), this::policy);
             String lot = blankToNull(in.lotNumber());
             int before = errors.size();
             ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());
@@ -214,8 +224,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             ReceiptLine was = current.get(lineKey(poLine.id(), lot));
             UUID lineId = was == null ? Identifiers.newId() : was.id();
             List<StockPackageView> cartonsBefore = labelled.getOrDefault(lineId, List.of());
-            UomConversion unit = cartonUnit(errors, i, in, item, order.subcontract(),
-                    was == null ? null : was.uomConversionId(), cartonsBefore);
+            UomConversion unit = cartonUnit(errors, i, in, item, unitsBySku.getOrDefault(item.sku(), List.of()),
+                    order.subcontract(), was == null ? null : was.uomConversionId(), cartonsBefore);
             if (errors.size() == before) {
                 // A SUBCONTRACT order's goods get one inspection, the production QC against the approved sample
                 // (user decision 2026-10-13): receiving counts them and does not inspect the same goods again.
@@ -243,10 +253,19 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         for (CartonCount count : cartonCounts) {
             inventory.countReceivingPackages(new CountReceivingPackagesCommand(count.lineId(), new Sku(count.sku()),
                     count.unitId(), count.locationCode(), count.packages().stream()
-                    .map(p -> new CountReceivingPackagesCommand.PackageCount(blankToNull(p.lpn()), p.quantity()))
+                    .map(p -> new CountReceivingPackagesCommand.PackageCount(p.lpn(), p.quantity()))
                     .toList(), actor));
         }
         return view(saved, order);
+    }
+
+    /**
+     * The unit among an item's units with this code, active or retired. Unit codes are stored upper-case
+     * ({@code ck_uom_conversions_unit}): a client's "carton" means CARTON.
+     */
+    private static Optional<UomConversion> unitByCode(List<UomConversion> itemUnits, String code) {
+        String wanted = code.strip().toUpperCase(Locale.ROOT);
+        return itemUnits.stream().filter(unit -> unit.unitOfMeasure().equals(wanted)).findFirst();
     }
 
     /** A line's cartons as counted, for inventory once the count is saved. {@code unitId} null voids them all. */
@@ -263,12 +282,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * through, it would be a check violation from the database.</p>
      */
     private UomConversion cartonUnit(LineErrors errors, int index, NewLine in, InventoryItemPolicy item,
-                                     boolean subcontract, UUID lineUnitId, List<StockPackageView> cartonsBefore) {
+                                     List<UomConversion> itemUnits, boolean subcontract, UUID lineUnitId,
+                                     List<StockPackageView> cartonsBefore) {
         String code = blankToNull(in.unitOfMeasure());
-        Sku sku = new Sku(item.sku());
         if (in.packages().isEmpty()) {
             if (code != null) {
-                Optional<UomConversion> unit = units.conversion(sku, code);
+                Optional<UomConversion> unit = unitByCode(itemUnits, code);
                 if (unit.isEmpty()) {
                     errors.add(index, "unitOfMeasure", ErrorCode.UOM_CONVERSION_NOT_FOUND,
                             "%s has no unit %s".formatted(item.sku(), code));
@@ -309,7 +328,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             errors.add(index, "unitOfMeasure", ErrorCode.VALIDATION_FAILED, "Cartons need the packing unit they are in");
             return null;
         }
-        Optional<UomConversion> found = units.conversion(sku, code);
+        Optional<UomConversion> found = unitByCode(itemUnits, code);
         if (found.isEmpty()) {
             errors.add(index, "unitOfMeasure", ErrorCode.UOM_CONVERSION_NOT_FOUND,
                     "%s has no unit %s".formatted(item.sku(), code));
@@ -521,11 +540,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      *
      * <p>SCRUM-473 (design §5): every IN_STOCK carton of the line moves whole, still unopened, and the loose remainder
      * - the line less what was counted into its cartons - moves as one loose move, none when it is 0. All of them
-     * name the line as their reference.</p>
-     *
-     * <p>The loose move goes first. It treats a MOVE ledger row with its reference as its own earlier attempt and
-     * skips (the replay lookup in {@code inventory.move}); written after the cartons, it would find theirs - same
-     * {@code GOODS_RECEIPT_LINE} and line id - and leave the loose units at the receiving area without a word.</p>
+     * name the line as their reference; the loose move's replay lookup sees loose ledger lines only, so the cartons'
+     * lines under the same reference are not taken for its earlier attempt, whichever runs first. The cartons go in
+     * one call, which locks once for all of them.</p>
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")
@@ -541,15 +558,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         if (loose > 0) {
             String from = locations.byIds(List.of(line.locationId())).get(line.locationId()).code();
             InventoryItemPolicy item = policy(line.inventoryItemId());
-            // Before the cartons: their MOVE rows share this reference, and this move would take them for its replay.
             inventory.move(new MoveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(), from, qcArea.code(),
                     loose, MoveReference.GOODS_RECEIPT_LINE, line.id(), userId, saved.confirmedAt()));
         }
-        for (StockPackageView carton : cartons) {
-            if (IN_STOCK.equals(carton.status())) {
-                inventory.moveStockPackage(new MoveStockPackageCommand(carton.lpn(), qcArea.code(),
-                        MoveReference.GOODS_RECEIPT_LINE, line.id(), userId));
-            }
+        List<String> inStock = cartons.stream().filter(carton -> IN_STOCK.equals(carton.status()))
+                .map(StockPackageView::lpn).toList();
+        if (!inStock.isEmpty()) {
+            inventory.moveStockPackages(new MoveStockPackagesCommand(inStock, qcArea.code(),
+                    MoveReference.GOODS_RECEIPT_LINE, line.id(), userId));
         }
         return view(saved, orderOf(saved));
     }
@@ -568,9 +584,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * loose units no part took, and it stays INBOUND at the QC area. {@code QcInspection.quantity} records a part's total; which carton went where is in the ledger
      * ({@code QC_INSPECTION} and the inspection's id, with the carton on both sides).</p>
      *
-     * <p>Each part's loose units are reclassified before its cartons, for the reason {@link #moveToQc} gives: the
-     * loose reclassification skips when a MOVE row with its reference ({@code QC_INSPECTION} and the part's
-     * inspection id) exists already, and the cartons' rows carry that reference too.</p>
+     * <p>A part's loose units and its cartons share the reference ({@code QC_INSPECTION} and the part's inspection
+     * id); as in {@link #moveToQc}, the loose reclassification's replay lookup ignores the cartons' lines. A part's
+     * cartons go in one call.</p>
      */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "goods-receipt", resourceId = "#receiptId")
@@ -835,7 +851,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * A named carton is decided where QC looked at it: IN_STOCK ({@code INVALID_STOCK_PACKAGE_TRANSITION}) at the
      * line's QC area ({@code STOCK_PACKAGE_WRONG_LOCATION}), not taken somewhere else by hand since.
      */
-    private static void requireAtQcArea(java.util.Collection<NamedCarton> named, String qcCode) {
+    private static void requireAtQcArea(Collection<NamedCarton> named, String qcCode) {
         for (NamedCarton each : named) {
             StockPackageView carton = each.carton();
             if (!IN_STOCK.equals(carton.status())) {
@@ -861,14 +877,13 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private void decide(Part part, QcInspection inspection, StockDisposition disposition, ReceivingLocation to,
                         Sku sku, ReceiptLine line, String qcCode, Instant receivedAt, UUID userId) {
         if (looseOf(part) > 0) {
-            // Before the cartons: their MOVE rows share this reference, and this would take them for its replay.
             inventory.reclassify(new ReclassifyStockCommand(sku, line.lotNumber(), qcCode, to.code(), looseOf(part),
                     disposition, MoveReference.QC_INSPECTION, inspection.id(), userId, inspection.reason(),
                     receivedAt));
         }
-        for (String lpn : part.packages()) {
-            inventory.reclassifyStockPackage(new ReclassifyStockPackageCommand(lpn, to.code(), disposition,
-                    MoveReference.QC_INSPECTION, inspection.id(), userId, inspection.reason()));
+        if (!part.packages().isEmpty()) {
+            inventory.reclassifyStockPackages(new ReclassifyStockPackagesCommand(part.packages(), to.code(),
+                    disposition, MoveReference.QC_INSPECTION, inspection.id(), userId, inspection.reason()));
         }
     }
 

@@ -16,9 +16,9 @@ import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.IssueReservedStockResult;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockCommand;
-import com.stockflow.inventory.api.MoveStockPackageCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
-import com.stockflow.inventory.api.ReclassifyStockPackageCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
@@ -68,6 +68,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -167,8 +168,10 @@ class StockOperationsServiceImpl implements StockOperations {
         // Match policy edits/reservations: take the SKU lock before any stock-row locks.
         policies.lock(sku.code());
 
-        // Replay first: a retried move must not move the goods again.
-        Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.MOVE, referenceType, referenceId);
+        // Replay first: a retried move must not move the goods again. Loose lines only - this moves loose stock,
+        // and a carton moved whole under the same reference is not this move's earlier attempt (SCRUM-473).
+        Optional<StockMovement> done = ledger.findLooseByReference(StockMovement.MovementType.MOVE, referenceType,
+                referenceId);
         if (done.isPresent()) {
             return toMove(done.get());
         }
@@ -259,70 +262,93 @@ class StockOperationsServiceImpl implements StockOperations {
     // ------------------------------------------------------------------ a carton, whole
 
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.lpn()")
-    public StockPackageView moveStockPackage(MoveStockPackageCommand command) {
-        return relocatePackage(command.lpn(), command.toLocationCode(), null, command.reference(),
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.referenceId()")
+    public List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command) {
+        return relocatePackages(command.lpns(), command.toLocationCode(), null, command.reference(),
                 command.referenceId(), command.actorId(), null);
     }
 
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.lpn()")
-    public StockPackageView reclassifyStockPackage(ReclassifyStockPackageCommand command) {
-        return relocatePackage(command.lpn(), command.toLocationCode(),
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.referenceId()")
+    public List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command) {
+        return relocatePackages(command.lpns(), command.toLocationCode(),
                 StockStatus.valueOf(command.disposition().name()), command.reference(), command.referenceId(),
                 command.actorId(), blankToNull(command.reason()));
     }
 
     /**
-     * A carton to {@code toCode} with its rows, {@code target} null for a plain move (the status travels) or the
-     * status QC gives it. The rows are changed in place, never split off (a carton is not opened by a decision
-     * about it), so each keeps its id and holds; one MOVE ledger line per row names the carton on both sides.
+     * Cartons to {@code toCode} with their rows, {@code target} null for a plain move (the status travels) or the
+     * status QC gives them. The rows are changed in place, never split off (a carton is not opened by a decision
+     * about it), so each keeps its id and holds; one MOVE ledger line per row names its carton on both sides.
      *
-     * <p>Lock order: the SKU, the carton, then its rows by id. The carton is read unlocked first only to learn
-     * its SKU; everything decided about it is read again under the lock. No replay lookup: a second call finds
-     * the carton already at the destination and is refused as any move to the same place is.</p>
+     * <p>One pass for the whole list: a document moves a line's cartons together, and a call per carton read,
+     * locked and wrote the same things once per carton. Lock order, as for one carton: the SKUs (sorted), the
+     * cartons, then their rows, each set in id order. The cartons are read unlocked first only to learn their SKUs;
+     * everything decided about them is read again under the lock, and every carton is checked before any moves. No
+     * replay lookup: a second call finds a carton already at the destination and is refused as any move to the same
+     * place is.</p>
      */
-    private StockPackageView relocatePackage(String lpn, String toCode, StockStatus target,
-                                             MoveReference reference, UUID referenceId, UUID actorId, String reason) {
+    private List<StockPackageView> relocatePackages(List<String> lpns, String toCode, StockStatus target,
+                                                    MoveReference reference, UUID referenceId, UUID actorId,
+                                                    String reason) {
         WarehouseScope.requireLocation(toCode);
-        StockPackage seen = stockPackages.findByLpn(lpn).orElseThrow(() ->
-                new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + lpn));
-        WarehouseScope.requireLocation(seen.location().code());
-        UomConversion unit = units.findAll(List.of(seen.uomConversionId())).stream().findFirst().orElseThrow(() ->
-                new IllegalStateException("Stock package %s is in no known unit".formatted(lpn)));
-        Sku sku = new Sku(unit.sku());
-        policies.lock(sku.code());
-
-        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
-                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + lpn));
-        if (carton.status() != StockPackageStatus.IN_STOCK) {
-            throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
-                    "%s is %s; only a carton in stock is moved".formatted(lpn, carton.status()));
+        Map<String, StockPackage> seen = stockPackages.findByLpns(lpns).stream()
+                .collect(Collectors.toMap(StockPackage::lpn, Function.identity()));
+        for (String lpn : lpns) {
+            StockPackage carton = seen.get(lpn);
+            if (carton == null) {
+                throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + lpn);
+            }
+            WarehouseScope.requireLocation(carton.location().code());
         }
-        LocationId from = carton.location();
+        Map<UUID, UomConversion> unitsById = units.findAll(seen.values().stream().map(StockPackage::uomConversionId)
+                        .distinct().toList()).stream()
+                .collect(Collectors.toMap(UomConversion::id, Function.identity()));
+        seen.values().stream()
+                .map(carton -> Optional.ofNullable(unitsById.get(carton.uomConversionId())).orElseThrow(() ->
+                        new IllegalStateException("Stock package %s is in no known unit".formatted(carton.lpn()))))
+                .map(UomConversion::sku).distinct().sorted()
+                .forEach(policies::lock);
+
+        List<StockPackage> cartons = stockPackages.findAllByIdForUpdate(
+                seen.values().stream().map(StockPackage::id).toList());
+        if (cartons.size() != seen.size()) {
+            throw new IllegalStateException("A stock package vanished mid-move");
+        }
         LocationId to = new LocationId(toCode);
-        requireMovableBetween(from, to);
+        Map<StockPackageId, LocationId> from = new LinkedHashMap<>();
+        for (StockPackage carton : cartons) {
+            if (carton.status() != StockPackageStatus.IN_STOCK) {
+                throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
+                        "%s is %s; only a carton in stock is moved".formatted(carton.lpn(), carton.status()));
+            }
+            requireMovableBetween(carton.location(), to);
+            from.put(carton.id(), carton.location());
+        }
 
         List<StockItem> rows = new ArrayList<>();
-        for (StockItemId id : stockItems.findIdsInStockPackage(carton.id()).stream()
-                .sorted(Comparator.comparing(id -> id.value().toString())).toList()) {
+        for (StockItemId id : stockItems.findIdsInStockPackages(from.keySet())) {
             rows.add(stockItems.findByIdForUpdate(id).orElseThrow(() ->
                     new IllegalStateException("Stock item %s vanished mid-move".formatted(id))));
         }
         if (target != null) {
+            Map<StockPackageId, String> lpnOf = cartons.stream()
+                    .collect(Collectors.toMap(StockPackage::id, StockPackage::lpn));
             for (StockItem row : rows) {
                 if (row.status() != StockStatus.INBOUND && row.status() != StockStatus.QUARANTINE) {
                     throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
                             "%s holds %s; only INBOUND or QUARANTINE stock takes a receiving decision"
-                                    .formatted(lpn, row.status()));
+                                    .formatted(lpnOf.get(row.stockPackageId()), row.status()));
                 }
             }
         }
 
-        carton.moveTo(to);
-        stockPackages.save(carton);
+        for (StockPackage carton : cartons) {
+            carton.moveTo(to);
+            stockPackages.save(carton);
+        }
         Instant now = clock.instant();
-        int onHand = 0;
+        Map<StockPackageId, Integer> onHand = new HashMap<>();
         for (StockItem row : rows) {
             StockStatus before = row.status();
             row.followPackageTo(to);
@@ -330,17 +356,22 @@ class StockOperationsServiceImpl implements StockOperations {
                 row.reclassifyInPackage(target);
             }
             stockItems.save(row);
-            onHand += row.onHand().value();
+            onHand.merge(row.stockPackageId(), row.onHand().value(), Integer::sum);
             if (row.onHand().value() > 0) {
                 ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, row.sku(),
-                        row.lotNumber(), from, to, row.onHand().value(), before, row.status(),
-                        StockMovement.ReferenceType.valueOf(reference.name()), referenceId, reason, actorId, now)
-                        .ofLot(row.lotId()).leaving(carton.id()).arriving(carton.id()));
+                        row.lotNumber(), from.get(row.stockPackageId()), to, row.onHand().value(), before,
+                        row.status(), StockMovement.ReferenceType.valueOf(reference.name()), referenceId, reason,
+                        actorId, now)
+                        .ofLot(row.lotId()).leaving(row.stockPackageId()).arriving(row.stockPackageId()));
             }
         }
-        log.info("Moved carton {} from {} to {} ({} row(s){})", lpn, from, to, rows.size(),
+        log.info("Moved {} carton(s) to {} ({} row(s){})", cartons.size(), to, rows.size(),
                 target == null ? "" : ", now " + target);
-        return view(carton, unit, onHand);
+        return cartons.stream()
+                .sorted(Comparator.comparing(StockPackage::lpn))
+                .map(carton -> view(carton, unitsById.get(carton.uomConversionId()),
+                        onHand.getOrDefault(carton.id(), 0)))
+                .toList();
     }
 
     // ------------------------------------------------------------------ issue held goods
@@ -1037,7 +1068,7 @@ class StockOperationsServiceImpl implements StockOperations {
 
         List<StockPackage> current = lockCartonsOf(command.receiptLineId());
         ReceivingPackagePlan plan = ReceivingPackagePlan.of(current, command.packages().stream()
-                .map(entry -> new ReceivingPackagePlan.Wanted(blankToNull(entry.lpn()), entry.quantity()))
+                .map(entry -> new ReceivingPackagePlan.Wanted(entry.lpn(), entry.quantity()))
                 .toList());
         Instant now = clock.instant();
         if (unit == null) {
@@ -1063,12 +1094,12 @@ class StockOperationsServiceImpl implements StockOperations {
         if (!plan.newCounts().isEmpty()) {
             UUID itemId = units.itemId(command.sku().code()).orElseThrow(() -> new BusinessException(
                     ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + command.sku()));
-            LocalDate day = BusinessCalendar.date(now);
-            for (int quantity : plan.newCounts()) {
-                StockPackage carton = StockPackage.receiving(new StockPackageId(Identifiers.newId()),
-                        stockPackages.nextLpn(day), itemId, unit.id(), unit.factor(), location,
-                        command.receiptLineId());
-                carton.count(quantity);
+            // One block for the line's new cartons: each number drawn alone cost a transaction of its own.
+            List<String> lpns = stockPackages.nextLpns(BusinessCalendar.date(now), plan.newCounts().size());
+            for (int i = 0; i < plan.newCounts().size(); i++) {
+                StockPackage carton = StockPackage.receiving(new StockPackageId(Identifiers.newId()), lpns.get(i),
+                        itemId, unit.id(), unit.factor(), location, command.receiptLineId());
+                carton.count(plan.newCounts().get(i));
                 live.add(stockPackages.save(carton));
             }
         }
@@ -1089,7 +1120,6 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     @Override
-    @Transactional(readOnly = true)
     public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
         List<StockPackage> found = stockPackages.findByReceiptLines(receiptLineIds).stream()
                 .filter(carton -> carton.status() != StockPackageStatus.VOID)

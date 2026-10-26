@@ -104,26 +104,28 @@ LPN: `LPN-yyyyMMdd-nnnnnn` from `platform.document_sequence` type `LPN`, dated i
 
 ### 4.3 Moving a carton whole
 
-`InventoryService.moveStockPackage(MoveStockPackageCommand(lpn, toLocation, reference, referenceId, actor))`:
-the carton `moveTo`s and its rows change location in place — never merged into another layer, never opened. One
+`InventoryService.moveStockPackages(MoveStockPackagesCommand(lpns, toLocation, reference, referenceId, actor))`:
+each carton `moveTo`s and its rows change location in place — never merged into another layer, never opened. One
 `MOVE` ledger row per row, naming the carton on both sides. Refused for a closed carton and for a destination in
-another warehouse.
+another warehouse; all of the list moves or none. A list rather than one LPN per call: a line's cartons move
+together, and the locks are taken once for all of them.
 
 ### 4.4 Reclassifying a carton whole
 
-`InventoryService.reclassifyStockPackage(ReclassifyStockPackageCommand(lpn, toLocation, disposition, reference,
-referenceId, actor, reason))`, disposition QUARANTINE or BLOCKED: the carton moves as in 4.3 and its rows change
+`InventoryService.reclassifyStockPackages(ReclassifyStockPackagesCommand(lpns, toLocation, disposition, reference,
+referenceId, actor, reason))`, disposition QUARANTINE or BLOCKED: each carton moves as in 4.3 and its rows change
 status from INBOUND (or QUARANTINE) to the disposition in place. The carton keeps its LPN and stays unopened.
 
 ## 5. QC on a line with cartons (procurement)
 
-- `moveToQc`: `moveStockPackage` for every IN_STOCK carton of the line, then `inventory.move` for the loose
-  remainder when there is one.
+- `moveToQc`: `inventory.move` for the loose remainder when there is one, and one `moveStockPackages` for every
+  IN_STOCK carton of the line. Both name the line; the loose move's replay lookup ignores carton ledger rows
+  (`findLooseByReference`), so the order does not matter.
 - `inspect`: `Part` (quarantined, rejected) gains `packages: [lpn]`; its `quantity` now means loose units.
   A named carton belongs to the line, is IN_STOCK at the line's QC area, and appears in one list only.
   BR-08 holds with cartons counted at their `received_qty`: accepted + quarantined + rejected = the line's
-  quantity, and the loose parts do not exceed the loose remainder. Each named carton goes through
-  `reclassifyStockPackage`; loose parts through `reclassify` as today. `QcInspection.quantity` records the part's
+  quantity, and the loose parts do not exceed the loose remainder. A part's named cartons go through one
+  `reclassifyStockPackages`; loose parts through `reclassify` as today. `QcInspection.quantity` records the part's
   total (loose + cartons); which LPN went where is in the ledger (`QC_INSPECTION`, `to_stock_package_id`).
 - The accepted part stays INBOUND at the QC area. `ReceiptStockReadyForPutaway` keeps its shape; the putaway spec
   decides whether it carries LPNs.

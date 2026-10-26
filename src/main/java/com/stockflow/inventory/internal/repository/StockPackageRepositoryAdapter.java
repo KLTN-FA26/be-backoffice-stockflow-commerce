@@ -125,13 +125,18 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     /**
-     * The number is drawn by {@link LpnSequence} in its own transaction, never in the caller's: cartons are labelled
+     * The block is drawn by {@link LpnSequence} in its own transaction, never in the caller's: cartons are labelled
      * under a SKU's lock, and a sequence row held until the caller commits would let two receipts counting several
-     * SKUs deadlock. A rolled-back count leaves a gap; {@code uk_stock_package_lpn} still forbids a duplicate.
+     * SKUs deadlock. One block per call, not one number per carton, so the second connection that transaction needs
+     * is borrowed once. A rolled-back count leaves a gap; {@code uk_stock_package_lpn} still forbids a duplicate.
      */
     @Override
-    public String nextLpn(LocalDate day) {
-        return "LPN-%s-%06d".formatted(day.format(DAY), lpns.next(day));
+    public List<String> nextLpns(LocalDate day, int count) {
+        long last = lpns.reserve(day, count);
+        String prefix = "LPN-" + day.format(DAY) + "-";
+        return java.util.stream.LongStream.rangeClosed(last - count + 1, last)
+                .mapToObj(number -> prefix + "%06d".formatted(number))
+                .toList();
     }
 
     private static StockPackage toDomain(StockPackageJpaEntity entity) {

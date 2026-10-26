@@ -5,8 +5,10 @@ import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.IssueReservedStockResult;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
@@ -88,11 +90,11 @@ public interface StockOperations {
 
     StockMove reclassify(ReclassifyStockCommand command);
 
-    /** See {@code InventoryService#moveStockPackage}. */
-    StockPackageView moveStockPackage(com.stockflow.inventory.api.MoveStockPackageCommand command);
+    /** See {@code InventoryService#moveStockPackages}. */
+    List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command);
 
-    /** See {@code InventoryService#reclassifyStockPackage}. */
-    StockPackageView reclassifyStockPackage(com.stockflow.inventory.api.ReclassifyStockPackageCommand command);
+    /** See {@code InventoryService#reclassifyStockPackages}. */
+    List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command);
 
     /**
      * A person's request to write stock up or down. Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a

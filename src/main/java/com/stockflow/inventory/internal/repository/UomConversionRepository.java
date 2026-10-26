@@ -65,12 +65,6 @@ public class UomConversionRepository {
         return jdbc.query(SELECT + " where i.sku = ? and c.id = ?", ROW, sku, id).stream().findFirst();
     }
 
-    /** The unit of the SKU's item with this code, active or retired. */
-    public Optional<UomConversion> find(String sku, String unitOfMeasure) {
-        return jdbc.query(SELECT + " where i.sku = ? and c.unit_of_measure = ?", ROW, sku, unitOfMeasure).stream()
-                .findFirst();
-    }
-
     /** The units with these ids, whatever their item: a carton knows its unit, and the unit knows its SKU. */
     public List<UomConversion> findAll(Collection<UUID> ids) {
         if (ids.isEmpty()) return List.of();

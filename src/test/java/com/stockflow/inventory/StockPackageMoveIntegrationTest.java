@@ -8,9 +8,9 @@ import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand.PackageCount;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
-import com.stockflow.inventory.api.MoveStockPackageCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
-import com.stockflow.inventory.api.ReclassifyStockPackageCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
@@ -119,8 +119,8 @@ class StockPackageMoveIntegrationTest {
         cartonId = jdbc.queryForObject("select id from inventory.stock_package where lpn = ?", UUID.class, lpn);
     }
 
-    private MoveStockPackageCommand move(String to) {
-        return new MoveStockPackageCommand(lpn, to, MoveReference.MOVE_TASK, Identifiers.newId(), clerk);
+    private MoveStockPackagesCommand move(String to) {
+        return new MoveStockPackagesCommand(lpn, to, MoveReference.MOVE_TASK, Identifiers.newId(), clerk);
     }
 
     private static ErrorCode code(Throwable e) {
@@ -144,7 +144,7 @@ class StockPackageMoveIntegrationTest {
         UUID row = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
                 cartonId);
 
-        StockPackageView moved = inventory.moveStockPackage(move(BIN));
+        StockPackageView moved = inventory.moveStockPackages(move(BIN)).getFirst();
 
         assertThat(moved.lpn()).isEqualTo(lpn);
         assertThat(moved.locationCode()).isEqualTo(BIN);
@@ -167,7 +167,7 @@ class StockPackageMoveIntegrationTest {
     void moveRefusesAnotherWarehouse() {
         receiveCartons();
 
-        assertThatThrownBy(() -> inventory.moveStockPackage(move("HN-RCV01")))
+        assertThatThrownBy(() -> inventory.moveStockPackages(move("HN-RCV01")))
                 .extracting(StockPackageMoveIntegrationTest::code).isEqualTo(ErrorCode.MOVE_ACROSS_WAREHOUSES);
         assertThat(cartonState()).isEqualTo(RECEIVING + ":IN_STOCK:true");
     }
@@ -177,7 +177,7 @@ class StockPackageMoveIntegrationTest {
     void moveRefusesSameLocation() {
         receiveCartons();
 
-        assertThatThrownBy(() -> inventory.moveStockPackage(move(RECEIVING)))
+        assertThatThrownBy(() -> inventory.moveStockPackages(move(RECEIVING)))
                 .extracting(StockPackageMoveIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
 
@@ -187,7 +187,7 @@ class StockPackageMoveIntegrationTest {
         lpn = count(new PackageCount(null, 1000)).getFirst().lpn();
         count();   // the empty list voids it
 
-        assertThatThrownBy(() -> inventory.moveStockPackage(move(BIN)))
+        assertThatThrownBy(() -> inventory.moveStockPackages(move(BIN)))
                 .extracting(StockPackageMoveIntegrationTest::code)
                 .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
     }
@@ -197,8 +197,9 @@ class StockPackageMoveIntegrationTest {
     void reclassifyQuarantinesInPlace() {
         receiveCartons();
 
-        StockPackageView view = inventory.reclassifyStockPackage(new ReclassifyStockPackageCommand(lpn, QUARANTINE,
-                StockDisposition.QUARANTINE, MoveReference.MOVE_TASK, Identifiers.newId(), clerk, "damaged outer"));
+        StockPackageView view = inventory.reclassifyStockPackages(new ReclassifyStockPackagesCommand(lpn, QUARANTINE,
+                StockDisposition.QUARANTINE, MoveReference.MOVE_TASK, Identifiers.newId(), clerk, "damaged outer"))
+                .getFirst();
 
         assertThat(view.locationCode()).isEqualTo(QUARANTINE);
         assertThat(view.unopened()).isTrue();
@@ -216,8 +217,43 @@ class StockPackageMoveIntegrationTest {
     void unknownLpn() {
         receiveCartons();
 
-        assertThatThrownBy(() -> inventory.moveStockPackage(new MoveStockPackageCommand("LPN-19990101-000000", BIN,
+        assertThatThrownBy(() -> inventory.moveStockPackages(new MoveStockPackagesCommand("LPN-19990101-000000", BIN,
                 MoveReference.MOVE_TASK, Identifiers.newId(), clerk)))
                 .extracting(StockPackageMoveIntegrationTest::code).isEqualTo(ErrorCode.STOCK_PACKAGE_NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("both cartons move in one call, each with its row and one MOVE line naming it")
+    void severalCartonsInOneCall() {
+        receiveCartons();
+        List<String> both = jdbc.queryForList("select lpn from inventory.stock_package where goods_receipt_line_id = ?"
+                + " order by lpn", String.class, line);
+
+        List<StockPackageView> moved = inventory.moveStockPackages(new MoveStockPackagesCommand(both, BIN,
+                MoveReference.MOVE_TASK, Identifiers.newId(), clerk));
+
+        assertThat(moved).extracting(StockPackageView::lpn).containsExactlyElementsOf(both);
+        assertThat(moved).extracting(StockPackageView::locationCode).containsOnly(BIN);
+        assertThat(moved).extracting(StockPackageView::quantity).containsExactly(1000, 980);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from inventory.stock_movement
+                 where movement_type = 'MOVE' and sku = ? and from_stock_package_id = to_stock_package_id""",
+                Integer.class, sku)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("a loose move under the reference a carton moved with is not taken for a replay: the loose units move")
+    void looseMoveAfterCartonUnderOneReference() {
+        receiveCartons();
+        UUID reference = Identifiers.newId();
+        inventory.moveStockPackages(new MoveStockPackagesCommand(lpn, BIN, MoveReference.MOVE_TASK, reference, clerk));
+
+        inventory.move(new com.stockflow.inventory.api.MoveStockCommand(Identifiers.newId(), new Sku(sku), null,
+                RECEIVING, BIN, 20, MoveReference.MOVE_TASK, reference, clerk, RECEIVED));
+
+        assertThat(jdbc.queryForObject("""
+                select coalesce(sum(on_hand), 0) from inventory.stock_item
+                 where sku = ? and location_code = ? and stock_package_id is null""",
+                Integer.class, sku, BIN)).isEqualTo(20);
     }
 }

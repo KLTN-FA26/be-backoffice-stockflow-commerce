@@ -42,6 +42,14 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     }
 
     @Override
+    public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
+                                                        StockMovement.ReferenceType referenceType, UUID referenceId) {
+        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndFromStockPackageIdIsNullAndToStockPackageIdIsNullOrderByIdAsc(
+                        type, referenceType, referenceId)
+                .map(StockMovementLogAdapter::toDomain);
+    }
+
+    @Override
     public Page<StockMovement> search(Criteria criteria, Pageable pageable) {
         Specification<StockMovementJpaEntity> spec = Specification
                 .<StockMovementJpaEntity>where(Specs.eq("sku", upper(criteria.sku())))

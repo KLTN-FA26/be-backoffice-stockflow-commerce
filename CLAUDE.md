@@ -267,13 +267,16 @@ Cartons are labelled while a DRAFT receipt is counted: `GoodsReceiptServiceImpl.
 `InventoryService.countReceivingPackages`, which reconciles the line's RECEIVING cartons through the pure
 `ReceivingPackagePlan` (new → LPN, listed → recount, missing → VOID). `receive` puts each carton's count in one
 INBOUND row inside it (carton → IN_STOCK, unopened) and only the remainder loose. QC moves and reclassifies
-cartons whole: `moveStockPackage` / `reclassifyStockPackage`. Lock order everywhere: **SKU advisory lock →
-`stock_package FOR UPDATE` → stock rows by id**.
+cartons whole, a list of LPNs per call: `moveStockPackages` / `reclassifyStockPackages`. Lock order everywhere:
+**SKU advisory locks (sorted) → `stock_package FOR UPDATE` → stock rows by id**.
 
-In `moveToQc` and `inspect` the loose part goes **before** the cartons: the loose `move` / `reclassify` treats a
-MOVE ledger row with its reference as its own earlier attempt, and written after the cartons it would find theirs
-and silently skip. `LpnSequence.next` is `REQUIRES_NEW`: one count labels several SKUs under their advisory locks,
-and a sequence row held until commit would deadlock two receipts on it. Gaps in LPNs are the accepted price.
+A loose `move` / `reclassify` and a carton move may share one reference (a receipt line to QC, a QC part). The
+loose replay lookup is `StockMovementLog.findLooseByReference`, which ignores ledger lines naming a carton; a lookup
+that saw them would take the carton's line for the loose move's earlier attempt and silently skip it.
+`LpnSequence.reserve` is `REQUIRES_NEW`: one count labels several SKUs under their advisory locks, and a sequence
+row held until commit would deadlock two receipts on it. It draws a line's LPNs as one block, so the second
+connection that transaction needs is borrowed once per line, not once per carton. Gaps in LPNs are the accepted
+price.
 
 ---
 

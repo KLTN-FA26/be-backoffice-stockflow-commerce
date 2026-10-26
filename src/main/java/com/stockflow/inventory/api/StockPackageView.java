@@ -1,6 +1,8 @@
 package com.stockflow.inventory.api;
 
+import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -38,5 +40,18 @@ public record StockPackageView(
      */
     public static String normalLpn(String lpn) {
         return lpn == null || lpn.isBlank() ? null : lpn.strip().toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * A command's list of cartons: each {@link #normalLpn normalised}, repeats dropped (an LPN in either case is one
+     * carton), first-named order kept. A blank entry or an empty list names no carton, which is a caller's bug.
+     */
+    public static List<String> normalLpns(List<String> lpns) {
+        Objects.requireNonNull(lpns, "lpns");
+        List<String> normal = lpns.stream().map(StockPackageView::normalLpn).toList();
+        if (normal.isEmpty() || normal.contains(null)) {
+            throw new IllegalArgumentException("Name at least one carton, and no blank LPN");
+        }
+        return normal.stream().distinct().toList();
     }
 }

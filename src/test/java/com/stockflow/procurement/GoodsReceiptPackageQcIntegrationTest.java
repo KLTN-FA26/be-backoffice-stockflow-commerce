@@ -5,7 +5,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
-import com.stockflow.inventory.api.MoveStockPackageCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.domain.QcOutcome;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
@@ -328,7 +328,7 @@ class GoodsReceiptPackageQcIntegrationTest {
     @DisplayName("a carton taken off the QC area by hand before the decision: STOCK_PACKAGE_WRONG_LOCATION")
     void cartonMovedOffQcArea() {
         moveToQc();
-        inventory.moveStockPackage(new MoveStockPackageCommand(lpn1, receiving, MoveReference.MOVE_TASK,
+        inventory.moveStockPackages(new MoveStockPackagesCommand(lpn1, receiving, MoveReference.MOVE_TASK,
                 Identifiers.newId(), clerk));
 
         Throwable refused = catchThrowable(() -> receipts.inspect(receiptId, lineId,

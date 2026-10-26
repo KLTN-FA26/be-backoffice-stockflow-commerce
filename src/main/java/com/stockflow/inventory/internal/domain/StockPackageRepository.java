@@ -1,8 +1,11 @@
 package com.stockflow.inventory.internal.domain;
 
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /** The persistence port of {@link StockPackage}. */
 public interface StockPackageRepository {
@@ -15,7 +18,7 @@ public interface StockPackageRepository {
     List<StockPackage> findByLpns(Collection<String> lpns);
 
     /** The cartons labelled on these goods receipt lines, read without locking. */
-    List<StockPackage> findByReceiptLines(Collection<java.util.UUID> goodsReceiptLineIds);
+    List<StockPackage> findByReceiptLines(Collection<UUID> goodsReceiptLineIds);
 
     /**
      * The stock packages with these ids, locked {@code FOR UPDATE} in id order and read after the lock.
@@ -32,13 +35,14 @@ public interface StockPackageRepository {
      * What is left in each of these stock packages: the sum of its rows' {@code on_hand}, in one read. A package
      * with no row is absent.
      */
-    java.util.Map<StockPackageId, Integer> onHandOf(Collection<StockPackageId> ids);
+    Map<StockPackageId, Integer> onHandOf(Collection<StockPackageId> ids);
 
     /**
-     * The next LPN of {@code day} ({@code LPN-yyyyMMdd-nnnnnn}), from {@code platform.document_sequence} type
-     * {@code LPN}; {@code day} is the business's calendar day, as every document number's is. Drawn and committed on
-     * its own, outside the caller's transaction, so it holds no lock under the caller's SKU lock: a number is never
-     * handed out twice, but one the caller then rolls back is lost (a gap).
+     * The next {@code count} LPNs of {@code day} ({@code LPN-yyyyMMdd-nnnnnn}), consecutive and in order, from
+     * {@code platform.document_sequence} type {@code LPN}; {@code day} is the business's calendar day, as every
+     * document number's is. Drawn as one block and committed on its own, outside the caller's transaction, so it
+     * holds no lock under the caller's SKU lock: a number is never handed out twice, but ones the caller then rolls
+     * back are lost (a gap).
      */
-    String nextLpn(java.time.LocalDate day);
+    List<String> nextLpns(LocalDate day, int count);
 }
