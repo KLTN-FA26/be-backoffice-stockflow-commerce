@@ -27,15 +27,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Locale;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -403,32 +402,42 @@ class PutawayConfirmationIntegrationTest {
     }
 
     @Test
-    @DisplayName("two putaways into one bin cannot both pass its capacity: the bin lock serialises them")
-    void concurrentPutawaysCannotOverfillABin() throws Exception {
-        String bin = bin(warehouse, "A01", "NORMAL", 25, 500, "ACTIVE");   // 20 loose + 10 in a carton do not both fit
-        UUID otherCarton = taskOf(lpn2);
-        CountDownLatch go = new CountDownLatch(1);
+    @DisplayName("a putaway into a bin waits for the bin's advisory lock before it reads the bin's occupancy")
+    void putawayWaitsForTheBinLock() throws Exception {
+        String bin = roomyBin("A01");
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
-            Future<ErrorCode> loose = pool.submit(() -> attempt(go, () -> confirmLoose(bin, 20)));
-            Future<ErrorCode> carton = pool.submit(() -> attempt(go, () -> confirmCarton(otherCarton, lpn2, bin)));
-            go.countDown();
-            List<ErrorCode> outcomes = Arrays.asList(loose.get(60, TimeUnit.SECONDS), carton.get(60, TimeUnit.SECONDS));
+            // Another putaway into the same bin, still open: it holds the lock the way a running confirmation does.
+            Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
+                jdbc.query("select pg_advisory_xact_lock(hashtext(?))", rs -> { }, "putaway-bin:" + bin);
+                held.countDown();
+                await(release);
+            }));
+            assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
 
-            assertThat(outcomes).containsExactlyInAnyOrder(null, ErrorCode.LOCATION_CAPACITY_EXCEEDED);
+            Future<TaskView> confirmation = pool.submit(() -> confirmCarton(cartonTask, lpn1, bin));
+            Await.until("the confirmation waits on an advisory lock", Duration.ofSeconds(30), () ->
+                    jdbc.queryForObject("select count(*) from pg_locks where locktype = 'advisory' and not granted",
+                            Integer.class) > 0);
+            assertThat(confirmation.isDone()).as("blocked behind the bin lock").isFalse();
+            assertThat(ledgerLines(cartonTask)).isZero();
+
+            release.countDown();
+            holder.get(30, TimeUnit.SECONDS);
+            assertThat(confirmation.get(60, TimeUnit.SECONDS).status()).isEqualTo("DONE");
         } finally {
+            release.countDown();
             pool.shutdownNow();
         }
     }
 
-    /** The refusal a confirmation ends in, or null when it went through. */
-    private static ErrorCode attempt(CountDownLatch go, Runnable confirm) throws InterruptedException {
-        go.await(10, TimeUnit.SECONDS);
+    private static void await(CountDownLatch latch) {
         try {
-            confirm.run();
-            return null;
-        } catch (BusinessException e) {
-            return e.errorCode();
+            latch.await(60, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 }
