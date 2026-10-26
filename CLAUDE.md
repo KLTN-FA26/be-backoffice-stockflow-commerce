@@ -278,6 +278,10 @@ row held until commit would deadlock two receipts on it. It draws a line's LPNs 
 connection that transaction needs is borrowed once per line, not once per carton. Gaps in LPNs are the accepted
 price.
 
+Looking cartons up is `StockPackageLookup` (`GET /inventory/stock-packages/{lpn}`, `/location-summary`, the paged
+list), one SQL statement per kind of fact over the view `inventory.stock_package_balance`. There is deliberately no
+endpoint to mark a carton LOST or found: that writes stock off, so it is only an approved count's adjustment.
+
 ---
 
 ## 5. Known traps — do not reintroduce these
