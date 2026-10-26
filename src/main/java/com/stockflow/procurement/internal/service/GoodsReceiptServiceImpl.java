@@ -42,6 +42,7 @@ import com.stockflow.procurement.internal.domain.ReceivingLocations;
 import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder;
 import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrders;
 import com.stockflow.procurement.internal.repository.GoodsReceiptSearch;
+import com.stockflow.warehouse.api.PutawayTasks;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
 import org.slf4j.Logger;
@@ -101,6 +102,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private final ReceivingLocations locations;
     private final InventoryService inventory;
     private final WarehouseService warehouses;
+    private final PutawayTasks putawayTasks;
     private final IdentityService identity;
     private final InventoryControlService inventoryControl;
     private final UomConversionService units;
@@ -110,7 +112,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     GoodsReceiptServiceImpl(GoodsReceiptRepository receipts, GoodsReceiptSearch search, ReceivingPurchaseOrders orders,
                             ReceivingLocations locations, InventoryService inventory, WarehouseService warehouses,
-                            IdentityService identity, InventoryControlService inventoryControl,
+                            PutawayTasks putawayTasks, IdentityService identity, InventoryControlService inventoryControl,
                             UomConversionService units, CurrentUserProvider users,
                             ApplicationEventPublisher events, Clock clock) {
         this.receipts = receipts;
@@ -119,6 +121,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         this.locations = locations;
         this.inventory = inventory;
         this.warehouses = warehouses;
+        this.putawayTasks = putawayTasks;
         this.identity = identity;
         this.inventoryControl = inventoryControl;
         this.units = units;
@@ -627,6 +630,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         // the aggregate, so a line not moved to QC or already decided hears that before where its cartons are or what
         // state they are in; then each carton's status and place.
         receipt.inspect(lineId, decided, now);
+        if (receipt.status() == GoodsReceiptStatus.IN_PUTAWAY) {
+            // A mixed receipt: its plain lines may have been put away while this one waited in QC, and if this
+            // decision accepts nothing no putaway event is left to close it (spec 7).
+            receipt.closeIfPutAway(putawayTasks.doneQuantityByReceiptLine(receiptId), now);
+        }
         ReceiptLine line = receipt.line(lineId);
         String qcCode = locations.byIds(List.of(line.qcLocationId())).get(line.qcLocationId()).code();
         requireAtQcArea(named.values(), qcCode);

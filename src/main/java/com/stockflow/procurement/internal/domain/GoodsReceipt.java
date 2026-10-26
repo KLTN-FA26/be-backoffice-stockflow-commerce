@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -190,6 +191,31 @@ public final class GoodsReceipt extends AggregateRoot {
                 this.closedAt = now;
             }
         }
+    }
+
+    /**
+     * SCRUM-92: the receipt closes once every line has had all its goods put away.
+     *
+     * <p>Decided on quantities ({@code doneByLine}: units of DONE putaway tasks per line), not on "no open task is
+     * left": tasks are opened asynchronously after the receipt event and, on a mixed receipt, a QC line gets its
+     * tasks only after the inspection, so "no open task" is also true before the first task exists and between two
+     * QC decisions. The quantity a line must reach is {@link ReceiptLine#quantityForPutaway()}; a line with nothing
+     * to put away (everything rejected or quarantined by QC) never holds the receipt open.</p>
+     *
+     * @return true when the receipt is now CLOSED; false, and unchanged, when it is not in putaway or a line is short
+     */
+    public boolean closeIfPutAway(Map<UUID, Integer> doneByLine, Instant now) {
+        if (status != GoodsReceiptStatus.IN_PUTAWAY) {
+            return false;
+        }
+        boolean allPutAway = lines.stream().allMatch(l ->
+                l.quantityForPutaway() <= 0 || doneByLine.getOrDefault(l.id(), 0) >= l.quantityForPutaway());
+        if (!allPutAway) {
+            return false;
+        }
+        this.status = GoodsReceiptStatus.CLOSED;
+        this.closedAt = Objects.requireNonNull(now, "now");
+        return true;
     }
 
     // ------------------------------------------------------------------ queries
