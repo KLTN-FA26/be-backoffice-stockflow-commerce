@@ -354,6 +354,12 @@ public enum ErrorCode {
     PAYMENT_REVERSAL_NEEDS_HOLD("Taking this money back leaves a confirmed order unpaid: confirm putting it on hold", 409),
     /** G2-3: money already refunded, or the order settled, closed or cancelled: the reversal would rewrite history. */
     PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
+    /**
+     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
+     * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and
+     * the client asks the customer, then resends with {@code confirmDuplicate: true}.
+     */
+    DUPLICATE_ORDER_SUSPECTED("An order with the same items was placed recently; confirm to place another", 409),
     /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
     BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
     /**
