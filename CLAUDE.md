@@ -308,6 +308,16 @@ DONE publishes `PutawayCompleted`; procurement's `PutawayCompletedListener`, and
 whichever of the two comes second. Round A stores no assignee, warehouse or suggestion reasons (no migration; Tú owns
 the schema).
 
+### Picking by carton (SCRUM-473)
+
+`StockAllocator.plan` keeps FEFO/FIFO first and orders only the group where the need runs out: whole sealed cartons
+(largest first, while each fits), then opened cartons and loose units (smallest first), then a sealed carton broken
+last. A sealed carton another order holds part of counts as opened. The facts come from the same projection
+(`AvailabilityRow.stockPackageId`, `wholeCarton`), so every caller of `plan` - order release, short-pick reallocation,
+production holds, transfer orders - gets the order. `HoldView` carries the hold's `lpn` and `wholeCarton`; fulfillment
+copies them onto `pick_line` (`V20261028003000`, checked by `tg_pick_line_carton`), and `PickList.confirm` accepts only
+the LPN for such a line: the deduction is from that carton, and a SKU scan would let the picker take any carton of it.
+
 ---
 
 ## 5. Known traps — do not reintroduce these
