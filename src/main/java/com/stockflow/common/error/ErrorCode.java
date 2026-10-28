@@ -184,6 +184,10 @@ public enum ErrorCode {
     LOCATION_LABELS_EMPTY("No storage location matches this selection", 422),
     /** More labels than one print request renders; print by zone or shelf instead (SCRUM-97). */
     LOCATION_LABELS_TOO_MANY("Too many labels for one request", 422),
+    /** A carton label print that names neither a receipt line with live cartons nor any carton (SCRUM-473). */
+    STOCK_PACKAGE_LABELS_EMPTY("Choose a receipt line or the cartons to print", 422),
+    /** More carton labels than one print request renders (SCRUM-473). */
+    STOCK_PACKAGE_LABELS_TOO_MANY("At most 500 carton labels at a time", 422),
     /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
     MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
     /** Four eyes: whoever asked for a stock adjustment may not decide it. */
@@ -212,8 +216,39 @@ public enum ErrorCode {
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
     RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
-    /** Cartons were labelled on the line (SCRUM-473): void or recount them before the line is dropped. */
+    /**
+     * SCRUM-473: a receipt line that has ever had labelled cartons - VOID ones too, which still point at it
+     * ({@code fk_stock_package_receipt_line}) - keeps its PO line and lot and cannot be removed from the draft, and
+     * its unit cannot change while it keeps cartons in the old one. A lot or PO line on such a line is corrected by
+     * cancelling the receipt and counting it again.
+     */
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
+    /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
+    RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
+    /**
+     * SCRUM-473 decision D5: a SUBCONTRACT order's goods are held for their production order one row per receipt
+     * line, so they are not received into cartons.
+     */
+    RECEIPT_PACKAGES_NOT_SUPPORTED("Cartons are not labelled on a subcontract receipt", 409),
+    /** SCRUM-92: no putaway task with this id. */
+    PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
+    /** SCRUM-92: the task has been put away completely; nothing is left to move. */
+    PUTAWAY_TASK_DONE("This putaway task is already done", 409),
+    /** SCRUM-92: more units than the task has left, a zero or negative count, or part of a carton. */
+    PUTAWAY_QUANTITY_EXCEEDED("The putaway quantity does not fit what the task has left", 422),
+    /** SCRUM-92: the scanned LPN is not the task's carton (or none was scanned for a carton task). */
+    PUTAWAY_LPN_MISMATCH("The scanned carton is not the one this putaway task is for", 409),
+    /** SCRUM-92: the chosen target is a storage area; goods are put away into bins. */
+    PUTAWAY_TARGET_NOT_BIN("Goods are put away into a bin, not a storage area", 422),
+    /** SCRUM-92: the bin's storage class is not the one the item must be kept in. */
+    LOCATION_STORAGE_CLASS_MISMATCH("The storage class of this bin does not fit the item", 409),
+    /** SCRUM-92: the putaway would take the bin past its capacity in units or its weight limit. */
+    LOCATION_CAPACITY_EXCEEDED("This bin cannot take that many units or that much weight", 409),
+    /**
+     * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
+     * and claims no packing unit it holds no carton of.
+     */
+    RECEIPT_LINE_UNIT_INVALID("A receipt line counts in its item's base unit, or in an active packing unit it has cartons of", 422),
     /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
     PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
     /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */
@@ -542,6 +577,13 @@ public enum ErrorCode {
     PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
     VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),
     VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
+    /**
+     * kltn-docs 02 §4 step 7 (owner decision SCRUM-124): the approver's approval limit - the highest of their roles'
+     * {@code procurement.approval_limits} in the order's currency - is below the order's total after tax. A business
+     * rule on a request that is otherwise allowed, hence 409 and not 403 (403 means a missing permission): the order
+     * waits for someone whose limit covers it. Never raised for an approver with no limit configured (PO-NOLIMIT).
+     */
+    PO_APPROVAL_LIMIT_EXCEEDED("The purchase order total is above your approval limit", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
     /** kltn-docs 18 BR-01: one pending or active customer per tax code. */

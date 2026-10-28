@@ -166,10 +166,41 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItemId> findIdsInStockPackages(
+            java.util.Collection<com.stockflow.inventory.internal.domain.StockPackageId> stockPackageIds) {
+        if (stockPackageIds.isEmpty()) {
+            return List.of();
+        }
+        return jpa.findIdsInStockPackages(stockPackageIds.stream()
+                        .map(com.stockflow.inventory.internal.domain.StockPackageId::value).distinct().toList())
+                .stream().map(StockItemId::new).toList();
+    }
+
+    @Override
     public List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location) {
         return jpa.findLooseBySkuAndLocation(sku.code(), location.code()).stream()
                 .map(StockItemPersistenceMapper::toDomain)
                 .toList();
+    }
+
+    @Override
+    public List<StockItem> findLooseInboundByLot(Sku sku, java.util.UUID lotId) {
+        return jpa.findLooseInboundByLot(sku.code(), lotId).stream()
+                .map(StockItemPersistenceMapper::toDomain)
+                .toList();
+    }
+
+    @Override
+    public Map<UUID, String> looseInboundLocationByLot(Collection<UUID> lotIds) {
+        if (lotIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, String> first = new HashMap<>();
+        // Ordered by id, so the first row met for a lot is its lowest.
+        for (Object[] row : jpa.findLooseInboundLocations(lotIds)) {
+            first.putIfAbsent((UUID) row[0], (String) row[1]);
+        }
+        return first;
     }
 
     @Override

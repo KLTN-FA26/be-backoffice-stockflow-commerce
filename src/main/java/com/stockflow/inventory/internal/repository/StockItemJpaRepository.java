@@ -132,9 +132,30 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     List<StockItemJpaEntity> findLooseBySkuAndLocation(@Param("sku") String sku,
                                                        @Param("locationCode") String locationCode);
 
+    @Query("""
+            select distinct s from StockItemJpaEntity s
+            left join fetch s.reservations
+            where s.sku = :sku and s.lotId = :lotId and s.stockPackageId is null
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.INBOUND
+            order by s.id
+            """)
+    List<StockItemJpaEntity> findLooseInboundByLot(@Param("sku") String sku, @Param("lotId") UUID lotId);
+
+    @Query("""
+            select s.lotId, s.locationCode from StockItemJpaEntity s
+            where s.lotId in :lotIds and s.stockPackageId is null and s.onHand > 0
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.INBOUND
+            order by s.id
+            """)
+    List<Object[]> findLooseInboundLocations(@Param("lotIds") Collection<UUID> lotIds);
+
     /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
     @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
     List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);
+
+    /** JPQL for the same reason as {@link #findIdsInStockPackage}. */
+    @Query("select s.id from StockItemJpaEntity s where s.stockPackageId in :stockPackageIds order by s.id")
+    List<UUID> findIdsInStockPackages(@Param("stockPackageIds") java.util.Collection<UUID> stockPackageIds);
 
     @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
     long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);

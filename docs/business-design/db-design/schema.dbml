@@ -331,6 +331,7 @@ Enum procurement.po_delivery_decision_channel {
 
 Enum procurement.purchase_order_approvals_decision {
   APPROVED
+  AUTO_APPROVED
   REJECTED
   WITHDRAWN
 }
@@ -347,6 +348,7 @@ Enum procurement.purchase_order_events_action {
   CREATED
   SUBMITTED
   APPROVED
+  AUTO_APPROVED
   REJECTED
   WITHDRAWN
   CONFIRMED
@@ -1790,6 +1792,10 @@ Table procurement.purchase_order_approvals [headercolor: #7D5BA6] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  limit_id         uuid
+  limit_amount     numeric(18,2)
+  limit_role_id    uuid
+  limit_holder_id  uuid
   indexes {
     (po_revision_id, step_no) [unique]
   }
@@ -1946,6 +1952,7 @@ Table procurement.purchase_orders [headercolor: #7D5BA6] {
   supplier_responded_at        timestamptz
   supplier_reference           varchar(100)
   supplier_response_note       varchar(1000)
+  auto_approved                boolean [not null, default: false]
 }
 
 Table procurement.qc_inspections [headercolor: #7D5BA6] {

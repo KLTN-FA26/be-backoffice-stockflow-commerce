@@ -144,14 +144,14 @@ SELECT pg_temp.expect_ok('WK18 a cancellation fee receivable', $q$
     INSERT INTO payment.receivable (id, order_id, customer_id, kind, amount, currency, issued_at, due_date)
     SELECT gen_random_uuid(), o.id, o.customer_id, 'CANCELLATION_FEE', 10000, 'VND', NOW(), CURRENT_DATE
       FROM ordering.customer_order o WHERE o.id = md5('qa11:order')::uuid $q$);
--- V20261025040100 (review of S6): kept and refunded out of the money still the order's.
+-- V20261028040100 (review of S6): kept and refunded out of the money still the order's.
 SELECT pg_temp.expect_fail('WK18a kept counts a refund a production shortfall already asked for', $q$
     UPDATE ordering.customer_order SET remainder_refund_amount = 4000 WHERE id = md5('qa11:order')::uuid $q$);
 SELECT pg_temp.expect_ok('WK18b 20,000 paid, 4,000 asked back by a shortfall: an agreed 30,000 keeps the 16,000 left', $q$
     UPDATE ordering.customer_order SET remainder_refund_amount = 4000, cancellation_retained_amount = 16000
      WHERE id = md5('qa11:order')::uuid $q$);
 
-\echo '--- a customer agreeing to take a print line short (V20261025040100, review of S6)'
+\echo '--- a customer agreeing to take a print line short (V20261028040100, review of S6)'
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
 VALUES (md5('qa11:stock-line')::uuid, md5('qa11:order')::uuid, 'SOFA-3S-GREY', 10, 2000, 'VND');
 SELECT pg_temp.expect_fail('SF1 an agreement on a stock line: nothing is printed for it', $q$

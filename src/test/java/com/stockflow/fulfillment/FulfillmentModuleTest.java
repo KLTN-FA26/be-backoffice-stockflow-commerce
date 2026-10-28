@@ -39,6 +39,7 @@ class FulfillmentModuleTest {
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @MockitoBean com.stockflow.customer.api.CustomerService customerServiceMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
     @MockitoBean com.stockflow.product.api.ProductService productServiceMock;
 
     @Test

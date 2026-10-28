@@ -13,6 +13,8 @@ import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.StockDisposition;
+import com.stockflow.inventory.api.UomConversionService;
+import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.procurement.internal.domain.GoodsReceipt;
 import com.stockflow.procurement.internal.domain.GoodsReceiptRepository;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
@@ -29,6 +31,7 @@ import com.stockflow.procurement.internal.service.GoodsReceipts.Decision;
 import com.stockflow.procurement.internal.service.GoodsReceipts.NewLine;
 import com.stockflow.procurement.internal.service.GoodsReceipts.Part;
 import com.stockflow.procurement.internal.service.GoodsReceipts.ReceiptView;
+import com.stockflow.warehouse.api.PutawayTasks;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
 import org.junit.jupiter.api.BeforeEach;
@@ -77,9 +80,12 @@ class GoodsReceiptServiceImplTest {
     private final ReceivingLocations locations = mock(ReceivingLocations.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
+    private final PutawayTasks putawayTasks = mock(PutawayTasks.class);
     private final IdentityService identity = mock(IdentityService.class);
     private final InventoryControlService inventoryControl = mock(InventoryControlService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+    private final UomConversionService units = mock(UomConversionService.class);
+    private final CurrentUserProvider users = mock(CurrentUserProvider.class);
     private GoodsReceiptServiceImpl service = service(NOW);
 
     private final UUID user = UUID.randomUUID();
@@ -100,8 +106,8 @@ class GoodsReceiptServiceImplTest {
             UUID.randomUUID(), "RECEIVING");
 
     private GoodsReceiptServiceImpl service(Instant now) {
-        return new GoodsReceiptServiceImpl(receipts, search, orders, locations, inventory, warehouses, identity,
-                inventoryControl, events, Clock.fixed(now, ZoneOffset.UTC));
+        return new GoodsReceiptServiceImpl(receipts, search, orders, locations, inventory, warehouses, putawayTasks, identity,
+                inventoryControl, units, users, events, Clock.fixed(now, ZoneOffset.UTC));
     }
 
     private InventoryItemPolicy plainItem() {
@@ -150,11 +156,12 @@ class GoodsReceiptServiceImplTest {
                 warehouse, user, null, null, NOW);
         receipt.replaceLines(List.of(lines));
         when(receipts.findById(receipt.id())).thenReturn(Optional.of(receipt));
+        when(receipts.findByIdForUpdate(receipt.id())).thenReturn(Optional.of(receipt));
         return receipt;
     }
 
     private ReceiptLine counted(int qty, boolean qc) {
-        return ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), qty, null, null, null, qc);
+        return ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), qty, null, null, null, qc, null);
     }
 
     private NewLine newLine(int qty) {
@@ -281,6 +288,24 @@ class GoodsReceiptServiceImplTest {
 
             assertThat(view.lines().get(0).id()).isEqualTo(existing.id());
             assertThat(view.lines().get(0).quantity()).isEqualTo(25);
+        }
+
+        @Test
+        @DisplayName("SCRUM-473 D5: a SUBCONTRACT receipt refuses cartons on lines[i].packages, and labels none")
+        void subcontractRefusesCartons() {
+            po(Status.CONFIRMED, "100", null, true);
+            GoodsReceipt receipt = draft();
+            NewLine withCartons = new NewLine(poLineId, 10, null, null, "HCM-RCV-01", null, "CARTON",
+                    List.of(new GoodsReceipts.NewPackage(null, 10)));
+
+            BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(withCartons)));
+
+            assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_PACKAGES_NOT_SUPPORTED);
+            assertThat(e.fieldErrors()).extracting(FieldError::field, FieldError::code)
+                    .containsExactly(org.assertj.core.groups.Tuple.tuple("lines[0].packages",
+                            "RECEIPT_PACKAGES_NOT_SUPPORTED"));
+            verify(receipts, never()).save(any(GoodsReceipt.class));
+            verify(inventory, never()).countReceivingPackages(any());
         }
 
         @Test
@@ -722,7 +747,7 @@ class GoodsReceiptServiceImplTest {
         void moveGuards() {
             ReceiptLine plain = counted(5, false);
             ReceiptLine qc = ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), 5, "L1", null,
-                    null, true);
+                    null, true, null);
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft(plain, qc);
             service.confirm(receipt.id(), user);
@@ -858,7 +883,7 @@ class GoodsReceiptServiceImplTest {
         void inspectedOnce() {
             ReceiptLine line = counted(10, true);
             ReceiptLine other = ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), 5, "L2",
-                    null, null, true);
+                    null, null, true, null);
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft(line, other);
             service.confirm(receipt.id(), user);
@@ -899,7 +924,7 @@ class GoodsReceiptServiceImplTest {
                     true, false)));
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft(ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), 1,
-                    "NEAR", TODAY.plusDays(2), null, false));
+                    "NEAR", TODAY.plusDays(2), null, false, null));
             ReceiptView view = service.cancel(receipt.id());
             assertThat(view.warnings()).isEmpty();
         }

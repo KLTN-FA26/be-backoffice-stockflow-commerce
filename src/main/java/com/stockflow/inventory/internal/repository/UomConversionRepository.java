@@ -65,6 +65,13 @@ public class UomConversionRepository {
         return jdbc.query(SELECT + " where i.sku = ? and c.id = ?", ROW, sku, id).stream().findFirst();
     }
 
+    /** The units with these ids, whatever their item: a carton knows its unit, and the unit knows its SKU. */
+    public List<UomConversion> findAll(Collection<UUID> ids) {
+        if (ids.isEmpty()) return List.of();
+        return jdbc.query(SELECT + " where c.id = any (?)", ps ->
+                ps.setArray(1, ps.getConnection().createArrayOf("uuid", ids.toArray())), ROW);
+    }
+
     public List<UomConversion> find(String sku, Collection<UUID> ids) {
         if (ids.isEmpty()) return List.of();
         return jdbc.query(SELECT + " where i.sku = ? and c.id = any (?)", ps -> {

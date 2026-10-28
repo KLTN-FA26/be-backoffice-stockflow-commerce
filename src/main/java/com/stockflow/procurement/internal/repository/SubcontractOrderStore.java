@@ -49,8 +49,28 @@ public interface SubcontractOrderStore {
     /** Units counted in against the order's line by confirmed goods receipts. */
     int receivedQuantity(UUID purchaseOrderId);
 
-    /** An AMENDMENT revision of an approved order waiting for approval: the quantity it would set, who asked. */
-    record Amendment(UUID revisionId, long revisionNo, int quantity, UUID requestedBy, String reason) {
+    /**
+     * An AMENDMENT revision of an approved order waiting for approval: the quantity it would set, the order's total
+     * after tax it would make, who asked.
+     */
+    record Amendment(UUID revisionId, long revisionNo, int quantity, BigDecimal total, UUID requestedBy,
+                     String reason) {
+    }
+
+    /**
+     * An amendment approved by the limit of whoever asked for it (SCRUM-124 rule 5): which limit row allowed it,
+     * whose limit it was, when, and why.
+     */
+    record AutoApproval(UUID limitHolderId, com.stockflow.procurement.internal.domain.ApprovalLimit limit,
+                        java.time.Instant at, String reason) {
+
+        /** The timeline facts of the decision: those of the limit, and the quantity the amendment sets. */
+        java.util.Map<String, String> facts(BigDecimal total, int quantity) {
+            java.util.Map<String, String> facts = new java.util.LinkedHashMap<>(
+                    limit.facts(new com.stockflow.common.domain.Money(total, limit.amount().currency()), limitHolderId));
+            facts.put("quantity", Integer.toString(quantity));
+            return facts;
+        }
     }
 
     Optional<Amendment> pendingAmendment(UUID purchaseOrderId);
@@ -64,8 +84,10 @@ public interface SubcontractOrderStore {
     /**
      * The pending amendment becomes the active revision: the line takes its quantity and amounts, a fully received
      * line and order are partially received again, header totals follow; one approval row and one event.
+     * {@code auto} is null for a decision by a person (decision {@code APPROVED}); otherwise the approval is
+     * {@code AUTO_APPROVED} on the limit it names and {@code approverId} is who asked.
      */
-    void approveAmendment(Row order, Amendment amendment, UUID approverId);
+    void approveAmendment(Row order, Amendment amendment, UUID approverId, AutoApproval auto);
 
     /** The pending amendment is dropped with an approval row of {@code decision} (REJECTED) and one event. */
     void dropAmendment(Row order, Amendment amendment, UUID actorId, String decision, String reason);

@@ -2,7 +2,7 @@
 -- A production order completed short (review 2026-10-25, S6). Module: production. Schema owner review: Tu.
 --
 -- A job that cannot reach its plan - the blanks ran out, a reprint would come too late - is completed with the good
--- units QC passed, once the customer agreed with Sales to take them (recorded on the order line, V20261025040100):
+-- units QC passed, once the customer agreed with Sales to take them (recorded on the order line, V20261028040100):
 -- the warehouse manager completes it short and says why (short_completion_reason). Only an order's in-house job,
 -- between rounds, with at least one good unit; one with none is cancelled instead. In the same transaction the units
 -- it will not make are closed out of the sales order line (ordering: the order is worth less, payment refunds what

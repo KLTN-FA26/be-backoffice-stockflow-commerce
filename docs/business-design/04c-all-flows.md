@@ -159,11 +159,19 @@ flowchart LR
 |---|---|---|---|
 | 01 | `procurement` | `+ goods_receipt, + receipt_line × N` | status = DRAFT, chép qty từ PO |
 | 02 | `procurement` | `~ receipt_line.quantity_received, .lot_number, .expiry_date` | BR-RCP-003 |
+| 02b | `inventory` | `+ / ~ stock_package` (RECEIVING), `~ receipt_line.uom_conversion_id` | đếm theo thùng ngay trên phiếu DRAFT (`PUT /goods-receipts/{id}/lines`, `unitOfMeasure` + `packages`): thùng mới được cấp LPN `LPN-yyyyMMdd-nnnnnn` và in nhãn (`POST /inventory/stock-packages/labels`); gửi lại LPN = đếm lại thùng đó; thùng bỏ khỏi danh sách hoặc phiếu bị huỷ → VOID. Phần không vào thùng là hàng rời. Dòng đã từng có thùng (kể cả thùng đã VOID) giữ nguyên dòng đơn mua và số lô: không bỏ được khỏi phiếu nháp, và không đổi được đơn vị khi còn giữ thùng của đơn vị cũ (`RECEIPT_LINE_HAS_PACKAGES`); muốn sửa số lô hoặc dòng đơn mua của dòng đó thì huỷ phiếu nhận rồi đếm lại |
 | 03 | `MinIO` | `+ receipts/{id}/photo-*.jpg` | ảnh bằng chứng |
 | 04 | `procurement` | `+ qc_task` | status = PENDING, cho SKU có cờ QC |
 | 05 | `procurement` | `+ qc_result, ~ goods_receipt` | → QC_PASSED | QC_QUARANTINED | QC_REJECTED |
 | 06 | `procurement` | `~ goods_receipt, ~ purchase_order.open_qty, + outbox_event` | → POSTED · GoodsReceived |
 | 07 | `inventory` | `+ processed_event, + stock_item, + stock_movement` | condition = GOOD | QUARANTINE |
+
+> ★ Nhận theo thùng (SCRUM-473): khi xác nhận phiếu, mỗi thùng thành một dòng tồn INBOUND nằm trong thùng
+> (đúng số đã đếm), thùng → IN_STOCK, chưa mở; phần còn lại (nếu > 0) là một dòng tồn rời. Đưa sang khu QC:
+> hàng rời trước, rồi từng thùng nguyên thùng. QC cách ly / loại theo LPN — cả thùng đổi trạng thái tại chỗ,
+> giữ LPN, không mở; hàng rời vẫn quyết theo số lượng. Phiếu gia công ngoài (SUBCONTRACT) không nhận theo thùng
+> (`409 RECEIPT_PACKAGES_NOT_SUPPORTED`). Nhãn không in tên hàng và lô (tồn kho không đọc schema của
+> `product` / `procurement`).
 
 > ⚠ QC REJECTED thì đi nhánh RTV và KHÔNG dòng tồn kho nào được tạo — WBS 3.3.4.4.
 > · QC QUARANTINED thì stock_item vẫn được tạo, nhưng condition = QUARANTINE: có mặt, không bán được.
@@ -204,6 +212,10 @@ flowchart LR
 > · Mỗi gợi ý phải kèm LÝ DO và lý do đó được lưu cùng task — BR-SLT-004.
 > · Không cập nhật `storage_location`: mức đầy suy ra từ tồn so với sức chứa, không lưu (module 06 §5).
 > ★ Chỉ sau PutawayCompleted thì location_code mới là mã một bin (`HCM-A01-2-B`) và ATP mới tính hàng này.
+> · Triển khai đợt A (SCRUM-92): xác nhận cất hàng chạy đồng bộ trong `inventory`, trong một transaction — khác sơ đồ, không chờ sự kiện rồi mới chuyển tồn; 200 nghĩa là hàng đã nằm trong bin.
+> · Thứ tự khoá: task → khoá bin → khoá SKU → `stock_package` → dòng tồn theo id.
+> · Đợt A chưa lưu người được giao, kho và lý do gợi ý (chờ migration của Tú).
+> · Gợi ý mới lọc ở mức bin (bin dùng được, đánh dấu cất hàng); phần tầng kệ do SCRUM-91 làm.
 
 ---
 

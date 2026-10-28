@@ -10,6 +10,7 @@ import com.stockflow.procurement.internal.entity.GoodsReceiptJpaEntity;
 import com.stockflow.procurement.internal.entity.GoodsReceiptLineJpaEntity;
 import com.stockflow.procurement.internal.entity.QcInspectionJpaEntity;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -42,6 +43,24 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
     @Override
     public Optional<GoodsReceipt> findById(UUID receiptId) {
         return jpa.findByIdWithLines(receiptId).map(GoodsReceiptRepositoryAdapter::toDomain);
+    }
+
+    /**
+     * The row is locked first with a native {@code FOR UPDATE} and the aggregate read afterwards, then refreshed: a
+     * caller that queued behind another transaction must see what that transaction committed, and an entity already
+     * in the persistence context would otherwise be returned as it was before the wait (the same reasoning as
+     * {@code StockItemRepositoryAdapter.findByIdForUpdate}).
+     */
+    @Override
+    public Optional<GoodsReceipt> findByIdForUpdate(UUID receiptId) {
+        if (entityManager.createNativeQuery("select id from procurement.goods_receipts where id = :id for update")
+                .setParameter("id", receiptId).getResultList().isEmpty()) {
+            return Optional.empty();
+        }
+        return jpa.findByIdWithLines(receiptId).map(entity -> {
+            entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
+            return toDomain(entity);
+        });
     }
 
     /** Same counter table and upsert as stock adjustment and transfer numbers. */
@@ -88,11 +107,11 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
             if (row == null) {
                 row = new GoodsReceiptLineJpaEntity(line.id(), line.poLineId(), line.inventoryItemId(),
                         line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.lotNumber(),
-                        line.expiryDate(), line.note(), line.qcRequired());
+                        line.expiryDate(), line.note(), line.qcRequired(), line.uomConversionId());
                 entity.addLine(row);
             } else if (receipt.status() == GoodsReceiptStatus.DRAFT) {
                 row.recount(line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.expiryDate(),
-                        line.note(), line.qcRequired());
+                        line.note(), line.qcRequired(), line.uomConversionId());
             }
             if (line.movedToQc() && row.getMovedToQcAt() == null) {
                 row.movedToQc(line.qcLocationId(), line.movedToQcAt(), line.movedToQcBy());
@@ -190,7 +209,8 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
     static GoodsReceipt toDomain(GoodsReceiptJpaEntity e) {
         List<ReceiptLine> lines = e.getLines().stream().map(l -> new ReceiptLine(l.getId(), l.getPoLineId(),
                 l.getInventoryItemId(), l.getLocationId(), l.getReceivedQty().intValueExact(), l.getLotNumber(),
-                l.getExpiryDate(), l.getNote(), l.isQcRequired(), l.getQcLocationId(), l.getMovedToQcAt(),
+                l.getExpiryDate(), l.getNote(), l.isQcRequired(), l.getUomConversionId(), l.getQcLocationId(),
+                l.getMovedToQcAt(),
                 l.getMovedToQcBy(),
                 l.getInspections().stream().map(i -> new QcInspection(i.getId(), i.getOutcome(),
                         i.getQuantity().intValueExact(), i.getTargetLocationId(), i.getReason(), i.getInspectedBy(),

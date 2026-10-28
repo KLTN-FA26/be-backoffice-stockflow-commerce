@@ -41,7 +41,7 @@ class SubcontractLogHygieneTest {
     private final ProcurementService procurement = mock(ProcurementService.class);
     private final SubcontractPurchasingImpl purchasing = new SubcontractPurchasingImpl(store, mock(InventoryService.class),
             mock(InventoryControlService.class), procurement, Clock.fixed(Instant.parse("2026-10-13T03:00:00Z"),
-            ZoneOffset.UTC));
+            ZoneOffset.UTC), mock(ApprovalLimits.class));
     private final UUID po = UUID.randomUUID();
 
     @BeforeEach

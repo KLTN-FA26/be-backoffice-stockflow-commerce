@@ -11,6 +11,9 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -37,8 +40,37 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     @Override
     public Optional<StockMovement> findByReference(StockMovement.MovementType type,
                                                    StockMovement.ReferenceType referenceType, UUID referenceId) {
-        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceId(type, referenceType, referenceId)
+        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(type, referenceType, referenceId)
                 .map(StockMovementLogAdapter::toDomain);
+    }
+
+    @Override
+    public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
+                                                        StockMovement.ReferenceType referenceType, UUID referenceId) {
+        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndFromStockPackageIdIsNullAndToStockPackageIdIsNullOrderByIdAsc(
+                        type, referenceType, referenceId)
+                .map(StockMovementLogAdapter::toDomain);
+    }
+
+    @Override
+    public Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
+                                                          StockMovement.ReferenceType referenceType,
+                                                          Collection<UUID> referenceIds) {
+        if (referenceIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, StockMovement> first = new LinkedHashMap<>();
+        // Ordered by id, so the first line met for a reference is the lowest, as findLooseByReference answers.
+        for (StockMovementJpaEntity row : jpa.findLooseByReferences(type, referenceType, referenceIds)) {
+            first.putIfAbsent(row.getReferenceId(), toDomain(row));
+        }
+        return first;
+    }
+
+    @Override
+    public int sumQuantityByReference(Collection<StockMovement.MovementType> types,
+                                      StockMovement.ReferenceType referenceType, UUID referenceId) {
+        return types.isEmpty() ? 0 : jpa.sumQuantityByReference(types, referenceType, referenceId);
     }
 
     @Override
