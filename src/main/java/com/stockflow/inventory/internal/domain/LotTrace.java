@@ -32,8 +32,21 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
                           String purchaseOrderNumber, UUID supplierId, String supplierName, UUID receivingWarehouseId,
                           long receivedQuantity, long onHand, long available, long held) { }
 
-    /** Units of the lot at one location in one status, now. */
-    public record Balance(String locationCode, String status, int onHand, int held) { }
+    /**
+     * Units of the lot at one location in one status, now. {@code onHand} and {@code held} are null, and
+     * {@code hiddenDuringCount} true, where a cycle count holds a slot of the lot there and the reader may not see
+     * the books (SCRUM-146).
+     */
+    public record Balance(String locationCode, String status, Integer onHand, Integer held,
+                          boolean hiddenDuringCount) {
+        public Balance(String locationCode, String status, int onHand, int held) {
+            this(locationCode, status, onHand, held, false);
+        }
+
+        public Balance hidden() {
+            return new Balance(locationCode, status, null, null, true);
+        }
+    }
 
     /** An allocation or hold placed on the lot's stock, in any status. */
     public record Hold(UUID reservationId, UUID orderId, String orderNumber, UUID productionOrderId,

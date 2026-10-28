@@ -134,9 +134,14 @@ Reads: `GET /{id}` is new and carries the lines. The list returns count headers 
 `countedCount` and — for whoever holds `APPROVE` — `varianceCount` (counted lines that differ from the books);
 it never carries lines, so a page stays the size of the page. On the count screen, whoever lacks `APPROVE`
 never sees `expected_qty`, the note, or the adjustments of a blind count, before or after submission — the
-delta would give the book quantity away. **Limitation:** that is the count screen only. `READ` on stock items,
-stock adjustments and the stock ledger still shows quantities; restricting those while a count is open is an
-owner decision, not part of this design.
+delta would give the book quantity away. **Blind across the system (owner decision 28/10).** The rule is not the count screen only: for a caller without
+`inventory-cycle-counts:APPROVE`, the books of a slot a count holds are hidden everywhere they can be read. A slot is
+held while its count is `PLANNED` / `IN_PROGRESS`, or `COMPLETED` with a `COUNT_VARIANCE` of the line still
+`PENDING_APPROVAL` (the same `BUSY` predicate the slot claim uses). Stock rows of the slot (`GET /stock-items?sku=`,
+`GET /warehouses/{id}/stock-items`, the balances of `GET /lots/{id}`) stay but carry no `onHand` / `reserved` /
+`available` and `hiddenDuringCount = true`; ledger lines (`GET /movements`, `GET /lots/{id}/movements`) and adjustments
+(`GET /adjustments`, `GET /adjustments/{id}` answers 404) of the slot are left out. SKU- and lot-level totals
+(`/stock-levels`, `/stock-items/atp`, the totals of a lot, alerts) stay: they are not a slot's.
 
 ## 6. Submission, adjustments, approval, recount (SCRUM-164)
 

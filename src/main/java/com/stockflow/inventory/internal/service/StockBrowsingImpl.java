@@ -9,6 +9,7 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.domain.WarehouseDirectory;
+import com.stockflow.inventory.internal.repository.SlotsUnderCount;
 import com.stockflow.inventory.internal.repository.StockBrowseSearch;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -16,7 +17,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -28,11 +31,14 @@ class StockBrowsingImpl implements StockBrowsing {
                     .withDefault("locationCode", Sort.Direction.ASC);
 
     private final StockBrowseSearch search;
+    private final SlotsUnderCount underCount;
     private final WarehouseDirectory warehouses;
     private final Clock clock;
 
-    StockBrowsingImpl(StockBrowseSearch search, WarehouseDirectory warehouses, Clock clock) {
+    StockBrowsingImpl(StockBrowseSearch search, SlotsUnderCount underCount, WarehouseDirectory warehouses,
+                      Clock clock) {
         this.search = search;
+        this.underCount = underCount;
         this.warehouses = warehouses;
         this.clock = clock;
     }
@@ -64,7 +70,7 @@ class StockBrowsingImpl implements StockBrowsing {
     }
 
     @Override
-    public PageResponse<StockRow> warehouseStock(UUID warehouseId, StockQuery query) {
+    public PageResponse<StockRow> warehouseStock(UUID warehouseId, StockQuery query, BookVisibility visibility) {
         String prefix = warehouses.prefixOf(warehouseId).orElseThrow(() ->
                 new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
         WarehouseScope.requireWarehouse(warehouseId);
@@ -76,10 +82,25 @@ class StockBrowsingImpl implements StockBrowsing {
         var criteria = new StockBrowseSearch.StockCriteria(prefix, location, query.sku(), query.lotNumber(),
                 query.statuses(), query.includeEmpty());
         LocalDate today = BusinessCalendar.date(clock.instant());
-        return Pages.toResponse(search.stock(criteria, Pages.of(query.page(), query.size(), STOCK_SORT.parse(query.sort())))
-                .map(row -> new StockRow(row.stockItemId(), row.sku(), row.locationCode(), row.lotNumber(),
-                        row.expiryDate(), row.onHand(), row.reserved(), available(row, today), row.status(),
-                        row.receivedAt())));
+        // Ordering by on hand would rank a hidden quantity against the visible ones: not for a blind reader.
+        String sort = visibility.hidesCountedSlots() && query.sort() != null
+                && query.sort().strip().toLowerCase(Locale.ROOT).startsWith("onhand") ? null : query.sort();
+        var page = search.stock(criteria, Pages.of(query.page(), query.size(), STOCK_SORT.parse(sort)));
+        Set<UUID> held = visibility.hidesCountedSlots()
+                ? underCount.stockItemsUnderCount(page.getContent().stream().map(StockBrowseSearch.StockRow::stockItemId)
+                        .toList())
+                : Set.of();
+        return Pages.toResponse(page.map(row -> {
+            var view = new StockRow(row.stockItemId(), row.sku(), row.locationCode(), row.lotNumber(),
+                    row.expiryDate(), row.onHand(), row.reserved(), available(row, today), row.status(),
+                    row.receivedAt(), false);
+            return held.contains(row.stockItemId()) ? view.hidden() : view;
+        }));
+    }
+
+    @Override
+    public Set<UUID> underCount(Collection<UUID> stockItemIds) {
+        return underCount.stockItemsUnderCount(stockItemIds);
     }
 
     private static int available(StockBrowseSearch.StockRow row, LocalDate today) {

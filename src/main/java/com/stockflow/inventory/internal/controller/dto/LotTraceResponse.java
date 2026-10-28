@@ -35,7 +35,12 @@ public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds
                       long held) { }
 
     @Schema(name = "LotBalance")
-    public record Balance(String locationCode, String status, int onHand, int held) { }
+    public record Balance(String locationCode, String status,
+                          @Schema(description = "Null while hiddenDuringCount", nullable = true) Integer onHand,
+                          @Schema(description = "Null while hiddenDuringCount", nullable = true) Integer held,
+                          @Schema(description = "A cycle count holds a slot of the lot here and the caller lacks "
+                                  + "inventory-cycle-counts:APPROVE: the quantities are withheld so the count stays blind")
+                          boolean hiddenDuringCount) { }
 
     @Schema(name = "LotHold", description = "An allocation (allocatedFrom set) or another hold on the lot's stock")
     public record Hold(UUID reservationId, UUID orderId, String orderNumber, UUID productionOrderId,
