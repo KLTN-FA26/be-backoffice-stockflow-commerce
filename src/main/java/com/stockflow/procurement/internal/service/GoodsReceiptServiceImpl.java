@@ -185,6 +185,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 : inventory.receivingPackagesOf(receipt.lines().stream().map(ReceiptLine::id).toList());
         // Every unit of every item a line names a unit of, in one query: a lookup per line was a query per line.
         Map<UUID, InventoryItemPolicy> items = new HashMap<>();
+        // The policies of every item the lines name, in one read (maxShelfLifeDays is part of it); an item it does
+        // not return falls back to the single read below.
+        items.putAll(inventory.itemPolicies(newLines.stream()
+                .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
+                .map(ReceivingPurchaseOrder.Line::inventoryItemId).distinct().toList()));
         List<Sku> unitSkus = newLines.stream()
                 .filter(in -> blankToNull(in.unitOfMeasure()) != null)
                 .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
@@ -745,7 +750,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     /**
      * BR-03 and BR-06, each refusal on its own field with its own code ({@code LOT_REQUIRED},
-     * {@code EXPIRY_NOT_AFTER_RECEIPT}…) under RECEIPT_LOT_DATA_INVALID.
+     * {@code EXPIRY_NOT_AFTER_RECEIPT}, {@code EXPIRY_EXCEEDS_MAX_SHELF_LIFE}…) under RECEIPT_LOT_DATA_INVALID.
      */
     private static void checkLotData(LineErrors errors, int index, InventoryItemPolicy item, String lot,
                                      LocalDate expiry, LocalDate receivedOn) {
@@ -769,6 +774,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         if (expiry != null && !expiry.isAfter(receivedOn)) {
             errors.add(index, "expiryDate", code, "EXPIRY_NOT_AFTER_RECEIPT",
                     "Expiry date %s must be after the receiving date %s (BR-06)".formatted(expiry, receivedOn));
+        }
+        // BR-RCP-004 (SCRUM-479): no later than the receiving date plus the SKU's maximum shelf life, when it has one.
+        if (expiry != null && item.expiryTracked() && item.maxShelfLifeDays() != null
+                && expiry.isAfter(receivedOn.plusDays(item.maxShelfLifeDays()))) {
+            errors.add(index, "expiryDate", code, "EXPIRY_EXCEEDS_MAX_SHELF_LIFE",
+                    "Expiry date %s is later than %s, the receiving date %s plus the maximum shelf life of %d day(s) of %s (BR-RCP-004)"
+                            .formatted(expiry, receivedOn.plusDays(item.maxShelfLifeDays()), receivedOn,
+                                    item.maxShelfLifeDays(), item.sku()));
         }
     }
 

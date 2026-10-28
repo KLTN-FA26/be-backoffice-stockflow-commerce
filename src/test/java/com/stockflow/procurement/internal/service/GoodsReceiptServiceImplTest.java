@@ -265,8 +265,9 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("an item that needs QC is counted as a QC line, except on a SUBCONTRACT order (production QC)")
         void qcRequiredFlag() {
-            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(new InventoryItemPolicy(itemId, "CUP-01", false,
-                    false, true)));
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", false, false, true);
+            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
+            when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt standard = draft();
             assertThat(service.replaceLines(standard.id(), List.of(newLine(5))).lines().get(0).qcRequired()).isTrue();
@@ -377,8 +378,14 @@ class GoodsReceiptServiceImplTest {
         // ---- BR-03 / BR-06: lot and expiry
 
         private void tracked(boolean lot, boolean expiry) {
-            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(new InventoryItemPolicy(itemId, "CUP-01", lot,
-                    expiry, false)));
+            trackedWithMaxShelfLife(lot, expiry, null);
+        }
+
+        private void trackedWithMaxShelfLife(boolean lot, boolean expiry, Integer maxShelfLifeDays) {
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", lot, expiry, false,
+                    maxShelfLifeDays);
+            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
+            when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
         }
 
         private List<String> fieldCodes(NewLine line) {
@@ -407,6 +414,48 @@ class GoodsReceiptServiceImplTest {
             tracked(false, false);
             assertThat(fieldCodes(new NewLine(poLineId, 1, null, TODAY.plusDays(90), "HCM-RCV-01", null)))
                     .containsExactly("EXPIRY_NOT_ALLOWED");
+        }
+
+        @Test
+        @DisplayName("BR-RCP-004: an expiry date up to receiving day + maximum shelf life is accepted, one day more is refused "
+                + "on that line with the latest allowed date in the message")
+        void expiryWithinMaxShelfLife() {
+            trackedWithMaxShelfLife(true, true, 30);
+            po(Status.CONFIRMED, "100", null, false);
+            GoodsReceipt ok = draft();
+            ReceiptView view = service.replaceLines(ok.id(),
+                    List.of(new NewLine(poLineId, 1, "L1", TODAY.plusDays(30), "HCM-RCV-01", null)));
+            assertThat(view.lines()).hasSize(1);
+
+            GoodsReceipt receipt = draft();
+            BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
+                    new NewLine(poLineId, 1, "L1", TODAY.plusDays(10), "HCM-RCV-01", null),
+                    new NewLine(poLineId, 1, "L2", TODAY.plusDays(31), "HCM-RCV-01", null))));
+            assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
+            assertThat(e.fieldErrors()).hasSize(1);
+            FieldError error = e.fieldErrors().get(0);
+            assertThat(error.field()).isEqualTo("lines[1].expiryDate");
+            assertThat(error.code()).isEqualTo("EXPIRY_EXCEEDS_MAX_SHELF_LIFE");
+            assertThat(error.message()).contains(TODAY.plusDays(30).toString());
+        }
+
+        @Test
+        @DisplayName("BR-RCP-004: with no maximum shelf life configured the expiry date has no upper bound")
+        void noMaxShelfLifeNoUpperBound() {
+            trackedWithMaxShelfLife(true, true, null);
+            po(Status.CONFIRMED, "100", null, false);
+            GoodsReceipt receipt = draft();
+            ReceiptView view = service.replaceLines(receipt.id(),
+                    List.of(new NewLine(poLineId, 1, "L1", TODAY.plusYears(50), "HCM-RCV-01", null)));
+            assertThat(view.lines()).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("BR-RCP-004: an expiry date not after the receiving day stays EXPIRY_NOT_AFTER_RECEIPT whatever the maximum")
+        void lowerBoundUnchangedWithMax() {
+            trackedWithMaxShelfLife(true, true, 30);
+            assertThat(fieldCodes(new NewLine(poLineId, 1, "L1", TODAY.minusDays(1), "HCM-RCV-01", null)))
+                    .containsExactly("EXPIRY_NOT_AFTER_RECEIPT");
         }
 
         @Test
@@ -903,8 +952,9 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("BR-06: a lot expiring within the warning window of the receiving day is flagged EXPIRY_NEAR, never refused")
         void expiryNearWarning() {
-            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(new InventoryItemPolicy(itemId, "CUP-01", true,
-                    true, false)));
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, true, false);
+            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
+            when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft();
 
@@ -920,8 +970,9 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("a cancelled receipt counted nothing: it flags nothing")
         void cancelledFlagsNothing() {
-            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(new InventoryItemPolicy(itemId, "CUP-01", true,
-                    true, false)));
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, true, false);
+            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
+            when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft(ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), 1,
                     "NEAR", TODAY.plusDays(2), null, false, null));
