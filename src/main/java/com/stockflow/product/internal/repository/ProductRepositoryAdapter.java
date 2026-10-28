@@ -3,6 +3,7 @@ package com.stockflow.product.internal.repository;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Specs;
+import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductId;
@@ -18,6 +19,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -154,6 +156,16 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     @Override
     public Optional<ProductSummary> summary(UUID productId) {
         return jpa.findById(productId).map(ProductPersistenceMapper::toSummary);
+    }
+
+    /** Both ids are checked: {@link Specs#eq} with a null value matches every row, the whole catalogue here. */
+    @Override
+    public List<ProductSummary> sameBrandAndCategory(UUID brandId, UUID categoryId) {
+        Specification<ProductJpaEntity> spec = Specification
+                .<ProductJpaEntity>where(Specs.eq("brandId", Objects.requireNonNull(brandId, "brandId")))
+                .and(Specs.eq("categoryId", Objects.requireNonNull(categoryId, "categoryId")))
+                .and(Specs.notEq("status", ProductStatus.DISCONTINUED));
+        return jpa.findAll(spec).stream().map(ProductPersistenceMapper::toSummary).toList();
     }
 
     /** The one primary category ({@code uk_product_categories_primary}); secondary ones are kept. */
