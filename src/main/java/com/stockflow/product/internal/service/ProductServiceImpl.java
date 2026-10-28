@@ -1,5 +1,6 @@
 package com.stockflow.product.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
@@ -26,6 +27,7 @@ import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
+import com.stockflow.product.internal.domain.ReferenceStatus;
 import com.stockflow.product.internal.repository.ProductChangeLogRepository;
 import com.stockflow.product.internal.repository.ProductCommerceRepository;
 import com.stockflow.product.internal.repository.ProductSearchCriteria;
@@ -138,7 +140,7 @@ class ProductServiceImpl implements ProductService {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "product", resourceId = "#result?.productId()")
     public ProductSummary create(CreateProductCommand command) {
-        requireReferences(command.brandId(), command.categoryId());
+        requireReferences(command.brandId(), command.categoryId(), null, null);
         if (products.existsByCode(command.code())) {
             throw new BusinessException(ErrorCode.PRODUCT_CODE_ALREADY_EXISTS,
                     "A product with code " + command.code() + " already exists");
@@ -197,7 +199,7 @@ class ProductServiceImpl implements ProductService {
     public ProductSummary update(UpdateProductCommand command) {
         Product product = requireProductForUpdate(command.productId());
         product.requireVersion(command.version());
-        requireReferences(command.brandId(), command.categoryId());
+        requireReferences(command.brandId(), command.categoryId(), product.brandId(), product.categoryId());
         List<String> changed = product.updateDetails(command.name(), command.nameEn(), command.brandId(),
                 command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
                 command.taxClass(), command.kind());
@@ -415,13 +417,35 @@ class ProductServiceImpl implements ProductService {
         return summaryOf(product.id().value());
     }
 
-    private void requireReferences(UUID brandId, UUID categoryId) {
-        if (brandId != null && !products.brandExists(brandId)) {
-            throw new BusinessException(ErrorCode.BRAND_NOT_FOUND, "No brand with id " + brandId);
+    /**
+     * The brand and category must exist, and one the product newly chooses must be active (SCRUM-87). One it
+     * already points at ({@code keptBrandId}, {@code keptCategoryId}) is accepted even if deactivated since:
+     * deactivating retires a brand or category without touching the products that chose it. The rule spans
+     * two rows, so it has no {@code CHECK} of its own; the foreign keys still refuse an id that does not exist.
+     */
+    private void requireReferences(UUID brandId, UUID categoryId, UUID keptBrandId, UUID keptCategoryId) {
+        if (brandId != null) {
+            ReferenceStatus brand = products.brandStatus(brandId);
+            if (brand == ReferenceStatus.MISSING) {
+                throw new BusinessException(ErrorCode.BRAND_NOT_FOUND, "No brand with id " + brandId);
+            }
+            if (brand == ReferenceStatus.INACTIVE && !brandId.equals(keptBrandId)) {
+                throw inactive(ErrorCode.BRAND_INACTIVE, "brandId", "Brand " + brandId + " is inactive");
+            }
         }
-        if (categoryId != null && !products.categoryExists(categoryId)) {
-            throw new BusinessException(ErrorCode.CATEGORY_NOT_FOUND, "No category with id " + categoryId);
+        if (categoryId != null) {
+            ReferenceStatus category = products.categoryStatus(categoryId);
+            if (category == ReferenceStatus.MISSING) {
+                throw new BusinessException(ErrorCode.CATEGORY_NOT_FOUND, "No category with id " + categoryId);
+            }
+            if (category == ReferenceStatus.INACTIVE && !categoryId.equals(keptCategoryId)) {
+                throw inactive(ErrorCode.CATEGORY_INACTIVE, "categoryId", "Category " + categoryId + " is inactive");
+            }
         }
+    }
+
+    private static BusinessException inactive(ErrorCode code, String field, String message) {
+        return new BusinessException(code, message, List.of(new FieldError(field, message, code.name())));
     }
 
     private Product requireProduct(UUID productId) {
