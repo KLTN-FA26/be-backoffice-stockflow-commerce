@@ -13,9 +13,10 @@ import java.util.Set;
  * {@code api-key}, the module still starts and its endpoints answer 503 {@code ASSISTANT_DISABLED}. An optional
  * provider that refuses to boot the application can roll back a deploy that has nothing to do with it.</p>
  *
- * @param apiKey             from {@code ANTHROPIC_API_KEY}; never written in a YAML file
+ * @param apiKey             the provider's key, from the environment ({@code ASSISTANT_API_KEY}, or
+ *                           {@code ANTHROPIC_API_KEY}); never written in a YAML file
  * @param model              the provider's model id; a cost decision to make from the golden set (design §13 AQ-07)
- * @param effort             {@code low}, {@code medium}, {@code high}, {@code xhigh} or {@code max}
+ * @param effort             {@code low}, {@code medium}, {@code high}, {@code xhigh} or {@code max}; Anthropic only
  * @param maxToolRounds      how many times one question may run tools before the assistant must answer
  * @param maxOutputTokens    room for thinking and the answer of one model call
  * @param dailyMessageLimit  questions one user may ask per business day
@@ -26,6 +27,8 @@ import java.util.Set;
  *                           call that could outlast it, so it must hold at least two of the longest calls
  * @param refusalFallback    lets the provider retry a request its safeguards declined on a fallback model
  * @param baseUrl            the provider's endpoint; blank for its default (a proxy or a test double otherwise)
+ * @param provider           {@code anthropic} (the default, ADR-0010) or {@code gemini}: which adapter sits behind the
+ *                           {@code LanguageModel} port. The loop, the tools and the stored history do not depend on it
  */
 @ConfigurationProperties(prefix = "stockflow.assistant")
 public record AssistantProperties(
@@ -40,14 +43,21 @@ public record AssistantProperties(
         @DefaultValue("PT90S") Duration requestTimeout,
         @DefaultValue("PT15M") Duration answerLease,
         @DefaultValue("true") boolean refusalFallback,
-        @DefaultValue("") String baseUrl) {
+        @DefaultValue("") String baseUrl,
+        @DefaultValue("anthropic") String provider) {
 
     /** Retries of a failed provider call, by the SDK, after the first attempt. */
     public static final int MAX_RETRIES = 2;
 
     private static final Set<String> EFFORTS = Set.of("low", "medium", "high", "xhigh", "max");
 
+    private static final Set<String> PROVIDERS = Set.of("anthropic", "gemini");
+
     public AssistantProperties {
+        provider = provider == null || provider.isBlank() ? "anthropic" : provider.strip().toLowerCase();
+        if (!PROVIDERS.contains(provider)) {
+            throw new IllegalArgumentException("stockflow.assistant.provider must be one of " + PROVIDERS);
+        }
         if (model == null || model.isBlank()) {
             throw new IllegalArgumentException("stockflow.assistant.model must not be blank");
         }
@@ -92,7 +102,7 @@ public record AssistantProperties(
     /** Hides the key: these properties are logged by the actuator and by startup diagnostics. */
     @Override
     public String toString() {
-        return "AssistantProperties[enabled=%s, apiKey=%s, model=%s, effort=%s, maxToolRounds=%d]"
-                .formatted(enabled, apiKey.isEmpty() ? "<none>" : "<set>", model, effort, maxToolRounds);
+        return "AssistantProperties[enabled=%s, provider=%s, apiKey=%s, model=%s, effort=%s, maxToolRounds=%d]"
+                .formatted(enabled, provider, apiKey.isEmpty() ? "<none>" : "<set>", model, effort, maxToolRounds);
     }
 }

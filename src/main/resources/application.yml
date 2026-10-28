@@ -448,13 +448,15 @@ stockflow:
   # and answers 503 ASSISTANT_DISABLED. The key comes from the environment only, never from this file.
   assistant:
     enabled: ${ASSISTANT_ENABLED:false}
-    api-key: ${ANTHROPIC_API_KEY:}
+    # anthropic (ADR-0010) or gemini; the key is the chosen provider's.
+    provider: ${ASSISTANT_PROVIDER:anthropic}
+    api-key: ${ASSISTANT_API_KEY:${ANTHROPIC_API_KEY:}}
     model: ${ASSISTANT_MODEL:claude-opus-5-5}
+    daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
     # low | medium | high | xhigh | max. Low suits chat-style questions; raise it only if the golden set says so.
     effort: low
     max-tool-rounds: 6
     max-output-tokens: 16000
-    daily-message-limit: 50
     retention-days: 90
     # One attempt; the SDK retries a failed call twice, each attempt with this timeout again.
     request-timeout: PT90S

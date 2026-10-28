@@ -104,7 +104,7 @@ class AssistantServiceTest {
             }
         };
         AssistantProperties properties = new AssistantProperties(true, "key", "claude-opus-5-5", "low",
-                maxToolRounds, 16000, 50, 90, Duration.ofSeconds(90), lease, true, "");
+                maxToolRounds, 16000, 50, 90, Duration.ofSeconds(90), lease, true, "", "anthropic");
         return new AssistantService(conversations, model, new AssistantTools(List.of(stock), new ObjectMapper()),
                 new SystemPrompt(), properties, new Messages(new StaticMessageSource()), clock, new ObjectMapper());
     }

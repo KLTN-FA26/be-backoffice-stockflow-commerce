@@ -199,6 +199,23 @@ trong `Turn.Question.context`, được lưu cùng câu hỏi nên lần gửi l
 - Cache: breakpoint trên system prompt và breakpoint tự động của request; danh sách tool và schema dùng
   map giữ thứ tự chèn (không `Map.of`, vì thứ tự của nó đổi theo mỗi lần chạy JVM).
 
+**Adapter thứ hai: Gemini** (`GeminiLanguageModel`, bật bằng `stockflow.assistant.provider=gemini`), thêm ngày
+28/10/2026 để test bằng key Google miễn phí. Nó chứng minh port `LanguageModel` đúng nghĩa: vòng lặp, tool, phân
+quyền và lịch sử lưu trữ không đổi một dòng.
+
+- REST `generateContent` qua `RestClientFactory` (correlation id, log chỉ có đường dẫn và mã trả về). Key nằm trong
+  header `x-goog-api-key`, không bao giờ trong URL. Read timeout là `request-timeout`, không phải 10 giây mặc định của
+  ứng dụng.
+- `content` của model được lưu và gửi lại **nguyên văn**, vì các phần `functionCall` mang `thoughtSignature` mà API
+  bắt buộc ở lượt sau.
+- `functionResponse` phải mang tên tool. `ToolResult` chỉ có id lần gọi, nên adapter đọc tên từ các lượt model trong
+  lịch sử. Id do API cấp thì gửi lại; id tự tạo (`gemini-local-…`) thì không gửi.
+- Schema dịch sang tập con OpenAPI của Gemini: kiểu viết hoa, bỏ `additionalProperties`. Gemini không có strict
+  mode, nên `ToolArguments` vẫn kiểm từng tham số bằng Java.
+- Thử lại 429 và 5xx theo `RetryInfo`, tối đa 60 giây. Hạn mức theo ngày (`retry after` hàng giờ) thì báo lỗi ngay,
+  không chờ. Gói miễn phí chỉ có khoảng 20 request/ngày cho mỗi model; playground mặc định dùng
+  `gemini-3.5-flash-lite`.
+
 ---
 
 ## 4. Tool
@@ -516,12 +533,13 @@ lần chạy thất bại khi một ngưỡng không đạt. **Chưa chạy**, v
 stockflow:
   assistant:
     enabled: ${ASSISTANT_ENABLED:false}
-    api-key: ${ANTHROPIC_API_KEY:}
+    provider: ${ASSISTANT_PROVIDER:anthropic}        # hoặc gemini (§3.4)
+    api-key: ${ASSISTANT_API_KEY:${ANTHROPIC_API_KEY:}}
     model: ${ASSISTANT_MODEL:claude-opus-5-5}
-    effort: low
+    daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
+    effort: low                                      # chỉ Anthropic
     max-tool-rounds: 6
     max-output-tokens: 16000
-    daily-message-limit: 50
     retention-days: 90
     request-timeout: PT90S
     answer-lease: PT15M          # >= request-timeout x 6 (3 lần thử x 2 lần gọi), kiểm lúc khởi động
