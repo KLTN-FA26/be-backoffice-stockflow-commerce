@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
+import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
@@ -9,13 +10,16 @@ import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.LowStockItem;
 import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.OrderHold;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
@@ -101,7 +105,7 @@ class InventoryServiceImpl implements InventoryService {
     private final InventoryPolicyRepository policies;
     private final SkuReservationRepository skuReservations;
     private final LocationDirectory locations;
-    private final com.stockflow.inventory.internal.domain.Recounts recounts;
+    private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
 
     /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
@@ -111,7 +115,7 @@ class InventoryServiceImpl implements InventoryService {
                          StockOperations operations, InventoryItemDirectory items, Clock clock,
                          InventoryControlService controls, InventoryPolicyRepository policies,
                          SkuReservationRepository skuReservations, LocationDirectory locations,
-                         com.stockflow.inventory.internal.domain.Recounts recounts,
+                         com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
                          com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages,
                          @org.springframework.beans.factory.annotation.Value(
                                  "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
@@ -129,7 +133,7 @@ class InventoryServiceImpl implements InventoryService {
         this.policies = policies;
         this.skuReservations = skuReservations;
         this.locations = locations;
-        this.recounts = recounts;
+        this.cycleCounts = cycleCounts;
     }
 
     @Override
@@ -182,8 +186,29 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command) {
+        return operations.countReceivingPackages(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
+        return operations.receivingPackagesOf(receiptLineIds);
+    }
+
+    @Override
     public StockMove reclassify(ReclassifyStockCommand command) {
         return operations.reclassify(command);
+    }
+
+    @Override
+    public List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command) {
+        return operations.moveStockPackages(command);
+    }
+
+    @Override
+    public List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command) {
+        return operations.reclassifyStockPackages(command);
     }
 
     @Override
@@ -296,13 +321,13 @@ class InventoryServiceImpl implements InventoryService {
      * open, so they are not promised. Every figure of available to promise subtracts them, the planner skips them.
      */
     private Map<String, Long> frozenBySku(Collection<String> skus, LocalDate today) {
-        return recounts.frozen(skus, today).stream().collect(Collectors.groupingBy(
-                com.stockflow.inventory.internal.domain.Recounts.Frozen::sku,
-                Collectors.summingLong(com.stockflow.inventory.internal.domain.Recounts.Frozen::free)));
+        return cycleCounts.frozen(skus, today).stream().collect(Collectors.groupingBy(
+                com.stockflow.inventory.internal.domain.CycleCountRepository.Frozen::sku,
+                Collectors.summingLong(com.stockflow.inventory.internal.domain.CycleCountRepository.Frozen::free)));
     }
 
     private Set<StockItemId> frozenLayers(Sku sku, LocalDate today) {
-        return recounts.frozen(List.of(sku.code()), today).stream()
+        return cycleCounts.frozen(List.of(sku.code()), today).stream()
                 .map(frozen -> new StockItemId(frozen.stockItemId())).collect(Collectors.toSet());
     }
 
@@ -383,7 +408,7 @@ class InventoryServiceImpl implements InventoryService {
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
             byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
         }
-        for (var frozen : recounts.frozen(List.of(sku.code()), today)) {
+        for (var frozen : cycleCounts.frozen(List.of(sku.code()), today)) {
             byWarehouse.computeIfPresent(new LocationId(frozen.locationCode()).warehouseCode(), (code, totals) ->
                     new Totals(totals.onHand(), totals.available(), totals.reserved(),
                             (int) Math.max(0, totals.atp() - frozen.free())));

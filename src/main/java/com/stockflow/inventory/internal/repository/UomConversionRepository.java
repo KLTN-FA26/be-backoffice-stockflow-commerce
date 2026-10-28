@@ -65,6 +65,13 @@ public class UomConversionRepository {
         return jdbc.query(SELECT + " where i.sku = ? and c.id = ?", ROW, sku, id).stream().findFirst();
     }
 
+    /** The units with these ids, whatever their item: a carton knows its unit, and the unit knows its SKU. */
+    public List<UomConversion> findAll(Collection<UUID> ids) {
+        if (ids.isEmpty()) return List.of();
+        return jdbc.query(SELECT + " where c.id = any (?)", ps ->
+                ps.setArray(1, ps.getConnection().createArrayOf("uuid", ids.toArray())), ROW);
+    }
+
     public List<UomConversion> find(String sku, Collection<UUID> ids) {
         if (ids.isEmpty()) return List.of();
         return jdbc.query(SELECT + " where i.sku = ? and c.id = any (?)", ps -> {
@@ -95,6 +102,26 @@ public class UomConversionRepository {
                 select exists(select 1 from inventory.uom_conversions
                     where inventory_item_id = ? and unit_of_measure = ? and id is distinct from ?)""",
                 Boolean.class, itemId, unitOfMeasure, except));
+    }
+
+    /**
+     * Whether a document counts in this unit (inventory.unit_in_use, V20261020000600), or is being written
+     * in it right now: a document's trigger holds the unit's advisory lock shared until it commits, and an
+     * uncommitted document is invisible to unit_in_use. Trying the lock exclusively answers both, and the
+     * lock is then held, so tg_uom_conversions_locked_in_use - which tries the same key in this
+     * transaction - passes on the change that follows.
+     *
+     * <p>Two statements, lock first: in READ COMMITTED a statement reads the snapshot taken when it
+     * started, so unit_in_use asked in the statement that takes the lock would miss a document that
+     * committed, letting go of its lock, between that snapshot and the lock being granted. The trigger
+     * would still refuse the change, but as a generic 409.</p>
+     */
+    public boolean inUse(UUID id) {
+        if (!Boolean.TRUE.equals(jdbc.queryForObject(
+                "select pg_try_advisory_xact_lock(inventory.unit_lock_key(?))", Boolean.class, id))) {
+            return true;
+        }
+        return Boolean.TRUE.equals(jdbc.queryForObject("select inventory.unit_in_use(?)", Boolean.class, id));
     }
 
     /** Unmark the default purchase unit of the item, except {@code keep}. */

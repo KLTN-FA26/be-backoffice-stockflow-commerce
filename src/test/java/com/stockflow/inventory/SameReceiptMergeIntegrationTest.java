@@ -38,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * V20261017000450 against a real PostgreSQL: units of one FIFO receipt layer may be moved into a layer of the
  * same receipt elsewhere, in parts — two moves to the same bin, two holds issued to the print shop, picked
  * goods put back after a cancellation — keeping the receipt time, lot and total; replenishing an existing FIFO
- * layer (a FOUND adjustment) is still refused, and so is a receipt dated more than a minute ahead of the
- * database clock. A put-back never merges into a carton's row.
+ * layer is still refused (a FOUND adjustment is posted into a new layer instead), and so is a receipt dated more
+ * than a minute ahead of the database clock. A put-back never merges into a carton's row.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -109,14 +109,37 @@ class SameReceiptMergeIntegrationTest {
         });
     }
 
+    /**
+     * Was {@code replenishmentStillRefused}, which pinned an approved FOUND failing on the database. SCRUM-146 (FIFO
+     * write-up ruling) changed the service, not the rule: a FIFO layer is still never raised, so a FOUND is posted
+     * into a new layer beside it, received at approval - units found have no provable receipt and must not be as old
+     * as the layer, first out. The trigger is unchanged, which the direct raise below still proves.
+     */
     @Test
-    @DisplayName("replenishing an existing FIFO layer is still refused: a FOUND adjustment cannot be posted onto it")
-    void replenishmentStillRefused() {
+    @DisplayName("a FOUND on a FIFO layer opens a new layer received at approval; raising the old row is still refused")
+    void foundOnFifoOpensANewLayer() {
         var adjustment = tx.execute(s -> operations.requestAdjustment(new RequestAdjustmentCommand(SHELF,
                 new Sku(sku), lot, 2, StockAdjustmentReason.FOUND, "found two", clerk)));
-        assertThatThrownBy(() -> tx.executeWithoutResult(s -> operations.approve(adjustment.adjustmentId(), approver)))
+
+        tx.executeWithoutResult(s -> operations.approve(adjustment.adjustmentId(), approver));
+
+        List<Map<String, Object>> layers = jdbc.queryForList("""
+                select location_code, lot_number, received_at, on_hand from inventory.stock_item
+                 where sku = ? order by received_at""", sku);
+        assertThat(layers).hasSize(2);
+        assertThat(layers.get(0)).as("the counted layer is not raised").containsEntry("on_hand", 10);
+        assertThat(((java.sql.Timestamp) layers.get(0).get("received_at")).toInstant()).isEqualTo(RECEIVED);
+        assertThat(layers.get(1)).as("the found units, as a layer of their own at the same bin and lot")
+                .containsEntry("on_hand", 2).containsEntry("location_code", SHELF).containsEntry("lot_number", lot);
+        assertThat(((java.sql.Timestamp) layers.get(1).get("received_at")).toInstant()).isAfter(RECEIVED);
+
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
+                update inventory.stock_item set on_hand = on_hand + 2 where sku = ? and received_at = ?""",
+                sku, java.sql.Timestamp.from(RECEIVED))))
+                .as("the database still refuses replenishing an existing FIFO layer")
                 .hasMessageContaining("FIFO replenishment requires a new receipt layer");
-        assertThat(layers()).singleElement().satisfies(row -> assertThat(row).containsEntry("on_hand", 10));
+        assertThat(jdbc.queryForObject("select on_hand from inventory.stock_item where sku = ? and received_at = ?",
+                Integer.class, sku, java.sql.Timestamp.from(RECEIVED))).isEqualTo(10);
     }
 
     private UUID confirmedOrder() {

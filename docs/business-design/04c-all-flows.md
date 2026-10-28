@@ -159,11 +159,19 @@ flowchart LR
 |---|---|---|---|
 | 01 | `procurement` | `+ goods_receipt, + receipt_line × N` | status = DRAFT, chép qty từ PO |
 | 02 | `procurement` | `~ receipt_line.quantity_received, .lot_number, .expiry_date` | BR-RCP-003 |
+| 02b | `inventory` | `+ / ~ stock_package` (RECEIVING), `~ receipt_line.uom_conversion_id` | đếm theo thùng ngay trên phiếu DRAFT (`PUT /goods-receipts/{id}/lines`, `unitOfMeasure` + `packages`): thùng mới được cấp LPN `LPN-yyyyMMdd-nnnnnn` và in nhãn (`POST /inventory/stock-packages/labels`); gửi lại LPN = đếm lại thùng đó; thùng bỏ khỏi danh sách hoặc phiếu bị huỷ → VOID. Phần không vào thùng là hàng rời. Dòng đã từng có thùng (kể cả thùng đã VOID) giữ nguyên dòng đơn mua và số lô: không bỏ được khỏi phiếu nháp, và không đổi được đơn vị khi còn giữ thùng của đơn vị cũ (`RECEIPT_LINE_HAS_PACKAGES`); muốn sửa số lô hoặc dòng đơn mua của dòng đó thì huỷ phiếu nhận rồi đếm lại |
 | 03 | `MinIO` | `+ receipts/{id}/photo-*.jpg` | ảnh bằng chứng |
 | 04 | `procurement` | `+ qc_task` | status = PENDING, cho SKU có cờ QC |
 | 05 | `procurement` | `+ qc_result, ~ goods_receipt` | → QC_PASSED | QC_QUARANTINED | QC_REJECTED |
 | 06 | `procurement` | `~ goods_receipt, ~ purchase_order.open_qty, + outbox_event` | → POSTED · GoodsReceived |
 | 07 | `inventory` | `+ processed_event, + stock_item, + stock_movement` | condition = GOOD | QUARANTINE |
+
+> ★ Nhận theo thùng (SCRUM-473): khi xác nhận phiếu, mỗi thùng thành một dòng tồn INBOUND nằm trong thùng
+> (đúng số đã đếm), thùng → IN_STOCK, chưa mở; phần còn lại (nếu > 0) là một dòng tồn rời. Đưa sang khu QC:
+> hàng rời trước, rồi từng thùng nguyên thùng. QC cách ly / loại theo LPN — cả thùng đổi trạng thái tại chỗ,
+> giữ LPN, không mở; hàng rời vẫn quyết theo số lượng. Phiếu gia công ngoài (SUBCONTRACT) không nhận theo thùng
+> (`409 RECEIPT_PACKAGES_NOT_SUPPORTED`). Nhãn không in tên hàng và lô (tồn kho không đọc schema của
+> `product` / `procurement`).
 
 > ⚠ QC REJECTED thì đi nhánh RTV và KHÔNG dòng tồn kho nào được tạo — WBS 3.3.4.4.
 > · QC QUARANTINED thì stock_item vẫn được tạo, nhưng condition = QUARANTINE: có mặt, không bán được.
@@ -654,22 +662,56 @@ flowchart LR
     N4["inventory<br><small>sf_inventory</small>"]
     N0 -->|"lập kế hoạch"| N1
     N1 -->|"đếm mobile"| N2
-    N2 -->|"so lệch"| N3
-    N3 -->|"duyệt"| N4
-    N3 -.->|"lệch = 0 → post thẳng, không cần duyệt"| N4
+    N2 -->|"nộp phiếu"| N3
+    N3 -->|"duyệt điều chỉnh"| N4
+    N3 -.->|"lệch = 0 → không sinh điều chỉnh"| N4
 ```
 
 | # | Service | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `inventory` | `+ cycle_count, + cycle_count_line × N` | status = PLANNED |
-| 02 | `inventory` | `~ cycle_count.status` | → COUNTING |
-| 03 | `inventory` | `~ cycle_count_line.counted_qty` | đếm bằng mobile, quét vị trí |
-| 04 | `inventory` | `+ count_variance` | so counted vs on_hand |
-| 05 | `inventory` | `+ stock_adjustment` | → VARIANCE_REVIEW, chờ duyệt |
-| 06 | `inventory` | `~ stock_item.on_hand, + stock_movement` | → POSTED sau khi duyệt |
+| 01 | `inventory` | `+ cycle_count, + cycle_count_line × N` | status = PLANNED. QL kho / Điều phối lập phiếu theo phạm vi (khu, kệ, bin, SKU); mỗi (bin, SKU, lô) có tồn rời → một dòng rời, mỗi thùng IN_STOCK → một dòng thùng. Ô đang bận thì bỏ qua và trả về `skipped`: ô nằm trên phiếu khác còn mở, hoặc trên phiếu đã nộp mà điều chỉnh `COUNT_VARIANCE` của dòng đó còn chờ duyệt (thêm dòng / đếm lại trên ô bận → `409 CYCLE_COUNT_SLOT_BUSY`). Báo thiếu khi lấy hàng trên ô bận cũng dùng lại chính phiếu đang giữ ô, không mở phiếu thứ hai |
+| 02 | `inventory` | `~ cycle_count.assigned_user_id` | giao cho NV kho hoặc QL kho của kho đó (chỉ khi còn PLANNED) |
+| 03 | `inventory` | `~ cycle_count_line.counted_qty / counted_by / counted_at / expected_qty` | đếm bằng mobile; lần đếm đầu → IN_PROGRESS. Số sổ sách đọc lại ngay lúc đếm (không đóng băng bin). Thùng chưa mở chỉ cần quét xác nhận còn/mất; thùng đã mở thì đếm từng đơn vị |
+| 04 | `inventory` | `+ cycle_count_line` (dòng phát sinh) | hàng thấy trên kệ mà phiếu chưa có: bin phải có sẵn dòng tồn của SKU/lô đó (không có → `422 CYCLE_COUNT_UNKNOWN_LAYER`: hàng để nhầm chỗ thì chuyển, không điều chỉnh); thùng (LPN) phải kèm bin đã quét (`locationCode`) |
+| 05 | `inventory` | `~ cycle_count → COMPLETED, + stock_adjustment(COUNT_VARIANCE) × M` | nộp phiếu, một transaction: mỗi dòng lệch thành điều chỉnh PENDING_APPROVAL (= "xem xét chênh lệch") |
+| 06 | `inventory` | `~ stock_item.on_hand, ~ stock_package, + stock_movement` | QL kho duyệt từng điều chỉnh trên màn hình điều chỉnh → POSTED; hoặc từ chối → REJECTED, rồi có thể yêu cầu đếm lại |
 
-> ★ Mọi chênh lệch đều cần duyệt của quản lý kho trước khi chạm vào tồn — BR-STK-005.
-> · Điều chỉnh vượt ngưỡng giá trị cấu hình thì cần cấp duyệt cao hơn.
+> ★ Mọi chênh lệch đều cần duyệt của quản lý kho trước khi chạm vào tồn — BR-STK-005. Phiếu kiểm kê
+> chỉ là chứng từ mỏng: việc xem xét, duyệt và hạch toán là các trạng thái của `stock_adjustment`
+> (SCRUM-145), không có cơ chế điều chỉnh thứ hai.
+> · Đã cài (SCRUM-146, 162, 164): `/api/v1/inventory/cycle-counts` — `POST` (lập phiếu), `GET /{id}`,
+> `GET /assignees`, `PUT /{id}/assignment`, `PUT /{id}/lines/{lineId}/count`, `POST /{id}/lines`,
+> `POST /{id}/submission`, `POST /{id}/recounts`, `POST /{id}/cancellation`. `GET` danh sách chỉ trả phần
+> đầu phiếu kèm `lineCount`, `countedCount` (và `varianceCount` — số dòng lệch — chỉ cho người có `APPROVE`);
+> các dòng chỉ có ở `GET /{id}`.
+> · Phiếu mù: màn hình kiểm kê không bao giờ cho người không có quyền `APPROVE` thấy số sổ sách, ghi chú hay
+> điều chỉnh của phiếu mù. **Giới hạn:** quyền READ của tồn kho (`stock-items`), điều chỉnh và sổ cái
+> (`stock_movement`) vẫn hiện số liệu — người đếm có các quyền đó vẫn tra được số sổ sách ở màn khác. Hạn chế
+> các màn đó trong lúc có phiếu mù là quyết định của chủ sản phẩm, chưa làm.
+> · Thiếu (lệch âm) của dòng rời: lấy phần chưa giữ (on_hand − reserved) trước, theo thứ tự FEFO, rồi mới tới
+> phần đã giữ cho đơn, cũng theo FEFO; mỗi dòng tồn một điều chỉnh, không quá on_hand của dòng đó. Nếu lúc nộp
+> ô đang giữ ít hơn phần thiếu (hàng đã rời đi sau khi đếm) → `409 CYCLE_COUNT_STALE`, đếm lại dòng đó; thùng
+> đã đếm mà sau đó bị lấy hết (CONSUMED) cũng → `CYCLE_COUNT_STALE`, nêu đúng dòng. Thừa (lệch dương) ghi vào dòng tồn nhận gần nhất; SKU FIFO thì khi duyệt thành một lớp
+> tồn mới nhận vào ngày duyệt (không nâng lớp cũ, để FIFO giữ đúng tuổi hàng).
+> · Thùng (LPN): một điều chỉnh cho cả thùng, để trạng thái thùng chỉ đổi một lần khi duyệt — tìm thấy lại
+> (LOST → IN_STOCK), mở thùng, tiêu hết, hoặc LOST khi kiểm kê không thấy. Thừa của thùng ghi lại vào chính
+> dòng tồn của thùng (thùng LOST thì `found()` trước), không bao giờ thành lớp mới. Dòng thùng đi theo thùng:
+> thùng được chuyển nguyên thùng sang bin khác trong cùng kho thì dòng đổi theo bin mới.
+> · Ô có điều chỉnh thiếu (`COUNT_VARIANCE` âm) đang chờ duyệt: phần tồn chưa giữ của ô bị khoá (không tính
+> ATP, không phân bổ) cho tới khi duyệt/từ chối, dù phiếu là MANUAL hay SHORT_PICK. Báo thiếu trên ô mà phiếu
+> MANUAL còn mở đang giữ thì dùng lại phiếu đó và ô chưa bị khoá cho tới khi phiếu được nộp — khoảng hở này
+> được chấp nhận.
+> · Điều chỉnh `COUNT_VARIANCE` chỉ được duyệt hoặc từ chối, người nộp không rút lại được
+> (`409 COUNT_VARIANCE_NOT_WITHDRAWABLE`); không tạo tay được ở màn điều chỉnh (`400 VALIDATION_FAILED`).
+> · Thiếu mà phải cắt vào phần đã giữ cho đơn → duyệt bị từ chối (`InsufficientStockException`); QL kho
+> phân bổ lại hoặc nhả giữ trước rồi mới duyệt. Kiểm kê không bao giờ âm thầm huỷ hàng giữ của khách.
+> · Đếm lại: `POST /{id}/recounts` (QL kho) cho các dòng có điều chỉnh bị từ chối → đánh dấu
+> `recount_required` và mở phiếu mù mới chỉ gồm các ô đó — SHORT_PICK nếu phiếu gốc là SHORT_PICK (ô vẫn bị
+> đóng băng trong lúc đếm lại), còn lại là MANUAL. Mỗi dòng chỉ được đếm lại một lần; muốn đếm nữa thì lập phiếu
+> mới. Phiếu đã COMPLETED không bao giờ mở lại.
+> · Chưa làm: lịch kiểm kê định kỳ, tần suất theo ABC, ngưỡng giá trị cho cấp duyệt cao hơn. NV kho chưa
+> có quyền `inventory-cycle-counts:UPDATE` (chờ migration của Tú) — tới lúc đó chỉ QL kho và Điều phối
+> nhập được số đếm.
 
 ---
 
@@ -843,7 +885,7 @@ flowchart LR
 > ★ Dòng đơn → SHORT, đơn → ON_HOLD(INVENTORY_ISSUE). Không dòng stock_movement nào được ghi.
 > · Điều phối chọn một trong ba: phân bổ lại từ vị trí khác, tách đơn, hoặc huỷ dòng đó.
 > · Chênh lệch giữa allocated và thực tế nhặt được luôn kèm một cycle_count tự động cho vị trí đó.
-> · Đã cài (SCRUM-152): `POST /fulfillment/tasks/{id}/pick-lines/{lineId}/short` (dòng → SHORT, đơn → ON_HOLD lý do `INVENTORY` — tên trong code của `INVENTORY_ISSUE`, enum `HoldReason` từ G3-2 — không ghi stock_movement) và `.../reallocation` (Điều phối/QL kho: nhả allocation cũ `SHORT_PICKED`, phân bổ lại FEFO ở bin khác cùng kho, dòng cũ → CANCELLED giữ `short_qty`, thêm dòng mới; hết dòng SHORT thì đơn quay lại IN_FULFILMENT). Báo thiếu còn tự mở phiếu kiểm kê mù `SHORT_PICK` cho đúng bin/SKU/lô (mỗi bin/SKU/lô chỉ một phiếu đang mở; xem ở `GET /api/v1/inventory/cycle-counts`, NV kho xem được, không thấy số sổ sách). Khi phiếu còn mở, phần tồn chưa giữ của bin/SKU/lô đó bị khoá: không tính vào ATP, không phân bổ FEFO (quyết định 19/10/2026); QL kho huỷ phiếu bằng `POST /api/v1/inventory/cycle-counts/{id}/cancellation` để mở khoá. Việc đếm và hạch toán chênh lệch thuộc story kiểm kê, chưa làm. Tách đơn và huỷ dòng chưa làm (để story sau).
+> · Đã cài (SCRUM-152): `POST /fulfillment/tasks/{id}/pick-lines/{lineId}/short` (dòng → SHORT, đơn → ON_HOLD lý do `INVENTORY` — tên trong code của `INVENTORY_ISSUE`, enum `HoldReason` từ G3-2 — không ghi stock_movement) và `.../reallocation` (Điều phối/QL kho: nhả allocation cũ `SHORT_PICKED`, phân bổ lại FEFO ở bin khác cùng kho, dòng cũ → CANCELLED giữ `short_qty`, thêm dòng mới; hết dòng SHORT thì đơn quay lại IN_FULFILMENT). Báo thiếu còn tự mở phiếu kiểm kê mù `SHORT_PICK` cho đúng bin/SKU/lô (hoặc đúng thùng) — trừ khi ô đã bận: nằm trên phiếu khác còn mở, hoặc trên phiếu đã nộp mà chênh lệch còn chờ duyệt (kể cả phiếu MANUAL), thì dùng lại phiếu đó; xem ở `GET /api/v1/inventory/cycle-counts`, NV kho xem được, màn hình kiểm kê không hiện số sổ sách cho họ. Khi phiếu còn mở, phần tồn chưa giữ của bin/SKU/lô đó bị khoá: không tính vào ATP, không phân bổ FEFO (quyết định 19/10/2026); QL kho huỷ phiếu bằng `POST /api/v1/inventory/cycle-counts/{id}/cancellation` để mở khoá. Đếm và hạch toán chênh lệch theo `F-CNT` (SCRUM-146): sau khi phiếu được nộp, khoá vẫn giữ cho tới khi mọi điều chỉnh `COUNT_VARIANCE` của dòng đó được duyệt hoặc từ chối — nếu không, giữa lúc nộp và lúc duyệt hệ thống lại hứa bán đúng những đơn vị picker không tìm thấy. Tách đơn và huỷ dòng chưa làm (để story sau).
 
 ---
 

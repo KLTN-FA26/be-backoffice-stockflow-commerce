@@ -18,4 +18,10 @@ public interface PaymentService {
      * every allocation takes that lock first, so one committed a moment ago is counted.
      */
     OrderLedger ledgerOf(UUID orderId);
+
+    /**
+     * The account customers transfer to (SCRUM-193), from this deployment's configuration; empty while any of its parts
+     * is not set, so a customer is never shown half an account - or a demo one.
+     */
+    java.util.Optional<CompanyBankAccount> companyBankAccount();
 }

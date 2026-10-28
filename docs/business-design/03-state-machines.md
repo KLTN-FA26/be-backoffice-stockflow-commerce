@@ -759,13 +759,60 @@ truck. This is the single most common transfer bug.
 
 ## 14. Cycle count — `inventory-service`
 
-WBS 3.6.6.
+WBS 3.6.6. Implemented 2026-10-23 (SCRUM-146, SCRUM-162, SCRUM-164). Stored as
+`inventory.cycle_count.status`.
 
-`PLANNED → COUNTING → VARIANCE_REVIEW → APPROVED → POSTED`, plus `CANCELLED` from PLANNED.
+```mermaid
+stateDiagram-v2
+    [*] --> PLANNED: plan (scope → lines) / short pick
+    PLANNED --> IN_PROGRESS: first count entered
+    IN_PROGRESS --> COMPLETED: submit (every line counted)
+    PLANNED --> CANCELLED: cancel
+    IN_PROGRESS --> CANCELLED: cancel
+    COMPLETED --> [*]
+    CANCELLED --> [*]
+```
 
-A count with zero variance may skip `VARIANCE_REVIEW` and post directly. Any variance needs
-manager approval (WBS 3.6.5.2) before it touches stock — a cycle count is the one place where an
-unapproved number can silently rewrite inventory.
+| From | To | Trigger | Actor | Guard | Event |
+|---|---|---|---|---|---|
+| — | PLANNED | plan a count over zones, shelves, bins and/or SKUs (`MANUAL`) | Warehouse manager / Inventory planner | scope not empty, at most `max-lines` lines; a busy slot is skipped and listed | — |
+| — | PLANNED | short pick reported (`SHORT_PICK`) | system | the slot (bin, SKU and lot, or one carton) is not busy; a busy slot's count is reused, whatever its trigger | — |
+| PLANNED | IN_PROGRESS | first count entered on a line | assignee, or a holder of `APPROVE` | the book quantity is re-read at that moment | — |
+| IN_PROGRESS | COMPLETED | submit | assignee, or a holder of `APPROVE` | every line counted; no shortage larger than what the slot holds now (`CYCLE_COUNT_STALE`) | — |
+| PLANNED / IN_PROGRESS | CANCELLED | cancel | Warehouse manager (`APPROVE`) | — | — |
+
+**The count is a thin document; review and posting belong to the adjustment.** Submitting a count
+turns every line whose count differs from the book into `COUNT_VARIANCE` stock adjustment(s) in the
+same transaction, and the count is `COMPLETED`. "Variance review" is the adjustment's
+`PENDING_APPROVAL`; approval posts the stock and the ledger (`POSTED`), or the manager rejects it
+(`REJECTED`) and may send the line for a recount, which opens a new blind count — nothing reopens a
+completed one. A count with no variance raises no adjustment at all. Every variance still needs
+manager approval (BR-STK-005, four-eyes) before it touches stock: a cycle count is the one place where
+an unapproved number could otherwise silently rewrite inventory.
+
+- **A slot is busy** while it is on an open count, or on a `COMPLETED` one whose `COUNT_VARIANCE`
+  adjustment of that line is still `PENDING_APPROVAL`. A busy slot is skipped by a new plan, refused to
+  a found line or a recount (`CYCLE_COUNT_SLOT_BUSY`), and a short pick on it reuses the count holding
+  it instead of opening a second one: two counts of the same stock would correct the books twice.
+  Once the adjustment is decided the slot is free again (which is what lets a rejected line be
+  recounted).
+- A loose shortage is split over the slot's rows taking free units (`on_hand − reserved`) first, in
+  FEFO order, then held units, again in FEFO order — one adjustment per row; `CYCLE_COUNT_STALE` only
+  beyond what the rows hold in all. A surplus goes on the most recently received row — for a FIFO SKU,
+  whose layers are never raised, into a new layer received at approval.
+- A carton raises one adjustment for the whole carton; approval decides its state once — found again,
+  opened, consumed, or `LOST` when the count found nothing. A write-up refills the carton's own row
+  (after `found()` for a `LOST` one), never a new layer, FIFO or not: the carton is the identity of
+  those units. A carton line follows its carton moved whole to another bin of the warehouse; one emptied
+  (`CONSUMED`) after it was counted makes its line `CYCLE_COUNT_STALE` at submission.
+- The free units of a `SHORT_PICK` slot stay out of ATP and FEFO while the count is open and until
+  every `COUNT_VARIANCE` adjustment of its line is decided, not just until the count closes. A pending
+  **shortage** freezes its slot's free units whatever the count's trigger. A short pick that reuses an
+  *open* `MANUAL` count leaves the slot sellable until that count is submitted — an accepted window.
+- A `COUNT_VARIANCE` adjustment is approved or rejected, never withdrawn
+  (`COUNT_VARIANCE_NOT_WITHDRAWABLE`).
+- Submitting a `COMPLETED` count again returns it unchanged; cancelling a `COMPLETED` one is refused
+  (`CYCLE_COUNT_NOT_OPEN`).
 
 ---
 

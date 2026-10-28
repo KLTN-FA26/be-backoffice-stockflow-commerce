@@ -118,4 +118,11 @@ public interface ReceivableBook {
     BigDecimal outstanding(UUID customerId);
 
     boolean hasOverdue(UUID customerId);
+
+    /** What is overdue on the receivables the customer pays themselves (SCRUM-193): the amount and the oldest due date. */
+    Overdue overdue(UUID customerId);
+
+    /** @param amount what is still unpaid on OVERDUE receivables; zero when none. @param oldestDueDate null when none */
+    record Overdue(BigDecimal amount, LocalDate oldestDueDate) {
+    }
 }

@@ -43,7 +43,8 @@ import java.util.UUID;
  *       left short of its terms by one goes ON_HOLD (reason PAYMENT), never silently back to unpaid;</li>
  *   <li>its goods leave only once the money its terms want before the handover is in (G3-Q4, G2-3): everything for a
  *       prepaid order, the balance for a deposit order paid before delivery, the deposit for one the carrier
- *       collects;</li>
+ *       collects; nothing for a credit order, a full truckload included (FTL-CREDIT, SCRUM-193: credit customers owe on
+ *       their due date, within their limit);</li>
  *   <li>a cancellation names a reason code and keeps no more than was paid (15 BR-05).</li>
  * </ul>
  *

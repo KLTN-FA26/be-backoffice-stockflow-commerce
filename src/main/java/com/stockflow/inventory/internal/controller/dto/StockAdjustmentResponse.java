@@ -7,5 +7,6 @@ public record StockAdjustmentResponse(UUID adjustmentId, String number, String l
                                       String lotNumber, int quantityDelta, String reason, String note,
                                       String status, UUID requestedBy, Instant requestedAt, UUID decidedBy,
                                       Instant decidedAt, String rejectionReason, Instant postedAt,
-                                      Instant withdrawnAt, long version) {
+                                      Instant withdrawnAt, long version, UUID stockPackageId,
+                                      UUID cycleCountLineId) {
 }

@@ -143,6 +143,9 @@ class ReceivableIntegrationTest {
         assertThat(first.status()).isEqualTo(OrderStatus.DELIVERED);
         Await.until("receivable opened", ASYNC, () -> receivableOf(first.orderId()) != null);
         assertThat(receivableOf(first.orderId())).isEqualTo("OPEN 12000000 0 " + today.plusDays(30));
+        // SCRUM-193: the order number is copied onto the receivable from the delivery event.
+        assertThat(jdbc.queryForObject("SELECT order_number FROM payment.receivable WHERE order_id = ?", String.class,
+                first.orderId())).isEqualTo(first.orderNumber());
         assertThat(orders.recordDelivery(first.orderId()).status()).isEqualTo(OrderStatus.DELIVERED);   // idempotent
         assertThat(payments.creditPosition(customer).outstandingReceivables()).isEqualByComparingTo("12000000");
 

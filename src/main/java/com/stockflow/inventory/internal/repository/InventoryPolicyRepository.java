@@ -81,6 +81,16 @@ public class InventoryPolicyRepository {
                 + ") and inventory.item_in_use(id, sku) order by sku", String.class, skus.toArray());
     }
 
+    /**
+     * Whether the database refuses to raise an existing stock layer of this SKU ({@code inventory.enforce_sku_policy},
+     * V20261017000450): a configured FIFO item, whose new units must be a new receipt layer or FIFO loses their age.
+     * An unconfigured item is not checked by the trigger, whatever its strategy says.
+     */
+    public boolean replenishesByNewLayer(String sku) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("select exists (select 1 from inventory.inventory_items"
+                + " where sku = ? and policy_configured and removal_strategy = 'FIFO')", Boolean.class, sku));
+    }
+
     public boolean hasActiveCount(String sku) {
         return Boolean.TRUE.equals(
                 jdbc.queryForObject(

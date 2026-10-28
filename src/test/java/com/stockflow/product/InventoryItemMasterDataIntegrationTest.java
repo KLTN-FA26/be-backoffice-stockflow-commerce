@@ -42,6 +42,11 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -200,6 +205,71 @@ class InventoryItemMasterDataIntegrationTest {
         units.removeConversion(productId, variantId, carton.id(), reread.version());
         assertCode(() -> units.conversion(productId, variantId, carton.id()), ErrorCode.UOM_CONVERSION_NOT_FOUND);
         assertThat(history()).contains("UOM_CONVERSION");
+    }
+
+    @Test
+    @DisplayName("a unit a document counts in keeps its factor and code (BR-10): it is retired, never changed or deleted")
+    void unitInUse() {
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true, true));
+        // A stock package is one of the documents inventory.unit_in_use asks about (V20261020000600).
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                                                     location_code)
+                VALUES (?, ?, ?, ?, 1000, 'HCM-A01-1-A')""", Identifiers.newId(), "IT-" + suffix, itemId(),
+                carton.id()));
+
+        assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
+                packing("CARTON", 500, true, true)), ErrorCode.UOM_CONVERSION_IN_USE);
+        assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
+                packing("BOX", 1000, true, true)), ErrorCode.UOM_CONVERSION_IN_USE);
+        assertCode(() -> units.removeConversion(productId, variantId, carton.id(), carton.version()),
+                ErrorCode.UOM_CONVERSION_IN_USE);
+
+        // Its size and weight are not what a document was converted with, and retiring it is BR-10's way out.
+        UomConversion resized = units.changeConversion(productId, variantId, carton.id(), carton.version(),
+                new UomConversionDraft("CARTON", 1000, new BigDecimal("7"), new BigDecimal("52"),
+                        new BigDecimal("42"), new BigDecimal("60"), true, true));
+        assertThat(resized.weightKg()).isEqualByComparingTo("7");
+        UomConversion retired = units.changeConversion(productId, variantId, carton.id(), resized.version(),
+                packing("CARTON", 1000, false, false));
+        assertThat(retired.active()).isFalse();
+        assertThat(retired.factor()).isEqualTo(1000);
+    }
+
+    @Test
+    @DisplayName("a unit a document is being written in right now is in use too: the document holds its lock (BR-10)")
+    void unitBeingWrittenOnADocument() throws Exception {
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true, true));
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(1);
+        ExecutorService writer = Executors.newSingleThreadExecutor();
+        // What check_stock_package_created and check_po_line_unit do before they read the unit, in a
+        // transaction that has not committed: unit_in_use cannot see its document yet.
+        Future<?> document = writer.submit(() -> tx.executeWithoutResult(s -> {
+            jdbc.queryForObject("select true from (select pg_advisory_xact_lock_shared(inventory.unit_lock_key(?))) l",
+                    Boolean.class, carton.id());
+            held.countDown();
+            try {
+                done.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        try {
+            assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
+            assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
+                    packing("CARTON", 500, true, true)), ErrorCode.UOM_CONVERSION_IN_USE);
+            assertCode(() -> units.removeConversion(productId, variantId, carton.id(), carton.version()),
+                    ErrorCode.UOM_CONVERSION_IN_USE);
+        } finally {
+            done.countDown();
+            document.get(30, TimeUnit.SECONDS);
+            writer.shutdown();
+        }
+
+        // That transaction wrote no document after all: the unit is free again.
+        assertThat(units.changeConversion(productId, variantId, carton.id(), carton.version(),
+                packing("CARTON", 500, true, true)).factor()).isEqualTo(500);
     }
 
     // ---- sales units -----------------------------------------------------------------------------------------

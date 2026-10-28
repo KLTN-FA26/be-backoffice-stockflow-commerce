@@ -3,6 +3,7 @@ package com.stockflow.order.internal.controller.dto;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -27,6 +28,14 @@ public record CreditPositionResponse(
         @Schema(example = "BEFORE_DELIVERY", description = "How a deposit order's balance is collected: "
                 + "BEFORE_DELIVERY (by transfer, before the goods leave), ON_DELIVERY (the carrier collects it) or "
                 + "ON_CREDIT (a receivable on the customer's credit); null without deposits (G2-3)")
-        String depositBalancePolicy
+        String depositBalancePolicy,
+        @Schema(description = "What is still unpaid on receivables past their due date; zero when none (SCRUM-193)")
+        BigDecimal overdueAmount,
+        @Schema(description = "The earliest due date among the overdue receivables; absent when nothing is overdue")
+        LocalDate oldestOverdueDueDate,
+        @Schema(example = "[\"BEFORE_DELIVERY\",\"ON_CREDIT\"]", description = "The balance policies a deposit "
+                + "order of this customer may be placed on (the balancePolicy of POST /orders): empty without deposits "
+                + "(SCRUM-193)")
+        List<String> allowedBalancePolicies
 ) {
 }

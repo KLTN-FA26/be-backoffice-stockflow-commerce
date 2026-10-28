@@ -68,7 +68,7 @@ public final class StockItem extends AggregateRoot {
 
     private final StockItemId id;
     private final Sku sku;
-    private final LocationId location;
+    private LocationId location;
     private final String lotNumber;
     private final LocalDate expiryDate;
     private Instant receivedAt;
@@ -266,6 +266,18 @@ public final class StockItem extends AggregateRoot {
                 StockStatus.INBOUND, List.of(), 0L, receivedAt, null, lotId);
     }
 
+    /**
+     * Goods counted into a carton at its receiving location: the same INBOUND layer as {@link #receiveInbound}, but
+     * the row is the carton's contents ({@code check_stock_package_contents} wants the row at its carton's location).
+     */
+    public static StockItem receiveInboundInto(StockPackageId carton, Sku sku, LocationId location, String lotNumber,
+                                               LocalDate expiryDate, Quantity quantity, Instant receivedAt, UUID lotId) {
+        Objects.requireNonNull(carton, "carton");
+        Objects.requireNonNull(receivedAt, "receivedAt");
+        return new StockItem(StockItemId.newId(), sku, location, lotNumber, expiryDate, quantity,
+                StockStatus.INBOUND, List.of(), 0L, receivedAt, null, lotId, carton);
+    }
+
     // ------------------------------------------------------------------ queries
 
     /** Units currently held by live reservations. */
@@ -349,6 +361,40 @@ public final class StockItem extends AggregateRoot {
                             .formatted(id, reserved()));
         }
         this.status = blockedStatus;
+    }
+
+    /**
+     * The carton this row is the contents of moved: the row follows it, in place. Id, reservations and carton stay,
+     * which is why this is not a {@code move} (that splits a layer and mints a row); a carton moves whole, and the
+     * commit-time check wants every row of it at the carton's location.
+     */
+    public void followPackageTo(LocationId destination) {
+        if (stockPackageId == null) {
+            throw new IllegalStateException("Stock item %s is loose; only a carton's rows follow it".formatted(id));
+        }
+        this.location = Objects.requireNonNull(destination, "destination");
+    }
+
+    /**
+     * A whole carton is put on hold or condemned (QC): the row changes status in place, keeping its carton, so the
+     * carton is never split by a decision about its contents. Units still reserved would silently lose their hold,
+     * as in {@link #block}.
+     */
+    public void reclassifyInPackage(StockStatus target) {
+        if (stockPackageId == null) {
+            throw new IllegalStateException("Stock item %s is loose; reclassify a carton's rows only".formatted(id));
+        }
+        if (status != StockStatus.INBOUND && status != StockStatus.QUARANTINE) {
+            throw new IllegalStateException("Stock item %s is %s, not INBOUND or QUARANTINE".formatted(id, status));
+        }
+        if (target != StockStatus.QUARANTINE && target != StockStatus.BLOCKED) {
+            throw new IllegalStateException(target + " is not QUARANTINE or BLOCKED");
+        }
+        if (!reserved().isZero()) {
+            throw new IllegalStateException(
+                    "Cannot reclassify stock item %s: %s units are still reserved".formatted(id, reserved()));
+        }
+        this.status = target;
     }
 
     // ------------------------------------------------------------------ reservation lifecycle
@@ -890,6 +936,19 @@ public final class StockItem extends AggregateRoot {
         return new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber, source.expiryDate,
                 Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L, source.receivedAt,
                 source.serialNumber, source.lotId);
+    }
+
+    /**
+     * An empty new layer beside {@code source} - same SKU, location, lot, lot id, expiry and status - received at
+     * {@code receivedAt}, for units a correction found on top of {@code source} when the SKU is FIFO (SCRUM-164). A
+     * FIFO layer is never raised (the policy trigger refuses it): loose units found have no provable receipt, so they
+     * are as young as the day they were found rather than as old as the layer they were counted against. No serial
+     * number: a serial is one unit's identity, never copied onto another.
+     */
+    public static StockItem newLayerBeside(StockItem source, Instant receivedAt) {
+        Objects.requireNonNull(receivedAt, "receivedAt");
+        return new StockItem(StockItemId.newId(), source.sku, source.location, source.lotNumber, source.expiryDate,
+                Quantity.ZERO, source.status, List.of(), 0L, receivedAt, null, source.lotId);
     }
 
     /**

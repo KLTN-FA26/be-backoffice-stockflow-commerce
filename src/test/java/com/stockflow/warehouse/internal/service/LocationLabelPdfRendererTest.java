@@ -1,6 +1,9 @@
 package com.stockflow.warehouse.internal.service;
 
 import com.google.zxing.BarcodeFormat;
+import com.stockflow.common.label.LabelDecoding;
+import com.stockflow.common.label.LabelFonts;
+import com.stockflow.common.label.LabelFormat;
 import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 import org.apache.pdfbox.Loader;

@@ -7,7 +7,7 @@ import com.stockflow.common.web.GlobalExceptionHandler;
 import com.stockflow.warehouse.internal.domain.LabelSelection;
 import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
-import com.stockflow.warehouse.internal.service.LabelFormat;
+import com.stockflow.common.label.LabelFormat;
 import com.stockflow.warehouse.internal.service.LabelWords;
 import com.stockflow.warehouse.internal.service.LocationLabel;
 import com.stockflow.warehouse.internal.service.LocationLabelPdfRenderer;

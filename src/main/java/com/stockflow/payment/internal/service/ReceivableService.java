@@ -147,7 +147,7 @@ public class ReceivableService {
         }
         LocalDate due = LocalDate.ofInstant(event.cancelledAt(), BUSINESS_ZONE);
         Receivable receivable = book.save(Receivable.openCancellationFee(event.orderId(), event.customerId(), owed,
-                event.currency(), event.cancelledAt(), due));
+                event.currency(), event.cancelledAt(), due).forOrderNumber(event.orderNumber()));
         log.info("Receivable {} opened for the cancellation fee of order {}: {} {} owed", receivable.id(),
                 event.orderNumber(), owed, event.currency());
     }
@@ -168,7 +168,8 @@ public class ReceivableService {
         }
         LocalDate due = LocalDate.ofInstant(event.closedAt(), BUSINESS_ZONE);
         Receivable fee = book.save(Receivable.openCancellationFee(event.orderId(), event.customerId(), owed,
-                event.currency(), event.closedAt(), due).forShipment(event.closureId()));
+                event.currency(), event.closedAt(), due).forShipment(event.closureId())
+                .forOrderNumber(event.orderNumber()));
         log.info("Receivable {} opened for the fee of the rest closed of order {}: {} {} owed", fee.id(),
                 event.orderNumber(), owed, event.currency());
     }
@@ -216,7 +217,8 @@ public class ReceivableService {
         }
         if (carrierCollects) {
             Receivable balance = book.save(Receivable.openCarrierCollected(event.orderId(), event.customerId(), owed,
-                    event.currency(), event.deliveredAt(), deliveryDay).forShipment(event.shipmentId()));
+                    event.currency(), event.deliveredAt(), deliveryDay).forShipment(event.shipmentId())
+                    .forOrderNumber(event.orderNumber()));
             log.info("Receivable {} opened for order {}: the carrier collected {} {} on delivery", balance.id(),
                     event.orderNumber(), owed, event.currency());
             return;
@@ -224,7 +226,7 @@ public class ReceivableService {
         int days = event.creditTermDays() == null ? 0 : event.creditTermDays();
         LocalDate due = deliveryDay.plusDays(days);
         Receivable opened = Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
-                event.deliveredAt(), due).forShipment(event.shipmentId());
+                event.deliveredAt(), due).forShipment(event.shipmentId()).forOrderNumber(event.orderNumber());
         Receivable receivable = book.save(balanceOnCredit ? opened.withKind("DEPOSIT_BALANCE") : opened);
         log.info("Receivable {} opened for order {}: {} {} due {}", receivable.id(), event.orderNumber(), owed,
                 event.currency(), due);
@@ -248,7 +250,8 @@ public class ReceivableService {
             return;
         }
         Receivable balance = book.save(Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
-                event.deliveredAt(), deliveryDay).withKind("DEPOSIT_BALANCE").forShipment(event.shipmentId()));
+                event.deliveredAt(), deliveryDay).withKind("DEPOSIT_BALANCE").forShipment(event.shipmentId())
+                .forOrderNumber(event.orderNumber()));
         log.warn("Order {} was delivered with {} {} of its balance unpaid (to be paid before delivery): receivable {} "
                 + "opened, due {}", event.orderNumber(), owed, event.currency(), balance.id(), deliveryDay);
         List<Receivable> unpaid = book.lockUnpaid(event.customerId());

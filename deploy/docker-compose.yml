@@ -139,6 +139,11 @@ services:
       # B2B onboarding (SCRUM-429): the portal page an invitation links to. Without it Sales cannot create a customer
       # (503 PORTAL_INVITATION_UNAVAILABLE) and, with self-registration gone, nobody can. Required, never guessed.
       PORTAL_ACTIVATION_URL: ${PORTAL_ACTIVATION_URL:?PORTAL_ACTIVATION_URL is required}
+      # Bank transfer instructions (SCRUM-193). Not required: blank only turns GET /orders/me/{id}/transfer-instructions
+      # into 503 TRANSFER_INSTRUCTIONS_UNAVAILABLE, so a customer is never shown a made-up account.
+      COMPANY_BANK_NAME: ${COMPANY_BANK_NAME:-}
+      COMPANY_BANK_ACCOUNT_NUMBER: ${COMPANY_BANK_ACCOUNT_NUMBER:-}
+      COMPANY_BANK_ACCOUNT_NAME: ${COMPANY_BANK_ACCOUNT_NAME:-}
       SUPPLIER_API_ALLOWED_HOSTS: ${SUPPLIER_API_ALLOWED_HOSTS:-}
       CACHE_VERSION: ${CACHE_VERSION:-v1}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}

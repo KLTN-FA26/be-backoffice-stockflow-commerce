@@ -176,4 +176,156 @@ class CheckoutPaymentTermsApiIntegrationTest {
                 .andExpect(status().isCreated()));
         assertThat(body.at("/data/depositRequired").decimalValue()).isEqualByComparingTo("3750000");
     }
+
+    /** A receivable of {@code amount}, {@code paid} of it settled, on a fresh order of the customer. */
+    private void receivable(String status, String collector, long amount, long paid, int dueInDays) throws Exception {
+        UUID order = UUID.fromString(placedBody(place(",\"paymentTerm\":\"PREPAID\"").andExpect(status().isCreated()))
+                .at("/data/orderId").asText());
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO payment.receivable (id, order_id, customer_id, amount, paid_amount, currency, issued_at,
+                    due_date, status, collector, kind)
+                VALUES (gen_random_uuid(), ?, ?, ?, ?, 'VND', NOW() - INTERVAL '40 days', CURRENT_DATE + ?, ?, ?, ?)""",
+                order, customer, amount, paid, dueInDays, status, collector,
+                "CARRIER".equals(collector) ? "DEPOSIT_BALANCE" : "CREDIT_ORDER"));
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: a customer with nothing overdue sees overdueAmount 0 and no oldestOverdueDueDate")
+    void nothingOverdue() throws Exception {
+        terms(false, true, CommercialTerm.CREDIT);
+        receivable("OPEN", "CUSTOMER", 2_000_000, 0, 20);
+        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.hasOverdue").value(false))
+                .andExpect(jsonPath("$.data.overdueAmount").value(0))
+                .andExpect(jsonPath("$.data.oldestOverdueDueDate").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: overdueAmount sums what is still unpaid on the customer's OVERDUE receivables and "
+            + "oldestOverdueDueDate is the earliest due date; open, paid and carrier-collected ones do not count")
+    void overdueAmountAndOldestDueDate() throws Exception {
+        terms(false, true, CommercialTerm.CREDIT);
+        receivable("OVERDUE", "CUSTOMER", 1_000_000, 200_000, -10);     // 800k unpaid, the oldest
+        receivable("OVERDUE", "CUSTOMER", 500_000, 0, -3);              // 500k unpaid
+        receivable("OPEN", "CUSTOMER", 9_000_000, 0, 15);               // not due yet
+        receivable("OVERDUE", "CARRIER", 7_000_000, 0, -30);            // the carrier's to collect, not the customer's
+        String oldest = java.time.LocalDate.now().minusDays(10).toString();
+
+        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.hasOverdue").value(true))
+                .andExpect(jsonPath("$.data.overdueAmount").value(1300000))
+                .andExpect(jsonPath("$.data.oldestOverdueDueDate").value(oldest))
+                // the existing fields are unchanged
+                .andExpect(jsonPath("$.data.customerId").value(customer.toString()))
+                .andExpect(jsonPath("$.data.currency").value("VND"))
+                .andExpect(jsonPath("$.data.creditLimit").value(50000000));
+        // the staff read of the same customer carries the same two fields
+        http().asRole(com.stockflow.common.security.Role.ACCOUNTANT, approver, get("/api/v1/orders/credit-position/" + customer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.overdueAmount").value(1300000))
+                .andExpect(jsonPath("$.data.oldestOverdueDueDate").value(oldest));
+    }
+
+    // ------------------------------------------------------------------ SCRUM-193: the balance policy on the portal
+
+    private void depositTerms(boolean credit, String limit, com.stockflow.customer.api.DepositBalancePolicy policy) {
+        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, credit, CommercialTerm.DEPOSIT,
+                new BigDecimal("30"), credit ? new BigDecimal(limit) : null, credit ? 30 : null, "test terms", approver,
+                null, policy));
+    }
+
+    private ResultActions placeTwo(String extra) throws Exception {
+        return http().asCustomer(user, post(ORDERS).contentType(MediaType.APPLICATION_JSON).content("""
+                {"requestId":"%s","customerId":"%s","lines":[{"sku":"SOFA-3S-GREY","quantity":2,"unitPrice":12500000}],
+                 "paymentTerm":"DEPOSIT"%s}""".formatted(UUID.randomUUID(), customer, extra)));
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: payment-terms lists the balance policies the customer may pick: none without deposits; "
+            + "paid first and the credit one with credit; their own ON_DELIVERY when their terms say so")
+    void allowedBalancePolicies() throws Exception {
+        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedBalancePolicies.length()").value(0));
+        depositTerms(true, "10000000", com.stockflow.customer.api.DepositBalancePolicy.ON_CREDIT);
+        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.depositBalancePolicy").value("ON_CREDIT"))
+                .andExpect(jsonPath("$.data.allowedBalancePolicies.length()").value(2))
+                .andExpect(jsonPath("$.data.allowedBalancePolicies[0]").value("BEFORE_DELIVERY"))
+                .andExpect(jsonPath("$.data.allowedBalancePolicies[1]").value("ON_CREDIT"));
+        depositTerms(false, null, com.stockflow.customer.api.DepositBalancePolicy.ON_DELIVERY);
+        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedBalancePolicies.length()").value(2))
+                .andExpect(jsonPath("$.data.allowedBalancePolicies[1]").value("ON_DELIVERY"));
+    }
+
+    @Test
+    @DisplayName("SCRUM-193 CREDIT-PORTAL: a portal order whose balance does not fit on credit is 409 "
+            + "BALANCE_CREDIT_LIMIT_EXCEEDED with the credit left and the currency in details - no order, no silent "
+            + "switch to BEFORE_DELIVERY - whether the policy is the customer's default or their own pick")
+    void aBalanceOverTheLimitIsRefusedWithTheCreditLeft() throws Exception {
+        depositTerms(true, "10000000", com.stockflow.customer.api.DepositBalancePolicy.ON_CREDIT);
+        // 25M order, 7.5M deposit, 17.5M balance on credit > the 10M limit
+        placeTwo("").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("BALANCE_CREDIT_LIMIT_EXCEEDED"))
+                .andExpect(jsonPath("$.details.availableCredit").value(10000000))
+                .andExpect(jsonPath("$.details.creditLimit").value(10000000))
+                .andExpect(jsonPath("$.details.requiredAmount").value(17500000))
+                .andExpect(jsonPath("$.details.currency").value("VND"));
+        placeTwo(",\"balancePolicy\":\"ON_CREDIT\"").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("BALANCE_CREDIT_LIMIT_EXCEEDED"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.customer_order WHERE customer_id = ?", Long.class,
+                customer)).isZero();
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: the customer picks BEFORE_DELIVERY and is placed even over the limit; within the limit the "
+            + "ON_CREDIT default is placed and the credit left shrinks; a limit used up leaves availableCredit 0, not below")
+    void aCustomerMayPickAnAllowedPolicy() throws Exception {
+        depositTerms(true, "10000000", com.stockflow.customer.api.DepositBalancePolicy.ON_CREDIT);
+        JsonNode paidFirst = placedBody(placeTwo(",\"balancePolicy\":\"BEFORE_DELIVERY\"").andExpect(status().isCreated()));
+        assertThat(paidFirst.at("/data/balancePolicy").asText()).isEqualTo("BEFORE_DELIVERY");
+        // one sofa: 12.5M, deposit 3.75M, balance 8.75M fits in 10M
+        JsonNode onCredit = placedBody(place(",\"paymentTerm\":\"DEPOSIT\"").andExpect(status().isCreated()));
+        assertThat(onCredit.at("/data/balancePolicy").asText()).isEqualTo("ON_CREDIT");
+        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.exposure").value(8750000))
+                .andExpect(jsonPath("$.data.availableCredit").value(1250000));
+        // the next one no longer fits: refused, with what is left
+        place(",\"paymentTerm\":\"DEPOSIT\"").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("BALANCE_CREDIT_LIMIT_EXCEEDED"))
+                .andExpect(jsonPath("$.details.availableCredit").value(1250000));
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: a policy the customer's terms do not allow is 409 BALANCE_POLICY_NOT_ALLOWED; a balance "
+            + "policy on a term with no balance is a 400")
+    void aPolicyNotAllowedIsRefused() throws Exception {
+        depositTerms(false, null, com.stockflow.customer.api.DepositBalancePolicy.BEFORE_DELIVERY);
+        place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"ON_CREDIT\"").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("BALANCE_POLICY_NOT_ALLOWED"));
+        place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"ON_DELIVERY\"").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("BALANCE_POLICY_NOT_ALLOWED"));
+        place(",\"paymentTerm\":\"PREPAID\",\"balancePolicy\":\"BEFORE_DELIVERY\"")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        JsonNode own = placedBody(place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"BEFORE_DELIVERY\"")
+                .andExpect(status().isCreated()));
+        assertThat(own.at("/data/balancePolicy").asText()).isEqualTo("BEFORE_DELIVERY");
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: an overdue customer's ON_CREDIT balance is 409 CUSTOMER_CREDIT_OVERDUE with the overdue "
+            + "amount, its oldest due date and the credit left in details; BEFORE_DELIVERY is still theirs to pick")
+    void anOverdueCustomerIsToldHowMuch() throws Exception {
+        depositTerms(true, "10000000", com.stockflow.customer.api.DepositBalancePolicy.ON_CREDIT);
+        receivable("OVERDUE", "CUSTOMER", 1_000_000, 0, -12);
+        place(",\"paymentTerm\":\"DEPOSIT\"").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_CREDIT_OVERDUE"))
+                .andExpect(jsonPath("$.details.overdueAmount").value(1000000))
+                .andExpect(jsonPath("$.details.oldestOverdueDueDate").value(java.time.LocalDate.now().minusDays(12).toString()))
+                .andExpect(jsonPath("$.details.availableCredit").value(9000000))
+                .andExpect(jsonPath("$.details.currency").value("VND"));
+        JsonNode paidFirst = placedBody(place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"BEFORE_DELIVERY\"")
+                .andExpect(status().isCreated()));
+        assertThat(paidFirst.at("/data/balancePolicy").asText()).isEqualTo("BEFORE_DELIVERY");
+    }
 }

@@ -253,12 +253,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             } catch (BusinessException refused) {
                 boolean creditRefusal = refused.errorCode() == ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED
                         || refused.errorCode() == ErrorCode.CUSTOMER_CREDIT_OVERDUE;
-                if (!creditRefusal || command.balancePolicy() != null) {
-                    throw refused;          // Sales asked for ON_CREDIT: Sales changes the terms (409)
+                // SCRUM-193 (CREDIT-PORTAL, owner decision): a balance that does not fit on credit is refused with the
+                // credit left in the error, whether Sales asked for ON_CREDIT or it is the customer's default - never
+                // quietly paid before delivery instead, which the customer could not see or undo. The customer picks
+                // BEFORE_DELIVERY (or pays the deposit and waits for Sales) knowing why. The one exception is an
+                // accepted quote being converted: the quote carries no balance policy to choose, and refusing would
+                // leave Sales unable to convert it, so the default gives way there as it did before (review of #150).
+                if (!creditRefusal || !quotePriced || command.balancePolicy() != null) {
+                    throw refused;
                 }
-                // Review of #150: ON_CREDIT came from the customer's terms (the portal cannot choose a policy) - the
-                // balance is then paid before delivery, the policy that never lets unpaid goods leave, instead of
-                // refusing an order the customer could not have placed any other way.
                 order.applyTerms(term, depositPercent, null, com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY);
                 log.info("Order {}: the balance of customer {} does not fit on credit ({}); paid before delivery instead",
                         orderNumber, command.customerId(), refused.errorCode());
@@ -341,6 +344,29 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 "Customer %s pays the balance of a deposit order %s".formatted(terms.customerId(), customers));
     }
 
+    /**
+     * The balance policies a customer may place a deposit order on - exactly those {@link #balancePolicyFor} accepts
+     * from them: paying before delivery (always, it only tightens), their own configured policy, and the balance on
+     * credit when they are allowed credit. Empty when deposits are not allowed. Offered by the payment-terms read so a
+     * storefront shows only what will not be refused.
+     */
+    static List<com.stockflow.order.api.BalancePolicy> allowedBalancePolicies(CreditTerms terms) {
+        if (!terms.allowDeposit()) {
+            return List.of();
+        }
+        var own = terms.depositBalancePolicy() == null ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY
+                : com.stockflow.order.api.BalancePolicy.valueOf(terms.depositBalancePolicy().name());
+        List<com.stockflow.order.api.BalancePolicy> allowed = new ArrayList<>();
+        allowed.add(com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY);
+        if (own == com.stockflow.order.api.BalancePolicy.ON_DELIVERY) {
+            allowed.add(own);
+        }
+        if (terms.allowCredit()) {
+            allowed.add(com.stockflow.order.api.BalancePolicy.ON_CREDIT);
+        }
+        return List.copyOf(allowed);
+    }
+
     /** What the customer owed on credit before the order, and the balance it puts on credit. */
     private record BalanceCredit(BigDecimal exposure, BigDecimal amount) {
     }
@@ -356,25 +382,48 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private BalanceCredit requireBalanceWithinLimit(Order order, CreditTerms terms) {
         var position = paymentService.creditPosition(order.customerId());
         BigDecimal amount = order.creditAmount();
+        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
+                .add(position.outstandingReceivables());
+        String currency = order.total().currency().getCurrencyCode();
+        BigDecimal available = terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO);
         if (position.hasOverdue()) {
+            Map<String, Object> details = new java.util.LinkedHashMap<>(creditDetails(terms, exposure, available, amount,
+                    currency));
+            details.put("overdueAmount", position.overdueAmount());
+            if (position.oldestOverdueDueDate() != null) {
+                details.put("oldestOverdueDueDate", position.oldestOverdueDueDate().toString());
+            }
             throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE, ("Customer %s has overdue receivables: the "
                     + "balance of a deposit order cannot go on credit; choose BEFORE_DELIVERY or ON_DELIVERY")
                     .formatted(terms.customerId()), List.of(new com.stockflow.common.api.FieldError("balancePolicy",
-                    "the customer is overdue", "CreditOverdue")));
+                    "the customer is overdue", "CreditOverdue")), details);
         }
-        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
-                .add(position.outstandingReceivables());
         if (exposure.add(amount).compareTo(terms.creditLimit()) > 0) {
-            String currency = order.total().currency().getCurrencyCode();
             throw new BusinessException(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED, ("The balance on credit, %s %s, would "
                     + "take customer %s to %s %s owed on credit, above their limit of %s %s (%s %s available): change "
                     + "the balance policy or the deposit").formatted(plain(amount), currency, terms.customerId(),
                     plain(exposure.add(amount)), currency, plain(terms.creditLimit()), currency,
-                    plain(terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO)), currency),
+                    plain(available), currency),
                     List.of(new com.stockflow.common.api.FieldError("balancePolicy",
-                            "over the customer's credit limit", "CreditLimitExceeded")));
+                            "over the customer's credit limit", "CreditLimitExceeded")),
+                    creditDetails(terms, exposure, available, amount, currency));
         }
         return new BalanceCredit(exposure, amount);
+    }
+
+    /**
+     * What the storefront needs to explain a credit refusal (SCRUM-193): the credit left (limit minus what is owed on
+     * credit, never below zero), the limit, what is owed, what this order would put on credit, and the currency.
+     */
+    private static Map<String, Object> creditDetails(CreditTerms terms, BigDecimal exposure, BigDecimal available,
+                                                     BigDecimal required, String currency) {
+        Map<String, Object> details = new java.util.LinkedHashMap<>();
+        details.put("availableCredit", available);
+        details.put("creditLimit", terms.creditLimit());
+        details.put("exposure", exposure);
+        details.put("requiredAmount", required);
+        details.put("currency", currency);
+        return details;
     }
 
     private static String plain(BigDecimal value) {

@@ -164,13 +164,18 @@ public enum ErrorCode {
     SUPPLIER_ITEM_NOT_LISTED("This supplier does not list this SKU", 409),
     PO_LINE_BELOW_MOQ("The quantity is below the supplier's minimum order quantity", 409),
     PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
+    /** A line entered in a packing unit is a whole number of that unit (BR-09, V20261020000400). */
+    PO_LINE_UNIT_NOT_MULTIPLE("The quantity must be a whole number of the line's unit", 409),
     PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
-    /** The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11). */
-    UOM_CONVERSION_IN_USE("This unit of measure is the base unit or is still sold in", 409),
+    /**
+     * The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11); a unit
+     * a document counts in keeps its factor and code and is not deleted (BR-10, V20261020000600).
+     */
+    UOM_CONVERSION_IN_USE("This unit of measure is the base unit, is still sold in, or is used by a document", 409),
     /** The variant already sells in this unit. */
     SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
     DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
@@ -185,6 +190,10 @@ public enum ErrorCode {
     LOCATION_LABELS_EMPTY("No storage location matches this selection", 422),
     /** More labels than one print request renders; print by zone or shelf instead (SCRUM-97). */
     LOCATION_LABELS_TOO_MANY("Too many labels for one request", 422),
+    /** A carton label print that names neither a receipt line with live cartons nor any carton (SCRUM-473). */
+    STOCK_PACKAGE_LABELS_EMPTY("Choose a receipt line or the cartons to print", 422),
+    /** More carton labels than one print request renders (SCRUM-473). */
+    STOCK_PACKAGE_LABELS_TOO_MANY("At most 500 carton labels at a time", 422),
     /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
     MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
     /** Four eyes: whoever asked for a stock adjustment may not decide it. */
@@ -213,8 +222,25 @@ public enum ErrorCode {
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
     RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
-    /** Cartons were labelled on the line (SCRUM-473): void or recount them before the line is dropped. */
+    /**
+     * SCRUM-473: a receipt line that has ever had labelled cartons - VOID ones too, which still point at it
+     * ({@code fk_stock_package_receipt_line}) - keeps its PO line and lot and cannot be removed from the draft, and
+     * its unit cannot change while it keeps cartons in the old one. A lot or PO line on such a line is corrected by
+     * cancelling the receipt and counting it again.
+     */
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
+    /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
+    RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
+    /**
+     * SCRUM-473 decision D5: a SUBCONTRACT order's goods are held for their production order one row per receipt
+     * line, so they are not received into cartons.
+     */
+    RECEIPT_PACKAGES_NOT_SUPPORTED("Cartons are not labelled on a subcontract receipt", 409),
+    /**
+     * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
+     * and claims no packing unit it holds no carton of.
+     */
+    RECEIPT_LINE_UNIT_INVALID("A receipt line counts in its item's base unit, or in an active packing unit it has cartons of", 422),
     /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
     PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
     /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */
@@ -357,6 +383,26 @@ public enum ErrorCode {
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
     /** A cycle count already completed or cancelled. */
     CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),
+    /** A planned count whose scope resolves to no stock slot. */
+    CYCLE_COUNT_EMPTY_SCOPE("The count scope matches no stock", 422),
+    /** A planned count above stockflow.inventory.cycle-count-max-lines. */
+    CYCLE_COUNT_TOO_LARGE("The count scope is too large - narrow it", 422),
+    /** A counter who is not the assignee and may not decide. */
+    CYCLE_COUNT_NOT_ASSIGNEE("This count is assigned to someone else", 403),
+    /** Submitting a count that still has uncounted lines. */
+    CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
+    /** A slot already held by an open count. */
+    CYCLE_COUNT_SLOT_BUSY("This stock slot is already on an open count", 409),
+    /** A surplus where the slot has no layer to receive it. */
+    CYCLE_COUNT_UNKNOWN_LAYER("The surplus cannot be placed on any receipt layer", 422),
+    /** A shortage larger than what the slot holds now. */
+    CYCLE_COUNT_STALE("Stock changed since it was counted - recount the line", 409),
+    /** A COUNT_VARIANCE adjustment withdrawn by its requester: a count's variance is approved or rejected. */
+    COUNT_VARIANCE_NOT_WITHDRAWABLE("A count variance is approved or rejected, not withdrawn", 409),
+    /** A carton counted at a location it is not in. */
+    STOCK_PACKAGE_WRONG_LOCATION("The carton is not at this location", 422),
+    /** A carton counted above its received quantity. */
+    STOCK_PACKAGE_OVERFILLED("A carton cannot hold more than it was received with", 422),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
@@ -599,6 +645,8 @@ public enum ErrorCode {
     STORAGE_ERROR("File storage is unavailable", 503),
     /** No portal activation address is configured, so no invitation link can be built. */
     PORTAL_INVITATION_UNAVAILABLE("Portal invitations cannot be sent right now", 503),
+    /** The company bank account customers transfer to is not configured for this deployment (SCRUM-193). */
+    TRANSFER_INSTRUCTIONS_UNAVAILABLE("Transfer details cannot be shown right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);

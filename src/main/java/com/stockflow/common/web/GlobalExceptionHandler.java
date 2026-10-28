@@ -133,7 +133,7 @@ public class GlobalExceptionHandler {
                 .map(f -> new FieldError(f.field(),
                         f.code() == null ? f.message() : messages.get("error." + f.code(), f.message()), f.code()))
                 .toList();
-        return respond(ex.errorCode(), message, fields);
+        return respond(ex.errorCode(), message, fields, ex.details());
     }
 
     /**
@@ -498,9 +498,15 @@ public class GlobalExceptionHandler {
      */
     private ResponseEntity<ApiResponse<Void>> respond(ErrorCode code, String message,
                                                       List<FieldError> fieldErrors) {
+        return respond(code, message, fieldErrors, null);
+    }
+
+    private ResponseEntity<ApiResponse<Void>> respond(ErrorCode code, String message,
+                                                      List<FieldError> fieldErrors,
+                                                      java.util.Map<String, Object> details) {
         return ResponseEntity.status(code.httpStatus())
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(ApiResponse.error(code.name(), message, fieldErrors,
+                .body(ApiResponse.error(code.name(), message, fieldErrors, details,
                         MDC.get(CorrelationIdFilter.MDC_KEY)));
     }
 }

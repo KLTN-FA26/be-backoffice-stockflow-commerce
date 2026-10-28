@@ -245,6 +245,39 @@ hold by hand) and runs the same implementation, writing a `PICK` ledger row that
 in the repo calls it; picking never goes over HTTP. (The original design did — "fulfillment calls the
 consumption endpoint over HTTP" — and was replaced so the pick line and the deduction commit together.)
 
+### Cycle count — a thin document over the adjustment (SCRUM-146)
+
+The count lives in `inventory`: aggregate `CycleCount` (`PLANNED → IN_PROGRESS → COMPLETED`, `CANCELLED`)
+with `CountSlot` (a bin + SKU + lot, or one carton) and the pure `CountVariance` split in `internal/domain/`;
+planning in `CycleCountService`, counting and submission in `CycleCountCountingService`. Counting re-reads the
+book quantity, so nothing is frozen while people count. `CycleCountCountingService.submit` is one
+`@Transactional` method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` (a carton line
+follows its carton to its current bin) → `COMPLETED` → `StockOperations.requestCountVariance` per differing
+line, which raises pending `COUNT_VARIANCE` adjustments through the SCRUM-145 four-eyes mechanism — a loose
+shortage split over the slot's rows, free units first then held ones, each FEFO (`CYCLE_COUNT_STALE` rolls
+the whole submission back), one adjustment per carton. Nothing posts here: review and posting are the
+adjustment's own `PENDING_APPROVAL → POSTED`, and a SHORT_PICK slot stays out of ATP until its line's
+adjustments are decided. A slot with a pending `COUNT_VARIANCE` adjustment is busy — for new counts and for
+short picks, which reuse the count holding it (`CycleCountRepositoryAdapter.BUSY`, one predicate for
+`claim` and `findHolding`).
+
+### Receiving into cartons (SCRUM-473)
+
+Cartons are labelled while a DRAFT receipt is counted: `GoodsReceiptServiceImpl.replaceLines` →
+`InventoryService.countReceivingPackages`, which reconciles the line's RECEIVING cartons through the pure
+`ReceivingPackagePlan` (new → LPN, listed → recount, missing → VOID). `receive` puts each carton's count in one
+INBOUND row inside it (carton → IN_STOCK, unopened) and only the remainder loose. QC moves and reclassifies
+cartons whole, a list of LPNs per call: `moveStockPackages` / `reclassifyStockPackages`. Lock order everywhere:
+**SKU advisory locks (sorted) → `stock_package FOR UPDATE` → stock rows by id**.
+
+A loose `move` / `reclassify` and a carton move may share one reference (a receipt line to QC, a QC part). The
+loose replay lookup is `StockMovementLog.findLooseByReference`, which ignores ledger lines naming a carton; a lookup
+that saw them would take the carton's line for the loose move's earlier attempt and silently skip it.
+`LpnSequence.reserve` is `REQUIRES_NEW`: one count labels several SKUs under their advisory locks, and a sequence
+row held until commit would deadlock two receipts on it. It draws a line's LPNs as one block, so the second
+connection that transaction needs is borrowed once per line, not once per carton. Gaps in LPNs are the accepted
+price.
+
 ---
 
 ## 5. Known traps — do not reintroduce these

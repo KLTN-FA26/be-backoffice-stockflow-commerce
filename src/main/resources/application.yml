@@ -433,6 +433,8 @@ stockflow:
     # A lot that expires within this many days of the day it is received, or of today, is "near expiry"
     # (docs 03 BR-06; plan G5a-3 §6 #11): goods receipts warn, the expiry alerts use the same window.
     expiry-warning-days: 30
+    # Most lines one planned cycle count may hold (SCRUM-146); a wider scope is refused so the count stays countable.
+    cycle-count-max-lines: 500
     # Stock alerts (SCRUM-147). The drain evaluates the SKUs whose stock changed (a trigger on stock_item queues them).
     alert-drain-interval: PT30S
     alert-drain-initial-delay: PT30S
@@ -441,6 +443,15 @@ stockflow:
     # Nightly net under the drain (01:30) and the expiry sweep that moves expired stock to EXPIRED (02:00), business time.
     alert-reconcile-cron: "0 30 1 * * *"
     expiry-sweep-cron: "0 0 2 * * *"
+
+  payment:
+    # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and
+    # in prod: GET /orders/me/{id}/transfer-instructions answers 503 TRANSFER_INSTRUCTIONS_UNAVAILABLE until all three
+    # are set per deployment, so a customer is never shown a made-up account. local, dev and test carry a demo one.
+    company-bank:
+      bank-name: ${COMPANY_BANK_NAME:}
+      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
+      account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
 
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
