@@ -226,7 +226,7 @@ class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A rejection must say why");
         }
         TransferOrder order = load(transferId);
-        order.reject(approverId);
+        order.reject(approverId, reason, clock.instant());
         log.info("Transfer {} rejected: {}", order.number(), reason);
         return toView(transfers.save(order));
     }
@@ -411,7 +411,8 @@ class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
                 o.expectedDate(), o.lines().stream().map(l -> new TransferOrders.Line(l.id(), l.lineNo(),
                         l.sku().code(), l.lotNumber(), l.requested(), l.shipped())).toList(),
                 o.submittedBy(), o.submittedAt(), o.approvedBy(), o.approvedAt(), o.dispatchedBy(), o.dispatchedAt(),
-                o.cancelReason(), o.createdAt(), o.version(), o.deliveryMode(), o.packedAt(), o.goodsLeftAt());
+                o.cancelReason(), o.createdAt(), o.version(), o.deliveryMode(), o.packedAt(), o.goodsLeftAt(), o.rejectedBy(), o.rejectedAt(),
+                o.rejectionReason());
     }
 
     // ------------------------------------------------------------------ TransferFulfillment (SCRUM-287 PR T)
