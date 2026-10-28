@@ -210,7 +210,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "goods_left_at")
     private Instant goodsLeftAt;
 
-    /** V20261025020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
+    /** V20261028020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
     @Column(name = "replaces_return_request_id", updatable = false)
     private UUID replacesReturnRequestId;
 

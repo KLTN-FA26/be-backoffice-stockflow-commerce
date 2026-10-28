@@ -15,7 +15,7 @@
 --    review (approved or rejected, goods to come back by a deadline or not), the receipt, the inspection, the
 --    resolution and its four-eyes settlement, what payment booked, the replacement order and the VAT note. refund_id
 --    goes: a return is refunded through several refund rows (one per payment it is placed on), which name the return
---    themselves (V20261025020100).
+--    themselves (V20261028020100).
 -- 2. return_request_line: the order line's SKU, price and whether it was printed to the customer's design, snapshot
 --    at opening; approved, received (and what SKU arrived), accepted and rejected units; where the received units
 --    went (back on sale, scrapped, back to the customer) with the inventory adjustments asked for; and how the
@@ -36,13 +36,13 @@
 -- here); rejected units are the customer's goods (back to them, or scrapped with their consent); only plain stock QC
 -- vouched for goes back on sale.
 --
--- Schema owner (Tú): please review - written in the range reserved for this branch (V20261025020000-029900).
+-- Schema owner (Tú): please review - written in the range reserved for this branch (V20261028020000-029900).
 -- =============================================================================
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM ordering.return_request) OR EXISTS (SELECT 1 FROM ordering.return_request_line) THEN
-        RAISE EXCEPTION 'V20261025020000: ordering.return_request holds rows; they predate the return flow and '
+        RAISE EXCEPTION 'V20261028020000: ordering.return_request holds rows; they predate the return flow and '
             'need a person to map them before this migration can run';
     END IF;
 END $$;
@@ -193,7 +193,7 @@ ALTER TABLE ordering.return_request
     -- invoice.
     ADD CONSTRAINT ck_return_request_vat CHECK (vat_adjustment_required = (status = 'RESOLVED'
         AND (settlement_amount > 0 OR (withdrawal_status = 'APPROVED' AND withdrawal_amount > 0)))),
-    -- The credit entry payment books for a return (V20261025020100) carries exactly what was set off or kept as credit.
+    -- The credit entry payment books for a return (V20261028020100) carries exactly what was set off or kept as credit.
     ADD CONSTRAINT ck_return_request_credit_transfer CHECK ((credit_transfer_id IS NOT NULL)
         = (credited_amount + offset_amount > 0)),
     -- A replacement is withdrawn only from a resolved return that had one; proposed, then decided by someone else;
@@ -520,7 +520,7 @@ BEGIN
     IF (SELECT count(*) FROM identity.permission WHERE code IN ('sales-rmas:VIEW_PAGE', 'sales-rmas:READ',
             'sales-rmas:CREATE', 'sales-rmas:UPDATE', 'sales-rmas:APPROVE', 'sales-rma-receipts:UPDATE',
             'sales-rma-inspections:UPDATE', 'sales-rma-resolutions:UPDATE', 'sales-rma-resolutions:APPROVE')) <> 9 THEN
-        RAISE EXCEPTION 'V20261025020000: a permission it grants is missing';
+        RAISE EXCEPTION 'V20261028020000: a permission it grants is missing';
     END IF;
 END $$;
 

@@ -4,7 +4,7 @@
 -- (SCRUM-267/274/275, V20261014001000; docs 07 step 6, BR-04, BR-05); the packing station's parcels, scans and
 -- shipments (G4-5, V20261021000300; docs 08 BR-01/03/04, 09 §5); carriers, loads and the handover (G4-2a,
 -- V20261021000400/500; docs 09 §4.1, BR-01/03/04); damage found at packing among picked units (R8,
--- V20261025030000/030100). Needs the demo seed.
+-- V20261028030000/030100). Needs the demo seed.
 -- Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on

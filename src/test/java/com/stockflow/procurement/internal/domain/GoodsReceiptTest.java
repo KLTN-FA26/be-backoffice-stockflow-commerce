@@ -154,4 +154,67 @@ class GoodsReceiptTest {
         assertThatThrownBy(() -> receipt.moveToQc(UUID.randomUUID(), UUID.randomUUID(), USER, NOW))
                 .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_FOUND);
     }
+
+    private static GoodsReceipt inPutaway(ReceiptLine... lines) {
+        GoodsReceipt receipt = draft();
+        receipt.replaceLines(List.of(lines));
+        receipt.confirm(USER, NOW);
+        return receipt;
+    }
+
+    @Test
+    @DisplayName("closeIfPutAway: closes once every line has had its whole quantity put away")
+    void closesWhenEveryLineIsPutAway() {
+        ReceiptLine a = line(6, false);
+        ReceiptLine b = line(4, false);
+        GoodsReceipt receipt = inPutaway(a, b);
+        Instant later = NOW.plusSeconds(60);
+
+        assertThat(receipt.closeIfPutAway(Map.of(a.id(), 6, b.id(), 4), later)).isTrue();
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
+        assertThat(receipt.closedAt()).isEqualTo(later);
+    }
+
+    @Test
+    @DisplayName("closeIfPutAway: stays open while a line is short, or has nothing done at all")
+    void staysWhileALineIsShort() {
+        ReceiptLine a = line(6, false);
+        ReceiptLine b = line(4, false);
+        GoodsReceipt receipt = inPutaway(a, b);
+
+        assertThat(receipt.closeIfPutAway(Map.of(a.id(), 6, b.id(), 3), NOW)).isFalse();
+        assertThat(receipt.closeIfPutAway(Map.of(a.id(), 6), NOW)).isFalse();
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+        assertThat(receipt.closedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("closeIfPutAway: a QC line with nothing accepted does not hold the receipt open")
+    void linesWithNothingToPutAwayDoNotHoldItOpen() {
+        ReceiptLine qcLine = line(2, true);
+        ReceiptLine plain = line(4, false);
+        GoodsReceipt receipt = inPutaway(qcLine, plain);
+        receipt.moveToQc(qcLine.id(), UUID.randomUUID(), USER, NOW);
+        receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.REJECTED, 2, "wrong print")), NOW);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+
+        assertThat(receipt.closeIfPutAway(Map.of(plain.id(), 4), NOW)).isTrue();
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
+    }
+
+    @Test
+    @DisplayName("closeIfPutAway: a receipt not in putaway is left alone")
+    void notInPutawayIsLeftAlone() {
+        ReceiptLine qcLine = line(2, true);
+        GoodsReceipt inQc = inPutaway(qcLine);
+        assertThat(inQc.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+        assertThat(inQc.closeIfPutAway(Map.of(), NOW)).isFalse();
+        assertThat(inQc.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+
+        ReceiptLine plain = line(3, false);
+        GoodsReceipt closed = inPutaway(plain);
+        closed.closeIfPutAway(Map.of(plain.id(), 3), NOW);
+        assertThat(closed.closeIfPutAway(Map.of(plain.id(), 3), NOW.plusSeconds(5))).isFalse();
+        assertThat(closed.closedAt()).isEqualTo(NOW);
+    }
 }

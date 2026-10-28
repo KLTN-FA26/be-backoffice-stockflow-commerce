@@ -4,13 +4,16 @@ package com.stockflow.procurement.internal.domain;
  * Lifecycle of a purchase order, decision D4 ({@code ck_purchase_orders_status}).
  *
  * <pre>
- *   DRAFT ──submit──▶ PENDING_APPROVAL ──approve (four-eyes)──▶ APPROVED ──confirm (= send)──▶ CONFIRMED
- *     ▲                     │                                                                   │
- *     └──────reject─────────┘                                         goods receipts (SCRUM-435)│
- *                                                                                               ▼
- *                                           CLOSED ◀──close── RECEIVED ◀── PARTIALLY_RECEIVED ◀─┘
- *                                             ▲                                  │
- *                                             └──────────close short─────────────┘
+ *   DRAFT ──submit, total above the submitter's limit──▶ PENDING_APPROVAL ──approve (four-eyes, approver's limit)──┐
+ *     │  ▲                                                      │                                                │
+ *     │  └──────────────────reject (reason)────────────────────┘                                                ▼
+ *     └──submit, total within the submitter's own limit (auto-approved)──────────────────────────────────▶ APPROVED
+ *                                                                                                                │ confirm (= send)
+ *                                                                                                                ▼
+ *   CLOSED ◀──close── RECEIVED ◀── PARTIALLY_RECEIVED ◀──goods receipts (SCRUM-435)── CONFIRMED
+ *     ▲  ▲                                  │                                              │
+ *     │  └──────────close short─────────────┘                                              │
+ *     └──────────────────────force close (reason; nothing was received)────────────────────┘
  *
  *   DRAFT / PENDING_APPROVAL / APPROVED / CONFIRMED ──cancel──▶ CANCELLED   (nothing received)
  * </pre>
@@ -26,10 +29,12 @@ public enum PurchaseOrderStatus {
 
     public boolean canTransitionTo(PurchaseOrderStatus target) {
         return switch (this) {
-            case DRAFT -> target == PENDING_APPROVAL || target == CANCELLED;
+            // DRAFT -> APPROVED is the under-limit submission only (PurchaseOrder#submitWithinLimit); approve() refuses a draft.
+            case DRAFT -> target == PENDING_APPROVAL || target == APPROVED || target == CANCELLED;
             case PENDING_APPROVAL -> target == APPROVED || target == DRAFT || target == CANCELLED;
             case APPROVED -> target == CONFIRMED || target == CANCELLED;
-            case CONFIRMED -> target == CANCELLED;
+            // CONFIRMED -> CLOSED is the force close: the order will not be received at all (PurchaseOrder#closeShort).
+            case CONFIRMED -> target == CANCELLED || target == CLOSED;
             case PARTIALLY_RECEIVED, RECEIVED -> target == CLOSED;
             case CLOSED, CANCELLED -> false;
         };

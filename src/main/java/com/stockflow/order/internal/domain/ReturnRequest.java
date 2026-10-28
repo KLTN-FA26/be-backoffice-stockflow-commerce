@@ -33,7 +33,7 @@ import java.util.UUID;
  * application service moves it alongside (RETURN_REQUESTED while a return is open, then DELIVERED again or
  * (PARTIALLY_)REFUNDED, 03 §9), under the order's row lock.
  *
- * <p>Invariants it protects - each stated again as a {@code CHECK} in {@code V20261025020000}:</p>
+ * <p>Invariants it protects - each stated again as a {@code CHECK} in {@code V20261028020000}:</p>
  * <ul>
  *   <li><b>BR-RMA-001</b>: opened only on a delivered order, within the return window after delivery (calendar days of
  *       Asia/Ho_Chi_Minh) - or outside it when Sales accept a late claim and say why;</li>
@@ -99,7 +99,7 @@ public final class ReturnRequest extends AggregateRoot {
     }
 
     /**
-     * What payment booked for the credited value (V20261025020100): set off against the order's receivables, refunded
+     * What payment booked for the credited value (V20261028020100): set off against the order's receivables, refunded
      * (PENDING), kept as the customer's credit; and the ledger entry of the credit, when one was made.
      */
     public record MoneyOutcome(BigDecimal offset, BigDecimal refunded, BigDecimal credited, UUID creditTransferId) {

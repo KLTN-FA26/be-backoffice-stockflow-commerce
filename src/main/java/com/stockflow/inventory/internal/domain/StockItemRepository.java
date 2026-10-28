@@ -88,6 +88,20 @@ public interface StockItemRepository {
     List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location);
 
     /**
+     * The loose INBOUND rows of one lot, in id order, unlocked. A confirmed receipt opens its own lot per (SKU, lot
+     * number, expiry), so these are exactly one receipt line's loose goods still waiting for putaway; the caller
+     * locks the rows it takes from.
+     */
+    List<StockItem> findLooseInboundByLot(Sku sku, java.util.UUID lotId);
+
+    /**
+     * Where each lot's loose goods wait: the location code of the lowest-id loose INBOUND row with units, per lot, in
+     * one query that loads no reservations. A lot with no such row is absent. For reading only: nothing here may be
+     * taken from, because the rows are neither locked nor loaded.
+     */
+    java.util.Map<java.util.UUID, String> looseInboundLocationByLot(java.util.Collection<java.util.UUID> lotIds);
+
+    /**
      * What is left in a stock package: the sum of its rows' {@code on_hand}, as this transaction has written them
      * (pending changes are flushed first). A carton holds no quantity of its own (V20261020000100).
      */

@@ -27,7 +27,7 @@ import java.util.UUID;
  * transaction that created the report ({@link StockItem#giveUpDamaged}), and every decision moves them again in
  * the transaction that records it.</p>
  *
- * <p>The rules it keeps, each said a second time by the tables of V20261025030000:</p>
+ * <p>The rules it keeps, each said a second time by the tables of V20261028030000:</p>
  * <ul>
  *   <li>at least one photo, at most {@value #MAX_PHOTOS} (BR-STK-003; {@code tg_stock_damage_report_photo});</li>
  *   <li>a reason, and a note when the reason is OTHER;</li>

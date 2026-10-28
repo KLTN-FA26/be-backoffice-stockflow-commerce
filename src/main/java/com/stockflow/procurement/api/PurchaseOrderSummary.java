@@ -14,7 +14,9 @@ import java.util.UUID;
  * RECEIVED, CLOSED, CANCELLED (decision D4). {@code sentAt} is {@code confirmedAt}: confirming an
  * order is sending it (plan Q1), and the field keeps its old name for the supplier-communication
  * screens. A short close is {@code CLOSED} with {@code closeKind = SHORT_CLOSE} and its reason in
- * {@code closeReason}. {@code version} is what an edit of the draft sends back (SCRUM-462).
+ * {@code closeReason}; a force close of a CONFIRMED order nothing was received against is {@code closeKind =
+ * FORCE_CLOSE}. {@code autoApproved}: approved at submission within the submitter's own approval limit, so
+ * {@code approvedBy} is the submitter. {@code version} is what an edit of the draft sends back (SCRUM-462).
  * {@code tolerancePercent} is the supplier's over-receipt tolerance (BR-02), 0 when none is set.</p>
  */
 public record PurchaseOrderSummary(
@@ -47,6 +49,7 @@ public record PurchaseOrderSummary(
         Instant submittedAt,
         UUID approvedBy,
         Instant approvedAt,
+        boolean autoApproved,
         UUID confirmedBy,
         Instant confirmedAt,
         Instant closedAt,

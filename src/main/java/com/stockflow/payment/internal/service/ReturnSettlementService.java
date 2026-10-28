@@ -30,7 +30,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The money of a resolved return (SCRUM-260; V20261025020100 explains the two ways it is booked). Called by the order
+ * The money of a resolved return (SCRUM-260; V20261028020100 explains the two ways it is booked). Called by the order
  * module inside the transaction that resolves the return, after the second person approved it.
  *
  * <ol>

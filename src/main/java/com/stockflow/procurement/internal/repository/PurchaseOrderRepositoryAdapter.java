@@ -9,6 +9,7 @@ import com.stockflow.procurement.api.POLineSummary;
 import com.stockflow.procurement.api.PurchaseOrderStatusCount;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.SupplierSpendSummary;
+import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PoLineStatus;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
@@ -35,6 +36,7 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -313,6 +315,76 @@ class PurchaseOrderRepositoryAdapter
     }
 
     @Override
+    public void recordAutoApproval(UUID revisionId, UUID approverId, UUID limitHolderId, ApprovalLimit limit,
+                                   Instant at, String reason) {
+        entityManager.createNativeQuery("""
+                        INSERT INTO procurement.purchase_order_approvals
+                               (id, po_revision_id, step_no, approver_id, decision, decision_at, reason,
+                                limit_id, limit_amount, limit_role_id, limit_holder_id, created_at, created_by)
+                        VALUES (:id, :revision,
+                                (SELECT COALESCE(MAX(step_no), 0) + 1 FROM procurement.purchase_order_approvals
+                                  WHERE po_revision_id = :revision),
+                                :approver, 'AUTO_APPROVED', :at, :reason,
+                                :limitId, :limitAmount, :limitRole, :holder, NOW(), 'procurement')""")
+                .setParameter("id", Identifiers.newId())
+                .setParameter("revision", revisionId)
+                .setParameter("approver", approverId)
+                .setParameter("at", at)
+                .setParameter("reason", reason == null ? null : truncate(reason, 500))
+                .setParameter("limitId", limit.id())
+                .setParameter("limitAmount", limit.amount().amount())
+                .setParameter("limitRole", limit.roleId())
+                .setParameter("holder", limitHolderId)
+                .executeUpdate();
+    }
+
+    @Override
+    public boolean hasBeenRejected(PurchaseOrderId id) {
+        return (Boolean) entityManager.createNativeQuery("""
+                        SELECT EXISTS (SELECT 1 FROM procurement.purchase_order_approvals a
+                                         JOIN procurement.purchase_order_revisions r ON r.id = a.po_revision_id
+                                        WHERE r.po_id = :po AND a.decision = 'REJECTED')""")
+                .setParameter("po", id.value())
+                .getSingleResult();
+    }
+
+    @Override
+    public Optional<UUID> creatorOf(PurchaseOrderId id) {
+        @SuppressWarnings("unchecked")
+        List<UUID> creators = entityManager.createNativeQuery("""
+                        SELECT actor_id FROM procurement.purchase_order_events
+                         WHERE po_id = :po AND action = 'CREATED' AND actor_id IS NOT NULL
+                         ORDER BY created_at, id LIMIT 1""")
+                .setParameter("po", id.value())
+                .getResultList();
+        return creators.stream().findFirst();
+    }
+
+    @Override
+    public Money autoApprovedTotal(UUID limitHolderId, UUID supplierId, Currency currency, Instant since,
+                                   PurchaseOrderId except) {
+        // One submission at a time per holder and supplier: the sum is read and then acted on in the same transaction.
+        entityManager.createNativeQuery("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))")
+                .setParameter("key", "po-auto-approval:" + limitHolderId + ":" + supplierId)
+                .getSingleResult();
+        BigDecimal sum = (BigDecimal) entityManager.createNativeQuery("""
+                        SELECT COALESCE(SUM(p.total_amount), 0) FROM procurement.purchase_orders p
+                         WHERE p.supplier_id = :supplier AND p.currency = :currency AND p.id <> :except
+                           AND p.status <> 'CANCELLED'
+                           AND EXISTS (SELECT 1 FROM procurement.purchase_order_approvals a
+                                         JOIN procurement.purchase_order_revisions r ON r.id = a.po_revision_id
+                                        WHERE r.po_id = p.id AND a.decision = 'AUTO_APPROVED'
+                                          AND a.limit_holder_id = :holder AND a.decision_at > :since)""")
+                .setParameter("supplier", supplierId)
+                .setParameter("currency", currency.getCurrencyCode())
+                .setParameter("except", except.value())
+                .setParameter("holder", limitHolderId)
+                .setParameter("since", since)
+                .getSingleResult();
+        return new Money(sum, currency);
+    }
+
+    @Override
     public void recordEvent(PurchaseOrderId id, UUID revisionId, String action, UUID actorId, PurchaseOrderStatus from,
                             PurchaseOrderStatus to, String reason) {
         recordEvent(id, revisionId, action, actorId, from, to, reason, null);
@@ -373,8 +445,8 @@ class PurchaseOrderRepositoryAdapter
                 e.getStatus().name(), e.getCurrency(), e.getOrderDate(), e.getExpectedAt(), e.getSubtotal(),
                 e.getTaxTotal(), e.getTotalAmount(), e.getNote(), lines, e.getCreatedAt(), e.getCreatedBy(),
                 e.getLastModifiedAt(), e.getLastModifiedBy(), possibleDuplicate, e.getRevisionNo(),
-                e.getSubmittedBy(), e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.getConfirmedBy(),
-                e.getConfirmedAt(), e.getClosedAt(), e.getCloseKind() == null ? null : e.getCloseKind().name(),
+                e.getSubmittedBy(), e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.isAutoApproved(),
+                e.getConfirmedBy(), e.getConfirmedAt(), e.getClosedAt(), e.getCloseKind() == null ? null : e.getCloseKind().name(),
                 e.getCloseReason(), e.getCancelReason(), e.getPaymentTermDays(), e.getLeadTimeDays(),
                 e.getConfirmedAt(), e.getSupplierConfirmationStatus().name(), e.getSupplierRespondedAt(),
                 e.getSupplierReference(), e.getSupplierResponseNote(), e.getVersion(),
@@ -469,8 +541,8 @@ class PurchaseOrderRepositoryAdapter
                 e.getProductionOrderId(), e.getSupplierId(), e.getWarehouseId(), e.getStatus(), currency, lines,
                 e.getOrderDate(), e.getExpectedAt(), e.getNote(), e.getPaymentTermDays(), e.getLeadTimeDays(),
                 e.getRevisionNo(), e.getActiveRevisionId(), e.getPendingRevisionId(), e.getSubmittedBy(),
-                e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.getConfirmedBy(), e.getConfirmedAt(),
-                e.getClosedBy(), e.getClosedAt(), e.getCloseKind(), e.getCloseReason(), e.getCancelReason(),
+                e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.isAutoApproved(), e.getConfirmedBy(),
+                e.getConfirmedAt(), e.getClosedBy(), e.getClosedAt(), e.getCloseKind(), e.getCloseReason(), e.getCancelReason(),
                 e.getSupplierConfirmationStatus(), e.getSupplierRespondedAt(), e.getSupplierReference(),
                 e.getSupplierResponseNote(), e.getVersion(), e.getCreatedAt(), e.getCreatedBy(), e.getLastModifiedAt(),
                 e.getLastModifiedBy()));

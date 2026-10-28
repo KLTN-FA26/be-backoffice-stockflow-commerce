@@ -152,7 +152,7 @@ SELECT pg_temp.expect_fail('O31 history rewritten', $q$
 SELECT pg_temp.expect_fail('O32 a "transition" to the same status', $q$
     INSERT INTO ordering.order_status_history (id, order_id, from_status, to_status, occurred_at)
     VALUES (gen_random_uuid(), md5('qa:order:1')::uuid, 'PAID', 'PAID', NOW()) $q$);
-\echo '--- returns (SCRUM-243, V20261025020000)'
+\echo '--- returns (SCRUM-243, V20261028020000)'
 INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
                                      requested_resolution, status, reason_code, requested_at)
 VALUES (md5('qa:rma:1')::uuid, 'RMA-QA-1', md5('qa:order:1')::uuid, 'SO-QA-1', 'c0000000-0000-4000-8000-000000000001',

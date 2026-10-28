@@ -20,7 +20,7 @@ class ProcurementBusinessValidationTest {
                         Money.vnd(100), null)),
                 LocalDate.of(2026, 10, 1), expected, null, 30, 7);
         po.submit(UUID.randomUUID(), UUID.randomUUID(), 0, NOW);
-        po.approve(UUID.randomUUID(), NOW);
+        po.approve(UUID.randomUUID(), Money.vnd(1_000_000_000L), NOW);
         return po;
     }
 

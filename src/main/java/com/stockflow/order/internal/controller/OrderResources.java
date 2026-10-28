@@ -42,21 +42,21 @@ public final class OrderResources {
             com.stockflow.order.internal.service.OrderPermissions.DELIVERY_MODES;
 
     /**
-     * Return requests (SCRUM-243, seeded by V20260903000100, UPDATE added by V20261025020000): CREATE opens one and adds
+     * Return requests (SCRUM-243, seeded by V20260903000100, UPDATE added by V20261028020000): CREATE opens one and adds
      * photos (the customer on their own orders, Sales on any), UPDATE withdraws one, READ lists them, APPROVE is Sales'
      * review (approve, reject).
      */
     public static final String RMAS = "sales-rmas";
 
-    /** Counting a returned parcel into quarantine: the warehouse's step (V20261025020000). */
+    /** Counting a returned parcel into quarantine: the warehouse's step (V20261028020000). */
     public static final String RMA_RECEIPTS = "sales-rma-receipts";
 
-    /** QC's verdict on returned goods and where they go (V20261025020000). */
+    /** QC's verdict on returned goods and where they go (V20261028020000). */
     public static final String RMA_INSPECTIONS = "sales-rma-inspections";
 
     /**
      * How accepted units are made good: UPDATE proposes (Sales, coordinator), APPROVE approves a resolution with money
-     * - four eyes, the Accountant (V20261025020000).
+     * - four eyes, the Accountant (V20261028020000).
      */
     public static final String RMA_RESOLUTIONS = "sales-rma-resolutions";
 

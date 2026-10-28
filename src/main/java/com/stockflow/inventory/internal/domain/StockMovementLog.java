@@ -18,13 +18,6 @@ public interface StockMovementLog {
                                             StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
-     * The units a document's lines moved so far: a document booked in several steps - a return line whose goods came
-     * back in more than one parcel - recognises a retried step by the total it already reached.
-     */
-    long quantityByReference(StockMovement.MovementType type, StockMovement.ReferenceType referenceType,
-                             UUID referenceId);
-
-    /**
      * {@link #findByReference}, among the lines that name no carton on either side: how a retried loose move is
      * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line
      * to QC, a QC part to quarantine); a lookup that also saw the carton's lines would take them for the loose
@@ -32,6 +25,23 @@ public interface StockMovementLog {
      */
     Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
                                                  StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    /**
+     * {@link #findLooseByReference} for many documents at once: for each reference id that has a loose line, its
+     * first (lowest id); one query. A reference with none is absent.
+     */
+    java.util.Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
+                                                             StockMovement.ReferenceType referenceType,
+                                                             java.util.Collection<UUID> referenceIds);
+
+    /**
+     * Units a document's ledger lines of these types add up to, 0 when it has none: how much of a putaway task has
+     * been put away, counting every part, loose or in a carton. Several types in one query, because a putaway writes
+     * both moves and in-place status changes under one reference. A document booked in several steps - a return line
+     * whose goods came back in more than one parcel - recognises a retried step by the total it already reached.
+     */
+    int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
+                               StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
      * Whether production handed {@code hold}'s goods over, out of the print shop, to {@code location}: the hand-over

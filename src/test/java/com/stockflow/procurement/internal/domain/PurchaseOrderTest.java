@@ -49,7 +49,7 @@ class PurchaseOrderTest {
 
     private static PurchaseOrder approved() {
         var po = submitted();
-        po.approve(APPROVER, NOW);
+        po.approve(APPROVER, Money.vnd(1_000_000_000L), NOW);
         return po;
     }
 
@@ -68,7 +68,7 @@ class PurchaseOrderTest {
                         receivedOfFirstLine >= 10 ? PoLineStatus.RECEIVED : PoLineStatus.PARTIALLY_RECEIVED));
         return new PurchaseOrder(new PurchaseOrder.State(po.id(), po.poNumber(), po.type(), null, po.supplierId(),
                 po.warehouseId(), status, po.currency(), lines, po.orderDate(), po.expectedAt(), null, 30, 7,
-                po.revisionNo(), po.activeRevisionId(), null, SUBMITTER, NOW, APPROVER, NOW, BUYER, NOW, null, null,
+                po.revisionNo(), po.activeRevisionId(), null, SUBMITTER, NOW, APPROVER, NOW, false, BUYER, NOW, null, null,
                 null, null, null, SupplierConfirmationStatus.CONFIRMED, NOW, null, null, 3, NOW, "buyer", NOW,
                 "buyer"));
     }
@@ -131,7 +131,7 @@ class PurchaseOrderTest {
             assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
             assertThat(po.pendingRevisionId()).isEqualTo(revision);
 
-            po.approve(APPROVER, NOW);
+            po.approve(APPROVER, Money.vnd(1_000_000_000L), NOW);
             assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
             assertThat(po.activeRevisionId()).isEqualTo(revision);
             assertThat(po.pendingRevisionId()).isNull();
@@ -141,7 +141,7 @@ class PurchaseOrderTest {
         @Test
         void theSubmitterCannotApprove() {
             var po = submitted();
-            assertThatThrownBy(() -> po.approve(SUBMITTER, NOW))
+            assertThatThrownBy(() -> po.approve(SUBMITTER, Money.vnd(1_000_000_000L), NOW))
                     .isInstanceOfSatisfying(BusinessException.class,
                             e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED));
             assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
@@ -160,8 +160,93 @@ class PurchaseOrderTest {
 
         @Test
         void approvingADraftIsATransitionError() {
-            assertThatThrownBy(() -> draft().approve(APPROVER, NOW))
+            assertThatThrownBy(() -> draft().approve(APPROVER, Money.vnd(1_000_000_000L), NOW))
                     .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+
+        // 02 §5: Draft -> Approved exists, but only as the under-limit submission; the draft total is 10 x 1000 + 5 x 2000 = 20,000
+
+        @Test
+        void aDraftMayGoStraightToApprovedOnlyThroughTheUnderLimitSubmission() {
+            assertThat(PurchaseOrderStatus.DRAFT.canTransitionTo(PurchaseOrderStatus.APPROVED)).isTrue();
+
+            var po = draft();
+            UUID revision = UUID.randomUUID();
+            po.submitWithinLimit(SUBMITTER, revision, 0, Money.vnd(20_000), NOW);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.autoApproved()).isTrue();
+            assertThat(po.submittedBy()).isEqualTo(SUBMITTER);
+            assertThat(po.approvedBy()).isEqualTo(SUBMITTER);
+            assertThat(po.submittedAt()).isEqualTo(NOW);
+            assertThat(po.approvedAt()).isEqualTo(NOW);
+            assertThat(po.activeRevisionId()).isEqualTo(revision);
+            assertThat(po.pendingRevisionId()).isNull();
+            assertThat(po.revisionNo()).isZero();
+        }
+
+        @Test
+        void aTotalAboveTheSubmittersLimitCannotBeAutoApproved() {
+            assertThat(draft().coveredBy(Money.vnd(19_999))).isFalse();
+            assertThatThrownBy(() -> draft().submitWithinLimit(SUBMITTER, UUID.randomUUID(), 0, Money.vnd(19_999), NOW))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED));
+        }
+
+        @Test
+        void noLimitIsZeroAndCoversNothing() {
+            assertThat(draft().coveredBy(Money.zero(Money.VND))).isFalse();
+            assertThatThrownBy(() -> draft().submitWithinLimit(SUBMITTER, UUID.randomUUID(), 0,
+                    Money.zero(Money.VND), NOW)).isInstanceOfSatisfying(BusinessException.class,
+                    e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED));
+        }
+
+        @Test
+        void onlyADraftIsAutoApproved() {
+            assertThatThrownBy(() -> submitted().submitWithinLimit(SUBMITTER, UUID.randomUUID(), 1,
+                    Money.vnd(1_000_000_000L), NOW)).isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+
+        @Test
+        void anAutoApprovedOrderIsConfirmedLikeAnyApprovedOne() {
+            var po = draft();
+            po.submitWithinLimit(SUBMITTER, UUID.randomUUID(), 0, Money.vnd(20_000), NOW);
+            po.confirm(BUYER, null, null, NOW);
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.CONFIRMED);
+        }
+
+        @Test
+        void anApproverBelowTheTotalIsRefusedAndTheOrderStaysPending() {
+            var po = submitted();
+            assertThatThrownBy(() -> po.approve(APPROVER, Money.vnd(19_999), NOW))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED));
+            assertThatThrownBy(() -> po.approve(APPROVER, Money.zero(Money.VND), NOW))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED));
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+            assertThat(po.approvedBy()).isNull();
+            assertThat(po.autoApproved()).isFalse();
+
+            po.approve(APPROVER, Money.vnd(20_000), NOW);   // a limit equal to the total is enough
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.autoApproved()).isFalse();
+        }
+
+        @Test
+        void fourEyesComesBeforeTheLimit() {
+            assertThatThrownBy(() -> submitted().approve(SUBMITTER, Money.zero(Money.VND), NOW))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED));
+        }
+
+        @Test
+        @DisplayName("PO-NOLIMIT: an approver with no limit configured (null) approves any total")
+        void approveWithoutConfiguredLimit() {
+            PurchaseOrder po = submitted();
+            po.approve(APPROVER, null, NOW);
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.approvedBy()).isEqualTo(APPROVER);
         }
     }
 
@@ -189,7 +274,7 @@ class PurchaseOrderTest {
             var po = PurchaseOrder.draft("PO-1", UUID.randomUUID(), UUID.randomUUID(), Money.VND,
                     List.of(line(1, "CUP-12OZ", 1, 1)), ORDER_DATE, null, null, 30, 7);
             po.submit(SUBMITTER, UUID.randomUUID(), 0, NOW);
-            po.approve(APPROVER, NOW);
+            po.approve(APPROVER, Money.vnd(1_000_000_000L), NOW);
             assertThatThrownBy(() -> po.confirm(BUYER, null, null, NOW)).isInstanceOfSatisfying(
                     BusinessException.class, e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PO_DELIVERY_DATE_REQUIRED));
         }
@@ -270,9 +355,44 @@ class PurchaseOrderTest {
             assertThat(po.lines()).extracting(PoLine::status).containsOnly(PoLineStatus.CLOSED);
         }
 
+        // 02 §5: Confirmed -> Closed (force close, with a reason): nothing was received and nothing will be
+
         @Test
-        void closeShortOnlyAfterAPartialReceipt() {
-            assertThatThrownBy(() -> confirmed().closeShort("x", BUYER, NOW))
+        void aConfirmedOrderThatWillNotBeReceivedIsForceClosedWithAReason() {
+            assertThat(PurchaseOrderStatus.CONFIRMED.canTransitionTo(PurchaseOrderStatus.CLOSED)).isTrue();
+            var po = confirmed();
+
+            po.closeShort(" Nhà cung cấp ngừng sản xuất ", BUYER, NOW);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.CLOSED);
+            assertThat(po.closeKind()).isEqualTo(CloseKind.FORCE_CLOSE);
+            assertThat(po.closeReason()).isEqualTo("Nhà cung cấp ngừng sản xuất");
+            assertThat(po.closedBy()).isEqualTo(BUYER);
+            assertThat(po.closedAt()).isEqualTo(NOW);
+            assertThat(po.lines()).extracting(PoLine::status).containsOnly(PoLineStatus.CLOSED);
+            assertThat(po.lines()).extracting(PoLine::quantityReceived).containsOnly(0);
+        }
+
+        @Test
+        void aForceCloseNeedsAReason() {
+            var po = confirmed();
+            for (String reason : new String[] {null, "", "   "}) {
+                assertThatThrownBy(() -> po.closeShort(reason, BUYER, NOW)).isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PO_REASON_REQUIRED));
+            }
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.CONFIRMED);
+            assertThat(po.closeKind()).isNull();
+        }
+
+        @Test
+        void onlyAConfirmedOrReceivingOrderIsClosedShort() {
+            assertThatThrownBy(() -> draft().closeShort("x", BUYER, NOW))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+            assertThatThrownBy(() -> submitted().closeShort("x", BUYER, NOW))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+            assertThatThrownBy(() -> approved().closeShort("x", BUYER, NOW))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+            assertThatThrownBy(() -> received(PurchaseOrderStatus.RECEIVED, 10).closeShort("x", BUYER, NOW))
                     .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
         }
 

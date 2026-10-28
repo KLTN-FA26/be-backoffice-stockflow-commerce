@@ -127,14 +127,14 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     public Optional<Amendment> pendingAmendment(UUID purchaseOrderId) {
         @SuppressWarnings("unchecked")
         java.util.List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT r.id, r.revision_no, lr.ordered_qty, r.changed_by, r.change_summary
+                        SELECT r.id, r.revision_no, lr.ordered_qty, lr.line_total, r.changed_by, r.change_summary
                           FROM procurement.purchase_orders p
                           JOIN procurement.purchase_order_revisions r ON r.id = p.pending_revision_id
                           JOIN procurement.purchase_order_line_revisions lr ON lr.po_revision_id = r.id
                          WHERE p.id = :po AND r.kind = 'AMENDMENT' AND p.status <> 'PENDING_APPROVAL'""")
                 .setParameter("po", purchaseOrderId).getResultList();
         return rows.stream().findFirst().map(row -> new Amendment((UUID) row[0], ((Number) row[1]).longValue(),
-                ((BigDecimal) row[2]).intValueExact(), (UUID) row[3], (String) row[4]));
+                ((BigDecimal) row[2]).intValueExact(), (BigDecimal) row[3], (UUID) row[4], (String) row[5]));
     }
 
     @Override
@@ -205,7 +205,7 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     }
 
     @Override
-    public void approveAmendment(Row row, Amendment amendment, UUID approverId) {
+    public void approveAmendment(Row row, Amendment amendment, UUID approverId, AutoApproval auto) {
         entityManager.flush();
         // An amendment changes how many, never the unit: the line keeps its uom_conversion_id. A revision that
         // froze no unit for a line that has one (written before revisions carried it) then fails
@@ -232,11 +232,17 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                          WHERE p.id = :po""")
                 .setParameter("revision", amendment.revisionId()).setParameter("no", amendment.revisionNo())
                 .setParameter("po", row.id()).executeUpdate();
-        approval(amendment.revisionId(), approverId, "APPROVED", null);
         String to = "RECEIVED".equals(row.status()) ? "PARTIALLY_RECEIVED" : row.status();
-        events.record(row.id(), amendment.revisionId(), "APPROVED", approverId, row.status(), to,
-                amendment.reason(), java.util.Map.of("quantity", Integer.toString(amendment.quantity())),
-                "subcontracting");
+        if (auto == null) {
+            approval(amendment.revisionId(), approverId, "APPROVED", null);
+            events.record(row.id(), amendment.revisionId(), "APPROVED", approverId, row.status(), to,
+                    amendment.reason(), java.util.Map.of("quantity", Integer.toString(amendment.quantity())),
+                    "subcontracting");
+        } else {
+            autoApproval(amendment.revisionId(), approverId, auto);
+            events.record(row.id(), amendment.revisionId(), "AUTO_APPROVED", approverId, row.status(), to,
+                    auto.reason(), auto.facts(amendment.total(), amendment.quantity()), "subcontracting");
+        }
         refresh(row.id());
     }
 
@@ -266,6 +272,28 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                 .setParameter("approver", approverId)
                 .setParameter("decision", decision)
                 .setParameter("reason", reason == null ? null : reason.length() > 500 ? reason.substring(0, 500) : reason)
+                .executeUpdate();
+    }
+
+    private void autoApproval(UUID revisionId, UUID approverId, AutoApproval auto) {
+        entityManager.createNativeQuery("""
+                        INSERT INTO procurement.purchase_order_approvals
+                               (id, po_revision_id, step_no, approver_id, decision, decision_at, reason,
+                                limit_id, limit_amount, limit_role_id, limit_holder_id, created_at, created_by)
+                        VALUES (:id, :revision,
+                                (SELECT COALESCE(MAX(step_no), 0) + 1 FROM procurement.purchase_order_approvals
+                                  WHERE po_revision_id = :revision),
+                                :approver, 'AUTO_APPROVED', :at, :reason,
+                                :limitId, :limitAmount, :limitRole, :holder, NOW(), 'subcontracting')""")
+                .setParameter("id", Identifiers.newId())
+                .setParameter("revision", revisionId)
+                .setParameter("approver", approverId)
+                .setParameter("at", auto.at())
+                .setParameter("reason", auto.reason().length() > 500 ? auto.reason().substring(0, 500) : auto.reason())
+                .setParameter("limitId", auto.limit().id())
+                .setParameter("limitAmount", auto.limit().amount().amount())
+                .setParameter("limitRole", auto.limit().roleId())
+                .setParameter("holder", auto.limitHolderId())
                 .executeUpdate();
     }
 

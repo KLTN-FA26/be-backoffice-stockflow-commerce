@@ -17,7 +17,7 @@
 --                          order module's API lists them by day. No foreign key, as for processed_order_events: a
 --                          projection outlives the rows it was computed from.
 --
--- Schema owner (Tú): please review - written in the range reserved for the returns branch (V20261025020000-029900).
+-- Schema owner (Tú): please review - written in the range reserved for the returns branch (V20261028020000-029900).
 -- =============================================================================
 
 CREATE TABLE reporting.processed_return_events

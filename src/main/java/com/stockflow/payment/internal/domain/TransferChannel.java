@@ -4,7 +4,7 @@ package com.stockflow.payment.internal.domain;
  * How money reached the business (kltn-docs 15 §4.5, 09 §4.3 step 4): a customer's bank transfer, or a carrier
  * remitting the balance it collected on delivery. Mapped {@code EnumType.STRING}.
  *
- * <p>{@link #RETURN_CREDIT} is the one entry that is not money arriving (SCRUM-260, V20261025020100): the credit a
+ * <p>{@link #RETURN_CREDIT} is the one entry that is not money arriving (SCRUM-260, V20261028020100): the credit a
  * resolved return gives the customer, booked in the same ledger because it settles what they owe exactly as a
  * transfer does (Nợ 5212 / Có 131). Its reference is the RMA number, never a bank statement line.</p>
  */

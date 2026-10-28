@@ -10,6 +10,12 @@ public interface GoodsReceiptRepository {
 
     Optional<GoodsReceipt> findById(UUID receiptId);
 
+    /**
+     * The receipt under a row lock ({@code SELECT ... FOR UPDATE}), read after the lock is taken so a caller that waited
+     * sees the status and lines the holder committed. Deciding whether a receipt is fully put away from anything older
+     * misses a decision made while it waited.
+     */
+    Optional<GoodsReceipt> findByIdForUpdate(UUID receiptId);
     GoodsReceipt save(GoodsReceipt receipt);
 
     /** {@code GR-yyyyMMdd-nnnn}, numbered per business day. */

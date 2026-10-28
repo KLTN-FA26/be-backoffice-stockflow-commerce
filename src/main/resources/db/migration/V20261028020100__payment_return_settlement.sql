@@ -19,7 +19,7 @@
 --    than was paid. Each names the return (return_request_id), once per money row and return. The accountant pays them
 --    out as any refund (SCRUM-220); nothing is paid out here.
 --
--- Schema owner (Tú): please review - written in the range reserved for this branch (V20261025020000-029900).
+-- Schema owner (Tú): please review - written in the range reserved for this branch (V20261028020000-029900).
 -- =============================================================================
 
 -- ---- 1. the credit entry of a return --------------------------------------------------------------------------------

@@ -92,7 +92,7 @@ class OrderLifecycleMigrationUpgradeTest {
                 // The transition table holds exactly the edges of the enum.
                 assertThat(RawSql.texts(db, "SELECT from_status || '>' || to_status FROM ordering.order_status_transition"))
                         .containsExactlyInAnyOrderElementsOf(OrderStatus.edges().stream()
-                                // V20261022000400 (PACK-EARLY) adds two later, V20261025020000 (returns) three more.
+                                // V20261022000400 (PACK-EARLY) adds two later, V20261028020000 (returns) three more.
                                 .filter(edge -> !java.util.Set.of("IN_PRODUCTION>PARTIALLY_FULFILLED",
                                         "READY_TO_FULFILL>PARTIALLY_FULFILLED", "COMPLETED>RETURN_REQUESTED",
                                         "REFUNDED>RETURN_REQUESTED", "PARTIALLY_REFUNDED>RETURN_REQUESTED")

@@ -2,6 +2,8 @@ package com.stockflow.procurement.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
@@ -15,6 +17,8 @@ import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
 import com.stockflow.procurement.api.SubcontractSettlement;
 import com.stockflow.procurement.api.SubcontractorTerms;
+import com.stockflow.procurement.internal.domain.ApprovalLimit;
+import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.repository.SubcontractOrderStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +32,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.Currency;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -65,14 +70,17 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
     private final InventoryControlService inventoryControl;
     private final ProcurementService procurement;
     private final Clock clock;
+    private final ApprovalLimits approvalLimits;
 
     SubcontractPurchasingImpl(SubcontractOrderStore store, InventoryService inventory,
-                              InventoryControlService inventoryControl, ProcurementService procurement, Clock clock) {
+                              InventoryControlService inventoryControl, ProcurementService procurement, Clock clock,
+                              ApprovalLimits approvalLimits) {
         this.store = store;
         this.inventory = inventory;
         this.inventoryControl = inventoryControl;
         this.procurement = procurement;
         this.clock = clock;
+        this.approvalLimits = approvalLimits;
     }
 
     @Override
@@ -157,9 +165,39 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         });
         store.requestAmendment(order, newQuantity, reason.trim(), actorId);
         log.info("Amendment of {} to {} (+{}) asked for", order.poNumber(), newQuantity, additionalQuantity);
+        autoApproveWithinLimit(order, actorId);
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
     }
 
+    /**
+     * SCRUM-124 rule 5: an amendment raises the total of an order that was approved, so it is decided again against
+     * the new total with the limit of whoever asked for it - the same rules as a submission (rules 1, 3 and 4, see
+     * {@link ApprovalLimits#autoApprovalLimit}). Within that limit the amendment is approved here, as
+     * {@code AUTO_APPROVED} on the limit that allowed it; above it, or with no limit configured for the requester, it
+     * waits for someone else (four-eyes) whose own limit covers the new total ({@link #approveAmendment}).
+     */
+    private void autoApproveWithinLimit(SubcontractOrderStore.Row order, UUID requesterId) {
+        if (requesterId == null) {
+            return;
+        }
+        SubcontractOrderStore.Amendment amendment = store.pendingAmendment(order.id()).orElseThrow();
+        Money newTotal = new Money(amendment.total(), Currency.getInstance(order.currency()));
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        approvalLimits.autoApprovalLimit(new PurchaseOrderId(order.id()), requesterId, order.supplierId(), newTotal, now)
+                .ifPresent(limit -> {
+                    String reason = "Auto-approved within limit: new total %s, limit %s".formatted(newTotal, limit.amount());
+                    store.approveAmendment(order, amendment, requesterId,
+                            new SubcontractOrderStore.AutoApproval(requesterId, limit, now, reason));
+                    log.info("Amendment of {} to {} auto-approved within the requester's limit", order.poNumber(),
+                            amendment.quantity());
+                });
+    }
+
+    /**
+     * Four-eyes (an amendment is approved by someone other than who asked for it), and the approver's own limit must
+     * cover the new total (SCRUM-124 rule 5, as for a purchase order, BR-PO-002) - when they have one: an approver none
+     * of whose roles has a limit configured is bounded by the approve permission alone (owner decision PO-NOLIMIT).
+     */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public SubcontractOrder approveAmendment(UUID purchaseOrderId, UUID approverId) {
@@ -170,7 +208,16 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
             throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
                     "An amendment is approved by someone other than who asked for it");
         }
-        store.approveAmendment(order, amendment, approverId);
+        Currency currency = Currency.getInstance(order.currency());
+        Money newTotal = new Money(amendment.total(), currency);
+        Optional<ApprovalLimit> limit = approvalLimits.limitOf(approverId, currency,
+                BusinessCalendar.date(clock.instant()));
+        if (limit.isPresent() && newTotal.compareTo(limit.get().amount()) > 0) {
+            throw new BusinessException(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED,
+                    "Amendment of %s makes it total %s; your approval limit is %s".formatted(order.poNumber(), newTotal,
+                            limit.get().amount()));
+        }
+        store.approveAmendment(order, amendment, approverId, null);
         log.info("Amendment of {} to {} approved", order.poNumber(), amendment.quantity());
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
     }

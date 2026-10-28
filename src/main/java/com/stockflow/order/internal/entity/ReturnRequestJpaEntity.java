@@ -22,7 +22,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * {@code ordering.return_request} (V20260928005400, reshaped by V20261025020000). The opening is written once; the
+ * {@code ordering.return_request} (V20260928005400, reshaped by V20261028020000). The opening is written once; the
  * review, receipt, inspection, resolution and end move. The lines are children written through it; photos,
  * discrepancies and the status history are append-only rows of their own.
  */
