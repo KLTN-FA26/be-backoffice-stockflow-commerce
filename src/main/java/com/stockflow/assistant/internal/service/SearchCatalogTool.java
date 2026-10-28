@@ -24,7 +24,9 @@ class SearchCatalogTool implements AssistantTool {
     private static final ToolSpec SPEC = new ToolSpec("searchCatalog",
             "Search the published product catalog by words (Vietnamese or English, accents optional, typos "
                     + "tolerated) or by SKU: product title, storefront slug, and its SKUs with names, best match "
-                    + "first. No prices and no stock: use getStockLevels with a SKU for stock.",
+                    + "first. Only products published on the storefront are here: a SKU missing from the catalog "
+                    + "may still be stocked, bought and sold, so never conclude from this tool that a SKU does not "
+                    + "exist. No prices and no stock: use getStockLevels with a SKU for stock.",
             ToolSchema.object()
                     .string("text", "What to search for, for example 'cốc giấy 12oz'")
                     .integer("limit", "How many products to return, 1 to " + MAX_ROWS)
