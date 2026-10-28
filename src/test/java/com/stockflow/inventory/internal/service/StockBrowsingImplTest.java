@@ -8,6 +8,7 @@ import com.stockflow.common.security.Role;
 import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.domain.WarehouseDirectory;
+import com.stockflow.inventory.internal.repository.SlotsUnderCount;
 import com.stockflow.inventory.internal.repository.StockBrowseSearch;
 import com.stockflow.support.WithCurrentUser;
 import org.junit.jupiter.api.DisplayName;
@@ -43,7 +44,8 @@ class StockBrowsingImplTest {
 
     private final StockBrowseSearch search = mock(StockBrowseSearch.class);
     private final WarehouseDirectory warehouses = mock(WarehouseDirectory.class);
-    private final StockBrowsingImpl service = new StockBrowsingImpl(search, warehouses, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final SlotsUnderCount underCount = mock(SlotsUnderCount.class);
+    private final StockBrowsingImpl service = new StockBrowsingImpl(search, underCount, warehouses, Clock.fixed(NOW, ZoneOffset.UTC));
 
     private static CurrentUser clerkOf(UUID id, String prefix) {
         return new CurrentUser(UUID.randomUUID(), "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(), DataScope.WAREHOUSE,
@@ -63,7 +65,7 @@ class StockBrowsingImplTest {
     private StockBrowsing.StockRow oneStockRow(StockBrowseSearch.StockRow row) {
         when(warehouses.prefixOf(HCM)).thenReturn(Optional.of("HCM"));
         when(search.stock(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(row)));
-        return service.warehouseStock(HCM, new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, null))
+        return service.warehouseStock(HCM, new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, null), BookVisibility.FULL)
                 .items().get(0);
     }
 
@@ -174,7 +176,7 @@ class StockBrowsingImplTest {
             when(warehouses.prefixOf(HCM)).thenReturn(Optional.empty());
 
             assertThat(codeOf(() -> service.warehouseStock(HCM,
-                    new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, null))))
+                    new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, null), BookVisibility.FULL)))
                     .isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
         }
 
@@ -185,7 +187,7 @@ class StockBrowsingImplTest {
 
             WithCurrentUser.run(clerkOf(HCM, "HCM"), () ->
                     assertThat(codeOf(() -> service.warehouseStock(HN,
-                            new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, null))))
+                            new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, null), BookVisibility.FULL)))
                             .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
         }
 
@@ -195,7 +197,7 @@ class StockBrowsingImplTest {
             when(warehouses.prefixOf(HCM)).thenReturn(Optional.of("HCM"));
 
             assertThat(codeOf(() -> service.warehouseStock(HCM,
-                    new StockBrowsing.StockQuery("HN-A01", null, null, null, false, 0, 20, null))))
+                    new StockBrowsing.StockQuery("HN-A01", null, null, null, false, 0, 20, null), BookVisibility.FULL)))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
             verify(search, never()).stock(any(), any());
         }
@@ -207,7 +209,7 @@ class StockBrowsingImplTest {
             when(search.stock(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
 
             service.warehouseStock(HCM, new StockBrowsing.StockQuery(" hcm-a01 ", "CUP-12OZ", null, null, true, 0, 20,
-                    null));
+                    null), BookVisibility.FULL);
 
             ArgumentCaptor<StockBrowseSearch.StockCriteria> criteria =
                     ArgumentCaptor.forClass(StockBrowseSearch.StockCriteria.class);
@@ -223,7 +225,7 @@ class StockBrowsingImplTest {
             when(warehouses.prefixOf(HCM)).thenReturn(Optional.of("HCM"));
 
             org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.warehouseStock(HCM,
-                    new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, "password,asc")))
+                    new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, "password,asc"), BookVisibility.FULL))
                     .isInstanceOf(RuntimeException.class);
         }
 
@@ -250,6 +252,59 @@ class StockBrowsingImplTest {
         void expiryBoundary() {
             assertThat(oneStockRow(stock(StockStatus.AVAILABLE, TODAY.minusDays(1), 50, 0)).available()).isZero();
             assertThat(oneStockRow(stock(StockStatus.AVAILABLE, TODAY, 50, 0)).available()).isEqualTo(50);
+        }
+    }
+
+    @Nested
+    @DisplayName("blind reading of counted slots (SCRUM-146)")
+    class Blind {
+
+        private StockBrowsing.StockQuery query(String sort) {
+            return new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20, sort);
+        }
+
+        @Test
+        @DisplayName("a blind reader gets the quantities of a slot a count holds masked, the other rows as they are")
+        void heldRowsAreMasked() {
+            var held = stock(StockStatus.AVAILABLE, null, 50, 12);
+            var free = stock(StockStatus.AVAILABLE, null, 30, 0);
+            when(warehouses.prefixOf(HCM)).thenReturn(Optional.of("HCM"));
+            when(search.stock(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(held, free)));
+            when(underCount.stockItemsUnderCount(any())).thenReturn(Set.of(held.stockItemId()));
+
+            var rows = service.warehouseStock(HCM, query(null), BookVisibility.HIDE_COUNTED_SLOTS).items();
+
+            assertThat(rows.get(0).hiddenDuringCount()).isTrue();
+            assertThat(rows.get(0).onHand()).isNull();
+            assertThat(rows.get(0).reserved()).isNull();
+            assertThat(rows.get(0).available()).isNull();
+            assertThat(rows.get(0).sku()).isEqualTo("CUP-12OZ");
+            assertThat(rows.get(1).hiddenDuringCount()).isFalse();
+            assertThat(rows.get(1).onHand()).isEqualTo(30);
+        }
+
+        @Test
+        @DisplayName("an approver sees every quantity and the count lookup is never made")
+        void fullVisibilitySeesEverything() {
+            var row = stock(StockStatus.AVAILABLE, null, 50, 12);
+
+            assertThat(oneStockRow(row).onHand()).isEqualTo(50);
+            verify(underCount, never()).stockItemsUnderCount(any());
+        }
+
+        @Test
+        @DisplayName("ordering by on hand is dropped for a blind reader, kept for an approver")
+        void onHandOrderingIsNotOfferedToABlindReader() {
+            when(warehouses.prefixOf(HCM)).thenReturn(Optional.of("HCM"));
+            when(search.stock(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
+
+            service.warehouseStock(HCM, query("onHand,desc"), BookVisibility.HIDE_COUNTED_SLOTS);
+            service.warehouseStock(HCM, query("onHand,desc"), BookVisibility.FULL);
+
+            ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+            verify(search, org.mockito.Mockito.times(2)).stock(any(), pageable.capture());
+            assertThat(pageable.getAllValues().get(0).getSort().getOrderFor("onHand")).isNull();
+            assertThat(pageable.getAllValues().get(1).getSort().getOrderFor("onHand")).isNotNull();
         }
     }
 }
