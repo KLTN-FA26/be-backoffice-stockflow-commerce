@@ -53,7 +53,8 @@ class CustomerOrdersServiceTest {
     private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
     private final QuoteRepository quotes = mock(QuoteRepository.class);
     private final CustomerOrdersService service =
-            new CustomerOrdersService(search, orders, production, creditChecks, requests, quotes);
+            new CustomerOrdersService(search, orders, production, creditChecks, requests, quotes,
+                    mock(com.stockflow.catalog.api.CatalogService.class));
 
     private CustomerOrders.Query query(LocalDate from, LocalDate to) {
         return new CustomerOrders.Query(0, 20, List.of(OrderStatus.CONFIRMED), "SO-1", from, to, null);
