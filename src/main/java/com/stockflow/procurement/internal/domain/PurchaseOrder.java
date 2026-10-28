@@ -190,8 +190,15 @@ public final class PurchaseOrder extends AggregateRoot {
     /** Line numbers of a new order: 1, 2, 3… in the order given. */
     public static PoLine line(int lineNo, UUID inventoryItemId, com.stockflow.common.domain.Sku sku, String uom,
                               String description, int quantity, Money unitPrice, BigDecimal taxRate) {
+        return line(lineNo, inventoryItemId, sku, uom, description, quantity, unitPrice, taxRate, null);
+    }
+
+    /** A new line in {@code packingUnit} (SCRUM-473), null for base units. */
+    public static PoLine line(int lineNo, UUID inventoryItemId, com.stockflow.common.domain.Sku sku, String uom,
+                              String description, int quantity, Money unitPrice, BigDecimal taxRate,
+                              PackingUnit packingUnit) {
         return PoLine.draft(com.stockflow.common.id.Identifiers.newId(), lineNo, inventoryItemId, sku, uom,
-                description, quantity, unitPrice, taxRate);
+                description, quantity, unitPrice, taxRate, packingUnit);
     }
 
     // ------------------------------------------------------------------ editing a draft (SCRUM-462)
@@ -201,7 +208,14 @@ public final class PurchaseOrder extends AggregateRoot {
      * has, which keeps its number and its item; null is a new line.
      */
     public record DraftLine(UUID lineId, UUID inventoryItemId, com.stockflow.common.domain.Sku sku, String uom,
-                            String description, int quantity, Money unitPrice, BigDecimal taxRate) {
+                            String description, int quantity, Money unitPrice, BigDecimal taxRate, PackingUnit unit,
+                            boolean unitNamed) {
+
+        /** Naming no unit: a new line is in base units, an existing one keeps its own. */
+        public DraftLine(UUID lineId, UUID inventoryItemId, com.stockflow.common.domain.Sku sku, String uom,
+                         String description, int quantity, Money unitPrice, BigDecimal taxRate) {
+            this(lineId, inventoryItemId, sku, uom, description, quantity, unitPrice, taxRate, null, false);
+        }
     }
 
     /**
@@ -253,7 +267,7 @@ public final class PurchaseOrder extends AggregateRoot {
             if (wanted.lineId() == null) {
                 revised.add(PoLine.draft(com.stockflow.common.id.Identifiers.newId(), nextLineNo++,
                         wanted.inventoryItemId(), wanted.sku(), wanted.uom(), wanted.description(), wanted.quantity(),
-                        wanted.unitPrice(), wanted.taxRate()));
+                        wanted.unitPrice(), wanted.taxRate(), wanted.unit()));
                 continue;
             }
             PoLine existing = current.get(wanted.lineId());
@@ -266,8 +280,14 @@ public final class PurchaseOrder extends AggregateRoot {
                         "Line %d orders %s; to order another SKU, remove the line and add a new one"
                                 .formatted(existing.lineNo(), existing.sku().code()));
             }
+            // SCRUM-473: a client that names no unit keeps the line's, so one that knows nothing of units cannot drop
+            // it; the quantity must then be a whole number of it. Naming the base unit is how a line leaves one.
+            PackingUnit unit = wanted.unitNamed() ? wanted.unit()
+                    : existing.packingUnit() == null ? null
+                    : existing.packingUnit().withQuantity(poNumber, wanted.quantity());
             revised.add(PoLine.draft(existing.id(), existing.lineNo(), existing.inventoryItemId(), existing.sku(),
-                    existing.uom(), wanted.description(), wanted.quantity(), wanted.unitPrice(), wanted.taxRate()));
+                    existing.uom(), wanted.description(), wanted.quantity(), wanted.unitPrice(), wanted.taxRate(),
+                    unit));
         }
         this.warehouseId = warehouseId;
         this.expectedAt = expectedAt;
