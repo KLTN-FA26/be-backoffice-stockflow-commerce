@@ -7,6 +7,7 @@ import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
+import com.stockflow.product.internal.domain.ReferenceStatus;
 import com.stockflow.product.internal.entity.ProductJpaEntity;
 import jakarta.persistence.EntityManager;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -82,13 +83,17 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     }
 
     @Override
-    public boolean categoryExists(UUID categoryId) {
-        return categories.existsById(categoryId);
+    public ReferenceStatus categoryStatus(UUID categoryId) {
+        return categories.findById(categoryId)
+                .map(c -> c.isActive() ? ReferenceStatus.ACTIVE : ReferenceStatus.INACTIVE)
+                .orElse(ReferenceStatus.MISSING);
     }
 
     @Override
-    public boolean brandExists(UUID brandId) {
-        return brands.existsById(brandId);
+    public ReferenceStatus brandStatus(UUID brandId) {
+        return brands.findById(brandId)
+                .map(b -> b.isActive() ? ReferenceStatus.ACTIVE : ReferenceStatus.INACTIVE)
+                .orElse(ReferenceStatus.MISSING);
     }
 
     @Override

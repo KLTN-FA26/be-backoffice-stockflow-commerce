@@ -68,6 +68,13 @@ class ProductTest {
                 status == ProductStatus.INACTIVE ? NOW : null, status == ProductStatus.INACTIVE ? "recall" : null);
     }
 
+    /** A DRAFT as a legacy row may hold it: brand and category, but the English name and tax class as given. */
+    private static Product legacyDraft(String nameEn, TaxClass taxClass) {
+        return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy 12oz", nameEn, BRAND, CATEGORY, null, null, null,
+                taxClass, ProductKind.STANDARD, ProductStatus.DRAFT, 0L,
+                null, null, null, null, null, null, null, null, null);
+    }
+
     private static void assertRefused(Runnable action, ErrorCode code) {
         assertThatThrownBy(action::run).isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.errorCode()).isEqualTo(code));
@@ -141,9 +148,44 @@ class ProductTest {
         @Test
         @DisplayName("without a category the category refusal still comes first, as before")
         void categoryRefusalKeepsItsCode() {
-            Product product = Product.draft("CUP-12OZ", "Ly", null, null, null, null, null, null, null, null);
+            Product product = Product.draft("CUP-12OZ", "Ly", "Cup", null, null, null, null, null,
+                    TaxClass.STANDARD, null);
 
             assertRefused(() -> product.submit(SUBMITTER, NOW), ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("rejected without an English name or a tax class: PRODUCT_DETAILS_REQUIRED naming each (SCRUM-87)")
+        void missingDetailsAreRefusedWithFieldErrors() {
+            Product product = legacyDraft(null, null);
+
+            assertThatThrownBy(() -> product.submit(SUBMITTER, NOW)).isInstanceOfSatisfying(BusinessException.class,
+                    e -> {
+                        assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_DETAILS_REQUIRED);
+                        assertThat(e.fieldErrors()).extracting(f -> f.field()).containsExactly("nameEn", "taxClass");
+                        assertThat(e.fieldErrors()).allSatisfy(
+                                f -> assertThat(f.code()).isEqualTo("PRODUCT_DETAILS_REQUIRED"));
+                    });
+            assertThat(product.status()).isEqualTo(ProductStatus.DRAFT);
+            assertThat(product.submittedBy()).isNull();
+
+            assertThatThrownBy(() -> legacyDraft("  ", TaxClass.STANDARD).submit(SUBMITTER, NOW))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            e -> assertThat(e.fieldErrors()).extracting(f -> f.field()).containsExactly("nameEn"));
+        }
+
+        @Test
+        @DisplayName("the category and brand refusals still come before the details")
+        void categoryAndBrandStillComeFirst() {
+            Product noCategory = new Product(ProductId.newId(), "CUP-12OZ", "Ly", null, BRAND, null, null, null, null,
+                    null, ProductKind.STANDARD, ProductStatus.DRAFT, 0L, null, null, null, null, null, null, null, null,
+                    null);
+            Product noBrand = new Product(ProductId.newId(), "CUP-12OZ", "Ly", null, null, CATEGORY, null, null, null,
+                    null, ProductKind.STANDARD, ProductStatus.DRAFT, 0L, null, null, null, null, null, null, null, null,
+                    null);
+
+            assertRefused(() -> noCategory.submit(SUBMITTER, NOW), ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
+            assertRefused(() -> noBrand.submit(SUBMITTER, NOW), ErrorCode.PRODUCT_BRAND_REQUIRED);
         }
     }
 
@@ -296,6 +338,21 @@ class ProductTest {
                     TaxClass.STANDARD, ProductKind.STANDARD))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
         }
+
+        @Test
+        @DisplayName("an English name and a tax class are required, as the request DTO requires them (SCRUM-87)")
+        void requiresDetails() {
+            Product product = draftWithCategory();
+
+            assertThatThrownBy(() -> product.updateDetails("Ly", null, BRAND, CATEGORY, null, null, null,
+                    TaxClass.STANDARD, null)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("nameEn");
+            assertThatThrownBy(() -> product.updateDetails("Ly", " ", BRAND, CATEGORY, null, null, null,
+                    TaxClass.STANDARD, null)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("nameEn");
+            assertThatThrownBy(() -> product.updateDetails("Ly", "Cup", BRAND, CATEGORY, null, null, null,
+                    null, null)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("taxClass");
+            assertThat(product.nameEn()).isEqualTo("Paper cup 12oz");
+            assertThat(product.taxClass()).isEqualTo(TaxClass.STANDARD);
+        }
     }
 
     @Nested
@@ -305,12 +362,23 @@ class ProductTest {
         @Test
         @DisplayName("must fit ck_products_code: upper case, at most 50 characters")
         void codeRules() {
-            assertThatThrownBy(() -> Product.draft("cup-12oz", "Ly", null, null, null, null, null, null, null, null))
-                    .isInstanceOf(IllegalArgumentException.class);
-            assertThatThrownBy(() -> Product.draft("C".repeat(51), "Ly", null, null, null, null, null, null, null,
-                    null)).isInstanceOf(IllegalArgumentException.class);
-            assertThat(Product.draft("CUP_12-OZ", "Ly", null, null, null, null, null, null, null, null).kind())
-                    .isEqualTo(ProductKind.STANDARD);
+            assertThatThrownBy(() -> Product.draft("cup-12oz", "Ly", "Cup", null, null, null, null, null,
+                    TaxClass.STANDARD, null)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> Product.draft("C".repeat(51), "Ly", "Cup", null, null, null, null, null,
+                    TaxClass.STANDARD, null)).isInstanceOf(IllegalArgumentException.class);
+            assertThat(Product.draft("CUP_12-OZ", "Ly", "Cup", null, null, null, null, null, TaxClass.STANDARD,
+                    null).kind()).isEqualTo(ProductKind.STANDARD);
+        }
+
+        @Test
+        @DisplayName("a new draft needs an English name and a tax class (SCRUM-87)")
+        void draftRequiresDetails() {
+            assertThatThrownBy(() -> Product.draft("CUP-12OZ", "Ly", null, null, null, null, null, null,
+                    TaxClass.STANDARD, null)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("nameEn");
+            assertThatThrownBy(() -> Product.draft("CUP-12OZ", "Ly", " ", null, null, null, null, null,
+                    TaxClass.STANDARD, null)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("nameEn");
+            assertThatThrownBy(() -> Product.draft("CUP-12OZ", "Ly", "Cup", null, null, null, null, null,
+                    null, null)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("taxClass");
         }
     }
 
@@ -408,6 +476,19 @@ class ProductTest {
     @Nested
     @DisplayName("suspend and resume (SCRUM-461, kltn-docs 01 §5.1 Inactive)")
     class SuspendAndResume {
+
+        @Test
+        @DisplayName("a legacy approved row without an English name or tax class still suspends and resumes (SCRUM-87)")
+        void legacyRowWithoutDetailsStillMoves() {
+            Product product = new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy 12oz", null, BRAND, CATEGORY, null,
+                    null, null, null, ProductKind.STANDARD, ProductStatus.APPROVED, 3L, SUBMITTER, NOW, APPROVER, NOW,
+                    null, null, null, null, null);
+
+            product.suspend("recall", NOW);
+            product.resume(NOW.plusSeconds(60));
+
+            assertThat(product.status()).isEqualTo(ProductStatus.APPROVED);
+        }
 
         @ParameterizedTest(name = "from {0}")
         @EnumSource(value = ProductStatus.class, names = {"APPROVED", "PUBLISHED"})
