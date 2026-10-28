@@ -37,6 +37,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -88,9 +89,11 @@ class StockOperationsController {
             @RequestParam(required = false) String location,
             @RequestParam(required = false) StockMovement.MovementType type,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(required = false) Integer size) {
+            @RequestParam(required = false) Integer size,
+            @AuthenticatedUser Optional<CurrentUser> user) {
         return ApiResponse.ok(operations.ledger(sku, location, type, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(mapper::toResponse));
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, BlindCount.visibilityFor(user))
+                .map(mapper::toResponse));
     }
 
     @PostMapping("/adjustments")
@@ -113,16 +116,20 @@ class StockOperationsController {
             @RequestParam(required = false) String location,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
-            @RequestParam(required = false) String sort) {
+            @RequestParam(required = false) String sort,
+            @AuthenticatedUser Optional<CurrentUser> user) {
         return ApiResponse.ok(operations.adjustments(status, sku, location, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(mapper::toResponse));
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort, BlindCount.visibilityFor(user))
+                .map(mapper::toResponse));
     }
 
     @GetMapping("/adjustments/{adjustmentId}")
     @Operation(summary = "One stock adjustment")
     @RequiresPermission(resource = InventoryResources.STOCK_ADJUSTMENTS, action = Action.READ)
-    public ApiResponse<StockAdjustmentResponse> adjustment(@PathVariable UUID adjustmentId) {
-        return operations.findAdjustment(adjustmentId).map(mapper::toResponse).map(ApiResponse::ok)
+    public ApiResponse<StockAdjustmentResponse> adjustment(@PathVariable UUID adjustmentId,
+                                                           @AuthenticatedUser Optional<CurrentUser> user) {
+        return operations.findAdjustment(adjustmentId, BlindCount.visibilityFor(user)).map(mapper::toResponse)
+                .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ADJUSTMENT_NOT_FOUND,
                         "No stock adjustment " + adjustmentId));
     }

@@ -11,6 +11,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.CatalogListingChanged;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.ProductPublication;
+import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.PublishedProductImage;
 
@@ -178,7 +179,8 @@ public class CatalogCommerceService {
             String description,
             String seoTitle,
             String seoDescription,
-            List<Variant> variants) {}
+            List<Variant> variants,
+            ProductKind kind) {}
 
     /**
      * One storefront list card. {@code primaryImageUrl} and {@code skus} spare the page a detail call and a
@@ -186,7 +188,7 @@ public class CatalogCommerceService {
      * prices and availability endpoints).
      */
     public record Card(UUID productId, String slug, String title, String seoTitle, String primaryImageUrl,
-                       List<CardSku> skus) {}
+                       List<CardSku> skus, ProductKind kind) {}
 
     /** A variant of a card: its SKU code and name. */
     public record CardSku(String sku, String name) {}
@@ -227,7 +229,8 @@ public class CatalogCommerceService {
                 listing.publishedDescription(),
                 listing.publishedSeoTitle(),
                 listing.publishedSeoDescription(),
-                variants);
+                variants,
+                product.kind());
     }
 
     @Transactional(readOnly = true)

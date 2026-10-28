@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.internal.service.StockConsumption;
@@ -38,6 +39,8 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -90,8 +93,16 @@ class InventoryController {
     @Operation(summary = "Stock for one SKU, broken down by location, earliest expiry first")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS,
             action = Action.READ, scope = DataScope.WAREHOUSE)
-    public ApiResponse<List<StockItemResponse>> stockItems(@RequestParam("sku") String sku) {
-        return ApiResponse.ok(mapper.toResponses(inventoryService.availabilityOf(new Sku(sku))));
+    public ApiResponse<List<StockItemResponse>> stockItems(@RequestParam("sku") String sku,
+                                                           @AuthenticatedUser Optional<CurrentUser> user) {
+        List<StockAvailability> rows = inventoryService.availabilityOf(new Sku(sku));
+        if (!BlindCount.visibilityFor(user).hidesCountedSlots()) {
+            return ApiResponse.ok(mapper.toResponses(rows));
+        }
+        // SCRUM-146: the books of a slot under a count are not for a counter; the row stays, its quantities do not.
+        Set<UUID> held = browsing.underCount(rows.stream().map(StockAvailability::stockItemId).toList());
+        return ApiResponse.ok(rows.stream().map(row -> held.contains(row.stockItemId())
+                ? mapper.toResponse(row).hidden() : mapper.toResponse(row)).toList());
     }
 
     @GetMapping("/warehouses/{warehouseId}/stock-items")
@@ -110,9 +121,11 @@ class InventoryController {
             @RequestParam(defaultValue = "false") boolean includeEmpty,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
-            @RequestParam(required = false) String sort) {
+            @RequestParam(required = false) String sort,
+            @AuthenticatedUser Optional<CurrentUser> user) {
         return ApiResponse.ok(browsing.warehouseStock(warehouseId, new StockBrowsing.StockQuery(location, sku,
-                lotNumber, statuses, includeEmpty, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort))
+                lotNumber, statuses, includeEmpty, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort),
+                BlindCount.visibilityFor(user))
                 .map(mapper::toResponse));
     }
 

@@ -87,8 +87,16 @@ public interface CustomerOrders {
     record Production(ProductionState state, int goodQuantity) {
     }
 
+    /**
+     * @param productSlug  where the line's SKU is on sale in the storefront today ({@code /catalog/{slug}}); with
+     *                     {@code productTitle} and {@code productImageUrl} what a portal needs to put the line
+     *                     back in a basket (reorder, SCRUM-190). All three are null when the SKU is not on sale now
+     *                     (suspended, discontinued, unpublished): the portal skips such a line. They describe
+     *                     today's catalogue, not what the order froze
+     */
     record Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
-                UUID designSnapshotId, Production production) {
+                UUID designSnapshotId, Production production, String productSlug, String productTitle,
+                String productImageUrl) {
     }
 
     /**
