@@ -45,7 +45,7 @@ class DuplicateOrderServiceTest {
 
     private static Order order(long sequence, Instant placedAt, UUID design, Object... skuAndQuantity) {
         var lines = new java.util.ArrayList<com.stockflow.order.internal.domain.OrderLine>();
-        for (int i = 0; i < skuAndQuantity.length; i += 2) {
+        for (int i = 0; i + 1 < skuAndQuantity.length; i += 2) {
             lines.add(Order.line(new Sku((String) skuAndQuantity[i]), (Integer) skuAndQuantity[i + 1],
                     Money.vnd(1000), design));
         }

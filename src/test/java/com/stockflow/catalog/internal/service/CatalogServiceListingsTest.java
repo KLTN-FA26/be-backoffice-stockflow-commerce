@@ -32,7 +32,7 @@ class CatalogServiceListingsTest {
         when(listings.listedBySku(Set.of("CUP-8OZ", "CUP-OLD"))).thenReturn(Map.of("CUP-8OZ",
                 new ListingRepository.ListedSku("CUP-8OZ", product, "ly-giay-8oz", "Ly giấy 8oz")));
         when(products.cards(Set.of(product))).thenReturn(Map.of(product,
-                new PublishedProductCard("https://cdn.example/ly.jpg", List.of())));
+                new PublishedProductCard("https://cdn.example/ly.jpg", List.of(), com.stockflow.product.api.ProductKind.STANDARD)));
 
         Map<String, CatalogService.SkuListing> found = service.listings(Set.of("CUP-8OZ", "CUP-OLD"));
 
