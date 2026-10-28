@@ -143,6 +143,12 @@ held while its count is `PLANNED` / `IN_PROGRESS`, or `COMPLETED` with a `COUNT_
 (`GET /adjustments`, `GET /adjustments/{id}` answers 404) of the slot are left out. SKU- and lot-level totals
 (`/stock-levels`, `/stock-items/atp`, the totals of a lot, alerts) stay: they are not a slot's.
 
+**Known limitation (owner decision BLIND-TOTALS, 28/10): accepted.** Because SKU and lot totals stay visible, a counter
+can still infer a held slot's book quantity: when the SKU sits in that one slot only, its total *is* the slot's books,
+and in general `total - sum(visible rows)` is what the held slots hold. Closing this would mean hiding the totals of
+every SKU with a held slot, which would also blind sales' available-to-promise. The team accepts the gap; the count
+screen, slot rows, ledger and adjustments stay hidden as described above.
+
 ## 6. Submission, adjustments, approval, recount (SCRUM-164)
 
 **Submission** runs in one transaction, in the lock order of §5. For every line, `delta = counted − expected`:
