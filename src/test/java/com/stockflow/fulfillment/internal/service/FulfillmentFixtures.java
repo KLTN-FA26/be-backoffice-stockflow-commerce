@@ -150,12 +150,17 @@ final class FulfillmentFixtures {
     record LeftBehindPlan(com.stockflow.fulfillment.internal.domain.LoadPlan plan, UUID shipmentId, UUID leftBehind,
                           java.util.Set<UUID> placed) { }
 
-    static LeftBehindPlan confirmedPlanLeavingOneBehind() {
+    /** A PLANNED plan of one shipment's 1 m cubes on trucks of 2 x 1 x 1 m, with the cartons the planner saw. */
+    record PlannedPlan(com.stockflow.fulfillment.internal.domain.LoadPlan plan, UUID shipmentId, UUID dispatcher,
+                       java.util.Map<UUID, com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage> cartons,
+                       com.stockflow.fulfillment.internal.domain.loadplanning.VehicleSpec truck) { }
+
+    static PlannedPlan plannedPlan(int cubes, int trucks) {
         UUID shipmentId = UUID.randomUUID();
         java.util.Map<UUID, com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage> cartons =
                 new java.util.LinkedHashMap<>();
         java.util.Map<UUID, UUID> shipmentOf = new java.util.LinkedHashMap<>();
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < cubes; i++) {
             UUID id = UUID.randomUUID();
             cartons.put(id, new com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage(id.toString(), null,
                     1000, 1000, 1000, new BigDecimal("100"), true, "CUBE", null, shipmentId.toString(), false));
@@ -163,7 +168,7 @@ final class FulfillmentFixtures {
         }
         var truck = new com.stockflow.fulfillment.internal.domain.loadplanning.VehicleSpec(TRUCK_TYPE, "TRUCK-TEST",
                 com.stockflow.fulfillment.internal.domain.loadplanning.VehicleKind.TRUCK, 2000, 1000, 1000,
-                new BigDecimal("1000"), 1, 0);
+                new BigDecimal("1000"), trucks, 0);
         var plan = com.stockflow.fulfillment.internal.domain.LoadPlan.draft(UUID.randomUUID(), "LP-20261022-0001",
                 UUID.randomUUID(), WAREHOUSE,
                 com.stockflow.fulfillment.internal.domain.loadplanning.SelectionMode.SINGLE_TYPE, null);
@@ -175,9 +180,15 @@ final class FulfillmentFixtures {
                         List.of(), com.stockflow.fulfillment.internal.domain.loadplanning.KitDistribution.AUTO, false,
                         null, 0L, java.time.Duration.ofSeconds(2)));
         plan.applyCalculation(result, java.util.Map.of(TRUCK_TYPE, truck), UUID::randomUUID, dispatcher, NOW, cartons);
-        plan.acknowledgeUnplaced(dispatcher, NOW, null, cartons);
+        return new PlannedPlan(plan, shipmentId, dispatcher, cartons, truck);
+    }
+
+    static LeftBehindPlan confirmedPlanLeavingOneBehind() {
+        PlannedPlan planned = plannedPlan(3, 1);
+        var plan = planned.plan();
+        plan.acknowledgeUnplaced(planned.dispatcher(), NOW, null, planned.cartons());
         UUID left = plan.unplacedPackageIds().iterator().next();
-        plan.confirm(dispatcher, NOW, cartons);
-        return new LeftBehindPlan(plan, shipmentId, left, plan.placedPackageIds());
+        plan.confirm(planned.dispatcher(), NOW, planned.cartons());
+        return new LeftBehindPlan(plan, planned.shipmentId(), left, plan.placedPackageIds());
     }
 }
