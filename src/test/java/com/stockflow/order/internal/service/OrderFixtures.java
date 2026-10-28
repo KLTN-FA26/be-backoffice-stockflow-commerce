@@ -83,6 +83,26 @@ final class OrderFixtures {
         return order;
     }
 
+    /** The summary the order module publishes for {@code order}, built by the real mapping. */
+    static com.stockflow.order.api.OrderSummary summaryOf(Order order) {
+        com.stockflow.order.internal.domain.OrderRepository repository =
+                org.mockito.Mockito.mock(com.stockflow.order.internal.domain.OrderRepository.class);
+        org.mockito.Mockito.when(repository.findById(order.id())).thenReturn(java.util.Optional.of(order));
+        OrderServiceImpl service = new OrderServiceImpl(repository,
+                org.mockito.Mockito.mock(com.stockflow.order.internal.repository.OrderSearchRepository.class),
+                org.mockito.Mockito.mock(com.stockflow.inventory.api.InventoryService.class),
+                org.mockito.Mockito.mock(OrderEventPublisher.class), java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC),
+                org.mockito.Mockito.mock(com.stockflow.design.api.DesignService.class),
+                org.mockito.Mockito.mock(com.stockflow.order.internal.repository.OrderHoldJpaRepository.class),
+                org.mockito.Mockito.mock(com.stockflow.customer.api.CustomerService.class),
+                org.mockito.Mockito.mock(com.stockflow.catalog.api.CatalogService.class),
+                org.mockito.Mockito.mock(com.stockflow.order.internal.domain.OrderPayments.class),
+                org.mockito.Mockito.mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
+                org.mockito.Mockito.mock(com.stockflow.order.internal.domain.CreditChecks.class),
+                org.mockito.Mockito.mock(com.stockflow.payment.api.PaymentService.class));
+        return service.findById(order.id().value()).orElseThrow();
+    }
+
     static ErrorCode codeOf(Runnable call) {
         BusinessException thrown = catchThrowableOfType(BusinessException.class, call::run);
         assertThat(thrown).as("a BusinessException").isNotNull();
