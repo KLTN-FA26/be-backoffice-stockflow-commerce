@@ -184,6 +184,12 @@ public final class Product extends AggregateRoot {
      * category and brand refusals. The database's statement of the same rule,
      * {@code ck_products_details_on_submit}, is requested in
      * {@code docs/business-design/db-design/SCRUM-73-schema-change-request.md}.</p>
+     *
+     * <p><b>The category rule is stated once, here.</b> The category lives in
+     * {@code product.product_categories}, which a {@code CHECK} cannot see; the only database statement
+     * would be a trigger whose body names that table and {@code is_primary} as text, so a later rename
+     * would pass its migration and then fail every submission at runtime. Only this aggregate writes
+     * the primary category, and only while DRAFT, so the trigger would guard a path nothing takes.</p>
      */
     public void submit(UUID submittedBy, Instant now) {
         requireCanTransitionTo(ProductStatus.PENDING_APPROVAL);

@@ -78,11 +78,21 @@ $$;
 > Có thể gộp 2.2 vào `ck_products_brand_on_submit` thành một constraint. Đề xuất để **riêng**: tên
 > constraint nằm trong log lỗi, và tách ra thì biết ngay thiếu brand hay thiếu chi tiết.
 
-### 2.3 Category chính trước khi duyệt — tuỳ chọn, ưu tiên thấp
+### 2.3 Category chính trước khi duyệt — **không đề xuất**
 
-`CHECK` không nhìn sang `product.product_categories`, nên muốn database chặn thì cần trigger. Đề xuất
-một constraint trigger hoãn đến commit, để thứ tự flush của Hibernate trong cùng transaction không ảnh
-hưởng:
+Quyết định (28/10/2026): **không làm**; quy tắc category chỉ được nói một lần, trong
+`Product.submit()`, và javadoc của nó ghi lý do. Phần dưới giữ lại để biết đã cân nhắc gì.
+
+Lý do không làm:
+- Thân hàm trigger là SQL dạng chữ. Một migration sau này đổi tên `product_categories` hoặc
+  `is_primary` vẫn chạy qua, Postgres không sửa thân hàm cũng không báo lỗi; đến lúc chạy thật thì
+  mọi lần gửi duyệt lỗi 500. Một `CHECK` thì khác: `RENAME COLUMN` được Postgres cập nhật theo.
+- Trigger không bắt việc xoá category chính sau khi đã gửi duyệt (xem dưới), nên vẫn không kín.
+- Chỉ aggregate `Product` ghi category chính, và chỉ khi `DRAFT`: trigger canh một đường không ai đi.
+
+Phương án đã cân nhắc: `CHECK` không nhìn sang `product.product_categories`, nên muốn database chặn thì
+cần trigger, dạng constraint trigger hoãn đến commit để thứ tự flush của Hibernate trong cùng transaction
+không ảnh hưởng:
 
 ```sql
 CREATE FUNCTION product.check_primary_category_on_submit() RETURNS trigger
@@ -111,10 +121,7 @@ web.
 
 Trigger này chỉ bắt lúc chuyển trạng thái. Xoá category chính của một sản phẩm đã submit thì không bắt;
 ứng dụng hiện chỉ cho sửa ở `DRAFT` nên đường đó không có. Nếu muốn kín cả phía
-`product_categories` thì cần thêm trigger trên bảng đó; đề xuất **không** làm nếu không có yêu cầu.
-
-**Nếu không làm 2.3:** phía code ghi trong javadoc của `Product.submit()` rằng quy tắc category chỉ được
-nói một lần và vì sao.
+`product_categories` thì cần thêm trigger trên bảng đó.
 
 ## 3. Không cần đổi schema
 
@@ -129,9 +136,9 @@ nói một lần và vì sao.
 
 - `Product.draft()` / `updateDetails()` bắt buộc `nameEn`, `taxClass`; constructor dựng lại từ DB vẫn
   chấp nhận null của dòng cũ; `submit()` từ chối khi thiếu, trả field error như brand.
-- Javadoc của `Product.submit()` đã nhắc `ck_products_details_on_submit` và trỏ về tài liệu này. Khi Tú
-  thêm constraint, javadoc được bổ sung tên `ck_products_name_not_blank` (và `tg_products_category_on_submit`
-  nếu làm 2.3) cùng lúc với test tích hợp của từng constraint (§5).
+- Javadoc của `Product.submit()` đã nhắc `ck_products_details_on_submit` và trỏ về tài liệu này, và ghi
+  vì sao quy tắc category chỉ nói một lần (§2.3). Khi Tú thêm constraint, javadoc được bổ sung tên
+  `ck_products_name_not_blank` cùng lúc với test tích hợp của từng constraint (§5).
 
 ## 5. Kiểm chứng đề xuất
 
@@ -143,6 +150,7 @@ nói một lần và vì sao.
 
 ## 6. Cần Tú quyết
 
-1. Làm 2.3 (trigger) hay chấp nhận quy tắc category chỉ nói một lần.
-2. 2.1 thêm bình thường hay `NOT VALID`, tuỳ dữ liệu thật.
-3. Version và tên file migration (phải mới hơn migration mới nhất trên `develop` lúc merge).
+1. 2.1 thêm bình thường hay `NOT VALID`, tuỳ dữ liệu thật.
+2. Version và tên file migration (phải mới hơn migration mới nhất trên `develop` lúc merge).
+
+(2.3 đã chốt là không làm; nếu Tú thấy cần thì mở lại.)
