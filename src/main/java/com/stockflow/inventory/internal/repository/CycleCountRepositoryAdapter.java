@@ -373,6 +373,13 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     }
 
     @Override
+    public Optional<UUID> countedByOf(UUID lineId) {
+        return jdbc.query("SELECT counted_by FROM inventory.cycle_count_line WHERE id = :id",
+                new MapSqlParameterSource("id", lineId), rs -> rs.next()
+                        ? Optional.ofNullable(rs.getObject("counted_by", UUID.class)) : Optional.<UUID>empty());
+    }
+
+    @Override
     public Map<UUID, String> lpnsOf(Collection<StockPackageId> ids) {
         if (ids.isEmpty()) {
             return Map.of();

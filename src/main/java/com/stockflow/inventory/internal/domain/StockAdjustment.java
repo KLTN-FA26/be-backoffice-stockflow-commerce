@@ -174,6 +174,23 @@ public final class StockAdjustment extends AggregateRoot {
         posted(approverId, now);
     }
 
+    /**
+     * Four eyes, deciding side: the variance of a count line is not decided by the person who counted the line - the
+     * figure and its approval are two people, whoever requested the adjustment (the submitter). Checked before any
+     * stock is looked at, after the adjustment is known to be still pending.
+     *
+     * @param countedBy who entered the line's figure; null when the line was never counted (no one to refuse)
+     * @throws BusinessException {@code ADJUSTMENT_SELF_APPROVAL}; {@code INVALID_ADJUSTMENT_TRANSITION} when decided
+     */
+    public void requireNotCountedBy(UUID decider, UUID countedBy) {
+        requirePending();
+        Objects.requireNonNull(decider, "decider");
+        if (countedBy != null && countedBy.equals(decider)) {
+            throw new BusinessException(ErrorCode.ADJUSTMENT_SELF_APPROVAL,
+                    "Adjustment %s cannot be decided by the person who counted the line it comes from".formatted(number));
+        }
+    }
+
     private void requireApprovableBy(UUID approverId) {
         requirePending();
         Objects.requireNonNull(approverId, "approverId");
