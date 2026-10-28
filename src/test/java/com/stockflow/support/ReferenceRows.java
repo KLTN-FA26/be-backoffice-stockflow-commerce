@@ -16,9 +16,6 @@ import java.util.UUID;
  */
 public final class ReferenceRows {
 
-    /** The day in the number of an order {@link #orderWithLine} inserts; it is placed now all the same. */
-    public static final String FIXTURE_ORDER_DAY = "20000101";
-
     private ReferenceRows() {
     }
 
@@ -97,15 +94,24 @@ public final class ReferenceRows {
         return row;
     }
 
+    /** Every fixture order number starts with this, after the date: real numbers never reach 9 followed by 11 digits. */
+    public static final String ORDER_NUMBER_INFIX = "-9";
+
+    /**
+     * A well-formed order number ({@code SO-yyyyMMdd-NNNNNN...}, what {@code OrderNumber} accepts - the reporting
+     * rebuild and the order API parse every order in the table) that is still recognisable as a fixture's:
+     * {@code SO-<placed day>-9<11 digits from the id>}.
+     */
+    static String orderNumber(UUID order) {
+        long digits = Long.remainderUnsigned(order.getLeastSignificantBits(), 100_000_000_000L);
+        return "SO-%s%s%011d".formatted(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh"))
+                .format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE), ORDER_NUMBER_INFIX, digits);
+    }
+
     /**
      * A placed order with one line of {@code sku}, in {@code status}, on credit (the payment term every status
      * accepts); {@code releasedBy} and {@code warehouseId} are what an order that has been released needs.
      * Returns the order id. For tests of what refers to a SKU.
-     *
-     * <p>The order number has the real shape ({@code OrderNumber}: {@code SO-yyyyMMdd-nnnnnn}), dated
-     * {@link #FIXTURE_ORDER_DAY} so it never meets a number the sequence hands out today. A malformed one broke
-     * whatever else shared the test context and read every order of the day (the sales rollup's rebuild) - and only
-     * when this ran first.</p>
      */
     public static UUID orderWithLine(EntityManager em, String sku, String status, UUID customerId, UUID releasedBy,
                                      UUID warehouseId) {
@@ -123,9 +129,7 @@ public final class ReferenceRows {
                                 CASE WHEN ?5 IN ('DELIVERED', 'COMPLETED') THEN NOW() END,
                                 CASE WHEN ?5 = 'COMPLETED' THEN NOW() END, 0, NOW())""")
                 .setParameter(1, order)
-                // The id's last 48 bits (its last 12 hex digits), as decimal: unique as the id is.
-                .setParameter(2, "SO-%s-%06d".formatted(FIXTURE_ORDER_DAY,
-                        order.getLeastSignificantBits() & 0xFFFF_FFFF_FFFFL))
+                .setParameter(2, orderNumber(order))
                 .setParameter(3, customerId)
                 .setParameter(4, Identifiers.newId())
                 .setParameter(5, status)

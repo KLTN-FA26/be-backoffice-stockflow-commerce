@@ -53,19 +53,6 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     private static final Map<String, Object> LOCK_TIMEOUT =
             Map.of("jakarta.persistence.lock.timeout", 3000);
 
-    /**
-     * When line {@code l} of count {@code c} holds its slot: the count is open, or it is submitted and a
-     * {@code COUNT_VARIANCE} adjustment of the line still waits for approval. One fragment for {@link #claim} (plans,
-     * found lines, recounts) and {@link #findHolding} (short picks), so the two can never disagree on what busy is.
-     */
-    private static final String BUSY = """
-            (c.status IN ('PLANNED', 'IN_PROGRESS')
-             OR (c.status = 'COMPLETED'
-                 AND EXISTS (SELECT 1 FROM inventory.stock_adjustment a
-                              WHERE a.cycle_count_line_id = l.id
-                                AND a.reason_code = 'COUNT_VARIANCE'
-                                AND a.status = 'PENDING_APPROVAL')))""";
-
     private final CycleCountJpaRepository jpa;
     private final EntityManager entityManager;
     private final NamedParameterJdbcTemplate jdbc;
@@ -137,7 +124,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      * No constraint says one count per slot, so without it two short reports on one bin in different picks would
      * both find none and both open one. A loose slot matches only loose lines, a carton only its package.</p>
      *
-     * <p>Held means what {@link #claim} means ({@link #BUSY}): a short pick on a slot whose count still waits for its
+     * <p>Held means what {@link #claim} means ({@link CountBusy#BUSY}): a short pick on a slot whose count still waits for its
      * variance to be decided must not open a second count of the same stock, or approving both would correct it
      * twice.</p>
      */
@@ -149,7 +136,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         List<UUID> ids = jdbc.queryForList("""
                 SELECT c.id FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
                  WHERE %s AND %s
-                 ORDER BY c.created_at, c.id LIMIT 1""".formatted(BUSY, match), params, UUID.class);
+                 ORDER BY c.created_at, c.id LIMIT 1""".formatted(CountBusy.BUSY, match), params, UUID.class);
         return ids.stream().findFirst().flatMap(this::findById);
     }
 
@@ -199,7 +186,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                 SELECT c.count_number, l.location_code, l.sku, l.lot_number, l.stock_package_id
                   FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
                  WHERE %s AND (%s)
-                 ORDER BY c.created_at, c.id""".formatted(BUSY, String.join(" OR ", any)), params,
+                 ORDER BY c.created_at, c.id""".formatted(CountBusy.BUSY, String.join(" OR ", any)), params,
                 (RowCallbackHandler) rs -> {
             CountSlot held = slotOf(rs);
             CountSlot wanted = byKey.get(held.lockKey());
@@ -374,6 +361,13 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     }
 
     @Override
+    public Optional<UUID> countedByOf(UUID lineId) {
+        return jdbc.query("SELECT counted_by FROM inventory.cycle_count_line WHERE id = :id",
+                new MapSqlParameterSource("id", lineId), rs -> rs.next()
+                        ? Optional.ofNullable(rs.getObject("counted_by", UUID.class)) : Optional.<UUID>empty());
+    }
+
+    @Override
     public Map<UUID, String> lpnsOf(Collection<StockPackageId> ids) {
         if (ids.isEmpty()) {
             return Map.of();
@@ -428,7 +422,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                                        OR (l.stock_package_id IS NULL AND s.stock_package_id IS NULL
                                            AND l.location_code = s.location_code AND l.sku = s.sku
                                            AND COALESCE(l.lot_number, '') = COALESCE(btrim(s.lot_number), ''))))"""
-                        .formatted(BUSY),
+                        .formatted(CountBusy.BUSY),
                 new MapSqlParameterSource().addValue("skus", skus).addValue("today", today),
                 (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),
                         rs.getString("location_code"), rs.getLong("free")));

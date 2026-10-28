@@ -39,4 +39,25 @@ public interface CatalogService {
      *         {@code CUSTOMER_NOT_FOUND}
      */
     PriceSchedule priceSchedule(java.util.UUID customerId, String sku);
+
+    /**
+     * Where the storefront shows each of these SKUs today, so a client can rebuild a basket from SKUs it only
+     * remembers (reorder, SCRUM-190). A SKU that is not on sale now - unpublished, suspended, discontinued or
+     * unknown - has no entry; its absence is the answer. Reads only; never a price or a stock figure.
+     *
+     * @param skus upper-case SKU codes
+     * @return the entry of each listed SKU, keyed by the SKU code
+     */
+    java.util.Map<String, SkuListing> listings(java.util.Collection<String> skus);
+
+    /**
+     * One SKU's storefront entry.
+     *
+     * @param slug     the product page: {@code /catalog/{slug}}
+     * @param title    the published product title
+     * @param imageUrl the product's primary published image, a public URL of the kind the gallery returns; null
+     *                 without one
+     */
+    record SkuListing(String slug, String title, String imageUrl) {
+    }
 }
