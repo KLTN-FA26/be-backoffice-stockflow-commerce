@@ -593,6 +593,15 @@ class IdentityServiceImpl implements IdentityService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<UUID> roleIdsOf(UUID userId) {
+        if (userId == null) {
+            return List.of();
+        }
+        return userRoles.findByUserId(userId).stream().map(UserRoleJpaEntity::getRoleId).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public StaffUser user(UUID userId) {
         return staffUserOf(requireAccount(userId), codesOf(rolesOf(new UserId(userId))),
                 userWarehouses.findByUserId(userId).stream().map(UserWarehouseJpaEntity::getWarehouseId).toList());

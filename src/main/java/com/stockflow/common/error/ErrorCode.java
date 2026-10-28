@@ -230,6 +230,20 @@ public enum ErrorCode {
      * line, so they are not received into cartons.
      */
     RECEIPT_PACKAGES_NOT_SUPPORTED("Cartons are not labelled on a subcontract receipt", 409),
+    /** SCRUM-92: no putaway task with this id. */
+    PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
+    /** SCRUM-92: the task has been put away completely; nothing is left to move. */
+    PUTAWAY_TASK_DONE("This putaway task is already done", 409),
+    /** SCRUM-92: more units than the task has left, a zero or negative count, or part of a carton. */
+    PUTAWAY_QUANTITY_EXCEEDED("The putaway quantity does not fit what the task has left", 422),
+    /** SCRUM-92: the scanned LPN is not the task's carton (or none was scanned for a carton task). */
+    PUTAWAY_LPN_MISMATCH("The scanned carton is not the one this putaway task is for", 409),
+    /** SCRUM-92: the chosen target is a storage area; goods are put away into bins. */
+    PUTAWAY_TARGET_NOT_BIN("Goods are put away into a bin, not a storage area", 422),
+    /** SCRUM-92: the bin's storage class is not the one the item must be kept in. */
+    LOCATION_STORAGE_CLASS_MISMATCH("The storage class of this bin does not fit the item", 409),
+    /** SCRUM-92: the putaway would take the bin past its capacity in units or its weight limit. */
+    LOCATION_CAPACITY_EXCEEDED("This bin cannot take that many units or that much weight", 409),
     /**
      * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
      * and claims no packing unit it holds no carton of.
@@ -554,6 +568,13 @@ public enum ErrorCode {
     PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
     VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),
     VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
+    /**
+     * kltn-docs 02 §4 step 7 (owner decision SCRUM-124): the approver's approval limit - the highest of their roles'
+     * {@code procurement.approval_limits} in the order's currency - is below the order's total after tax. A business
+     * rule on a request that is otherwise allowed, hence 409 and not 403 (403 means a missing permission): the order
+     * waits for someone whose limit covers it. Never raised for an approver with no limit configured (PO-NOLIMIT).
+     */
+    PO_APPROVAL_LIMIT_EXCEEDED("The purchase order total is above your approval limit", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
     /** kltn-docs 18 BR-01: one pending or active customer per tax code. */

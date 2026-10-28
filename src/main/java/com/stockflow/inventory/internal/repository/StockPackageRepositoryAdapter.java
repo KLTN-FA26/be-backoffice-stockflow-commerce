@@ -54,6 +54,15 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     @Override
+    public List<StockPackage> findAllById(Collection<StockPackageId> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return jpa.findAllById(ids.stream().map(StockPackageId::value).distinct().toList()).stream()
+                .map(StockPackageRepositoryAdapter::toDomain).toList();
+    }
+
+    @Override
     public List<StockPackage> findByReceiptLines(Collection<UUID> goodsReceiptLineIds) {
         if (goodsReceiptLineIds.isEmpty()) {
             return List.of();
@@ -116,6 +125,28 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
         List<Object[]> rows = entityManager.createNativeQuery("""
                         select stock_package_id, sum(on_hand) from inventory.stock_item
                          where stock_package_id in (:ids) group by stock_package_id""")
+                .setParameter("ids", wanted).getResultList();
+        Map<StockPackageId, Integer> onHand = new HashMap<>();
+        for (Object[] row : rows) {
+            onHand.put(new StockPackageId((UUID) row[0]), Math.toIntExact(((Number) row[1]).longValue()));
+        }
+        return onHand;
+    }
+
+    /**
+     * The same read as {@link #onHandOf}, restricted to INBOUND rows: a native query through the entity manager, so
+     * pending stock rows are flushed first.
+     */
+    @Override
+    public Map<StockPackageId, Integer> inboundOnHandOf(Collection<StockPackageId> ids) {
+        List<UUID> wanted = ids.stream().map(StockPackageId::value).distinct().toList();
+        if (wanted.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        select stock_package_id, sum(on_hand) from inventory.stock_item
+                         where stock_package_id in (:ids) and status = 'INBOUND' group by stock_package_id""")
                 .setParameter("ids", wanted).getResultList();
         Map<StockPackageId, Integer> onHand = new HashMap<>();
         for (Object[] row : rows) {

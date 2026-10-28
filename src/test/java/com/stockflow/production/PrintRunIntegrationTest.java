@@ -30,6 +30,7 @@ import com.stockflow.production.internal.service.ProductionWorkflow;
 import com.stockflow.production.internal.service.SampleProductionProgress;
 import com.stockflow.production.internal.service.SampleRequests;
 import com.stockflow.production.internal.domain.SampleStatus;
+import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.Await;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.DemoData;
@@ -133,6 +134,8 @@ class PrintRunIntegrationTest {
         inspector = user(Role.QC_STAFF);
         manager = user(Role.WAREHOUSE_MANAGER);
         approver = user(Role.WAREHOUSE_MANAGER);
+        // Approving a purchase order needs an approval limit (SCRUM-114): the role in a token is not what is read.
+        tx.executeWithoutResult(s -> ApprovalLimitFixtures.makeApprover(entityManager, approver.userId()));
         recorded.clear();
     }
 
