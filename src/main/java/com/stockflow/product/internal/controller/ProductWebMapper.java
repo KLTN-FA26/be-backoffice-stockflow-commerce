@@ -11,6 +11,7 @@ import com.stockflow.product.internal.controller.dto.CreateProductRequest;
 import com.stockflow.product.internal.controller.dto.OpenReferenceResponse;
 import com.stockflow.product.internal.controller.dto.OpenReferencesResponse;
 import com.stockflow.product.internal.controller.dto.ProductDiscontinuationResponse;
+import com.stockflow.product.internal.controller.dto.ProductMatchResponse;
 import com.stockflow.product.internal.controller.dto.ProductResponse;
 import com.stockflow.product.internal.controller.dto.ProductVersionResponse;
 import com.stockflow.product.internal.controller.dto.UpdateProductRequest;
@@ -20,6 +21,7 @@ import org.mapstruct.Mapping;
 import org.mapstruct.Named;
 import org.mapstruct.ReportingPolicy;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -39,8 +41,16 @@ interface ProductWebMapper {
     UpdateProductCommand toCommand(UUID productId, UpdateProductRequest request);
 
     /** {@code status} is {@code ProductStatus} on the summary, {@code String} on the wire — MapStruct
-     *  generates the {@code .name()} conversion automatically since the field name matches. */
+     *  generates the {@code .name()} conversion automatically since the field name matches. The possible
+     *  duplicates are not looked for here: a list row would cost a query per product. */
+    @Mapping(target = "possibleDuplicates", ignore = true)
     ProductResponse toResponse(ProductSummary summary);
+
+    /** One product as create, update and detail answer it: with the products it may duplicate (SCRUM-88). */
+    @Mapping(target = "possibleDuplicates", source = "possibleDuplicates")
+    ProductResponse toDetail(ProductSummary summary, List<ProductSummary> possibleDuplicates);
+
+    ProductMatchResponse toMatch(ProductSummary summary);
 
     /**
      * {@code action} and {@code outcome} are what history entries carried when they came from the audit trail,

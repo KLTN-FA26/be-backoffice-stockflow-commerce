@@ -3,12 +3,15 @@ package com.stockflow.product.internal.controller;
 import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.controller.dto.CreateProductRequest;
 import com.stockflow.product.internal.controller.dto.OpenReferencesResponse;
+import com.stockflow.product.internal.controller.dto.ProductMatchResponse;
 import com.stockflow.product.internal.controller.dto.ProductResponse;
 import com.stockflow.product.internal.controller.dto.ProductVersionResponse;
 import com.stockflow.product.internal.controller.dto.RejectProductRequest;
 import com.stockflow.product.internal.controller.dto.UpdateProductRequest;
+import com.stockflow.product.internal.service.ProductDuplicateService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -42,6 +45,10 @@ import java.util.UUID;
  * (SCRUM-57/WBS 3.1.1.3), and its end of life (SCRUM-461): suspension, discontinuation with a reason and
  * warnings, and deletion of a draft.
  *
+ * <p><b>Possible duplicates</b> (SCRUM-88): create, update and detail answer with the products this one may
+ * duplicate, read after the write in a transaction of their own; {@code GET /duplicates} asks before anything
+ * is saved. The list rows carry none: a page would cost a query per product.</p>
+ *
  * <p><b>Suspend, resume and discontinue</b> are in {@link ProductLifecycleController}, under a permission of
  * their own ({@code product-lifecycle:APPROVE}, System Admin only, kltn-docs 01 §5.1). {@code DELETE} is a
  * permission of its own too, so it can be given or withheld separately.</p>
@@ -63,11 +70,19 @@ import java.util.UUID;
 class ProductController {
 
     private final ProductService productService;
+    private final ProductDuplicateService duplicates;
     private final ProductWebMapper mapper;
 
-    ProductController(ProductService productService, ProductWebMapper mapper) {
+    ProductController(ProductService productService, ProductDuplicateService duplicates, ProductWebMapper mapper) {
         this.productService = productService;
+        this.duplicates = duplicates;
         this.mapper = mapper;
+    }
+
+    /** The product with the products it may duplicate (SCRUM-88): never itself, never a refusal. */
+    private ProductResponse detail(ProductSummary product) {
+        return mapper.toDetail(product, duplicates.possibleDuplicates(product.name(), product.brandId(),
+                product.categoryId(), product.productId()));
     }
 
     @GetMapping
@@ -91,7 +106,7 @@ class ProductController {
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
     public ApiResponse<ProductResponse> findOne(@PathVariable UUID productId) {
         return productService.findById(productId)
-                .map(mapper::toResponse)
+                .map(this::detail)
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.PRODUCT_NOT_FOUND, "No product with id " + productId));
@@ -102,7 +117,24 @@ class ProductController {
     @Operation(summary = "Create a product master row with its variants: one default (SKU = code), or with axes every combination (SKU by rule)")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.CREATE)
     public ApiResponse<ProductResponse> create(@Valid @RequestBody CreateProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(productService.create(mapper.toCommand(request))));
+        return ApiResponse.ok(detail(productService.create(mapper.toCommand(request))));
+    }
+
+    /**
+     * The products a name would duplicate, before anything is saved: the form asks while the name is typed.
+     * Without a brand or a category the answer is empty, as it is on create.
+     */
+    @GetMapping("/duplicates")
+    @Operation(summary = "Products of the same brand and primary category whose name has the same key as this one "
+            + "(case, diacritics, spaces and punctuation ignored); a warning, never a refusal")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
+    public ApiResponse<List<ProductMatchResponse>> duplicates(
+            @RequestParam String name,
+            @RequestParam(required = false) UUID brandId,
+            @RequestParam(required = false) UUID categoryId,
+            @RequestParam(required = false) UUID excludeProductId) {
+        return ApiResponse.ok(duplicates.possibleDuplicates(name, brandId, categoryId, excludeProductId).stream()
+                .map(mapper::toMatch).toList());
     }
 
     @PutMapping("/{productId}")
@@ -110,8 +142,7 @@ class ProductController {
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<ProductResponse> update(@PathVariable UUID productId,
                                                @Valid @RequestBody UpdateProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
-                productService.update(mapper.toCommand(productId, request))));
+        return ApiResponse.ok(detail(productService.update(mapper.toCommand(productId, request))));
     }
 
     @PostMapping("/{productId}/submission")

@@ -5,6 +5,7 @@ import com.stockflow.product.api.TaxClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /** What the API returns for one product master row. */
@@ -67,6 +68,12 @@ public record ProductResponse(
         Instant suspendedAt,
 
         @Schema(description = "Why it was suspended; set while INACTIVE")
-        String suspendReason
+        String suspendReason,
+
+        @Schema(description = "Products of the same brand and primary category whose name normalises to the same "
+                + "key: a warning, never a refusal. Filled only by create (POST), update (PUT) and detail (GET one); "
+                + "null on every other response, lists and the submit, approve, reject, suspend and resume answers "
+                + "included. Ask GET /api/v1/products/duplicates to check again.")
+        List<ProductMatchResponse> possibleDuplicates
 ) {
 }

@@ -1,12 +1,19 @@
 package com.stockflow.product.internal.controller;
 
 import com.stockflow.product.api.CreateProductCommand;
+import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
+import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.api.ProductSummary;
+import com.stockflow.product.api.TaxClass;
+import com.stockflow.product.internal.service.ProductDuplicateService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -14,6 +21,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -24,8 +32,18 @@ class ProductControllerCreateHttpTest {
     private static final UUID VALUE = UUID.fromString("0190a000-0000-7000-8000-000000000052");
 
     private final ProductService service = mock(ProductService.class);
+    private final ProductDuplicateService duplicates = mock(ProductDuplicateService.class);
     private final MockMvc mvc = MockMvcBuilders.standaloneSetup(
-            new ProductController(service, new ProductWebMapperImpl())).build();
+            new ProductController(service, duplicates, new ProductWebMapperImpl())).build();
+
+    /** What the service answers a create with; its content does not matter to these tests. */
+    @BeforeEach
+    void created() {
+        Instant now = Instant.parse("2026-10-28T03:00:00Z");
+        when(service.create(any())).thenReturn(new ProductSummary(UUID.randomUUID(), "CUP-12", "Ly", "Cup", "cup-12",
+                null, null, null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD, ProductStatus.DRAFT, now,
+                "u", now, "u", null, null, null, null, null, null, null, 0L, null, null, null));
+    }
 
     @Test
     void axesReachTheCommand() throws Exception {
