@@ -415,6 +415,8 @@ public enum ErrorCode {
     CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
     /** A slot already held by an open count. */
     CYCLE_COUNT_SLOT_BUSY("This stock slot is already on an open count", 409),
+    /** A manual move out of or into a slot a cycle count holds (SCRUM-146). */
+    STOCK_SLOT_UNDER_COUNT("This stock slot is under a cycle count; stock cannot be moved out of or into it", 409),
     /** A surplus where the slot has no layer to receive it. */
     CYCLE_COUNT_UNKNOWN_LAYER("The surplus cannot be placed on any receipt layer", 422),
     /** A shortage larger than what the slot holds now. */
