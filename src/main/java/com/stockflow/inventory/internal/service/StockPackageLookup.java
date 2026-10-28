@@ -20,10 +20,11 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
- * The carton lookup (SCRUM-473, #125 item 11, the "Tra cứu thùng" screen of #138): a carton by the LPN on its label,
+ * The carton lookup (SCRUM-473, #125 item 11, the carton lookup screen of #138): a carton by the LPN on its label,
  * what one location holds split into whole cartons, opened cartons and loose units, and cartons page by page.
  *
  * <p>Read only. Marking a carton LOST or found is not here on purpose: a carton that still holds stock is lost only by
@@ -73,7 +74,7 @@ public class StockPackageLookup {
 
     /**
      * @param location one exact location code; null for any the caller may see
-     * @param statuses null or empty for the live ones (RECEIVING, IN_STOCK)
+     * @param statuses null or empty for the live ones (RECEIVING, IN_STOCK); null entries are ignored
      */
     public record CartonQuery(String location, String sku, List<StockPackageStatus> statuses, int page, int size,
                               String sort) {
@@ -142,8 +143,10 @@ public class StockPackageLookup {
             WarehouseScope.requireLocation(location);
         }
         String sku = normalCode(query.sku());
-        List<StockPackageStatus> statuses = query.statuses() == null || query.statuses().isEmpty()
-                ? LIVE : List.copyOf(query.statuses());
+        // A blank ?status= binds as a null entry: ignored, not a 500 out of List.copyOf.
+        List<StockPackageStatus> asked = query.statuses() == null ? List.of()
+                : query.statuses().stream().filter(Objects::nonNull).distinct().toList();
+        List<StockPackageStatus> statuses = asked.isEmpty() ? LIVE : asked;
         var criteria = new StockPackageSearch.CartonCriteria(location, sku, statuses,
                 WarehouseScope.restriction().map(AssignedWarehouses::prefixes).orElse(null));
         return Pages.toResponse(search.cartons(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort()))),

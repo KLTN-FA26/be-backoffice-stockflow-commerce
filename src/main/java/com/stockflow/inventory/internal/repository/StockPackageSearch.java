@@ -14,9 +14,9 @@ import java.util.UUID;
 
 /**
  * Read side of the carton lookup (SCRUM-473, #125 item 11): a carton by its label, what one location holds split into
- * whole cartons, opened cartons and loose units, and cartons page by page. Each method is one SQL statement, whatever
- * the number of cartons. Outside the domain port for the same reason as {@link StockBrowseSearch}: paging is Spring
- * Data's vocabulary.
+ * whole cartons, opened cartons and loose units, and cartons page by page. Each method is one SQL statement (the list
+ * two: its total and its page), whatever the number of cartons. Outside the domain port for the same reason as
+ * {@link StockBrowseSearch}: paging is Spring Data's vocabulary.
  */
 public interface StockPackageSearch {
 

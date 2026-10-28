@@ -31,6 +31,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -227,6 +229,34 @@ class StockPackageLookupIntegrationTest {
                         tuple(lpns.get(1), RECEIVING, 980));
         assertThat(list(BIN, sku, null).items()).extracting(Carton::lpn).containsExactly(lpns.getFirst());
         assertThat(list(null, "NO-SUCH-SKU", null).totalElements()).isZero();
+    }
+
+    @Test
+    @DisplayName("the list sorts and pages in SQL: by location descending, a page after the first, one past the end")
+    void listSortsAndPages() {
+        receive();
+        inventory.moveStockPackages(new MoveStockPackagesCommand(lpns.getFirst(), BIN, MoveReference.MOVE_TASK,
+                Identifiers.newId(), clerk));
+
+        assertThat(lookup.cartons(new CartonQuery(null, sku, null, 0, 20, "locationCode,desc")).items())
+                .extracting(Carton::locationCode).containsExactly(RECEIVING, BIN);
+        assertThat(lookup.cartons(new CartonQuery(null, sku, null, 1, 1, "lpn,desc"))).satisfies(page -> {
+            assertThat(page.items()).extracting(Carton::lpn).containsExactly(lpns.getFirst());
+            assertThat(page.totalElements()).isEqualTo(2);
+        });
+        assertThat(lookup.cartons(new CartonQuery(null, sku, null, 2, 1, null))).satisfies(page -> {
+            assertThat(page.items()).isEmpty();
+            assertThat(page.totalElements()).isEqualTo(2);
+        });
+    }
+
+    @Test
+    @DisplayName("a blank status in the filter is ignored, not a server error")
+    void aBlankStatusIsIgnored() {
+        receive();
+
+        assertThat(list(null, sku, Arrays.asList(StockPackageStatus.IN_STOCK, null)).items()).hasSize(2);
+        assertThat(list(null, sku, Collections.singletonList(null)).items()).hasSize(2);
     }
 
     @Test

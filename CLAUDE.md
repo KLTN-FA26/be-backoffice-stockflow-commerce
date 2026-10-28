@@ -279,7 +279,8 @@ connection that transaction needs is borrowed once per line, not once per carton
 price.
 
 Looking cartons up is `StockPackageLookup` (`GET /inventory/stock-packages/{lpn}`, `/location-summary`, the paged
-list), one SQL statement per kind of fact over the view `inventory.stock_package_balance`. There is deliberately no
+list), one SQL statement per kind of fact: a carton and the list read the view `inventory.stock_package_balance`, a
+carton's contents and a location's summary read `inventory.stock_item`. There is deliberately no
 endpoint to mark a carton LOST or found: that writes stock off, so it is only an approved count's adjustment.
 
 ### Putaway (SCRUM-92)

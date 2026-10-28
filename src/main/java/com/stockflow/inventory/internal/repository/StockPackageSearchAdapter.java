@@ -39,6 +39,16 @@ class StockPackageSearchAdapter implements StockPackageSearch {
     private static final Map<String, String> SORT_COLUMNS =
             Map.of("lpn", "b.lpn", "locationCode", "b.location_code", "sku", "b.sku");
 
+    /**
+     * What the list's total is counted over: the columns {@link #where} filters on, named as the view names them, with
+     * none of its sums. Counting over the view would join and group every matching carton's stock rows only to drop
+     * them; the view's unit join is left out too, its key being NOT NULL with a foreign key.
+     */
+    private static final String COUNTED = """
+            (SELECT p.status, p.location_code, i.sku
+               FROM inventory.stock_package p
+               JOIN inventory.inventory_items i ON i.id = p.inventory_item_id) b""";
+
     private final NamedParameterJdbcTemplate jdbc;
 
     StockPackageSearchAdapter(JdbcTemplate jdbc) {
@@ -94,8 +104,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
     public Page<CartonRow> cartons(CartonCriteria criteria, Pageable pageable) {
         MapSqlParameterSource params = new MapSqlParameterSource();
         String where = where(criteria, params);
-        Long total = jdbc.queryForObject("SELECT count(*) FROM inventory.stock_package_balance b WHERE " + where,
-                params, Long.class);
+        Long total = jdbc.queryForObject("SELECT count(*) FROM " + COUNTED + " WHERE " + where, params, Long.class);
         if (total == null || total == 0 || pageable.getOffset() >= total) {
             return new PageImpl<>(List.of(), pageable, total == null ? 0 : total);
         }
