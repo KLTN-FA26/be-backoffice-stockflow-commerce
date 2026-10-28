@@ -96,11 +96,12 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
             filters.add(criteria.statuses().isEmpty() ? cb.disjunction() : root.get("status").in(criteria.statuses()));
         }
         if (criteria.warehousePrefix() != null) {
-            filters.add(cb.like(stock.get("locationCode"), escape(criteria.warehousePrefix()) + "-%", '\\'));
+            filters.add(cb.like(stock.get("locationCode"), WarehouseScope.locationPattern(criteria.warehousePrefix()),
+                    '\\'));
         }
         WarehouseScope.restriction().ifPresent(allowed -> {
             List<Predicate> any = allowed.prefixes().stream()
-                    .map(prefix -> cb.like(stock.get("locationCode"), escape(prefix) + "-%", '\\'))
+                    .map(prefix -> cb.like(stock.get("locationCode"), WarehouseScope.locationPattern(prefix), '\\'))
                     .toList();
             filters.add(any.isEmpty() ? cb.disjunction() : cb.or(any.toArray(Predicate[]::new)));
         });
@@ -123,10 +124,5 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
-    }
-
-    /** A prefix is letters and digits, but it is a LIKE pattern all the same: escape it. */
-    private static String escape(String value) {
-        return value.toUpperCase(Locale.ROOT).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
     }
 }
