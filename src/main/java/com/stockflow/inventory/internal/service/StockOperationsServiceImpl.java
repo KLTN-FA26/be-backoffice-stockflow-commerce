@@ -31,6 +31,7 @@ import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CountVariance;
+import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
@@ -111,13 +112,15 @@ class StockOperationsServiceImpl implements StockOperations {
     /** The cartons labelled while receiving (SCRUM-473); taken from through {@link #cartons}. */
     private final StockPackageRepository stockPackages;
     private final UomConversionRepository units;
+    private final CycleCountRepository countLines;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
                                InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
                                InventoryEventPublisher events, StockPackageRepository stockPackages,
-                               UomConversionRepository units) {
+                               UomConversionRepository units, CycleCountRepository countLines) {
+        this.countLines = countLines;
         this.stockPackages = stockPackages;
         this.units = units;
         this.cartons = cartons;
@@ -1369,6 +1372,7 @@ class StockOperationsServiceImpl implements StockOperations {
     public StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId) {
         StockAdjustment adjustment = load(adjustmentId);
         policies.lock(adjustment.sku().code());
+        requireNotCounter(adjustment, approverId);
         if (adjustment.stockPackageId() != null) {
             return approveCarton(adjustment, approverId);
         }
@@ -1444,6 +1448,17 @@ class StockOperationsServiceImpl implements StockOperations {
         return toSummary(saved);
     }
 
+    /**
+     * A count variance is decided by someone other than whoever counted its line (spec §6 four eyes, SCRUM-146): the
+     * requester check of the aggregate only sees the submitter, who is not always the one who entered the figure
+     * (an approver may count a line on an assigned count). A line's counter is fixed once the count is submitted.
+     */
+    private void requireNotCounter(StockAdjustment adjustment, UUID decider) {
+        if (adjustment.cycleCountLineId() != null) {
+            adjustment.requireNotCountedBy(decider, countLines.countedByOf(adjustment.cycleCountLineId()).orElse(null));
+        }
+    }
+
     /** The ledger's reason for a posted adjustment: its reason code, and the note when there is one. */
     private static String ledgerReason(StockAdjustment adjustment) {
         return adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note());
@@ -1453,6 +1468,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Auditable(action = AuditAction.REJECT, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary reject(UUID adjustmentId, UUID approverId, String reason) {
         StockAdjustment adjustment = load(adjustmentId);
+        requireNotCounter(adjustment, approverId);
         adjustment.reject(approverId, reason, clock.instant());
         return toSummary(adjustments.save(adjustment));
     }

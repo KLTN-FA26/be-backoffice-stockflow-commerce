@@ -58,6 +58,9 @@ public interface CycleCountRepository {
 
     Map<UUID, String> lpnsOf(Collection<StockPackageId> ids);
 
+    /** Who entered the line's figure; empty when the line is unknown or was never counted. */
+    Optional<UUID> countedByOf(UUID lineId);
+
     List<Frozen> frozen(Collection<String> skus, LocalDate today);
 
     /** A variance adjustment raised from a count line. */

@@ -190,7 +190,10 @@ public enum ErrorCode {
     STOCK_PACKAGE_LABELS_TOO_MANY("At most 500 carton labels at a time", 422),
     /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
     MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
-    /** Four eyes: whoever asked for a stock adjustment may not decide it. */
+    /**
+     * Four eyes: whoever asked for a stock adjustment may not decide it - nor, for a {@code COUNT_VARIANCE}, whoever
+     * counted the line it came from.
+     */
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
@@ -397,6 +400,11 @@ public enum ErrorCode {
     CYCLE_COUNT_TOO_LARGE("The count scope is too large - narrow it", 422),
     /** A counter who is not the assignee and may not decide. */
     CYCLE_COUNT_NOT_ASSIGNEE("This count is assigned to someone else", 403),
+    /**
+     * A line already counted by someone else on a count assigned to a third person: the figure is the counter's to
+     * correct. Whoever may decide could otherwise replace it and then approve the variance it raises.
+     */
+    CYCLE_COUNT_LINE_COUNTED_BY_OTHER("This line was counted by someone else; only the assignee may count it again", 403),
     /** Submitting a count that still has uncounted lines. */
     CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
     /** A slot already held by an open count. */
