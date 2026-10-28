@@ -35,6 +35,10 @@ public final class PickLine {
     private Instant putBackAt;
     /** Units the picker did not find at the bin (X-SHORT); positive only on a SHORT line or one reallocated since. */
     private int shortQty;
+    /** The carton the hold is in (SCRUM-473), null for loose stock: the line is confirmed by scanning it. */
+    private String lpn;
+    /** The hold was the carton's whole sealed content when planned: a hint for the picker, not a rule. */
+    private boolean wholeCarton;
 
     /** Rehydrates a stored line that was never short. */
     public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
@@ -81,11 +85,27 @@ public final class PickLine {
         this.shortQty = shortQty;
     }
 
+    /** Rehydrates a stored line, drawn from a carton when {@code lpn} is set. */
+    public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
+                    String lotNumber, int sequenceNo, int allocatedQty, int pickedQty, PickLineStatus status,
+                    UUID pickedBy, Instant pickedAt, Instant consumedAt, String scannedLocationCode,
+                    String scannedCode, int putBackQty, String putBackLocationCode, UUID putBackBy,
+                    Instant putBackAt, int shortQty, String lpn, boolean wholeCarton) {
+        this(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, pickedQty, status,
+                pickedBy, pickedAt, consumedAt, scannedLocationCode, scannedCode, putBackQty, putBackLocationCode,
+                putBackBy, putBackAt, shortQty);
+        if (wholeCarton && lpn == null) {
+            throw new IllegalArgumentException("Only a line drawn from a carton takes the whole carton");
+        }
+        this.lpn = lpn;
+        this.wholeCarton = wholeCarton;
+    }
+
     /** A new line, open, nothing picked. Package-private: only {@link PickList} plans lines. */
     static PickLine open(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
-                         String lotNumber, int sequenceNo, int allocatedQty) {
+                         String lotNumber, int sequenceNo, int allocatedQty, String lpn, boolean wholeCarton) {
         return new PickLine(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty,
-                0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null, null);
+                0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null, null, 0, lpn, wholeCarton);
     }
 
     void pick(String scannedLocation, String scannedItem, UUID actor, Instant now) {
@@ -154,4 +174,6 @@ public final class PickLine {
     public UUID putBackBy() { return putBackBy; }
     public Instant putBackAt() { return putBackAt; }
     public int shortQty() { return shortQty; }
+    public String lpn() { return lpn; }
+    public boolean wholeCarton() { return wholeCarton; }
 }
