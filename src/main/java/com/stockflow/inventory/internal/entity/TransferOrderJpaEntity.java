@@ -81,6 +81,16 @@ public class TransferOrderJpaEntity extends BaseEntity {
     @Column(name = "goods_left_at")
     private Instant goodsLeftAt;
 
+    /** kltn-docs 10 §5: the last rejection - who, when, why - kept for the planner while the transfer is DRAFT again. */
+    @Column(name = "rejected_by")
+    private UUID rejectedBy;
+
+    @Column(name = "rejected_at")
+    private Instant rejectedAt;
+
+    @Column(name = "rejection_reason", length = 500)
+    private String rejectionReason;
+
     @OneToMany(mappedBy = "transferOrder", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("lineNo")
     private List<TransferOrderLineJpaEntity> lines = new ArrayList<>();
@@ -118,6 +128,12 @@ public class TransferOrderJpaEntity extends BaseEntity {
         this.goodsLeftAt = goodsLeftAt;
     }
 
+    public void applyRejection(UUID rejectedBy, Instant rejectedAt, String rejectionReason) {
+        this.rejectedBy = rejectedBy;
+        this.rejectedAt = rejectedAt;
+        this.rejectionReason = rejectionReason;
+    }
+
     /** A DRAFT's new header (SCRUM-462); the lines are replaced by the repository. */
     public void reviseDraft(UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason, LocalDate expectedDate) {
         if (status != TransferStatus.DRAFT) {
@@ -150,5 +166,8 @@ public class TransferOrderJpaEntity extends BaseEntity {
     public com.stockflow.inventory.api.TransferDeliveryMode getDeliveryMode() { return deliveryMode; }
     public Instant getPackedAt() { return packedAt; }
     public Instant getGoodsLeftAt() { return goodsLeftAt; }
+    public UUID getRejectedBy() { return rejectedBy; }
+    public Instant getRejectedAt() { return rejectedAt; }
+    public String getRejectionReason() { return rejectionReason; }
     public List<TransferOrderLineJpaEntity> getLines() { return lines; }
 }

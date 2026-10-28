@@ -449,6 +449,13 @@ class PickConfirmationIntegrationTest {
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.pickStatus").value("PICKED"));
+        // SCRUM-482: completing again (a retried scan) is answered with the task; stock moved once.
+        call(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
+                .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.pickStatus").value("PICKED"));
+        assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        assertThat(ledgerRows("PICK", lineId)).isEqualTo(1);
         // The audit trail has the confirmation.
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM platform.audit_log WHERE resource_type = 'fulfillment-task' AND resource_id = ?
