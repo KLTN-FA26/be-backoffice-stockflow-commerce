@@ -70,7 +70,7 @@ class OrderSkuReferenceProbeIntegrationTest {
         assertThat(found).allSatisfy(r -> {
             assertThat(r.kind()).isEqualTo(SkuReference.Kind.SALES_ORDER_LINE);
             assertThat(r.sku()).isEqualTo(sku);
-            assertThat(r.documentNumber()).startsWith("SO-RR-");
+            assertThat(r.documentNumber()).startsWith(ReferenceRows.REFERENCE_ORDER_PREFIX);
         });
     }
 
