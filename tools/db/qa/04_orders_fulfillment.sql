@@ -207,6 +207,24 @@ SELECT pg_temp.expect_fail('O38g a withdrawal of a replacement the return never 
     UPDATE ordering.return_request SET withdrawal_status = 'PENDING', withdrawal_reason = 'x',
            withdrawal_proposed_by = md5('demo:user:editor')::uuid, withdrawal_proposed_at = NOW()
      WHERE id = md5('qa:rma:1')::uuid $q$);
+-- Refused by the line trigger itself, by its own message: another refusal of the same insert would not prove the rule.
+SELECT pg_temp.expect_ok('O38g2 goods printed to the customer''s design claimed for OTHER, a reason naming no defect (BR-RMA-002)', $q$
+    DO $d$
+    BEGIN
+        INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel,
+                                             requested_by, requested_resolution, status, reason_code, note, requested_at)
+        VALUES (md5('qa:rma:other')::uuid, 'RMA-QA-OTHER', md5('qa:order:1')::uuid, 'SO-QA-1',
+                'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid,
+                'REFUND', 'REQUESTED', 'OTHER', 'x', NOW());
+        INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price,
+                                                  quantity)
+        VALUES (gen_random_uuid(), md5('qa:rma:other')::uuid, md5('qa:ol:1')::uuid, 'SOFA-3S-GREY', TRUE, 10000000, 1);
+        RAISE EXCEPTION 'the database accepted it';
+    EXCEPTION WHEN check_violation THEN
+        IF SQLERRM NOT LIKE 'printed goods come back for a named defect only%' THEN
+            RAISE;
+        END IF;
+    END $d$ $q$);
 
 \echo '--- returns: four eyes on approval, the customer''s goods, the replacement order (business review 2026-10-25)'
 INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
