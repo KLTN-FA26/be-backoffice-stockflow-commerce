@@ -55,7 +55,7 @@ class OrderHistoryEntryTypeTest {
         when(decisions.decisions(orderId)).thenReturn(List.of(new PartialShipmentDecision(true,
                 OrderStatus.IN_PRODUCTION, "Khách nhận hàng sẵn trước", sales, Instant.parse("2026-10-21T02:00:00Z"))));
         when(identities.displayNames(any())).thenReturn(Map.of(sales, "Nguyễn Hải Yến"));
-        OrderController controller = new OrderController(orders, null, null, null, null, identities, decisions, modes);
+        OrderController controller = new OrderController(orders, null, null, null, null, identities, decisions, modes, null);
         CurrentUser staff = new CurrentUser(UUID.randomUUID(), "sales1", Set.of(Role.SALES_STAFF), Set.of(),
                 DataScope.ALL, Set.of());
 
@@ -94,7 +94,7 @@ class OrderHistoryEntryTypeTest {
                 DeliveryMode.PARCEL, OrderStatus.READY_TO_FULFILL, "2 container", coordinator,
                 Instant.parse("2026-10-22T01:00:01Z"))));
         when(identities.displayNames(any())).thenReturn(Map.of(coordinator, "Trần Minh Khoa"));
-        OrderController controller = new OrderController(orders, null, null, null, null, identities, decisions, modes);
+        OrderController controller = new OrderController(orders, null, null, null, null, identities, decisions, modes, null);
         CurrentUser staff = new CurrentUser(UUID.randomUUID(), "oc1", Set.of(Role.ORDER_COORDINATOR), Set.of(),
                 DataScope.ALL, Set.of());
 

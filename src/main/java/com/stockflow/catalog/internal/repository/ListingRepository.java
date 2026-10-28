@@ -15,7 +15,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -63,6 +66,31 @@ public class ListingRepository {
                         sku)
                 .stream()
                 .findFirst();
+    }
+
+    /** A published SKU's listing as the storefront shows it: the product it belongs to, its slug and title. */
+    public record ListedSku(String sku, UUID productId, String slug, String title) {}
+
+    /**
+     * The storefront listing of each of these SKUs that is on sale now: a published catalog entry of an enabled,
+     * published listing. A SKU that is not on sale has no entry (a reorder skips it).
+     */
+    public Map<String, ListedSku> listedBySku(Collection<String> skus) {
+        if (skus.isEmpty()) {
+            return Map.of();
+        }
+        var rows = new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc).query(
+                """
+select e.sku, e.product_id, l.slug, l.published_title
+from catalog.catalog_entry e join catalog.product_listing l on l.product_id = e.product_id
+where e.sku in (:skus) and e.published and l.enabled and l.published_title is not null
+""",
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("skus", skus),
+                (r, n) -> new ListedSku(r.getString("sku"), r.getObject("product_id", UUID.class),
+                        r.getString("slug"), r.getString("published_title")));
+        Map<String, ListedSku> bySku = new LinkedHashMap<>();
+        rows.forEach(row -> bySku.putIfAbsent(row.sku(), row));
+        return Map.copyOf(bySku);
     }
 
     public Optional<Listing> bySlug(String slug) {

@@ -71,6 +71,23 @@ class CatalogServiceImpl implements CatalogService {
         return resolver.schedule(customerId, sku);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, SkuListing> listings(java.util.Collection<String> skus) {
+        var listed = listings.listedBySku(skus);
+        if (listed.isEmpty()) {
+            return Map.of();
+        }
+        var cards = products.cards(listed.values().stream().map(ListingRepository.ListedSku::productId)
+                .collect(java.util.stream.Collectors.toSet()));
+        Map<String, SkuListing> bySku = new HashMap<>();
+        listed.forEach((sku, row) -> {
+            var card = cards.get(row.productId());
+            bySku.put(sku, new SkuListing(row.slug(), row.title(), card == null ? null : card.primaryImageUrl()));
+        });
+        return Map.copyOf(bySku);
+    }
+
     private void lockPurchasable(Set<String> skus) {
         Map<UUID, Set<String>> grouped = new TreeMap<>();
         for (String sku : skus) {

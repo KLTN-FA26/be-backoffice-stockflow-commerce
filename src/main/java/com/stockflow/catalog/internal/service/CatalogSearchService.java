@@ -248,6 +248,7 @@ public class CatalogSearchService {
     private static CatalogCommerceService.Card card(Candidate c, PublishedProductCard details) {
         return new CatalogCommerceService.Card(c.productId(), c.slug(), c.title(), c.seoTitle(),
                 details.primaryImageUrl(),
-                details.skus().stream().map(s -> new CatalogCommerceService.CardSku(s.sku(), s.name())).toList());
+                details.skus().stream().map(s -> new CatalogCommerceService.CardSku(s.sku(), s.name())).toList(),
+                details.kind());
     }
 }

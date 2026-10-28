@@ -98,9 +98,10 @@ class CheckoutPaymentTermsApiIntegrationTest {
                 "test terms", approver, null));
     }
 
+    /** These tests are about terms, not about ordering twice (SCRUM-190): every placement confirms a duplicate. */
     private ResultActions place(String extra) throws Exception {
         return http().asCustomer(user, post(ORDERS).contentType(MediaType.APPLICATION_JSON).content("""
-                {"requestId":"%s","customerId":"%s","lines":[{"sku":"SOFA-3S-GREY","quantity":1,"unitPrice":12500000}]%s}"""
+                {"requestId":"%s","customerId":"%s","confirmDuplicate":true,"lines":[{"sku":"SOFA-3S-GREY","quantity":1,"unitPrice":12500000}]%s}"""
                 .formatted(UUID.randomUUID(), customer, extra)));
     }
 
