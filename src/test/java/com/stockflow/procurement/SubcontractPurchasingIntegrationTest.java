@@ -41,6 +41,7 @@ class SubcontractPurchasingIntegrationTest {
 
     @Autowired SubcontractPurchasing subcontracting;
     @Autowired com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
+    @Autowired com.stockflow.procurement.api.ProcurementService procurement;
     @Autowired com.stockflow.product.api.ProductService products;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
@@ -295,6 +296,152 @@ class SubcontractPurchasingIntegrationTest {
         assertThat(amended.quantity()).isEqualTo(420);
         assertThat(jdbc.queryForMap("SELECT uom_conversion_id, unit_qty FROM procurement.purchase_order_lines WHERE id = ?",
                 line)).containsEntry("uom_conversion_id", carton).containsEntry("unit_qty", 42);
+    }
+
+    // ------------------------------------------------------------------ SCRUM-124: approval limits
+
+    /** A user with a role of their own whose only VND limit is {@code limit}; none when {@code limit} is null. */
+    private UUID personWithLimit(Long limit) {
+        return tx.execute(s -> {
+            UUID user = ReferenceRows.user(entityManager);
+            if (limit != null) {
+                UUID role = com.stockflow.support.ApprovalLimitFixtures.newRole(entityManager);
+                com.stockflow.support.ApprovalLimitFixtures.giveRole(entityManager, user, role);
+                com.stockflow.support.ApprovalLimitFixtures.setLimit(entityManager, role, limit);
+            }
+            return user;
+        });
+    }
+
+    @Test
+    @DisplayName("rule 6: a subcontract order raised by splitting a production order is approved at submit on the limit "
+            + "of whoever split it (its creator), recorded as such - not on the limit of whoever submits it")
+    void splitGeneratedOrderUsesTheSplittersLimit() {
+        UUID splitter = personWithLimit(500_000L);                       // the order totals 320,000
+        UUID submitterWithoutLimit = personWithLimit(null);
+        SubcontractOrder created = subcontracting.create(new CreateSubcontractOrderCommand(child, innhanh, hcm, CUP, 400,
+                new BigDecimal("800"), "VND", LocalDate.now().plusDays(7), splitter));
+
+        var submitted = procurement.submit(created.purchaseOrderId(), submitterWithoutLimit);
+
+        assertThat(submitted.status()).isEqualTo("APPROVED");
+        Map<String, Object> approval = jdbc.queryForMap("""
+                SELECT a.decision, a.approver_id, a.limit_holder_id, a.limit_amount, a.limit_role_id, a.limit_id
+                  FROM procurement.purchase_order_approvals a
+                  JOIN procurement.purchase_order_revisions r ON r.id = a.po_revision_id WHERE r.po_id = ?""",
+                created.purchaseOrderId());
+        assertThat(approval).containsEntry("decision", "AUTO_APPROVED").containsEntry("approver_id", submitterWithoutLimit)
+                .containsEntry("limit_holder_id", splitter);
+        assertThat((BigDecimal) approval.get("limit_amount")).isEqualByComparingTo("500000");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM identity.user_role WHERE user_id = ? AND role_id = ?""", Integer.class, splitter,
+                approval.get("limit_role_id"))).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("rule 6: the submitter's own limit does not approve a split-generated order whose splitter has none")
+    void submittersLimitDoesNotCountForASplitGeneratedOrder() {
+        UUID splitterWithoutLimit = personWithLimit(null);
+        UUID submitterWithLimit = personWithLimit(10_000_000L);
+        SubcontractOrder created = subcontracting.create(new CreateSubcontractOrderCommand(child, innhanh, hcm, CUP, 400,
+                new BigDecimal("800"), "VND", LocalDate.now().plusDays(7), splitterWithoutLimit));
+
+        assertThat(procurement.submit(created.purchaseOrderId(), submitterWithLimit).status())
+                .isEqualTo("PENDING_APPROVAL");
+    }
+
+    /** An APPROVED order of 400 x 800 = 320,000 (submitted and approved by two others), ready to be amended. */
+    private SubcontractOrder approvedOrder() {
+        UUID productionOrder = splitProductionOrder();       // one live purchase order per production order
+        SubcontractOrder created = subcontracting.create(new CreateSubcontractOrderCommand(productionOrder, innhanh, hcm,
+                CUP, 400, new BigDecimal("800"), "VND", LocalDate.now().plusDays(7), manager));
+        UUID revision = Identifiers.newId();
+        UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header, changed_by)
+                    VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?)""", revision, created.purchaseOrderId(), manager);
+            jdbc.update("""
+                    UPDATE procurement.purchase_orders SET status = 'APPROVED', active_revision_id = ?, submitted_at = NOW(),
+                           submitted_by = ?, approved_at = NOW(), approved_by = ? WHERE id = ?""",
+                    revision, manager, approver, created.purchaseOrderId());
+        });
+        return created;
+    }
+
+    @Test
+    @DisplayName("rule 5: an amendment is decided again against the new total with the requester's limit - within it "
+            + "it is approved at once (AUTO_APPROVED, limit recorded), above it, or with no limit, it waits")
+    void amendmentIsReevaluatedWithTheRequestersLimit() {
+        SubcontractOrder within = approvedOrder();
+        UUID rich = personWithLimit(400_000L);
+        SubcontractOrder amended = subcontracting.supplement(within.purchaseOrderId(), 50, "QC shortfall resend", rich);
+        assertThat(amended.quantity()).as("360,000 is within 400,000").isEqualTo(450);
+        assertThat(amended.pendingQuantity()).isNull();
+        Map<String, Object> approval = jdbc.queryForMap("""
+                SELECT a.decision, a.approver_id, a.limit_holder_id, a.limit_amount FROM procurement.purchase_order_approvals a
+                  JOIN procurement.purchase_orders p ON p.active_revision_id = a.po_revision_id WHERE p.id = ?""",
+                within.purchaseOrderId());
+        assertThat(approval).containsEntry("decision", "AUTO_APPROVED").containsEntry("approver_id", rich)
+                .containsEntry("limit_holder_id", rich);
+        assertThat((BigDecimal) approval.get("limit_amount")).isEqualByComparingTo("400000");
+        assertThat(jdbc.queryForList("""
+                SELECT action FROM procurement.purchase_order_events WHERE po_id = ? ORDER BY created_at""", String.class,
+                within.purchaseOrderId())).contains("AUTO_APPROVED");
+
+        SubcontractOrder above = approvedOrder();
+        UUID poor = personWithLimit(350_000L);
+        SubcontractOrder waiting = subcontracting.supplement(above.purchaseOrderId(), 50, "QC shortfall resend", poor);
+        assertThat(waiting.quantity()).as("360,000 is above 350,000").isEqualTo(400);
+        assertThat(waiting.pendingQuantity()).isEqualTo(450);
+
+        SubcontractOrder none = approvedOrder();
+        assertThat(subcontracting.supplement(none.purchaseOrderId(), 50, "resend", personWithLimit(null))
+                .pendingQuantity()).as("no limit configured is no limit: it waits").isEqualTo(450);
+    }
+
+    @Test
+    @DisplayName("rule 5: an amendment is never auto-approved for an order that was rejected before")
+    void amendmentOfAnOrderRejectedBeforeWaits() {
+        SubcontractOrder order = approvedOrder();
+        UUID rich = personWithLimit(10_000_000L);
+        UUID approver = personWithLimit(null);
+        subcontracting.supplement(order.purchaseOrderId(), 40, "first ask", personWithLimit(null));
+        amendments.rejectAmendment(order.purchaseOrderId(), approver, "not needed");   // a REJECTED decision on the order
+
+        SubcontractOrder asked = subcontracting.supplement(order.purchaseOrderId(), 10, "again", rich);
+
+        assertThat(asked.pendingQuantity()).isEqualTo(410);
+        assertThat(asked.quantity()).isEqualTo(400);
+    }
+
+    @Test
+    @DisplayName("rule 5 / rule 2: approving an amendment needs a limit that covers the new total when the approver "
+            + "has one (409 PO_APPROVAL_LIMIT_EXCEEDED); four-eyes stays; an approver with no limit may approve")
+    void amendmentApproverLimit() {
+        SubcontractOrder order = approvedOrder();
+        UUID requester = personWithLimit(null);
+        subcontracting.supplement(order.purchaseOrderId(), 50, "resend", requester);        // new total 360,000
+
+        UUID tooSmall = personWithLimit(359_999L);
+        assertThatThrownBy(() -> amendments.approveAmendment(order.purchaseOrderId(), tooSmall))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED);
+        assertThat(subcontracting.findById(order.purchaseOrderId())).get()
+                .satisfies(o -> assertThat(o.pendingQuantity()).as("still waiting").isEqualTo(450));
+        assertThatThrownBy(() -> amendments.approveAmendment(order.purchaseOrderId(), requester))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED);
+
+        assertThat(amendments.approveAmendment(order.purchaseOrderId(), personWithLimit(360_000L)).quantity())
+                .isEqualTo(450);
+
+        SubcontractOrder second = approvedOrder();
+        subcontracting.supplement(second.purchaseOrderId(), 50, "resend", requester);
+        assertThat(amendments.approveAmendment(second.purchaseOrderId(), personWithLimit(null)).quantity())
+                .as("no limit configured: the approve permission alone bounds the approver").isEqualTo(450);
+        assertThat(jdbc.queryForList("""
+                SELECT a.decision FROM procurement.purchase_order_approvals a
+                  JOIN procurement.purchase_orders p ON p.active_revision_id = a.po_revision_id WHERE p.id = ?""",
+                String.class, second.purchaseOrderId())).containsExactly("APPROVED");
     }
 
     @Test

@@ -293,8 +293,9 @@ public final class PurchaseOrder extends AggregateRoot {
     }
 
     /**
-     * Whether {@code limit} (an approval limit, in this order's currency) covers the order's total. A limit of zero
-     * or less covers nothing: "no limit configured" is zero, and an order of any size then needs someone else.
+     * Whether {@code limit} (a configured approval limit, in this order's currency) covers the order's total, after
+     * tax: what is paid to the supplier. A limit of zero or less covers nothing. Having no limit at all is not a limit
+     * of zero and never reaches here (owner decision PO-NOLIMIT): the caller asks only when one is configured.
      */
     public boolean coveredBy(Money limit) {
         return limit.amount().signum() > 0 && totalAmount().compareTo(limit) <= 0;
@@ -302,7 +303,8 @@ public final class PurchaseOrder extends AggregateRoot {
 
     /**
      * DRAFT → APPROVED at submission, the one way a draft reaches APPROVED (docs 02 §4 step 7 and §5: "Submit (dưới hạn
-     * mức)"; owner decision POLIMIT2): the total is within the submitter's own approval limit, so nobody else decides.
+     * mức)"; owner decision POLIMIT2): the total is within the limit of the submitter (or, for an order raised by splitting
+     * a production order, of whoever split it - rule 6), so nobody else decides.
      * The submitter is recorded as the approver and the order is flagged {@link #autoApproved()}, which is what lets
      * {@code ck_purchase_orders_four_eyes} stand aside for exactly this case. Above the limit the order is
      * {@link #submit submitted} to PENDING_APPROVAL instead.

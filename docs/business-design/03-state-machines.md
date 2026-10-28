@@ -85,8 +85,8 @@ stateDiagram-v2
 |---|---|---|---|---|---|
 | — | DRAFT | create | Procurement staff | supplier active, ≥1 line | — |
 | DRAFT | PENDING_APPROVAL | submit | Procurement staff | total ≥ 0, MOQ respected (BR-PO-001) | — |
-| DRAFT | APPROVED | submit | Procurement staff | PO total ≤ the **submitter's** approval limit (none configured = 0, so it never applies); recorded as auto-approved with the limit used (BR-PO-002, kltn-docs 02 §4 step 7) | — |
-| PENDING_APPROVAL | APPROVED | approve | approver per threshold | approver's limit ≥ PO total (BR-PO-002) | `PurchaseOrderApproved` |
+| DRAFT | APPROVED | submit (auto-approval) | Procurement staff | PO total after tax ≤ the limit of the submitter (of whoever split the production order, for a SUBCONTRACT PO), configured and in force in the PO currency; never rejected before; with the same holder's AUTO_APPROVED POs to the same supplier in the last 7 days still ≤ the limit; recorded as `AUTO_APPROVED` with the limit used (BR-PO-002, kltn-docs 02 §4 step 7) | `AUTO_APPROVED` |
+| PENDING_APPROVAL | APPROVED | approve | approver per threshold | not the submitter; approver's limit, when configured, ≥ PO total (BR-PO-002; 409 `PO_APPROVAL_LIMIT_EXCEEDED`) | `PurchaseOrderApproved` |
 | PENDING_APPROVAL | DRAFT | reject | approver | reason given | — |
 | APPROVED | SENT | send | Procurement staff | supplier has email or API endpoint | `PurchaseOrderSent` |
 | SENT | CONFIRMED | supplier confirms | Procurement staff (records it) | — | `PurchaseOrderConfirmed` |

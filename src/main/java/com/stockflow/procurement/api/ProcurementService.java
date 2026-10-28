@@ -35,14 +35,18 @@ public interface ProcurementService {
     PurchaseOrderSummary reviseDraft(UUID purchaseOrderId, RevisePurchaseOrderCommand command);
 
     /**
-     * DRAFT → PENDING_APPROVAL, freezing the order as a revision (SCRUM-114) - or straight to APPROVED when the total is
-     * within the submitter's own approval limit ({@code autoApproved}; kltn-docs 02 §4 step 7). No limit is zero.
+     * DRAFT → PENDING_APPROVAL, freezing the order as a revision (SCRUM-114) - or straight to APPROVED, recorded as
+     * {@code AUTO_APPROVED} with the limit used ({@code autoApproved}; kltn-docs 02 §4 step 7, SCRUM-124), when the
+     * total after tax is within the approval limit of the submitter (for a subcontract order raised by splitting a
+     * production order, of the person who split it), the order was never rejected, and with the same holder's
+     * automatic approvals to the same supplier in the last 7 days it still is. No limit configured is no limit: the
+     * order waits for an approver.
      */
     PurchaseOrderSummary submit(UUID purchaseOrderId, UUID submittedBy);
 
     /**
      * PENDING_APPROVAL → APPROVED. Four-eyes: {@code approverId} must not be who submitted it
-     * (SELF_APPROVAL_NOT_ALLOWED), and the approver's own limit must cover the total (403 PO_APPROVAL_LIMIT_EXCEEDED).
+     * (SELF_APPROVAL_NOT_ALLOWED), and the approver's own limit, when they have one, must cover the total (409 PO_APPROVAL_LIMIT_EXCEEDED).
      */
     PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId);
 

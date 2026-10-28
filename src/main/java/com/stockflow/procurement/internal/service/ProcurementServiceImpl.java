@@ -31,6 +31,7 @@ import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
 import com.stockflow.procurement.api.SendPurchaseOrderCommand;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
+import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.InvalidPurchaseOrderTransitionException;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
@@ -60,6 +61,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Currency;
@@ -321,9 +323,18 @@ class ProcurementServiceImpl implements ProcurementService {
     // ------------------------------------------------------------------ approval
 
     /**
-     * kltn-docs 02 §4 step 7 (owner decision POLIMIT2): an order whose total is within the SUBMITTER's approval limit
-     * is approved right here, recording why and which limit; above it, it goes to PENDING_APPROVAL for someone whose
-     * limit covers it. With no limit configured for the submitter it always waits (owner decision PO-NOLIMIT).
+     * kltn-docs 02 §4 step 7 (owner decisions POLIMIT2, SCRUM-124 of 21/10, PO-NOLIMIT of 28/10): an order is approved
+     * right here, as {@code AUTO_APPROVED} with the limit that allowed it, when all of these hold, and otherwise goes
+     * to PENDING_APPROVAL for someone whose limit covers it.
+     * <ol>
+     *   <li>the limit holder has a limit configured in force in the order's currency (none is no limit, never zero:
+     *       an order of someone with no limit always waits) - the holder is the submitter, or for a SUBCONTRACT order
+     *       the person who raised it by splitting the production order (rule 6);</li>
+     *   <li>the total, after tax, is within it (rule 1);</li>
+     *   <li>the order was never rejected: a rejected order is decided by a person again (rule 3);</li>
+     *   <li>with the automatic approvals of the same holder to the same supplier in the last 7 days it still is
+     *       (rule 4, against splitting one purchase into small ones).</li>
+     * </ol>
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
@@ -335,30 +346,36 @@ class ProcurementServiceImpl implements ProcurementService {
                     PurchaseOrderStatus.PENDING_APPROVAL);
         }
         requireLinesPurchasable(order);
-        Optional<Money> configured = approvalLimits.limitOf(submittedBy, order.currency(),
-                BusinessCalendar.date(clock.instant()));
-        boolean withinLimit = configured.map(order::coveredBy).orElse(false);
-        Money limit = configured.orElse(null);
+        Instant now = clock.instant();
+        UUID limitHolder = limitHolderOf(order, submittedBy);
+        Optional<ApprovalLimit> autoLimit = approvalLimits.autoApprovalLimit(order.id(), limitHolder,
+                order.supplierId(), order.totalAmount(), now);
         long revisionNo = purchaseOrders.nextRevisionNo(order.id());
         UUID revisionId = purchaseOrders.recordRevision(order, revisionNo, submittedBy,
                 revisionNo == 0 ? null : "Resubmitted after rejection");
-        if (withinLimit) {
-            order.submitWithinLimit(submittedBy, revisionId, revisionNo, limit, clock.instant());
+        if (autoLimit.isPresent()) {
+            order.submitWithinLimit(submittedBy, revisionId, revisionNo, autoLimit.get().amount(), now);
         } else {
-            order.submit(submittedBy, revisionId, revisionNo, clock.instant());
+            order.submit(submittedBy, revisionId, revisionNo, now);
         }
         purchaseOrders.save(order);
         purchaseOrders.recordEvent(order.id(), revisionId, "SUBMITTED", submittedBy, PurchaseOrderStatus.DRAFT,
                 PurchaseOrderStatus.PENDING_APPROVAL, null);
-        if (withinLimit) {
-            String reason = "Auto-approved within limit: total %s, limit %s".formatted(order.totalAmount(), limit);
-            purchaseOrders.recordApproval(revisionId, submittedBy, "APPROVED", reason);
-            purchaseOrders.recordEvent(order.id(), revisionId, "APPROVED", submittedBy,
+        if (autoLimit.isPresent()) {
+            ApprovalLimit limit = autoLimit.get();
+            String reason = "Auto-approved within limit: total %s, limit %s".formatted(order.totalAmount(), limit.amount());
+            purchaseOrders.recordAutoApproval(revisionId, submittedBy, limitHolder, limit, now, reason);
+            purchaseOrders.recordEvent(order.id(), revisionId, "AUTO_APPROVED", submittedBy,
                     PurchaseOrderStatus.PENDING_APPROVAL, PurchaseOrderStatus.APPROVED, reason,
-                    Map.of("autoApproved", "true", "total", order.totalAmount().amount().toPlainString(),
-                            "limit", limit.amount().toPlainString(), "currency", order.currency().getCurrencyCode()));
+                    limit.facts(order.totalAmount(), limitHolder));
         }
         return summaryOf(order, false);
+    }
+
+    /** Whose limit decides an automatic approval: the submitter's, except for a split-generated order (rule 6). */
+    private UUID limitHolderOf(PurchaseOrder order, UUID submitter) {
+        return order.type() == PurchaseOrder.Type.SUBCONTRACT
+                ? purchaseOrders.creatorOf(order.id()).orElse(submitter) : submitter;
     }
 
     /**
@@ -374,7 +391,7 @@ class ProcurementServiceImpl implements ProcurementService {
             requireLinesPurchasable(order);
         }
         Money limit = approvalLimits.limitOf(approverId, order.currency(), BusinessCalendar.date(clock.instant()))
-                .orElse(null);
+                .map(ApprovalLimit::amount).orElse(null);
         order.approve(approverId, limit, clock.instant());
         purchaseOrders.save(order);
         purchaseOrders.recordApproval(order.activeRevisionId(), approverId, "APPROVED", null);

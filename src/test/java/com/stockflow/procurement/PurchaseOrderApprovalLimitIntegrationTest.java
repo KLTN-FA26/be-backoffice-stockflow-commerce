@@ -135,7 +135,7 @@ class PurchaseOrderApprovalLimitIntegrationTest {
 
     @Test
     @DisplayName("02 §4 step 7: within the submitter's own limit the order is approved at submit, with the reason and "
-            + "the limit used on its approval record and timeline; it then confirms like any approved order")
+            + "the limit used (row, amount, role) on its AUTO_APPROVED record and timeline; it then confirms like any approved order")
     void underLimitSubmitIsApprovedAtOnce() throws Exception {
         UUID submitter = personWithLimits(100_000);
         String buyer = buyer(submitter);
@@ -155,22 +155,33 @@ class PurchaseOrderApprovalLimitIntegrationTest {
         assertThat(row.get("pending_revision_id")).isNull();
 
         String reason = "Auto-approved within limit: total 60000 VND, limit 100000 VND";
-        assertThat(jdbc.queryForList("""
-                SELECT a.decision || '|' || a.approver_id || '|' || a.reason FROM procurement.purchase_order_approvals a
-                  JOIN procurement.purchase_order_revisions r ON r.id = a.po_revision_id WHERE r.po_id = ?""",
-                String.class, po)).containsExactly("APPROVED|" + submitter + "|" + reason);
+        Map<String, Object> approval = jdbc.queryForMap("""
+                SELECT a.decision, a.approver_id, a.reason, a.limit_id, a.limit_amount, a.limit_role_id, a.limit_holder_id
+                  FROM procurement.purchase_order_approvals a
+                  JOIN procurement.purchase_order_revisions r ON r.id = a.po_revision_id WHERE r.po_id = ?""", po);
+        Map<String, Object> limitRow = jdbc.queryForMap("""
+                SELECT l.id, l.role_id FROM procurement.approval_limits l
+                  JOIN identity.user_role ur ON ur.role_id = l.role_id WHERE ur.user_id = ?""", submitter);
+        assertThat(approval).containsEntry("decision", "AUTO_APPROVED").containsEntry("approver_id", submitter)
+                .containsEntry("reason", reason).containsEntry("limit_id", limitRow.get("id"))
+                .containsEntry("limit_role_id", limitRow.get("role_id")).containsEntry("limit_holder_id", submitter);
+        assertThat((java.math.BigDecimal) approval.get("limit_amount")).isEqualByComparingTo("100000");
         assertThat(jdbc.queryForList("""
                 SELECT action || ':' || from_status || '>' || to_status FROM procurement.purchase_order_events
                  WHERE po_id = ? ORDER BY created_at, action DESC""", String.class, po))
-                .contains("SUBMITTED:DRAFT>PENDING_APPROVAL", "APPROVED:PENDING_APPROVAL>APPROVED");
+                .contains("SUBMITTED:DRAFT>PENDING_APPROVAL", "AUTO_APPROVED:PENDING_APPROVAL>APPROVED")
+                .doesNotContain("APPROVED:PENDING_APPROVAL>APPROVED");
         JsonNode payload = json.readTree(jdbc.queryForObject("""
-                SELECT payload::text FROM procurement.purchase_order_events WHERE po_id = ? AND action = 'APPROVED'""",
+                SELECT payload::text FROM procurement.purchase_order_events WHERE po_id = ? AND action = 'AUTO_APPROVED'""",
                 String.class, po));
         assertThat(payload.path("autoApproved").asText()).isEqualTo("true");
         assertThat(payload.path("limit").asText()).isEqualTo("100000");
         assertThat(payload.path("total").asText()).isEqualTo("60000");
+        assertThat(payload.path("limitId").asText()).isEqualTo(limitRow.get("id").toString());
+        assertThat(payload.path("limitRoleId").asText()).isEqualTo(limitRow.get("role_id").toString());
+        assertThat(payload.path("limitHolderId").asText()).isEqualTo(submitter.toString());
         assertThat(jdbc.queryForObject("""
-                SELECT reason FROM procurement.purchase_order_events WHERE po_id = ? AND action = 'APPROVED'""",
+                SELECT reason FROM procurement.purchase_order_events WHERE po_id = ? AND action = 'AUTO_APPROVED'""",
                 String.class, po)).isEqualTo(reason);
 
         // Nobody approves it again: it is not waiting.
@@ -238,7 +249,7 @@ class PurchaseOrderApprovalLimitIntegrationTest {
     }
 
     @Test
-    @DisplayName("approve: refused above the approver's own limit (403 PO_APPROVAL_LIMIT_EXCEEDED) and by the submitter "
+    @DisplayName("approve: refused above the approver's own limit (409 PO_APPROVAL_LIMIT_EXCEEDED, a business rule, not a missing permission) and by the submitter "
             + "(four-eyes); a bigger limit approves; the order stays pending meanwhile")
     void approveNeedsALimitThatCoversTheTotal() throws Exception {
         UUID submitter = personWithLimits(1_000);
@@ -246,7 +257,7 @@ class PurchaseOrderApprovalLimitIntegrationTest {
         submit(po, buyer(submitter)).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
 
         UUID tooSmall = personWithLimits(49_999);
-        approve(po, approver(tooSmall)).andExpect(status().isForbidden())
+        approve(po, approver(tooSmall)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PO_APPROVAL_LIMIT_EXCEEDED"));
         approve(po, approver(submitter)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("SELF_APPROVAL_NOT_ALLOWED"));
@@ -284,6 +295,173 @@ class PurchaseOrderApprovalLimitIntegrationTest {
         approve(po, approver(personWithLimits(1_000_000))).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_PURCHASE_ORDER_TRANSITION"));
         assertThat(row(po).get("status")).isEqualTo("DRAFT");
+    }
+
+    // ------------------------------------------------------------------ SCRUM-124: what the limit is compared with
+
+    @Test
+    @DisplayName("rule 1: the total compared with the limit is what is paid to the supplier, after tax")
+    void theTotalIsAfterTax() throws Exception {
+        UUID person = personWithLimits(100_000);
+        String buyer = buyer(person);
+        String body = """
+                {"supplierId":"%s","warehouseId":"%s","currency":"VND",
+                 "lines":[{"sku":"%s","quantityOrdered":1,"unitPrice":%d,"taxRate":%s}]}""";
+        UUID taxed = UUID.fromString(data(call("/api/v1/purchase-orders", buyer,
+                body.formatted(supplier, DemoData.WAREHOUSE_HCM, sku, 95_000, "10")).andExpect(status().isCreated()))
+                .path("purchaseOrderId").asText());
+        submit(taxed, buyer).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));   // 104,500 > 100,000
+
+        UUID untaxed = UUID.fromString(data(call("/api/v1/purchase-orders", buyer,
+                body.formatted(supplier, DemoData.WAREHOUSE_HCM, sku, 95_000, "0")).andExpect(status().isCreated()))
+                .path("purchaseOrderId").asText());
+        submit(untaxed, buyer).andExpect(jsonPath("$.data.status").value("APPROVED"));
+    }
+
+    @Test
+    @DisplayName("rule 3: an order that was rejected is decided by a person again, even edited below the limit; "
+            + "an order never rejected is not affected")
+    void rejectedOrderIsNeverAutoApproved() throws Exception {
+        UUID buyerUser = personWithLimits(50_000);
+        String buyer = buyer(buyerUser);
+        UUID po = draft(buyer, 80_000);                                  // above the buyer's limit
+        submit(po, buyer).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
+
+        UUID rejecter = personWithLimits(1_000_000);
+        JsonNode rejected = data(call("/api/v1/purchase-orders/" + po + "/rejection", approver(rejecter),
+                "{\"reason\":\"wrong supplier\"}").andExpect(status().isOk()));
+        assertThat(rejected.path("status").asText()).isEqualTo("DRAFT");
+
+        // The buyer cuts it to 45,000, within their limit, and sends it again.
+        String edit = """
+                {"version":%d,"warehouseId":"%s","expectedAt":"%s",
+                 "lines":[{"lineId":"%s","sku":"%s","quantityOrdered":1,"unitPrice":45000}]}""".formatted(
+                rejected.path("version").asLong(), DemoData.WAREHOUSE_HCM, rejected.path("expectedAt").asText(),
+                rejected.path("lines").get(0).path("lineId").asText(), sku);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/purchase-orders/" + po)
+                .header("Authorization", buyer).contentType(MediaType.APPLICATION_JSON).content(edit))
+                .andExpect(status().isOk());
+        submit(po, buyer).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"))
+                .andExpect(jsonPath("$.data.autoApproved").value(false))
+                .andExpect(jsonPath("$.data.revisionNo").value(1));
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM procurement.purchase_order_approvals a
+                  JOIN procurement.purchase_order_revisions r ON r.id = a.po_revision_id
+                 WHERE r.po_id = ? AND a.decision = 'AUTO_APPROVED'""", Integer.class, po)).isZero();
+
+        // Someone else decides it, and four-eyes holds.
+        approve(po, approver(buyerUser)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("SELF_APPROVAL_NOT_ALLOWED"));
+        approve(po, approver(rejecter)).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+    }
+
+    @Test
+    @DisplayName("rule 4: three orders of 45,000 to the same supplier within a limit of 100,000 - the first two are "
+            + "approved (90,000), the third would make 135,000 and goes to a person")
+    void splittingAPurchaseIsCaught() throws Exception {
+        UUID person = personWithLimits(100_000);
+        String buyer = buyer(person);
+
+        UUID first = draft(buyer, 45_000);
+        UUID second = draft(buyer, 45_000);
+        UUID third = draft(buyer, 45_000);
+        submit(first, buyer).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        submit(second, buyer).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        submit(third, buyer).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"))
+                .andExpect(jsonPath("$.data.autoApproved").value(false));
+
+        // Another supplier, or another person, is a different purchase.
+        UUID otherSupplier = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO procurement.suppliers (id, code, name, status, version, created_at)
+                VALUES (?, ?, 'Other limit supplier', 'ACTIVE', 0, NOW())""", otherSupplier,
+                "LIM-" + otherSupplier.toString().substring(24).toUpperCase()));
+        SupplierItemFixtures.list(catalog, otherSupplier, sku);
+        String body = """
+                {"supplierId":"%s","warehouseId":"%s","currency":"VND",
+                 "lines":[{"sku":"%s","quantityOrdered":1,"unitPrice":45000}]}""".formatted(otherSupplier,
+                DemoData.WAREHOUSE_HCM, sku);
+        UUID elsewhere = UUID.fromString(data(call("/api/v1/purchase-orders", buyer, body)
+                .andExpect(status().isCreated())).path("purchaseOrderId").asText());
+        submit(elsewhere, buyer).andExpect(jsonPath("$.data.status").value("APPROVED"));
+
+        UUID colleague = personWithLimits(100_000);
+        submit(draft(buyer(colleague), 45_000), buyer(colleague)).andExpect(jsonPath("$.data.status").value("APPROVED"));
+    }
+
+    /**
+     * An order of {@code holder}'s to the test supplier that was auto-approved {@code daysAgo} days ago, put there
+     * directly (the approval record is append-only, so it cannot be back-dated through the API).
+     */
+    private void autoApprovedBefore(UUID holder, long total, String status, int daysAgo) {
+        UUID po = Identifiers.newId();
+        UUID revision = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
+                        order_date, submitted_at, submitted_by, approved_at, approved_by, auto_approved, cancel_reason,
+                        subtotal, total_amount, active_revision_id, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, TRUE, ?, ?, ?, ?, 0, NOW())""",
+                    po, "PO-AA-" + po.toString().substring(24), status, supplier, DemoData.WAREHOUSE_HCM, holder, holder,
+                    "CANCELLED".equals(status) ? "cancelled for the test" : null, total, total, revision);
+            jdbc.update("""
+                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
+                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
+                    revision, po, holder);
+            jdbc.update("""
+                    INSERT INTO procurement.purchase_order_approvals (id, po_revision_id, step_no, approver_id, decision,
+                        decision_at, limit_id, limit_amount, limit_role_id, limit_holder_id, version, created_at)
+                    SELECT ?, ?, 1, ?, 'AUTO_APPROVED', NOW() - make_interval(days => ?), l.id, l.max_po_amount, l.role_id,
+                           ?, 0, NOW()
+                      FROM procurement.approval_limits l JOIN identity.user_role ur ON ur.role_id = l.role_id
+                     WHERE ur.user_id = ? LIMIT 1""", Identifiers.newId(), revision, holder, daysAgo, holder, holder);
+        });
+    }
+
+    @Test
+    @DisplayName("rule 4: only the 7 days ending now count, and a cancelled order does not")
+    void antiSplittingWindowAndCancelled() throws Exception {
+        UUID person = personWithLimits(100_000);
+        String buyer = buyer(person);
+        autoApprovedBefore(person, 70_000, "APPROVED", 8);          // outside the window
+        autoApprovedBefore(person, 70_000, "CANCELLED", 1);         // inside, but cancelled
+        submit(draft(buyer, 60_000), buyer).andExpect(jsonPath("$.data.status").value("APPROVED"));
+
+        autoApprovedBefore(person, 41_000, "APPROVED", 6);        // inside the window, still live
+        submit(draft(buyer, 40_000), buyer).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));  // 60+41+40
+        UUID other = personWithLimits(100_000);
+        autoApprovedBefore(other, 41_000, "APPROVED", 6);
+        submit(draft(buyer(other), 59_000), buyer(other)).andExpect(jsonPath("$.data.status").value("APPROVED"));   // = 100,000
+    }
+
+    @Test
+    @DisplayName("the limit in force at submit time is the one used and the one recorded: closing or lowering it "
+            + "afterwards changes nothing for the order, and the approval still names the old row")
+    void limitAtSubmitTimeIsUsedAndRecorded() throws Exception {
+        UUID person = personWithLimits(100_000);
+        String buyer = buyer(person);
+        UUID before = draft(buyer, 90_000);
+        submit(before, buyer).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        Map<String, Object> oldRow = jdbc.queryForMap("""
+                SELECT l.id, l.role_id FROM procurement.approval_limits l
+                  JOIN identity.user_role ur ON ur.role_id = l.role_id WHERE ur.user_id = ?""", person);
+
+        // The limit is lowered afterwards: the old row is closed and a smaller one opens.
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE procurement.approval_limits SET effective_to = CURRENT_DATE - 1 WHERE id = ?", oldRow.get("id"));
+            jdbc.update("""
+                    INSERT INTO procurement.approval_limits (id, role_id, currency, max_po_amount, effective_from, version,
+                                                             created_at)
+                    VALUES (?, ?, 'VND', 20000, CURRENT_DATE - 1, 0, NOW())""", Identifiers.newId(), oldRow.get("role_id"));
+        });
+        submit(draft(buyer, 30_000), buyer).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
+
+        Map<String, Object> approval = jdbc.queryForMap("""
+                SELECT a.limit_id, a.limit_amount FROM procurement.purchase_order_approvals a
+                  JOIN procurement.purchase_order_revisions r ON r.id = a.po_revision_id WHERE r.po_id = ?""", before);
+        assertThat(approval).containsEntry("limit_id", oldRow.get("id"));
+        assertThat((java.math.BigDecimal) approval.get("limit_amount")).isEqualByComparingTo("100000");
     }
 
     // ------------------------------------------------------------------ the database states it too
