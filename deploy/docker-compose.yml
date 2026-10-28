@@ -123,6 +123,11 @@ services:
       # Off by default for the reason in application.yml: the request carries its own unit price.
       STOCKFLOW_CHECKOUT_GUEST_ENABLED: ${GUEST_CHECKOUT_ENABLED:-false}
       STOCKFLOW_UPLOAD_INSPECTION_ENABLED: "false"
+      # Connections allowed to set the client address through X-Forwarded-For (SCRUM-483): a regex over the
+      # peer address. nginx reaches the application over the compose network (private range); the
+      # application publishes no port. Same value as the default in application-prod.yml / -dev.yml. A
+      # request from anywhere else keeps its own address whatever the header says.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|127\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0:0:0:0:0:0:0:1|::1}
       STOCKFLOW_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS: ${CORS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*}
       OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
       # Spring Boot's mail starter is on the classpath; these create its JavaMailSender. Mailpit
