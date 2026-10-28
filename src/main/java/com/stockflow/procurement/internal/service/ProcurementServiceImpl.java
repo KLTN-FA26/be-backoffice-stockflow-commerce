@@ -893,7 +893,6 @@ class ProcurementServiceImpl implements ProcurementService {
             ResolvedLine line = lines.get(i);
             LineInput in = line.input();
             String field = "lines[" + i + "].";
-            int before = errors.size();
             String code = blankToNull(in.unitOfMeasure());
             if (code == null) {
                 if (in.unitQuantity() != null) {
@@ -927,14 +926,13 @@ class ProcurementServiceImpl implements ProcurementService {
                 } else if (in.quantity() != null && in.quantity() != quantity) {
                     errors.add(new FieldError(field + "quantityOrdered", "%d %s hold %d units, not %d"
                             .formatted(in.unitQuantity(), wanted, quantity, in.quantity()), ErrorCode.VALIDATION_FAILED.name()));
+                } else {
+                    sized.add(new SizedLine((int) quantity, unit.base() ? null
+                            : new PackingUnit(unit.id(), unit.unitOfMeasure(), unit.factor(), in.unitQuantity()), true));
+                    continue;
                 }
             }
-            if (errors.size() > before) {
-                sized.add(new SizedLine(0, null, true));
-                continue;
-            }
-            sized.add(new SizedLine((int) ((long) in.unitQuantity() * unit.factor()), unit.base() ? null
-                    : new PackingUnit(unit.id(), unit.unitOfMeasure(), unit.factor(), in.unitQuantity()), true));
+            sized.add(new SizedLine(0, null, true));
         }
         if (!errors.isEmpty()) {
             long linesAtFault = errors.stream().map(error -> error.field().substring(0, error.field().indexOf(']')))
