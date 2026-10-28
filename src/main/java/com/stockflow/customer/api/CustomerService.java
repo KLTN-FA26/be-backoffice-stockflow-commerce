@@ -89,8 +89,12 @@ public interface CustomerService {
     /**
      * Set the terms; whoever approves credit only (18 BR-02), recorded with who and when.
      *
+     * <p>Terms that already exist are changed only against the version the caller read
+     * ({@link SaveCreditTermsCommand#expectedVersion()}); only the first set may omit it.</p>
+     *
      * @throws com.stockflow.common.error.BusinessException {@code CREDIT_PROFILE_INVALID},
-     *         {@code CUSTOMER_NOT_FOUND}, {@code OPTIMISTIC_LOCK} when they changed since read
+     *         {@code CUSTOMER_NOT_FOUND}, {@code VALIDATION_FAILED} (field {@code expectedVersion}) when the
+     *         customer has terms and no version was sent, {@code OPTIMISTIC_LOCK} when they changed since read
      */
     CreditTerms saveCreditTerms(SaveCreditTermsCommand command);
 }

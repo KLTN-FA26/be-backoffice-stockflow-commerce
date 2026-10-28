@@ -1,5 +1,6 @@
 package com.stockflow.customer.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -95,6 +96,14 @@ class CustomerServiceImpl implements CustomerService {
                 new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND, "No customer " + command.customerId()));
         var existing = creditProfiles.findByCustomerId(command.customerId());
         long current = existing.map(CreditProfile::version).orElse(-1L);
+        // SCRUM-484: terms that already exist are changed only against the version the caller read. Without it
+        // two approvers editing at once would overwrite each other silently. The first set may omit it.
+        if (existing.isPresent() && command.expectedVersion() == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "expectedVersion is required: customer %s already has terms".formatted(command.customerId()),
+                    List.of(new FieldError("expectedVersion",
+                            "is required when the customer already has terms", "NotNull")));
+        }
         if (command.expectedVersion() != null && command.expectedVersion() != current) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "The terms of customer %s changed since they were read".formatted(command.customerId()));

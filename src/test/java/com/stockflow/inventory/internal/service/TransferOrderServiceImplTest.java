@@ -587,6 +587,36 @@ class TransferOrderServiceImplTest {
         }
 
         @Test
+        @DisplayName("issue 206: the rejection's reason, approver and time are stored and shown on the transfer, also when read again")
+        void rejectionIsKept() {
+            TransferOrder order = draft(THRESHOLD + 1);
+            service.submit(order.id(), PLANNER);
+
+            TransferOrders.Transfer rejected = service.reject(order.id(), APPROVER, "  Too much for Hanoi ");
+
+            assertThat(rejected.rejectedBy()).isEqualTo(APPROVER);
+            assertThat(rejected.rejectedAt()).isEqualTo(NOW);
+            assertThat(rejected.rejectionReason()).isEqualTo("Too much for Hanoi");
+            TransferOrders.Transfer read = service.get(order.id());
+            assertThat(read.status()).isEqualTo(TransferStatus.DRAFT);
+            assertThat(read.rejectedBy()).isEqualTo(APPROVER);
+            assertThat(read.rejectionReason()).isEqualTo("Too much for Hanoi");
+        }
+
+        @Test
+        @DisplayName("a refused rejection (no reason) leaves the transfer pending and without a rejection")
+        void refusedRejectionStoresNothing() {
+            TransferOrder order = draft(THRESHOLD + 1);
+            service.submit(order.id(), PLANNER);
+
+            assertThat(codeOf(() -> service.reject(order.id(), APPROVER, " "))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+            TransferOrders.Transfer read = service.get(order.id());
+            assertThat(read.status()).isEqualTo(TransferStatus.PENDING_APPROVAL);
+            assertThat(read.rejectionReason()).isNull();
+        }
+
+        @Test
         @DisplayName("the submitter cannot reject their own transfer either")
         void selfRejection() {
             TransferOrder order = draft(THRESHOLD + 1);

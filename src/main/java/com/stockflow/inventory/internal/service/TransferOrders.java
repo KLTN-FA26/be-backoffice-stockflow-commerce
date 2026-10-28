@@ -52,13 +52,16 @@ public interface TransferOrders {
      * @param deliveryMode LP2-8: FULL_TRUCKLOAD (packed, load-planned, dispatched by its plan's last vehicle) or PARCEL
      * @param packedAt     its packing completed: ready for a load plan (SCRUM-287 PR T)
      * @param goodsLeftAt  goods of it first left on a load plan's vehicle: picking is no longer cancelled (10 BR-04)
+     * @param rejectedBy      the approver of its last rejection (10 §5), null when it was never rejected
+     * @param rejectedAt      when that rejection was made
+     * @param rejectionReason why: what the planner reads in DRAFT before changing and resubmitting it
      */
     record Transfer(UUID transferId, String number, UUID fromWarehouseId, UUID toWarehouseId, TransferStatus status,
                     TransferReason reason, LocalDate expectedDate, List<Line> lines, UUID submittedBy,
                     Instant submittedAt, UUID approvedBy, Instant approvedAt, UUID dispatchedBy, Instant dispatchedAt,
                     String cancelReason, Instant createdAt, long version,
                     com.stockflow.inventory.api.TransferDeliveryMode deliveryMode, Instant packedAt,
-                    Instant goodsLeftAt) {
+                    Instant goodsLeftAt, UUID rejectedBy, Instant rejectedAt, String rejectionReason) {
     }
 
     /** @param deliveryMode LP2-8; @param packedAt its packing completed - ready for a load plan (SCRUM-287 PR T) */
