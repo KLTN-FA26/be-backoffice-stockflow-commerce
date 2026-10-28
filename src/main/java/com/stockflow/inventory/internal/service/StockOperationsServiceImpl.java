@@ -31,6 +31,7 @@ import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CountVariance;
+import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
@@ -52,6 +53,7 @@ import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import com.stockflow.inventory.internal.repository.SlotsUnderCount;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
@@ -99,6 +101,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private final StockItemRepository stockItems;
     private final StockAdjustmentRepository adjustments;
     private final StockAdjustmentSearch adjustmentSearch;
+    private final SlotsUnderCount underCount;
     private final StockMovementLog ledger;
     private final StockLedgerSearch ledgerSearch;
     private final LocationDirectory locations;
@@ -111,13 +114,17 @@ class StockOperationsServiceImpl implements StockOperations {
     /** The cartons labelled while receiving (SCRUM-473); taken from through {@link #cartons}. */
     private final StockPackageRepository stockPackages;
     private final UomConversionRepository units;
+    private final CycleCountRepository countLines;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
                                InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
                                InventoryEventPublisher events, StockPackageRepository stockPackages,
-                               UomConversionRepository units) {
+                               UomConversionRepository units, SlotsUnderCount underCount,
+                               CycleCountRepository countLines) {
+        this.underCount = underCount;
+        this.countLines = countLines;
         this.stockPackages = stockPackages;
         this.units = units;
         this.cartons = cartons;
@@ -141,7 +148,8 @@ class StockOperationsServiceImpl implements StockOperations {
         StockMovement.ReferenceType referenceType = StockMovement.ReferenceType.valueOf(command.reference().name());
         UUID referenceId = command.referenceId() != null ? command.referenceId() : command.requestId();
         return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
-                command.toLocation(), command.quantity(), null, referenceType, referenceId, command.actorId(), null);
+                command.toLocation(), command.quantity(), null, referenceType, referenceId, command.actorId(), null,
+                command.reference() == MoveReference.MOVE_TASK);
     }
 
     @Override
@@ -150,7 +158,7 @@ class StockOperationsServiceImpl implements StockOperations {
         return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
                 command.toLocation(), command.quantity(), StockStatus.valueOf(command.disposition().name()),
                 StockMovement.ReferenceType.valueOf(command.reference().name()), command.referenceId(),
-                command.actorId(), blankToNull(command.reason()));
+                command.actorId(), blankToNull(command.reason()), false);
     }
 
     /**
@@ -160,7 +168,7 @@ class StockOperationsServiceImpl implements StockOperations {
      */
     private StockMove relocate(Sku sku, String lotNumber, Instant receivedAt, String fromCode, String toCode,
                                int qty, StockStatus target, StockMovement.ReferenceType referenceType,
-                               UUID referenceId, UUID actorId, String reason) {
+                               UUID referenceId, UUID actorId, String reason, boolean refuseUnderCount) {
         // BR-SEC-002 (SCRUM-457): both ends in a warehouse the caller is assigned to. First, so a
         // replay cannot reveal a move made in someone else's warehouse.
         WarehouseScope.requireLocation(fromCode);
@@ -176,8 +184,35 @@ class StockOperationsServiceImpl implements StockOperations {
             return toMove(done.get());
         }
 
+        if (refuseUnderCount) {
+            requireNotUnderCount(sku, lotNumber, new LocationId(fromCode), new LocationId(toCode));
+        }
         return moveLayer(sku, lotNumber, receivedAt, new LocationId(fromCode), new LocationId(toCode), qty, target,
                 referenceType, referenceId, actorId, reason, null);
+    }
+
+    /**
+     * SCRUM-146 (owner decision 28/10): a move a person asks for does not take loose stock out of, or put it into, a
+     * slot a cycle count holds - the count would be of books that changed under it. The slot is the loose bin, SKU and
+     * lot ({@link CountSlot}) and held is exactly what {@code claim} calls busy (open count, or submitted with its
+     * variance still pending), so the two cannot disagree. Asked through {@code claim}, which also takes the slots'
+     * advisory locks in sorted order: a count planned at the same moment either sees this move committed or waits.
+     * Whoever asks, whatever they may do: this protects the count, it is not a visibility rule.
+     */
+    private void requireNotUnderCount(Sku sku, String lotNumber, LocationId from, LocationId to) {
+        CountSlot source = CountSlot.loose(from, sku, lotNumber);
+        CountSlot destination = CountSlot.loose(to, sku, lotNumber);
+        Map<CountSlot, String> busy = countLines.claim(List.of(source, destination));
+        for (CountSlot slot : List.of(source, destination)) {
+            String count = busy.get(slot);
+            if (count != null) {
+                throw new BusinessException(ErrorCode.STOCK_SLOT_UNDER_COUNT,
+                        "%s of %s%s is under count %s; it cannot be moved %s until the count is done".formatted(
+                                slot.location(), sku, lotSuffix(lotNumber), count,
+                                slot == source ? "out" : "in"),
+                        List.of(), Map.of("locationCode", slot.location().code(), "cycleCountNumber", count));
+            }
+        }
     }
 
     /**
@@ -1426,6 +1461,7 @@ class StockOperationsServiceImpl implements StockOperations {
     public StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId) {
         StockAdjustment adjustment = load(adjustmentId);
         policies.lock(adjustment.sku().code());
+        requireNotCounter(adjustment, approverId);
         if (adjustment.stockPackageId() != null) {
             return approveCarton(adjustment, approverId);
         }
@@ -1501,6 +1537,17 @@ class StockOperationsServiceImpl implements StockOperations {
         return toSummary(saved);
     }
 
+    /**
+     * A count variance is decided by someone other than whoever counted its line (spec §6 four eyes, SCRUM-146): the
+     * requester check of the aggregate only sees the submitter, who is not always the one who entered the figure
+     * (an approver may count a line on an assigned count). A line's counter is fixed once the count is submitted.
+     */
+    private void requireNotCounter(StockAdjustment adjustment, UUID decider) {
+        if (adjustment.cycleCountLineId() != null) {
+            adjustment.requireNotCountedBy(decider, countLines.countedByOf(adjustment.cycleCountLineId()).orElse(null));
+        }
+    }
+
     /** The ledger's reason for a posted adjustment: its reason code, and the note when there is one. */
     private static String ledgerReason(StockAdjustment adjustment) {
         return adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note());
@@ -1510,6 +1557,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Auditable(action = AuditAction.REJECT, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary reject(UUID adjustmentId, UUID approverId, String reason) {
         StockAdjustment adjustment = load(adjustmentId);
+        requireNotCounter(adjustment, approverId);
         adjustment.reject(approverId, reason, clock.instant());
         return toSummary(adjustments.save(adjustment));
     }
@@ -1525,19 +1573,23 @@ class StockOperationsServiceImpl implements StockOperations {
 
     @Override
     @Transactional(readOnly = true)
-    public Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId) {
-        // Out of the caller's warehouses reads as not found: its existence is not theirs to know.
+    public Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId, BookVisibility visibility) {
+        // Out of the caller's warehouses reads as not found: its existence is not theirs to know. So does the
+        // adjustment of a slot under a count, for a reader blind to its books.
         return adjustments.findById(adjustmentId)
                 .filter(adjustment -> inScope(adjustment.location().code()))
+                .filter(adjustment -> !visibility.hidesCountedSlots() || !underCount.adjustmentUnderCount(adjustmentId))
                 .map(StockOperationsServiceImpl::toSummary);
     }
 
     @Override
     @Transactional(readOnly = true)
     public PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                           int page, int size, String sort) {
+                                                           int page, int size, String sort,
+                                                           BookVisibility visibility) {
         var criteria = new StockAdjustmentSearch.Criteria(
-                status == null ? null : AdjustmentStatus.valueOf(status.name()), sku, location);
+                status == null ? null : AdjustmentStatus.valueOf(status.name()), sku, location,
+                visibility.hidesCountedSlots());
         return Pages.toResponse(adjustmentSearch.search(criteria, Pages.of(page, size, ADJUSTMENT_SORT.parse(sort)))
                 .map(StockOperationsServiceImpl::toSummary));
     }
@@ -1545,9 +1597,10 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
-                                           int page, int size) {
+                                           int page, int size, BookVisibility visibility) {
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "occurredAt"));
-        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(sku, location, type), pageable)
+        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(sku, location, type,
+                        visibility.hidesCountedSlots()), pageable)
                 .map(StockOperationsServiceImpl::toLine));
     }
 

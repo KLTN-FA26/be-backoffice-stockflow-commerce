@@ -39,7 +39,8 @@ public class ProductCommerceRepository {
                                         r.getString("description"),
                                         null,
                                         status(r.getString("status")),
-                                        List.of()),
+                                        List.of(),
+                                        kind(r.getString("kind"))),
                         id);
         if (rows.isEmpty()) throw new BusinessException(ErrorCode.PRODUCT_NOT_FOUND);
         var p = rows.getFirst();
@@ -66,7 +67,8 @@ order by pc.is_primary desc, pc.id limit 1
                 p.description(),
                 categories.isEmpty() ? null : categories.getFirst(),
                 p.status(),
-                skus);
+                skus,
+                p.kind());
     }
 
     private static ProductStatus status(String status) {
@@ -123,6 +125,23 @@ order by pc.is_primary desc, pc.id limit 1
                                 + ")",
                         (r, n) -> r.getObject(1, UUID.class),
                         ids.toArray()));
+    }
+
+    /** The kind of each PUBLISHED product among {@code ids}; one that is not published, or unknown, has no entry. */
+    public java.util.Map<UUID, com.stockflow.product.api.ProductKind> publishedKinds(Set<UUID> ids) {
+        if (ids.isEmpty()) return java.util.Map.of();
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        java.util.Map<UUID, com.stockflow.product.api.ProductKind> kinds = new java.util.LinkedHashMap<>();
+        jdbc.query(
+                "select id,kind from product.products where status='PUBLISHED' and id in (" + placeholders + ")",
+                (r, n) -> kinds.put(r.getObject(1, UUID.class), kind(r.getString(2))),
+                ids.toArray());
+        return kinds;
+    }
+
+    private static com.stockflow.product.api.ProductKind kind(String kind) {
+        return "CUSTOMIZABLE".equals(kind) ? com.stockflow.product.api.ProductKind.CUSTOMIZABLE
+                : com.stockflow.product.api.ProductKind.STANDARD;
     }
 
     public List<UUID> publishedPage(UUID after, int size) {

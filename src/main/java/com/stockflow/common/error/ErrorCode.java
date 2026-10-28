@@ -200,7 +200,10 @@ public enum ErrorCode {
     STOCK_PACKAGE_LABELS_TOO_MANY("At most 500 carton labels at a time", 422),
     /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
     MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
-    /** Four eyes: whoever asked for a stock adjustment may not decide it. */
+    /**
+     * Four eyes: whoever asked for a stock adjustment may not decide it - nor, for a {@code COUNT_VARIANCE}, whoever
+     * counted the line it came from.
+     */
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
@@ -431,6 +434,12 @@ public enum ErrorCode {
     PAYMENT_REVERSAL_NEEDS_HOLD("Taking this money back leaves a confirmed order unpaid: confirm putting it on hold", 409),
     /** G2-3: money already refunded, or the order settled, closed or cancelled: the reversal would rewrite history. */
     PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
+    /**
+     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
+     * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and
+     * the client asks the customer, then resends with {@code confirmDuplicate: true}.
+     */
+    DUPLICATE_ORDER_SUSPECTED("An order with the same items was placed recently; confirm to place another", 409),
     /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
     BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
     /**
@@ -474,10 +483,17 @@ public enum ErrorCode {
     CYCLE_COUNT_TOO_LARGE("The count scope is too large - narrow it", 422),
     /** A counter who is not the assignee and may not decide. */
     CYCLE_COUNT_NOT_ASSIGNEE("This count is assigned to someone else", 403),
+    /**
+     * A line already counted by someone else on a count assigned to a third person: the figure is the counter's to
+     * correct. Whoever may decide could otherwise replace it and then approve the variance it raises.
+     */
+    CYCLE_COUNT_LINE_COUNTED_BY_OTHER("This line was counted by someone else; only the assignee may count it again", 403),
     /** Submitting a count that still has uncounted lines. */
     CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
     /** A slot already held by an open count. */
     CYCLE_COUNT_SLOT_BUSY("This stock slot is already on an open count", 409),
+    /** A manual move out of or into a slot a cycle count holds (SCRUM-146). */
+    STOCK_SLOT_UNDER_COUNT("This stock slot is under a cycle count; stock cannot be moved out of or into it", 409),
     /** A surplus where the slot has no layer to receive it. */
     CYCLE_COUNT_UNKNOWN_LAYER("The surplus cannot be placed on any receipt layer", 422),
     /** A shortage larger than what the slot holds now. */

@@ -127,10 +127,24 @@ public interface StockOperations {
     /** The requester takes back an adjustment nobody has decided yet (SCRUM-459). */
     StockAdjustmentSummary withdraw(UUID adjustmentId, UUID userId);
 
-    Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId);
+    default Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId) {
+        return findAdjustment(adjustmentId, BookVisibility.FULL);
+    }
 
+    /** As above; an adjustment of a slot under a count is not found for a reader who may not see the books (SCRUM-146). */
+    Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId, BookVisibility visibility);
+
+    default PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
+                                                            int page, int size, String sort) {
+        return adjustments(status, sku, location, page, size, sort, BookVisibility.FULL);
+    }
+
+    /**
+     * As above, without the adjustments of slots under a count (open, or its variance still pending approval) for a
+     * reader who may not see the books: a pending {@code COUNT_VARIANCE} is a delta against them (SCRUM-146).
+     */
     PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                    int page, int size, String sort);
+                                                    int page, int size, String sort, BookVisibility visibility);
 
     /** One line of the stock history, as the screen shows it. */
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
@@ -139,6 +153,12 @@ public interface StockOperations {
                       java.time.Instant occurredAt) {
     }
 
+    default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
+                                            int page, int size) {
+        return ledger(sku, location, type, page, size, BookVisibility.FULL);
+    }
+
+    /** As above, without the lines of slots under a count for a reader who may not see their books (SCRUM-146). */
     PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
-                                    int page, int size);
+                                    int page, int size, BookVisibility visibility);
 }

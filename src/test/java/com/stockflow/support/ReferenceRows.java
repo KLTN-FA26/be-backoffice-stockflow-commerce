@@ -16,12 +16,6 @@ import java.util.UUID;
  */
 public final class ReferenceRows {
 
-    /**
-     * Order numbers of {@link #orderWithLine}: well formed ({@code OrderNumber} reads every order the database holds -
-     * the sales rollup's rebuild of a day reads them all, whoever placed them), on a date no real sequence reaches.
-     */
-    public static final String REFERENCE_ORDER_PREFIX = "SO-20991231-";
-
     private ReferenceRows() {
     }
 
@@ -100,6 +94,20 @@ public final class ReferenceRows {
         return row;
     }
 
+    /** Every fixture order number starts with this, after the date: real numbers never reach 9 followed by 11 digits. */
+    public static final String ORDER_NUMBER_INFIX = "-9";
+
+    /**
+     * A well-formed order number ({@code SO-yyyyMMdd-NNNNNN...}, what {@code OrderNumber} accepts - the reporting
+     * rebuild and the order API parse every order in the table) that is still recognisable as a fixture's:
+     * {@code SO-<placed day>-9<11 digits from the id>}.
+     */
+    static String orderNumber(UUID order) {
+        long digits = Long.remainderUnsigned(order.getLeastSignificantBits(), 100_000_000_000L);
+        return "SO-%s%s%011d".formatted(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh"))
+                .format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE), ORDER_NUMBER_INFIX, digits);
+    }
+
     /**
      * A placed order with one line of {@code sku}, in {@code status}, on credit (the payment term every status
      * accepts); {@code releasedBy} and {@code warehouseId} are what an order that has been released needs.
@@ -121,7 +129,7 @@ public final class ReferenceRows {
                                 CASE WHEN ?5 IN ('DELIVERED', 'COMPLETED') THEN NOW() END,
                                 CASE WHEN ?5 = 'COMPLETED' THEN NOW() END, 0, NOW())""")
                 .setParameter(1, order)
-                .setParameter(2, REFERENCE_ORDER_PREFIX + Long.toUnsignedString(order.getLeastSignificantBits()))
+                .setParameter(2, orderNumber(order))
                 .setParameter(3, customerId)
                 .setParameter(4, Identifiers.newId())
                 .setParameter(5, status)

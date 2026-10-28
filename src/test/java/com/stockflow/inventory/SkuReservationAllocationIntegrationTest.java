@@ -430,7 +430,7 @@ class SkuReservationAllocationIntegrationTest {
                   JOIN identity.permission p ON p.id = rp.permission_id
                  WHERE ro.code = 'WAREHOUSE_STAFF' AND p.resource = 'inventory-cycle-counts'""", String.class))
                 .as("docs 04c F-CNT: the warehouse staff count").containsExactlyInAnyOrder(
-                        "inventory-cycle-counts:VIEW_PAGE", "inventory-cycle-counts:READ");
+                        "inventory-cycle-counts:VIEW_PAGE", "inventory-cycle-counts:READ", "inventory-cycle-counts:UPDATE");
 
         // The short bin's free unit is in doubt: not promised, not allocated, until the count is called off.
         assertThat(allocation.locationCode()).isEqualTo("HCM-A01-1-B");
