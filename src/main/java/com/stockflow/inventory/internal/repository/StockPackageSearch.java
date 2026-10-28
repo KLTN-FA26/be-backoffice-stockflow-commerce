@@ -1,12 +1,10 @@
 package com.stockflow.inventory.internal.repository;
 
+import com.stockflow.inventory.internal.domain.StockPackageBalance;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
-import com.stockflow.inventory.internal.domain.StockStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
-import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -21,24 +19,10 @@ import java.util.UUID;
 public interface StockPackageSearch {
 
     /**
-     * One carton as {@code inventory.stock_package_balance} shows it. {@code lotNumber} and {@code expiryDate} are those
-     * of its rows holding stock - a carton holds one lot at most - and null when it holds nothing.
+     * What {@link #cartons} sorts by. The service's whitelist is built from this list and the adapter refuses to start
+     * unless it has a column for each, so a property cannot pass the whitelist and then fail in the query.
      */
-    record CartonRow(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty, Integer receivedQty,
-                     String locationCode, StockPackageStatus status, boolean unopened, String lotNumber,
-                     LocalDate expiryDate, int onHand, int reserved, UUID goodsReceiptLineId, Instant closedAt) {
-    }
-
-    /** One stock row inside a carton. */
-    record ContentRow(String lotNumber, LocalDate expiryDate, Instant receivedAt, StockStatus status, int onHand,
-                      int reserved) {
-    }
-
-    /** What one location holds of one SKU, lot and stock status. */
-    record LocationLine(String sku, String lotNumber, LocalDate expiryDate, StockStatus status,
-                        int wholeCartons, int wholeCartonUnits, int openedCartons, int openedCartonUnits,
-                        int looseUnits) {
-    }
+    List<String> SORTABLE = List.of("lpn", "locationCode", "sku");
 
     /**
      * @param locationCode      one exact location code; null for any
@@ -50,14 +34,14 @@ public interface StockPackageSearch {
                           Set<String> warehousePrefixes) {
     }
 
-    Optional<CartonRow> byLpn(String lpn);
+    Optional<StockPackageBalance> byLpn(String lpn);
 
     /** Its stock rows holding something, earliest expiry first, then oldest receipt. */
-    List<ContentRow> contentsOf(UUID stockPackageId);
+    List<StockPackageBalance.Content> contentsOf(UUID stockPackageId);
 
     /** Grouped by SKU, lot, expiry and stock status; rows holding nothing are left out. */
-    List<LocationLine> atLocation(String locationCode);
+    List<StockPackageBalance.LocationLine> atLocation(String locationCode);
 
-    /** Sortable by {@code lpn}, {@code locationCode} and {@code sku}. */
-    Page<CartonRow> cartons(CartonCriteria criteria, Pageable pageable);
+    /** Sortable by {@link #SORTABLE}. */
+    Page<StockPackageBalance> cartons(CartonCriteria criteria, Pageable pageable);
 }

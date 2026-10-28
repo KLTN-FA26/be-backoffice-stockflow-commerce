@@ -150,16 +150,21 @@ class StockPackageLookupHttpTest {
                 .andExpect(jsonPath("$.data.lpn").value(lpns.getFirst()))
                 .andExpect(jsonPath("$.data.onHand").value(1000))
                 .andExpect(jsonPath("$.data.unopened").value(true))
-                .andExpect(jsonPath("$.data.contents.length()").value(1));
+                .andExpect(jsonPath("$.data.status").value("IN_STOCK"))
+                .andExpect(jsonPath("$.data.locationCode").value(RECEIVING))
+                .andExpect(jsonPath("$.data.contents.length()").value(1))
+                .andExpect(jsonPath("$.data.contents[0].status").value("INBOUND"));
         read(Role.WAREHOUSE_STAFF, clerk, "/location-summary?location=" + RECEIVING)
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.sku == '%s')].status", sku).value("INBOUND"))
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].wholeCartons", sku).value(2))
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].looseUnits", sku).value(20))
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].totalUnits", sku).value(2000));
         read(Role.WAREHOUSE_STAFF, clerk, "?sku=" + sku)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(2))
-                .andExpect(jsonPath("$.data.items[1].onHand").value(980));
+                .andExpect(jsonPath("$.data.items[1].onHand").value(980))
+                .andExpect(jsonPath("$.data.items[1].status").value("IN_STOCK"));
     }
 
     @Test

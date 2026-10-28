@@ -10,18 +10,16 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
+import com.stockflow.inventory.internal.domain.StockPackageBalance;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.repository.StockPackageSearch;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.UUID;
 
 /**
  * The carton lookup (SCRUM-473, #125 item 11, the carton lookup screen of #138): a carton by the LPN on its label,
@@ -41,36 +39,8 @@ public class StockPackageLookup {
     /** Live cartons: a CONSUMED one keeps the location it was emptied at, and listing it there would look like stock. */
     static final List<StockPackageStatus> LIVE = List.of(StockPackageStatus.RECEIVING, StockPackageStatus.IN_STOCK);
 
-    private static final SortWhitelist SORT = SortWhitelist.of("lpn", "locationCode", "sku")
+    private static final SortWhitelist SORT = SortWhitelist.of(StockPackageSearch.SORTABLE.toArray(String[]::new))
             .withDefault("lpn", Sort.Direction.ASC);
-
-    /**
-     * @param nominalQty what the carton was made to hold: its packing unit's factor then
-     * @param lotNumber  of the stock it holds (one lot at most); null when it holds nothing
-     * @param onHand     what is left in it, the sum of its rows; 0 for a carton with none yet (RECEIVING)
-     * @param reserved   of that, what orders hold
-     * @param contents   its rows holding stock, earliest expiry first
-     */
-    public record Detail(String lpn, String sku, String unitOfMeasure, int nominalQty, Integer receivedQty,
-                         String lotNumber, LocalDate expiryDate, int onHand, int reserved, String status,
-                         boolean unopened, String locationCode, UUID goodsReceiptLineId, Instant closedAt,
-                         List<Content> contents) {
-    }
-
-    public record Content(String lotNumber, LocalDate expiryDate, Instant receivedAt, String status, int onHand,
-                          int reserved) {
-    }
-
-    /** One SKU, lot and stock status at a location; {@code totalUnits} is the three unit columns added. */
-    public record LocationLine(String sku, String lotNumber, LocalDate expiryDate, String status, int wholeCartons,
-                               int wholeCartonUnits, int openedCartons, int openedCartonUnits, int looseUnits,
-                               int totalUnits) {
-    }
-
-    public record Carton(String lpn, String sku, String unitOfMeasure, int nominalQty, Integer receivedQty,
-                         String lotNumber, LocalDate expiryDate, int onHand, int reserved, String status,
-                         boolean unopened, String locationCode, UUID goodsReceiptLineId) {
-    }
 
     /**
      * @param location one exact location code; null for any the caller may see
@@ -92,21 +62,14 @@ public class StockPackageLookup {
      * @throws BusinessException {@code STOCK_PACKAGE_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE} for a carton in a warehouse
      *         the caller is not assigned to, whatever its status
      */
-    public Detail byLpn(String lpn) {
+    public StockPackageBalance.Detail byLpn(String lpn) {
         String normal = StockPackageView.normalLpn(lpn);
-        StockPackageSearch.CartonRow carton = (normal == null ? null : search.byLpn(normal).orElse(null));
+        StockPackageBalance carton = (normal == null ? null : search.byLpn(normal).orElse(null));
         if (carton == null) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No carton " + normal);
         }
         WarehouseScope.requireLocation(carton.locationCode());
-        List<Content> contents = search.contentsOf(carton.id()).stream()
-                .map(row -> new Content(row.lotNumber(), row.expiryDate(), row.receivedAt(), row.status().name(),
-                        row.onHand(), row.reserved()))
-                .toList();
-        return new Detail(carton.lpn(), carton.sku(), carton.unitOfMeasure(), carton.nominalQty(),
-                carton.receivedQty(), carton.lotNumber(), carton.expiryDate(), carton.onHand(), carton.reserved(),
-                carton.status().name(), carton.unopened(), carton.locationCode(), carton.goodsReceiptLineId(),
-                carton.closedAt(), contents);
+        return new StockPackageBalance.Detail(carton, search.contentsOf(carton.id()));
     }
 
     /**
@@ -115,7 +78,7 @@ public class StockPackageLookup {
      * @throws BusinessException {@code VALIDATION_FAILED} for a blank code; {@code OUT_OF_DATA_SCOPE};
      *         {@code LOCATION_NOT_FOUND}
      */
-    public List<LocationLine> atLocation(String locationCode) {
+    public List<StockPackageBalance.LocationLine> atLocation(String locationCode) {
         String code = normalCode(locationCode);
         if (code == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "location is required");
@@ -124,12 +87,7 @@ public class StockPackageLookup {
         if (locations.stateOf(new LocationId(code)) == LocationDirectory.LocationState.UNKNOWN) {
             throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + code);
         }
-        return search.atLocation(code).stream()
-                .map(line -> new LocationLine(line.sku(), line.lotNumber(), line.expiryDate(), line.status().name(),
-                        line.wholeCartons(), line.wholeCartonUnits(), line.openedCartons(), line.openedCartonUnits(),
-                        line.looseUnits(),
-                        line.wholeCartonUnits() + line.openedCartonUnits() + line.looseUnits()))
-                .toList();
+        return search.atLocation(code);
     }
 
     /**
@@ -137,7 +95,7 @@ public class StockPackageLookup {
      * empty page, as every scoped filter in inventory answers. An unknown SKU or location is an empty page: they are
      * filters.
      */
-    public PageResponse<Carton> cartons(CartonQuery query) {
+    public PageResponse<StockPackageBalance> cartons(CartonQuery query) {
         String location = normalCode(query.location());
         if (location != null) {
             WarehouseScope.requireLocation(location);
@@ -149,10 +107,7 @@ public class StockPackageLookup {
         List<StockPackageStatus> statuses = asked.isEmpty() ? LIVE : asked;
         var criteria = new StockPackageSearch.CartonCriteria(location, sku, statuses,
                 WarehouseScope.restriction().map(AssignedWarehouses::prefixes).orElse(null));
-        return Pages.toResponse(search.cartons(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort()))),
-                row -> new Carton(row.lpn(), row.sku(), row.unitOfMeasure(), row.nominalQty(), row.receivedQty(),
-                        row.lotNumber(), row.expiryDate(), row.onHand(), row.reserved(), row.status().name(),
-                        row.unopened(), row.locationCode(), row.goodsReceiptLineId()));
+        return Pages.toResponse(search.cartons(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort()))));
     }
 
     /** Location codes and SKUs are stored upper-case; a client may send either. Blank is absent. */

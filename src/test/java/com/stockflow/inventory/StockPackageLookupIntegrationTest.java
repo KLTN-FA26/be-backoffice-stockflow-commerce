@@ -12,11 +12,12 @@ import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.StockPackageView;
+import com.stockflow.inventory.internal.domain.StockPackageBalance;
+import com.stockflow.inventory.internal.domain.StockPackageBalance.LocationLine;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.service.StockPackageLookup;
-import com.stockflow.inventory.internal.service.StockPackageLookup.Carton;
 import com.stockflow.inventory.internal.service.StockPackageLookup.CartonQuery;
-import com.stockflow.inventory.internal.service.StockPackageLookup.LocationLine;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -122,7 +123,7 @@ class StockPackageLookupIntegrationTest {
         inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
     }
 
-    private PageResponse<Carton> list(String location, String sku, List<StockPackageStatus> statuses) {
+    private PageResponse<StockPackageBalance> list(String location, String sku, List<StockPackageStatus> statuses) {
         return lookup.cartons(new CartonQuery(location, sku, statuses, 0, 20, null));
     }
 
@@ -135,7 +136,8 @@ class StockPackageLookupIntegrationTest {
     void detailByLowerCaseLpn() {
         receive();
 
-        StockPackageLookup.Detail detail = lookup.byLpn(" " + lpns.getFirst().toLowerCase(Locale.ROOT) + " ");
+        StockPackageBalance.Detail found = lookup.byLpn(" " + lpns.getFirst().toLowerCase(Locale.ROOT) + " ");
+        StockPackageBalance detail = found.carton();
 
         assertThat(detail.lpn()).isEqualTo(lpns.getFirst());
         assertThat(detail.sku()).isEqualTo(sku);
@@ -144,14 +146,14 @@ class StockPackageLookupIntegrationTest {
         assertThat(detail.receivedQty()).isEqualTo(1000);
         assertThat(detail.onHand()).isEqualTo(1000);
         assertThat(detail.reserved()).isZero();
-        assertThat(detail.status()).isEqualTo("IN_STOCK");
+        assertThat(detail.status()).isEqualTo(StockPackageStatus.IN_STOCK);
         assertThat(detail.unopened()).isTrue();
         assertThat(detail.locationCode()).isEqualTo(RECEIVING);
         assertThat(detail.goodsReceiptLineId()).isEqualTo(line);
         assertThat(detail.closedAt()).isNull();
-        assertThat(detail.contents()).singleElement().satisfies(content -> {
+        assertThat(found.contents()).singleElement().satisfies(content -> {
             assertThat(content.onHand()).isEqualTo(1000);
-            assertThat(content.status()).isEqualTo("INBOUND");
+            assertThat(content.status()).isEqualTo(StockStatus.INBOUND);
             assertThat(content.receivedAt()).isEqualTo(RECEIVED);
         });
     }
@@ -159,13 +161,13 @@ class StockPackageLookupIntegrationTest {
     @Test
     @DisplayName("a carton still being received has no stock row yet: on hand 0, no contents")
     void aReceivingCartonHoldsNothingYet() {
-        StockPackageLookup.Detail detail = lookup.byLpn(lpns.get(1));
+        StockPackageBalance.Detail found = lookup.byLpn(lpns.get(1));
 
-        assertThat(detail.status()).isEqualTo("RECEIVING");
-        assertThat(detail.receivedQty()).isEqualTo(980);
-        assertThat(detail.onHand()).isZero();
-        assertThat(detail.lotNumber()).isNull();
-        assertThat(detail.contents()).isEmpty();
+        assertThat(found.carton().status()).isEqualTo(StockPackageStatus.RECEIVING);
+        assertThat(found.carton().receivedQty()).isEqualTo(980);
+        assertThat(found.carton().onHand()).isZero();
+        assertThat(found.carton().lotNumber()).isNull();
+        assertThat(found.contents()).isEmpty();
     }
 
     @Test
@@ -183,7 +185,7 @@ class StockPackageLookupIntegrationTest {
         receive();
 
         assertThat(lookup.atLocation(RECEIVING.toLowerCase(Locale.ROOT))).filteredOn(l -> l.sku().equals(sku))
-                .containsExactly(new LocationLine(sku, null, null, "INBOUND", 2, 1980, 0, 0, 20, 2000));
+                .containsExactly(new LocationLine(sku, null, null, StockStatus.INBOUND, 2, 1980, 0, 0, 20, 2000));
     }
 
     @Test
@@ -200,8 +202,8 @@ class StockPackageLookupIntegrationTest {
         });
 
         assertThat(lookup.atLocation(RECEIVING)).filteredOn(l -> l.sku().equals(sku))
-                .containsExactly(new LocationLine(sku, null, null, "INBOUND", 1, 1000, 1, 880, 20, 1900));
-        assertThat(lookup.byLpn(lpns.get(1))).satisfies(detail -> {
+                .containsExactly(new LocationLine(sku, null, null, StockStatus.INBOUND, 1, 1000, 1, 880, 20, 1900));
+        assertThat(lookup.byLpn(lpns.get(1)).carton()).satisfies(detail -> {
             assertThat(detail.onHand()).isEqualTo(880);
             assertThat(detail.unopened()).isFalse();
         });
@@ -224,10 +226,10 @@ class StockPackageLookupIntegrationTest {
                 Identifiers.newId(), clerk));
 
         assertThat(list(null, sku.toLowerCase(Locale.ROOT), null).items())
-                .extracting(Carton::lpn, Carton::locationCode, Carton::onHand)
+                .extracting(StockPackageBalance::lpn, StockPackageBalance::locationCode, StockPackageBalance::onHand)
                 .containsExactly(tuple(lpns.get(0), BIN, 1000),
                         tuple(lpns.get(1), RECEIVING, 980));
-        assertThat(list(BIN, sku, null).items()).extracting(Carton::lpn).containsExactly(lpns.getFirst());
+        assertThat(list(BIN, sku, null).items()).extracting(StockPackageBalance::lpn).containsExactly(lpns.getFirst());
         assertThat(list(null, "NO-SUCH-SKU", null).totalElements()).isZero();
     }
 
@@ -239,9 +241,9 @@ class StockPackageLookupIntegrationTest {
                 Identifiers.newId(), clerk));
 
         assertThat(lookup.cartons(new CartonQuery(null, sku, null, 0, 20, "locationCode,desc")).items())
-                .extracting(Carton::locationCode).containsExactly(RECEIVING, BIN);
+                .extracting(StockPackageBalance::locationCode).containsExactly(RECEIVING, BIN);
         assertThat(lookup.cartons(new CartonQuery(null, sku, null, 1, 1, "lpn,desc"))).satisfies(page -> {
-            assertThat(page.items()).extracting(Carton::lpn).containsExactly(lpns.getFirst());
+            assertThat(page.items()).extracting(StockPackageBalance::lpn).containsExactly(lpns.getFirst());
             assertThat(page.totalElements()).isEqualTo(2);
         });
         assertThat(lookup.cartons(new CartonQuery(null, sku, null, 2, 1, null))).satisfies(page -> {
@@ -264,9 +266,9 @@ class StockPackageLookupIntegrationTest {
     void listHidesClosedCartonsByDefault() {
         count(new PackageCount(lpns.getFirst(), 1000));   // the 980 carton, left out of the count, is voided
 
-        assertThat(list(null, sku, null).items()).extracting(Carton::lpn, Carton::status)
-                .containsExactly(tuple(lpns.getFirst(), "RECEIVING"));
-        assertThat(list(null, sku, List.of(StockPackageStatus.VOID)).items()).extracting(Carton::lpn)
+        assertThat(list(null, sku, null).items()).extracting(StockPackageBalance::lpn, StockPackageBalance::status)
+                .containsExactly(tuple(lpns.getFirst(), StockPackageStatus.RECEIVING));
+        assertThat(list(null, sku, List.of(StockPackageStatus.VOID)).items()).extracting(StockPackageBalance::lpn)
                 .containsExactly(lpns.get(1));
     }
 }

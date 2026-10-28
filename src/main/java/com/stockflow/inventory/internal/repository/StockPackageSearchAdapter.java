@@ -1,5 +1,7 @@
 package com.stockflow.inventory.internal.repository;
 
+import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.internal.domain.StockPackageBalance;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import org.springframework.data.domain.Page;
@@ -20,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -35,9 +38,15 @@ class StockPackageSearchAdapter implements StockPackageSearch {
             b.status, b.unopened, b.lot_number, b.expiry_date, b.on_hand, b.reserved, b.goods_receipt_line_id,
             b.closed_at""";
 
-    /** The sortable properties and their columns; the whitelist in the service names the same three. */
+    /** The column of each of {@link #SORTABLE}; checked when the class loads, so a gap fails startup, not a request. */
     private static final Map<String, String> SORT_COLUMNS =
             Map.of("lpn", "b.lpn", "locationCode", "b.location_code", "sku", "b.sku");
+
+    static {
+        if (!SORT_COLUMNS.keySet().equals(Set.copyOf(SORTABLE))) {
+            throw new IllegalStateException("Sort columns " + SORT_COLUMNS.keySet() + " do not match " + SORTABLE);
+        }
+    }
 
     /**
      * What the list's total is counted over: the columns {@link #where} filters on, named as the view names them, with
@@ -56,20 +65,20 @@ class StockPackageSearchAdapter implements StockPackageSearch {
     }
 
     @Override
-    public Optional<CartonRow> byLpn(String lpn) {
+    public Optional<StockPackageBalance> byLpn(String lpn) {
         return jdbc.query("SELECT " + CARTON_COLUMNS + " FROM inventory.stock_package_balance b WHERE b.lpn = :lpn",
                 new MapSqlParameterSource("lpn", lpn), StockPackageSearchAdapter::cartonRow).stream().findFirst();
     }
 
     @Override
-    public List<ContentRow> contentsOf(UUID stockPackageId) {
+    public List<StockPackageBalance.Content> contentsOf(UUID stockPackageId) {
         return jdbc.query("""
                         SELECT lot_number, expiry_date, received_at, status, on_hand, reserved
                           FROM inventory.stock_item
                          WHERE stock_package_id = :id AND on_hand > 0
                          ORDER BY expiry_date NULLS LAST, received_at NULLS LAST, id""",
                 new MapSqlParameterSource("id", stockPackageId),
-                (rs, i) -> new ContentRow(rs.getString("lot_number"), rs.getObject("expiry_date", LocalDate.class),
+                (rs, i) -> new StockPackageBalance.Content(rs.getString("lot_number"), rs.getObject("expiry_date", LocalDate.class),
                         instant(rs, "received_at"), StockStatus.valueOf(rs.getString("status")), rs.getInt("on_hand"),
                         rs.getInt("reserved")));
     }
@@ -80,7 +89,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
      * would be counted in each, holding in each what its rows there hold.
      */
     @Override
-    public List<LocationLine> atLocation(String locationCode) {
+    public List<StockPackageBalance.LocationLine> atLocation(String locationCode) {
         return jdbc.query("""
                         SELECT s.sku, s.lot_number, s.expiry_date, s.status,
                                count(DISTINCT p.id) FILTER (WHERE p.unopened)                 AS whole_cartons,
@@ -94,14 +103,14 @@ class StockPackageSearchAdapter implements StockPackageSearch {
                          GROUP BY s.sku, s.lot_number, s.expiry_date, s.status
                          ORDER BY s.sku, s.expiry_date NULLS LAST, s.lot_number NULLS FIRST, s.status""",
                 new MapSqlParameterSource("code", locationCode),
-                (rs, i) -> new LocationLine(rs.getString("sku"), rs.getString("lot_number"),
+                (rs, i) -> new StockPackageBalance.LocationLine(rs.getString("sku"), rs.getString("lot_number"),
                         rs.getObject("expiry_date", LocalDate.class), StockStatus.valueOf(rs.getString("status")),
                         rs.getInt("whole_cartons"), rs.getInt("whole_units"), rs.getInt("opened_cartons"),
                         rs.getInt("opened_units"), rs.getInt("loose_units")));
     }
 
     @Override
-    public Page<CartonRow> cartons(CartonCriteria criteria, Pageable pageable) {
+    public Page<StockPackageBalance> cartons(CartonCriteria criteria, Pageable pageable) {
         MapSqlParameterSource params = new MapSqlParameterSource();
         String where = where(criteria, params);
         Long total = jdbc.queryForObject("SELECT count(*) FROM " + COUNTED + " WHERE " + where, params, Long.class);
@@ -109,7 +118,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
             return new PageImpl<>(List.of(), pageable, total == null ? 0 : total);
         }
         params.addValue("limit", pageable.getPageSize()).addValue("offset", pageable.getOffset());
-        List<CartonRow> content = jdbc.query("SELECT " + CARTON_COLUMNS + " FROM inventory.stock_package_balance b"
+        List<StockPackageBalance> content = jdbc.query("SELECT " + CARTON_COLUMNS + " FROM inventory.stock_package_balance b"
                         + " WHERE " + where + " ORDER BY " + orderBy(pageable.getSort())
                         + " LIMIT :limit OFFSET :offset",
                 params, StockPackageSearchAdapter::cartonRow);
@@ -129,15 +138,8 @@ class StockPackageSearchAdapter implements StockPackageSearch {
             params.addValue("sku", criteria.sku());
         }
         if (criteria.warehousePrefixes() != null) {
-            List<String> any = new ArrayList<>();
-            int index = 0;
-            for (String prefix : criteria.warehousePrefixes()) {
-                String name = "warehouse" + index++;
-                any.add("b.location_code LIKE :" + name);
-                params.addValue(name, prefix + "-%");
-            }
-            // A limited caller assigned to no warehouse sees nothing (WarehouseScope).
-            conditions.add(any.isEmpty() ? "FALSE" : "(" + String.join(" OR ", any) + ")");
+            conditions.add(WarehouseScope.locationsInSql("b.location_code", criteria.warehousePrefixes(), "warehouse",
+                    params));
         }
         return String.join(" AND ", conditions);
     }
@@ -155,8 +157,8 @@ class StockPackageSearchAdapter implements StockPackageSearch {
         return String.join(", ", orders);
     }
 
-    private static CartonRow cartonRow(ResultSet rs, int rowNum) throws SQLException {
-        return new CartonRow(rs.getObject("stock_package_id", UUID.class), rs.getString("lpn"), rs.getString("sku"),
+    private static StockPackageBalance cartonRow(ResultSet rs, int rowNum) throws SQLException {
+        return new StockPackageBalance(rs.getObject("stock_package_id", UUID.class), rs.getString("lpn"), rs.getString("sku"),
                 rs.getString("unit_of_measure"), rs.getInt("nominal_qty"), rs.getObject("received_qty", Integer.class),
                 rs.getString("location_code"), StockPackageStatus.valueOf(rs.getString("status")),
                 rs.getBoolean("unopened"), rs.getString("lot_number"), rs.getObject("expiry_date", LocalDate.class),
