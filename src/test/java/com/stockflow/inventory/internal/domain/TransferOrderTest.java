@@ -63,11 +63,36 @@ class TransferOrderTest {
     void rejectAndResubmit() {
         TransferOrder order = draft(500);
         order.submit(PLANNER, 100, NOW);
-        order.reject(MANAGER);
+        order.reject(MANAGER, "  Too much for Hanoi ", NOW);
         assertThat(order.status()).isEqualTo(TransferStatus.DRAFT);
         assertThat(order.submittedBy()).isNull();
+        assertThat(order.rejectedBy()).isEqualTo(MANAGER);
+        assertThat(order.rejectedAt()).isEqualTo(NOW);
+        assertThat(order.rejectionReason()).isEqualTo("Too much for Hanoi");
         order.submit(PLANNER, 100, NOW);
         assertThat(order.status()).isEqualTo(TransferStatus.PENDING_APPROVAL);
+    }
+
+    @Test
+    @DisplayName("a rejection must say why, and a refused one changes nothing; a second rejection replaces the first")
+    void rejectionReason() {
+        TransferOrder order = draft(500);
+        order.submit(PLANNER, 100, NOW);
+        assertThatThrownBy(() -> order.reject(MANAGER, " ", NOW)).extracting(TransferOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> order.reject(MANAGER, null, NOW)).extracting(TransferOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(order.status()).isEqualTo(TransferStatus.PENDING_APPROVAL);
+        assertThat(order.rejectionReason()).isNull();
+
+        order.reject(MANAGER, "First", NOW);
+        order.submit(PLANNER, 100, NOW);
+        UUID other = UUID.randomUUID();
+        Instant later = NOW.plusSeconds(60);
+        order.reject(other, "Second", later);
+        assertThat(order.rejectedBy()).isEqualTo(other);
+        assertThat(order.rejectedAt()).isEqualTo(later);
+        assertThat(order.rejectionReason()).isEqualTo("Second");
     }
 
     @Test
@@ -152,7 +177,7 @@ class TransferOrderTest {
         big.submit(PLANNER, 100, NOW);
         assertThatThrownBy(() -> big.reviseDraft(HCM, HN, null, null, List.of(line(1, "CUP-PP-700", 1))))
                 .extracting(TransferOrderTest::code).isEqualTo(ErrorCode.TRANSFER_ORDER_NOT_EDITABLE);
-        big.reject(MANAGER);
+        big.reject(MANAGER, "Fewer units", NOW);
         big.reviseDraft(HCM, HN, null, null, List.of(line(1, "CUP-PP-700", 60)));
         big.submit(PLANNER, 100, NOW);
         assertThat(big.status()).isEqualTo(TransferStatus.APPROVED);
