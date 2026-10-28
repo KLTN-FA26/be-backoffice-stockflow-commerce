@@ -53,6 +53,7 @@ import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import com.stockflow.inventory.internal.repository.SlotsUnderCount;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
@@ -100,6 +101,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private final StockItemRepository stockItems;
     private final StockAdjustmentRepository adjustments;
     private final StockAdjustmentSearch adjustmentSearch;
+    private final SlotsUnderCount underCount;
     private final StockMovementLog ledger;
     private final StockLedgerSearch ledgerSearch;
     private final LocationDirectory locations;
@@ -119,7 +121,9 @@ class StockOperationsServiceImpl implements StockOperations {
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
                                InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
                                InventoryEventPublisher events, StockPackageRepository stockPackages,
-                               UomConversionRepository units, CycleCountRepository countLines) {
+                               UomConversionRepository units, SlotsUnderCount underCount,
+                               CycleCountRepository countLines) {
+        this.underCount = underCount;
         this.countLines = countLines;
         this.stockPackages = stockPackages;
         this.units = units;
@@ -1484,19 +1488,23 @@ class StockOperationsServiceImpl implements StockOperations {
 
     @Override
     @Transactional(readOnly = true)
-    public Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId) {
-        // Out of the caller's warehouses reads as not found: its existence is not theirs to know.
+    public Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId, BookVisibility visibility) {
+        // Out of the caller's warehouses reads as not found: its existence is not theirs to know. So does the
+        // adjustment of a slot under a count, for a reader blind to its books.
         return adjustments.findById(adjustmentId)
                 .filter(adjustment -> inScope(adjustment.location().code()))
+                .filter(adjustment -> !visibility.hidesCountedSlots() || !underCount.adjustmentUnderCount(adjustmentId))
                 .map(StockOperationsServiceImpl::toSummary);
     }
 
     @Override
     @Transactional(readOnly = true)
     public PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                           int page, int size, String sort) {
+                                                           int page, int size, String sort,
+                                                           BookVisibility visibility) {
         var criteria = new StockAdjustmentSearch.Criteria(
-                status == null ? null : AdjustmentStatus.valueOf(status.name()), sku, location);
+                status == null ? null : AdjustmentStatus.valueOf(status.name()), sku, location,
+                visibility.hidesCountedSlots());
         return Pages.toResponse(adjustmentSearch.search(criteria, Pages.of(page, size, ADJUSTMENT_SORT.parse(sort)))
                 .map(StockOperationsServiceImpl::toSummary));
     }
@@ -1504,9 +1512,10 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
-                                           int page, int size) {
+                                           int page, int size, BookVisibility visibility) {
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "occurredAt"));
-        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(sku, location, type), pageable)
+        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(sku, location, type,
+                        visibility.hidesCountedSlots()), pageable)
                 .map(StockOperationsServiceImpl::toLine));
     }
 

@@ -4,6 +4,8 @@ import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.internal.controller.dto.LotTraceResponse;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -57,11 +60,12 @@ class LotTraceController {
     @Operation(summary = "One lot traced: origin, balances by location, allocations and holds, customer orders")
     @RequiresPermission(resource = InventoryResources.STOCK_MOVEMENTS, action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<LotTraceResponse> trace(@PathVariable UUID lotId,
-                                               @RequestParam(required = false) UUID warehouseId) {
-        LotTrace trace = traces.trace(lotId, warehouseId);
+                                               @RequestParam(required = false) UUID warehouseId,
+                                               @AuthenticatedUser Optional<CurrentUser> user) {
+        LotTrace trace = traces.trace(lotId, warehouseId, BlindCount.visibilityFor(user));
         return ApiResponse.ok(new LotTraceResponse(toResponse(trace.lot()),
                 trace.balances().stream().map(b -> new LotTraceResponse.Balance(b.locationCode(), b.status(),
-                        b.onHand(), b.held())).toList(),
+                        b.onHand(), b.held(), b.hiddenDuringCount())).toList(),
                 trace.holds().stream().map(h -> new LotTraceResponse.Hold(h.reservationId(), h.orderId(),
                         h.orderNumber(), h.productionOrderId(), h.allocatedFrom(), h.locationCode(), h.quantity(), h.status(),
                         h.reservedAt(), h.closedAt())).toList(),
@@ -79,9 +83,11 @@ class LotTraceController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(required = false) Integer size) {
+            @RequestParam(required = false) Integer size,
+            @AuthenticatedUser Optional<CurrentUser> user) {
         return ApiResponse.ok(traces.movements(lotId, warehouseId, from, to, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(m -> new LotTraceResponse.Movement(m.movementId(),
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, BlindCount.visibilityFor(user))
+                .map(m -> new LotTraceResponse.Movement(m.movementId(),
                 m.type(), m.fromLocation(), m.toLocation(), m.quantity(), m.fromStatus(), m.toStatus(),
                 m.referenceType(), m.referenceId(), m.orderId(), m.orderNumber(), m.actorId(), m.occurredAt(),
                 m.reason())));

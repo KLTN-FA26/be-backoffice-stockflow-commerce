@@ -13,10 +13,15 @@ public record WarehouseStockItemResponse(
         @Schema(example = "HCM-A01-2-B") String locationCode,
         String lotNumber,
         LocalDate expiryDate,
-        @Schema(description = "Physical units present, including reserved ones") int onHand,
-        @Schema(description = "Units held for orders") int reserved,
-        @Schema(description = "onHand minus reserved; zero unless AVAILABLE and not expired") int available,
+        @Schema(description = "Physical units present, including reserved ones; null while hiddenDuringCount",
+                nullable = true) Integer onHand,
+        @Schema(description = "Units held for orders; null while hiddenDuringCount", nullable = true) Integer reserved,
+        @Schema(description = "onHand minus reserved; zero unless AVAILABLE and not expired; null while "
+                + "hiddenDuringCount", nullable = true) Integer available,
         @Schema(description = "INBOUND, AVAILABLE, QUARANTINE, BLOCKED, DAMAGED or EXPIRED") String status,
-        Instant receivedAt
+        Instant receivedAt,
+        @Schema(description = "A cycle count holds this slot and the caller lacks inventory-cycle-counts:APPROVE: the "
+                + "quantities are withheld so the count stays blind")
+        boolean hiddenDuringCount
 ) {
 }
