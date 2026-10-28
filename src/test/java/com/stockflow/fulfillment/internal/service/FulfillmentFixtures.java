@@ -156,6 +156,11 @@ final class FulfillmentFixtures {
                        com.stockflow.fulfillment.internal.domain.loadplanning.VehicleSpec truck) { }
 
     static PlannedPlan plannedPlan(int cubes, int trucks) {
+        return plannedPlan(cubes, trucks, com.stockflow.fulfillment.internal.domain.LoadPlan.SOURCE_ORDER);
+    }
+
+    /** As {@link #plannedPlan(int, int)}; {@code sourceType} TRANSFER makes the key of its parcels a transfer order. */
+    static PlannedPlan plannedPlan(int cubes, int trucks, String sourceType) {
         UUID shipmentId = UUID.randomUUID();
         java.util.Map<UUID, com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage> cartons =
                 new java.util.LinkedHashMap<>();
@@ -171,7 +176,7 @@ final class FulfillmentFixtures {
                 new BigDecimal("1000"), trucks, 0);
         var plan = com.stockflow.fulfillment.internal.domain.LoadPlan.draft(UUID.randomUUID(), "LP-20261022-0001",
                 UUID.randomUUID(), WAREHOUSE,
-                com.stockflow.fulfillment.internal.domain.loadplanning.SelectionMode.SINGLE_TYPE, null);
+                com.stockflow.fulfillment.internal.domain.loadplanning.SelectionMode.SINGLE_TYPE, null, sourceType);
         UUID dispatcher = UUID.randomUUID();
         plan.setInputs(shipmentOf, List.of(TRUCK_TYPE), null, dispatcher, NOW);
         var result = new com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanner().plan(
