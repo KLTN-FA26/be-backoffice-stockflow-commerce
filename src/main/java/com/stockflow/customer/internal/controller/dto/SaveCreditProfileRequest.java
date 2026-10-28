@@ -22,7 +22,8 @@ public record SaveCreditProfileRequest(
         @Schema(example = "30", description = "Days to pay after delivery; required when allowCredit, 0-365")
         Integer creditTermDays,
         @Size(max = 1000, message = "note is at most 1000 characters") String note,
-        @Schema(description = "The version read; omit when the customer has no terms yet") Long expectedVersion,
+        @Schema(description = "The version read (GET returns -1 while no terms are set); required when the customer "
+                + "already has terms, otherwise 400 VALIDATION_FAILED; a stale one is 409 OPTIMISTIC_LOCK") Long expectedVersion,
         @Schema(description = "How a deposit order's balance is collected: BEFORE_DELIVERY (by transfer, before the "
                 + "handover), ON_DELIVERY (the carrier collects it) or ON_CREDIT (a receivable on the customer's credit, due "
                 + "after creditTermDays; needs allowCredit); only with allowDeposit. Omit to keep the current "
