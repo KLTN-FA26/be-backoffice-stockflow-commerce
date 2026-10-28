@@ -31,6 +31,7 @@ import com.stockflow.procurement.internal.service.GoodsReceipts.Decision;
 import com.stockflow.procurement.internal.service.GoodsReceipts.NewLine;
 import com.stockflow.procurement.internal.service.GoodsReceipts.Part;
 import com.stockflow.procurement.internal.service.GoodsReceipts.ReceiptView;
+import com.stockflow.warehouse.api.PutawayTasks;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
 import org.junit.jupiter.api.BeforeEach;
@@ -79,6 +80,7 @@ class GoodsReceiptServiceImplTest {
     private final ReceivingLocations locations = mock(ReceivingLocations.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
+    private final PutawayTasks putawayTasks = mock(PutawayTasks.class);
     private final IdentityService identity = mock(IdentityService.class);
     private final InventoryControlService inventoryControl = mock(InventoryControlService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
@@ -104,7 +106,7 @@ class GoodsReceiptServiceImplTest {
             UUID.randomUUID(), "RECEIVING");
 
     private GoodsReceiptServiceImpl service(Instant now) {
-        return new GoodsReceiptServiceImpl(receipts, search, orders, locations, inventory, warehouses, identity,
+        return new GoodsReceiptServiceImpl(receipts, search, orders, locations, inventory, warehouses, putawayTasks, identity,
                 inventoryControl, units, users, events, Clock.fixed(now, ZoneOffset.UTC));
     }
 
@@ -154,6 +156,7 @@ class GoodsReceiptServiceImplTest {
                 warehouse, user, null, null, NOW);
         receipt.replaceLines(List.of(lines));
         when(receipts.findById(receipt.id())).thenReturn(Optional.of(receipt));
+        when(receipts.findByIdForUpdate(receipt.id())).thenReturn(Optional.of(receipt));
         return receipt;
     }
 

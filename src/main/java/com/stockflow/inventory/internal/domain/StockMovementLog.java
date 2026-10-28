@@ -27,6 +27,22 @@ public interface StockMovementLog {
                                                  StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
+     * {@link #findLooseByReference} for many documents at once: for each reference id that has a loose line, its
+     * first (lowest id); one query. A reference with none is absent.
+     */
+    java.util.Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
+                                                             StockMovement.ReferenceType referenceType,
+                                                             java.util.Collection<UUID> referenceIds);
+
+    /**
+     * Units a document's ledger lines of these types add up to, 0 when it has none: how much of a putaway task has
+     * been put away, counting every part, loose or in a carton. Several types in one query, because a putaway writes
+     * both moves and in-place status changes under one reference.
+     */
+    int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
+                               StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    /**
      * Whether production handed {@code hold}'s goods over, out of the print shop, to {@code location}: the hand-over
      * line a production move writes ({@code MOVE}, reference {@code PRODUCTION_ORDER}, "Hold &lt;id&gt;",
      * IN_PRODUCTION to AVAILABLE). Tells printed goods in a packing area from free stock somebody moved there.

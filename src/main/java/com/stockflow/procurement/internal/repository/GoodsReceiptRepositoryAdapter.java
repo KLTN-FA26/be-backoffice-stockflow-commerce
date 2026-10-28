@@ -10,6 +10,7 @@ import com.stockflow.procurement.internal.entity.GoodsReceiptJpaEntity;
 import com.stockflow.procurement.internal.entity.GoodsReceiptLineJpaEntity;
 import com.stockflow.procurement.internal.entity.QcInspectionJpaEntity;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -42,6 +43,24 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
     @Override
     public Optional<GoodsReceipt> findById(UUID receiptId) {
         return jpa.findByIdWithLines(receiptId).map(GoodsReceiptRepositoryAdapter::toDomain);
+    }
+
+    /**
+     * The row is locked first with a native {@code FOR UPDATE} and the aggregate read afterwards, then refreshed: a
+     * caller that queued behind another transaction must see what that transaction committed, and an entity already
+     * in the persistence context would otherwise be returned as it was before the wait (the same reasoning as
+     * {@code StockItemRepositoryAdapter.findByIdForUpdate}).
+     */
+    @Override
+    public Optional<GoodsReceipt> findByIdForUpdate(UUID receiptId) {
+        if (entityManager.createNativeQuery("select id from procurement.goods_receipts where id = :id for update")
+                .setParameter("id", receiptId).getResultList().isEmpty()) {
+            return Optional.empty();
+        }
+        return jpa.findByIdWithLines(receiptId).map(entity -> {
+            entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
+            return toDomain(entity);
+        });
     }
 
     /** Same counter table and upsert as stock adjustment and transfer numbers. */

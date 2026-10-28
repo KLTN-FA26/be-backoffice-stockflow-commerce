@@ -17,6 +17,9 @@ public interface StockPackageRepository {
     /** The cartons with these LPNs, in one read; an LPN that is not a carton is absent. */
     List<StockPackage> findByLpns(Collection<String> lpns);
 
+    /** The cartons with these ids, in one read, without locking; an id that is not a carton is absent. */
+    List<StockPackage> findAllById(Collection<StockPackageId> ids);
+
     /** The cartons labelled on these goods receipt lines, read without locking. */
     List<StockPackage> findByReceiptLines(Collection<UUID> goodsReceiptLineIds);
 
@@ -36,6 +39,13 @@ public interface StockPackageRepository {
      * with no row is absent.
      */
     Map<StockPackageId, Integer> onHandOf(Collection<StockPackageId> ids);
+
+    /**
+     * What each of these stock packages still has waiting for putaway: the sum of its {@code INBOUND} rows only. A
+     * package with no such row is absent. Putaway tasks are sized from this, not from {@link #onHandOf}, so a carton
+     * whose units are already available (or held by QC) never opens a task.
+     */
+    Map<StockPackageId, Integer> inboundOnHandOf(Collection<StockPackageId> ids);
 
     /**
      * The next {@code count} LPNs of {@code day} ({@code LPN-yyyyMMdd-nnnnnn}), consecutive and in order, from

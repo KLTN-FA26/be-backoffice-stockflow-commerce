@@ -211,6 +211,36 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     }
 
     @Override
+    public List<PutawayCandidateRow> findPutawayCandidates(UUID warehouseId,
+                                                           com.stockflow.warehouse.internal.domain.StorageClass storageClass,
+                                                           String locationCode) {
+        // The one-location form appends its predicate rather than binding a nullable parameter, which PostgreSQL
+        // cannot type in "(:code is null or ...)".
+        var query = entityManager.createQuery("""
+                        select loc.id, loc.locationCode, loc.capacityUnits, loc.maxWeight
+                        from StorageLocationJpaEntity loc
+                        join WarehouseJpaEntity w on w.id = loc.warehouseId
+                        join BinJpaEntity b on b.location = loc
+                        join b.level l
+                        join l.shelf s
+                        where loc.warehouseId = :warehouseId
+                          and loc.kind = com.stockflow.warehouse.internal.domain.StorageLocationKind.BIN
+                          and loc.storageClass = :storageClass
+                          and loc.putawayTarget = true
+                          and w.status = com.stockflow.warehouse.internal.domain.WarehouseStatus.ACTIVE
+                          and s.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
+                          and loc.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
+                        """ + (locationCode == null ? "" : " and loc.locationCode = :locationCode")
+                        + " order by loc.locationCode", PutawayCandidateRow.class)
+                .setParameter("warehouseId", warehouseId)
+                .setParameter("storageClass", storageClass);
+        if (locationCode != null) {
+            query.setParameter("locationCode", locationCode);
+        }
+        return query.getResultList();
+    }
+
+    @Override
     public java.util.List<String> findShelfCodesInZone(UUID warehouseId, UUID zoneId) {
         return entityManager.createQuery("""
                         select s.code from ShelfJpaEntity s join ZoneJpaEntity z on z.id = s.zoneId

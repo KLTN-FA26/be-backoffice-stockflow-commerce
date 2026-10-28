@@ -29,6 +29,9 @@ public final class InventoryResources {
     /** Seeded by V20261020000700; printing and reprinting carton labels (SCRUM-473). */
     public static final String STOCK_PACKAGES = "inventory-stock-packages";
 
+    /** Seeded by V20260903000100; putaway tasks (SCRUM-92) are served here, though the resource is the warehouse's. */
+    public static final String PUTAWAY_TASKS = "warehouse-putaway-tasks";
+
     private InventoryResources() {
     }
 }
