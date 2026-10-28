@@ -31,7 +31,9 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
                        boolean qcRequired, boolean lotTracked, boolean expiryTracked, String qcProgress,
                        String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
                        List<Inspection> inspections, List<String> warnings, String unitOfMeasure,
-                       int looseQuantity, List<Package> packages, List<Unit> units) {
+                       int looseQuantity, List<Package> packages, List<Unit> units,
+                       @io.swagger.v3.oas.annotations.media.Schema(description = "SCRUM-473: the unit the PO line was"
+                               + " ordered in, to pre-select; null for base units") String orderedUnitOfMeasure) {
     }
 
     /**

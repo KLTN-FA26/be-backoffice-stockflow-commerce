@@ -37,7 +37,17 @@ public record ReceivingPurchaseOrder(
 
     public enum LineStatus { OPEN, PARTIALLY_RECEIVED, RECEIVED, CLOSED, CANCELLED }
 
-    public record Line(UUID id, int lineNo, UUID inventoryItemId, BigDecimal orderedQuantity, LineStatus status) {
+    /**
+     * @param uomConversionId the packing unit the line was ordered in (SCRUM-473), null for base units: a receipt
+     *                        line's cartons default to it, never are held to it
+     */
+    public record Line(UUID id, int lineNo, UUID inventoryItemId, BigDecimal orderedQuantity, LineStatus status,
+                       UUID uomConversionId) {
+
+        /** Ordered in base units. */
+        public Line(UUID id, int lineNo, UUID inventoryItemId, BigDecimal orderedQuantity, LineStatus status) {
+            this(id, lineNo, inventoryItemId, orderedQuantity, status, null);
+        }
 
         /** Most that may ever be received against the line: ordered × (1 + tolerance / 100), rounded down. */
         public int receivableLimit(BigDecimal tolerancePercent) {

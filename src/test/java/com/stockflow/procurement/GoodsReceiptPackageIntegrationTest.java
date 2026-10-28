@@ -407,4 +407,77 @@ class GoodsReceiptPackageIntegrationTest {
         assertThat(jdbc.queryForList("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
                 .containsExactly(1010);
     }
+
+    // ---- SCRUM-473: the unit the PO line was ordered in -------------------------------------------
+
+    /** The fixture's line as ordered in CARTON: 5 of 1000. */
+    private void orderedInCartons() {
+        tx.executeWithoutResult(s -> {
+            // The fixture order is CONFIRMED, whose lines tg_purchase_order_lines_draft_content freezes; the unit is
+            // what the line would have been ordered in.
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE procurement.purchase_order_lines SET uom_conversion_id = ?, unit_qty = 5 WHERE id = ?",
+                    carton, poLine);
+        });
+    }
+
+    @Test
+    @DisplayName("cartons listed with no unit are counted in the unit the PO line was ordered in")
+    void cartonsWithoutAUnitTakeTheOrderedUnit() {
+        orderedInCartons();
+
+        GoodsReceipts.LineView counted = count(line(2000, null, area, new NewPackage(null, 1000),
+                new NewPackage(null, 1000)));
+
+        assertThat(counted.unitOfMeasure()).isEqualTo("CARTON");
+        assertThat(counted.packages()).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("a unit the clerk names wins over the ordered one: the supplier may ship another pack size")
+    void aNamedUnitWins() {
+        orderedInCartons();
+
+        assertThat(count(line(1000, "BOX", area, new NewPackage(null, 500), new NewPackage(null, 500)))
+                .unitOfMeasure()).isEqualTo("BOX");
+    }
+
+    @Test
+    @DisplayName("a PO line in base units gives no default: cartons still need their unit named")
+    void baseUnitLineStillNeedsTheUnitNamed() {
+        Throwable refused = catchThrowable(() -> count(line(2000, null, area, new NewPackage(null, 1000),
+                new NewPackage(null, 1000))));
+
+        assertThat(fields(refused)).containsExactly("lines[0].unitOfMeasure:VALIDATION_FAILED");
+    }
+
+    @Test
+    @DisplayName("a receipt line shows the unit its PO line was ordered in, for the app to pre-select")
+    void receiptLineShowsTheOrderedUnit() {
+        orderedInCartons();
+
+        assertThat(count(line(10, null, area)).orderedUnitOfMeasure()).isEqualTo("CARTON");
+    }
+
+    @Test
+    @DisplayName("a recount naming no unit stays in the unit the receipt line was counted in, not the ordered one")
+    void recountWithoutAUnitKeepsTheLinesOwnUnit() {
+        orderedInCartons();
+        count(line(1000, "BOX", area, new NewPackage(null, 500), new NewPackage(null, 500)));
+
+        GoodsReceipts.LineView recounted = count(line(500, null, area, new NewPackage(null, 500)));
+
+        assertThat(recounted.unitOfMeasure()).isEqualTo("BOX");
+    }
+
+    @Test
+    @DisplayName("goods ordered in a unit retired since still arrive in it: their cartons are labelled in it")
+    void orderedUnitRetiredSinceIsStillReceived() {
+        orderedInCartons();
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.uom_conversions SET active = false WHERE id = ?",
+                carton));
+
+        assertThat(count(line(2000, null, area, new NewPackage(null, 1000), new NewPackage(null, 1000)))
+                .unitOfMeasure()).isEqualTo("CARTON");
+    }
 }

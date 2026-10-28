@@ -190,8 +190,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         items.putAll(inventory.itemPolicies(newLines.stream()
                 .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
                 .map(ReceivingPurchaseOrder.Line::inventoryItemId).distinct().toList()));
+        // A line's units are needed when it names one, or lists cartons whose unit defaults to the line's own or the
+        // ordered one (SCRUM-473).
         List<Sku> unitSkus = newLines.stream()
-                .filter(in -> blankToNull(in.unitOfMeasure()) != null)
+                .filter(in -> blankToNull(in.unitOfMeasure()) != null || !in.packages().isEmpty())
                 .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
                 .map(poLine -> new Sku(items.computeIfAbsent(poLine.inventoryItemId(), this::policy).sku()))
                 .distinct().toList();
@@ -233,7 +235,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             UUID lineId = was == null ? Identifiers.newId() : was.id();
             List<StockPackageView> cartonsBefore = labelled.getOrDefault(lineId, List.of());
             UomConversion unit = cartonUnit(errors, i, in, item, unitsBySku.getOrDefault(item.sku(), List.of()),
-                    order.subcontract(), was == null ? null : was.uomConversionId(), cartonsBefore);
+                    order.subcontract(), was == null ? null : was.uomConversionId(), poLine.uomConversionId(),
+                    cartonsBefore);
             if (errors.size() == before) {
                 // A SUBCONTRACT order's goods get one inspection, the production QC against the approved sample
                 // (user decision 2026-10-13): receiving counts them and does not inspect the same goods again.
@@ -288,10 +291,17 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * unit was retired is still recounted in it, as {@code tg_goods_receipt_lines_unit} and
      * {@code tg_stock_package_created} allow. Refused here, the retired unit is an answer naming the field; let
      * through, it would be a check violation from the database.</p>
+     *
+     * <p>Cartons listed with no unit are in the line's own unit when it has been counted in one, else in
+     * {@code orderedUnitId}, the unit the PO line was ordered in (SCRUM-473). That is the default, never a rule: a
+     * supplier that ships another pack size is counted in the unit the clerk names, and every rule below holds the
+     * defaulted unit as it holds a named one. A unit retired since the PO line was ordered in it is still accepted, as
+     * {@code tg_goods_receipt_lines_unit} allows: goods ordered before the supplier changed its carton arrive in the
+     * old one.</p>
      */
     private UomConversion cartonUnit(LineErrors errors, int index, NewLine in, InventoryItemPolicy item,
                                      List<UomConversion> itemUnits, boolean subcontract, UUID lineUnitId,
-                                     List<StockPackageView> cartonsBefore) {
+                                     UUID orderedUnitId, List<StockPackageView> cartonsBefore) {
         String code = blankToNull(in.unitOfMeasure());
         if (in.packages().isEmpty()) {
             if (code != null) {
@@ -332,6 +342,13 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             errors.add(index, "packages", ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE,
                     "The cartons hold %d units, more than the line's %d".formatted(total, in.quantity()));
         }
+        // The line's own unit first: a recount of a line counted in another unit than ordered must not switch it and
+        // void its labelled cartons.
+        UUID fallback = lineUnitId != null ? lineUnitId : orderedUnitId;
+        if (code == null && fallback != null) {
+            code = itemUnits.stream().filter(unit -> unit.id().equals(fallback)).findFirst()
+                    .map(UomConversion::unitOfMeasure).orElse(null);
+        }
         if (code == null) {
             errors.add(index, "unitOfMeasure", ErrorCode.VALIDATION_FAILED, "Cartons need the packing unit they are in");
             return null;
@@ -348,7 +365,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     "Cartons are labelled in a packing unit, not in the base unit %s".formatted(code));
             return null;
         }
-        if (!unit.active() && !unit.id().equals(lineUnitId)) {
+        if (!unit.active() && !unit.id().equals(lineUnitId) && !unit.id().equals(orderedUnitId)) {
             errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID,
                     "%s is retired; cartons are labelled in an active packing unit".formatted(code));
             return null;
@@ -997,7 +1014,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()
                             .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.base(), u.active(),
                                     u.defaultPurchase()))
-                            .toList());
+                            .toList(),
+                    order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::uomConversionId)
+                            .map(unitCodes::get).orElse(null));
         }).toList();
         List<String> warnings = lines.stream().anyMatch(l -> !l.warnings().isEmpty())
                 ? List.of(ExpiryWarning.EXPIRY_NEAR) : List.of();

@@ -98,7 +98,8 @@ public interface GoodsReceipts {
                     boolean qcRequired, boolean lotTracked, boolean expiryTracked, QcProgress qcProgress,
                     String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
                     List<InspectionView> inspections, List<String> warnings, String unitOfMeasure,
-                    int looseQuantity, List<PackageView> packages, List<UnitView> units) {
+                    int looseQuantity, List<PackageView> packages, List<UnitView> units,
+                    String orderedUnitOfMeasure) {
     }
 
     /**
