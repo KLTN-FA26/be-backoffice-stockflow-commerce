@@ -554,6 +554,13 @@ public enum ErrorCode {
     PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
     VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),
     VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
+    /**
+     * kltn-docs 02 §4 step 7 (owner decision SCRUM-124): the approver's approval limit - the highest of their roles'
+     * {@code procurement.approval_limits} in the order's currency - is below the order's total after tax. A business
+     * rule on a request that is otherwise allowed, hence 409 and not 403 (403 means a missing permission): the order
+     * waits for someone whose limit covers it. Never raised for an approver with no limit configured (PO-NOLIMIT).
+     */
+    PO_APPROVAL_LIMIT_EXCEEDED("The purchase order total is above your approval limit", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
     /** kltn-docs 18 BR-01: one pending or active customer per tax code. */

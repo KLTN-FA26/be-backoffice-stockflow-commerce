@@ -31,6 +31,7 @@ import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
 import com.stockflow.procurement.api.SendPurchaseOrderCommand;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
+import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.InvalidPurchaseOrderTransitionException;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
@@ -60,6 +61,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Currency;
@@ -112,6 +114,7 @@ class ProcurementServiceImpl implements ProcurementService {
     private final WarehouseService warehouses;
     private final CurrentUserProvider users;
     private final SupplierItemRepository supplierItems;
+    private final ApprovalLimits approvalLimits;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
@@ -119,7 +122,8 @@ class ProcurementServiceImpl implements ProcurementService {
                            PoDeliveryDecisionRepository deliveryDecisions, PoCommunicationProfile communication,
                            ProductService products, InventoryService inventory,
                            InventoryControlService inventoryControl, WarehouseService warehouses,
-                           CurrentUserProvider users, SupplierItemRepository supplierItems) {
+                           CurrentUserProvider users, SupplierItemRepository supplierItems,
+                           ApprovalLimits approvalLimits) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.reports = reports;
@@ -135,6 +139,7 @@ class ProcurementServiceImpl implements ProcurementService {
         this.warehouses = warehouses;
         this.users = users;
         this.supplierItems = supplierItems;
+        this.approvalLimits = approvalLimits;
     }
 
     /**
@@ -317,6 +322,20 @@ class ProcurementServiceImpl implements ProcurementService {
 
     // ------------------------------------------------------------------ approval
 
+    /**
+     * kltn-docs 02 §4 step 7 (owner decisions POLIMIT2, SCRUM-124 of 21/10, PO-NOLIMIT of 28/10): an order is approved
+     * right here, as {@code AUTO_APPROVED} with the limit that allowed it, when all of these hold, and otherwise goes
+     * to PENDING_APPROVAL for someone whose limit covers it.
+     * <ol>
+     *   <li>the limit holder has a limit configured in force in the order's currency (none is no limit, never zero:
+     *       an order of someone with no limit always waits) - the holder is the submitter, or for a SUBCONTRACT order
+     *       the person who raised it by splitting the production order (rule 6);</li>
+     *   <li>the total, after tax, is within it (rule 1);</li>
+     *   <li>the order was never rejected: a rejected order is decided by a person again (rule 3);</li>
+     *   <li>with the automatic approvals of the same holder to the same supplier in the last 7 days it still is
+     *       (rule 4, against splitting one purchase into small ones).</li>
+     * </ol>
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary submit(UUID purchaseOrderId, UUID submittedBy) {
@@ -327,16 +346,43 @@ class ProcurementServiceImpl implements ProcurementService {
                     PurchaseOrderStatus.PENDING_APPROVAL);
         }
         requireLinesPurchasable(order);
+        Instant now = clock.instant();
+        UUID limitHolder = limitHolderOf(order, submittedBy);
+        Optional<ApprovalLimit> autoLimit = approvalLimits.autoApprovalLimit(order.id(), limitHolder,
+                order.supplierId(), order.totalAmount(), now);
         long revisionNo = purchaseOrders.nextRevisionNo(order.id());
         UUID revisionId = purchaseOrders.recordRevision(order, revisionNo, submittedBy,
                 revisionNo == 0 ? null : "Resubmitted after rejection");
-        order.submit(submittedBy, revisionId, revisionNo, clock.instant());
+        if (autoLimit.isPresent()) {
+            order.submitWithinLimit(submittedBy, revisionId, revisionNo, autoLimit.get().amount(), now);
+        } else {
+            order.submit(submittedBy, revisionId, revisionNo, now);
+        }
         purchaseOrders.save(order);
         purchaseOrders.recordEvent(order.id(), revisionId, "SUBMITTED", submittedBy, PurchaseOrderStatus.DRAFT,
                 PurchaseOrderStatus.PENDING_APPROVAL, null);
+        if (autoLimit.isPresent()) {
+            ApprovalLimit limit = autoLimit.get();
+            String reason = "Auto-approved within limit: total %s, limit %s".formatted(order.totalAmount(), limit.amount());
+            purchaseOrders.recordAutoApproval(revisionId, submittedBy, limitHolder, limit, now, reason);
+            purchaseOrders.recordEvent(order.id(), revisionId, "AUTO_APPROVED", submittedBy,
+                    PurchaseOrderStatus.PENDING_APPROVAL, PurchaseOrderStatus.APPROVED, reason,
+                    limit.facts(order.totalAmount(), limitHolder));
+        }
         return summaryOf(order, false);
     }
 
+    /** Whose limit decides an automatic approval: the submitter's, except for a split-generated order (rule 6). */
+    private UUID limitHolderOf(PurchaseOrder order, UUID submitter) {
+        return order.type() == PurchaseOrder.Type.SUBCONTRACT
+                ? purchaseOrders.creatorOf(order.id()).orElse(submitter) : submitter;
+    }
+
+    /**
+     * Four-eyes (BR-PO-002), and the approver's own limit must cover the total (owner decision POLIMIT2) - when they
+     * have one: an approver none of whose roles has a limit configured is bounded by the approve permission alone
+     * (owner decision PO-NOLIMIT).
+     */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId) {
@@ -344,7 +390,9 @@ class ProcurementServiceImpl implements ProcurementService {
         if (order.status() == PurchaseOrderStatus.PENDING_APPROVAL) {
             requireLinesPurchasable(order);
         }
-        order.approve(approverId, clock.instant());
+        Money limit = approvalLimits.limitOf(approverId, order.currency(), BusinessCalendar.date(clock.instant()))
+                .map(ApprovalLimit::amount).orElse(null);
+        order.approve(approverId, limit, clock.instant());
         purchaseOrders.save(order);
         purchaseOrders.recordApproval(order.activeRevisionId(), approverId, "APPROVED", null);
         purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), "APPROVED", approverId,
@@ -495,14 +543,30 @@ class ProcurementServiceImpl implements ProcurementService {
         return summaryOf(order, false);
     }
 
+    /**
+     * Short-close of a PARTIALLY_RECEIVED order, or the force close (kltn-docs 02 §5, {@code Confirmed → Closed}) of a
+     * CONFIRMED one that will not be received at all; the reason is mandatory in both. A force close behaves like a
+     * cancel for what is still in flight: it refuses while a goods receipt of the order is being counted, and it stops
+     * the supplier delivery from being retried (the order is closed, there is nothing left to send). The supplier is
+     * not sent a cancellation notice - the order was not cancelled.
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary closeShort(UUID purchaseOrderId, UUID userId, String reason) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        PurchaseOrderStatus from = order.status();
+        boolean force = from == PurchaseOrderStatus.CONFIRMED;
+        if (force && purchaseOrders.hasReceiptInProgress(order.id())) {
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "A goods receipt of this order is being counted; cancel or confirm it first");
+        }
         order.closeShort(reason, userId, clock.instant());
+        if (force) {
+            notifications.suppressSupplierDelivery(purchaseOrderId);
+        }
         purchaseOrders.save(order);
-        purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), "SHORT_CLOSED", userId,
-                PurchaseOrderStatus.PARTIALLY_RECEIVED, PurchaseOrderStatus.CLOSED, reason);
+        purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), force ? "FORCE_CLOSED" : "SHORT_CLOSED", userId,
+                from, PurchaseOrderStatus.CLOSED, reason);
         return summaryOf(order, false);
     }
 

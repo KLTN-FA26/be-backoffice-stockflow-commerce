@@ -10,6 +10,7 @@ import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.inventory.api.InventoryControlItem;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
+import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.procurement.api.CreatePOLineCommand;
@@ -18,19 +19,25 @@ import com.stockflow.procurement.api.ListPurchaseOrdersQuery;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.RecordSupplierConfirmationCommand;
 import com.stockflow.procurement.api.SendPurchaseOrderCommand;
+import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.CatalogSupplier;
+import com.stockflow.procurement.internal.domain.CloseKind;
+import com.stockflow.procurement.internal.domain.PoLine;
+import com.stockflow.procurement.internal.domain.PoLineStatus;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.Supplier;
 import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
+import com.stockflow.procurement.internal.domain.SupplierConfirmationStatus;
 import com.stockflow.procurement.internal.domain.SupplierDetails;
 import com.stockflow.procurement.internal.domain.SupplierItem;
 import com.stockflow.procurement.internal.domain.SupplierItemRepository;
 import com.stockflow.procurement.internal.domain.SupplierItemTerms;
 import com.stockflow.procurement.internal.domain.SupplierRepository;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
+import com.stockflow.procurement.internal.repository.ApprovalLimitRepository;
 import com.stockflow.procurement.internal.repository.PoDeliveryDecisionRepository;
 import com.stockflow.procurement.internal.repository.PurchaseOrderSearchRepository;
 import com.stockflow.procurement.internal.repository.ProcurementReportRepository;
@@ -40,7 +47,6 @@ import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -64,7 +70,9 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -91,10 +99,14 @@ class ProcurementServiceImplTest {
     private final InventoryControlService inventoryControl = mock(InventoryControlService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final SupplierItemRepository supplierItems = mock(SupplierItemRepository.class);
+    private final IdentityService identity = mock(IdentityService.class);
+    private final ApprovalLimitRepository limitRows = mock(ApprovalLimitRepository.class);
+    /** The real decision rules over mocked stores; {@code limitOf} is stubbed, see {@link #limit}. */
+    private final ApprovalLimits limits = spy(new ApprovalLimits(identity, limitRows, orders));
     private final ProcurementServiceImpl service = new ProcurementServiceImpl(orders, search, reports,
             Clock.fixed(NOW, ZoneOffset.UTC), suppliers, events, notifications, deliveryDecisions,
             new PoCommunicationProfile("Buyer", "Address", "Contact", "0901234567", "buyer@example.com", "Warehouse"),
-            products, inventory, inventoryControl, warehouses, mock(CurrentUserProvider.class), supplierItems);
+            products, inventory, inventoryControl, warehouses, mock(CurrentUserProvider.class), supplierItems, limits);
 
     private final UUID supplierId = UUID.randomUUID();
     private final UUID warehouseId = UUID.randomUUID();
@@ -131,6 +143,9 @@ class ProcurementServiceImplTest {
         when(supplierItems.findSupplier(supplierId)).thenReturn(Optional.of(
                 new CatalogSupplier(supplierId, "SUP", "Supplier", SupplierStatus.ACTIVE, Money.VND, 7)));
         listed(1, 1, null, "1000");
+        // Nobody has an approval limit unless a test gives one: every submit waits, no approval is allowed.
+        doReturn(Optional.empty()).when(limits).limitOf(any(), any(), any());
+        when(orders.autoApprovedTotal(any(), any(), any(), any(), any())).thenReturn(Money.zero(Money.VND));
         when(orders.save(any())).thenAnswer(call -> call.getArgument(0));
         when(orders.nextPoNumber(any())).thenReturn("PO-20261022-0001");
         when(orders.nextRevisionNo(any())).thenReturn(0L);
@@ -349,8 +364,15 @@ class ProcurementServiceImplTest {
 
         private PurchaseOrder approved() {
             PurchaseOrder po = pending();
-            po.approve(approver, NOW);
+            po.approve(approver, Money.vnd(1_000_000_000L), NOW);
             return po;
+        }
+
+        /** The approval limit {@code user} holds today (none configured for everyone else, see {@code defaults}). */
+        private ApprovalLimit limit(UUID user, long vnd) {
+            ApprovalLimit limit = new ApprovalLimit(UUID.randomUUID(), UUID.randomUUID(), Money.vnd(vnd));
+            doReturn(Optional.of(limit)).when(limits).limitOf(eq(user), any(), eq(TODAY));
+            return limit;
         }
 
         @Test
@@ -415,6 +437,8 @@ class ProcurementServiceImplTest {
                 + "and the approval is recorded against the revision")
         void fourEyes() {
             PurchaseOrder po = pending();
+            limit(submitter, 1_000_000);
+            limit(approver, 1_000_000);
             assertThat(refused(() -> service.approve(po.id().value(), submitter)).errorCode())
                     .isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED);
             verify(orders, never()).recordApproval(any(), any(), anyString(), any());
@@ -432,6 +456,7 @@ class ProcurementServiceImplTest {
         @DisplayName("approve: a draft is not approved (INVALID_PURCHASE_ORDER_TRANSITION)")
         void approveDraft() {
             PurchaseOrder po = draft();
+            limit(approver, 1_000_000);   // however big the limit, a draft is approved only by the under-limit submit
             assertThat(refused(() -> service.approve(po.id().value(), approver)).errorCode())
                     .isEqualTo(ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
         }
@@ -592,38 +617,330 @@ class ProcurementServiceImplTest {
         // ---- close
 
         @Test
-        @DisplayName("close: only a RECEIVED order; short-close only a PARTIALLY_RECEIVED one, with a reason")
+        @DisplayName("close: only a RECEIVED order; short-close only a PARTIALLY_RECEIVED one (or force close of a "
+                + "CONFIRMED one), never an order still being approved")
         void closing() {
             PurchaseOrder confirmed = approved();
             confirmed.confirm(approver, null, null, NOW);
             assertThat(refused(() -> service.close(confirmed.id().value(), approver)).errorCode())
                     .isEqualTo(ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
-            assertThat(refused(() -> service.closeShort(confirmed.id().value(), approver, "short")).errorCode())
+            verify(orders, never()).save(any());
+
+            PurchaseOrder awaiting = pending();
+            assertThat(refused(() -> service.closeShort(awaiting.id().value(), approver, "short")).errorCode())
+                    .isEqualTo(ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
+            PurchaseOrder approvedOnly = approved();
+            assertThat(refused(() -> service.closeShort(approvedOnly.id().value(), approver, "short")).errorCode())
                     .isEqualTo(ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
             verify(orders, never()).save(any());
         }
 
-        // ---- documented-but-different
+        @Test
+        @DisplayName("short-close of a PARTIALLY_RECEIVED order is unchanged: SHORT_CLOSED on the timeline, the supplier "
+                + "delivery untouched")
+        void shortCloseUnchanged() {
+            PurchaseOrder po = partiallyReceived();
+
+            service.closeShort(po.id().value(), approver, "supplier cannot finish");
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.CLOSED);
+            assertThat(po.closeKind()).isEqualTo(CloseKind.SHORT_CLOSE);
+            verify(orders).recordEvent(po.id(), po.activeRevisionId(), "SHORT_CLOSED", approver,
+                    PurchaseOrderStatus.PARTIALLY_RECEIVED, PurchaseOrderStatus.CLOSED, "supplier cannot finish");
+            verify(notifications, never()).suppressSupplierDelivery(any());
+        }
+
+        /** As a goods receipt leaves a confirmed order: PARTIALLY_RECEIVED, 4 of the 10 cups counted in. */
+        private PurchaseOrder partiallyReceived() {
+            PurchaseOrder confirmed = approved();
+            confirmed.confirm(approver, null, null, NOW);
+            PurchaseOrder po = new PurchaseOrder(new PurchaseOrder.State(confirmed.id(), confirmed.poNumber(),
+                    confirmed.type(), null, supplierId, warehouseId, PurchaseOrderStatus.PARTIALLY_RECEIVED, Money.VND,
+                    List.of(new PoLine(UUID.randomUUID(), 1, itemId, new Sku("CUP-01"), "EACH", "Cup", 10, 4,
+                            Money.vnd(1000), BigDecimal.ZERO, PoLineStatus.PARTIALLY_RECEIVED)),
+                    TODAY, TODAY.plusDays(7), null, 30, 7, confirmed.revisionNo(), confirmed.activeRevisionId(), null,
+                    submitter, NOW, approver, NOW, false, approver, NOW, null, null, null, null, null,
+                    SupplierConfirmationStatus.CONFIRMED, NOW, null, null, 3, NOW, "buyer", NOW, "buyer"));
+            when(orders.findByIdForUpdate(po.id())).thenReturn(Optional.of(po));
+            return po;
+        }
+
+        // ---- force close: 02 §5 Confirmed -> Closed
 
         @Test
-        @Disabled("Possible bug: kltn-docs warehouse/02 §5 allows Confirmed -> Closed (force close with a reason) for an "
-                + "order not expected to be received any more; PurchaseOrderStatus.CONFIRMED only allows CANCELLED and "
-                + "PurchaseOrder.closeShort requires PARTIALLY_RECEIVED - see PR body")
         @DisplayName("02 §5: a CONFIRMED order that will not be received can be force-closed with a reason")
         void forceCloseConfirmedOrder() {
             PurchaseOrder po = approved();
             po.confirm(approver, null, null, NOW);
+            when(orders.findByIdForUpdate(po.id())).thenReturn(Optional.of(po));
+
             service.closeShort(po.id().value(), approver, "supplier stopped production");
+
             assertThat(po.status()).isEqualTo(PurchaseOrderStatus.CLOSED);
+            assertThat(po.closeKind()).isEqualTo(CloseKind.FORCE_CLOSE);
+            assertThat(po.closeReason()).isEqualTo("supplier stopped production");
+            assertThat(po.closedBy()).isEqualTo(approver);
+            assertThat(po.lines()).extracting(PoLine::status).containsOnly(PoLineStatus.CLOSED);
+            verify(orders).save(po);
+            verify(orders).recordEvent(po.id(), po.activeRevisionId(), "FORCE_CLOSED", approver,
+                    PurchaseOrderStatus.CONFIRMED, PurchaseOrderStatus.CLOSED, "supplier stopped production");
+            // Closed, so there is nothing left to deliver to the supplier; it is not a cancellation, so no notice goes.
+            verify(notifications).suppressSupplierDelivery(po.id().value());
+            verify(notifications, never()).prepareSupplierCancellation(any());
+            verify(events, never()).publishEvent(any(PurchaseOrderSent.class));
         }
 
         @Test
-        @Disabled("Possible bug: kltn-docs warehouse/02 §4 step 7 and the §5 diagram let a draft below the creator's approval "
-                + "limit go straight to Approved; submit always goes to PENDING_APPROVAL and procurement.approval_limits is "
-                + "read by no code - see PR body")
-        @DisplayName("02 §5: Draft -> Approved is a legal transition for an order under the approval limit")
-        void underLimitDraftMayBeApprovedDirectly() {
-            assertThat(PurchaseOrderStatus.DRAFT.canTransitionTo(PurchaseOrderStatus.APPROVED)).isTrue();
+        @DisplayName("force close: the reason is mandatory; nothing is written without one")
+        void forceCloseNeedsAReason() {
+            PurchaseOrder po = approved();
+            po.confirm(approver, null, null, NOW);
+            when(orders.findByIdForUpdate(po.id())).thenReturn(Optional.of(po));
+
+            assertThat(refused(() -> service.closeShort(po.id().value(), approver, null)).errorCode())
+                    .isEqualTo(ErrorCode.PO_REASON_REQUIRED);
+            assertThat(refused(() -> service.closeShort(po.id().value(), approver, "  ")).errorCode())
+                    .isEqualTo(ErrorCode.PO_REASON_REQUIRED);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.CONFIRMED);
+            verify(orders, never()).save(any());
+            verify(orders, never()).recordEvent(any(), any(), anyString(), any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("force close: refused while a goods receipt of the order is being counted, like a cancel")
+        void forceCloseRefusedWhileReceiving() {
+            PurchaseOrder po = approved();
+            po.confirm(approver, null, null, NOW);
+            when(orders.findByIdForUpdate(po.id())).thenReturn(Optional.of(po));
+            when(orders.hasReceiptInProgress(po.id())).thenReturn(true);
+
+            assertThat(refused(() -> service.closeShort(po.id().value(), approver, "stopped")).errorCode())
+                    .isEqualTo(ErrorCode.CONFLICT);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.CONFIRMED);
+            verify(orders, never()).save(any());
+        }
+
+        // ---- approval limits: 02 §4 step 7, owner decision POLIMIT2
+
+        @Test
+        @DisplayName("submit within the submitter's own limit: approved at once, recording the reason and the limit used")
+        void submitWithinLimitAutoApproves() {
+            PurchaseOrder po = draft();                       // total 10,000
+            UUID revision = UUID.randomUUID();
+            when(orders.recordRevision(any(), eq(0L), eq(submitter), isNull())).thenReturn(revision);
+            ApprovalLimit limit = limit(submitter, 50_000_000);
+
+            PurchaseOrderSummary summary = service.submit(po.id().value(), submitter);
+
+            assertThat(summary).isNotNull();
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.autoApproved()).isTrue();
+            assertThat(po.approvedBy()).isEqualTo(submitter);
+            assertThat(po.activeRevisionId()).isEqualTo(revision);
+            assertThat(po.pendingRevisionId()).isNull();
+            verify(orders).save(po);
+            String reason = "Auto-approved within limit: total 10000 VND, limit 50000000 VND";
+            verify(orders).recordAutoApproval(revision, submitter, submitter, limit, NOW, reason);
+            verify(orders, never()).recordApproval(any(), any(), anyString(), any());
+            verify(orders).recordEvent(po.id(), revision, "SUBMITTED", submitter, PurchaseOrderStatus.DRAFT,
+                    PurchaseOrderStatus.PENDING_APPROVAL, null);
+            verify(orders).recordEvent(po.id(), revision, "AUTO_APPROVED", submitter,
+                    PurchaseOrderStatus.PENDING_APPROVAL, PurchaseOrderStatus.APPROVED, reason,
+                    limit.facts(Money.vnd(10_000), submitter));
+        }
+
+        @Test
+        @DisplayName("rule 3: an order that was ever rejected is never auto-approved, even edited below the limit")
+        void rejectedBeforeAlwaysWaits() {
+            PurchaseOrder po = draft();                       // 10,000, well within the limit below
+            limit(submitter, 50_000_000);
+            when(orders.hasBeenRejected(po.id())).thenReturn(true);
+            when(orders.nextRevisionNo(po.id())).thenReturn(1L);
+
+            service.submit(po.id().value(), submitter);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+            assertThat(po.autoApproved()).isFalse();
+            verify(orders, never()).recordAutoApproval(any(), any(), any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("rule 4: the automatic approvals of the same submitter and supplier in the last 7 days count with "
+                + "this order; up to the limit it is approved, one dong over it waits")
+        void antiSplitting() {
+            PurchaseOrder within = draft();                   // 10,000 + 40,000 already = 50,000 = the limit
+            limit(submitter, 50_000);
+            Instant since = NOW.minus(java.time.Duration.ofDays(7));
+            when(orders.autoApprovedTotal(submitter, supplierId, Money.VND, since, within.id()))
+                    .thenReturn(Money.vnd(40_000));
+            service.submit(within.id().value(), submitter);
+            assertThat(within.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+
+            PurchaseOrder over = draft();                     // 10,000 + 40,001 already = one dong over
+            when(orders.autoApprovedTotal(submitter, supplierId, Money.VND, since, over.id()))
+                    .thenReturn(Money.vnd(40_001));
+            service.submit(over.id().value(), submitter);
+            assertThat(over.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+            assertThat(over.autoApproved()).isFalse();
+        }
+
+        @Test
+        @DisplayName("rule 4: the sum is not read for an order that is over its limit anyway")
+        void antiSplittingNotAskedWhenAlreadyOver() {
+            PurchaseOrder po = draft();                       // 10,000
+            limit(submitter, 9_999);
+            service.submit(po.id().value(), submitter);
+            verify(orders, never()).autoApprovedTotal(any(), any(), any(), any(), any());
+        }
+
+        private PurchaseOrder subcontractDraft() {
+            PurchaseOrder po = PurchaseOrder.subcontract("SPO-1", UUID.randomUUID(), supplierId, warehouseId, Money.VND,
+                    PurchaseOrder.line(1, itemId, new Sku("CUP-01"), "EACH", "Cup", 10, Money.vnd(1000), null),
+                    TODAY, TODAY.plusDays(7), 30, 7);
+            when(orders.findByIdForUpdate(po.id())).thenReturn(Optional.of(po));
+            return po;
+        }
+
+        @Test
+        @DisplayName("rule 6: a subcontract order generated by splitting a production order uses the limit of whoever "
+                + "split it (the PO's creator), not of whoever submits it")
+        void subcontractUsesTheCreatorsLimit() {
+            UUID splitter = UUID.randomUUID();
+            PurchaseOrder po = subcontractDraft();            // 10,000
+            when(orders.creatorOf(po.id())).thenReturn(Optional.of(splitter));
+            ApprovalLimit splitterLimit = limit(splitter, 50_000);
+            UUID revision = UUID.randomUUID();
+            when(orders.recordRevision(any(), eq(0L), eq(submitter), isNull())).thenReturn(revision);
+
+            service.submit(po.id().value(), submitter);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.approvedBy()).as("the submitter is the one the system approved for").isEqualTo(submitter);
+            verify(orders).recordAutoApproval(eq(revision), eq(submitter), eq(splitter), eq(splitterLimit), eq(NOW),
+                    anyString());
+        }
+
+        @Test
+        @DisplayName("rule 6: the submitter's own limit does not approve a subcontract order whose creator has none")
+        void subcontractIgnoresTheSubmittersLimit() {
+            UUID splitter = UUID.randomUUID();
+            PurchaseOrder po = subcontractDraft();
+            when(orders.creatorOf(po.id())).thenReturn(Optional.of(splitter));
+            limit(submitter, 50_000_000);                     // the splitter has no limit configured
+
+            service.submit(po.id().value(), submitter);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+            verify(orders, never()).recordAutoApproval(any(), any(), any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("an ordinary order always uses its submitter's limit; its creator is not even looked up")
+        void standardOrderUsesTheSubmitter() {
+            PurchaseOrder po = draft();
+            limit(submitter, 50_000);
+            service.submit(po.id().value(), submitter);
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            verify(orders, never()).creatorOf(any());
+        }
+
+        @Test
+        @DisplayName("the limit is inclusive: a total equal to it is auto-approved, one dong more waits")
+        void limitBoundary() {
+            PurchaseOrder exact = draft();                    // 10,000
+            limit(submitter, 10_000);
+            service.submit(exact.id().value(), submitter);
+            assertThat(exact.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+
+            PurchaseOrder over = draft();
+            limit(submitter, 9_999);
+            service.submit(over.id().value(), submitter);
+            assertThat(over.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+            assertThat(over.autoApproved()).isFalse();
+        }
+
+        @Test
+        @DisplayName("submit above the submitter's limit, or with no limit configured (PO-NOLIMIT): PENDING_APPROVAL, "
+                + "no approval recorded")
+        void submitAboveOrWithoutLimitWaits() {
+            PurchaseOrder above = draft();
+            limit(submitter, 5_000);
+            service.submit(above.id().value(), submitter);
+            assertThat(above.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+
+            PurchaseOrder none = draft();
+            service.submit(none.id().value(), UUID.randomUUID());   // limits.limitOf: none configured for anyone else
+            assertThat(none.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+            verify(orders, never()).recordApproval(any(), any(), anyString(), any());
+            verify(orders, never()).recordAutoApproval(any(), any(), any(), any(), any(), any());
+            verify(orders, never()).recordEvent(any(), any(), eq("AUTO_APPROVED"), any(), any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("a draft discontinued SKU is refused at submit before any limit is looked at")
+        void submitChecksPurchasabilityBeforeAutoApproving() {
+            PurchaseOrder po = draft();
+            limit(submitter, 50_000_000);
+            when(products.purchasability(anyCollection())).thenReturn(Map.of("CUP-01", Purchasability.PRODUCT_DISCONTINUED));
+            assertThat(refused(() -> service.submit(po.id().value(), submitter)).errorCode())
+                    .isEqualTo(ErrorCode.SKU_NOT_PURCHASABLE);
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.DRAFT);
+            verify(orders, never()).recordApproval(any(), any(), anyString(), any());
+        }
+
+        @Test
+        @DisplayName("approve: a configured limit must cover the total; above it is PO_APPROVAL_LIMIT_EXCEEDED and the "
+                + "order stays pending")
+        void approveAboveOwnLimitIsRefused() {
+            PurchaseOrder po = pending();                     // 10,000
+            limit(approver, 9_999);
+
+            assertThat(refused(() -> service.approve(po.id().value(), approver)).errorCode())
+                    .isEqualTo(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+            verify(orders, never()).save(any());
+            verify(orders, never()).recordApproval(any(), any(), anyString(), any());
+        }
+
+        @Test
+        @DisplayName("approve (PO-NOLIMIT): an approver with no limit configured is bounded by the approve permission "
+                + "alone and may approve any total")
+        void approveWithoutConfiguredLimit() {
+            PurchaseOrder po = pending();
+            UUID unconfigured = UUID.randomUUID();            // limits.limitOf: none configured
+
+            service.approve(po.id().value(), unconfigured);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.approvedBy()).isEqualTo(unconfigured);
+            assertThat(po.autoApproved()).isFalse();
+        }
+
+        @Test
+        @DisplayName("approve: someone whose limit is big enough approves what the submitter could not")
+        void approveWithAnotherPersonsBiggerLimit() {
+            PurchaseOrder po = draft();
+            limit(submitter, 5_000);
+            service.submit(po.id().value(), submitter);
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
+            limit(approver, 300_000_000);
+
+            service.approve(po.id().value(), approver);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.approvedBy()).isEqualTo(approver);
+            assertThat(po.autoApproved()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the limit is looked up for the order's currency and today's business date")
+        void limitIsPerCurrencyAndDate() {
+            PurchaseOrder po = draft();
+            service.submit(po.id().value(), submitter);
+            verify(limits).limitOf(submitter, java.util.Currency.getInstance("VND"), TODAY);
         }
     }
 

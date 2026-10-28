@@ -17,7 +17,8 @@ public interface SubcontractAmendments {
      * extra units can be counted in.
      *
      * @throws com.stockflow.common.error.BusinessException {@code PURCHASE_ORDER_NOT_FOUND}, {@code CONFLICT} (none
-     *         waiting), {@code SELF_APPROVAL_NOT_ALLOWED}
+     *         waiting), {@code SELF_APPROVAL_NOT_ALLOWED}, {@code PO_APPROVAL_LIMIT_EXCEEDED} (the approver's limit,
+     *         when they have one, is below the order's total with the amendment)
      */
     SubcontractOrder approveAmendment(UUID purchaseOrderId, UUID approverId);
 
