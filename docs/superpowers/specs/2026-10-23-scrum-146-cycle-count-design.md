@@ -104,7 +104,9 @@ PLANNED ──first count entered──▶ IN_PROGRESS ──submit (every line 
 ## 5. Counting
 
 `inventory-cycle-counts:UPDATE`. On an assigned count only the assignee may count; a holder of `APPROVE` always
-may. Anyone else gets `403 CYCLE_COUNT_NOT_ASSIGNEE`.
+may. Anyone else gets `403 CYCLE_COUNT_NOT_ASSIGNEE`. On an assigned count a holder of `APPROVE` may not overwrite a
+line that another user already counted (`403 CYCLE_COUNT_LINE_COUNTED_BY_OTHER`, only the assignee corrects it):
+otherwise they would see the books, replace the assignee's figure and approve the variance it raises.
 
 | Endpoint | Body | Effect |
 |---|---|---|
@@ -178,7 +180,9 @@ A count variance is requested through a new `StockOperations.requestCountVarianc
 with the slot already chosen, so the (SKU, location, lot) ambiguity `findOne` refuses never arises.
 
 **Approval** stays where it is: the manager approves or rejects each adjustment on the existing adjustment
-screen (FE #26). No new approval endpoint. A `COUNT_VARIANCE` adjustment is never withdrawn, not even by the
+screen (FE #26). No new approval endpoint. Four eyes covers the counter as well as the requester: whoever entered a
+line's figure (`cycle_count_line.counted_by`) cannot approve or reject that line's `COUNT_VARIANCE` adjustment
+(`409 ADJUSTMENT_SELF_APPROVAL`), whoever submitted the count. A `COUNT_VARIANCE` adjustment is never withdrawn, not even by the
 submitter (`409 COUNT_VARIANCE_NOT_WITHDRAWABLE`): withdrawn, it would leave a completed count whose variance
 nobody decided. A typed-in adjustment request cannot claim `COUNT_VARIANCE` (`400 VALIDATION_FAILED`). A shortage that would cut into reserved units is refused by
 `StockItem.adjustBy` as today (`InsufficientStockException`): the manager reallocates or releases the holds first
