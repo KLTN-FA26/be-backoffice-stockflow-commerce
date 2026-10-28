@@ -16,6 +16,9 @@ import java.util.UUID;
  */
 public final class ReferenceRows {
 
+    /** The day in the number of an order {@link #orderWithLine} inserts; it is placed now all the same. */
+    public static final String FIXTURE_ORDER_DAY = "20000101";
+
     private ReferenceRows() {
     }
 
@@ -98,6 +101,11 @@ public final class ReferenceRows {
      * A placed order with one line of {@code sku}, in {@code status}, on credit (the payment term every status
      * accepts); {@code releasedBy} and {@code warehouseId} are what an order that has been released needs.
      * Returns the order id. For tests of what refers to a SKU.
+     *
+     * <p>The order number has the real shape ({@code OrderNumber}: {@code SO-yyyyMMdd-nnnnnn}), dated
+     * {@link #FIXTURE_ORDER_DAY} so it never meets a number the sequence hands out today. A malformed one broke
+     * whatever else shared the test context and read every order of the day (the sales rollup's rebuild) - and only
+     * when this ran first.</p>
      */
     public static UUID orderWithLine(EntityManager em, String sku, String status, UUID customerId, UUID releasedBy,
                                      UUID warehouseId) {
@@ -115,7 +123,8 @@ public final class ReferenceRows {
                                 CASE WHEN ?5 IN ('DELIVERED', 'COMPLETED') THEN NOW() END,
                                 CASE WHEN ?5 = 'COMPLETED' THEN NOW() END, 0, NOW())""")
                 .setParameter(1, order)
-                .setParameter(2, "SO-RR-" + order.toString().substring(24))
+                .setParameter(2, "SO-%s-%06d".formatted(FIXTURE_ORDER_DAY,
+                        Long.parseLong(order.toString().substring(24), 16)))
                 .setParameter(3, customerId)
                 .setParameter(4, Identifiers.newId())
                 .setParameter(5, status)
