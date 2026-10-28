@@ -111,7 +111,8 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
     @Override
     public Page<StockRow> stock(StockCriteria criteria, Pageable pageable) {
         Specification<StockItemJpaEntity> spec = Specification
-                .<StockItemJpaEntity>where(Specs.startsWith("locationCode", criteria.warehousePrefix() + "-"))
+                .<StockItemJpaEntity>where((root, query, cb) -> cb.like(root.get("locationCode"),
+                        WarehouseScope.locationPattern(criteria.warehousePrefix()), '\\'))
                 .and(Specs.startsWith("locationCode", criteria.locationPrefix()))
                 .and(Specs.eq("sku", blankToNull(criteria.sku())))
                 .and(Specs.eq("lotNumber", blankToNull(criteria.lotNumber())))

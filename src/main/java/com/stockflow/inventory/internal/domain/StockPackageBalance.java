@@ -41,11 +41,18 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
      * What one location holds of one SKU, lot and stock status: unopened cartons and their units, opened cartons
      * still holding something and what is left in them, units in no carton.
      *
-     * @param totalUnits the three unit columns added
+     * @param totalUnits the three unit columns added; any other value is refused
      */
     public record LocationLine(String sku, String lotNumber, LocalDate expiryDate, StockStatus status,
                                int wholeCartons, int wholeCartonUnits, int openedCartons, int openedCartonUnits,
                                int looseUnits, int totalUnits) {
+
+        public LocationLine {
+            if (totalUnits != wholeCartonUnits + openedCartonUnits + looseUnits) {
+                throw new IllegalArgumentException("totalUnits " + totalUnits + " is not " + wholeCartonUnits + " + "
+                        + openedCartonUnits + " + " + looseUnits);
+            }
+        }
 
         public LocationLine(String sku, String lotNumber, LocalDate expiryDate, StockStatus status, int wholeCartons,
                             int wholeCartonUnits, int openedCartons, int openedCartonUnits, int looseUnits) {
