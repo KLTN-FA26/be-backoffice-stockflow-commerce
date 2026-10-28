@@ -16,6 +16,12 @@ import java.util.UUID;
  */
 public final class ReferenceRows {
 
+    /**
+     * Order numbers of {@link #orderWithLine}: well formed ({@code OrderNumber} reads every order the database holds -
+     * the sales rollup's rebuild of a day reads them all, whoever placed them), on a date no real sequence reaches.
+     */
+    public static final String REFERENCE_ORDER_PREFIX = "SO-20991231-";
+
     private ReferenceRows() {
     }
 
@@ -115,7 +121,7 @@ public final class ReferenceRows {
                                 CASE WHEN ?5 IN ('DELIVERED', 'COMPLETED') THEN NOW() END,
                                 CASE WHEN ?5 = 'COMPLETED' THEN NOW() END, 0, NOW())""")
                 .setParameter(1, order)
-                .setParameter(2, "SO-RR-" + order.toString().substring(24))
+                .setParameter(2, REFERENCE_ORDER_PREFIX + Long.toUnsignedString(order.getLeastSignificantBits()))
                 .setParameter(3, customerId)
                 .setParameter(4, Identifiers.newId())
                 .setParameter(5, status)
