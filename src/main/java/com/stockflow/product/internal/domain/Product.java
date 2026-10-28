@@ -202,24 +202,27 @@ public final class Product extends AggregateRoot {
             throw new BusinessException(ErrorCode.PRODUCT_BRAND_REQUIRED, message,
                     List.of(new FieldError("brandId", message, ErrorCode.PRODUCT_BRAND_REQUIRED.name())));
         }
-        List<FieldError> missing = missingDetails();
-        if (!missing.isEmpty()) {
-            throw new BusinessException(ErrorCode.PRODUCT_DETAILS_REQUIRED,
-                    "An English name and a tax class are required before submitting for approval", missing);
-        }
+        requireDetails();
         this.status = ProductStatus.PENDING_APPROVAL;
         this.submittedBy = Objects.requireNonNull(submittedBy, "submittedBy");
         this.submittedAt = Objects.requireNonNull(now, "now");
         this.rejectionReason = null;
     }
 
-    /** BR-PRD-003: the approver must not be the person who submitted it. */
+    /**
+     * BR-PRD-003: the approver must not be the person who submitted it.
+     *
+     * <p>The English name and the tax class are checked again (SCRUM-87): a row that was already waiting
+     * for approval before {@link #submit} required them would otherwise be approved without them, until
+     * {@code ck_products_details_on_submit} is in the database. The approver rejects it back to DRAFT.</p>
+     */
     public void approve(UUID approverId, Instant now) {
         requireCanTransitionTo(ProductStatus.APPROVED);
         Objects.requireNonNull(approverId, "approverId");
         if (submittedBy != null && submittedBy.equals(approverId)) {
             throw new SelfApprovalNotAllowedException(id, approverId);
         }
+        requireDetails();
         this.status = ProductStatus.APPROVED;
         this.approvedBy = approverId;
         this.approvedAt = Objects.requireNonNull(now, "now");
@@ -343,8 +346,8 @@ public final class Product extends AggregateRoot {
         return taxClass;
     }
 
-    /** One field error per detail the product still lacks before approval, in the order the form shows them. */
-    private List<FieldError> missingDetails() {
+    /** Refused with one field error per detail the product still lacks, in the order the form shows them. */
+    private void requireDetails() {
         String code = ErrorCode.PRODUCT_DETAILS_REQUIRED.name();
         List<FieldError> missing = new ArrayList<>();
         if (nameEn == null || nameEn.isBlank()) {
@@ -353,7 +356,10 @@ public final class Product extends AggregateRoot {
         if (taxClass == null) {
             missing.add(new FieldError("taxClass", "A tax class is required before submitting for approval", code));
         }
-        return missing;
+        if (!missing.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCT_DETAILS_REQUIRED,
+                    "An English name and a tax class are required before submitting for approval", missing);
+        }
     }
 
     public ProductId id() { return id; }

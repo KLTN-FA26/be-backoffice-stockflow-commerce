@@ -242,6 +242,22 @@ class ProductTest {
             assertThatThrownBy(() -> product.approve(APPROVER, NOW))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
         }
+
+        @Test
+        @DisplayName("a legacy row already pending without an English name or tax class is not approved (SCRUM-87)")
+        void legacyPendingRowWithoutDetailsIsNotApproved() {
+            Product product = new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy 12oz", null, BRAND, CATEGORY, null,
+                    null, null, null, ProductKind.STANDARD, ProductStatus.PENDING_APPROVAL, 3L, SUBMITTER, NOW,
+                    null, null, null, null, null, null, null);
+
+            assertThatThrownBy(() -> product.approve(APPROVER, NOW)).isInstanceOfSatisfying(BusinessException.class,
+                    e -> {
+                        assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_DETAILS_REQUIRED);
+                        assertThat(e.fieldErrors()).extracting(f -> f.field()).containsExactly("nameEn", "taxClass");
+                    });
+            assertThat(product.status()).isEqualTo(ProductStatus.PENDING_APPROVAL);
+            assertThat(product.approvedBy()).isNull();
+        }
     }
 
     @Nested
