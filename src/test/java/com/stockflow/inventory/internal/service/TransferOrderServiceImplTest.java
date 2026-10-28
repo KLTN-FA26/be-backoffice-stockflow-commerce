@@ -293,6 +293,50 @@ class TransferOrderServiceImplTest {
         }
 
         @Test
+        @DisplayName("issue 207, step 2: units promised to checkout reservations are not available to transfer")
+        void skuReservationsAreSubtracted() {
+            stock("HCM-A01-1-A", 50);
+            when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 45L));
+
+            BusinessException refused = catchThrowableOfType(BusinessException.class,
+                    () -> service.create(create(line("CUP-12OZ", 10))));
+
+            assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+            assertThat(refused.getMessage()).contains("requested 10").contains("available 5");
+            verify(transfers, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("issue 207: exactly what is left after the reservations may be transferred")
+        void reservationsLeaveExactlyEnough() {
+            stock("HCM-A01-1-A", 50);
+            when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 40L));
+
+            assertThat(service.create(create(line("CUP-12OZ", 10))).status()).isEqualTo(TransferStatus.DRAFT);
+        }
+
+        @Test
+        @DisplayName("issue 207: a reservation on another SKU does not reduce this one")
+        void otherSkuReservationIgnored() {
+            stock("HCM-A01-1-A", 50);
+            when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-16OZ", 50L));
+
+            assertThat(service.create(create(line("CUP-12OZ", 50))).status()).isEqualTo(TransferStatus.DRAFT);
+        }
+
+        @Test
+        @DisplayName("issue 207: lines of one SKU in different lots are checked together against the reservations")
+        void lotLinesOfOneSkuAreSummed() {
+            stock("CUP-12OZ", "HCM-A01-1-A", "L1", null, 30);
+            stock("CUP-12OZ", "HCM-A02-1-A", "L2", null, 30);
+            when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 30L));
+
+            // each line alone fits in the 30 left after the reservation; together (40) they do not.
+            assertThat(codeOf(() -> service.create(create(new TransferOrders.NewLine("CUP-12OZ", "L1", 20),
+                    new TransferOrders.NewLine("CUP-12OZ", "L2", 20))))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        }
+
+        @Test
         @DisplayName("step 2: exactly what the source has is allowed")
         void exactlyCoverable() {
             stock("HCM-A01-1-A", 20);
@@ -421,6 +465,18 @@ class TransferOrderServiceImplTest {
 
             assertThat(codeOf(() -> service.reviseDraft(order.id(), new TransferOrders.Revise(7, HCM, HN,
                     TransferReason.DEMAND, null, List.of(line("CUP-12OZ", 1)))))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+        }
+
+        @Test
+        @DisplayName("issue 207: the new lines are held to the SKU reservations too, as at creation")
+        void mustLeaveReservationsCovered() {
+            stock("HCM-A01-1-A", 50);
+            when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 45L));
+            TransferOrder order = draft(1);
+
+            assertThat(codeOf(() -> service.reviseDraft(order.id(), new TransferOrders.Revise(0, HCM, HN,
+                    TransferReason.DEMAND, null, List.of(line("CUP-12OZ", 6)))))).isEqualTo(
+                    ErrorCode.INSUFFICIENT_STOCK);
         }
 
         @Test

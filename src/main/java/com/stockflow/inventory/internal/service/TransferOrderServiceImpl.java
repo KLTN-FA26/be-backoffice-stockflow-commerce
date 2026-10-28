@@ -181,15 +181,24 @@ class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
     /**
      * SCRUM-330: every line must be coverable from sellable, unreserved stock at the source now.
      * Checked again, under lock, at dispatch — this only stops a transfer nobody can fill.
+     *
+     * <p>SCRUM-491 (issue 207, kltn-docs 10 step 2): stock allocated to customers is not available to transfer, and
+     * checkout's SKU reservations sit on no stock row, so the rows alone cannot show them. The requested units per SKU
+     * are therefore held to the same rule the hold and the dispatch use ({@link #requireSkuReservationsCovered}), so a
+     * transfer is not created that packing or dispatch would later refuse. Unlike those it takes no SKU lock: this is
+     * the early, advisory check, and the locked ones follow.</p>
      */
     private void requireCoverable(TransferOrder order, String sourcePrefix, Instant now) {
+        Map<com.stockflow.common.domain.Sku, Integer> requested = new LinkedHashMap<>();
         for (TransferLine line : order.lines()) {
             StockAllocator.plan(line.sku().code(),
                     candidates(line, sourcePrefix),
                     Quantity.of(line.requested()),
                     controls.policy(line.sku()).removalStrategy(),
                     BusinessCalendar.date(now));
+            requested.merge(line.sku(), line.requested(), Integer::sum);
         }
+        requireSkuReservationsCovered(requested, BusinessCalendar.date(now));
     }
 
     @Override
