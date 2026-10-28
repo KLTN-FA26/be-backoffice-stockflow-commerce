@@ -26,7 +26,8 @@ import java.util.regex.Pattern;
  * (WBS 3.1.8.1) adds {@code discontinue()}, the terminal edge, and SCRUM-461 adds the reason it
  * needs, {@code suspend()}/{@code resume()} (kltn-docs 01 §5.1 "Inactive"), the brand a submission
  * needs, and the version check an edit quotes — all following {@link ProductStatus#canTransitionTo}'s
- * table. {@link #updateDetails} guards on {@code DRAFT}.</p>
+ * table. {@link #updateDetails} guards on {@code DRAFT}. SCRUM-87 requires the English name and the tax
+ * class of every new or edited draft, and of every submission.</p>
  *
  * <p>What is deliberately <b>not</b> on the product (the PIM model, docs 01): logistics — weight,
  * dimensions, package, storage class — belong to the inventory item of each SKU (BR-08), and images
@@ -106,13 +107,17 @@ public final class Product extends AggregateRoot {
         this.suspendReason = suspendReason;
     }
 
-    /** A new product master row, always born {@link ProductStatus#DRAFT}. */
+    /**
+     * A new product master row, always born {@link ProductStatus#DRAFT}. The English name and the tax
+     * class are required here, as the request requires them; the constructor still accepts a row without
+     * them, because legacy rows are loaded through it.
+     */
     public static Product draft(String code, String name, String nameEn, UUID brandId, UUID categoryId,
                                 String shortDescription, String description, String descriptionEn,
                                 TaxClass taxClass, ProductKind kind) {
-        return new Product(ProductId.newId(), code, name, nameEn, brandId, categoryId, shortDescription,
-                description, descriptionEn, taxClass, kind, ProductStatus.DRAFT, 0L,
-                null, null, null, null, null, null, null, null, null);
+        return new Product(ProductId.newId(), code, name, requireNonBlank(nameEn, "nameEn"), brandId, categoryId,
+                shortDescription, description, descriptionEn, requireTaxClass(taxClass), kind, ProductStatus.DRAFT,
+                0L, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -129,25 +134,27 @@ public final class Product extends AggregateRoot {
                                       TaxClass taxClass, ProductKind kind) {
         requireStatus(ProductStatus.DRAFT, "edited");
         String newName = requireNonBlank(name, "name");
+        String newNameEn = requireNonBlank(nameEn, "nameEn");
+        TaxClass newTaxClass = requireTaxClass(taxClass);
         ProductKind newKind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
         List<String> changed = new ArrayList<>();
         if (!Objects.equals(this.name, newName)) changed.add("name");
-        if (!Objects.equals(this.nameEn, nameEn)) changed.add("nameEn");
+        if (!Objects.equals(this.nameEn, newNameEn)) changed.add("nameEn");
         if (!Objects.equals(this.brandId, brandId)) changed.add("brandId");
         if (!Objects.equals(this.categoryId, categoryId)) changed.add("categoryId");
         if (!Objects.equals(this.shortDescription, shortDescription)) changed.add("shortDescription");
         if (!Objects.equals(this.description, description)) changed.add("description");
         if (!Objects.equals(this.descriptionEn, descriptionEn)) changed.add("descriptionEn");
-        if (this.taxClass != taxClass) changed.add("taxClass");
+        if (this.taxClass != newTaxClass) changed.add("taxClass");
         if (this.kind != newKind) changed.add("kind");
         this.name = newName;
-        this.nameEn = nameEn;
+        this.nameEn = newNameEn;
         this.brandId = brandId;
         this.categoryId = categoryId;
         this.shortDescription = shortDescription;
         this.description = description;
         this.descriptionEn = descriptionEn;
-        this.taxClass = taxClass;
+        this.taxClass = newTaxClass;
         this.kind = newKind;
         return List.copyOf(changed);
     }
@@ -170,6 +177,19 @@ public final class Product extends AggregateRoot {
      * since a product is identified by name, code, category and brand (kltn-docs 01 §3), a brand —
      * {@code ck_products_brand_on_submit} says it again. A DRAFT may be saved without one. The product
      * always has at least one variant — it is created with its default one.
+     *
+     * <p>The English name and the tax class (SCRUM-87) are required by {@link #draft} and
+     * {@link #updateDetails}, so only a row written some other way — the legacy bridge, carried rows —
+     * reaches this point without them; it is refused with one field error per missing detail, after the
+     * category and brand refusals. The database's statement of the same rule,
+     * {@code ck_products_details_on_submit}, is requested in
+     * {@code docs/business-design/db-design/SCRUM-73-schema-change-request.md}.</p>
+     *
+     * <p><b>The category rule is stated once, here.</b> The category lives in
+     * {@code product.product_categories}, which a {@code CHECK} cannot see; the only database statement
+     * would be a trigger whose body names that table and {@code is_primary} as text, so a later rename
+     * would pass its migration and then fail every submission at runtime. Only this aggregate writes
+     * the primary category, and only while DRAFT, so the trigger would guard a path nothing takes.</p>
      */
     public void submit(UUID submittedBy, Instant now) {
         requireCanTransitionTo(ProductStatus.PENDING_APPROVAL);
@@ -182,19 +202,27 @@ public final class Product extends AggregateRoot {
             throw new BusinessException(ErrorCode.PRODUCT_BRAND_REQUIRED, message,
                     List.of(new FieldError("brandId", message, ErrorCode.PRODUCT_BRAND_REQUIRED.name())));
         }
+        requireDetails();
         this.status = ProductStatus.PENDING_APPROVAL;
         this.submittedBy = Objects.requireNonNull(submittedBy, "submittedBy");
         this.submittedAt = Objects.requireNonNull(now, "now");
         this.rejectionReason = null;
     }
 
-    /** BR-PRD-003: the approver must not be the person who submitted it. */
+    /**
+     * BR-PRD-003: the approver must not be the person who submitted it.
+     *
+     * <p>The English name and the tax class are checked again (SCRUM-87): a row that was already waiting
+     * for approval before {@link #submit} required them would otherwise be approved without them, until
+     * {@code ck_products_details_on_submit} is in the database. The approver rejects it back to DRAFT.</p>
+     */
     public void approve(UUID approverId, Instant now) {
         requireCanTransitionTo(ProductStatus.APPROVED);
         Objects.requireNonNull(approverId, "approverId");
         if (submittedBy != null && submittedBy.equals(approverId)) {
             throw new SelfApprovalNotAllowedException(id, approverId);
         }
+        requireDetails();
         this.status = ProductStatus.APPROVED;
         this.approvedBy = approverId;
         this.approvedAt = Objects.requireNonNull(now, "now");
@@ -309,6 +337,29 @@ public final class Product extends AggregateRoot {
             throw new IllegalArgumentException(field + " must not be blank");
         }
         return value;
+    }
+
+    private static TaxClass requireTaxClass(TaxClass taxClass) {
+        if (taxClass == null) {
+            throw new IllegalArgumentException("taxClass must not be null");
+        }
+        return taxClass;
+    }
+
+    /** Refused with one field error per detail the product still lacks, in the order the form shows them. */
+    private void requireDetails() {
+        String code = ErrorCode.PRODUCT_DETAILS_REQUIRED.name();
+        List<FieldError> missing = new ArrayList<>();
+        if (nameEn == null || nameEn.isBlank()) {
+            missing.add(new FieldError("nameEn", "An English name is required before submitting for approval", code));
+        }
+        if (taxClass == null) {
+            missing.add(new FieldError("taxClass", "A tax class is required before submitting for approval", code));
+        }
+        if (!missing.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCT_DETAILS_REQUIRED,
+                    "An English name and a tax class are required before submitting for approval", missing);
+        }
     }
 
     public ProductId id() { return id; }

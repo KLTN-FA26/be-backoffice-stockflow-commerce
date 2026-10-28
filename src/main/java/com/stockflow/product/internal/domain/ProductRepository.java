@@ -9,7 +9,8 @@ import java.util.UUID;
 /**
  * Domain port of the {@link Product} aggregate. {@code save} also writes the product's primary
  * category ({@code product.product_categories}); the reference checks below exist so the service
- * can answer 404 with a real error code before the foreign key would answer 500.
+ * can answer 404 with a real error code before the foreign key would answer 500, and 409 for a brand or
+ * category retired by deactivation (SCRUM-87).
  */
 public interface ProductRepository extends AggregateRepository<Product, ProductId> {
 
@@ -27,9 +28,9 @@ public interface ProductRepository extends AggregateRepository<Product, ProductI
      *  without axes takes the code. */
     boolean skuExists(String sku);
 
-    boolean categoryExists(UUID categoryId);
+    ReferenceStatus categoryStatus(UUID categoryId);
 
-    boolean brandExists(UUID brandId);
+    ReferenceStatus brandStatus(UUID brandId);
 
     /** The SKU of every variant of the product, whatever its status. */
     List<String> skusOf(ProductId id);

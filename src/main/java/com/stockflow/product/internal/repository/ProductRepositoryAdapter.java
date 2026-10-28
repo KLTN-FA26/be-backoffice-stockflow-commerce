@@ -3,10 +3,12 @@ package com.stockflow.product.internal.repository;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Specs;
+import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
+import com.stockflow.product.internal.domain.ReferenceStatus;
 import com.stockflow.product.internal.entity.ProductJpaEntity;
 import jakarta.persistence.EntityManager;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -17,6 +19,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -82,13 +85,17 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     }
 
     @Override
-    public boolean categoryExists(UUID categoryId) {
-        return categories.existsById(categoryId);
+    public ReferenceStatus categoryStatus(UUID categoryId) {
+        return categories.findById(categoryId)
+                .map(c -> c.isActive() ? ReferenceStatus.ACTIVE : ReferenceStatus.INACTIVE)
+                .orElse(ReferenceStatus.MISSING);
     }
 
     @Override
-    public boolean brandExists(UUID brandId) {
-        return brands.existsById(brandId);
+    public ReferenceStatus brandStatus(UUID brandId) {
+        return brands.findById(brandId)
+                .map(b -> b.isActive() ? ReferenceStatus.ACTIVE : ReferenceStatus.INACTIVE)
+                .orElse(ReferenceStatus.MISSING);
     }
 
     @Override
@@ -149,6 +156,16 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     @Override
     public Optional<ProductSummary> summary(UUID productId) {
         return jpa.findById(productId).map(ProductPersistenceMapper::toSummary);
+    }
+
+    /** Both ids are checked: {@link Specs#eq} with a null value matches every row, the whole catalogue here. */
+    @Override
+    public List<ProductSummary> sameBrandAndCategory(UUID brandId, UUID categoryId) {
+        Specification<ProductJpaEntity> spec = Specification.allOf(List.of(
+                Specs.eq("brandId", Objects.requireNonNull(brandId, "brandId")),
+                Specs.eq("categoryId", Objects.requireNonNull(categoryId, "categoryId")),
+                Specs.notEq("status", ProductStatus.DISCONTINUED)));
+        return jpa.findAll(spec).stream().map(ProductPersistenceMapper::toSummary).toList();
     }
 
     /** The one primary category ({@code uk_product_categories_primary}); secondary ones are kept. */

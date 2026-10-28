@@ -5,6 +5,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.OpenReferences;
 import com.stockflow.product.api.ProductChange;
 import com.stockflow.product.api.ProductDiscontinuation;
@@ -20,6 +21,7 @@ import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
+import com.stockflow.product.internal.domain.ReferenceStatus;
 import com.stockflow.product.internal.repository.ProductChangeLogRepository;
 import com.stockflow.product.internal.repository.ProductCommerceRepository;
 import com.stockflow.product.internal.repository.ProductSearchRepository;
@@ -92,7 +94,7 @@ class ProductServiceImplTest {
 
     private static Product productIn(ProductStatus status, long version) {
         boolean approvedOnce = status != ProductStatus.DRAFT && status != ProductStatus.PENDING_APPROVAL;
-        return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", null, BRAND, CATEGORY, null, null, null,
+        return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", "Paper cup", BRAND, CATEGORY, null, null, null,
                 TaxClass.STANDARD, ProductKind.STANDARD, status, version,
                 status == ProductStatus.DRAFT ? null : PEOPLE, status == ProductStatus.DRAFT ? null : NOW,
                 approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, null,
@@ -405,18 +407,90 @@ class ProductServiceImplTest {
     @DisplayName("update: the history names the fields that changed, and nothing is written when none did")
     void updateRecordsChangedFields() {
         Product product = locked(ProductStatus.DRAFT, 5, ProductStatus.DRAFT);
-        when(products.brandExists(BRAND)).thenReturn(true);
-        when(products.categoryExists(CATEGORY)).thenReturn(true);
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.ACTIVE);
 
-        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", null, BRAND, CATEGORY, null, null, null,
-                TaxClass.STANDARD, ProductKind.STANDARD));
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
+                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
 
         verify(history).record(product.id().value(), ProductChangeType.UPDATED, null, null, null, null, List.of("name"));
 
-        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", null, BRAND, CATEGORY, null, null, null,
-                TaxClass.STANDARD, ProductKind.STANDARD));
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
+                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
 
         verify(history, org.mockito.Mockito.times(1)).record(any(), eq(ProductChangeType.UPDATED), any(), any(), any(), any(), anyList());
+    }
+
+    // ------------------------------------------------------------------ the brand and category chosen (SCRUM-87)
+
+    private static CreateProductCommand create(UUID brand, UUID category) {
+        return new CreateProductCommand("CUP-NEW", "Ly mới", "New cup", brand, category, null, null, null,
+                TaxClass.STANDARD, ProductKind.STANDARD, List.of());
+    }
+
+    @Test
+    @DisplayName("create: an inactive brand is BRAND_INACTIVE on brandId, an inactive category CATEGORY_INACTIVE on categoryId")
+    void createRefusesInactiveReferences() {
+        UUID otherCategory = UUID.randomUUID();
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.INACTIVE);
+        when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.brandStatus(PEOPLE)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.categoryStatus(otherCategory)).thenReturn(ReferenceStatus.INACTIVE);
+
+        BusinessException brand = refusal(catchThrowable(() -> service.create(create(BRAND, CATEGORY))));
+        BusinessException category = refusal(catchThrowable(() -> service.create(create(PEOPLE, otherCategory))));
+
+        assertThat(brand.errorCode()).isEqualTo(ErrorCode.BRAND_INACTIVE);
+        assertThat(brand.fieldErrors()).extracting(f -> f.field()).containsExactly("brandId");
+        assertThat(category.errorCode()).isEqualTo(ErrorCode.CATEGORY_INACTIVE);
+        assertThat(category.fieldErrors()).extracting(f -> f.field()).containsExactly("categoryId");
+        verify(products, never()).save(any());
+        verifyNoInteractions(history);
+    }
+
+    @Test
+    @DisplayName("create: an unknown brand or category is still 404 BRAND_NOT_FOUND / CATEGORY_NOT_FOUND")
+    void createStillAnswersNotFound() {
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.MISSING);
+        when(products.brandStatus(PEOPLE)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.MISSING);
+
+        assertThat(refusal(catchThrowable(() -> service.create(create(BRAND, null)))).errorCode())
+                .isEqualTo(ErrorCode.BRAND_NOT_FOUND);
+        assertThat(refusal(catchThrowable(() -> service.create(create(PEOPLE, CATEGORY)))).errorCode())
+                .isEqualTo(ErrorCode.CATEGORY_NOT_FOUND);
+        verify(products, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("update: a brand deactivated after the product chose it is kept; the edit goes through")
+    void keptInactiveBrandIsAccepted() {
+        Product product = locked(ProductStatus.DRAFT, 5, ProductStatus.DRAFT);
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.INACTIVE);
+        when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.INACTIVE);
+
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
+                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
+
+        assertThat(product.name()).isEqualTo("Ly mới");
+        verify(products).save(product);
+    }
+
+    @Test
+    @DisplayName("update: moving to an inactive category is CATEGORY_INACTIVE, and nothing changes")
+    void changingToInactiveCategoryIsRefused() {
+        Product product = locked(ProductStatus.DRAFT, 5, ProductStatus.DRAFT);
+        UUID retired = UUID.randomUUID();
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.categoryStatus(retired)).thenReturn(ReferenceStatus.INACTIVE);
+
+        BusinessException refused = refusal(catchThrowable(() -> service.update(new UpdateProductCommand(
+                product.id().value(), 5, "Ly mới", "Paper cup", BRAND, retired, null, null, null, TaxClass.STANDARD,
+                ProductKind.STANDARD))));
+
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.CATEGORY_INACTIVE);
+        assertThat(product.categoryId()).isEqualTo(CATEGORY);
+        verify(products, never()).save(any());
     }
 
     @Test

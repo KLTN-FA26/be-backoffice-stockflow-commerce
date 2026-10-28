@@ -309,10 +309,18 @@ class PickListService implements PickLists {
         orderReservations.replaceHold(pick.getOrderId(), shortLine.reservationId(),
                 allocated.stream().map(StockReservation::reservationId).toList());
         Map<String, UUID> warehouseOf = new HashMap<>();
-        List<PickList.Hold> holds = allocated.stream().map(hold -> new PickList.Hold(hold.reservationId(),
-                shortLine.sku(), hold.locationCode(), warehouseOf.computeIfAbsent(hold.locationCode(),
-                        code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
-                hold.lotNumber(), hold.quantity(), true)).toList();
+        // The new holds' cartons (SCRUM-473): a line drawn from a carton must name it. A hold not read back is planned
+        // loose; were it in a carton after all, tg_pick_line_carton refuses the line rather than let it go unscanned.
+        Map<UUID, HoldView> cartons = inventory.holds(allocated.stream().map(StockReservation::reservationId).toList())
+                .stream().collect(Collectors.toMap(HoldView::reservationId, view -> view));
+        List<PickList.Hold> holds = allocated.stream().map(hold -> {
+            HoldView carton = cartons.get(hold.reservationId());
+            return new PickList.Hold(hold.reservationId(), shortLine.sku(), hold.locationCode(),
+                    warehouseOf.computeIfAbsent(hold.locationCode(),
+                            code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
+                    hold.lotNumber(), hold.quantity(), true, carton == null ? null : carton.lpn(),
+                    carton != null && carton.wholeCarton());
+        }).toList();
         List<PickLine> added = list.replaceShort(lineId, holds, Identifiers::newId);
         // The superseded line first: a restored impaired allocation is kept, so the new line holds the same allocation,
         // and only one live line may (uk_pick_line_reservation_live) - a flush inserts before it updates.
@@ -363,11 +371,7 @@ class PickListService implements PickLists {
                 line.reservationId(), line.id(), pick.getOrderId(), damage.damagedQuantity(), damage.reason(),
                 damage.note(), evidence, damage.damageLocationCode(), actor.userId()));
 
-        Map<String, UUID> warehouseOf = new HashMap<>();
-        List<PickList.Hold> replacements = result.replacements().stream().map(hold -> new PickList.Hold(
-                hold.reservationId(), line.sku(), hold.locationCode(), warehouseOf.computeIfAbsent(hold.locationCode(),
-                        code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
-                hold.lotNumber(), hold.quantity(), true)).toList();
+        List<PickList.Hold> replacements = replacementHolds(line.sku(), result);
         List<PickLine> added = list.replaceDamaged(lineId, damage.damagedQuantity(), result.damageReportId(),
                 result.retainedQuantity(), replacements, result.impairedReservationId(), Identifiers::newId);
         // The superseded line first: the line for the good units takes over its allocation, and only one live line
@@ -450,11 +454,7 @@ class PickListService implements PickLists {
                 line.reservationId(), line.id(), pick.getOrderId(), damage.damagedQuantity(), damage.reason(),
                 damage.note(), evidence, damage.damageLocationCode(), actor.userId()));
 
-        Map<String, UUID> warehouseOf = new HashMap<>();
-        List<PickList.Hold> replacements = result.replacements().stream().map(hold -> new PickList.Hold(
-                hold.reservationId(), line.sku(), hold.locationCode(), warehouseOf.computeIfAbsent(hold.locationCode(),
-                        code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
-                hold.lotNumber(), hold.quantity(), true)).toList();
+        List<PickList.Hold> replacements = replacementHolds(line.sku(), result);
         List<PickLine> added = list.replaceDamagedAfterPick(lineId, damage.damagedQuantity(), result.damageReportId(),
                 replacements, result.impairedReservationId(), Identifiers::newId);
         writeBack(list, stored, Set.of(lineId));
@@ -547,6 +547,29 @@ class PickListService implements PickLists {
                 .toList();
     }
 
+    /**
+     * The allocations that replaced damaged units, as the pick list plans them: with the warehouse of each location and
+     * the carton each is in (SCRUM-473), read back as the short reallocation does. A hold not read back is planned
+     * loose; were it in a carton after all, tg_pick_line_carton refuses the line rather than let it go unscanned.
+     */
+    private List<PickList.Hold> replacementHolds(String sku, ReportPickDamageResult result) {
+        if (result.replacements().isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, HoldView> cartons = inventory.holds(result.replacements().stream()
+                        .map(ReportPickDamageResult.Allocation::reservationId).toList())
+                .stream().collect(Collectors.toMap(HoldView::reservationId, view -> view));
+        Map<String, UUID> warehouseOf = new HashMap<>();
+        return result.replacements().stream().map(hold -> {
+            HoldView carton = cartons.get(hold.reservationId());
+            return new PickList.Hold(hold.reservationId(), sku, hold.locationCode(),
+                    warehouseOf.computeIfAbsent(hold.locationCode(),
+                            code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
+                    hold.lotNumber(), hold.quantity(), true, carton == null ? null : carton.lpn(),
+                    carton != null && carton.wholeCarton());
+        }).toList();
+    }
+
     /** The holds of the order's stock lines, with the warehouse each one's location belongs to. */
     private Map<UUID, PickList.Hold> holdsOf(OrderSummary order) {
         Set<UUID> ids = order.lines().stream()
@@ -562,7 +585,8 @@ class PickListService implements PickLists {
             UUID where = warehouseOf.computeIfAbsent(hold.locationCode(), code -> warehouses.findLocation(code)
                     .map(StorageLocationView::warehouseId).orElse(null));
             holds.put(hold.reservationId(), new PickList.Hold(hold.reservationId(), hold.sku(), hold.locationCode(),
-                    where, hold.lotNumber(), hold.quantity(), hold.status() == HoldView.Status.HELD));
+                    where, hold.lotNumber(), hold.quantity(), hold.status() == HoldView.Status.HELD, hold.lpn(),
+                    hold.wholeCarton()));
         }
         return holds;
     }
@@ -583,6 +607,6 @@ class PickListService implements PickLists {
         return new PickLineView(line.id(), taskId, line.sequenceNo(), line.orderLineId(), line.sku(), barcode,
                 line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(), line.status().name(),
                 line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(), line.shortQty(),
-                line.damagedQty(), line.damageReportId(), line.packingDamagedQty());
+                line.lpn(), line.wholeCarton(), line.damagedQty(), line.damageReportId(), line.packingDamagedQty());
     }
 }

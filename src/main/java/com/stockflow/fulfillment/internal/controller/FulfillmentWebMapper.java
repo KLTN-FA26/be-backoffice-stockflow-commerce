@@ -44,7 +44,8 @@ class FulfillmentWebMapper {
         return new PickLineResponse(line.lineId(), line.taskId(), line.sequenceNo(), line.orderLineId(), line.sku(),
                 line.barcode(), line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(),
                 line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(),
-                line.shortQty(), line.damagedQty(), line.damageReportId(), line.packingDamagedQty());
+                line.shortQty(), line.lpn(), line.wholeCarton(), line.damagedQty(), line.damageReportId(),
+                line.packingDamagedQty());
     }
 
     PickDamageResponse toResponse(PickLists.PickDamageView damage) {

@@ -152,6 +152,26 @@ class PickListServiceTest {
         }
 
         @Test
+        @DisplayName("a hold in a carton plans a line naming that carton (SCRUM-473)")
+        void holdsOfPassesTheCarton() {
+            OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
+                    List.of(FulfillmentFixtures.stockLine("SKU-A", resA)), null);
+            when(inventory.holds(any())).thenReturn(List.of(new HoldView(resA, "SKU-A", "HCM-A-01", "LOT-1", 10,
+                    HoldView.Status.HELD, null, null, null, "LPN-20261028-000001", true)));
+            locationsIn(WAREHOUSE, "HCM-A-01");
+
+            service.planLines(task, order);
+
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<PickLineJpaEntity>> saved = ArgumentCaptor.forClass(List.class);
+            verify(pickLines).saveAll(saved.capture());
+            assertThat(saved.getValue()).singleElement().satisfies(row -> {
+                assertThat(row.getLpn()).isEqualTo("LPN-20261028-000001");
+                assertThat(row.isWholeCarton()).isTrue();
+            });
+        }
+
+        @Test
         @DisplayName("a task that already has lines is left as it is")
         void planningIsIdempotent() {
             line("SKU-A", "HCM-A-01", 3, resA);

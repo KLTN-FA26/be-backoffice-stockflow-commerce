@@ -152,14 +152,40 @@ class PickListDamageTest {
     }
 
     @Test
+    @DisplayName("a line drawn from a carton: the good units stay in that carton, no longer whole; a replacement names "
+            + "its own carton; the impaired share is loose in quarantine (SCRUM-473)")
+    void damageKeepsTheCartons() {
+        PickLine carton = new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP", "HCM-A01-1-A",
+                "L1", 1, 5, 0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null, null, 0, "LPN-1",
+                true);
+        PickList replaced = list(PickStatus.PICKING, carton);
+        List<PickLine> added = replaced.replaceDamaged(carton.id(), 2, REPORT, 3, List.of(new PickList.Hold(
+                UUID.randomUUID(), "CUP", "HCM-A02-1-A", HCM, "L2", 2, true, "LPN-2", true)), null, UUID::randomUUID);
+        assertThat(added).extracting(PickLine::lpn, PickLine::wholeCarton)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("LPN-1", false),
+                        org.assertj.core.groups.Tuple.tuple("LPN-2", true));
+
+        PickLine other = new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP", "HCM-A01-1-A",
+                "L1", 1, 2, 0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null, null, 0, "LPN-3",
+                false);
+        List<PickLine> impaired = list(PickStatus.PICKING, other).replaceDamaged(other.id(), 2, REPORT, 0, List.of(),
+                UUID.randomUUID(), UUID::randomUUID);
+        assertThat(impaired).singleElement().satisfies(line -> {
+            assertThat(line.status()).isEqualTo(PickLineStatus.SHORT);
+            assertThat(line.lpn()).isNull();
+            assertThat(line.wholeCarton()).isFalse();
+        });
+    }
+
+    @Test
     @DisplayName("only a superseded line carries damaged units, and never more than it was allocated")
     void rehydrationRule() {
         assertThatThrownBy(() -> new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP",
                 "HCM-A01-1-A", null, 1, 2, 0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null, null, 0,
-                1, REPORT)).isInstanceOf(IllegalArgumentException.class);
+                null, false, 1, REPORT, 0)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP",
                 "HCM-A01-1-A", null, 1, 2, 0, PickLineStatus.CANCELLED, null, null, null, null, null, 0, null, null,
-                null, 0, 3, REPORT)).isInstanceOf(IllegalArgumentException.class);
+                null, 0, null, false, 3, REPORT, 0)).isInstanceOf(IllegalArgumentException.class);
     }
 
     // ---- damage found at packing (R8) ---------------------------------------------------------------------------
@@ -248,10 +274,10 @@ class PickListDamageTest {
     void putBackLeavesTheDamagedUnits() {
         PickLine some = new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP", "HCM-A01-1-A",
                 "L1", 1, 3, 3, PickLineStatus.PICKED, UUID.randomUUID(), java.time.Instant.now(),
-                java.time.Instant.now(), "HCM-A01-1-A", "CUP", 0, null, null, null, 0, 0, null, 1);
+                java.time.Instant.now(), "HCM-A01-1-A", "CUP", 0, null, null, null, 0, null, false, 0, null, 1);
         PickLine all = new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP", "HCM-A01-1-A",
                 "L1", 1, 2, 2, PickLineStatus.PICKED, UUID.randomUUID(), java.time.Instant.now(),
-                java.time.Instant.now(), "HCM-A01-1-A", "CUP", 0, null, null, null, 0, 0, null, 2);
+                java.time.Instant.now(), "HCM-A01-1-A", "CUP", 0, null, null, null, 0, null, false, 0, null, 2);
         PickList cancelled = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, List.of(some, all));
         PickList.PutBackTarget bin = new PickList.PutBackTarget("HCM-A01-1-B", HCM, true, true);
 
@@ -261,6 +287,6 @@ class PickListDamageTest {
                 .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
         assertThatThrownBy(() -> new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP",
                 "HCM-A01-1-A", null, 1, 2, 0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null,
-                null, 0, 0, null, 1)).as("only units a line picked").isInstanceOf(IllegalArgumentException.class);
+                null, 0, null, false, 0, null, 1)).as("only units a line picked").isInstanceOf(IllegalArgumentException.class);
     }
 }

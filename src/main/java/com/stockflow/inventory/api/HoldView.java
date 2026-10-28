@@ -13,14 +13,25 @@ import java.util.UUID;
  *                   storage, packing or print-shop location, only be written off
  * @param serialNumber the unit's serial number for a serial-tracked SKU (one unit per stock row), else null; packing
  *                     checks a scanned serial against it (kltn-docs 08 step 2)
+ * @param lpn          the carton the held units are in (SCRUM-473), null for loose stock or a SKU reservation: the
+ *                     picker scans it, since the hold is deducted from that carton and no other
+ * @param wholeCarton  the hold is its carton's whole, sealed content: the picker takes the carton as it stands
  */
 public record HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
-                       Status status, Instant expiresAt, java.time.LocalDate expiryDate, String serialNumber) {
+                       Status status, Instant expiresAt, java.time.LocalDate expiryDate, String serialNumber,
+                       String lpn, boolean wholeCarton) {
 
     /** Without the serial number: goods that have none. */
     public HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
                     Status status, Instant expiresAt, java.time.LocalDate expiryDate) {
         this(reservationId, sku, locationCode, lotNumber, quantity, status, expiresAt, expiryDate, null);
+    }
+
+    /** On loose stock, or a SKU reservation. */
+    public HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
+                    Status status, Instant expiresAt, java.time.LocalDate expiryDate, String serialNumber) {
+        this(reservationId, sku, locationCode, lotNumber, quantity, status, expiresAt, expiryDate, serialNumber,
+                null, false);
     }
 
 

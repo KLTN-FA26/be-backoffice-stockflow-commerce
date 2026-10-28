@@ -21,5 +21,6 @@ import java.util.UUID;
 public record PickLineResponse(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                                String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                                Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
-                               int shortQty, int damagedQty, UUID damageReportId, int packingDamagedQty) {
+                               int shortQty, String lpn, boolean wholeCarton, int damagedQty, UUID damageReportId,
+                               int packingDamagedQty) {
 }
