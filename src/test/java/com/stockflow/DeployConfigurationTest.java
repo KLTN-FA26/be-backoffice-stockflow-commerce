@@ -41,7 +41,7 @@ class DeployConfigurationTest {
         }
         // Deployed on every push to develop: a server not yet given a Resend key must still start (on its Mailpit).
         assertThat(dev).as("dev stays on SMTP unless told to use Resend").contains("provider: ${EMAIL_PROVIDER:smtp}")
-                .contains("from: ${RESEND_FROM:}");
+                .contains("from: ${RESEND_FROM:${MAIL_FROM:}}");
         assertThat(compose).as("so does the deployed server").contains("EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}");
     }
 }

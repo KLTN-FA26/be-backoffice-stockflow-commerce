@@ -14,7 +14,6 @@ import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,11 +50,12 @@ class StockDamageNotificationListenerTest {
     @BeforeEach
     void staff() {
         when(inbox.post(any(), any())).thenReturn(1);
-        when(identity.notificationRecipients(Set.of("WAREHOUSE_MANAGER"), WAREHOUSE))
+        // Told by the permission to act (review of #195, N2): the role matrix decides who holds it.
+        when(identity.notificationRecipientsHolding("inventory-damage-reports:APPROVE", WAREHOUSE))
                 .thenReturn(List.of(new StaffContact(manager, "manager@example.com")));
-        when(identity.notificationRecipients(Set.of("ORDER_COORDINATOR"), WAREHOUSE))
+        when(identity.notificationRecipientsHolding("fulfillment-task-assignment:UPDATE", WAREHOUSE))
                 .thenReturn(List.of(new StaffContact(coordinator, "coordinator@example.com")));
-        when(identity.notificationRecipients(Set.of("INVENTORY_PLANNER"), WAREHOUSE))
+        when(identity.notificationRecipientsHolding("procurement-replenishment-proposals:CREATE", WAREHOUSE))
                 .thenReturn(List.of(new StaffContact(planner, null)));
     }
 
@@ -81,7 +81,8 @@ class StockDamageNotificationListenerTest {
         assertThat(message.body()).contains("lô L1", "vỡ", "khi kiểm kệ", "HCM-A01-1-A", "HCM-QC01",
                 "huỷ, trả nhà cung cấp hoặc khôi phục");
         assertThat(message.link()).isEqualTo("/admin/inventory/damage-reports/" + event.reportId());
-        assertThat(message.dedupeKey()).isEqualTo("stock-damage:%s:WAREHOUSE_MANAGER".formatted(event.reportId()));
+        assertThat(message.dedupeKey()).isEqualTo("stock-damage:%s:inventory-damage-reports:APPROVE"
+                .formatted(event.reportId()));
         verify(inbox, times(1)).post(any(), any());
         var mailed = ArgumentCaptor.forClass(SimpleMailMessage.class);
         verify(mail).send(mailed.capture());
@@ -119,7 +120,8 @@ class StockDamageNotificationListenerTest {
 
     @Test
     void nobodyToTellIsLoggedNotFailed() {
-        when(identity.notificationRecipients(Set.of("WAREHOUSE_MANAGER"), WAREHOUSE)).thenReturn(List.of());
+        when(identity.notificationRecipientsHolding("inventory-damage-reports:APPROVE", WAREHOUSE))
+                .thenReturn(List.of());
         assertThatCode(() -> listener.on(event("STOCK_CHECK", null, false, 0))).doesNotThrowAnyException();
         verify(inbox, never()).post(any(), any());
     }

@@ -54,6 +54,18 @@ class CustomerEmailLog {
     }
 
     /**
+     * The retry is about to hand the message to a send (review of #195, N5): its pending failures wait until
+     * {@code until}, so the next run passes it over while that send is still queued behind the provider's rate limit,
+     * instead of handing it over a second time. The send's own outcome replaces the lease: a new failure row with its
+     * back-off, or a SENT row that completes it. A message with no failure yet has no row to lease and is not
+     * retried by this path anyway.
+     */
+    @Transactional
+    public void lease(String reference, Instant until) {
+        logs.leaseNextAttempt(reference, until);
+    }
+
+    /**
      * The message went out. Its reference is the row's {@code external_reference}, unique: a concurrent delivery of
      * the same message that recorded first makes this insert fail, which the caller reads as "already sent".
      */

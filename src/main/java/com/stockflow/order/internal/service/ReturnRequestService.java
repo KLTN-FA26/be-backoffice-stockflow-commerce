@@ -6,6 +6,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.storage.BufferedUpload;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileTransfers;
@@ -24,6 +25,7 @@ import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
+import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -65,6 +67,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Return requests (RMA, "đổi trả"; SCRUM-243 / SCRUM-260, 03-state-machines §12): the transaction boundary of every
@@ -275,6 +278,11 @@ public class ReturnRequestService {
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
         ReturnEvidence.Stage taken = ownCustomerId != null || stage == null ? ReturnEvidence.Stage.CLAIM : stage;
+        if (taken != ReturnEvidence.Stage.CLAIM) {
+            // The warehouse's and QC's photos: of a return their warehouse handles (BR-SEC-002, review of #195 N10).
+            WarehouseScope.requireWarehouse(orders.findById(new OrderId(request.orderId())).map(Order::warehouseId)
+                    .orElse(null));
+        }
         request.requireEvidenceAllowed(taken, policy);
         StoredFile file;
         try (BufferedUpload buffered = BufferedUpload.read(FileCategory.RETURN_EVIDENCE, upload)) {
@@ -354,6 +362,13 @@ public class ReturnRequestService {
         ReturnRequest request = locked.request();
         boolean reopening = request.receivingReopens();
         if (reopening) {
+            // BR-05 (review of #195, N8): a closed order is settled for good - a return it brought back would settle
+            // money on it again. The warehouse refuses the parcel; Sales deals with the customer outside the return.
+            if (locked.order().status() == OrderStatus.CLOSED) {
+                throw new BusinessException(ErrorCode.RETURN_ORDER_NOT_RETURNABLE, ("Order %s is closed for good "
+                        + "(BR-05): return %s ended and cannot be brought back by a late parcel - refuse it")
+                        .formatted(locked.order().orderNumber(), request.rmaNumber()));
+            }
             requireNoOtherOpenReturn(locked);
         }
         String location = request.parcelCount() > 0 ? request.receivingLocation()
@@ -373,6 +388,10 @@ public class ReturnRequestService {
             }
         }
         request.receive(by, now(), location, counted, command.unexpected(), command.note());
+        // Every SKU lock this parcel takes, in SKU order, before the first line takes one (review of #195, N7): two
+        // parcels of the same two SKUs then wait for each other instead of deadlocking.
+        inventory.prepareReservation(request.lines().stream().filter(line -> parcelUnits.getOrDefault(line.id(), 0) > 0)
+                .map(line -> new Sku(line.receivedSkuOrOwn())).collect(Collectors.toSet()));
         for (ReturnLine line : request.lines()) {
             int units = parcelUnits.getOrDefault(line.id(), 0);
             if (units > 0) {
@@ -520,6 +539,10 @@ public class ReturnRequestService {
             }
         }
         request.inspect(by, now(), command.lines(), command.note(), Boolean.TRUE.equals(command.noMoreParcels()));
+        // The SKU locks of every stock move below, in SKU order, first (N7, as receive).
+        inventory.prepareReservation(request.lines().stream().filter(line -> line.restockQuantity() > 0
+                        || line.scrapQuantity() > 0 || line.customerReturnQuantity() > 0)
+                .map(line -> new Sku(line.receivedSkuOrOwn())).collect(Collectors.toSet()));
         for (ReturnLine line : request.lines()) {
             Sku sku = new Sku(line.receivedSkuOrOwn());
             if (line.restockQuantity() > 0) {
@@ -581,7 +604,7 @@ public class ReturnRequestService {
         ReturnRequest request = locked.request();
         request.proposeResolution(by, now(), command.lines(), command.moneyMode(), command.note());
         replacements.requirePlaceable(locked.order(), request);
-        requireRefundAllowed(request);
+        requireRefundAllowed(locked);
         return finish(locked, by);
     }
 
@@ -593,7 +616,7 @@ public class ReturnRequestService {
     public ReturnRequest approveSettlement(UUID returnId, Long version, UUID by) {
         Locked locked = lock(returnId, null, version);
         locked.request().requireSettlementApprover(by);
-        requireRefundAllowed(locked.request());
+        requireRefundAllowed(locked);
         carryOut(locked, by);
         return finish(locked, by);
     }
@@ -607,11 +630,28 @@ public class ReturnRequestService {
     }
 
     /** A customer who owes money past its due date is credited, never paid out in cash. */
-    private void requireRefundAllowed(ReturnRequest request) {
-        if (request.moneyMode() == ReturnResolution.REFUND && payments.creditPosition(request.customerId()).hasOverdue()) {
+    private void requireRefundAllowed(Locked locked) {
+        ReturnRequest request = locked.request();
+        if (request.moneyMode() != ReturnResolution.REFUND) {
+            return;
+        }
+        if (payments.creditPosition(request.customerId()).hasOverdue()) {
             throw new BusinessException(ErrorCode.RETURN_REFUND_CUSTOMER_OVERDUE,
                     "The customer of %s has overdue receivables: resolve it as a credit note".formatted(
                             request.rmaNumber()));
+        }
+        // Review of #195 (N12): what payment would book now - the order's receivables first, then refunds of the money
+        // it received - so a refund it cannot cover is refused when Sales proposes it, not after the accountant read it.
+        Order paidOn = paidOn(locked.order());
+        BigDecimal room = settlement.refundCapacity(paidOn.id().value(), request.customerId(),
+                request.currency());
+        if (request.settlementAmount().compareTo(room) > 0) {
+            throw new BusinessException(ErrorCode.RETURN_REFUND_EXCEEDS_PAID, ("Return %s would refund %s %s but order "
+                    + "%s has %s %s of receivables and received money left to settle it: resolve the rest as a credit "
+                    + "note").formatted(request.rmaNumber(), request.settlementAmount().stripTrailingZeros()
+                    .toPlainString(), request.currency(), paidOn.orderNumber(), room.stripTrailingZeros().toPlainString(),
+                    request.currency()), List.of(), Map.of("refundable", room, "requested",
+                    request.settlementAmount()));
         }
     }
 
@@ -719,9 +759,9 @@ public class ReturnRequestService {
      * handed over or delivered come back as a return instead.
      */
     private static Map<UUID, Integer> withdrawable(Order replacement, ReturnRequest request) {
-        boolean whole = replacement.status().canTransitionTo(com.stockflow.order.api.OrderStatus.CANCELLED)
+        boolean whole = replacement.status().canTransitionTo(OrderStatus.CANCELLED)
                 && replacement.packedAt() == null;
-        boolean rest = replacement.status() == com.stockflow.order.api.OrderStatus.PARTIALLY_FULFILLED;
+        boolean rest = replacement.status() == OrderStatus.PARTIALLY_FULFILLED;
         Map<UUID, Integer> units = new HashMap<>();
         if (whole || rest) {
             for (ReturnLine line : request.lines()) {

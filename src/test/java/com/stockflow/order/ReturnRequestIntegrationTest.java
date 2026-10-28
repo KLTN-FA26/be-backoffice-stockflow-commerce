@@ -5,7 +5,9 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.Role;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
@@ -60,6 +62,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -237,6 +240,16 @@ class ReturnRequestIntegrationTest {
     private ReturnRequest open(UUID orderId, ReturnReason reason, ReturnResolution wanted, int units) {
         return returns.openOwn(customer, new ReturnRequestService.OpenReturnCommand(UUID.randomUUID(), orderId, reason,
                 "Hàng bị lỗi", wanted, List.of(new ReturnRequest.Claim(lineOf(orderId), units))), customerUser);
+    }
+
+    private static FileUpload photo() {
+        return new FileUpload("loi.png", "image/png", PNG.length, new ByteArrayInputStream(PNG));
+    }
+
+    /** A warehouse clerk limited to {@code warehouseId}, as the permission aspect puts them in force. */
+    private static CurrentUser clerkOf(UUID warehouseId) {
+        return new CurrentUser(UUID.randomUUID(), "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(), DataScope.WAREHOUSE,
+                Set.of(), Set.of(warehouseId));
     }
 
     private ReturnRequest withPhoto(ReturnRequest request) {
@@ -473,28 +486,36 @@ class ReturnRequestIntegrationTest {
     }
 
     @Test
-    @DisplayName("a refund above the money the order still holds is refused whole, and nothing is booked")
+    @DisplayName("a refund above the money the order still holds is refused whole - at approval when money went back "
+            + "after Sales proposed it, and as Sales propose it again - and nothing is booked")
     void refundAbovePaidIsRefused() {
         OrderSummary order = delivered(PaymentTerm.PREPAID, 2);
         UUID allocation = jdbc.queryForObject("SELECT id FROM payment.transfer_allocation WHERE order_id = ?", UUID.class,
                 order.orderId());
-        // The accountant already gave 1 500 000 back by hand.
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REFUND, 1);
+        approved(request, false);
+        // Proposed while the order still holds the 2 000 000 it received.
+        returns.proposeResolution(request.id(), new ReturnRequestService.ResolveReturnCommand(
+                List.of(new ReturnRequest.Remedy(only(request), 0, 1)), ReturnResolution.REFUND, null, null), sales);
+        // Then the accountant gives 1 500 000 back by hand, before approving the return.
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO payment.refund (id, allocation_id, amount, currency, reason, status, created_at, order_id,
                                             source)
                 VALUES (?, ?, 1500000, 'VND', 'manual', 'PENDING', NOW(), ?, 'MANUAL')""", Identifiers.newId(),
                 allocation, order.orderId()));
-        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REFUND, 1);
-        approved(request, false);
-        returns.proposeResolution(request.id(), new ReturnRequestService.ResolveReturnCommand(
-                List.of(new ReturnRequest.Remedy(only(request), 0, 1)), ReturnResolution.REFUND, null, null), sales);
         assertThat(code(catchThrowable(() -> returns.approveSettlement(request.id(), null, accountant))))
                 .isEqualTo(ErrorCode.RETURN_REFUND_EXCEEDS_PAID);
         assertThat(queries.detail(request.id(), null).request().status()).isEqualTo(ReturnStatus.SETTLEMENT_PENDING);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.refund WHERE return_request_id = ?", Long.class,
                 request.id())).isZero();
-        // Sent back and credited instead.
+        // Sent back: proposing the same refund again is refused as Sales propose it, not after the accountant read it.
         returns.rejectSettlement(request.id(), "Hoàn tiền vượt số đã thu", null, accountant);
+        ReturnStatus sentBack = queries.detail(request.id(), null).request().status();
+        assertThat(code(catchThrowable(() -> returns.proposeResolution(request.id(),
+                new ReturnRequestService.ResolveReturnCommand(List.of(new ReturnRequest.Remedy(only(request), 0, 1)),
+                        ReturnResolution.REFUND, null, null), sales)))).isEqualTo(ErrorCode.RETURN_REFUND_EXCEEDS_PAID);
+        assertThat(queries.detail(request.id(), null).request().status()).isEqualTo(sentBack);
+        // Credited instead.
         returns.proposeResolution(request.id(), new ReturnRequestService.ResolveReturnCommand(
                 List.of(new ReturnRequest.Remedy(only(request), 0, 1)), ReturnResolution.CREDIT_NOTE, null, null), sales);
         assertThat(returns.approveSettlement(request.id(), null, accountant).money().credited())
@@ -765,6 +786,59 @@ class ReturnRequestIntegrationTest {
                 List.of(new ReturnRequest.Inspection(only(request), 3, 0, ReturnItemCondition.GOOD, 3, 0, 0, "HCM-QC01",
                         null)), null, null), qc)))).as("back on sale is a bin, not the QC area")
                 .isEqualTo(ErrorCode.RETURN_RESTOCK_LOCATION_INVALID);
+    }
+
+    @Test
+    @DisplayName("an approved return expires, the order completes and is CLOSED for good: a parcel after that is "
+            + "refused, nothing is counted in and the return stays EXPIRED (BR-05)")
+    void lateParcelOnAClosedOrder() {
+        OrderSummary order = delivered(PaymentTerm.PREPAID, 3);
+        ReturnRequest request = open(order.orderId(), ReturnReason.PRINT_DEFECT, ReturnResolution.REFUND, 2);
+        approved(request, true);
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.return_request SET return_deadline = NOW() - "
+                + "interval '1 hour' WHERE id = ?", request.id()));
+        assertThat(returns.expire(request.id())).isTrue();
+        backdateDelivery(order.orderId(), 8);
+        assertThat(settlements.complete(order.orderId())).isTrue();
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET completed_at = NOW() - interval "
+                + "'31 days' WHERE id = ?", order.orderId()));
+        assertThat(settlements.close(order.orderId())).isTrue();
+
+        assertThat(code(catchThrowable(() -> returns.receive(request.id(),
+                new ReturnRequestService.ReceiveReturnGoodsCommand(null, List.of(new ReturnRequest.Receipt(only(request),
+                        2, null, null)), List.of(), "về sau khi đơn đã đóng", null), warehouse))))
+                .isEqualTo(ErrorCode.RETURN_ORDER_NOT_RETURNABLE);
+        assertThat(queries.detail(request.id(), null).request().status()).isEqualTo(ReturnStatus.EXPIRED);
+        assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.CLOSED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'RETURN_IN' "
+                + "AND reference_id = ?", Long.class, only(request))).isZero();
+    }
+
+    @Test
+    @DisplayName("staff limited to warehouses list, read and add warehouse photos to the returns of their warehouse's "
+            + "orders; a clerk of another warehouse finds none of them (BR-SEC-002)")
+    void staffOfAnotherWarehouse() {
+        OrderSummary order = delivered(PaymentTerm.PREPAID, 2);
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REFUND, 1);
+        approved(request, true);
+        CurrentUser here = clerkOf(DemoData.WAREHOUSE_HCM);
+        CurrentUser elsewhere = clerkOf(UUID.randomUUID());
+
+        assertThat(WithCurrentUser.call(here, DataScope.ALL, () -> queries.list(null, null, order.orderId(), null, null,
+                0, 20, null)).items()).extracting(ReturnRequestQueries.Item::id).containsExactly(request.id());
+        assertThat(WithCurrentUser.call(elsewhere, DataScope.ALL, () -> queries.list(null, null, order.orderId(), null,
+                null, 0, 20, null)).items()).isEmpty();
+        assertThat(WithCurrentUser.call(here, DataScope.ALL, () -> queries.detail(request.id(), null)).request().id())
+                .isEqualTo(request.id());
+        assertThat(code(catchThrowable(() -> WithCurrentUser.call(elsewhere, DataScope.ALL,
+                () -> queries.detail(request.id(), null))))).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+
+        assertThat(code(catchThrowable(() -> WithCurrentUser.call(elsewhere, DataScope.WAREHOUSE,
+                () -> returns.addEvidence(request.id(), null, ReturnEvidence.Stage.RECEIPT, photo(), warehouse)))))
+                .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        ReturnRequest photographed = WithCurrentUser.call(here, DataScope.WAREHOUSE,
+                () -> returns.addEvidence(request.id(), null, ReturnEvidence.Stage.RECEIPT, photo(), warehouse));
+        assertThat(photographed.evidence()).extracting(ReturnEvidence::stage).contains(ReturnEvidence.Stage.RECEIPT);
     }
 
     @Test

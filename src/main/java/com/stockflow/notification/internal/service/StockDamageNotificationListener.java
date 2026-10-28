@@ -1,7 +1,6 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
-import com.stockflow.common.security.Role;
 import com.stockflow.contracts.StockDamageReported;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.InboxMessage;
@@ -17,16 +16,16 @@ import java.util.ResourceBundle;
 
 /**
  * Tells the people who act on a damage report (SCRUM-475/277; docs 03 §5), as three separate notices, because three
- * different people have something to do:
+ * different people have something to do. Each audience is whoever holds the permission to do it, in the report's
+ * warehouse (review of #195, N2: permissions, not role names - the role matrix decides who that is):
  * <ul>
- *   <li>the <b>warehouse managers</b> who can see the report's warehouse decide what happens to the damaged units -
- *       write off, back to the supplier, or restore. Until one of them does, the units sit in quarantine and nobody
- *       is asked (the reporter cannot decide: four eyes);</li>
- *   <li>when nothing replaced an order's damaged units, the <b>order coordinators</b> of that warehouse: the order is
- *       ON_HOLD (INVENTORY) and only their reallocation of the short pick line moves it again (X-SHORT);</li>
- *   <li>when the damage leaves the SKU's checkout reservations promising more than its free stock, the
- *       <b>inventory planners</b>: those orders will not allocate in full at release unless stock arrives first, and
- *       replenishing is the planner's job.</li>
+ *   <li>{@value #DECIDE}: decide what happens to the damaged units - write off, back to the supplier, or restore.
+ *       Until one of them does, the units sit in quarantine and nobody is asked (the reporter cannot decide: four
+ *       eyes);</li>
+ *   <li>when nothing replaced an order's damaged units, {@value #REALLOCATE}: the order is ON_HOLD (INVENTORY) and only
+ *       a reallocation of the short pick line moves it again (X-SHORT);</li>
+ *   <li>when the damage leaves the SKU's checkout reservations promising more than its free stock,
+ *       {@value #REPLENISH}: those orders will not allocate in full at release unless stock arrives first.</li>
  * </ul>
  *
  * <p>Delivered as every staff notice ({@link StaffNotices}): in-app first, one inbox row per person per report and
@@ -41,6 +40,13 @@ class StockDamageNotificationListener {
     static final String CATEGORY = "STOCK_DAMAGE";
     static final String SOURCE_TYPE = "STOCK_DAMAGE_REPORT";
 
+    /** Who decides a damage report (DamageReportController's dispositions). */
+    static final String DECIDE = "inventory-damage-reports:APPROVE";
+    /** Who reallocates a short pick line (FulfillmentController.reallocateShort). */
+    static final String REALLOCATE = "fulfillment-task-assignment:UPDATE";
+    /** Who proposes replenishment of a SKU. */
+    static final String REPLENISH = "procurement-replenishment-proposals:CREATE";
+
     private final NotificationSender sender;
     private final StaffDirectory staff;
     private final StaffNotices notices;
@@ -53,17 +59,17 @@ class StockDamageNotificationListener {
 
     @ApplicationModuleListener
     public void on(StockDamageReported event) {
-        tell(Role.WAREHOUSE_MANAGER, event, decision(event));
+        tell(DECIDE, event, decision(event));
         if (event.orderOnHold() && event.orderId() != null) {
-            tell(Role.ORDER_COORDINATOR, event, orderHeld(event));
+            tell(REALLOCATE, event, orderHeld(event));
         }
         if (event.skuReservationShortfall() > 0) {
-            tell(Role.INVENTORY_PLANNER, event, shortfall(event));
+            tell(REPLENISH, event, shortfall(event));
         }
     }
 
-    private void tell(Role audience, StockDamageReported event, InboxMessage message) {
-        List<StaffContact> recipients = staff.activeStaff(audience, event.warehouseId());
+    private void tell(String audience, StockDamageReported event, InboxMessage message) {
+        List<StaffContact> recipients = staff.activeHolders(audience, event.warehouseId());
         if (recipients.isEmpty()) {
             log.warn("Damage report {}: no active {} for its warehouse; nobody was notified",
                     LogSafe.text(event.reportNumber()), audience);
@@ -86,7 +92,7 @@ class StockDamageNotificationListener {
         return new InboxMessage(CATEGORY, InboxSeverity.WARN, texts.getString("inbox.damage.decide.title")
                 .formatted(event.reportNumber(), event.quantity(), event.sku()), body,
                 "/admin/inventory/damage-reports/" + event.reportId(), SOURCE_TYPE, event.reportId().toString(),
-                key(event, Role.WAREHOUSE_MANAGER));
+                key(event, DECIDE));
     }
 
     /** The coordinators' notice: the order stopped because nothing replaced its damaged units. */
@@ -96,7 +102,7 @@ class StockDamageNotificationListener {
                 .formatted(event.reportNumber()), texts.getString("inbox.damage.order.body").formatted(
                 event.quantity(), event.sku(), label(texts, "inbox.damage.origin.", event.origin())),
                 "/admin/orders/" + event.orderId(), SOURCE_TYPE, event.reportId().toString(),
-                key(event, Role.ORDER_COORDINATOR));
+                key(event, REALLOCATE));
     }
 
     /** The planners' notice: checkout reservations now promise more than the free stock. */
@@ -112,8 +118,8 @@ class StockDamageNotificationListener {
                         com.stockflow.common.domain.BusinessCalendar.date(java.time.Instant.now())));
     }
 
-    private static String key(StockDamageReported event, Role audience) {
-        return "stock-damage:%s:%s".formatted(event.reportId(), audience.name());
+    private static String key(StockDamageReported event, String audience) {
+        return "stock-damage:%s:%s".formatted(event.reportId(), audience);
     }
 
     private static ResourceBundle texts() {

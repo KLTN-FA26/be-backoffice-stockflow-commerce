@@ -73,6 +73,16 @@ class WebhookSignatureTest {
     }
 
     @Test
+    @DisplayName("a timestamp no Instant can hold is refused, not thrown: the caller gets 401, not 500")
+    void hugeTimestamp() {
+        String signed = signature.sign("msg_1", NOW, BODY);
+        for (String timestamp : java.util.List.of(Long.toString(Long.MAX_VALUE), Long.toString(Long.MIN_VALUE),
+                "31556889864403200", "-31557014167219201")) {
+            assertThat(signature.verify("msg_1", timestamp, signed, BODY, NOW)).as(timestamp).isFalse();
+        }
+    }
+
+    @Test
     @DisplayName("during a secret rotation the header lists several signatures; one match is enough")
     void severalSignatures() {
         String signed = signature.sign("msg_1", NOW, BODY);

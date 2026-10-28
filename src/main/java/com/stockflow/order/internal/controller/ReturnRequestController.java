@@ -100,13 +100,48 @@ class ReturnRequestController {
 
     @PostMapping(value = "/returns/{returnId}/evidence", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Add a photo (JPEG, PNG, WebP, at most 15 MB): the customer's of the problem while the "
-            + "claim is open; staff may add stage RECEIPT or INSPECTION photos")
+    @Operation(summary = "Add a photo of the problem (JPEG, PNG, WebP, at most 15 MB) while the claim is open: the "
+            + "customer's, or Sales' for them. The warehouse's and QC's photos have their own endpoints")
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.OWN)
     public ApiResponse<ReturnView> addEvidence(@PathVariable UUID returnId,
                                                           @RequestPart("file") MultipartFile file,
                                                           @RequestParam(required = false) ReturnEvidence.Stage stage,
                                                           @AuthenticatedUser CurrentUser user) throws IOException {
+        // Review of #195 (N9): a staff stage is gated by the permission of that stage, below - not by sales-rmas:CREATE,
+        // which the warehouse and QC do not hold and Sales should not need for them.
+        if (stage != null && stage != ReturnEvidence.Stage.CLAIM) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("A %s photo is added through "
+                    + "/returns/{id}/receipt-evidence or /returns/{id}/inspection-evidence").formatted(stage));
+        }
+        return upload(returnId, file, ReturnEvidence.Stage.CLAIM, user);
+    }
+
+    @PostMapping(value = "/returns/{returnId}/receipt-evidence", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "The warehouse adds a photo of the parcel as it arrived (stage RECEIPT), for a return of "
+            + "its warehouse")
+    @RequiresPermission(resource = OrderResources.RMA_RECEIPTS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
+    public ApiResponse<ReturnView> addReceiptEvidence(@PathVariable UUID returnId,
+                                                      @RequestPart("file") MultipartFile file,
+                                                      @AuthenticatedUser CurrentUser user) throws IOException {
+        ScopeGuards.requireBackOffice(user);
+        return upload(returnId, file, ReturnEvidence.Stage.RECEIPT, user);
+    }
+
+    @PostMapping(value = "/returns/{returnId}/inspection-evidence", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "QC adds a photo of what it found (stage INSPECTION), for a return of its warehouse")
+    @RequiresPermission(resource = OrderResources.RMA_INSPECTIONS, action = Action.UPDATE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<ReturnView> addInspectionEvidence(@PathVariable UUID returnId,
+                                                         @RequestPart("file") MultipartFile file,
+                                                         @AuthenticatedUser CurrentUser user) throws IOException {
+        ScopeGuards.requireBackOffice(user);
+        return upload(returnId, file, ReturnEvidence.Stage.INSPECTION, user);
+    }
+
+    private ApiResponse<ReturnView> upload(UUID returnId, MultipartFile file, ReturnEvidence.Stage stage,
+                                           CurrentUser user) throws IOException {
         UUID own = ownCustomerIdOrNull(user);
         try (InputStream content = file.getInputStream()) {
             FileUpload upload = new FileUpload(file.getOriginalFilename() == null ? "photo" : file.getOriginalFilename(),

@@ -291,10 +291,10 @@ public final class ReturnRequest extends AggregateRoot {
                         "%s: %d unit(s) delivered, %d already claimed by other returns; %d cannot be returned"
                                 .formatted(line.sku().code(), delivered, claimed, claim.quantity()));
             }
-            if (reason == ReturnReason.CHANGED_MIND && line.isMadeToOrder()) {
-                throw new BusinessException(ErrorCode.RETURN_CUSTOM_ITEM_NOT_DEFECTIVE,
-                        "%s was printed to the customer's design: it is returned only when defective (BR-RMA-002)"
-                                .formatted(line.sku().code()));
+            if (!reason.isNamedFault() && line.isMadeToOrder()) {
+                throw new BusinessException(ErrorCode.RETURN_CUSTOM_ITEM_NOT_DEFECTIVE, ("%s was printed to the "
+                        + "customer's design: it is returned only for a named defect, not %s (BR-RMA-002)")
+                        .formatted(line.sku().code(), reason));
             }
             BigDecimal price = unitPrices == null ? null : unitPrices.get(line.id());
             lines.add(new ReturnLine(Identifiers.newId(), line.id(), line.sku().code(), line.isMadeToOrder(),

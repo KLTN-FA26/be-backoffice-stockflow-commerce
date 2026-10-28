@@ -351,6 +351,12 @@ BEGIN
         RAISE EXCEPTION 'order line % already has an open return', NEW.order_line_id
             USING ERRCODE = 'check_violation';
     END IF;
+    -- BR-RMA-002: goods printed to the customer's design come back for a named defect only (ReturnReason.isNamedFault).
+    IF TG_OP = 'INSERT' AND NEW.custom_printed AND EXISTS (SELECT 1 FROM ordering.return_request r
+                                                           WHERE r.id = NEW.return_request_id
+                                                             AND r.reason IN ('CHANGED_MIND', 'OTHER')) THEN
+        RAISE EXCEPTION 'printed goods come back for a named defect only (BR-RMA-002)' USING ERRCODE = 'check_violation';
+    END IF;
     -- This line claims what it was last decided to: accepted once inspected, approved once approved, else asked.
     IF claimed + COALESCE(NEW.accepted_quantity, NEW.approved_quantity, NEW.quantity) > deliverable THEN
         RAISE EXCEPTION 'would claim % of the % unit(s) delivered',

@@ -22,4 +22,12 @@ public interface ReturnSettlement {
      * @throws IllegalStateException when the return was booked already - the caller decides a return once
      */
     SettleReturnResult settleReturn(SettleReturnCommand command);
+
+    /**
+     * The most a REFUND resolution of the order could book now (review of #195, N12): what the order still owes on the
+     * customer's own receivables, plus what is left of the money it received after the refunds already asked of it.
+     * Read only, nothing locked: {@link #settleReturn} decides under the order's lock; this lets Sales hear "credit it
+     * instead" when they propose the resolution rather than after the accountant approved it.
+     */
+    java.math.BigDecimal refundCapacity(java.util.UUID orderId, java.util.UUID customerId, String currency);
 }

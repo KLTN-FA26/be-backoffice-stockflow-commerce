@@ -91,6 +91,18 @@ class ReturnRefundsAdapter implements ReturnRefunds {
     }
 
     @SuppressWarnings("unchecked")
+    @Override
+    public BigDecimal refundable(UUID orderId, String currency) {
+        BigDecimal left = BigDecimal.ZERO;
+        for (Object[] row : moneyOf(orderId, currency)) {
+            BigDecimal part = (BigDecimal) row[2];
+            if (part.signum() > 0) {
+                left = left.add(part);
+            }
+        }
+        return left;
+    }
+
     private List<Object[]> moneyOf(UUID orderId, String currency) {
         return entityManager.createNativeQuery(MONEY_OF_ORDER)
                 .setParameter("order", orderId)

@@ -57,8 +57,12 @@ public final class WebhookSignature {
         } catch (NumberFormatException notSeconds) {
             return false;
         }
-        Instant signedAt = Instant.ofEpochSecond(seconds);
-        if (Duration.between(signedAt, now).abs().compareTo(tolerance) > 0) {
+        // Compared as seconds: Instant.ofEpochSecond throws on a value no Instant holds, and a caller may send any
+        // number - that is a request we refuse, not a server error (review of #195, N4). now +- tolerance never
+        // overflows, so neither does this.
+        long earliest = now.minus(tolerance).getEpochSecond();
+        long latest = now.plus(tolerance).getEpochSecond();
+        if (seconds < earliest || seconds > latest) {
             return false;
         }
         byte[] expected = sign(id.strip(), timestamp.strip(), body);

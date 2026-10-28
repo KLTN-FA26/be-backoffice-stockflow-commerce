@@ -108,7 +108,7 @@ stockflow:
       # RESEND_API_KEY and RESEND_FROM switches it to Resend, which then refuses to start without them (as prod
       # always does). A server holding copies of real customers should also set CUSTOMER_EMAIL_ENABLED=false.
       provider: ${EMAIL_PROVIDER:smtp}
-      from: ${RESEND_FROM:}
+      from: ${RESEND_FROM:${MAIL_FROM:}}
       resend:
         api-key: ${RESEND_API_KEY:}
 

@@ -546,8 +546,10 @@ class StockDamageService implements StockDamages, PickDamageReporting {
 
     /**
      * Going back to the supplier: only the decision is recorded. The units stay DAMAGED where they are, out of sale,
-     * until they are handed over ({@link #shipToSupplier}); procurement raises the debit note from
-     * {@code StockDamageDisposed} - inventory cannot call procurement (procurement depends on inventory).
+     * until they are handed over ({@link #shipToSupplier}). {@code StockDamageDisposed} announces it for a procurement
+     * listener that would raise the debit note; none exists yet (a known limit, docs 03 §5): the purchasing team claims
+     * the money from the supplier by hand, from the delivery note. Inventory cannot call procurement - procurement
+     * depends on inventory.
      */
     private void returnToSupplier(StockDamageReport report, DisposeDamageCommand command, Quantity units,
                                   Instant now) {

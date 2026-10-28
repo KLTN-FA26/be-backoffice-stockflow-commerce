@@ -95,6 +95,18 @@ where c.cancellation_requested and 'purchase-order:' || c.purchase_order_id || '
     Instant nextAttemptAt(@Param("reference") String reference);
 
     /**
+     * Pushes the retryable failures of a message to {@code until} at least ({@code CustomerEmailLog.lease}); only
+     * those rows may wait ({@code ck_delivery_log_next_attempt}).
+     */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update DeliveryLogJpaEntity l set l.nextAttemptAt = :until
+            where l.operationReference = :reference
+              and l.status = com.stockflow.notification.internal.domain.DeliveryStatus.FAILED and l.terminal = false
+              and (l.nextAttemptAt is null or l.nextAttemptAt < :until)""")
+    int leaseNextAttempt(@Param("reference") String reference, @Param("until") Instant until);
+
+    /**
      * The sent message a delivery webhook reports on, locked: two reports on one message (delivered, then a complaint)
      * arrive together often enough, and each decides against what the other may just have written.
      */

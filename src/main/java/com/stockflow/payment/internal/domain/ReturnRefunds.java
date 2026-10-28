@@ -26,4 +26,7 @@ public interface ReturnRefunds {
 
     /** Whether a refund was already asked for the return. */
     boolean hasRefunds(UUID returnRequestId);
+
+    /** What {@link #requestReturnRefunds} could still place on the order's money now: its rows' sum of what is left. */
+    BigDecimal refundable(UUID orderId, String currency);
 }

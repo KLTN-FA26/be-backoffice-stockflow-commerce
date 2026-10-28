@@ -28,6 +28,7 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * The money of a resolved return (SCRUM-260; V20261028020100 explains the two ways it is booked). Called by the order
@@ -135,6 +136,16 @@ class ReturnSettlementService implements ReturnSettlement {
                 order.orderNumber(), plain(offset), plain(refunded), plain(kept), command.currency());
         return new SettleReturnResult(command.returnRequestId(), offset, refunded, kept,
                 credit == null ? null : credit.id());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public BigDecimal refundCapacity(UUID orderId, UUID customerId, String currency) {
+        // As settleReturn counts them, without its locks: the customer's own goods receivables of the order first.
+        BigDecimal owed = book.receivablesOfOrder(orderId).stream()
+                .filter(r -> r.customerId().equals(customerId) && GOODS_RECEIVABLES.contains(r.kind()))
+                .map(Receivable::outstanding).reduce(BigDecimal.ZERO, BigDecimal::add);
+        return owed.add(refunds.refundable(orderId, currency));
     }
 
     private static String plain(BigDecimal value) {

@@ -83,6 +83,11 @@ class CustomerEmailRetryTest {
 
         verify(listener).on(due);
         verify(listener, never()).on(waiting);
+        // Leased before it is handed over (review of #195, N5): a send still queued behind the rate limiter at the
+        // next run is not handed over a second time.
+        verify(log).lease("customer-mail:order.placed:" + due.orderId(), NOW.plus(CustomerEmailRetry.LEASE));
+        verify(log, never()).lease(org.mockito.ArgumentMatchers.eq("customer-mail:order.placed:" + waiting.orderId()),
+                any());
     }
 
     @Test

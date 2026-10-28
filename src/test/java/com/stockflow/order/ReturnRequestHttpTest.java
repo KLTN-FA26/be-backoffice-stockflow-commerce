@@ -22,6 +22,7 @@ import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -33,6 +34,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SecuredIntegrationTest
 class ReturnRequestHttpTest {
+
+    private static final byte[] PNG = {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 'I', 'H', 'D',
+            'R', 0, 0, 0, 1, 0, 0, 0, 1};
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -53,6 +57,10 @@ class ReturnRequestHttpTest {
         userA = tx.execute(s -> ReferenceRows.user(entityManager));
         userB = tx.execute(s -> ReferenceRows.user(entityManager));
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
+        // A clerk or QC acts on the returns of the warehouses they are assigned to (BR-SEC-002).
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO identity.user_warehouse (id, user_id, warehouse_id, version, created_at)
+                VALUES (gen_random_uuid(), ?, ?, 0, NOW())""", staff, DemoData.WAREHOUSE_HCM));
         UUID customerA = customerOf(userA);
         customerOf(userB);
         orderOfA = Identifiers.newId();
@@ -153,5 +161,49 @@ class ReturnRequestHttpTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("REJECTED"))
                 .andExpect(jsonPath("$.data.review.rejectionReason").value("Ngoài chính sách"));
+    }
+
+    @Test
+    @DisplayName("the warehouse's and QC's photos go through their own endpoints, each held by that step's permission "
+            + "and the order's warehouse; a clerk of no warehouse neither lists nor reads the return")
+    void staffPhotosAndWarehouses() throws Exception {
+        String returnId = open();
+        UUID unassigned = tx.execute(s -> ReferenceRows.user(entityManager));
+
+        http.asRole(Role.SALES_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/evidence").file(photo())
+                        .param("stage", "RECEIPT"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        http.asRole(Role.SALES_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/receipt-evidence")
+                        .file(photo()))
+                .andExpect(status().isForbidden());
+        http.asRole(Role.WAREHOUSE_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/inspection-evidence")
+                        .file(photo()))
+                .andExpect(status().isForbidden());
+        http.asRole(Role.WAREHOUSE_STAFF, unassigned, multipart("/api/v1/returns/" + returnId + "/receipt-evidence")
+                        .file(photo()))
+                .andExpect(status().isForbidden());
+        // Held and in scope: what stops them now is the return's state - nothing has come back yet.
+        http.asRole(Role.WAREHOUSE_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/receipt-evidence")
+                        .file(photo()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
+        http.asRole(Role.QC_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/inspection-evidence")
+                        .file(photo()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
+
+        http.asRole(Role.WAREHOUSE_STAFF, staff, get("/api/v1/returns").param("orderId", orderOfA.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value(returnId));
+        http.asRole(Role.WAREHOUSE_STAFF, unassigned, get("/api/v1/returns").param("orderId", orderOfA.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items").isEmpty());
+        http.asRole(Role.WAREHOUSE_STAFF, unassigned, get("/api/v1/returns/" + returnId))
+                .andExpect(status().isForbidden());
+    }
+
+    private static org.springframework.mock.web.MockMultipartFile photo() {
+        return new org.springframework.mock.web.MockMultipartFile("file", "loi.png", "image/png", PNG);
     }
 }

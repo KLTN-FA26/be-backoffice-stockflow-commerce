@@ -288,6 +288,18 @@ class ReturnRequestTest {
         }
 
         @Test
+        @DisplayName("OTHER names no defect: no way around printed goods coming back for a named defect only "
+                + "(BR-RMA-002); Sales may still take it for stock goods")
+        void otherIsNoDefect() {
+            assertThat(code(catchThrowable(() -> open(ReturnReason.OTHER, ReturnResolution.REFUND,
+                    new ReturnRequest.Claim(PRINTED_LINE, 1))))).isEqualTo(ErrorCode.RETURN_CUSTOM_ITEM_NOT_DEFECTIVE);
+            assertThat(open(ReturnReason.OTHER, ReturnResolution.REFUND, new ReturnRequest.Claim(STOCK_LINE, 1))
+                    .status()).isEqualTo(ReturnStatus.REQUESTED);
+            assertThat(ReturnReason.OTHER.isNamedFault()).isFalse();
+            assertThat(ReturnReason.PRINT_DEFECT.isNamedFault()).isTrue();
+        }
+
+        @Test
         @DisplayName("a change of mind: refused for printed goods (BR-RMA-002) and, by default, for any goods")
         void changeOfMind() {
             assertThat(code(catchThrowable(() -> open(ReturnReason.CHANGED_MIND, ReturnResolution.REFUND,

@@ -59,6 +59,12 @@ class CustomerEmailRetry {
     /** A publication younger than this is still being handled by its first dispatch. */
     private static final Duration SETTLING = Duration.ofMinutes(1);
 
+    /**
+     * How long a message handed to a send is left to it before the next run may hand it over again: a full page of
+     * every route queued behind the provider's 2 requests a second drains in about this long.
+     */
+    static final Duration LEASE = Duration.ofMinutes(5);
+
     private final PendingPublicationReader publications;
     private final EventSerializer serializer;
     private final CustomerEmailLog deliveries;
@@ -142,6 +148,8 @@ class CustomerEmailRetry {
                 if (message.isPresent() && deliveries.waiting(message.get().reference(), now)) {
                     continue;
                 }
+                // Leased first, so a send still queued behind the rate limiter at the next run is not handed over again.
+                message.ifPresent(found -> deliveries.lease(found.reference(), now.plus(LEASE)));
                 // Through the listener's proxy: asynchronous, and completed by Spring Modulith when it succeeds.
                 route.dispatch().accept(event);
                 dispatched++;

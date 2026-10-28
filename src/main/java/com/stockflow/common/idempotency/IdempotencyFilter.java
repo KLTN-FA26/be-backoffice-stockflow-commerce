@@ -89,6 +89,9 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
     /** Methods that change state. GET and friends need no protection - they are already idempotent. */
     private static final Set<String> UNSAFE_METHODS = Set.of("POST", "PUT", "PATCH", "DELETE");
 
+    /** Provider webhooks: anonymous, signed, idempotent by their own message ids. */
+    static final String WEBHOOK_PATH = "/api/v1/notifications/webhooks/";
+
     /**
      * How long a stored response can be replayed.
      *
@@ -114,6 +117,12 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         if (!UNSAFE_METHODS.contains(request.getMethod())) {
+            return true;
+        }
+        // A provider's webhook (SCRUM-352) is not a client's retry: it carries its own idempotency (Svix's message
+        // id) and caps its body at 64 KiB as it reads it. Buffering it here first, whatever its size, would bypass
+        // that cap (review of #195, N3).
+        if (request.getRequestURI() != null && request.getRequestURI().startsWith(WEBHOOK_PATH)) {
             return true;
         }
         if (request.getHeader(IdempotencyKeys.HEADER) == null) {

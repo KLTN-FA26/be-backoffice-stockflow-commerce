@@ -36,6 +36,15 @@ public enum ReturnReason {
         return this != CHANGED_MIND;
     }
 
+    /**
+     * Whether the claim names a fault of the goods or of their delivery - what goods printed to the customer's design
+     * may come back for (BR-RMA-002, kltn-docs 17 BR-08). {@link #OTHER} names none: Sales may still take it for stock
+     * goods, but it is no way around "printed goods: defects only" (review of #195, N11).
+     */
+    public boolean isNamedFault() {
+        return this != CHANGED_MIND && this != OTHER;
+    }
+
     /** A short delivery has no goods to send back; every other claim may have to. */
     public boolean hasGoodsToReturn() {
         return this != SHORT_DELIVERY;

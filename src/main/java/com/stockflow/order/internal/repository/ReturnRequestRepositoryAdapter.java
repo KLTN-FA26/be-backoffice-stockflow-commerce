@@ -2,6 +2,7 @@ package com.stockflow.order.internal.repository;
 
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.order.internal.domain.ReturnDiscrepancy;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnLine;
@@ -9,6 +10,7 @@ import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnRequestRepository;
 import com.stockflow.order.internal.domain.ReturnStatus;
 import com.stockflow.order.internal.domain.ReturnTransition;
+import com.stockflow.order.internal.entity.OrderJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestDiscrepancyJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestEvidenceJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestJpaEntity;
@@ -145,9 +147,28 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                 Specs.eq("vatAdjustmentRequired", criteria.vatAdjustment()),
                 criteria.text() == null || criteria.text().isBlank() ? Specs.all()
                         : Specs.<ReturnRequestJpaEntity>contains("rmaNumber", criteria.text())
-                        .or(Specs.contains("orderNumber", criteria.text())));
+                        .or(Specs.contains("orderNumber", criteria.text())),
+                inScopeWarehouses());
         // The lines are LAZY and not touched: a page is one query (plus its count).
         return jpa.findAll(spec, pageable).map(ReturnRequestRepositoryAdapter::toRow);
+    }
+
+    /**
+     * BR-SEC-002 (review of #195, N10): staff limited to warehouses list the returns of orders their warehouses ship.
+     * The return has no warehouse of its own; its order's is the one that shipped and takes the goods back. A
+     * subquery on the same schema, no join of another module's table.
+     */
+    private static Specification<ReturnRequestJpaEntity> inScopeWarehouses() {
+        return WarehouseScope.restriction()
+                .<Specification<ReturnRequestJpaEntity>>map(allowed -> (root, query, cb) -> {
+                    if (allowed.ids().isEmpty()) {
+                        return cb.disjunction();
+                    }
+                    var shipped = query.subquery(UUID.class);
+                    var order = shipped.from(OrderJpaEntity.class);
+                    shipped.select(order.get("id")).where(order.get("warehouseId").in(allowed.ids()));
+                    return root.get("orderId").in(shipped);
+                }).orElse(Specs.all());
     }
 
     // ---- mapping ---------------------------------------------------------------------------------------------------

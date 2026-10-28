@@ -5,7 +5,11 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.storage.FileStorage;
+import com.stockflow.order.internal.domain.Order;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnReason;
 import com.stockflow.order.internal.domain.ReturnRequest;
@@ -53,11 +57,14 @@ public class ReturnRequestQueries {
     private final ReturnRequestRepository returns;
     private final ReturnRequestSearch search;
     private final FileStorage storage;
+    private final OrderRepository orders;
 
-    ReturnRequestQueries(ReturnRequestRepository returns, ReturnRequestSearch search, FileStorage storage) {
+    ReturnRequestQueries(ReturnRequestRepository returns, ReturnRequestSearch search, FileStorage storage,
+                         OrderRepository orders) {
         this.returns = returns;
         this.search = search;
         this.storage = storage;
+        this.orders = orders;
     }
 
     /** Every customer's returns, for the back office; every filter null means any. */
@@ -82,6 +89,7 @@ public class ReturnRequestQueries {
         ReturnRequest request = returns.findById(returnId)
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
+        requireStaffWarehouse(request, ownCustomerId);
         return new Detail(request, returns.history(returnId));
     }
 
@@ -90,11 +98,23 @@ public class ReturnRequestQueries {
         ReturnRequest request = returns.findById(returnId)
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
+        requireStaffWarehouse(request, ownCustomerId);
         // A customer downloads their own photos of the claim; the warehouse's and QC's are staff records.
         ReturnEvidence photo = request.evidence().stream().filter(e -> e.id().equals(evidenceId))
                 .filter(e -> ownCustomerId == null || e.stage() == ReturnEvidence.Stage.CLAIM).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No photo " + evidenceId));
         return storage.presignedDownloadUrl(photo.fileKey(), LINK_LIFETIME);
+    }
+
+    /**
+     * BR-SEC-002 (review of #195, N10): staff limited to warehouses read the returns of orders their warehouses ship;
+     * the list filters the same way. A customer reads their own, which the filter above already settled.
+     */
+    private void requireStaffWarehouse(ReturnRequest request, UUID ownCustomerId) {
+        if (ownCustomerId == null && WarehouseScope.restriction().isPresent()) {
+            WarehouseScope.requireWarehouse(orders.findById(new OrderId(request.orderId())).map(Order::warehouseId)
+                    .orElse(null));
+        }
     }
 
     private static Item toItem(ReturnRequestSearch.ReturnRequestRow row) {
