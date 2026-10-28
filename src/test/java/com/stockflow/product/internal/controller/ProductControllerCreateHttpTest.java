@@ -10,6 +10,7 @@ import com.stockflow.product.internal.service.ProductDuplicateService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -23,6 +24,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** The HTTP edge of product creation with axes (spec D2): the axes reach the command, and a bad axis is a 400. */
@@ -83,6 +85,19 @@ class ProductControllerCreateHttpTest {
                         {"code":"CUP-16","name":"Ly","nameEn":"Cup","taxClass":"STANDARD","axes":[null]}"""))
                 .andExpect(status().isBadRequest());
         verify(service, never()).create(any());
+    }
+
+    /** The product is saved by then: a failed duplicate read must not turn the create into a 5xx (SCRUM-88). */
+    @Test
+    void aFailedDuplicateLookupStillAnswersTheCreate() throws Exception {
+        when(duplicates.possibleDuplicates(any(), any(), any(), any()))
+                .thenThrow(new QueryTimeoutException("statement timeout"));
+
+        mvc.perform(post("/api/v1/products").contentType("application/json").content("""
+                        {"code":"CUP-17","name":"Ly","nameEn":"Cup","taxClass":"STANDARD"}"""))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.code").value("CUP-12"))
+                .andExpect(jsonPath("$.data.possibleDuplicates").doesNotExist());
     }
 
     @Test

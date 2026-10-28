@@ -25,7 +25,11 @@ import com.stockflow.common.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.TransactionException;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -46,8 +50,9 @@ import java.util.UUID;
  * warnings, and deletion of a draft.
  *
  * <p><b>Possible duplicates</b> (SCRUM-88): create, update and detail answer with the products this one may
- * duplicate, read after the write in a transaction of their own; {@code GET /duplicates} asks before anything
- * is saved. The list rows carry none: a page would cost a query per product.</p>
+ * duplicate, read after the write in a transaction of their own, and left out (null) if that read fails;
+ * {@code GET /duplicates} asks before anything is saved. The list rows carry none: a page would cost a query
+ * per product.</p>
  *
  * <p><b>Suspend, resume and discontinue</b> are in {@link ProductLifecycleController}, under a permission of
  * their own ({@code product-lifecycle:APPROVE}, System Admin only, kltn-docs 01 §5.1). {@code DELETE} is a
@@ -69,6 +74,8 @@ import java.util.UUID;
         actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.DELETE, Action.APPROVE})
 class ProductController {
 
+    private static final Logger log = LoggerFactory.getLogger(ProductController.class);
+
     private final ProductService productService;
     private final ProductDuplicateService duplicates;
     private final ProductWebMapper mapper;
@@ -79,10 +86,24 @@ class ProductController {
         this.mapper = mapper;
     }
 
-    /** The product with the products it may duplicate (SCRUM-88): never itself, never a refusal. */
+    /**
+     * The product with the products it may duplicate (SCRUM-88): never itself, never a refusal.
+     *
+     * <p>On create and update the write has already committed when this runs, so a failed lookup answers
+     * without the warning ({@code possibleDuplicates} null) rather than with a 5xx: the idempotency filter
+     * does not keep a 5xx, and the client's retry would re-run the write and get 409 for a product it saved.</p>
+     */
     private ProductResponse detail(ProductSummary product) {
-        return mapper.toDetail(product, duplicates.possibleDuplicates(product.name(), product.brandId(),
-                product.categoryId(), product.productId()));
+        List<ProductSummary> possible;
+        try {
+            possible = duplicates.possibleDuplicates(product.name(), product.brandId(), product.categoryId(),
+                    product.productId());
+        } catch (DataAccessException | TransactionException lookupFailed) {
+            log.warn("Possible duplicates of product {} could not be read; answering without them",
+                    product.productId(), lookupFailed);
+            possible = null;
+        }
+        return mapper.toDetail(product, possible);
     }
 
     @GetMapping

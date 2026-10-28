@@ -73,7 +73,7 @@ public record ProductResponse(
         @Schema(description = "Products of the same brand and primary category whose name normalises to the same "
                 + "key: a warning, never a refusal. Filled only by create (POST), update (PUT) and detail (GET one); "
                 + "null on every other response, lists and the submit, approve, reject, suspend and resume answers "
-                + "included. Ask GET /api/v1/products/duplicates to check again.")
+                + "included, and when the lookup itself failed. Ask GET /api/v1/products/duplicates to check again.")
         List<ProductMatchResponse> possibleDuplicates
 ) {
 }
