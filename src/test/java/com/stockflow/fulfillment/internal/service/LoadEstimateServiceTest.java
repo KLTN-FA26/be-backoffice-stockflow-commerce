@@ -71,7 +71,6 @@ class LoadEstimateServiceTest {
     private final UUID truckId = UUID.randomUUID();
     private final UUID itemId = UUID.randomUUID();
     private VehicleTypeJpaEntity truck;
-    private final List<LoadEstimateJpaEntity> stored = new ArrayList<>();
 
     @BeforeEach
     void anOrderToEstimate() {
@@ -88,7 +87,6 @@ class LoadEstimateServiceTest {
         });
         when(estimates.saveAndFlush(any())).thenAnswer(call -> {
             LoadEstimateJpaEntity row = call.getArgument(0);
-            stored.add(row);
             when(estimates.findById(row.getId())).thenReturn(Optional.of(row));
             return row;
         });
@@ -503,7 +501,7 @@ class LoadEstimateServiceTest {
     @DisplayName("reading estimates back")
     class Reading {
 
-        private LoadEstimateJpaEntity row(String status) {
+        private LoadEstimateJpaEntity row() {
             return new LoadEstimateJpaEntity(UUID.randomUUID(), "ORDER", orderId, WAREHOUSE, json.valueToTree(List.of(truckId)),
                     "FEWEST_VEHICLES", json.createArrayNode(), json.createObjectNode(), json.createArrayNode(),
                     json.createArrayNode());
@@ -516,7 +514,7 @@ class LoadEstimateServiceTest {
             when(estimates.findById(unknown)).thenReturn(Optional.empty());
             assertThat(refusal(() -> service.get(unknown)).errorCode()).isEqualTo(ErrorCode.LOAD_ESTIMATE_NOT_FOUND);
 
-            LoadEstimateJpaEntity row = row("CURRENT");
+            LoadEstimateJpaEntity row = row();
             when(estimates.findById(row.getId())).thenReturn(Optional.of(row));
             assertThat(service.get(row.getId()).selectionMode()).isEqualTo(SelectionMode.FEWEST_VEHICLES);
             WithCurrentUser.run(FulfillmentFixtures.userOf(OTHER_WAREHOUSE), DataScope.WAREHOUSE, () ->
@@ -535,7 +533,7 @@ class LoadEstimateServiceTest {
             assertThat(refusal(() -> service.current(LoadEstimates.SourceType.ORDER, orderId)).errorCode())
                     .isEqualTo(ErrorCode.LOAD_ESTIMATE_NOT_FOUND);
 
-            LoadEstimateJpaEntity row = row("CURRENT");
+            LoadEstimateJpaEntity row = row();
             when(estimates.findBySourceTypeAndSourceIdAndStatus("ORDER", orderId, "CURRENT")).thenReturn(Optional.of(row));
             assertThat(service.current(LoadEstimates.SourceType.ORDER, orderId).id()).isEqualTo(row.getId());
         }

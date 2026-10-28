@@ -107,8 +107,7 @@ class DispatchVehicleHandoverTest {
     /** One vehicle of a plan, with its load LOADING and the parcels the plan placed on it, scanned or not. */
     private record Vehicle(LoadPlan.Vehicle vehicle, DispatchLoad load, DispatchLoadJpaEntity header) { }
 
-    private Vehicle vehicleLoad(LoadPlan plan, LoadPlan.Vehicle vehicle, UUID shipmentKey, boolean transfer,
-                                boolean scanAll) {
+    private Vehicle vehicleLoad(LoadPlan plan, LoadPlan.Vehicle vehicle, UUID shipmentKey, boolean scanAll) {
         DispatchLoad load = DispatchLoad.planFullTruckload(UUID.randomUUID(), "LD-V" + vehicle.seq(), UUID.randomUUID(),
                 WAREHOUSE, vehicle.id());
         load.addShipment(new DispatchLoad.ShipmentFacts(shipmentKey, "SHP-" + shipmentKey.toString().substring(0, 4),
@@ -209,7 +208,7 @@ class DispatchVehicleHandoverTest {
         void staleVersion() {
             confirmedPlan(2, 1);
             sealedWithContents();
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false, true);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
 
             assertThat(refusal(() -> service.handOver(v.load().id(), new Dispatching.Handover(99L, "Mr Hung", null, null,
                     null, true, null), actor)).errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
@@ -220,7 +219,7 @@ class DispatchVehicleHandoverTest {
         void planMustBeConfirmed() {
             confirmedPlan(2, 1);
             sealedWithContents();
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false, true);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
             plan.reopen("changed", false, actor.userId(), NOW);
 
             assertThat(refusal(() -> service.handOver(v.load().id(), signed(v.header()), actor)).errorCode())
@@ -232,7 +231,7 @@ class DispatchVehicleHandoverTest {
         void everyPlacedParcelMustBeOnBoard() {
             confirmedPlan(2, 1);
             sealedWithContents();
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false, false);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false);
 
             var thrown = refusal(() -> service.handOver(v.load().id(), signed(v.header()), actor));
 
@@ -246,7 +245,7 @@ class DispatchVehicleHandoverTest {
         void lastVehicleHandsTheShipmentOver() {
             confirmedPlan(2, 1);
             sealedWithContents();
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false, true);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
             when(planVehicles.completeIfDispatched(any(), eq(plan), any())).thenReturn(true);
 
             var detail = service.handOver(v.load().id(), signed(v.header()), actor);
@@ -269,8 +268,8 @@ class DispatchVehicleHandoverTest {
             sealedWithContents();
             LoadPlan.Vehicle first = plan.activeVehicles().get(0);
             LoadPlan.Vehicle second = plan.activeVehicles().get(1);
-            Vehicle one = vehicleLoad(plan, first, planned.shipmentId(), false, true);
-            Vehicle two = vehicleLoad(plan, second, planned.shipmentId(), false, true);
+            Vehicle one = vehicleLoad(plan, first, planned.shipmentId(), true);
+            Vehicle two = vehicleLoad(plan, second, planned.shipmentId(), true);
             Map<UUID, DispatchLoadJpaEntity> live = new HashMap<>();
             live.put(first.id(), one.header());
             live.put(second.id(), two.header());
@@ -294,7 +293,7 @@ class DispatchVehicleHandoverTest {
         void shipmentMustStillWait() {
             confirmedPlan(2, 1);
             sealedWithContents();
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false, true);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
             ShipmentJpaEntity cancelled = FulfillmentFixtures.rowIn(ShipmentStatus.CANCELLED);
             org.springframework.test.util.ReflectionTestUtils.setField(cancelled, "id", planned.shipmentId());
             when(locks.lockOfOrders(any())).thenReturn(List.of(cancelled));
@@ -308,7 +307,7 @@ class DispatchVehicleHandoverTest {
         void orderGateNamesTheShipment() {
             confirmedPlan(2, 1);
             sealedWithContents();
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false, true);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
             org.mockito.Mockito.doThrow(new com.stockflow.common.error.BusinessException(
                     ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED, "units stay outside the plan"))
                     .when(orders).recordGoodsLeft(any(), any(), any());
@@ -380,7 +379,7 @@ class DispatchVehicleHandoverTest {
         void transferMustStillBePicking() {
             confirmedTransferPlan(2, 1);
             when(transfers.find(planned.shipmentId())).thenReturn(Optional.of(transfer("IN_TRANSIT")));
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true, true);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
 
             assertThat(refusal(() -> service.handOver(v.load().id(), signed(v.header()), actor)).errorCode())
                     .isEqualTo(ErrorCode.PACKAGE_NOT_READY);
@@ -390,7 +389,7 @@ class DispatchVehicleHandoverTest {
         @DisplayName("the last vehicle leaves: the transfer records goods left and is dispatched with the units its plan carried")
         void lastVehicleDispatchesTheTransfer() {
             confirmedTransferPlan(2, 1);
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true, true);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
             when(packageLines.findByPackageIdIn(any())).thenReturn(plan.placedPackageIds().stream()
                     .map(id -> PackageLineJpaEntity.ofTransfer(UUID.randomUUID(), id, lineId, 4)).toList());
             when(planVehicles.completeIfDispatched(any(), eq(plan), any())).thenReturn(true);
@@ -410,8 +409,8 @@ class DispatchVehicleHandoverTest {
             confirmedTransferPlan(4, 2);
             LoadPlan.Vehicle first = plan.activeVehicles().get(0);
             LoadPlan.Vehicle second = plan.activeVehicles().get(1);
-            Vehicle one = vehicleLoad(plan, first, planned.shipmentId(), true, true);
-            Vehicle two = vehicleLoad(plan, second, planned.shipmentId(), true, true);
+            Vehicle one = vehicleLoad(plan, first, planned.shipmentId(), true);
+            Vehicle two = vehicleLoad(plan, second, planned.shipmentId(), true);
             Map<UUID, DispatchLoadJpaEntity> live = new HashMap<>();
             live.put(first.id(), one.header());
             live.put(second.id(), two.header());
@@ -428,7 +427,7 @@ class DispatchVehicleHandoverTest {
         @DisplayName("a vehicle of a transfer plan shows its transfer order and the parcels placed on it, with which are loaded")
         void transferVehicleDetail() {
             confirmedTransferPlan(2, 1);
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true, false);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false);
             List<PackageJpaEntity> parcels = sealedParcels(plan, null, planned.shipmentId());
             when(packages.findByTransferOrderIdIn(any())).thenReturn(parcels);
             v.load().scan(UUID.randomUUID(), new DispatchLoad.ParcelFacts(parcels.getFirst().getId(), "PKG-1",
@@ -451,7 +450,7 @@ class DispatchVehicleHandoverTest {
         @DisplayName("the printable manifest of a transfer's vehicle names the destination warehouse and has no COD")
         void transferManifest() {
             confirmedTransferPlan(2, 1);
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true, false);
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false);
             List<PackageJpaEntity> parcels = sealedParcels(plan, null, planned.shipmentId());
             when(packages.findByTransferOrderIdIn(any())).thenReturn(parcels);
             UUID to = transfer("PICKING").toWarehouseId();
