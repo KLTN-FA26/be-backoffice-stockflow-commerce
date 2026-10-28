@@ -37,6 +37,16 @@ class PoLineUnits {
      * no query; otherwise one query per SKU.
      */
     Map<UUID, Integer> factors(Collection<PoLineJpaEntity> lines) {
+        Map<UUID, Integer> factors = new HashMap<>();
+        units(lines).forEach((line, unit) -> factors.put(line, unit.factor()));
+        return factors;
+    }
+
+    /**
+     * The packing unit of each of {@code lines} entered in one, by line id; a line in the base unit is absent and,
+     * when every line is, nothing is asked.
+     */
+    Map<UUID, UomConversion> units(Collection<PoLineJpaEntity> lines) {
         List<PoLineJpaEntity> inUnit = lines.stream().filter(line -> line.getUomConversionId() != null).toList();
         if (inUnit.isEmpty()) {
             return Map.of();
@@ -44,7 +54,7 @@ class PoLineUnits {
         Map<UUID, String> skus = inventory.skusOf(inUnit.stream().map(PoLineJpaEntity::getInventoryItemId).toList());
         Map<UUID, List<PoLineJpaEntity>> byItem = inUnit.stream()
                 .collect(Collectors.groupingBy(PoLineJpaEntity::getInventoryItemId));
-        Map<UUID, Integer> factors = new HashMap<>();
+        Map<UUID, UomConversion> units = new HashMap<>();
         byItem.forEach((itemId, itemLines) -> {
             String sku = skus.get(itemId);
             if (sku == null) {
@@ -52,7 +62,7 @@ class PoLineUnits {
                 throw new IllegalStateException("Inventory has no SKU for item " + itemId + " of line "
                         + itemLines.get(0).getId());
             }
-            Map<UUID, UomConversion> found = units.conversions(new Sku(sku),
+            Map<UUID, UomConversion> found = this.units.conversions(new Sku(sku),
                     itemLines.stream().map(PoLineJpaEntity::getUomConversionId).distinct().toList());
             for (PoLineJpaEntity line : itemLines) {
                 UomConversion unit = found.get(line.getUomConversionId());
@@ -61,9 +71,9 @@ class PoLineUnits {
                     throw new IllegalStateException("Line " + line.getId() + " is in unit " + line.getUomConversionId()
                             + ", which is not a unit of " + sku);
                 }
-                factors.put(line.getId(), unit.factor());
+                units.put(line.getId(), unit);
             }
         });
-        return factors;
+        return units;
     }
 }

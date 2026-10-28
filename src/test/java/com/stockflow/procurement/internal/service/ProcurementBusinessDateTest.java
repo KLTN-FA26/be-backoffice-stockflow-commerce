@@ -90,7 +90,7 @@ class ProcurementBusinessDateTest {
                 new PoCommunicationProfile("Buyer", "Address", "Buyer contact", "0901234567", "buyer@example.com",
                         "Warehouse"),
                 mock(ProductService.class), inventory, inventoryControl, warehouses, mock(CurrentUserProvider.class),
-                supplierItems, mock(ApprovalLimits.class));
+                supplierItems, mock(ApprovalLimits.class), org.mockito.Mockito.mock(com.stockflow.inventory.api.UomConversionService.class));
     }
 
     private PurchaseOrder saved() {

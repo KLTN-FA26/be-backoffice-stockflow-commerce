@@ -5,11 +5,13 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.procurement.api.POLineSummary;
 import com.stockflow.procurement.api.PurchaseOrderStatusCount;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.procurement.internal.domain.ApprovalLimit;
+import com.stockflow.procurement.internal.domain.PackingUnit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PoLineStatus;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
@@ -155,7 +157,6 @@ class PurchaseOrderRepositoryAdapter
                 entityManager.lock(entity, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
             }
             Set<UUID> frozen = draft ? frozenLines(order.id().value()) : Set.of();
-            Map<UUID, Integer> unitFactors = draft ? lineUnits.factors(entity.getLines()) : Map.of();
             Set<UUID> stored = new HashSet<>();
             for (PoLineJpaEntity line : List.copyOf(entity.getLines())) {
                 if (line.getStatus() == PoLineStatus.WITHDRAWN) {
@@ -171,7 +172,7 @@ class PurchaseOrderRepositoryAdapter
                     }
                 } else if (current != null) {
                     if (draft) {
-                        line.reviseDraft(current, unitFactors.getOrDefault(line.getId(), 1));
+                        line.reviseDraft(current);
                     }
                     line.setStatus(current.status());
                 }
@@ -260,10 +261,9 @@ class PurchaseOrderRepositoryAdapter
                         : changeSummary == null ? "Resubmitted" : truncate(changeSummary, 500))
                 .setParameter("actor", actorId)
                 .executeUpdate();
-        // A revision freezes the line, the unit it was entered in included (V20261020000400): an amendment is
-        // matched against both, so a revision without them would refuse the next amendment of a line ordered
-        // in a carton. The domain line does not carry its unit yet, so the unit is copied from the line's row;
-        // a line not written yet has none, which is right - the application still orders in the base unit.
+        // A revision freezes the line, the unit it was ordered in included (V20261020000400, SCRUM-473): an
+        // amendment is matched against both, so a revision without them would refuse the next amendment of a
+        // line ordered in a carton.
         for (PoLine line : order.lines()) {
             entityManager.createNativeQuery("""
                             INSERT INTO procurement.purchase_order_line_revisions
@@ -271,9 +271,9 @@ class PurchaseOrderRepositoryAdapter
                                     tax_rate, discount_rate, line_subtotal, line_discount_amount, line_net, line_tax,
                                     line_total, note, uom_conversion_id, unit_qty)
                             SELECT :id, :line, :revision, :item, :uom, :qty, :price, :taxRate, 0, :subtotal, 0,
-                                   :subtotal, :tax, :total, :note, l.uom_conversion_id, l.unit_qty
-                              FROM (SELECT 1) one
-                              LEFT JOIN procurement.purchase_order_lines l ON l.id = :line""")
+                                   :subtotal, :tax, :total, :note, CAST(:unit AS uuid), CAST(:unitQty AS integer)""")
+                    .setParameter("unit", line.packingUnit() == null ? null : line.packingUnit().uomConversionId())
+                    .setParameter("unitQty", line.packingUnit() == null ? null : line.packingUnit().count())
                     .setParameter("id", Identifiers.newId())
                     .setParameter("line", line.id())
                     .setParameter("revision", revisionId)
@@ -425,10 +425,13 @@ class PurchaseOrderRepositoryAdapter
             var policies = inventory.itemPolicies(order.lines().stream().map(PoLine::inventoryItemId).toList());
             var lines = order.lines().stream().map(l -> {
                 var policy = policies.get(l.inventoryItemId());
+                PackingUnit unit = l.packingUnit();
                 return new POLineSummary(l.id(), l.lineNo(), l.inventoryItemId(), l.sku().code(), l.description(),
                         l.uom(), l.quantityOrdered(), l.quantityReceived(), l.unitPrice().amount(), l.taxRate(),
                         l.total(), l.status().name(), policy != null && policy.lotTracked(),
-                        policy != null && policy.expiryTracked(), policy != null && policy.qcRequired());
+                        policy != null && policy.expiryTracked(), policy != null && policy.qcRequired(),
+                        unit == null ? null : unit.unitOfMeasure(), unit == null ? null : unit.factor(),
+                        unit == null ? null : unit.count());
             }).toList();
             return summary(entity, suppliers.findById(entity.getSupplierId()).orElse(null),
                     warehouses.findWarehouse(entity.getWarehouseId()).orElse(null), lines, possibleDuplicate);
@@ -527,16 +530,24 @@ class PurchaseOrderRepositoryAdapter
 
     // ------------------------------------------------------------------ mapping
 
+    /** The line's packing unit (SCRUM-473), null for a line in the base unit. */
+    private static PackingUnit packingUnit(UomConversion unit, Integer count) {
+        return unit == null ? null : new PackingUnit(unit.id(), unit.unitOfMeasure(), unit.factor(), count);
+    }
+
     private PurchaseOrder toDomain(PurchaseOrderJpaEntity e) {
         Currency currency = Currency.getInstance(e.getCurrency());
         Map<UUID, String> skus = inventory.skusOf(e.getLines().stream().map(PoLineJpaEntity::getInventoryItemId)
                 .collect(Collectors.toSet()));
         Map<UUID, Integer> received = receivedByLine(e.getId());
-        List<PoLine> lines = e.getLines().stream().filter(l -> l.getStatus() != PoLineStatus.WITHDRAWN)
+        List<PoLineJpaEntity> live = e.getLines().stream().filter(l -> l.getStatus() != PoLineStatus.WITHDRAWN).toList();
+        Map<UUID, UomConversion> units = lineUnits.units(live);
+        List<PoLine> lines = live.stream()
                 .map(l -> new PoLine(l.getId(), l.getLineNo(), l.getInventoryItemId(),
                 new Sku(skus.getOrDefault(l.getInventoryItemId(), "UNKNOWN")), l.getUom(), l.getDescription(),
                 l.getOrderedQuantity().intValueExact(), received.getOrDefault(l.getId(), 0),
-                new Money(l.getUnitPrice(), currency), l.getTaxRate(), l.getStatus())).toList();
+                new Money(l.getUnitPrice(), currency), l.getTaxRate(), l.getStatus(),
+                packingUnit(units.get(l.getId()), l.getUnitQuantity()))).toList();
         return new PurchaseOrder(new PurchaseOrder.State(new PurchaseOrderId(e.getId()), e.getPoNumber(), e.getType(),
                 e.getProductionOrderId(), e.getSupplierId(), e.getWarehouseId(), e.getStatus(), currency, lines,
                 e.getOrderDate(), e.getExpectedAt(), e.getNote(), e.getPaymentTermDays(), e.getLeadTimeDays(),

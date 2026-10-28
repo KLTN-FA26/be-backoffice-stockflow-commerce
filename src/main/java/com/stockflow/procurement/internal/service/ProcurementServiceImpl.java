@@ -15,6 +15,8 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.PurchaseOrderSent;
+import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
@@ -33,6 +35,7 @@ import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.InvalidPurchaseOrderTransitionException;
+import com.stockflow.procurement.internal.domain.PackingUnit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
@@ -69,6 +72,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Collectors;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -115,6 +119,7 @@ class ProcurementServiceImpl implements ProcurementService {
     private final CurrentUserProvider users;
     private final SupplierItemRepository supplierItems;
     private final ApprovalLimits approvalLimits;
+    private final UomConversionService units;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
@@ -123,7 +128,7 @@ class ProcurementServiceImpl implements ProcurementService {
                            ProductService products, InventoryService inventory,
                            InventoryControlService inventoryControl, WarehouseService warehouses,
                            CurrentUserProvider users, SupplierItemRepository supplierItems,
-                           ApprovalLimits approvalLimits) {
+                           ApprovalLimits approvalLimits, UomConversionService units) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.reports = reports;
@@ -140,6 +145,7 @@ class ProcurementServiceImpl implements ProcurementService {
         this.users = users;
         this.supplierItems = supplierItems;
         this.approvalLimits = approvalLimits;
+        this.units = units;
     }
 
     /**
@@ -175,7 +181,7 @@ class ProcurementServiceImpl implements ProcurementService {
         }
         CheckedLines checked = checkLines(command.lines().stream()
                 .map(c -> c == null ? null : new LineInput(c.sku(), c.description(), c.quantityOrdered(), c.unitPrice(),
-                        c.taxRate()))
+                        c.taxRate(), c.unitOfMeasure(), c.unitQuantity(), null))
                 .toList(), currency, command.supplierId(), supplier.leadTimeDays());
         List<PoLine> lines = toLines(checked.lines());
 
@@ -252,13 +258,14 @@ class ProcurementServiceImpl implements ProcurementService {
         }
         CheckedLines checked = checkLines(command.lines().stream()
                 .map(l -> l == null ? null : new LineInput(l.sku(), l.description(), l.quantityOrdered(),
-                        l.unitPrice(), l.taxRate()))
+                        l.unitPrice(), l.taxRate(), l.unitOfMeasure(), l.unitQuantity(), unitIdOf(order, l.lineId())))
                 .toList(), order.currency(), order.supplierId(), supplierLeadTimeDays(order.supplierId()));
         List<PurchaseOrder.DraftLine> wanted = new ArrayList<>();
         for (int i = 0; i < checked.lines().size(); i++) {
             CheckedLine line = checked.lines().get(i);
             wanted.add(new PurchaseOrder.DraftLine(command.lines().get(i).lineId(), line.inventoryItemId(), line.sku(),
-                    line.uom(), line.description(), line.quantity(), line.unitPrice(), line.taxRate()));
+                    line.uom(), line.description(), line.quantity(), line.unitPrice(), line.taxRate(), line.unit(),
+                    line.unitNamed()));
         }
 
         Map<String, String> before = timelineFacts(order);
@@ -656,7 +663,7 @@ class ProcurementServiceImpl implements ProcurementService {
         List<PoLine> lines = new ArrayList<>();
         for (CheckedLine c : checked) {
             lines.add(PurchaseOrder.line(lines.size() + 1, c.inventoryItemId(), c.sku(), c.uom(), c.description(),
-                    c.quantity(), c.unitPrice(), c.taxRate()));
+                    c.quantity(), c.unitPrice(), c.taxRate(), c.unit()));
         }
         return lines;
     }
@@ -708,8 +715,17 @@ class ProcurementServiceImpl implements ProcurementService {
         }
     }
 
-    /** One requested line, as created or as edited; {@code unitPrice} null takes the catalog price. */
-    private record LineInput(String sku, String description, int quantity, BigDecimal unitPrice, BigDecimal taxRate) {
+    /**
+     * One requested line, as created or as edited; {@code unitPrice} null takes the catalog price. {@code quantity} is
+     * in base units and may be left out when {@code unitOfMeasure} and {@code unitQuantity} say it (SCRUM-473);
+     * {@code currentUnitId} is the packing unit of the draft line being edited, null for a new line.
+     */
+    private record LineInput(String sku, String description, Integer quantity, BigDecimal unitPrice,
+                             BigDecimal taxRate, String unitOfMeasure, Integer unitQuantity, UUID currentUnitId) {
+    }
+
+    /** A requested line's base quantity, and the packing unit it was ordered in when one was named. */
+    private record SizedLine(int quantity, PackingUnit unit, boolean unitNamed) {
     }
 
     /** A requested line once its SKU is resolved to an inventory item (BR-01), before the catalog is asked. */
@@ -718,7 +734,7 @@ class ProcurementServiceImpl implements ProcurementService {
 
     /** A requested line once its SKU is resolved, its catalog terms met and its amounts checked. */
     private record CheckedLine(UUID inventoryItemId, Sku sku, String uom, String description, int quantity,
-                               Money unitPrice, BigDecimal taxRate) {
+                               Money unitPrice, BigDecimal taxRate, PackingUnit unit, boolean unitNamed) {
     }
 
     /** The lines as they will be written, and the order's lead time: the slowest line's. */
@@ -730,6 +746,8 @@ class ProcurementServiceImpl implements ProcurementService {
      * subcontract order never comes here (BR-10). In this order:
      * <ol>
      *   <li>each SKU resolves to an inventory item, once per order, with a description;</li>
+     *   <li>each line's base quantity, from the packing unit it names (SCRUM-473), every line at fault in one
+     *       {@code VALIDATION_FAILED} - see {@link #sizeLines};</li>
      *   <li>the supplier's catalog rows for all of them, in one query, {@code FOR SHARE} so a concurrent
      *       catalog delete waits for this order instead of stranding its line;</li>
      *   <li>the catalog terms (BR-PO-001), every line at fault in one 409 {@code SUPPLIER_TERMS_VIOLATED}:
@@ -776,6 +794,7 @@ class ProcurementServiceImpl implements ProcurementService {
             resolved.add(new ResolvedLine(item.inventoryItemId(), sku, uom, description, c));
         }
 
+        List<SizedLine> sized = sizeLines(resolved);
         Map<UUID, SupplierItem> listed = supplierItems.listedForShare(supplierId,
                 resolved.stream().map(ResolvedLine::inventoryItemId).toList());
         List<FieldError> errors = new ArrayList<>();
@@ -794,7 +813,7 @@ class ProcurementServiceImpl implements ProcurementService {
                 continue;
             }
             int before = errors.size();
-            int quantity = line.input().quantity();
+            int quantity = sized.get(i).quantity();
             for (var violation : item.orderQuantityViolations(quantity)) {
                 ErrorCode code = switch (violation) {
                     case BELOW_MOQ -> ErrorCode.PO_LINE_BELOW_MOQ;
@@ -831,21 +850,102 @@ class ProcurementServiceImpl implements ProcurementService {
         for (int i = 0; i < resolved.size(); i++) {
             ResolvedLine line = resolved.get(i);
             LineInput c = line.input();
+            SizedLine size = sized.get(i);
             BigDecimal price = prices.get(i);
-            if (c.quantity() <= 0 || c.quantity() > 1_000_000 || !PurchasePrices.acceptable(price, currency)
+            if (size.quantity() <= 0 || size.quantity() > 1_000_000 || !PurchasePrices.acceptable(price, currency)
                     || c.taxRate() != null && (c.taxRate().signum() < 0
                     || c.taxRate().compareTo(BigDecimal.valueOf(100)) > 0)) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                         "Invalid purchase order quantity, unit price or tax rate");
             }
-            total = total.add(price.multiply(BigDecimal.valueOf(c.quantity())));
+            total = total.add(price.multiply(BigDecimal.valueOf(size.quantity())));
             lines.add(new CheckedLine(line.inventoryItemId(), line.sku(), line.uom(), line.description(),
-                    c.quantity(), new Money(price, currency), c.taxRate()));
+                    size.quantity(), new Money(price, currency), c.taxRate(), size.unit(), size.unitNamed()));
         }
         if (total.compareTo(PurchasePrices.MAX) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Purchase order total exceeds the supported limit");
         }
         requirePurchasable(lines.stream().map(line -> line.sku().code()).toList());
         return new CheckedLines(lines, leadTimeDays);
+    }
+
+    /** The packing unit of draft line {@code lineId} of {@code order}; null for a new line or one in base units. */
+    private static UUID unitIdOf(PurchaseOrder order, UUID lineId) {
+        return lineId == null ? null : order.lines().stream().filter(line -> line.id().equals(lineId)).findFirst()
+                .map(PoLine::packingUnit).map(PackingUnit::uomConversionId).orElse(null);
+    }
+
+    /**
+     * Each line's base quantity (SCRUM-473). A line naming no unit gives {@code quantityOrdered}; one naming a unit of
+     * its item gives {@code unitQuantity} times the unit's factor - the base unit means base units and stores none -
+     * and a {@code quantityOrdered} sent as well must be exactly that. A retired unit is refused unless it is the
+     * edited line's own: a draft ordered before the unit was retired is still revised in it, as receiving allows.
+     * Every line at fault is reported at once, each refusal on its own field, before the supplier's terms are asked:
+     * MOQ and whole packs are held to the base quantity this works out.
+     */
+    private List<SizedLine> sizeLines(List<ResolvedLine> lines) {
+        Set<Sku> naming = lines.stream().filter(line -> blankToNull(line.input().unitOfMeasure()) != null)
+                .map(ResolvedLine::sku).collect(Collectors.toSet());
+        Map<String, List<UomConversion>> itemUnits = naming.isEmpty() ? Map.of() : units.conversionsOf(naming);
+        List<FieldError> errors = new ArrayList<>();
+        List<SizedLine> sized = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            ResolvedLine line = lines.get(i);
+            LineInput in = line.input();
+            String field = "lines[" + i + "].";
+            int before = errors.size();
+            String code = blankToNull(in.unitOfMeasure());
+            if (code == null) {
+                if (in.unitQuantity() != null) {
+                    errors.add(new FieldError(field + "unitQuantity", "unitQuantity counts the unitOfMeasure; name it",
+                            ErrorCode.VALIDATION_FAILED.name()));
+                }
+                if (in.quantity() == null) {
+                    errors.add(new FieldError(field + "quantityOrdered",
+                            "Give quantityOrdered, or a unitOfMeasure and unitQuantity", ErrorCode.VALIDATION_FAILED.name()));
+                }
+                sized.add(new SizedLine(in.quantity() == null ? 0 : in.quantity(), null, false));
+                continue;
+            }
+            String wanted = code.toUpperCase(Locale.ROOT);
+            UomConversion unit = itemUnits.getOrDefault(line.sku().code(), List.of()).stream()
+                    .filter(candidate -> candidate.unitOfMeasure().equals(wanted)).findFirst().orElse(null);
+            if (unit == null) {
+                errors.add(new FieldError(field + "unitOfMeasure", "%s has no unit %s".formatted(line.sku().code(), wanted),
+                        ErrorCode.UOM_CONVERSION_NOT_FOUND.name()));
+            } else if (!unit.active() && !unit.id().equals(in.currentUnitId())) {
+                errors.add(new FieldError(field + "unitOfMeasure", "%s is retired; order in an active unit".formatted(wanted),
+                        ErrorCode.PO_LINE_UNIT_INVALID.name()));
+            } else if (in.unitQuantity() == null) {
+                errors.add(new FieldError(field + "unitQuantity", "Say how many " + wanted,
+                        ErrorCode.VALIDATION_FAILED.name()));
+            } else {
+                long quantity = (long) in.unitQuantity() * unit.factor();
+                if (quantity > 1_000_000) {
+                    errors.add(new FieldError(field + "unitQuantity", "%d %s hold %d units; a line takes at most 1,000,000"
+                            .formatted(in.unitQuantity(), wanted, quantity), ErrorCode.VALIDATION_FAILED.name()));
+                } else if (in.quantity() != null && in.quantity() != quantity) {
+                    errors.add(new FieldError(field + "quantityOrdered", "%d %s hold %d units, not %d"
+                            .formatted(in.unitQuantity(), wanted, quantity, in.quantity()), ErrorCode.VALIDATION_FAILED.name()));
+                }
+            }
+            if (errors.size() > before) {
+                sized.add(new SizedLine(0, null, true));
+                continue;
+            }
+            sized.add(new SizedLine((int) ((long) in.unitQuantity() * unit.factor()), unit.base() ? null
+                    : new PackingUnit(unit.id(), unit.unitOfMeasure(), unit.factor(), in.unitQuantity()), true));
+        }
+        if (!errors.isEmpty()) {
+            long linesAtFault = errors.stream().map(error -> error.field().substring(0, error.field().indexOf(']')))
+                    .distinct().count();
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    linesAtFault + " line(s) name an invalid quantity or unit", errors);
+        }
+        return sized;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.strip();
     }
 }

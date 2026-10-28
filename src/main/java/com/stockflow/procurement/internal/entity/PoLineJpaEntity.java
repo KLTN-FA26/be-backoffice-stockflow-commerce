@@ -1,7 +1,5 @@
 package com.stockflow.procurement.internal.entity;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PoLineStatus;
@@ -32,10 +30,11 @@ import java.util.UUID;
  * mapped. The amounts satisfy {@code ck_purchase_order_lines_amounts}: no line discount, so net is
  * the subtotal.</p>
  *
- * <p>The packing unit a line was entered in ({@code uom_conversion_id}, V20261020000400) is read here and
- * never written: the application still orders in the base unit. A draft line already in one keeps it
- * when it is resized, and {@code unit_qty} is recomputed with it, since {@code tg_purchase_order_lines_unit}
- * refuses an {@code ordered_qty} that is not {@code unit_qty} times the unit's factor.</p>
+ * <p>The packing unit a line was ordered in ({@code uom_conversion_id} and {@code unit_qty}, V20261020000400) is
+ * the domain line's {@code PackingUnit} (SCRUM-473), written on insert and by a draft revision, which may change it.
+ * A SUBCONTRACT draft resized by {@link #reviseDraftQuantity} keeps its unit and recomputes {@code unit_qty}, since
+ * {@code tg_purchase_order_lines_unit} refuses an {@code ordered_qty} that is not {@code unit_qty} times the unit's
+ * factor.</p>
  *
  * <p>{@code @DynamicUpdate}: an UPDATE writes only the columns that changed. The amendment of a
  * subcontract order rewrites {@code ordered_qty} and {@code unit_qty} with native SQL; a full-row
@@ -94,10 +93,10 @@ public class PoLineJpaEntity extends BaseEntity {
     private String description;
 
     /** NULL = the base unit. */
-    @Column(name = "uom_conversion_id", insertable = false, updatable = false)
+    @Column(name = "uom_conversion_id")
     private UUID uomConversionId;
 
-    @Column(name = "unit_qty", insertable = false)
+    @Column(name = "unit_qty")
     private Integer unitQuantity;
 
     protected PoLineJpaEntity() {
@@ -117,6 +116,12 @@ public class PoLineJpaEntity extends BaseEntity {
         this.total = line.total();
         this.status = line.status();
         this.description = line.description();
+        writeUnit(line);
+    }
+
+    private void writeUnit(PoLine line) {
+        this.uomConversionId = line.packingUnit() == null ? null : line.packingUnit().uomConversionId();
+        this.unitQuantity = line.packingUnit() == null ? null : line.packingUnit().count();
     }
 
     void attachTo(PurchaseOrderJpaEntity order) {
@@ -146,15 +151,21 @@ public class PoLineJpaEntity extends BaseEntity {
     }
 
     /**
-     * The buyer's new quantity, price, tax and description for a line of a DRAFT order (SCRUM-462);
-     * {@code unitFactor} as in {@link #reviseDraftQuantity}.
+     * The buyer's new quantity, unit, price, tax and description for a line of a DRAFT order (SCRUM-462,
+     * SCRUM-473). The domain line already says which packing unit it is in and how many, so nothing is
+     * worked out here.
      */
-    public void reviseDraft(PoLine line, int unitFactor) {
+    public void reviseDraft(PoLine line) {
         requireDraft();
         this.unitPrice = line.unitPrice().amount();
         this.taxRate = line.taxRate();
         this.description = line.description();
-        reviseDraftQuantity(line.quantityOrdered(), unitFactor);
+        writeUnit(line);
+        this.orderedQuantity = BigDecimal.valueOf(line.quantityOrdered());
+        this.subtotal = line.subtotal();
+        this.net = subtotal;
+        this.tax = line.tax();
+        this.total = line.total();
     }
 
     /**
@@ -163,11 +174,7 @@ public class PoLineJpaEntity extends BaseEntity {
      * rather than the generic 409 {@code tg_purchase_order_lines_unit} would turn it into.
      */
     public static int wholeUnits(String poNumber, int quantity, int factor) {
-        if (quantity % factor != 0) {
-            throw new BusinessException(ErrorCode.PO_LINE_UNIT_NOT_MULTIPLE,
-                    "%s is ordered in units of %d; %d is not a whole number of them".formatted(poNumber, factor, quantity));
-        }
-        return quantity / factor;
+        return com.stockflow.procurement.internal.domain.PackingUnit.wholeUnits(poNumber, quantity, factor);
     }
 
     /** Taken off a draft after a revision froze it: the row stays for that revision ({@code ck_purchase_order_lines_withdrawn}). */
@@ -199,4 +206,5 @@ public class PoLineJpaEntity extends BaseEntity {
     public PoLineStatus getStatus() { return status; }
     public String getDescription() { return description; }
     public UUID getUomConversionId() { return uomConversionId; }
+    public Integer getUnitQuantity() { return unitQuantity; }
 }

@@ -24,9 +24,31 @@ public record POLineSummary(
         String status,
         boolean lotTracked,
         boolean expiryTracked,
-        boolean qcRequired
+        boolean qcRequired,
+        String unitOfMeasure,
+        Integer unitFactor,
+        Integer unitQuantity
 ) {
+    /** A line in base units. */
+    public POLineSummary(UUID lineId, int lineNo, UUID inventoryItemId, String sku, String description, String uom,
+                         int quantityOrdered, int quantityReceived, BigDecimal unitPrice, BigDecimal taxRate,
+                         BigDecimal lineTotal, String status, boolean lotTracked, boolean expiryTracked,
+                         boolean qcRequired) {
+        this(lineId, lineNo, inventoryItemId, sku, description, uom, quantityOrdered, quantityReceived, unitPrice,
+                taxRate, lineTotal, status, lotTracked, expiryTracked, qcRequired, null, null, null);
+    }
+
     public int openQuantity() {
         return Math.max(0, quantityOrdered - quantityReceived);
+    }
+
+    /** Whole packing units still to receive, rounded down; null for a line in base units. */
+    public Integer openUnitQuantity() {
+        return unitFactor == null ? null : openQuantity() / unitFactor;
+    }
+
+    /** The price of one packing unit, for display only - prices are kept per base unit; null for base units. */
+    public BigDecimal packingUnitPrice() {
+        return unitFactor == null ? null : unitPrice.multiply(BigDecimal.valueOf(unitFactor));
     }
 }
