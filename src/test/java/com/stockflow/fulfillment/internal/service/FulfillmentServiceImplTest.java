@@ -551,9 +551,24 @@ class FulfillmentServiceImplTest {
 
         org.mockito.Mockito.doNothing().when(pickLists).requireAllPicked(pick, order);
         assertThat(service.completePicking(pick.getId(), worker).pickStatus()).isEqualTo("PICKED");
-        // Completing twice is a state conflict, no longer the generic CONFLICT.
-        assertThat(refusal(() -> service.completePicking(pick.getId(), worker)).errorCode())
-                .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        // SCRUM-482: completing again by the same assignee returns the task, applies nothing a second time.
+        var completedAt = pick.getPickedAt();
+        org.mockito.Mockito.clearInvocations(picks, pickLists);
+        assertThat(service.completePicking(pick.getId(), worker).pickStatus()).isEqualTo("PICKED");
+        assertThat(pick.getPickedAt()).isEqualTo(completedAt);
+        verify(picks, never()).save(any());
+        verify(pickLists, never()).requireAllPicked(any(), any());
+    }
+
+    @Test
+    void completingAPickedTaskIsRefusedForAnotherUser() {
+        UUID assigned = UUID.randomUUID();
+        var pick = pickedTask(assigned);
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+
+        assertThat(refusal(() -> service.completePicking(pick.getId(), user(UUID.randomUUID(), Role.WAREHOUSE_STAFF)))
+                .errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        verify(picks, never()).save(any());
     }
 
     @Test
