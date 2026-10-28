@@ -239,6 +239,15 @@ class PurchaseOrderTest {
                     .isInstanceOfSatisfying(BusinessException.class,
                             e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED));
         }
+
+        @Test
+        @DisplayName("PO-NOLIMIT: an approver with no limit configured (null) approves any total")
+        void approveWithoutConfiguredLimit() {
+            PurchaseOrder po = submitted();
+            po.approve(APPROVER, null, NOW);
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.approvedBy()).isEqualTo(APPROVER);
+        }
     }
 
     @Nested

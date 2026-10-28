@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.util.Currency;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -16,8 +17,9 @@ import java.util.UUID;
  * the roles' limits in force today in the order's currency. Roles are reached by id through
  * {@link IdentityService#roleIdsOf}; no role is named here, so who may approve how much stays data, not code.</p>
  *
- * <p>No limit configured is a limit of zero - the user can approve nothing, and an order they submit always waits
- * for someone else (the C4 plan, Q3: "no limit configured: always needs approval").</p>
+ * <p>No limit configured is <em>no limit</em>, not a limit of zero (owner decision PO-NOLIMIT, 28/10): an order is
+ * approved at submission only within a limit that is configured, so an unconfigured submitter's order always waits;
+ * an unconfigured approver is bounded only by holding the approve permission. A configured limit always caps.</p>
  */
 @Component
 class ApprovalLimits {
@@ -30,10 +32,12 @@ class ApprovalLimits {
         this.limits = limits;
     }
 
-    /** The most {@code userId} may approve in {@code currency} on {@code on}; zero when no limit is set for them. */
-    Money limitOf(UUID userId, Currency currency, LocalDate on) {
+    /**
+     * The most {@code userId} may approve in {@code currency} on {@code on}: the highest limit among their roles, or
+     * empty when none of their roles has a limit in force in that currency.
+     */
+    Optional<Money> limitOf(UUID userId, Currency currency, LocalDate on) {
         return limits.highestLimit(identity.roleIdsOf(userId), currency.getCurrencyCode(), on)
-                .map(amount -> new Money(amount, currency))
-                .orElseGet(() -> Money.zero(currency));
+                .map(amount -> new Money(amount, currency));
     }
 }

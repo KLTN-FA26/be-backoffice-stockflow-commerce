@@ -238,18 +238,15 @@ class PurchaseOrderApprovalLimitIntegrationTest {
     }
 
     @Test
-    @DisplayName("approve: refused above the approver's own limit (403 PO_APPROVAL_LIMIT_EXCEEDED), by an approver with "
-            + "no limit, and by the submitter (four-eyes); a bigger limit approves; the order stays pending meanwhile")
+    @DisplayName("approve: refused above the approver's own limit (403 PO_APPROVAL_LIMIT_EXCEEDED) and by the submitter "
+            + "(four-eyes); a bigger limit approves; the order stays pending meanwhile")
     void approveNeedsALimitThatCoversTheTotal() throws Exception {
         UUID submitter = personWithLimits(1_000);
         UUID po = draft(buyer(submitter), 50_000);
         submit(po, buyer(submitter)).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
 
         UUID tooSmall = personWithLimits(49_999);
-        UUID noLimit = personWithLimits();
         approve(po, approver(tooSmall)).andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.errorCode").value("PO_APPROVAL_LIMIT_EXCEEDED"));
-        approve(po, approver(noLimit)).andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("PO_APPROVAL_LIMIT_EXCEEDED"));
         approve(po, approver(submitter)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("SELF_APPROVAL_NOT_ALLOWED"));
@@ -262,6 +259,21 @@ class PurchaseOrderApprovalLimitIntegrationTest {
                 .andExpect(jsonPath("$.data.autoApproved").value(false))
                 .andExpect(jsonPath("$.data.approvedBy").value(exact.toString()));
         assertThat(row(po).get("auto_approved")).isEqualTo(false);
+    }
+
+    @Test
+    @DisplayName("PO-NOLIMIT: an approver none of whose roles has a limit configured is bounded by the approve "
+            + "permission alone and approves any total; a submitter without a limit still waits")
+    void approverWithoutConfiguredLimitApproves() throws Exception {
+        UUID submitter = personWithLimits();
+        UUID po = draft(buyer(submitter), 2_000_000_000);   // above every seeded limit
+        submit(po, buyer(submitter)).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
+
+        UUID noLimit = personWithLimits();
+        approve(po, approver(noLimit)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.autoApproved").value(false))
+                .andExpect(jsonPath("$.data.approvedBy").value(noLimit.toString()));
     }
 
     @Test

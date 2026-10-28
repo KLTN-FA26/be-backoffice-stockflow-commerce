@@ -136,7 +136,7 @@ class ProcurementServiceImplTest {
                 new CatalogSupplier(supplierId, "SUP", "Supplier", SupplierStatus.ACTIVE, Money.VND, 7)));
         listed(1, 1, null, "1000");
         // Nobody has an approval limit unless a test gives one: every submit waits, no approval is allowed.
-        when(limits.limitOf(any(), any(), any())).thenReturn(Money.zero(Money.VND));
+        when(limits.limitOf(any(), any(), any())).thenReturn(java.util.Optional.empty());
         when(orders.save(any())).thenAnswer(call -> call.getArgument(0));
         when(orders.nextPoNumber(any())).thenReturn("PO-20261022-0001");
         when(orders.nextRevisionNo(any())).thenReturn(0L);
@@ -359,9 +359,9 @@ class ProcurementServiceImplTest {
             return po;
         }
 
-        /** The approval limit {@code user} holds today (zero for everyone else, see {@code defaults}). */
+        /** The approval limit {@code user} holds today (none configured for everyone else, see {@code defaults}). */
         private void limit(UUID user, long vnd) {
-            when(limits.limitOf(eq(user), any(), eq(TODAY))).thenReturn(Money.vnd(vnd));
+            when(limits.limitOf(eq(user), any(), eq(TODAY))).thenReturn(java.util.Optional.of(Money.vnd(vnd)));
         }
 
         @Test
@@ -755,8 +755,8 @@ class ProcurementServiceImplTest {
         }
 
         @Test
-        @DisplayName("submit above the submitter's limit, or with no limit at all (zero): PENDING_APPROVAL, no approval "
-                + "recorded")
+        @DisplayName("submit above the submitter's limit, or with no limit configured (PO-NOLIMIT): PENDING_APPROVAL, "
+                + "no approval recorded")
         void submitAboveOrWithoutLimitWaits() {
             PurchaseOrder above = draft();
             limit(submitter, 5_000);
@@ -764,7 +764,7 @@ class ProcurementServiceImplTest {
             assertThat(above.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
 
             PurchaseOrder none = draft();
-            service.submit(none.id().value(), UUID.randomUUID());   // limits.limitOf: zero for anyone else
+            service.submit(none.id().value(), UUID.randomUUID());   // limits.limitOf: none configured for anyone else
             assertThat(none.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
             verify(orders, never()).recordApproval(any(), any(), anyString(), any());
             verify(orders, never()).recordEvent(any(), any(), eq("APPROVED"), any(), any(), any(), any());
@@ -783,20 +783,32 @@ class ProcurementServiceImplTest {
         }
 
         @Test
-        @DisplayName("approve: the approver's own limit must cover the total; above it, or with no limit, is "
-                + "PO_APPROVAL_LIMIT_EXCEEDED and the order stays pending")
+        @DisplayName("approve: a configured limit must cover the total; above it is PO_APPROVAL_LIMIT_EXCEEDED and the "
+                + "order stays pending")
         void approveAboveOwnLimitIsRefused() {
             PurchaseOrder po = pending();                     // 10,000
             limit(approver, 9_999);
 
             assertThat(refused(() -> service.approve(po.id().value(), approver)).errorCode())
                     .isEqualTo(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED);
-            assertThat(refused(() -> service.approve(po.id().value(), UUID.randomUUID())).errorCode())
-                    .isEqualTo(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED);
 
             assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
             verify(orders, never()).save(any());
             verify(orders, never()).recordApproval(any(), any(), anyString(), any());
+        }
+
+        @Test
+        @DisplayName("approve (PO-NOLIMIT): an approver with no limit configured is bounded by the approve permission "
+                + "alone and may approve any total")
+        void approveWithoutConfiguredLimit() {
+            PurchaseOrder po = pending();
+            UUID unconfigured = UUID.randomUUID();            // limits.limitOf: none configured
+
+            service.approve(po.id().value(), unconfigured);
+
+            assertThat(po.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+            assertThat(po.approvedBy()).isEqualTo(unconfigured);
+            assertThat(po.autoApproved()).isFalse();
         }
 
         @Test

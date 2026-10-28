@@ -134,7 +134,7 @@ class ProcurementPurchasabilityTest {
     /** Nobody has an approval limit: every submit waits for approval, which is what these tests were written against. */
     private static ApprovalLimits noLimits() {
         ApprovalLimits limits = mock(ApprovalLimits.class);
-        when(limits.limitOf(any(), any(), any())).thenReturn(Money.zero(Money.VND));
+        when(limits.limitOf(any(), any(), any())).thenReturn(java.util.Optional.empty());
         return limits;
     }
 

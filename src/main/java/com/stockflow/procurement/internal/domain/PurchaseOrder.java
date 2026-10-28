@@ -329,9 +329,11 @@ public final class PurchaseOrder extends AggregateRoot {
 
     /**
      * PENDING_APPROVAL → APPROVED. BR-PO-002 four-eyes: the approver did not submit it. And the approver's own limit
-     * covers the total (owner decision POLIMIT2): an order above it waits for someone with a bigger one.
+     * covers the total (owner decision POLIMIT2): an order above it waits for someone with a bigger one. An approver
+     * with no limit configured is bounded by the approve permission alone (owner decision PO-NOLIMIT).
      *
-     * @param approverLimit the highest approval limit the approver holds in this order's currency; zero for none
+     * @param approverLimit the highest approval limit the approver holds in this order's currency, or {@code null}
+     *                      when none is configured for them
      */
     public void approve(UUID approverId, Money approverLimit, Instant now) {
         if (status != PurchaseOrderStatus.PENDING_APPROVAL) {
@@ -343,7 +345,7 @@ public final class PurchaseOrder extends AggregateRoot {
             throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
                     "A purchase order is approved by someone other than who submitted it");
         }
-        if (!coveredBy(approverLimit)) {
+        if (approverLimit != null && !coveredBy(approverLimit)) {
             throw new BusinessException(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED,
                     "Purchase order %s totals %s; your approval limit is %s".formatted(poNumber, totalAmount(),
                             approverLimit));

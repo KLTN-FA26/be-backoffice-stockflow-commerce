@@ -323,7 +323,7 @@ class ProcurementServiceImpl implements ProcurementService {
     /**
      * kltn-docs 02 §4 step 7 (owner decision POLIMIT2): an order whose total is within the SUBMITTER's approval limit
      * is approved right here, recording why and which limit; above it, it goes to PENDING_APPROVAL for someone whose
-     * limit covers it. No limit configured for the submitter is a limit of zero: it always waits.
+     * limit covers it. With no limit configured for the submitter it always waits (owner decision PO-NOLIMIT).
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
@@ -335,8 +335,10 @@ class ProcurementServiceImpl implements ProcurementService {
                     PurchaseOrderStatus.PENDING_APPROVAL);
         }
         requireLinesPurchasable(order);
-        Money limit = approvalLimits.limitOf(submittedBy, order.currency(), BusinessCalendar.date(clock.instant()));
-        boolean withinLimit = order.coveredBy(limit);
+        Optional<Money> configured = approvalLimits.limitOf(submittedBy, order.currency(),
+                BusinessCalendar.date(clock.instant()));
+        boolean withinLimit = configured.map(order::coveredBy).orElse(false);
+        Money limit = configured.orElse(null);
         long revisionNo = purchaseOrders.nextRevisionNo(order.id());
         UUID revisionId = purchaseOrders.recordRevision(order, revisionNo, submittedBy,
                 revisionNo == 0 ? null : "Resubmitted after rejection");
@@ -359,7 +361,11 @@ class ProcurementServiceImpl implements ProcurementService {
         return summaryOf(order, false);
     }
 
-    /** Four-eyes (BR-PO-002), and the approver's own limit must cover the total (owner decision POLIMIT2). */
+    /**
+     * Four-eyes (BR-PO-002), and the approver's own limit must cover the total (owner decision POLIMIT2) - when they
+     * have one: an approver none of whose roles has a limit configured is bounded by the approve permission alone
+     * (owner decision PO-NOLIMIT).
+     */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId) {
@@ -367,7 +373,8 @@ class ProcurementServiceImpl implements ProcurementService {
         if (order.status() == PurchaseOrderStatus.PENDING_APPROVAL) {
             requireLinesPurchasable(order);
         }
-        Money limit = approvalLimits.limitOf(approverId, order.currency(), BusinessCalendar.date(clock.instant()));
+        Money limit = approvalLimits.limitOf(approverId, order.currency(), BusinessCalendar.date(clock.instant()))
+                .orElse(null);
         order.approve(approverId, limit, clock.instant());
         purchaseOrders.save(order);
         purchaseOrders.recordApproval(order.activeRevisionId(), approverId, "APPROVED", null);
