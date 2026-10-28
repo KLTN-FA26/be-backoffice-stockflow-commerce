@@ -196,6 +196,9 @@ class PickLineCartonMigrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.execute("ALTER TABLE fulfillment.pick_line DISABLE TRIGGER tg_pick_line_carton");
             line(reservation, null, false);
+            // The line's deferred keys (fk_pick_line_damage_report, SCRUM-277) are checked now: PostgreSQL refuses an
+            // ALTER TABLE while a trigger event of the table is still pending.
+            jdbc.execute("SET CONSTRAINTS ALL IMMEDIATE");
             jdbc.execute("ALTER TABLE fulfillment.pick_line ENABLE TRIGGER tg_pick_line_carton");
             jdbc.update(BACKFILL);
         });
