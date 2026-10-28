@@ -106,16 +106,18 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     }
 
     @Override
-    public long countMovements(UUID lotId, Set<String> warehouses, Instant from, Instant to) {
+    public long countMovements(UUID lotId, Set<String> warehouses, Instant from, Instant to,
+                               boolean hideCountedSlots) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         Long count = jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement m WHERE m.lot_id = :lotId"
-                + movementIn(warehouses, params) + window(from, to, params), params, Long.class);
+                + movementIn(warehouses, params) + window(from, to, params) + outsideCountedSlots(hideCountedSlots),
+                params, Long.class);
         return count == null ? 0 : count;
     }
 
     @Override
     public List<LotTrace.Movement> movements(UUID lotId, Set<String> warehouses, Instant from, Instant to,
-                                             long offset, int limit) {
+                                             long offset, int limit, boolean hideCountedSlots) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId)
                 .addValue("offset", offset).addValue("limit", limit);
         String sql = """
@@ -124,7 +126,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
                        m.occurred_at, m.reason
                   FROM inventory.stock_movement m
                  WHERE m.lot_id = :lotId""" + movementIn(warehouses, params) + window(from, to, params)
-                + " ORDER BY m.occurred_at, m.id LIMIT :limit OFFSET :offset";
+                + outsideCountedSlots(hideCountedSlots) + " ORDER BY m.occurred_at, m.id LIMIT :limit OFFSET :offset";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Movement(uuid(rs, "id"), rs.getString("movement_type"),
                 rs.getString("from_location_code"), rs.getString("to_location_code"), rs.getInt("quantity"),
                 rs.getString("from_status"), rs.getString("to_status"), rs.getString("reference_type"),
@@ -208,6 +210,11 @@ class LotTraceSearchAdapter implements LotTraceSearch {
         params.addValue("warehouses", warehouses);
         return " AND (" + PREFIX.formatted("m.from_location_code") + " IN (:warehouses) OR "
                 + PREFIX.formatted("m.to_location_code") + " IN (:warehouses))";
+    }
+
+    /** A ledger line of a slot a count holds is not for a counter: summed, a slot's lines are its books. */
+    private static String outsideCountedSlots(boolean hide) {
+        return hide ? " AND NOT " + CountBusy.movementInBusySlot("m") : "";
     }
 
     private static String window(Instant from, Instant to, MapSqlParameterSource params) {

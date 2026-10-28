@@ -7,7 +7,9 @@ import com.stockflow.inventory.internal.domain.StockStatus;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -27,9 +29,19 @@ public interface StockBrowsing {
                             int size) {
     }
 
-    /** {@code available} is what may still be promised: on hand less held, and zero unless sellable and unexpired. */
+    /**
+     * {@code available} is what may still be promised: on hand less held, and zero unless sellable and unexpired.
+     * The three quantities are null, and {@code hiddenDuringCount} true, for a row of a slot a cycle count holds when
+     * the reader may not see the books (SCRUM-146).
+     */
     record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, LocalDate expiryDate,
-                    int onHand, int reserved, int available, StockStatus status, Instant receivedAt) {
+                    Integer onHand, Integer reserved, Integer available, StockStatus status, Instant receivedAt,
+                    boolean hiddenDuringCount) {
+
+        public StockRow hidden() {
+            return new StockRow(stockItemId, sku, locationCode, lotNumber, expiryDate, null, null, null, status,
+                    receivedAt, true);
+        }
     }
 
     /** @param location the start of a location code ({@code HCM-A01}); it must lie in the warehouse */
@@ -43,5 +55,16 @@ public interface StockBrowsing {
     Reservation reservation(UUID reservationId);
 
     /** WAREHOUSE_NOT_FOUND for an unknown warehouse; OUT_OF_DATA_SCOPE when it is not the caller's. */
-    PageResponse<StockRow> warehouseStock(UUID warehouseId, StockQuery query);
+    default PageResponse<StockRow> warehouseStock(UUID warehouseId, StockQuery query) {
+        return warehouseStock(warehouseId, query, BookVisibility.FULL);
+    }
+
+    /** As above; rows of slots under a count show no quantity to a reader who may not see the books. */
+    PageResponse<StockRow> warehouseStock(UUID warehouseId, StockQuery query, BookVisibility visibility);
+
+    /**
+     * Which of these stock rows lie in a slot a cycle count holds (open, or its variance pending approval): the ones
+     * whose quantity a reader without {@code inventory-cycle-counts:APPROVE} must not see (SCRUM-146).
+     */
+    Set<UUID> underCount(Collection<UUID> stockItemIds);
 }

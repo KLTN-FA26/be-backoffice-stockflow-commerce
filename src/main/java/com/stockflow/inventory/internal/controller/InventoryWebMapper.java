@@ -32,6 +32,7 @@ interface InventoryWebMapper {
 
     @Mapping(target = "id", source = "stockItemId")
     @Mapping(target = "status", constant = "AVAILABLE")
+    @Mapping(target = "hiddenDuringCount", constant = "false")
     StockItemResponse toResponse(StockAvailability availability);
 
     List<StockItemResponse> toResponses(List<StockAvailability> availabilities);

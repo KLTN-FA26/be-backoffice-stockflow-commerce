@@ -44,8 +44,9 @@ public interface LotTraceSearch {
 
     List<LotTrace.OrderLeg> orders(UUID lotId, Set<String> warehouses);
 
-    long countMovements(UUID lotId, Set<String> warehouses, Instant from, Instant to);
+    /** @param hideCountedSlots leave out the lines of slots a cycle count holds (SCRUM-146) */
+    long countMovements(UUID lotId, Set<String> warehouses, Instant from, Instant to, boolean hideCountedSlots);
 
     List<LotTrace.Movement> movements(UUID lotId, Set<String> warehouses, Instant from, Instant to, long offset,
-                                      int limit);
+                                      int limit, boolean hideCountedSlots);
 }
