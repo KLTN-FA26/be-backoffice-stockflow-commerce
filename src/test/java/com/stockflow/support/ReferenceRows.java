@@ -123,8 +123,9 @@ public final class ReferenceRows {
                                 CASE WHEN ?5 IN ('DELIVERED', 'COMPLETED') THEN NOW() END,
                                 CASE WHEN ?5 = 'COMPLETED' THEN NOW() END, 0, NOW())""")
                 .setParameter(1, order)
+                // The id's last 48 bits (its last 12 hex digits), as decimal: unique as the id is.
                 .setParameter(2, "SO-%s-%06d".formatted(FIXTURE_ORDER_DAY,
-                        Long.parseLong(order.toString().substring(24), 16)))
+                        order.getLeastSignificantBits() & 0xFFFF_FFFF_FFFFL))
                 .setParameter(3, customerId)
                 .setParameter(4, Identifiers.newId())
                 .setParameter(5, status)
