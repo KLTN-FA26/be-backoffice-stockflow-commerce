@@ -148,7 +148,8 @@ class StockOperationsServiceImpl implements StockOperations {
         StockMovement.ReferenceType referenceType = StockMovement.ReferenceType.valueOf(command.reference().name());
         UUID referenceId = command.referenceId() != null ? command.referenceId() : command.requestId();
         return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
-                command.toLocation(), command.quantity(), null, referenceType, referenceId, command.actorId(), null);
+                command.toLocation(), command.quantity(), null, referenceType, referenceId, command.actorId(), null,
+                command.reference() == MoveReference.MOVE_TASK);
     }
 
     @Override
@@ -157,7 +158,7 @@ class StockOperationsServiceImpl implements StockOperations {
         return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
                 command.toLocation(), command.quantity(), StockStatus.valueOf(command.disposition().name()),
                 StockMovement.ReferenceType.valueOf(command.reference().name()), command.referenceId(),
-                command.actorId(), blankToNull(command.reason()));
+                command.actorId(), blankToNull(command.reason()), false);
     }
 
     /**
@@ -167,7 +168,7 @@ class StockOperationsServiceImpl implements StockOperations {
      */
     private StockMove relocate(Sku sku, String lotNumber, Instant receivedAt, String fromCode, String toCode,
                                int qty, StockStatus target, StockMovement.ReferenceType referenceType,
-                               UUID referenceId, UUID actorId, String reason) {
+                               UUID referenceId, UUID actorId, String reason, boolean refuseUnderCount) {
         // BR-SEC-002 (SCRUM-457): both ends in a warehouse the caller is assigned to. First, so a
         // replay cannot reveal a move made in someone else's warehouse.
         WarehouseScope.requireLocation(fromCode);
@@ -183,8 +184,35 @@ class StockOperationsServiceImpl implements StockOperations {
             return toMove(done.get());
         }
 
+        if (refuseUnderCount) {
+            requireNotUnderCount(sku, lotNumber, new LocationId(fromCode), new LocationId(toCode));
+        }
         return moveLayer(sku, lotNumber, receivedAt, new LocationId(fromCode), new LocationId(toCode), qty, target,
                 referenceType, referenceId, actorId, reason, null);
+    }
+
+    /**
+     * SCRUM-146 (owner decision 28/10): a move a person asks for does not take loose stock out of, or put it into, a
+     * slot a cycle count holds - the count would be of books that changed under it. The slot is the loose bin, SKU and
+     * lot ({@link CountSlot}) and held is exactly what {@code claim} calls busy (open count, or submitted with its
+     * variance still pending), so the two cannot disagree. Asked through {@code claim}, which also takes the slots'
+     * advisory locks in sorted order: a count planned at the same moment either sees this move committed or waits.
+     * Whoever asks, whatever they may do: this protects the count, it is not a visibility rule.
+     */
+    private void requireNotUnderCount(Sku sku, String lotNumber, LocationId from, LocationId to) {
+        CountSlot source = CountSlot.loose(from, sku, lotNumber);
+        CountSlot destination = CountSlot.loose(to, sku, lotNumber);
+        Map<CountSlot, String> busy = countLines.claim(List.of(source, destination));
+        for (CountSlot slot : List.of(source, destination)) {
+            String count = busy.get(slot);
+            if (count != null) {
+                throw new BusinessException(ErrorCode.STOCK_SLOT_UNDER_COUNT,
+                        "%s of %s%s is under count %s; it cannot be moved %s until the count is done".formatted(
+                                slot.location(), sku, lotSuffix(lotNumber), count,
+                                slot == source ? "out" : "in"),
+                        List.of(), Map.of("locationCode", slot.location().code(), "cycleCountNumber", count));
+            }
+        }
     }
 
     /**
