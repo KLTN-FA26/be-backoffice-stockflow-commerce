@@ -131,9 +131,11 @@ hàng không bao giờ được trả cho model.
 ### Chất lượng được đo, không được khẳng định suông
 
 Bộ câu hỏi chuẩn (golden set) gồm các câu hỏi tiếng Việt, dựng trên demo seed. Với mỗi câu, nó ghi lại
-các tool, dữ kiện, trích dẫn và lời từ chối kỳ vọng. Bộ này chạy khi cần, không nằm trong `mvn test`, vì
-nó tốn tiền và không tất định. `mvn test` bao phủ những gì tất định: quyền của tool, vòng lặp với model
-theo kịch bản, và sự cô lập scope.
+các tool, dữ kiện, trích dẫn và lời từ chối kỳ vọng. Với model thật, bộ này chạy khi cần (bật bằng thuộc
+tính hệ thống `assistant.eval=true`), không nằm trong `mvn test`, vì nó tốn tiền và không tất định. `mvn test` bao phủ
+những gì tất định: quyền của tool, vòng lặp với model theo kịch bản, sự cô lập scope, và chính bộ câu hỏi
+chuẩn chạy với một model giả (oracle) gọi đúng tool kỳ vọng, để kiểm dữ kiện và việc không lộ dữ liệu ở
+các lớp bên dưới model.
 
 ## Hệ quả
 
