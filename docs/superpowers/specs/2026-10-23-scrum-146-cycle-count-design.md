@@ -143,6 +143,11 @@ held while its count is `PLANNED` / `IN_PROGRESS`, or `COMPLETED` with a `COUNT_
 (`GET /adjustments`, `GET /adjustments/{id}` answers 404) of the slot are left out. SKU- and lot-level totals
 (`/stock-levels`, `/stock-items/atp`, the totals of a lot, alerts) stay: they are not a slot's.
 
+**Moves (owner decision MOVE-HELD, 28/10).** `POST /inventory/movements` (the manual move, `MOVE_TASK`) is refused with
+`409 STOCK_SLOT_UNDER_COUNT` (`details`: `locationCode` of the held end, `cycleCountNumber`) when the loose slot (bin, SKU,
+lot) it takes stock from, or puts it into, is held - the same `BUSY` predicate, asked through `CycleCountRepository.claim`.
+Putaway, picking, packing, receiving, transfers and adjustments are not covered.
+
 **Known limitation (owner decision BLIND-TOTALS, 28/10): accepted.** Because SKU and lot totals stay visible, a counter
 can still infer a held slot's book quantity: when the SKU sits in that one slot only, its total *is* the slot's books,
 and in general `total - sum(visible rows)` is what the held slots hold. Closing this would mean hiding the totals of
