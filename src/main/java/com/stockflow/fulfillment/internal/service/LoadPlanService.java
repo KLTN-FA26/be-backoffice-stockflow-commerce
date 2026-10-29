@@ -1178,6 +1178,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT,
                         "A shipment of the plan no longer waits for dispatch as a full truckload");
             }
+            if (message.contains("tg_package_awaiting_unload")) {
+                throw new BusinessException(ErrorCode.PACKAGE_UNLOAD_PENDING,
+                        "A package of these shipments is still to be scanned off a vehicle that was called off");
+            }
             throw raced;
         }
     }

@@ -65,7 +65,8 @@ public interface Dispatching {
                       long version, List<LoadShipment> shipments, UUID loadPlanId, String loadPlanCode,
                       Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt, UUID bookedBy,
                       Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads,
-                      boolean carrierBookingToCancel, String cancelReasonCode) { }
+                      boolean carrierBookingToCancel, String cancelReasonCode, UUID replacementLoadId,
+                      String replacementLoadCode) { }
 
     /**
      * The answer to the controlled cancel of one vehicle: the load, now CANCELLED, and the PLANNED load that took its

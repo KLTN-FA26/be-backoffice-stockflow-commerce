@@ -44,7 +44,7 @@ class DispatchWebMapper {
                 d.pendingUnloads().stream().map(u -> new LoadResponse.PendingUnload(u.packageId(), u.labelCode(),
                         u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt(), u.reasonCode(),
                         u.transferOrderId())).toList(),
-                d.carrierBookingToCancel(), d.cancelReasonCode());
+                d.carrierBookingToCancel(), d.cancelReasonCode(), d.replacementLoadId(), d.replacementLoadCode());
     }
 
     ControlledCancelResponse toResponse(Dispatching.ControlledCancelResult r) {

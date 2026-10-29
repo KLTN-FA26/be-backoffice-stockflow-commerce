@@ -381,6 +381,19 @@ class ControlledUnloadIntegrationTest {
         Await.until("the cancelled order's shipment is cancelled", ASYNC, () -> "CANCELLED".equals(shipmentStatus(shipment)));
     }
 
+    /** The load of the vehicle carrying {@code shipment}'s parcels (one vehicle each here). */
+    private String loadCarrying(JsonNode plan, UUID shipment) throws Exception {
+        for (int seq = 1; seq <= plan.path("vehicles").size(); seq++) {
+            String loadId = loadOf(plan, seq);
+            for (JsonNode s : load(loadId).path("shipments")) {
+                if (s.path("shipmentId").asText().equals(shipment.toString())) {
+                    return loadId;
+                }
+            }
+        }
+        throw new AssertionError("no vehicle carries " + shipment);
+    }
+
     private void loadAll(String loadId, UUID carrier) throws Exception {
         book(loadId, carrier, "51C-" + loadId.substring(0, 6));
         dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());
@@ -436,6 +449,8 @@ class ControlledUnloadIntegrationTest {
 
         // Back to PLANNED: same plan vehicle, same layout, same manifest, nothing loaded, another truck to be booked.
         assertThat(replacement.path("loadId").asText()).isNotEqualTo(v1);
+        assertThat(cancelled.path("replacementLoadId").asText()).isEqualTo(replacement.path("loadId").asText());
+        assertThat(load(v1).path("replacementLoadCode").asText()).isEqualTo(replacement.path("code").asText());
         assertThat(replacement.path("status").asText()).isEqualTo("PLANNED");
         assertThat(replacement.path("loadPlanId").asText()).isEqualTo(planId);
         assertThat(replacement.path("vehicleSeq").asInt()).isEqualTo(1);
@@ -567,6 +582,66 @@ class ControlledUnloadIntegrationTest {
         return id.toString();
     }
 
+    // ---- review of #228, B1 ---------------------------------------------------------------------
+
+    @Test
+    @DisplayName("B1: a vehicle whose only order was cancelled while it loads (its parcels still to scan off) is called off "
+            + "under control after the other vehicle left: no empty replacement is opened, the plan no longer waits for "
+            + "it and is DISPATCHED; the cancelled order's parcels are still scanned off. Calling off a load that was "
+            + "cancelled another way is 409 INVALID_LOAD_TRANSITION, not a silent 200")
+    void emptiedVehicleLeavesNoReplacementAndDoesNotHoldThePlan() throws Exception {
+        OrderSummary orderA = ftlOrder(1);
+        UUID shipmentA = packed(orderA, true)[0];
+        UUID shipmentB = packed(ftlOrder(1), true)[0];
+        JsonNode plan = confirmed(List.of(shipmentA, shipmentB), truck1t25);
+        assertThat(plan.path("vehicles")).hasSize(2);
+        String vA = loadCarrying(plan, shipmentA);
+        String vB = loadCarrying(plan, shipmentB);
+        assertThat(vA).isNotEqualTo(vB);
+        loadAll(vA, ghn);
+        loadAll(vB, ghtk);
+        List<String> parcelsOfA = labels(load(vA));
+        handOver(vB).andExpect(status().isOk());
+        assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
+
+        cancelOrder(orderA, shipmentA);
+        JsonNode emptied = load(vA);
+        assertThat(emptied.path("shipments")).isEmpty();
+        assertThat(pendingLabels(emptied)).containsExactlyInAnyOrderElementsOf(parcelsOfA);
+        assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
+
+        JsonNode result = data(cancelVehicle(vA, XE_HONG).andExpect(status().isOk()));
+        assertThat(result.path("cancelled").path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(result.path("cancelled").path("cancelReasonCode").asText()).isEqualTo("XE_HONG");
+        assertThat(result.hasNonNull("replacement")).as("nothing to carry: no empty replacement").isFalse();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.dispatch_load WHERE load_plan_vehicle_id = "
+                + "(SELECT load_plan_vehicle_id FROM fulfillment.dispatch_load WHERE id = ?::uuid) AND status <> "
+                + "'CANCELLED'", Integer.class, vA)).isZero();
+        assertThat(planStatus(plan)).as("BR-15: the plan does not wait for the emptied vehicle").isEqualTo("DISPATCHED");
+        assertThat(pendingLabels(load(vA))).containsExactlyInAnyOrderElementsOf(parcelsOfA);
+        assertThat(load(vA).hasNonNull("replacementLoadId")).isFalse();
+        // Again: answered as it is, still no replacement
+        assertThat(data(cancelVehicle(vA, XE_HONG).andExpect(status().isOk())).hasNonNull("replacement")).isFalse();
+        for (String label : parcelsOfA) {
+            scanOff(vA, label).andExpect(status().isOk());
+        }
+        assertThat(pendingLabels(load(vA))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("review of #228: a load cancelled another way (the plan was reopened: plain cancel of its PLANNED load) is "
+            + "not 'called off again' - 409 INVALID_LOAD_TRANSITION, not a 200 that would read as a replacement")
+    void loadCancelledAnotherWayIsRefused() throws Exception {
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck5t);
+        String loadId = loadOf(plan, 1);
+        JsonNode now = planOf(plan);
+        step(now, "/reopening", "{\"expectedVersion\":" + now.path("version").asLong() + ",\"reason\":\"x\"}");
+        assertThat(load(loadId).path("status").asText()).isEqualTo("CANCELLED");
+        cancelVehicle(loadId, XE_HONG).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+    }
+
     // ---- point 4: the whole plan -----------------------------------------------------------------
 
     @Test
@@ -593,6 +668,7 @@ class ControlledUnloadIntegrationTest {
         JsonNode loading = load(v1);
         assertThat(loading.path("status").asText()).isEqualTo("CANCELLED");
         assertThat(loading.path("cancelReasonCode").asText()).isEqualTo("KHAC");
+        assertThat(loading.hasNonNull("replacementLoadId")).as("a whole-plan cancel has no replacement").isFalse();
         assertThat(pendingLabels(loading)).containsExactlyInAnyOrderElementsOf(onTruck);
         JsonNode booked = load(v2);
         assertThat(booked.path("status").asText()).isEqualTo("CANCELLED");

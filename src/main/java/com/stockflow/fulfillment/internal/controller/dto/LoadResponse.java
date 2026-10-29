@@ -21,6 +21,9 @@ import java.util.UUID;
  *                             the handover (409 LOAD_UNLOAD_PENDING)
  * @param cancelReasonCode     XE_HONG, SAI_XE, KIEN_KHONG_VUA or KHAC when it was called off under control (SCRUM-474);
  *                             {@code cancelReason} is then the note; absent for any other cancellation
+ * @param replacementLoadId    on a vehicle called off under control: the live load (PLANNED, same plan vehicle and
+ *                             layout) that took its place, with {@code replacementLoadCode}; absent when nothing replaced
+ *                             it (it had nothing left to carry) and on every other load
  * @param carrierBookingToCancel CANCELLED after it was booked (the plan reopened or cancelled, or the system called it
  *                             off with nothing left to carry - {@code cancelReason} "auto-cancelled: ..."): the
  *                             booking made with the carrier outside the system still exists - cancel it there
@@ -35,7 +38,9 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mo
                            String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt,
                            UUID bookedBy, Instant bookingCancelledAt, String bookingCancelReason,
                            List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel,
-                           String cancelReasonCode) {
+                           String cancelReasonCode,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) UUID replacementLoadId,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode) {
 
     /**
      * A parcel still to take off the vehicle: its order was cancelled (SCRUM-392) or the vehicle was called off under

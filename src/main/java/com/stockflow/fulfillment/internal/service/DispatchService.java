@@ -772,6 +772,12 @@ class DispatchService implements Dispatching {
                     .formatted(load.code()));
         }
         DispatchLoadJpaEntity header = locked.header();
+        if (load.status() == LoadStatus.CANCELLED && load.cancelReasonCode() == null) {
+            // Called off by another path (plain cancel, auto-cancel): nothing to answer "as it is" - a replay only
+            // makes sense after a controlled cancel.
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is CANCELLED and was not called "
+                    + "off under control").formatted(load.code()));
+        }
         if (load.status() != LoadStatus.CANCELLED) {
             PlanVehicles.requireConfirmed(ctx);
         }
@@ -788,6 +794,15 @@ class DispatchService implements Dispatching {
         log.info("Load {} (vehicle {} of plan {}) cancelled under control ({}: {}): {} parcel(s) to scan off",
                 load.code(), ctx.vehicle() == null ? null : ctx.vehicle().seq(), ctx.plan().code(), code,
                 note.trim(), load.pendingUnloads().size());
+        if (onManifest.isEmpty()) {
+            // Nothing left to carry (every order on it was cancelled; only parcels to scan off remain): no replacement,
+            // as when the system calls an emptied vehicle off. It must not hold the plan back (BR-15): the plan is
+            // DISPATCHED if every other vehicle left.
+            boolean planDone = planVehicles.completeIfDispatched(ctx.header(), ctx.plan(), now);
+            log.info("Load {}: no shipment left on its manifest, no replacement{}", load.code(),
+                    planDone ? "; plan dispatched" : "");
+            return new ControlledCancelResult(detail(header, load), null);
+        }
         DispatchLoadJpaEntity replacementHeader = openReplacement(ctx, load, onManifest, actor.userId(), now);
         return new ControlledCancelResult(detail(header, load), detail(replacementHeader,
                 store.load(replacementHeader)));
@@ -1102,6 +1117,7 @@ class DispatchService implements Dispatching {
                 : carriers.findById(header.getCarrierId()).orElse(null);
         Map<UUID, String> names = header.getDispatchedBy() == null ? new HashMap<>()
                 : new HashMap<>(identities.displayNames(List.of(header.getDispatchedBy())));
+        DispatchLoadJpaEntity replacement = replacementOf(header, ctx);
         return new LoadDetail(header.getId(), header.getCode(), header.getWarehouseId(), header.getMode().name(),
                 header.getStatus().name(), header.getCarrierId(), carrier == null ? null : carrier.getCode(),
                 carrier == null ? null : carrier.getName(), header.getVehiclePlate(), header.getDriverName(),
@@ -1114,7 +1130,8 @@ class DispatchService implements Dispatching {
                 ctx.vehicle() == null ? null : ctx.vehicle().spec().code(), header.getBookedAt(),
                 header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelReason(),
                 pendingUnloads(load, true), load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null,
-                header.getCancelReasonCode() == null ? null : header.getCancelReasonCode().name());
+                header.getCancelReasonCode() == null ? null : header.getCancelReasonCode().name(),
+                replacement == null ? null : replacement.getId(), replacement == null ? null : replacement.getCode());
     }
 
     /** The manifest of a TRANSFER plan's vehicle: its transfer order, to the destination warehouse; no COD (LP-2). */
@@ -1322,6 +1339,7 @@ class DispatchService implements Dispatching {
             people.add(header.getDispatchedBy());
         }
         Map<UUID, String> names = people.isEmpty() ? new HashMap<>() : new HashMap<>(identities.displayNames(people));
+        DispatchLoadJpaEntity replacement = replacementOf(header, ctx);
         return new LoadDetail(header.getId(), header.getCode(), header.getWarehouseId(), header.getMode().name(),
                 header.getStatus().name(), header.getCarrierId(), carrier == null ? null : carrier.getCode(),
                 carrier == null ? null : carrier.getName(), header.getVehiclePlate(), header.getDriverName(),
@@ -1335,7 +1353,20 @@ class DispatchService implements Dispatching {
                 ctx == null || ctx.vehicle() == null ? null : ctx.vehicle().spec().code(), header.getBookedAt(),
                 header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelReason(),
                 pendingUnloads(load, false), load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null,
-                header.getCancelReasonCode() == null ? null : header.getCancelReasonCode().name());
+                header.getCancelReasonCode() == null ? null : header.getCancelReasonCode().name(),
+                replacement == null ? null : replacement.getId(), replacement == null ? null : replacement.getCode());
+    }
+
+    /**
+     * The live load that took the place of a vehicle called off under control (SCRUM-474), null when there is none: the
+     * load is not such a cancelled vehicle, or nothing replaced it (nothing left to carry).
+     */
+    private DispatchLoadJpaEntity replacementOf(DispatchLoadJpaEntity header, PlanVehicles.PlanOfLoad ctx) {
+        if (header.getStatus() != LoadStatus.CANCELLED || header.getCancelReasonCode() == null || ctx == null
+                || ctx.vehicle() == null) {
+            return null;
+        }
+        return planVehicles.liveLoads(ctx.plan()).get(ctx.vehicle().id());
     }
 
     /**

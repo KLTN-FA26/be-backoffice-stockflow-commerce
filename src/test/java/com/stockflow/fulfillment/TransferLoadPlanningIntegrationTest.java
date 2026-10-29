@@ -633,6 +633,64 @@ class TransferLoadPlanningIntegrationTest {
                 planId)).isEqualTo("CANCELLED");
     }
 
+    @Test
+    @DisplayName("UNLOAD-DESIGN point 2 on a transfer plan: the loading vehicle is called off alone - its load CANCELLED with "
+            + "the transfer's parcels locked (pending unloads carry the transfer), a PLANNED load with the same plan vehicle "
+            + "and the same transfer takes its place; the locked parcels are not scanned onto it (PACKAGE_UNLOAD_PENDING) "
+            + "until scanned off or confirmed off, then they are")
+    void perVehicleControlledCancelOnATransferPlan() throws Exception {
+        String lpn = stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        packed(transfer, lpn);
+        JsonNode plan = confirmed(transfer);
+        String loadId = loadOf(plan, 1);
+        bookAndLoad(loadId, "51C-555.55");
+        scanAll(loadId);
+        List<String> labels = new ArrayList<>();
+        load(loadId).path("shipments").forEach(l -> l.path("packages").forEach(p -> labels.add(
+                p.path("labelCode").asText())));
+        assertThat(labels).hasSizeGreaterThanOrEqualTo(2);
+
+        dispatch(body(post(LOADS + "/" + loadId + "/controlled-cancellation"),
+                "{\"reasonCode\":\"SAI_XE\",\"note\":\"wrong truck\"}")).andExpect(status().isForbidden());
+        JsonNode result = data(as(manager, "WAREHOUSE_MANAGER", body(post(LOADS + "/" + loadId
+                + "/controlled-cancellation"), "{\"reasonCode\":\"SAI_XE\",\"note\":\"wrong truck\"}"))
+                .andExpect(status().isOk()));
+        JsonNode cancelled = result.path("cancelled");
+        JsonNode replacement = result.path("replacement");
+        assertThat(cancelled.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(cancelled.path("cancelReasonCode").asText()).isEqualTo("SAI_XE");
+        assertThat(cancelled.path("pendingUnloads")).hasSize(labels.size());
+        cancelled.path("pendingUnloads").forEach(u -> {
+            assertThat(u.path("transferOrderId").asText()).isEqualTo(transfer.toString());
+            assertThat(u.path("reasonCode").asText()).isEqualTo("SAI_XE");
+        });
+        assertThat(replacement.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(replacement.path("loadPlanId").asText()).isEqualTo(plan.path("loadPlanId").asText());
+        assertThat(replacement.path("vehicleSeq").asInt()).isEqualTo(1);
+        assertThat(replacement.path("shipments")).singleElement().satisfies(l -> assertThat(l.path("transferOrderId")
+                .asText()).isEqualTo(transfer.toString()));
+        assertThat(replacement.path("expectedPackageCount").asInt()).isEqualTo(labels.size());
+        assertThat(transferStatus(transfer)).isEqualTo("PICKING");
+
+        String vehicle = replacement.path("loadId").asText();
+        bookAndLoad(vehicle, "51C-666.66");
+        dispatch(body(post(LOADS + "/" + vehicle + "/scans"), "{\"scanId\":\"" + UUID.randomUUID()
+                + "\",\"packageCode\":\"" + labels.getFirst() + "\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PACKAGE_UNLOAD_PENDING"));
+        for (int i = 0; i < labels.size() - 1; i++) {
+            dispatch(body(post(LOADS + "/" + loadId + "/unloads"), "{\"packageCode\":\"" + labels.get(i) + "\"}"))
+                    .andExpect(status().isOk());
+        }
+        String last = jdbc.queryForObject("SELECT id FROM fulfillment.package WHERE label_code = ?", String.class,
+                labels.getLast());
+        as(manager, "WAREHOUSE_MANAGER", body(post(LOADS + "/" + loadId + "/unload-overrides"),
+                "{\"packageId\":\"" + last + "\"}")).andExpect(status().isOk());
+        assertThat(load(loadId).path("pendingUnloads")).isEmpty();
+        scanAll(vehicle);
+        assertThat(load(vehicle).path("loadedPackageCount").asInt()).isEqualTo(labels.size());
+    }
+
     // ---- the estimate ---------------------------------------------------------------------------
 
     @Test
