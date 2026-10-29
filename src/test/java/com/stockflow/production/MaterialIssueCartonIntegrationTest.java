@@ -28,6 +28,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -129,7 +130,11 @@ class MaterialIssueCartonIntegrationTest {
         assertThat(hold.wholeCarton()).isTrue();
         assertThat(hold.quantity()).isEqualTo(PER_CARTON);
 
-        for (String wrong : List.of(BLANK.code(), "LPN-IT-NOT-THIS-ONE")) {
+        List<String> wrongScans = new ArrayList<>(List.of(BLANK.code(), "LPN-IT-NOT-THIS-ONE"));
+        if (hold.barcode() != null) {
+            wrongScans.add(hold.barcode());   // what a loose hold of the SKU would take
+        }
+        for (String wrong : wrongScans) {
             assertThatThrownBy(() -> issues.issue(storekeeper, lsx, new MaterialIssues.Issue(UUID.randomUUID(),
                     PRINT_SHOP, hold.reservationId(), hold.locationCode(), wrong)))
                     .as("scanned %s", wrong)
