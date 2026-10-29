@@ -118,6 +118,9 @@ the inventory item's **QC required** flag (snapshotted on the receipt line):
 stateDiagram-v2
     [*] --> DRAFT
     DRAFT --> CONFIRMED: confirm counts
+    DRAFT --> PENDING_APPROVAL: confirm, a PO line beyond its tolerance (BR-RCP-001)
+    PENDING_APPROVAL --> CONFIRMED: manager approves / rejects the excess
+    PENDING_APPROVAL --> CANCELLED: cancel, or nothing within the tolerance is left
     DRAFT --> CANCELLED: cancel
     CONFIRMED --> IN_QC: a QC-required line has no verdict yet
     CONFIRMED --> IN_PUTAWAY: no line needs QC
@@ -131,12 +134,20 @@ stateDiagram-v2
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
 | — | DRAFT | create from PO | Warehouse staff | PO `CONFIRMED` / `PARTIALLY_RECEIVED` (BR-RCP-001) | — |
-| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance, else manager approval | `GoodsReceived` |
+| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance | `GoodsReceived` |
+| DRAFT | PENDING_APPROVAL | confirm | Warehouse staff | a PO line goes beyond its over-receipt tolerance (BR-RCP-001, SCRUM-477); nothing is counted in, no event | — |
+| PENDING_APPROVAL | CONFIRMED | approve, or reject the excess | holder of `procurement-goods-receipts:APPROVE` (warehouse manager), not the receiver nor whoever sent it for approval | reason required; approve posts the whole count, reject-excess cuts each PO line to its remaining limit and posts (BR-RCP-001) | `GoodsReceived` |
+| PENDING_APPROVAL | CANCELLED | cancel; or reject the excess with nothing within the tolerance left | Warehouse staff / manager | never confirmed | — |
 | DRAFT | CANCELLED | cancel | Warehouse staff | never confirmed (`ck_goods_receipts_cancelled`) | — |
 | CONFIRMED | IN_QC | — | system | ≥1 line with `qc_required`; a **move-to-QC task** (`move_task.origin = RECEIPT_QC`) is created per such line | — |
 | CONFIRMED | IN_PUTAWAY | — | system | no line needs QC; putaway tasks from `RECEIVING` | — |
 | IN_QC | IN_PUTAWAY | last QC verdict | QC staff | QC only on goods already in the QC area (BR-08); accepted + quarantined + rejected = moved quantity | `QcCompleted` |
 | IN_PUTAWAY / IN_QC | CLOSED | — | system | every line handled | — |
+
+`PENDING_APPROVAL` is not in kltn-docs 03 §5.1, which says only that a count beyond the tolerance "needs the
+Warehouse Manager's exception approval or rejection of the excess" (§4 step 5): it is the form that wait takes (owner
+decision OVER-RCPT, 29/10). A receipt in it holds nothing: no stock, no PO progress, no event, and it does not count
+against the PO line's tolerance until posted.
 
 **What confirming does to inventory.** Stock rows appear in the `RECEIVING` area in condition
 **INBOUND** (machine 5). A QC-required line then moves `RECEIVING → QUALITY_CONTROL` (still INBOUND);
