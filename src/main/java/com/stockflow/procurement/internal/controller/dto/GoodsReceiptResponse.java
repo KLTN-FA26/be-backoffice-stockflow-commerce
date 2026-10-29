@@ -9,16 +9,29 @@ import java.util.UUID;
  * A goods receipt with its lines. {@code qcProgress} per line: NOT_REQUIRED (2-step flow),
  * AWAITING_MOVE_TO_QC, IN_QC_AREA, INSPECTED. {@code quantityForPutaway}: what waits for putaway.
  *
- * <p>{@code warnings}: non-blocking business warnings (docs 03 BR-06), on the receipt and on the line they
- * come from. {@code EXPIRY_NEAR}: the lot expires within {@code stockflow.inventory.expiry-warning-days}
- * (30) of the receiving date; the manager decides whether to accept it. Empty when there is none.</p>
+ * <p>{@code warnings}: non-blocking business warnings, on the receipt and on the line they come from.
+ * {@code EXPIRY_NEAR} (docs 03 BR-06): the lot expires within {@code stockflow.inventory.expiry-warning-days}
+ * (30) of the receiving date; the manager decides whether to accept it. {@code OVER_TOLERANCE} (BR-RCP-001): the
+ * count, not yet posted, goes beyond the PO line's over-receipt tolerance; confirming it sends the receipt to the
+ * warehouse manager ({@code status = PENDING_APPROVAL}). Empty when there is none.</p>
  */
 public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber,
                                    UUID supplierId, String supplierName, UUID warehouseId, String warehouseCode,
                                    String warehouseName, String status, String deliveryNote, String note,
                                    Instant receivedAt, UUID receivedBy, String receivedByName, Instant confirmedAt,
                                    UUID confirmedBy, String confirmedByName, Instant closedAt, List<Line> lines,
-                                   List<String> warnings) {
+                                   List<String> warnings, Approval approval) {
+
+    /**
+     * The warehouse manager's exception approval (SCRUM-477, BR-RCP-001): null for a receipt that never went beyond
+     * a PO line's over-receipt tolerance. {@code requestedAt}/{@code requestedBy}: the count was sent to the manager.
+     * {@code decision}: {@code APPROVED} (the whole count was posted) or {@code EXCESS_REJECTED} (cut back to the
+     * tolerance, the rest posted); null while the receipt waits ({@code status = PENDING_APPROVAL}); then
+     * {@code decidedAt}, {@code decidedBy} and {@code reason} are null too.
+     */
+    public record Approval(Instant requestedAt, UUID requestedBy, String requestedByName, String decision,
+                           Instant decidedAt, UUID decidedBy, String decidedByName, String reason) {
+    }
 
     /**
      * {@code lotTracked} / {@code expiryTracked}: whether the line needs a lot / an expiry date (BR-03).

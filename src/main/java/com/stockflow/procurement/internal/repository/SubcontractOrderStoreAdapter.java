@@ -118,7 +118,7 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                         SELECT COALESCE(SUM(l.received_qty), 0) FROM procurement.goods_receipt_lines l
                           JOIN procurement.goods_receipts r ON r.id = l.receipt_id
                           JOIN procurement.purchase_order_lines pl ON pl.id = l.po_line_id
-                         WHERE pl.po_id = :po AND r.status NOT IN ('DRAFT', 'CANCELLED')""")
+                         WHERE pl.po_id = :po AND r.status NOT IN ('DRAFT', 'PENDING_APPROVAL', 'CANCELLED')""")
                 .setParameter("po", purchaseOrderId).getSingleResult();
         return received.intValue();
     }

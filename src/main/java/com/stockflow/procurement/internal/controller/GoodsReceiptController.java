@@ -13,6 +13,7 @@ import com.stockflow.procurement.internal.controller.dto.GoodsReceiptResponse;
 import com.stockflow.procurement.internal.controller.dto.GoodsReceiptRowResponse;
 import com.stockflow.procurement.internal.controller.dto.MoveToQcRequest;
 import com.stockflow.procurement.internal.controller.dto.QcDecisionRequest;
+import com.stockflow.procurement.internal.controller.dto.ReceiptDecisionRequest;
 import com.stockflow.procurement.internal.controller.dto.ReceiptLinesRequest;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
@@ -38,7 +39,8 @@ import java.util.UUID;
 /**
  * Goods receipts against purchase orders (SCRUM-435, docs 03). Counting, confirming and moving goods
  * to QC are warehouse work ({@code procurement-goods-receipts}); deciding QC is the QC staff's
- * ({@code procurement-qc-tasks:APPROVE}).
+ * ({@code procurement-qc-tasks:APPROVE}). A count beyond a PO line's over-receipt tolerance waits for the warehouse
+ * manager, who approves it or rejects its excess ({@code procurement-goods-receipts:APPROVE}, BR-RCP-001).
  *
  * <p>The only way goods are received: the old {@code POST /purchase-orders/{id}/receipts}, which only
  * advanced PO-line totals, went with the old purchasing tables (contract C4).</p>
@@ -134,15 +136,51 @@ class GoodsReceiptController {
     }
 
     @PostMapping("/{receiptId}/confirmation")
-    @Operation(summary = "Confirm the count: goods become INBOUND stock, the PO progresses, receipt goes to QC or putaway")
+    @Operation(summary = "Confirm the count: goods become INBOUND stock, the PO progresses, receipt goes to QC or putaway",
+            description = """
+                    A count beyond a PO line's over-receipt tolerance (BR-RCP-001) is not refused and not posted: the \
+                    receipt becomes `PENDING_APPROVAL`, nothing is counted in, and the warehouse manager decides \
+                    (`/approval`, `/excess-rejection`). The draft's `warnings` say which lines (`OVER_TOLERANCE`) \
+                    before it is confirmed.""")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> confirm(@PathVariable UUID receiptId,
                                                      @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(receipts.confirm(receiptId, user.userId())));
     }
 
+    @PostMapping("/{receiptId}/approval")
+    @Operation(summary = "Approve a receipt waiting in PENDING_APPROVAL: its whole count, beyond the tolerance, is posted",
+            description = """
+                    BR-RCP-001. The warehouse manager accepts the count as it stands; the goods are counted in exactly \
+                    as on a normal confirmation, by and in the name of the approver. `reason` is required. Four \
+                    eyes: the approver is neither whoever started the receipt nor whoever sent it for approval \
+                    (`RECEIPT_SELF_APPROVAL`, 409). Other refusals: `INVALID_RECEIPT_TRANSITION` (409, not waiting), \
+                    `PURCHASE_ORDER_NOT_RECEIVABLE` (409).""")
+    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.APPROVE)
+    public ApiResponse<GoodsReceiptResponse> approve(@PathVariable UUID receiptId,
+                                                     @Valid @RequestBody ReceiptDecisionRequest request,
+                                                     @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(receipts.approve(receiptId, user.userId(), request.reason())));
+    }
+
+    @PostMapping("/{receiptId}/excess-rejection")
+    @Operation(summary = "Reject the excess of a receipt waiting in PENDING_APPROVAL: only up to the tolerance is posted",
+            description = """
+                    BR-RCP-001. Each PO line keeps only what its limit still allows (ordered x (1 + tolerance), less \
+                    what posted receipts hold); the excess comes off that PO line's receipt lines from the last one \
+                    counted backwards, and the receipt is posted with the rest. A receipt with nothing left is \
+                    cancelled. `reason` is required; same four-eyes rule as the approval. `RECEIPT_PACKAGES_EXCEED_LINE` \
+                    / `RECEIPT_LINE_HAS_PACKAGES` (labelled cartons in the way of the cut): approve instead, or cancel \
+                    the receipt and count it again.""")
+    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.APPROVE)
+    public ApiResponse<GoodsReceiptResponse> rejectExcess(@PathVariable UUID receiptId,
+                                                          @Valid @RequestBody ReceiptDecisionRequest request,
+                                                          @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(receipts.rejectExcess(receiptId, user.userId(), request.reason())));
+    }
+
     @PostMapping("/{receiptId}/cancellation")
-    @Operation(summary = "Cancel a DRAFT receipt; a confirmed one is corrected by a stock adjustment (BR-05)")
+    @Operation(summary = "Cancel a DRAFT or PENDING_APPROVAL receipt; a confirmed one is corrected by a stock adjustment (BR-05)")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> cancel(@PathVariable UUID receiptId) {
         return ApiResponse.ok(mapper.toResponse(receipts.cancel(receiptId)));

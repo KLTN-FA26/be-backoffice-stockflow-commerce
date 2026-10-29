@@ -217,4 +217,148 @@ class GoodsReceiptTest {
         assertThat(closed.closeIfPutAway(Map.of(plain.id(), 3), NOW.plusSeconds(5))).isFalse();
         assertThat(closed.closedAt()).isEqualTo(NOW);
     }
+
+    // ------------------------------------------------------------------ SCRUM-477: BR-RCP-001
+
+    private static final UUID MANAGER = UUID.randomUUID();
+    private static final UUID CLERK = UUID.randomUUID();
+
+    private static GoodsReceipt waiting(ReceiptLine... lines) {
+        GoodsReceipt receipt = draft();
+        receipt.replaceLines(List.of(lines));
+        receipt.requestApproval(CLERK, NOW);
+        return receipt;
+    }
+
+    @Test
+    @DisplayName("asking for approval: a draft with lines waits, counted in nowhere; an empty one or a posted one cannot ask")
+    void requestApproval() {
+        GoodsReceipt receipt = waiting(line(5, false));
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+        assertThat(receipt.confirmedAt()).isNull();
+        assertThat(receipt.confirmedBy()).isNull();
+        assertThat(receipt.approval()).get().satisfies(a -> {
+            assertThat(a.requestedBy()).isEqualTo(CLERK);
+            assertThat(a.requestedAt()).isEqualTo(NOW);
+            assertThat(a.pending()).isTrue();
+        });
+
+        assertThatThrownBy(() -> draft().requestApproval(CLERK, NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        assertThatThrownBy(() -> receipt.requestApproval(CLERK, NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("a receipt waiting for approval is neither recounted nor confirmed; it can be cancelled")
+    void waitingIsNotEditedOrConfirmed() {
+        GoodsReceipt receipt = waiting(line(5, false));
+        assertThatThrownBy(() -> receipt.replaceLines(List.of(line(1, false)))).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        assertThatThrownBy(() -> receipt.confirm(CLERK, NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        receipt.cancel();
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+    }
+
+    @Test
+    @DisplayName("approve posts the whole count as confirm does - IN_PUTAWAY, or IN_QC with a QC line - in the approver's name")
+    void approvePosts() {
+        GoodsReceipt plain = waiting(line(5, false));
+        plain.approve(MANAGER, "  bonus  ", NOW.plusSeconds(60), false);
+        assertThat(plain.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+        assertThat(plain.confirmedBy()).isEqualTo(MANAGER);
+        assertThat(plain.confirmedAt()).isEqualTo(NOW.plusSeconds(60));
+        assertThat(plain.approval()).get().satisfies(a -> {
+            assertThat(a.decision()).isEqualTo(ReceiptApproval.Decision.APPROVED);
+            assertThat(a.decidedBy()).isEqualTo(MANAGER);
+            assertThat(a.reason()).isEqualTo("bonus");
+            assertThat(a.requestedBy()).isEqualTo(CLERK);
+        });
+
+        GoodsReceipt withQc = waiting(line(5, false), line(3, true));
+        withQc.approve(MANAGER, "ok", NOW, false);
+        assertThat(withQc.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+        assertThat(withQc.lines()).extracting(ReceiptLine::receivedQuantity).containsExactly(5, 3);
+    }
+
+    @Test
+    @DisplayName("four eyes and a reason: the receiver and whoever asked cannot decide; a blank reason is refused")
+    void decisionRules() {
+        GoodsReceipt receipt = waiting(line(5, false));
+        assertThatThrownBy(() -> receipt.approve(USER, "ok", NOW, false)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+        assertThatThrownBy(() -> receipt.approve(CLERK, "ok", NOW, false)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+        assertThatThrownBy(() -> receipt.rejectExcess(CLERK, "no", NOW, false)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+        assertThatThrownBy(() -> receipt.approve(MANAGER, " ", NOW, false)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
+        assertThatThrownBy(() -> receipt.rejectExcess(MANAGER, null, NOW, false)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+        assertThat(receipt.approval()).get().extracting(ReceiptApproval::pending).isEqualTo(true);
+
+        GoodsReceipt posted = draft();
+        posted.replaceLines(List.of(line(5, false)));
+        posted.confirm(USER, NOW);
+        assertThatThrownBy(() -> posted.approve(MANAGER, "ok", NOW, false)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("cutBackTo takes the excess off the lots of a PO line from the last one counted; a lot left with nothing goes")
+    void cutBack() {
+        UUID poLine = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        ReceiptLine a = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 70, "A", null,
+                null, false, null, null, null, null, List.of());
+        ReceiptLine b = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 30, "B", null,
+                null, false, null, null, null, null, List.of());
+        ReceiptLine c = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 20, "C", null,
+                null, false, null, null, null, null, List.of());
+        ReceiptLine unrelated = new ReceiptLine(UUID.randomUUID(), other, UUID.randomUUID(), UUID.randomUUID(), 9, null,
+                null, null, false, null, null, null, null, List.of());
+        GoodsReceipt receipt = waiting(a, b, c, unrelated);
+
+        receipt.cutBackTo(Map.of(poLine, 85, other, 9));
+
+        assertThat(receipt.lines()).extracting(l -> l.lotNumber() + ":" + l.receivedQuantity())
+                .containsExactly("A:70", "B:15", "null:9");
+        assertThat(receipt.lines().get(0).id()).as("a cut line keeps its id").isEqualTo(a.id());
+
+        receipt.cutBackTo(Map.of(poLine, 100));
+        assertThat(receipt.lines()).as("an allowance above the count cuts nothing").hasSize(3);
+    }
+
+    @Test
+    @DisplayName("rejecting the excess posts what is left; with nothing left the receipt is cancelled, decision kept")
+    void rejectExcess() {
+        UUID poLine = UUID.randomUUID();
+        ReceiptLine a = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 20, null,
+                null, null, false, null, null, null, null, List.of());
+        GoodsReceipt receipt = waiting(a);
+        receipt.cutBackTo(Map.of(poLine, 12));
+        receipt.rejectExcess(MANAGER, "8 back to the supplier", NOW, false);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+        assertThat(receipt.lines()).extracting(ReceiptLine::receivedQuantity).containsExactly(12);
+        assertThat(receipt.approval()).get().extracting(ReceiptApproval::decision)
+                .isEqualTo(ReceiptApproval.Decision.EXCESS_REJECTED);
+
+        GoodsReceipt nothing = waiting(a);
+        nothing.cutBackTo(Map.of(poLine, 0));
+        nothing.rejectExcess(MANAGER, "full", NOW, false);
+        assertThat(nothing.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+        assertThat(nothing.confirmedAt()).isNull();
+        assertThat(nothing.approval()).get().extracting(ReceiptApproval::reason).isEqualTo("full");
+    }
+
+    @Test
+    @DisplayName("only a receipt waiting for approval is cut back")
+    void cutBackOnlyWhileWaiting() {
+        GoodsReceipt receipt = draft();
+        receipt.replaceLines(List.of(line(5, false)));
+        assertThatThrownBy(() -> receipt.cutBackTo(Map.of())).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+    }
 }

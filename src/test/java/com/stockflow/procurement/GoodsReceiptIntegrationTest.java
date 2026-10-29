@@ -238,7 +238,7 @@ class GoodsReceiptIntegrationTest {
         List<UUID> other = lineIds(draft.id(), second);
 
         // 8 + 2 to 2 + 8 and back: whichever row is written first, the PO line passes 8 + 8 on the way. The
-        // tolerance is checked on the final totals (tg_goods_receipt_lines_tolerance, V20261020000800).
+        // tolerance is checked when the receipt is posted (tg_goods_receipts_tolerance, V20261029002000).
         receipts.replaceLines(draft.id(), List.of(tableLot(line, 2, lot, "short"), tableLot(line, 8, second, null)));
         receipts.replaceLines(draft.id(), List.of(tableLot(line, 8, lot, null), tableLot(line, 2, second, "short")));
         assertThat(lineIds(draft.id(), lot)).as("stock packages point at the line").isEqualTo(first);
@@ -291,7 +291,7 @@ class GoodsReceiptIntegrationTest {
     }
 
     @Test
-    @DisplayName("partial receipts move the PO on; the supplier's 5% tolerance caps the total (BR-02)")
+    @DisplayName("partial receipts move the PO on; a count past the supplier's 5% tolerance is flagged, not refused (BR-02)")
     void partialAndTolerance() {
         UUID po = confirmedOrder(SOFA, 10);
         UUID line = poLine(po, SOFA);
@@ -302,10 +302,12 @@ class GoodsReceiptIntegrationTest {
         assertThat(poStatus(po)).isEqualTo("PARTIALLY_RECEIVED");
 
         GoodsReceipts.ReceiptView second = receipts.create(new GoodsReceipts.Create(po, null, null), clerk);
-        // 6 + 5 = 11 > floor(10 × 1.05) = 10.
-        assertThatThrownBy(() -> receipts.replaceLines(second.id(),
-                List.of(new GoodsReceipts.NewLine(line, 5, null, null, "HCM-RCV01", null))))
-                .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
+        // 6 + 5 = 11 > floor(10 × 1.05) = 10: counted and flagged, not refused (SCRUM-477); confirming it would go to
+        // the manager (GoodsReceiptOverToleranceApprovalIntegrationTest).
+        GoodsReceipts.ReceiptView over = receipts.replaceLines(second.id(),
+                List.of(new GoodsReceipts.NewLine(line, 5, null, null, "HCM-RCV01", null)));
+        assertThat(over.lines().get(0).warnings()).containsExactly(GoodsReceipts.OVER_TOLERANCE);
+        assertThat(over.warnings()).containsExactly(GoodsReceipts.OVER_TOLERANCE);
         // Recounting a draft's line twice: the row is updated in place, never counted twice by the tolerance.
         receipts.replaceLines(second.id(), List.of(new GoodsReceipts.NewLine(line, 3, null, null, "HCM-RCV01", null)));
         receipts.replaceLines(second.id(), List.of(new GoodsReceipts.NewLine(line, 4, null, null, "HCM-RCV01", "rest")));
@@ -398,16 +400,14 @@ class GoodsReceiptIntegrationTest {
                 new GoodsReceipts.NewLine(UUID.randomUUID(), 1, null, null, "HCM-RCV01", null),
                 new GoodsReceipts.NewLine(sofa, 9, null, null, "HCM-A01-1-A", null))));
 
-        // Line 0 is fine on its own; with line 3 the sofa goes past floor(2 x 1.05) = 2 (BR-02).
-        assertThat(code(thrown)).isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
+        // The sofa going past floor(2 x 1.05) = 2 with line 3 is no refusal (BR-02, SCRUM-477): the manager decides.
+        assertThat(code(thrown)).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
         assertThat(fields(thrown)).containsExactly(
-                "lines[0].quantity:OVER_RECEIPT_TOLERANCE",
                 "lines[1].lotNumber:LOT_REQUIRED",
                 "lines[1].expiryDate:EXPIRY_REQUIRED",
                 "lines[2].purchaseOrderLineId:RECEIPT_LINE_NOT_ON_PO",
                 "lines[3].locationCode:LOCATION_AREA_MISMATCH",
-                "lines[3].lotNumber:DUPLICATE_RECEIPT_LINE",
-                "lines[3].quantity:OVER_RECEIPT_TOLERANCE");
+                "lines[3].lotNumber:DUPLICATE_RECEIPT_LINE");
         assertThat(receipts.get(receiptId).lines()).as("nothing was saved").isEmpty();
 
         // The first line at fault decides the top-level code.

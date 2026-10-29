@@ -2,6 +2,7 @@ package com.stockflow.procurement.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
+import com.stockflow.procurement.internal.domain.ReceiptApproval;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -54,6 +55,26 @@ public class GoodsReceiptJpaEntity extends BaseEntity {
     @Column(name = "closed_at")
     private Instant closedAt;
 
+    /** SCRUM-477: the manager's exception approval (BR-RCP-001); all null for a receipt that never needed one. */
+    @Column(name = "approval_requested_at")
+    private Instant approvalRequestedAt;
+
+    @Column(name = "approval_requested_by")
+    private UUID approvalRequestedBy;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "approval_decision", length = 16)
+    private ReceiptApproval.Decision approvalDecision;
+
+    @Column(name = "approval_decided_at")
+    private Instant approvalDecidedAt;
+
+    @Column(name = "approval_decided_by")
+    private UUID approvalDecidedBy;
+
+    @Column(name = "approval_reason", length = 500)
+    private String approvalReason;
+
     @Column(name = "delivery_note", length = 100, updatable = false)
     private String deliveryNote;
 
@@ -81,11 +102,24 @@ public class GoodsReceiptJpaEntity extends BaseEntity {
         this.status = GoodsReceiptStatus.DRAFT;
     }
 
-    public void apply(GoodsReceiptStatus status, Instant confirmedAt, UUID confirmedBy, Instant closedAt) {
+    public void apply(GoodsReceiptStatus status, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
+                      ReceiptApproval approval) {
         this.status = status;
         this.confirmedAt = confirmedAt;
         this.confirmedBy = confirmedBy;
         this.closedAt = closedAt;
+        this.approvalRequestedAt = approval == null ? null : approval.requestedAt();
+        this.approvalRequestedBy = approval == null ? null : approval.requestedBy();
+        this.approvalDecision = approval == null ? null : approval.decision();
+        this.approvalDecidedAt = approval == null ? null : approval.decidedAt();
+        this.approvalDecidedBy = approval == null ? null : approval.decidedBy();
+        this.approvalReason = approval == null ? null : approval.reason();
+    }
+
+    /** The approval as stored; null when the receipt never asked for one. */
+    public ReceiptApproval approval() {
+        return approvalRequestedAt == null ? null : new ReceiptApproval(approvalRequestedAt, approvalRequestedBy,
+                approvalDecision, approvalDecidedAt, approvalDecidedBy, approvalReason);
     }
 
     public void addLine(GoodsReceiptLineJpaEntity line) {

@@ -13,11 +13,13 @@ import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.StockDisposition;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.procurement.internal.domain.GoodsReceipt;
 import com.stockflow.procurement.internal.domain.GoodsReceiptRepository;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
+import com.stockflow.procurement.internal.domain.ReceiptApproval;
 import com.stockflow.procurement.internal.domain.ReceiptLine;
 import com.stockflow.procurement.internal.domain.ReceivingLocation;
 import com.stockflow.procurement.internal.domain.ReceivingLocations;
@@ -523,16 +525,23 @@ class GoodsReceiptServiceImplTest {
             assertThat(e.getMessage()).startsWith("Receipt line 1:").endsWith("(and 2 more)");
         }
 
-        // ---- BR-02 tolerance
+        // ---- BR-02 tolerance: flagged on the count, decided by the manager at confirmation (SCRUM-477)
 
         @Test
-        @DisplayName("BR-02: ordered 100 with 5% tolerance receives up to 105 in all: 105 is fine, 106 is OVER_RECEIPT_TOLERANCE")
+        @DisplayName("BR-02: ordered 100 with 5% tolerance receives up to 105 in all: 105 is fine, 106 is accepted but flagged OVER_TOLERANCE")
         void toleranceBoundary() {
             po(Status.CONFIRMED, "100", "5", false);
             GoodsReceipt receipt = draft();
-            assertThat(service.replaceLines(receipt.id(), List.of(newLine(105))).lines()).hasSize(1);
-            assertThat(code(() -> service.replaceLines(receipt.id(), List.of(newLine(106)))))
-                    .isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
+            ReceiptView within = service.replaceLines(receipt.id(), List.of(newLine(105)));
+            assertThat(within.lines()).hasSize(1);
+            assertThat(within.warnings()).isEmpty();
+            assertThat(within.lines().get(0).warnings()).isEmpty();
+
+            ReceiptView over = service.replaceLines(receipt.id(), List.of(newLine(106)));
+            assertThat(over.lines().get(0).quantity()).isEqualTo(106);
+            assertThat(over.lines().get(0).warnings()).containsExactly(GoodsReceipts.OVER_TOLERANCE);
+            assertThat(over.warnings()).containsExactly(GoodsReceipts.OVER_TOLERANCE);
+            assertThat(over.status()).isEqualTo(GoodsReceiptStatus.DRAFT);
         }
 
         @Test
@@ -540,40 +549,37 @@ class GoodsReceiptServiceImplTest {
         void toleranceRoundsDown() {
             po(Status.CONFIRMED, "10", "2.5", false);
             GoodsReceipt receipt = draft();
-            assertThat(code(() -> service.replaceLines(receipt.id(), List.of(newLine(11)))))
-                    .isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
+            assertThat(service.replaceLines(receipt.id(), List.of(newLine(11))).warnings())
+                    .containsExactly(GoodsReceipts.OVER_TOLERANCE);
             po(Status.CONFIRMED, "10", null, false);
-            assertThat(code(() -> service.replaceLines(receipt.id(), List.of(newLine(11)))))
-                    .isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
-            assertThat(service.replaceLines(receipt.id(), List.of(newLine(10))).lines()).hasSize(1);
+            assertThat(service.replaceLines(receipt.id(), List.of(newLine(11))).warnings())
+                    .containsExactly(GoodsReceipts.OVER_TOLERANCE);
+            assertThat(service.replaceLines(receipt.id(), List.of(newLine(10))).warnings()).isEmpty();
         }
 
         @Test
-        @DisplayName("BR-02: units already on other (non-cancelled) receipts count against the limit; the tolerance is "
-                + "reported on the quantity field of the line")
+        @DisplayName("BR-02: units already posted on other receipts count against the limit; the flag is on the line")
         void toleranceCountsOtherReceipts() {
             po(Status.PARTIALLY_RECEIVED, "100", "0", false);
             GoodsReceipt receipt = draft();
             when(receipts.receivedOnOtherReceipts(anyIterable(), eq(receipt.id()))).thenReturn(Map.of(poLineId, 60));
 
-            BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(newLine(41))));
-
-            assertThat(e.errorCode()).isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
-            assertThat(e.fieldErrors()).extracting(FieldError::field).containsExactly("lines[0].quantity");
-            assertThat(service.replaceLines(receipt.id(), List.of(newLine(40))).lines()).hasSize(1);
+            ReceiptView over = service.replaceLines(receipt.id(), List.of(newLine(41)));
+            assertThat(over.lines().get(0).warnings()).containsExactly(GoodsReceipts.OVER_TOLERANCE);
+            assertThat(service.replaceLines(receipt.id(), List.of(newLine(40))).warnings()).isEmpty();
         }
 
         @Test
-        @DisplayName("BR-02: two lots of one PO line are summed against the limit, and both lines are marked")
+        @DisplayName("BR-02: two lots of one PO line are summed against the limit, and both lines are flagged")
         void toleranceSumsLots() {
             tracked(true, false);
             po(Status.CONFIRMED, "10", null, false);
             GoodsReceipt receipt = draft();
-            BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
+            ReceiptView view = service.replaceLines(receipt.id(), List.of(
                     new NewLine(poLineId, 6, "L1", null, "HCM-RCV-01", null),
-                    new NewLine(poLineId, 6, "L2", null, "HCM-RCV-01", null))));
-            assertThat(e.fieldErrors()).extracting(FieldError::field)
-                    .containsExactly("lines[0].quantity", "lines[1].quantity");
+                    new NewLine(poLineId, 6, "L2", null, "HCM-RCV-01", null)));
+            assertThat(view.lines()).extracting(l -> l.warnings()).containsExactly(
+                    List.of(GoodsReceipts.OVER_TOLERANCE), List.of(GoodsReceipts.OVER_TOLERANCE));
         }
     }
 
@@ -592,14 +598,23 @@ class GoodsReceiptServiceImplTest {
         }
 
         @Test
-        @DisplayName("BR-02 is asked again at confirmation (another receipt may have been confirmed meanwhile)")
+        @DisplayName("BR-02 is asked again at confirmation (another receipt may have been confirmed meanwhile): the "
+                + "count is not posted, it waits for the manager (BR-RCP-001)")
         void toleranceAtConfirm() {
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft(counted(50, false));
             when(receipts.receivedOnOtherReceipts(anyIterable(), eq(receipt.id()))).thenReturn(Map.of(poLineId, 60));
-            assertThat(code(() -> service.confirm(receipt.id(), user))).isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
-            assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.DRAFT);
+
+            ReceiptView view = service.confirm(receipt.id(), user);
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+            assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+            assertThat(view.approval().requestedBy()).isEqualTo(user);
+            assertThat(view.approval().decision()).isNull();
+            assertThat(view.confirmedAt()).isNull();
             verify(inventory, never()).receive(any());
+            verify(orders, never()).recordProgress(any(), any(), any(), any(), any(), any());
+            verify(events, never()).publishEvent(any(Object.class));
         }
 
         @Test
@@ -941,6 +956,266 @@ class GoodsReceiptServiceImplTest {
             assertThat(code(() -> service.inspect(receipt.id(), line.id(), new Decision(10, null, null), user)))
                     .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
             assertThat(receipt.status()).as("the other line is still undecided").isEqualTo(GoodsReceiptStatus.IN_QC);
+        }
+    }
+
+    // ------------------------------------------------------------------ over-receipt approval (SCRUM-477)
+
+    @Nested
+    class OverReceiptApproval {
+
+        private final UUID manager = UUID.randomUUID();
+
+        private ReceivingPurchaseOrder order;
+        /** Units of the PO line held by other posted receipts. */
+        private int postedElsewhere;
+
+        @BeforeEach
+        void anOrderOf100WithTolerance5() {
+            order = po(Status.CONFIRMED, "100", "5", false);
+            when(receipts.receivedOnOtherReceipts(anyIterable(), any()))
+                    .thenAnswer(call -> postedElsewhere == 0 ? Map.of() : Map.of(poLineId, postedElsewhere));
+        }
+
+        /** A draft counting these quantities of the one PO line, confirmed by {@code user}: it now waits. */
+        private GoodsReceipt waiting(int... quantities) {
+            ReceiptLine[] lines = new ReceiptLine[quantities.length];
+            for (int i = 0; i < quantities.length; i++) {
+                lines[i] = ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), quantities[i],
+                        quantities.length == 1 ? null : "L" + i, null, null, false, null);
+            }
+            if (quantities.length > 1) {
+                InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, false, false);
+                when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
+                when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
+            }
+            GoodsReceipt receipt = draft(lines);
+            assertThat(service.confirm(receipt.id(), user).status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+            return receipt;
+        }
+
+        @Test
+        @DisplayName("a count within the tolerance is posted at once, as before")
+        void withinToleranceIsPosted() {
+            GoodsReceipt receipt = draft(counted(105, false));
+            assertThat(service.confirm(receipt.id(), user).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+            verify(inventory).receive(any());
+        }
+
+        @Test
+        @DisplayName("beyond the tolerance, confirming asks for approval: nothing is counted in, no event goes out")
+        void confirmWaits() {
+            GoodsReceipt receipt = waiting(110);
+
+            assertThat(receipt.approval()).get().satisfies(a -> {
+                assertThat(a.requestedBy()).isEqualTo(user);
+                assertThat(a.requestedAt()).isEqualTo(NOW);
+                assertThat(a.pending()).isTrue();
+            });
+            verify(inventory, never()).receive(any());
+            verify(orders, never()).recordProgress(any(), any(), any(), any(), any(), any());
+            verify(events, never()).publishEvent(any(Object.class));
+        }
+
+        @Test
+        @DisplayName("the manager approves: the whole count is posted, in the manager's name, with the reason kept")
+        void approvePostsTheWholeCount() {
+            GoodsReceipt receipt = waiting(110);
+            when(receipts.confirmedQuantities(poId)).thenReturn(Map.of(poLineId, 110));
+
+            ReceiptView view = service.approve(receipt.id(), manager, "  supplier sent a bonus carton ");
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+            ArgumentCaptor<ReceiveStockCommand> receive = ArgumentCaptor.forClass(ReceiveStockCommand.class);
+            verify(inventory).receive(receive.capture());
+            assertThat(receive.getValue().quantity()).isEqualTo(110);
+            assertThat(receive.getValue().actorId()).isEqualTo(manager);
+            assertThat(view.confirmedBy()).isEqualTo(manager);
+            assertThat(view.approval().decision()).isEqualTo(ReceiptApproval.Decision.APPROVED);
+            assertThat(view.approval().decidedBy()).isEqualTo(manager);
+            assertThat(view.approval().reason()).isEqualTo("supplier sent a bonus carton");
+            assertThat(view.approval().requestedBy()).isEqualTo(user);
+            verify(orders).recordProgress(eq(order), eq(Map.of(poLineId, LineStatus.RECEIVED)), eq(Status.RECEIVED),
+                    eq(manager), eq(receipt.id()), any());
+            verify(events).publishEvent(any(GoodsReceiptConfirmed.class));
+            verify(events).publishEvent(any(ReceiptStockReadyForPutaway.class));
+            assertThat(view.warnings()).as("posted: no longer a count to decide on").isEmpty();
+        }
+
+        @Test
+        @DisplayName("four eyes: neither whoever started the receipt nor whoever asked for the approval decides it")
+        void fourEyes() {
+            GoodsReceipt receipt = draft(counted(110, false));
+            UUID confirmer = UUID.randomUUID();
+            service.confirm(receipt.id(), confirmer);
+
+            assertThat(code(() -> service.approve(receipt.id(), user, "ok"))).as("the receiver")
+                    .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+            assertThat(code(() -> service.approve(receipt.id(), confirmer, "ok"))).as("who asked")
+                    .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+            assertThat(code(() -> service.rejectExcess(receipt.id(), user, "no"))).isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+            assertThat(code(() -> service.rejectExcess(receipt.id(), confirmer, "no")))
+                    .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+            assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+            verify(inventory, never()).receive(any());
+        }
+
+        @Test
+        @DisplayName("a decision needs a reason")
+        void reasonRequired() {
+            GoodsReceipt receipt = waiting(110);
+            for (String blank : new String[]{null, "", "   "}) {
+                assertThat(code(() -> service.approve(receipt.id(), manager, blank)))
+                        .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
+                assertThat(code(() -> service.rejectExcess(receipt.id(), manager, blank)))
+                        .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
+            }
+            assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+        }
+
+        @Test
+        @DisplayName("only a receipt that is waiting is decided; it is decided once")
+        void onlyWaitingIsDecided() {
+            GoodsReceipt draft = draft(counted(110, false));
+            assertThat(code(() -> service.approve(draft.id(), manager, "ok"))).as("DRAFT")
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+            assertThat(code(() -> service.rejectExcess(draft.id(), manager, "no"))).as("DRAFT")
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+
+            GoodsReceipt receipt = waiting(110);
+            service.approve(receipt.id(), manager, "ok");
+            assertThat(code(() -> service.approve(receipt.id(), manager, "again")))
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+            verify(inventory, times(1)).receive(any());
+        }
+
+        @Test
+        @DisplayName("BR-01 is asked again at the decision: an order cancelled meanwhile takes no goods")
+        void orderNoLongerReceivable() {
+            GoodsReceipt receipt = waiting(110);
+            po(Status.CANCELLED, "100", "5", false);
+
+            assertThat(code(() -> service.approve(receipt.id(), manager, "ok")))
+                    .isEqualTo(ErrorCode.PURCHASE_ORDER_NOT_RECEIVABLE);
+            verify(inventory, never()).receive(any());
+        }
+
+        @Test
+        @DisplayName("the manager rejects the excess: only up to the tolerance is posted (110 counted, 105 allowed)")
+        void rejectCutsToTheTolerance() {
+            GoodsReceipt receipt = waiting(110);
+            when(receipts.confirmedQuantities(poId)).thenReturn(Map.of(poLineId, 105));
+
+            ReceiptView view = service.rejectExcess(receipt.id(), manager, "5 cartons go back to the supplier");
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+            assertThat(view.lines()).extracting(l -> l.quantity()).containsExactly(105);
+            ArgumentCaptor<ReceiveStockCommand> receive = ArgumentCaptor.forClass(ReceiveStockCommand.class);
+            verify(inventory).receive(receive.capture());
+            assertThat(receive.getValue().quantity()).isEqualTo(105);
+            assertThat(view.approval().decision()).isEqualTo(ReceiptApproval.Decision.EXCESS_REJECTED);
+            assertThat(view.approval().reason()).isEqualTo("5 cartons go back to the supplier");
+            assertThat(view.confirmedBy()).isEqualTo(manager);
+            verify(orders).recordProgress(eq(order), any(), eq(Status.RECEIVED), eq(manager), eq(receipt.id()), any());
+        }
+
+        @Test
+        @DisplayName("what other posted receipts already hold narrows the allowance: 60 posted, 50 counted, 45 stay")
+        void rejectCountsOtherReceipts() {
+            order = po(Status.PARTIALLY_RECEIVED, "100", "5", false);
+            postedElsewhere = 60;
+            GoodsReceipt receipt = waiting(50);
+
+            ReceiptView view = service.rejectExcess(receipt.id(), manager, "over");
+
+            assertThat(view.lines()).extracting(l -> l.quantity()).containsExactly(45);
+        }
+
+        @Test
+        @DisplayName("the excess comes off the lots of the PO line from the last one counted: 70 + 50 against 105 -> 70 + 35")
+        void rejectCutsFromTheLastLot() {
+            GoodsReceipt receipt = waiting(70, 50);
+
+            ReceiptView view = service.rejectExcess(receipt.id(), manager, "over");
+
+            assertThat(view.lines()).extracting(l -> l.lotNumber() + ":" + l.quantity()).containsExactly("L0:70", "L1:35");
+        }
+
+        @Test
+        @DisplayName("a lot cut to nothing is removed: 100 + 20 against 105 -> 100 + 5; 105 + 20 -> only the first lot")
+        void rejectRemovesALotCutToNothing() {
+            GoodsReceipt receipt = waiting(105, 20);
+
+            ReceiptView view = service.rejectExcess(receipt.id(), manager, "over");
+
+            assertThat(view.lines()).extracting(l -> l.lotNumber() + ":" + l.quantity()).containsExactly("L0:105");
+        }
+
+        @Test
+        @DisplayName("nothing within the tolerance left (105 already posted): the receipt is cancelled with the manager's reason")
+        void rejectWithNothingLeftCancels() {
+            order = po(Status.PARTIALLY_RECEIVED, "100", "5", false);
+            postedElsewhere = 105;
+            GoodsReceipt receipt = waiting(10);
+
+            ReceiptView view = service.rejectExcess(receipt.id(), manager, "the order is full");
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+            assertThat(view.lines()).isEmpty();
+            assertThat(view.approval().decision()).isEqualTo(ReceiptApproval.Decision.EXCESS_REJECTED);
+            assertThat(view.approval().reason()).isEqualTo("the order is full");
+            assertThat(view.confirmedAt()).isNull();
+            verify(inventory, never()).receive(any());
+            verify(events, never()).publishEvent(any(Object.class));
+        }
+
+        @Test
+        @DisplayName("a cut below the units labelled cartons hold is refused: approve, or cancel and count again")
+        void rejectBelowTheCartonsIsRefused() {
+            GoodsReceipt receipt = waiting(110);
+            UUID lineId = receipt.lines().get(0).id();
+            when(inventory.receivingPackagesOf(anyCollection())).thenReturn(Map.of(lineId, List.of(
+                    new StockPackageView(UUID.randomUUID(), "LPN-1", lineId, "CUP-01", UUID.randomUUID(), "CARTON", 106, 106,
+                            106, "HCM-RCV-01", "RECEIVING", true))));
+
+            assertThat(code(() -> service.rejectExcess(receipt.id(), manager, "over")))
+                    .isEqualTo(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE);
+            verify(inventory, never()).receive(any());
+        }
+
+        @Test
+        @DisplayName("a lot cut to nothing that labelled cartons were counted into cannot be removed")
+        void rejectRemovingALabelledLotIsRefused() {
+            GoodsReceipt receipt = waiting(105, 20);
+            when(inventory.receiptLinesWithStockPackages(anyCollection()))
+                    .thenReturn(Set.of(receipt.lines().get(1).id()));
+
+            assertThat(code(() -> service.rejectExcess(receipt.id(), manager, "over")))
+                    .isEqualTo(ErrorCode.RECEIPT_LINE_HAS_PACKAGES);
+        }
+
+        @Test
+        @DisplayName("a receipt waiting for approval can be cancelled; its cartons are voided")
+        void cancelWhileWaiting() {
+            GoodsReceipt receipt = waiting(110);
+
+            ReceiptView view = service.cancel(receipt.id());
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+            verify(inventory).voidStockPackagesOfReceiptLines(anyCollection());
+            assertThat(code(() -> service.approve(receipt.id(), manager, "ok")))
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("a subcontract order's approved receipt is handed to production and CLOSED, as its confirmation is")
+        void approveOnASubcontractOrder() {
+            order = po(Status.CONFIRMED, "100", "5", true);
+            GoodsReceipt receipt = waiting(110);
+
+            ReceiptView view = service.approve(receipt.id(), manager, "ok");
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
         }
     }
 
