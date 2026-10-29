@@ -418,6 +418,49 @@ class GoodsReceiptIntegrationTest {
         assertThat(fields(lotOnly)).containsExactly("lines[1].expiryDate:EXPIRY_NOT_AFTER_RECEIPT");
     }
 
+    private void setMaxShelfLife(Integer days) {
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.inventory_items SET max_shelf_life_days = ? WHERE sku = ?", days, TABLE));
+    }
+
+    @Test
+    @DisplayName("SCRUM-479 / BR-RCP-004: an expiry date beyond the receiving day + the item's maximum shelf life is "
+            + "refused on its line; within it, or with no maximum, it is accepted")
+    void expiryBeyondMaxShelfLifeIsRefused() {
+        UUID po = confirmedOrder(TABLE, 10);
+        UUID receiptId = receipts.create(new GoodsReceipts.Create(po, null, null), clerk).id();
+        UUID line = poLine(po, TABLE);
+        LocalDate today = LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
+        setMaxShelfLife(30);
+        try {
+            Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(() -> receipts.replaceLines(receiptId,
+                    List.of(new GoodsReceipts.NewLine(line, 1, lot + "-A", today.plusDays(30), "HCM-RCV01", null),
+                            new GoodsReceipts.NewLine(line, 1, lot + "-B", today.plusDays(31), "HCM-RCV01", null))));
+            assertThat(code(thrown)).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
+            assertThat(fields(thrown)).containsExactly("lines[1].expiryDate:EXPIRY_EXCEEDS_MAX_SHELF_LIFE");
+            assertThat(((BusinessException) thrown).fieldErrors().get(0).message())
+                    .contains(today.plusDays(30).toString());
+            assertThat(receipts.get(receiptId).lines()).as("nothing was saved").isEmpty();
+
+            assertThat(receipts.replaceLines(receiptId, List.of(
+                    new GoodsReceipts.NewLine(line, 1, lot + "-A", today.plusDays(30), "HCM-RCV01", null))).lines())
+                    .hasSize(1);
+
+            // Earlier than the receiving day: the lower bound is unchanged.
+            Throwable early = org.assertj.core.api.Assertions.catchThrowable(() -> receipts.replaceLines(receiptId,
+                    List.of(new GoodsReceipts.NewLine(line, 1, lot + "-A", today.minusDays(1), "HCM-RCV01", null))));
+            assertThat(fields(early)).containsExactly("lines[0].expiryDate:EXPIRY_NOT_AFTER_RECEIPT");
+
+            // No maximum configured: no upper bound.
+            setMaxShelfLife(null);
+            assertThat(receipts.replaceLines(receiptId, List.of(
+                    new GoodsReceipts.NewLine(line, 1, lot + "-A", today.plusYears(20), "HCM-RCV01", null))).lines())
+                    .hasSize(1);
+        } finally {
+            setMaxShelfLife(null);
+        }
+    }
+
     @Test
     @DisplayName("SCRUM-464: a QC line in a warehouse with no QC area is QC_AREA_MISSING; display names and flags")
     void qcAreaMissingAndDisplayFields() {

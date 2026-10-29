@@ -48,6 +48,12 @@ public enum ErrorCode {
     SKU_NOT_SELLABLE("The SKU is no longer active; change the line to an active SKU", 409),
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
     PRODUCT_BRAND_REQUIRED("A brand is required before submitting for approval", 409),
+    /** SCRUM-87: the request requires them, so a product reaching approval without them is a legacy row. */
+    PRODUCT_DETAILS_REQUIRED("An English name and a tax class are required before submitting for approval", 409),
+    /** SCRUM-87: a retired brand stays on the products that chose it, but no product newly chooses it. */
+    BRAND_INACTIVE("This brand is inactive and cannot be chosen for a product", 409),
+    /** SCRUM-87: a retired category stays on the products that chose it, but no product newly chooses it. */
+    CATEGORY_INACTIVE("This category is inactive and cannot be chosen for a product", 409),
     /** SCRUM-461, kltn-docs 01 BR-02: only a draft is deleted. */
     PRODUCT_NOT_DELETABLE("Only a draft product can be deleted", 409),
     /** SCRUM-461: stock, a purchase order, an order or a design already points at the product. */
@@ -415,6 +421,8 @@ public enum ErrorCode {
     CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
     /** A slot already held by an open count. */
     CYCLE_COUNT_SLOT_BUSY("This stock slot is already on an open count", 409),
+    /** A manual move out of or into a slot a cycle count holds (SCRUM-146). */
+    STOCK_SLOT_UNDER_COUNT("This stock slot is under a cycle count; stock cannot be moved out of or into it", 409),
     /** A surplus where the slot has no layer to receive it. */
     CYCLE_COUNT_UNKNOWN_LAYER("The surplus cannot be placed on any receipt layer", 422),
     /** A shortage larger than what the slot holds now. */

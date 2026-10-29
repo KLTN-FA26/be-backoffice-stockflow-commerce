@@ -6,7 +6,9 @@ import java.util.UUID;
 /**
  * Set a customer's commercial terms; only whoever approves credit may (kltn-docs 18 BR-02).
  *
- * @param expectedVersion      the version the caller read, or null for a customer with no terms yet
+ * @param expectedVersion      the version the caller read; null only for a customer with no terms yet (-1, the
+ *                             version of unset terms, is accepted too). A customer that has terms is refused
+ *                             without it (SCRUM-484)
  * @param depositBalancePolicy how a deposit order's balance is collected (G2-3); null with deposits allowed keeps the
  *                             policy the terms had, or BEFORE_DELIVERY (goods never leave unpaid) when they had none
  */

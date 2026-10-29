@@ -221,12 +221,21 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return toTask(pick);
     }
 
-    /** Docs 07 step 9: only when every line is picked ({@code PICK_LINES_INCOMPLETE} otherwise). */
+    /**
+     * Docs 07 step 9: only when every line is picked ({@code PICK_LINES_INCOMPLETE} otherwise).
+     * Completing a task that is already PICKED by its assignee is answered with the task as it is
+     * (SCRUM-482): a scanner retrying a lost response must get the first answer back, not a 409. It is
+     * answered before the order is looked at, because the order has moved on since; nothing is applied
+     * again. Another user, or any other status, is refused as before.
+     */
     @Override
     public FulfillmentTask completePicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         pick.requireAssigned(actor.userId());
+        if (pick.getStatus() == PickStatus.PICKED) {
+            return toTask(pick);
+        }
         var order = requireOrderInFulfilment(pick);
         if (pick.getStatus() == PickStatus.PICKING) {
             pickLists.requireAllPicked(pick, order);

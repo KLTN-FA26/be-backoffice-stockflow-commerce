@@ -74,6 +74,7 @@ class SkuReservationAllocationIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired jakarta.persistence.EntityManager entityManager;
+    @Autowired com.stockflow.inventory.internal.service.TransferOrders transfers;
 
     private String sku;
     private final Map<String, UUID> rows = new java.util.HashMap<>();
@@ -533,5 +534,29 @@ class SkuReservationAllocationIntegrationTest {
                 new ReserveProductionStockCommand(UUID.randomUUID(), new Sku(sku), 3, productionOrder, "HCM"))))))
                 .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
         assertThat(reservedEverywhere()).isZero();
+    }
+
+    @Test
+    @DisplayName("issue 207, doc 10 step 2: a transfer is created only for what is left after checkout reservations")
+    void transfersRespectSkuReservations() {
+        UUID hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
+        UUID destination = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
+                                                 version, created_at)
+                VALUES (?, 'Transfer destination', 'ACTIVE', ?, 'Test address', 'M', 50, 50, 0, NOW())""",
+                destination, "T" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT)));
+        reserve(order(), 20);   // 22 sellable in HCM, 2 left once the promise is counted
+        java.util.function.IntFunction<com.stockflow.inventory.internal.service.TransferOrders.Transfer> transfer =
+                quantity -> transfers.create(new com.stockflow.inventory.internal.service.TransferOrders.Create(hcm,
+                        destination, com.stockflow.inventory.internal.domain.TransferReason.REBALANCING, null,
+                        List.of(new com.stockflow.inventory.internal.service.TransferOrders.NewLine(sku, null, quantity)),
+                        com.stockflow.inventory.api.TransferDeliveryMode.PARCEL));
+
+        assertThat(code(catchThrowable(() -> transfer.apply(3)))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.transfer_order_line WHERE sku = ?""", Integer.class, sku)).isZero();
+        assertThat(transfer.apply(2).status())
+                .isEqualTo(com.stockflow.inventory.internal.domain.TransferStatus.DRAFT);
     }
 }
