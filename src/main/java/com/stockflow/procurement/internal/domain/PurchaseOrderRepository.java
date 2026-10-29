@@ -37,7 +37,10 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
 
     Optional<PurchaseOrder> findByIdForUpdate(PurchaseOrderId id);
 
-    /** A goods receipt of this order is still being counted (DRAFT): the order cannot be cancelled under it. */
+    /**
+     * A goods receipt of this order is still being counted (DRAFT) or waits for the manager (PENDING_APPROVAL): the
+     * order cannot be cancelled under it.
+     */
     boolean hasReceiptInProgress(PurchaseOrderId id);
 
     /**

@@ -213,7 +213,7 @@ class PurchaseOrderRepositoryAdapter
     @Override
     public boolean hasReceiptInProgress(PurchaseOrderId id) {
         return (Boolean) entityManager.createNativeQuery("""
-                        SELECT EXISTS (SELECT 1 FROM procurement.goods_receipts WHERE po_id = :po AND status = 'DRAFT')""")
+                        SELECT EXISTS (SELECT 1 FROM procurement.goods_receipts WHERE po_id = :po AND status IN ('DRAFT', 'PENDING_APPROVAL'))""")
                 .setParameter("po", id.value())
                 .getSingleResult();
     }

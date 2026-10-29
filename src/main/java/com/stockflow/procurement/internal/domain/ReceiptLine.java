@@ -66,6 +66,16 @@ public final class ReceiptLine {
                 qcRequired, uomConversionId, null, null, null, List.of());
     }
 
+    /**
+     * The same line counting {@code quantity} units: the cut the manager's rejection of an excess makes (SCRUM-477).
+     * Only a line nothing has happened to yet - not moved to QC, not inspected - is cut; the aggregate cuts only
+     * receipts that are waiting for approval, which have none of either.
+     */
+    ReceiptLine withReceivedQuantity(int quantity) {
+        return new ReceiptLine(id, poLineId, inventoryItemId, locationId, quantity, lotNumber, expiryDate, note,
+                qcRequired, uomConversionId, qcLocationId, movedToQcAt, movedToQcBy, inspections);
+    }
+
     public boolean movedToQc() {
         return movedToQcAt != null;
     }

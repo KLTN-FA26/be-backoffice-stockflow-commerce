@@ -511,7 +511,7 @@ class ProcurementServiceImpl implements ProcurementService {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
         if (purchaseOrders.hasReceiptInProgress(order.id())) {
             throw new BusinessException(ErrorCode.CONFLICT,
-                    "A goods receipt of this order is being counted; cancel or confirm it first");
+                    "A goods receipt of this order is being counted or waits for approval; cancel or confirm it first");
         }
         PurchaseOrderStatus from = order.status();
         order.requireCancellable(reason);
@@ -558,7 +558,7 @@ class ProcurementServiceImpl implements ProcurementService {
         boolean force = from == PurchaseOrderStatus.CONFIRMED;
         if (force && purchaseOrders.hasReceiptInProgress(order.id())) {
             throw new BusinessException(ErrorCode.CONFLICT,
-                    "A goods receipt of this order is being counted; cancel or confirm it first");
+                    "A goods receipt of this order is being counted or waits for approval; cancel or confirm it first");
         }
         order.closeShort(reason, userId, clock.instant());
         if (force) {

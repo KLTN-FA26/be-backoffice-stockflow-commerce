@@ -21,9 +21,17 @@ import java.util.UUID;
  *
  * <pre>
  *   DRAFT ──confirm──▶ IN_QC ──every QC line decided──▶ IN_PUTAWAY ──(putaway, SCRUM-92)──▶ CLOSED
- *     │        └──────(no QC line)────────────────────────▲
- *     └──cancel──▶ CANCELLED            IN_QC ──nothing left to put away──▶ CLOSED
+ *     │ │      └──────(no QC line)────────────────────────▲
+ *     │ └──cancel──▶ CANCELLED            IN_QC ──nothing left to put away──▶ CLOSED
+ *     │
+ *     └──confirm, count beyond a PO line's tolerance──▶ PENDING_APPROVAL ──manager approves / rejects the excess──▶ (as confirm)
+ *                                                          └──cancel──▶ CANCELLED
  * </pre>
+ *
+ * <p>SCRUM-477 (BR-RCP-001): a count beyond the over-receipt tolerance is not refused, and not posted either. It waits
+ * in PENDING_APPROVAL, counted in nowhere, until a user other than the receiver decides: <em>approve</em> posts the
+ * whole count; <em>reject the excess</em> cuts the lines back to the tolerance and posts what is left (a receipt with
+ * nothing left is cancelled). The decision, its maker and its reason stay on the receipt ({@link ReceiptApproval}).</p>
  *
  * <p>What the aggregate decides: the order of the steps, that a confirmed count is never edited
  * (BR-05), that QC decides only on goods already in the QC area and accounts for every unit of them
@@ -51,12 +59,13 @@ public final class GoodsReceipt extends AggregateRoot {
     private Instant confirmedAt;
     private UUID confirmedBy;
     private Instant closedAt;
+    private ReceiptApproval approval;
     private final long version;
 
     public GoodsReceipt(UUID id, String number, UUID purchaseOrderId, UUID purchaseOrderRevisionId, UUID warehouseId,
                         Instant receivedAt, UUID receivedBy, String deliveryNote, String note, List<ReceiptLine> lines,
                         GoodsReceiptStatus status, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
-                        long version) {
+                        ReceiptApproval approval, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.number = Objects.requireNonNull(number, "number");
         this.purchaseOrderId = Objects.requireNonNull(purchaseOrderId, "purchaseOrderId");
@@ -71,6 +80,7 @@ public final class GoodsReceipt extends AggregateRoot {
         this.confirmedAt = confirmedAt;
         this.confirmedBy = confirmedBy;
         this.closedAt = closedAt;
+        this.approval = approval;
         this.version = version;
         requireDistinctLines(this.lines);
     }
@@ -79,7 +89,7 @@ public final class GoodsReceipt extends AggregateRoot {
                                      UUID warehouseId, UUID receivedBy, String deliveryNote, String note,
                                      Instant now) {
         return new GoodsReceipt(id, number, purchaseOrderId, purchaseOrderRevisionId, warehouseId, now, receivedBy,
-                deliveryNote, note, List.of(), GoodsReceiptStatus.DRAFT, null, null, null, 0L);
+                deliveryNote, note, List.of(), GoodsReceiptStatus.DRAFT, null, null, null, null, 0L);
     }
 
     // ------------------------------------------------------------------ counting
@@ -107,10 +117,69 @@ public final class GoodsReceipt extends AggregateRoot {
      */
     public void confirm(UUID userId, Instant now, boolean handedToProduction) {
         requireStatus(GoodsReceiptStatus.DRAFT, "confirm");
+        post(userId, now, handedToProduction);
+    }
+
+    /**
+     * BR-RCP-001: the count goes beyond a PO line's tolerance, so it is not counted in. It waits for a user who may
+     * decide it (never the one who counted it or the one asking now) and nothing downstream sees it until then.
+     */
+    public void requestApproval(UUID userId, Instant now) {
+        requireStatus(GoodsReceiptStatus.DRAFT, "send for approval");
+        requireLines();
+        this.approval = ReceiptApproval.requested(Objects.requireNonNull(userId, "userId"),
+                Objects.requireNonNull(now, "now"));
+        this.status = GoodsReceiptStatus.PENDING_APPROVAL;
+    }
+
+    /** The manager accepts the whole count; it is posted exactly as {@link #confirm} posts a count. */
+    public void approve(UUID approverId, String reason, Instant now, boolean handedToProduction) {
+        requireDecidable(approverId, reason);
+        this.approval = approval.decided(ReceiptApproval.Decision.APPROVED, approverId, now, reason.strip());
+        post(approverId, now, handedToProduction);
+    }
+
+    /**
+     * The manager refuses the part beyond the tolerance: the lines are cut back to {@code allowedByPoLine} (units each
+     * PO line may still receive on this receipt) first, by {@link #cutBackTo}, then this posts what is left. With
+     * nothing left the receipt is cancelled: nothing was received that the tolerance allows.
+     */
+    public void rejectExcess(UUID approverId, String reason, Instant now, boolean handedToProduction) {
+        requireDecidable(approverId, reason);
+        this.approval = approval.decided(ReceiptApproval.Decision.EXCESS_REJECTED, approverId, now, reason.strip());
         if (lines.isEmpty()) {
-            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
-                    "Receipt %s has no lines to confirm".formatted(number));
+            this.status = GoodsReceiptStatus.CANCELLED;
+            return;
         }
+        post(approverId, now, handedToProduction);
+    }
+
+    /**
+     * Cuts each named PO line's units on this receipt down to what it may still receive: the excess comes off the
+     * lines of that PO line from the last one counted backwards, a line left with nothing is removed. Only a receipt
+     * waiting for approval is cut, and only by the rejection of its excess.
+     */
+    public void cutBackTo(Map<UUID, Integer> allowedByPoLine) {
+        requireStatus(GoodsReceiptStatus.PENDING_APPROVAL, "cut back");
+        List<ReceiptLine> kept = new ArrayList<>();
+        Map<UUID, Integer> toCut = new java.util.HashMap<>();
+        for (Map.Entry<UUID, Integer> allowed : allowedByPoLine.entrySet()) {
+            toCut.put(allowed.getKey(), Math.max(quantityOf(allowed.getKey()) - Math.max(allowed.getValue(), 0), 0));
+        }
+        for (int i = lines.size() - 1; i >= 0; i--) {
+            ReceiptLine line = lines.get(i);
+            int cut = Math.min(toCut.getOrDefault(line.poLineId(), 0), line.receivedQuantity());
+            toCut.computeIfPresent(line.poLineId(), (k, v) -> v - cut);
+            if (cut < line.receivedQuantity()) {
+                kept.add(0, cut == 0 ? line : line.withReceivedQuantity(line.receivedQuantity() - cut));
+            }
+        }
+        lines.clear();
+        lines.addAll(kept);
+    }
+
+    private void post(UUID userId, Instant now, boolean handedToProduction) {
+        requireLines();
         this.confirmedBy = Objects.requireNonNull(userId, "userId");
         this.confirmedAt = Objects.requireNonNull(now, "now");
         if (handedToProduction) {
@@ -125,9 +194,34 @@ public final class GoodsReceipt extends AggregateRoot {
                 ? GoodsReceiptStatus.IN_QC : GoodsReceiptStatus.IN_PUTAWAY;
     }
 
-    /** Only a draft: once counted in, a receipt is corrected by an adjustment or a reversal (BR-05). */
+    private void requireLines() {
+        if (lines.isEmpty()) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
+                    "Receipt %s has no lines to confirm".formatted(number));
+        }
+    }
+
+    /** Waiting for a decision, a reason given, and a decider who is neither the receiver nor the one who asked. */
+    private void requireDecidable(UUID approverId, String reason) {
+        requireStatus(GoodsReceiptStatus.PENDING_APPROVAL, "decide");
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED,
+                    "Deciding on receipt %s needs a reason".formatted(number));
+        }
+        Objects.requireNonNull(approverId, "approverId");
+        if (approverId.equals(receivedBy) || approverId.equals(approval.requestedBy())) {
+            throw new BusinessException(ErrorCode.RECEIPT_SELF_APPROVAL,
+                    "Receipt %s cannot be decided by the person who counted it or asked for its approval"
+                            .formatted(number));
+        }
+    }
+
+    /** Only before the count is posted: once counted in, a receipt is corrected by an adjustment or a reversal (BR-05). */
     public void cancel() {
-        requireStatus(GoodsReceiptStatus.DRAFT, "cancel");
+        if (status != GoodsReceiptStatus.DRAFT && status != GoodsReceiptStatus.PENDING_APPROVAL) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
+                    "Cannot cancel receipt %s: it is %s, not DRAFT or PENDING_APPROVAL".formatted(number, status));
+        }
         this.status = GoodsReceiptStatus.CANCELLED;
     }
 
@@ -267,5 +361,7 @@ public final class GoodsReceipt extends AggregateRoot {
     public Instant confirmedAt() { return confirmedAt; }
     public UUID confirmedBy() { return confirmedBy; }
     public Instant closedAt() { return closedAt; }
+    /** The exception approval this receipt asked for; empty when it never went beyond a tolerance. */
+    public Optional<ReceiptApproval> approval() { return Optional.ofNullable(approval); }
     public long version() { return version; }
 }

@@ -19,11 +19,11 @@ interface GoodsReceiptJpaRepository extends BaseJpaRepository<GoodsReceiptJpaEnt
 
     @Query("""
             select l.poLineId, sum(l.receivedQty) from GoodsReceiptLineJpaEntity l join l.receipt r
-             where l.poLineId in :poLineIds and r.status <> :cancelled and r.id <> :excluding
+             where l.poLineId in :poLineIds and r.status not in :notCounted and r.id <> :excluding
              group by l.poLineId""")
     List<Object[]> sumByPoLineExcluding(@Param("poLineIds") Collection<UUID> poLineIds,
                                         @Param("excluding") UUID excluding,
-                                        @Param("cancelled") GoodsReceiptStatus cancelled);
+                                        @Param("notCounted") Collection<GoodsReceiptStatus> notCounted);
 
     @Query("""
             select l.poLineId, sum(l.receivedQty) from GoodsReceiptLineJpaEntity l join l.receipt r
