@@ -1,6 +1,6 @@
 # Bản đồ toàn bộ luồng dữ liệu
 
-27 luồng của StockFlowCommerce: chính, phụ, ngoại lệ và nền tảng. Mỗi luồng gồm sơ đồ
+28 luồng của StockFlowCommerce: chính, phụ, ngoại lệ và nền tảng. Mỗi luồng gồm sơ đồ
 service–database và bảng liệt kê từng bước ghi vào bảng nào.
 
 Ký hiệu trong bảng: `+` tạo dòng · `~` sửa dòng · `−` trừ hoặc xoá.
@@ -47,9 +47,10 @@ Kafka. Xem ADR-0003.
 - `F-RTO` Hàng hoàn về vì giao không thành công (WBS 3.9.7)
 - `F-REF` Hoàn tiền và đối soát với cổng thanh toán (WBS 3.15.6 · 3.20.4)
 
-**Ngoại lệ** — 3 luồng
+**Ngoại lệ** — 4 luồng
 
 - `X-SHORT` Nhặt thiếu — đơn không hỏng, đơn dừng lại (WBS 3.7.5)
+- `X-DMG` Hàng hỏng — báo hỏng có ảnh, cách ly, quản lý kho quyết định xử lý (WBS 3.6.5.1)
 - `X-RESV` Giữ chỗ hết hạn — tồn tự phục hồi (WBS 3.14.5.2)
 - `X-CHK` Lệch checksum thiết kế — dừng đóng gói (WBS 3.8.3)
 
@@ -788,6 +789,40 @@ flowchart LR
 > ⚠ Hàng in theo yêu cầu KHÔNG được trả trừ khi lỗi — BR-RMA-002. Cốc in ảnh của khách không bán lại cho ai được.
 > · Hàng in bị lỗi trả về thì vào thẳng DAMAGED, không phải QUARANTINE — không có gì để kiểm lại.
 
+> **Đã triển khai 2026-10-25 (SCRUM-243 / SCRUM-260), sửa lại sau rà soát cùng ngày (R1–R14)** — luồng thực tế nằm ở
+> `03-state-machines.md` §12 và khác bảng trên ở mấy điểm: mọi hàng trả về (kể cả hàng in lỗi) đều nhập vào QUARANTINE
+> (`stock_movement` RETURN_IN), rồi QC quyết định từng đơn vị — nhập lại để bán (chỉ hàng QC xác nhận là hàng phôi
+> thường, lên ô kệ bán được của đúng kho nhận), huỷ (phiếu điều chỉnh SCRAP chờ duyệt) hoặc gửi trả khách; không có
+> `return_shipment`/`qc_task` riêng, kho ghi nhận và QC kiểm ngay trên yêu cầu đổi trả. Hàng thay thế là một đơn thay
+> thế giá 0 đi qua sản xuất và giao hàng như đơn thường; tiền được cấn trừ công nợ của đơn, hoàn tiền (tối đa số đã
+> thu) hoặc giữ làm số dư của khách. **Mọi** phương án (kể cả chỉ giao bù) đều do Sales đề xuất và người khác duyệt.
+>
+> Những điểm nghiệp vụ đã chốt khi sửa:
+> - Hạn đổi trả và hạn gửi hàng về tính theo **ngày lịch giờ Việt Nam** (hết ngày thứ N), không phải N × 24 giờ. Quá
+>   hạn thì cổng khách từ chối; Sales vẫn mở được khi có lý do (`lateClaimReason`, ghi `LATE_CLAIM_ACCEPTED`).
+> - Phiếu do Sales mở phải do **người khác** duyệt; mọi lý do đều cần ít nhất một ảnh (giao thiếu: ảnh biên bản giao
+>   nhận có ký). Giới hạn ảnh tính riêng cho từng bước (khách, kho, QC).
+> - Hàng về **nhiều kiện** được ghi từng kiện (mỗi kiện một email, gửi kèm `version` để bấm hai lần không thành hai
+>   kiện); QC chỉ kiểm khi đủ hàng, hoặc khi xác nhận khách không gửi thêm (`noMoreParcels`) - lúc đó mới ghi thiếu.
+>   Hàng về **sau hạn** hoặc **sau khi khách huỷ** phiếu đã duyệt vẫn được nhận vào kho, phiếu mở lại (không để hàng
+>   nằm kho mà không có sổ).
+> - Chỉ hàng QC chấm GOOD/UNOPENED mới được nhập lại kho bán. Hạn mức "không cần gửi hàng về" (2 triệu) tính theo cả
+>   đơn, không theo từng phiếu.
+> - Hàng QC **từ chối** vẫn là của khách: gửi trả khách, hoặc huỷ khi có ghi nhận khách đồng ý; không bao giờ nhập kho
+>   bán. Khách chỉ thấy lý do `NO_DEFECT_FOUND`, ghi chú của QC là nội bộ.
+> - **Đơn thay thế** không được khách huỷ trên portal, cũng không được "đóng phần còn lại" theo cách thường; muốn huỷ thì
+>   "rút đơn thay thế" trên phiếu đổi trả (Sales đề xuất, kế toán duyệt): chưa đóng gói thì huỷ cả đơn, đã giao một
+>   phần thì đóng phần chưa giao. Giá trị hàng rút được ghi có cho khách (cấn trừ công nợ trước, phần còn lại là số
+>   dư) và đánh dấu cần hoá đơn điều chỉnh.
+> - Cổng khách chỉ thấy ảnh khách gửi (không thấy ảnh của kho, QC), và chỉ thấy số tiền/số hàng bù khi đã được người
+>   thứ hai duyệt.
+> - Giới hạn còn lại: một dòng trả hàng chỉ ghi được một lô qua mọi kiện (dòng nhặt từ hai lô trả về đủ thì chưa ghi
+>   đúng lô) - cần làm tiếp.
+> - Hàng thay thế lại lỗi: phiếu mới trên đơn thay thế được tính theo **giá của đơn gốc**, tiền ghi vào đơn gốc.
+> - Sales mở được phiếu tiếp theo trên đơn đã COMPLETED / REFUNDED / PARTIALLY_REFUNDED; đơn còn nợ thì không CLOSED.
+> - Báo cáo doanh thu trừ phần đã ghi có cho khách vào ngày đặt của đơn đã thanh toán; đơn thay thế không tính là
+>   doanh số.
+
 ---
 
 ## `F-RTO` Hàng hoàn về vì giao không thành công
@@ -890,6 +925,51 @@ flowchart LR
 > · Điều phối chọn một trong ba: phân bổ lại từ vị trí khác, tách đơn, hoặc huỷ dòng đó.
 > · Chênh lệch giữa allocated và thực tế nhặt được luôn kèm một cycle_count tự động cho vị trí đó.
 > · Đã cài (SCRUM-152): `POST /fulfillment/tasks/{id}/pick-lines/{lineId}/short` (dòng → SHORT, đơn → ON_HOLD lý do `INVENTORY` — tên trong code của `INVENTORY_ISSUE`, enum `HoldReason` từ G3-2 — không ghi stock_movement) và `.../reallocation` (Điều phối/QL kho: nhả allocation cũ `SHORT_PICKED`, phân bổ lại FEFO ở bin khác cùng kho, dòng cũ → CANCELLED giữ `short_qty`, thêm dòng mới; hết dòng SHORT thì đơn quay lại IN_FULFILMENT). Báo thiếu còn tự mở phiếu kiểm kê mù `SHORT_PICK` cho đúng bin/SKU/lô (hoặc đúng thùng) — trừ khi ô đã bận: nằm trên phiếu khác còn mở, hoặc trên phiếu đã nộp mà chênh lệch còn chờ duyệt (kể cả phiếu MANUAL), thì dùng lại phiếu đó; xem ở `GET /api/v1/inventory/cycle-counts`, NV kho xem được, màn hình kiểm kê không hiện số sổ sách cho họ. Khi phiếu còn mở, phần tồn chưa giữ của bin/SKU/lô đó bị khoá: không tính vào ATP, không phân bổ FEFO (quyết định 19/10/2026); QL kho huỷ phiếu bằng `POST /api/v1/inventory/cycle-counts/{id}/cancellation` để mở khoá. Đếm và hạch toán chênh lệch theo `F-CNT` (SCRUM-146): sau khi phiếu được nộp, khoá vẫn giữ cho tới khi mọi điều chỉnh `COUNT_VARIANCE` của dòng đó được duyệt hoặc từ chối — nếu không, giữa lúc nộp và lúc duyệt hệ thống lại hứa bán đúng những đơn vị picker không tìm thấy. Tách đơn và huỷ dòng chưa làm (để story sau).
+> · Hàng **hỏng** (không phải thiếu) phát hiện lúc nhặt đi theo `X-DMG` bên dưới: dòng không thành SHORT cho toàn bộ, chỉ phần hỏng, và hệ thống tự phân bổ lại ngay trong cùng giao dịch; chỉ khi không còn hàng thì mới rơi vào nhánh SHORT + ON_HOLD của X-SHORT.
+
+---
+
+## `X-DMG` Hàng hỏng — báo hỏng có ảnh, cách ly, quyết định xử lý
+
+*WBS 3.6.5.1 · BR-STK-003 · SCRUM-475 (báo hỏng trên kệ), SCRUM-277 (báo hỏng lúc nhặt)*
+
+Hàng vỡ/nứt, móp méo, ẩm mốc/ướt, bẩn/in lỗi được phát hiện trên kệ, ngay lúc nhặt, hoặc ở bàn đóng gói (hàng đã nhặt, vỡ trong thùng). Hàng hỏng phải rời ATP ngay, được tách khỏi hàng tốt cả trên sổ lẫn ngoài sàn, và chỉ quản lý kho (không phải người báo) mới được quyết định hủy, trả nhà cung cấp hay phục hồi.
+
+```mermaid
+flowchart LR
+    N0(["NV kho / QC / người nhặt"])
+    N1["inventory<br><small>sf_inventory</small>"]
+    N2["fulfillment<br><small>sf_fulfillment</small>"]
+    N3["order<br><small>sf_order</small>"]
+    N4(["Quản lý kho"])
+    N0 -->|"báo hỏng + ảnh (trên kệ)"| N1
+    N0 -->|"báo hỏng + ảnh (dòng nhặt)"| N2
+    N2 -->|"cùng giao dịch"| N1
+    N2 -->|"giữ chỗ mới / ON_HOLD(INVENTORY)"| N3
+    N4 -->|"hủy / trả NCC / phục hồi"| N1
+    N1 -.->|"StockDamageReported, StockDamageDisposed"| N3
+```
+
+| # | Service | Ghi vào | Kết quả |
+|---|---|---|---|
+| 01 | `inventory` | `+ stock_damage_report, + stock_damage_photo × 1..5` | biên bản hàng hỏng `DMG-yyyyMMdd-nnnn`, ảnh lưu trong MinIO (`qc-evidence`) |
+| 02 | `inventory` | `~ stock_item.on_hand −` (dòng nguồn), `+/~ stock_item` DAMAGED ở khu `QUARANTINE`, `+ stock_movement` MOVE | AVAILABLE → DAMAGED, rời ATP ngay |
+| 03 | `fulfillment` | `~ pick_line` (CANCELLED, `damaged_qty`), `+ pick_line × N` | chỉ khi báo lúc nhặt: dòng phần tốt + dòng thay thế, hoặc dòng SHORT |
+| 04 | `inventory` | `~ stock_reservation` (giảm/đóng DAMAGED), `+ stock_reservation` | phân bổ lại FEFO, hoặc giữ chỗ "bị ảnh hưởng" trên hàng hỏng |
+| 05 | `order` | `~ order_line_reservation`, `~ order.status` | dòng đơn nhận giữ chỗ mới; không còn hàng → ON_HOLD(INVENTORY) |
+| 06 | `inventory` | `+ stock_damage_disposition`, `+ stock_adjustment` (POSTED), `+ stock_movement` ADJUSTMENT | hủy: biên bản hủy `WO-yyyyMMdd-nnnn`, tồn giảm |
+| 07 | `inventory` | `+ stock_damage_disposition`, `~ stock_item`, `+ stock_movement` MOVE | phục hồi: DAMAGED → AVAILABLE lên một ô kệ |
+| 08 | `inventory` | `+ stock_damage_supplier_shipment`, `~ stock_item.on_hand −`, `+ stock_movement` SUPPLIER_RETURN | trả NCC: giao hàng cho NCC/nhà xe theo số phiếu xuất trả, hàng rời khu cách ly và rời sổ |
+| 09 | `notification` | `+ user_notification` (in-app), email | quản lý kho (cần quyết định), điều phối (đơn bị ON_HOLD), kế hoạch tồn kho (giữ chỗ vượt tồn tự do) |
+
+> ★ Ít nhất một ảnh và một lý do (OTHER phải có ghi chú) — BR-STK-003, kiểm ở aggregate và ở DB (`tg_stock_damage_report_photo`). Lỗi lưu ảnh → không đổi tồn, ảnh đã lưu bị xoá khi rollback.
+> ★ Báo hỏng trên kệ chỉ lấy hàng **chưa được giữ chỗ** (`DAMAGE_EXCEEDS_FREE_STOCK`); hàng đã phân bổ cho đơn do người nhặt báo ở bước nhặt, để đơn biết ngay trong cùng giao dịch. Giữ chỗ của sản xuất/điều chuyển không bao giờ bị lấy; phôi hỏng trong xưởng in vẫn theo luồng ghi hủy của sản xuất.
+> ★ Hàng hỏng luôn chuyển sang một khu `QUARANTINE` của cùng kho (người báo chọn, hoặc khu đầu tiên theo mã còn nhận được lớp hàng này): một lớp nhận hàng chỉ có một dòng tồn mỗi vị trí, và hàng hỏng phải tách khỏi hàng tốt. Hàng trong thùng (LPN) ra khỏi thùng: thùng mở, hoặc CONSUMED khi hết.
+> · Lúc nhặt (`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/damage`, chỉ người được giao, đúng kho, đúng ô): khoá pick → đơn → tồn. Dòng cũ CANCELLED với `damaged_qty`; phần tốt thành dòng OPEN mới cùng ô cùng allocation; phần hỏng được phân bổ lại FEFO trong kho (kể cả chính ô đó — số đếm ở đó không bị nghi ngờ như nhặt thiếu) thành các dòng OPEN mới, đơn tiếp tục PICKING. Không còn hàng → dòng SHORT mang giữ chỗ "bị ảnh hưởng" nằm trên hàng hỏng (không ai nhặt được), đơn ON_HOLD(INVENTORY); Điều phối gọi `.../reallocation` như X-SHORT khi có hàng, đơn tự quay lại.
+> · Ở bàn đóng gói (`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/damage-after-pick`, người đang đóng gói phiên đó hoặc quản lý, quyền `fulfillment-packing:UPDATE`): hàng đã nhặt (đã trừ tồn lúc nhặt) quay lại sổ dưới dạng DAMAGED ở khu cách ly bằng một dòng `PUT_BACK` (tham chiếu `DAMAGE_REPORT`), không bao giờ nhiều hơn số dòng nhặt đã lấy. Hàng đang nằm trong kiện phải lấy ra trước (`PACK_DAMAGED_UNITS_PACKED`). Đơn được bù như lúc nhặt (phân bổ lại FEFO, hoặc giữ chỗ "bị ảnh hưởng" + dòng SHORT, đơn ON_HOLD); nhiệm vụ nhặt quay về PICKING để nhặt dòng mới, đóng gói chờ đến khi nhặt xong lại. Dòng nhặt cũ giữ `packing_damaged_qty`: đóng gói không tính các đơn vị đó nữa, huỷ đơn thì chỉ cất lại phần còn lại.
+> · Quyết định (`POST /api/v1/inventory/damage-reports/{id}/dispositions`, quyền `inventory-damage-reports:APPROVE`, không phải người báo): có thể chia nhiều lần theo số lượng. Hủy = phiếu điều chỉnh DAMAGED do người báo đề nghị, quản lý duyệt và ghi sổ ngay. Trả NCC = ghi nhận ý định (NCC lấy từ lô), hàng vẫn DAMAGED ở khu cách ly cho đến khi quản lý ghi nhận đã giao cho NCC (`.../dispositions/{dispositionId}/supplier-shipment`, kèm số phiếu xuất trả): giao một lần hoặc nhiều đợt, mỗi đợt rời sổ bằng một dòng `SUPPLIER_RETURN`; NCC từ chối (`.../supplier-refusal`, ghi câu trả lời) thì số đó quay về chờ quyết định lại. Biên bản đã quyết hết nhưng còn hàng chờ giao NCC có trạng thái AWAITING_SUPPLIER. Phiếu ghi nợ NCC là việc của procurement (chưa làm). Phục hồi = lên ô kệ AVAILABLE, phải có ghi chú. Phần hàng đang giữ chỗ cho một đơn (giữ chỗ "bị ảnh hưởng") được bảo vệ theo từng biên bản: không hủy, không trả NCC được (`DAMAGED_STOCK_HELD`); nếu kiểm lại thấy hàng vẫn tốt thì "phục hồi toàn bộ phần còn lại" sẽ trả hàng lại cho đơn - giữ chỗ đi theo hàng lên ô kệ và lần phân bổ lại dòng thiếu của Điều phối giữ nguyên nó.
+> · Báo hỏng hàng đã nhặt được cả khi nhiệm vụ còn đang nhặt (vỡ trong thùng nhặt) lẫn ở bàn đóng gói, kể cả khi đơn đang tạm giữ (không được khi đơn đã huỷ). Nhiệm vụ nhặt quay lại PICKING có thể giao cho người khác (`PUT /fulfillment/tasks/{id}/assignment`).
+> · Giữ chỗ mềm lúc checkout (SKU reservation) không gắn hàng cụ thể: nếu hàng hỏng làm tổng giữ chỗ vượt hàng tự do, `StockDamageReported.skuReservationShortfall` báo số thiếu; lúc release đơn sẽ báo `INSUFFICIENT_STOCK` như mọi trường hợp thiếu hàng.
 
 ---
 

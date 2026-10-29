@@ -39,6 +39,12 @@ public final class PickLine {
     private String lpn;
     /** The hold was the carton's whole sealed content when planned: a hint for the picker, not a rule. */
     private boolean wholeCarton;
+    /** Units the picker found damaged at the bin (SCRUM-277); positive only on the line a damage report superseded. */
+    private int damagedQty;
+    /** The damage report that superseded this line, or that created it; null otherwise. */
+    private UUID damageReportId;
+    /** Units of a picked line found damaged at the packing bench (R8): back in quarantine, no longer this line's. */
+    private int packingDamagedQty;
 
     /** Rehydrates a stored line that was never short. */
     public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
@@ -101,6 +107,47 @@ public final class PickLine {
         this.wholeCarton = wholeCarton;
     }
 
+    /**
+     * Rehydrates a stored line with what a damage report recorded on it ({@code ck_pick_line_damaged}) and the units
+     * found damaged at packing ({@code ck_pick_line_packing_damaged}).
+     */
+    public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
+                    String lotNumber, int sequenceNo, int allocatedQty, int pickedQty, PickLineStatus status,
+                    UUID pickedBy, Instant pickedAt, Instant consumedAt, String scannedLocationCode,
+                    String scannedCode, int putBackQty, String putBackLocationCode, UUID putBackBy,
+                    Instant putBackAt, int shortQty, String lpn, boolean wholeCarton, int damagedQty,
+                    UUID damageReportId, int packingDamagedQty) {
+        this(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, pickedQty, status,
+                pickedBy, pickedAt, consumedAt, scannedLocationCode, scannedCode, putBackQty, putBackLocationCode,
+                putBackBy, putBackAt, shortQty, lpn, wholeCarton);
+        if (damagedQty < 0 || pickedQty + shortQty + damagedQty > allocatedQty
+                || damagedQty > 0 && (status != PickLineStatus.CANCELLED || damageReportId == null)) {
+            throw new IllegalArgumentException("Only a line a damage report superseded carries damaged units");
+        }
+        if (packingDamagedQty < 0 || packingDamagedQty > pickedQty || packingDamagedQty > 0
+                && status != PickLineStatus.PICKED && status != PickLineStatus.PUT_BACK) {
+            throw new IllegalArgumentException("Only units a line picked are found damaged at packing");
+        }
+        this.damagedQty = damagedQty;
+        this.damageReportId = damageReportId;
+        this.packingDamagedQty = packingDamagedQty;
+    }
+
+    /**
+     * A line a damage report made (SCRUM-277): the good units still to pick at the bin, a replacement allocation
+     * elsewhere (OPEN, {@code shortQty} 0), or the damaged share nothing could replace (SHORT by all of it, waiting for
+     * the coordinator's reallocation like any short line). {@code lpn} is the carton its hold is in, null for loose
+     * stock (SCRUM-473; {@code tg_pick_line_carton}). Package-private: only {@link PickList} plans lines.
+     */
+    static PickLine fromDamage(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
+                               String lotNumber, int sequenceNo, int allocatedQty, boolean shortOfAll,
+                               UUID damageReportId, String lpn, boolean wholeCarton) {
+        return new PickLine(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, 0,
+                shortOfAll ? PickLineStatus.SHORT : PickLineStatus.OPEN, null, null, null, null, null, 0, null, null,
+                null, shortOfAll ? allocatedQty : 0, lpn, wholeCarton, 0,
+                Objects.requireNonNull(damageReportId, "damageReportId"), 0);
+    }
+
     /** A new line, open, nothing picked. Package-private: only {@link PickList} plans lines. */
     static PickLine open(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
                          String lotNumber, int sequenceNo, int allocatedQty, String lpn, boolean wholeCarton) {
@@ -129,7 +176,7 @@ public final class PickLine {
 
     void putBack(String location, UUID actor, Instant now) {
         this.status = PickLineStatus.PUT_BACK;
-        this.putBackQty = pickedQty;
+        this.putBackQty = goodQty();
         this.putBackLocationCode = Objects.requireNonNull(location, "location");
         this.putBackBy = Objects.requireNonNull(actor, "actor");
         this.putBackAt = Objects.requireNonNull(now, "now");
@@ -154,6 +201,35 @@ public final class PickLine {
         this.status = PickLineStatus.CANCELLED;
     }
 
+    /**
+     * The picker found {@code damaged} of the allocated units damaged (SCRUM-277): the line gives way to the lines
+     * the damage report made, and keeps the damaged units and the report on record.
+     */
+    void supersedeForDamage(int damaged, UUID reportId) {
+        if (damaged < 1 || damaged > allocatedQty) {
+            throw new IllegalArgumentException("A line is damaged by 1.." + allocatedQty + " units");
+        }
+        this.status = PickLineStatus.CANCELLED;
+        this.damagedQty = damaged;
+        this.damageReportId = Objects.requireNonNull(reportId, "reportId");
+    }
+
+    /**
+     * The packer found {@code damaged} more of the units this line picked damaged (R8): they went back into stock, in
+     * quarantine, and are no longer the line's to pack or to put back.
+     */
+    void damagedAfterPick(int damaged) {
+        if (status != PickLineStatus.PICKED || damaged < 1 || damaged > goodQty()) {
+            throw new IllegalArgumentException("A picked line is found damaged by 1.." + goodQty() + " units");
+        }
+        this.packingDamagedQty += damaged;
+    }
+
+    /** What the line picked and still has: picked, less what was found damaged at packing. */
+    public int goodQty() {
+        return pickedQty - packingDamagedQty;
+    }
+
     public UUID id() { return id; }
     public UUID orderLineId() { return orderLineId; }
     public UUID reservationId() { return reservationId; }
@@ -176,4 +252,7 @@ public final class PickLine {
     public int shortQty() { return shortQty; }
     public String lpn() { return lpn; }
     public boolean wholeCarton() { return wholeCarton; }
+    public int damagedQty() { return damagedQty; }
+    public UUID damageReportId() { return damageReportId; }
+    public int packingDamagedQty() { return packingDamagedQty; }
 }

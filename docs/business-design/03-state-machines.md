@@ -207,10 +207,12 @@ stateDiagram-v2
     QUARANTINE --> AVAILABLE: re-inspected and accepted, then put away
     QUARANTINE --> BLOCKED: re-inspected and rejected
     BLOCKED --> [*]: returned to vendor
-    AVAILABLE --> DAMAGED: damage reported
+    AVAILABLE --> DAMAGED: damage reported (moved to a QUARANTINE area)
     AVAILABLE --> EXPIRED: expiry date passes
     AVAILABLE --> QUARANTINE: recall or re-inspection
+    DAMAGED --> AVAILABLE: re-inspected, fine (restored onto a bin)
     DAMAGED --> [*]: written off
+    DAMAGED --> [*]: handed back to the supplier
     EXPIRED --> [*]: written off
 ```
 
@@ -222,10 +224,17 @@ stateDiagram-v2
 | QUARANTINE | AVAILABLE | re-inspection accepts | QC staff | then putaway from the `QUARANTINE` area | `StockReleasedFromQuarantine` |
 | QUARANTINE | BLOCKED | re-inspection rejects | QC staff | reason given | `StockBlocked(BLOCKED)` |
 | BLOCKED | left stock | return to vendor | Procurement staff | movement out of the warehouse | `ReturnToVendorRaised` |
-| AVAILABLE | DAMAGED | report damage | Warehouse staff | reason and photo (BR-STK-003) | `StockBlocked(DAMAGED)` |
+| AVAILABLE | DAMAGED | report damage on a shelf | Warehouse / QC staff (`inventory-damage-reports:CREATE`) | reason and 1-5 photos (BR-STK-003); free units only | `StockDamageReported` |
+| AVAILABLE | DAMAGED | report damage at a pick line's bin | the task's picker (`fulfillment-picking:UPDATE`) | reason and photos; units of the line's allocation | `StockDamageReported` |
+| (picked, off the books) | DAMAGED | report damage at the packing bench | the session's packer or a manager (`fulfillment-packing:UPDATE`) | reason and photos; units the pick line took, out of every parcel; never more than it took | `StockDamageReported` |
 | AVAILABLE | EXPIRED | nightly sweep | system | `expiry_date < today` (BR-STK-004) | `StockBlocked(EXPIRED)` |
 | AVAILABLE | QUARANTINE | recall | Warehouse manager | reason given | `StockBlocked(QUARANTINE)` |
-| DAMAGED / EXPIRED | written off | write-off | Warehouse manager | approved adjustment (BR-STK-005) | `StockWrittenOff` |
+| DAMAGED | written off | decision WRITE_OFF | Warehouse manager (`inventory-damage-reports:APPROVE`), never the reporter | the units unheld; a DAMAGED adjustment posted at once (BR-STK-005) | `StockDamageDisposed` |
+| DAMAGED | (stays, earmarked) | decision RETURN_TO_SUPPLIER | Warehouse manager, never the reporter | note; intent until handed over (see below) | `StockDamageDisposed` |
+| DAMAGED (earmarked) | left stock | hand-over to the supplier under a delivery note | Warehouse manager (`inventory-damage-reports:APPROVE`) | some or all of the units of the decision, never more; unheld | — |
+| DAMAGED (earmarked) | DAMAGED (undecided again) | the supplier refused (or took fewer) | Warehouse manager | the supplier's answer in the note | — |
+| DAMAGED | AVAILABLE | decision RESTORE | Warehouse manager, never the reporter | note; onto an active bin of the warehouse; not expired. Units an order's impaired allocation holds go back only with everything left of the report: the allocation goes onto the bin with them, and the coordinator's reallocation keeps it there | `StockDamageDisposed` |
+| EXPIRED | written off | write-off | Warehouse manager | approved adjustment (BR-STK-005) | `StockWrittenOff` |
 
 **Only AVAILABLE counts towards ATP.** That single sentence is the reason this dimension is separate
 from the quantity buckets: inbound, quarantined and blocked stock is on hand, occupies its location, appears in a
@@ -235,6 +244,53 @@ physical count, and is invisible to the storefront.
 to DAMAGED or EXPIRED, the reservation is *not* silently dropped — `inventory-service` emits
 `ReservationImpaired`, and `order-service` puts the order on hold with reason
 `INVENTORY_ISSUE` (WBS 3.17.6.1). Dropping it quietly is how a paid order never ships.
+
+**As built for DAMAGED (SCRUM-475, SCRUM-277; 2026-10-24).** One document, the damage report
+(`inventory.stock_damage_report`, number `DMG-yyyyMMdd-nnnn`), records what, how many, why (BROKEN, DEFORMED,
+WET_OR_MOULDY, DIRTY_OR_MISPRINTED, OTHER with a note), who, and 1-5 photos (category `qc-evidence`, checked by
+their first bytes, deleted again if the report fails). Expired goods are never "damaged": they are the sweep's.
+
+- **Where the units go.** The damaged units leave their row and move, DAMAGED, to a QUARANTINE area of the same
+  warehouse - the one the reporter names, or the first usable one by code that can take them - with one `MOVE`
+  ledger line (reference `DAMAGE_REPORT`, AVAILABLE → DAMAGED). They cannot stay "DAMAGED at the bin": a receipt
+  layer has one row per location whatever its status, and damaged goods belong apart from good ones on the floor too.
+  A carton (stock package) they came out of is opened, or closed CONSUMED when emptied; they arrive loose.
+- **Holds are never broken behind their owner's back.** A shelf report takes free units only (`DAMAGE_EXCEEDS_FREE_STOCK`
+  otherwise): held units are reported where they are taken. A picker's report takes units of the line's
+  allocation and makes the order whole in the same transaction: the same quantity is allocated again FEFO on
+  pickable stock of the warehouse (the bin included - its count is not in doubt, unlike a short pick's), or, when
+  there is none, the order keeps that share as an **impaired allocation** on the damaged units - never pickable,
+  its pick line SHORT, the order ON_HOLD (`INVENTORY`) - until the coordinator reallocates it (the X-SHORT
+  endpoint). Checkout reservations hold no units: when the damage leaves them promising more than the free stock,
+  `StockDamageReported.skuReservationShortfall` says by how much, and their release refuses as it would for any
+  shortage. Production holds (blanks in storage) and transfer holds are never taken by a shelf report; blanks
+  spoilt in the print shop keep production's own scrap write-off.
+- **Found after the pick** (origin `PACKING`): units a pick line already took - broken in the tote while the task is
+  still picked, or seen at the packing bench - were deducted when picked; reported whatever hold the order is on, as
+  long as it is not cancelled (a cancelled order's goods are put back, then reported on the shelf). They come back into stock as DAMAGED in quarantine with one `PUT_BACK`
+  ledger line from nowhere (reference `DAMAGE_REPORT`), never more than the pick took
+  (`tg_stock_damage_report_after_pick`); the consumed hold stays consumed. The order is made whole as at picking -
+  replacement FEFO or an impaired allocation - and the pick task goes back to PICKING for the new lines; the picked
+  line keeps the damaged units on record (`pick_line.packing_damaged_qty`), so packing no longer counts them and a
+  cancelled order puts back only the rest. Units already in a parcel are taken out of it first
+  (`PACK_DAMAGED_UNITS_PACKED`). A task back at picking can be handed to someone else
+  (`PUT /fulfillment/tasks/{id}/assignment` while PENDING or PICKING): its picker may have gone home.
+- **Who hears of it.** The warehouse managers of the warehouse (they decide), the order coordinators when an order
+  is ON_HOLD for it, the inventory planners when checkout reservations now exceed free stock: in-app, then e-mail
+  best effort (`StockDamageNotificationListener`).
+- **Decisions, four eyes.** A warehouse manager who did not report decides some or all units (several decisions
+  per report, never more units than reported): WRITE_OFF posts a DAMAGED stock adjustment at once - the reporter
+  as requester, the manager as approver - and numbers the destruction record (`WO-yyyyMMdd-nnnn`);
+  RETURN_TO_SUPPLIER records the intent (supplier from the lot when known) and the units stay DAMAGED in quarantine
+  until a manager records them handed to the supplier or their carrier under a delivery note
+  (`POST /damage-reports/{id}/dispositions/{dispositionId}/supplier-shipment`, `stock_damage_supplier_shipment`): in
+  one or several parts, off the books with one `SUPPLIER_RETURN` ledger line each. Units the supplier refuses
+  (`.../supplier-refusal`, with its answer) stay in quarantine and wait for a decision again. A report whose units are
+  all decided but some still wait for the supplier reads AWAITING_SUPPLIER (a list filter of its own). The debit note
+  to the supplier is procurement's, from `StockDamageDisposed` (not built). RESTORE moves them back onto a bin as
+  AVAILABLE. Units an impaired allocation holds are guarded per report, not per row (several reports' units share one
+  DAMAGED row of a layer): a write-off or a return never takes them (`DAMAGED_STOCK_HELD`); restoring everything left
+  gives them back to the order - the allocation rides onto the bin, and reallocating the short line keeps it there.
 
 ---
 
@@ -267,7 +323,8 @@ stateDiagram-v2
 (`stock_item_id` NULL) is the HELD row above: checkout, payment pin/re-arm, expiry sweep, cancellation. Release
 to a warehouse turns it ALLOCATED and writes one allocation per bin and lot (`stock_item_id` set,
 `allocated_from_id` = the reservation, `expires_at` NULL); each allocation then goes HELD → CONSUMED (pick) or
-RELEASED (cancel, or `SHORT_PICKED` when X-SHORT reallocates it elsewhere). The order line swaps the reservation id
+RELEASED (cancel, `SHORT_PICKED` when X-SHORT reallocates it elsewhere, or `DAMAGED` when a picker reports all of its
+units damaged; for part of them it keeps its id over fewer units, SCRUM-277 - see §5). The order line swaps the reservation id
 for the allocation ids. Production holds and checkout holds placed before this change are stock-item rows that
 were never SKU reservations; they keep their old lifecycle.
 
@@ -394,8 +451,8 @@ stateDiagram-v2
     DELIVERY_FAILED --> PARTIALLY_FULFILLED: one came back, others arrived
     DELIVERED --> COMPLETED: return window passed, paid, no RMA open
     DELIVERED --> RETURN_REQUESTED: RMA
-    RETURN_REQUESTED --> RETURNED
-    RETURN_REQUESTED --> DELIVERED: RMA refused (decision 2026-10-21)
+    RETURN_REQUESTED --> RETURNED: last return ended, money given back
+    RETURN_REQUESTED --> DELIVERED: last return ended without money (refused 2026-10-21, withdrawn, expired, replaced)
     RETURNED --> REFUNDED
     RETURNED --> PARTIALLY_REFUNDED
     COMPLETED --> CLOSED: after 30 days
@@ -430,7 +487,9 @@ stateDiagram-v2
 | CONFIRMED … PACKED, PARTIALLY_FULFILLED | ON_HOLD | `POST /orders/{id}/hold` (coordinator), design mismatch at packing (system), credit check (system) | reasons PAYMENT, ADDRESS, INVENTORY, CUSTOMER, FRAUD, OTHER (with note) by hand; CREDIT, DESIGN_MISMATCH by the system |
 | ON_HOLD | `status_before_hold` | `POST /orders/{id}/hold/resolution` | note required; a CREDIT hold → `ORDER_CREDIT_HOLD_USE_APPROVAL`; the trigger refuses leaving a hold anywhere else |
 | DELIVERED | COMPLETED | `OrderSettlementJob` nightly | `delivered_at` + `stockflow.order.return-window-days` (7, BR-ORD-005) passed, nothing owed, no return request open |
-| COMPLETED / REFUNDED / PARTIALLY_REFUNDED | CLOSED | `OrderSettlementJob` | `stockflow.order.close-after-days` (30, G3-Q1) passed |
+| DELIVERED | RETURN_REQUESTED | `ReturnRequestService` opening a return (SCRUM-243, §12) | under the order's row lock, so a return and the nightly completion see each other |
+| RETURN_REQUESTED | DELIVERED / RETURNED → REFUNDED, PARTIALLY_REFUNDED | `ReturnRequestService` when the order's last open return ends (§12) | money given back (refunded, credited, set off) ≥ what the order is worth → REFUNDED, less → PARTIALLY_REFUNDED, none → DELIVERED |
+| COMPLETED / REFUNDED / PARTIALLY_REFUNDED | CLOSED | `OrderSettlementJob` | `stockflow.order.close-after-days` (30, G3-Q1) passed, no return request open |
 
 **Split shipments (decision G4-Q3, 2026-10-19).** The order records each shipment it is told of
 (`ordering.order_shipment`, `_line`): the units, their value, the outcome. A credit order bills each delivered
@@ -690,38 +749,103 @@ G4-Q3; a mixed order's stock lines first, decision 2026-10-21) with a reason, th
 
 ## 12. RMA — `order-service`
 
-WBS 3.17.5.
+WBS 3.17.5. **Implemented 2026-10-25 (SCRUM-243 / SCRUM-260, GitHub #192), corrected after the review of the same day
+(R1–R14).** The aggregate is `order.internal.domain.ReturnRequest` (`ordering.return_request`, `return_request_line`;
+migrations `V20261028020000`, `V20261028020100`, `V20261028020200`); the transition table is
+`ReturnStatus.canTransitionTo`; every change is a row of `ordering.return_request_status_history` (who, why) and an
+`@Auditable` entry. SCRUM-243 narrowed returns to **production defects and delivery faults** (B2B plan 2026-10-06): a
+change of mind is refused (configurable for stock items only, off by default).
+
+Every deadline is a **calendar day in Vietnam time** (`BusinessCalendar`, Asia/Ho_Chi_Minh): a window of N days after
+an event closes at the end of the N-th day after the day it happened, not N × 24 hours later.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> REQUESTED
-    REQUESTED --> APPROVED: sales approves
-    REQUESTED --> REJECTED: outside policy
-    APPROVED --> AWAITING_RETURN: return instructions sent
-    AWAITING_RETURN --> RECEIVED: parcel arrives
-    AWAITING_RETURN --> EXPIRED: never returned
-    RECEIVED --> INSPECTED: QC inspects
-    INSPECTED --> REFUNDED: refund issued
-    INSPECTED --> EXCHANGED: replacement shipped
-    INSPECTED --> REJECTED: goods not as described
-    REFUNDED --> [*]
-    EXCHANGED --> [*]
+    [*] --> REQUESTED: customer (portal) or Sales opens it
+    REQUESTED --> AWAITING_RETURN: approved, goods come back
+    REQUESTED --> INSPECTED: approved, goods stay (low value, or a short delivery)
+    REQUESTED --> REJECTED: refused (outside policy)
+    REQUESTED --> CANCELLED: withdrawn
+    AWAITING_RETURN --> RECEIVED: first parcel counted into quarantine
+    AWAITING_RETURN --> CANCELLED: withdrawn before sending
+    AWAITING_RETURN --> EXPIRED: deadline passed (hourly sweep)
+    RECEIVED --> RECEIVED: a later parcel
+    EXPIRED --> RECEIVED: the goods arrive late after all
+    CANCELLED --> RECEIVED: goods of an approved return arrive after it was withdrawn
+    RECEIVED --> INSPECTED: QC accepts at least one unit
+    RECEIVED --> REJECTED: QC finds no defect
+    INSPECTED --> SETTLEMENT_PENDING: remedy proposed (replacement, money or both)
+    SETTLEMENT_PENDING --> RESOLVED: approved by a second person
+    SETTLEMENT_PENDING --> INSPECTED: sent back
+    RESOLVED --> [*]
     REJECTED --> [*]
-    EXPIRED --> [*]
 ```
 
-| From | To | Trigger | Actor | Guard | Event |
+`CANCELLED` and `EXPIRED` are final for the paperwork but not for the goods: a parcel that turns up anyway is counted
+in (it is in the warehouse, so it must be on the books) and the return goes on from `RECEIVED` - unless the order was
+CLOSED meanwhile: CLOSED is final (BR-05), so the warehouse refuses that parcel (`RETURN_ORDER_NOT_RETURNABLE`) and Sales
+deals with the customer outside the return.
+
+Staff limited to warehouses (scope WAREHOUSE: warehouse staff, manager, QC) list, read and add photos to the returns of
+orders their warehouses shipped only (BR-SEC-002); the return has no warehouse of its own, its order's is the one that
+takes the goods back.
+
+| From | To | Trigger · endpoint | Actor (permission) | Guard | Event |
 |---|---|---|---|---|---|
-| — | REQUESTED | open RMA | Customer / Sales staff | order DELIVERED, within window (BR-RMA-001) | `RmaRequested` |
-| REQUESTED | APPROVED | approve | Sales staff | reason in policy; **custom-printed items are not returnable unless defective** (BR-RMA-002) | `RmaApproved` |
-| APPROVED | AWAITING_RETURN | send return instructions | system | customer told to write the RMA number on the parcel; no return label (carriers are outside the system) | — |
-| AWAITING_RETURN | RECEIVED | parcel arrives | Warehouse staff | RMA number on parcel | `RmaGoodsReceived` |
-| RECEIVED | INSPECTED | inspect | QC staff | condition recorded | `RmaInspected` |
-| INSPECTED | REFUNDED | refund | Accountant | within refund limit | `RefundCompleted` |
-| INSPECTED | EXCHANGED | ship replacement | Order coordinator | replacement stock available | `ExchangeShipped` |
+| — | REQUESTED | open · `POST /orders/{id}/returns` | Customer on own order / Sales any (`sales-rmas:CREATE`) | order DELIVERED or RETURN_REQUESTED; Sales only, for a further claim: COMPLETED, REFUNDED, PARTIALLY_REFUNDED (the portal says the window closed, or to ask Sales); never CLOSED. Window: until the end of the `stockflow.order.return-window-days`-th calendar day after delivery (BR-RMA-001); Sales may accept a late claim with a reason (`lateClaimReason`, history reason `LATE_CLAIM_ACCEPTED`, `ck_return_request_window_override`), the portal never. Units ≤ delivered (ordered − closed) − what other returns of the line claim; one open return per order line; printed goods only for a named defect (BR-RMA-002): CHANGED_MIND and OTHER are refused for them (`RETURN_CUSTOM_ITEM_NOT_DEFECTIVE`, again in the trigger `check_return_request_line`) (SCRUM-243); portal account ACTIVE; idempotent on `requestId`. A claim on a replacement order is valued at the prices of the order it replaced (the replacement itself is free) | `ReturnRequested` |
+| REQUESTED | AWAITING_RETURN | approve · `POST /returns/{id}/approval` | Sales, coordinator (`sales-rmas:APPROVE`); a return Sales opened is approved by someone else (`RETURN_SELF_APPROVAL`, `ck_return_request_approval_four_eyes`) | at least one CLAIM photo, whatever the reason (a short delivery: the signed delivery note) - the customer's, or Sales' for them, `POST /returns/{id}/evidence`; approved ≤ asked per line, > 0 in total; deadline = end of the `returns.deadline-days`-th (14) calendar day after the approval. Return instructions = the RMA number on the parcel (no carrier API, no label) | `ReturnApproved` |
+| REQUESTED | INSPECTED | approve with `returnRequired=false` | as above | value (price × approved) plus what the order's other returns already left with the customer ≤ `returns.no-return-max-value` (2 000 000 VND) - the limit is per order, so a claim split into small returns still comes back - or SHORT_DELIVERY (nothing to send); never for a change of mind. The photos are the inspection: accepted = approved | `ReturnApproved` |
+| REQUESTED | REJECTED | reject · `POST /returns/{id}/rejection` | Sales (`sales-rmas:APPROVE`) | reason required | `ReturnRejected(REVIEW)` |
+| REQUESTED, AWAITING_RETURN | CANCELLED | `POST /returns/{id}/cancellation` | Customer (own) / Sales (`sales-rmas:UPDATE`) | only before the goods are counted in | `ReturnClosed(CANCELLED)` |
+| AWAITING_RETURN | EXPIRED | `ReturnExpirySweeper` (hourly, ShedLock) | system | the deadline day is over | `ReturnClosed(EXPIRED)` |
+| AWAITING_RETURN, RECEIVED, EXPIRED, CANCELLED (approved, goods expected) | RECEIVED | count a parcel · `POST /returns/{id}/receipt` with the return's `version` (a parcel sent twice is refused the second time, never counted as another parcel) | Warehouse staff / manager (`sales-rma-receipts:UPDATE`, scope WAREHOUSE) | into a QUARANTINE (else QUALITY_CONTROL) area of the order's warehouse, never a bin (OQ-12); a later parcel goes to the same area, with the same SKU and lot per line; one parcel at a time (`parcel_count`): per line the units and the SKU that actually arrived; another SKU, units beyond the approval, unexpected items are discrepancies at once, a shortfall only at inspection (more parcels may come). An EXPIRED or withdrawn return reopens (reason `RECEIVED_AFTER_DEADLINE` / `RECEIVED_AFTER_WITHDRAWAL`, the order back to RETURN_REQUESTED) - unless the order is CLOSED (`RETURN_ORDER_NOT_RETURNABLE`, BR-05) or the line's other returns claim the units meanwhile (`RETURN_LINE_ALREADY_OPEN`, `RETURN_QUANTITY_EXCEEDED`: Sales decides). Photos of the parcel as it arrived: `POST /returns/{id}/receipt-evidence` (stage RECEIPT, same permission, AWAITING_RETURN or RECEIVED). One lot per line: a later parcel of another lot is not counted in on the line (known limit, see below). Stock: `InventoryService.receiveReturn` → QUARANTINE layer, ledger `RETURN_IN` / `RETURN_REQUEST_LINE`, idempotent per line on its running total | `ReturnReceived` (with the parcel number; one e-mail per parcel) |
+| RECEIVED | INSPECTED / REJECTED | inspect · `POST /returns/{id}/inspection` | QC, warehouse manager (`sales-rma-inspections:UPDATE`) | while approved units have not all arrived, only with `noMoreParcels` (`RETURN_PARCELS_OUTSTANDING` otherwise): QC does not close a return on its first parcel; the shortfall is recorded then. Per line accepted + rejected = received, accepted ≤ approved. Accepted units: back on sale only when QC graded them GOOD or UNOPENED (`ck_return_request_line_restock_condition`) and confirms them plain stock (`plainStock`; never printed goods - BR-RMA-002 -, never another SKU than was delivered without QC's word; `ck_return_request_line_restock_plain`), onto a selling BIN of the receiving warehouse (`RETURN_RESTOCK_LOCATION_INVALID`), else scrapped (SCRAP adjustment). Rejected units are still the customer's: sent back to them, or scrapped only with their recorded consent (`disposalConsent`, `RETURN_DISPOSAL_CONSENT_REQUIRED`, `ck_return_request_line_customer_goods`), never put on sale. Adjustments approved by a second person (BR-STK-005). Nothing accepted → REJECTED: the customer reads `NO_DEFECT_FOUND`, QC's note stays with staff. QC's photos: `POST /returns/{id}/inspection-evidence` (stage INSPECTION, same permission, RECEIVED or INSPECTED) | `ReturnRejected(INSPECTION)` when rejected |
+| INSPECTED | SETTLEMENT_PENDING | propose · `POST /returns/{id}/resolution` | Sales, coordinator (`sales-rma-resolutions:UPDATE`) | per line replacement + credit = accepted; credit → mode REFUND or CREDIT_NOTE; REFUND refused for a customer with overdue receivables, and above what the order's own open receivables plus the money it received (less refunds already asked) can carry (`RETURN_REFUND_EXCEEDS_PAID` as Sales propose it - checked again at approval, money may have gone back meanwhile); a replacement needs an ACTIVE customer and, for printed goods, an approved sample or an earlier print run (BR-PRD-08). Every remedy waits for a second person, a free replacement too (history reason `SETTLEMENT_PROPOSED_REPLACEMENT`) | — |
+| SETTLEMENT_PENDING | RESOLVED | `POST /returns/{id}/settlement-approval` | Accountant (`sales-rma-resolutions:APPROVE`), never the proposer (four eyes; `ck_return_request_four_eyes`) | the replacement order is placed; payment books the money in the same transaction (`ReturnSettlement`) on the order that was paid - for a claim on a replacement order, the order it replaced | `ReturnResolved` |
+| SETTLEMENT_PENDING | INSPECTED | `POST /returns/{id}/settlement-rejection` | Accountant | reason required | — |
+| RESOLVED | RESOLVED (replacement withdrawn) | propose · `POST /returns/{id}/replacement-withdrawal`, then `.../replacement-withdrawal/approval` or `/rejection` | Sales proposes (`sales-rma-resolutions:UPDATE`), an accountant decides (`:APPROVE`), never the proposer | the replacement order is not packed yet - it is cancelled (`REPLACEMENT_WITHDRAWN`) - or it shipped in part (PARTIALLY_FULFILLED) - its rest is closed (`REMAINDER_CLOSED_REPLACEMENT_WITHDRAWN`) and the customer keeps what reached them; anything else is `RETURN_REPLACEMENT_NOT_WITHDRAWABLE`. The value of the units withdrawn (the claimed order's prices) is credited (CREDIT_NOTE, reference `<RMA>-W`: the order's open receivables first, the rest kept as the customer's credit), and flags the adjustment invoice (`vat_adjustment_required`) | `ReturnReplacementWithdrawn` |
+
+**Making accepted units good** (SCRUM-260):
+- **Replacement** ("in lại / giao bù"): a new order of the same customer at price 0 (`customer_order.replaces_return_request_id`,
+  `ck_order_replacement_free`), CONFIRMED at once with its stock (blanks for printed lines) held and pinned, released by
+  the coordinator and printed / picked / shipped / delivered like any order - production creates the reprint from the
+  release (`OrderLinesReleasedForProduction`), under its own rules. Each return line names the replacement line. A
+  replacement order is cancelled - or its rest closed, after a partial shipment - only by withdrawing it from its
+  return (above): never by the customer on the portal (`RETURN_REPLACEMENT_ORDER_LOCKED`), never with another reason
+  (`ck_order_replacement_cancellation`, `Order.closeRemainder`) - otherwise the return would say "made good by order X"
+  about goods that will never come, and the customer would get neither them nor the money.
+- **Money** = price × credited units, at the order's line prices (they carry any negotiated discount; tax is not stored
+  separately). Payment first reduces the order's own open receivables (credit orders, deposit balances on credit - not a
+  carrier's, not a fee) through a `RETURN_CREDIT` ledger entry (reference = RMA number, method `CREDIT_NOTE`); the rest is
+  either refunded - PENDING refunds of source RETURN on the money the order received, never more of a payment than is left
+  (`RETURN_REFUND_EXCEEDS_PAID` otherwise, nothing booked) - or kept as the customer's credit (CREDIT_NOTE), which pays their
+  next receivable or is refunded on request. An overdue receivable stays OVERDUE until settled in full.
+- **VAT**: money given back sets `vat_adjustment_required`; accounting issues the adjustment invoice (hóa đơn điều chỉnh
+  giảm, Nghị định 123/2020/NĐ-CP, Thông tư 78/2021/TT-BTC). There is no e-invoicing in the system.
+- **Reporting**: the credited value and units come off the sales of the day the paid order was placed
+  (`reporting.processed_return_events`, kept through a rebuild); a replacement order is never a sale.
+
+**The order follows its returns** (§9): DELIVERED → RETURN_REQUESTED when the first opens (it cannot complete, BR-ORD-005);
+when the last open one ends, back to DELIVERED if none gave money back (refused, withdrawn, expired, replaced only) - it
+then completes once its window has passed and it is paid - or RETURN_REQUESTED → RETURNED → REFUNDED (money ≥ what the
+order is worth) / PARTIALLY_REFUNDED. Sales may open a further claim on a COMPLETED, REFUNDED or PARTIALLY_REFUNDED order
+(→ RETURN_REQUESTED again); an order closes only when nothing is owed on it (`Order.close`), and a CLOSED order takes no
+return. Nightly closing waits while a return is open.
 
 Returned goods re-enter stock in condition **QUARANTINE**, never GOOD. Whether they become
-sellable again is a QC decision, not an automatic one.
+sellable again is a QC decision, not an automatic one - and never for goods printed to a customer's design.
+
+**What the customer sees** (portal): their own claim photos (never the warehouse's or QC's, nor a download link to
+them), the units at every step, and what is made good - replacement units, credited units and amounts - only once a
+second person approved it (RESOLVED): a proposal waiting for approval shows no amount, and accounting's flags are staff
+only.
+
+**Known limit**: a return line holds one SKU and one lot across all its parcels. A line picked from two lots that comes
+back in full is counted in under one lot (or the second lot is refused as another lot); per-lot return lines are a
+follow-up.
+
+Not built here (other stories): return shipping labels (SCRUM-259), carrier returns to origin (RTO, SCRUM-295), payout of
+refunds (SCRUM-220). E-mails: the notification module listens to the `Return*` events.
 
 ---
 

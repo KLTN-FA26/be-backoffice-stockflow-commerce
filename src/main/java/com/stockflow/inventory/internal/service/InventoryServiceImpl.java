@@ -107,6 +107,7 @@ class InventoryServiceImpl implements InventoryService {
     private final LocationDirectory locations;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
+    private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports;
 
     /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
     private final java.time.Duration reservationTtl;
@@ -117,12 +118,14 @@ class InventoryServiceImpl implements InventoryService {
                          SkuReservationRepository skuReservations, LocationDirectory locations,
                          com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
                          com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages,
+                         com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports,
                          @org.springframework.beans.factory.annotation.Value(
                                  "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
         if (reservationTtl == null || reservationTtl.isZero() || reservationTtl.isNegative()) {
             throw new IllegalArgumentException("stockflow.inventory.reservation-ttl must be positive");
         }
         this.stockPackages = stockPackages;
+        this.damageReports = damageReports;
         this.reservationTtl = reservationTtl;
         this.repository = repository;
         this.events = events;
@@ -199,6 +202,11 @@ class InventoryServiceImpl implements InventoryService {
     @Override
     public StockMove reclassify(ReclassifyStockCommand command) {
         return operations.reclassify(command);
+    }
+
+    @Override
+    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
+        return operations.receiveReturn(command);
     }
 
     @Override
@@ -586,6 +594,16 @@ class InventoryServiceImpl implements InventoryService {
         }
         policies.lock(view.sku().code());
         LocalDate today = BusinessCalendar.date(now);
+        if (restoredImpairment(shortId, now)) {
+            // A damage report's impaired allocation whose units a manager found fine and restored onto a bin, the
+            // order's share with them: a sound allocation on pickable stock now, nothing about that bin in doubt. Kept
+            // where it is; the short line gives way to one that picks it there.
+            StockItem current = repository.findByIdForUpdate(view.id()).orElseThrow();
+            Reservation hold = current.findReservation(shortId).orElseThrow();
+            log.info("Allocation {} of order {}: restored from damage at {}, kept for picking", shortId,
+                    command.orderId(), current.location());
+            return List.of(toApiReservation(current, hold));
+        }
         String warehouse = view.location().warehouseCode();
         List<StockAllocator.AllocationLine> lines = plan(view.sku(),
                 pickableCandidates(view.sku(), warehouse, view.location()), shortHold.quantity(), warehouse, today);
@@ -621,18 +639,32 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     /**
+     * Whether the allocation is a damage report's impaired share that went back onto good stock with its units
+     * (RESTORE of everything left): AVAILABLE, unexpired, on a pickable location of a layer no count has frozen.
+     * Read under the SKU lock.
+     */
+    private boolean restoredImpairment(ReservationId holdId, Instant now) {
+        if (!damageReports.isImpairedAllocation(holdId.value())) {
+            return false;
+        }
+        StockItem item = repository.findIdByReservationId(holdId).flatMap(repository::findById).orElseThrow();
+        LocalDate today = BusinessCalendar.date(now);
+        boolean frozen = cycleCounts.frozen(List.of(item.sku().code()), today).stream()
+                .anyMatch(layer -> layer.stockItemId().equals(item.id().value()));
+        return item.findReservation(holdId).map(r -> r.status().isActive()).orElse(false)
+                && item.status() == StockStatus.AVAILABLE
+                && !com.stockflow.inventory.internal.domain.ExpiryPolicy.isExpired(item.expiryDate(), today)
+                && !frozen
+                && locations.pickable(List.of(item.location().code())).containsKey(item.location().code());
+    }
+
+    /**
      * Sellable stock of the SKU on pickable, usable locations of one warehouse (module 06 BR-12), never at
      * {@code excluded}; read as projections, so nothing lands in the persistence context before the locked reads.
+     * The one definition, shared with the damage reported at picking: {@link PickableStock}.
      */
     private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, LocationId excluded) {
-        Set<StockItemId> frozen = frozenLayers(sku, BusinessCalendar.date(clock.instant()));
-        List<StockAllocator.Candidate> inWarehouse = repository.findAvailabilityBySku(sku).stream()
-                .filter(c -> c.location().warehouseCode().equals(warehouse))
-                .filter(c -> !c.location().equals(excluded))
-                .filter(c -> !frozen.contains(c.stockItemId()))
-                .toList();
-        Map<String, UUID> pickable = locations.pickable(inWarehouse.stream().map(c -> c.location().code()).toList());
-        return inWarehouse.stream().filter(c -> pickable.containsKey(c.location().code())).toList();
+        return new PickableStock(repository, locations, cycleCounts).candidates(sku, warehouse, excluded, clock.instant());
     }
 
     /**

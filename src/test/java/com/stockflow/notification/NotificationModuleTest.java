@@ -1,5 +1,6 @@
 package com.stockflow.notification;
 
+import com.stockflow.notification.api.CustomerDirectory;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.DisplayName;
@@ -9,6 +10,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.modulith.test.ApplicationModuleTest;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import java.util.Set;
 import java.util.UUID;
 
@@ -29,6 +31,12 @@ class NotificationModuleTest {
 
     @Autowired NotificationService notification;
     @Autowired ApplicationContext context;
+    /**
+     * Notification's own interface, implemented by the customer module (dependency inversion: customer depends on
+     * notification). Customer is not in this context, so its implementation is stood in for, as payment's module
+     * test does for OrderPayables. Not a widening: no other module is booted.
+     */
+    @MockitoBean CustomerDirectory customerDirectory;
 
     @Test
     @DisplayName("notification starts and answers through its api with the other modules absent")

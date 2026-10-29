@@ -68,6 +68,8 @@ public enum ErrorCode {
     SEGMENT_PRICE_NOT_FOUND("This customer group has no price for the SKU", 404),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
+    /** SCRUM-243: the units of a return do not add up (received, accepted and rejected, where they went, how made good). */
+    RETURN_QUANTITIES_INVALID("The quantities of this return do not add up", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
     /** The URL itself was refused before routing: {@code //}, an encoded {@code ..}, a {@code ;}. */
     REQUEST_REJECTED("The request URL is not acceptable", 400),
@@ -79,6 +81,8 @@ public enum ErrorCode {
     FORBIDDEN("Not authorised", 403),
     /** Distinct from FORBIDDEN: the action is allowed, but not on these rows. See {@code DataScope}. */
     OUT_OF_DATA_SCOPE("Not authorised for this data", 403),
+    /** A provider webhook whose signature is missing, wrong or outside the replay window (SCRUM-352). */
+    WEBHOOK_SIGNATURE_INVALID("The webhook signature is missing or invalid", 401),
 
     // ---- 404
     NOT_FOUND("Resource not found", 404),
@@ -119,7 +123,11 @@ public enum ErrorCode {
     /** No stock package (carton) with this id or LPN (SCRUM-473). */
     STOCK_PACKAGE_NOT_FOUND("No such stock package", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
+    /** SCRUM-475: no damage report with this id, or not in the caller's warehouses. */
+    DAMAGE_REPORT_NOT_FOUND("Damage report not found", 404),
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
+    /** SCRUM-243: no return request by that id - or not the caller's own, which is not revealed. */
+    RETURN_REQUEST_NOT_FOUND("Return request not found", 404),
     RECEIVABLE_NOT_FOUND("Receivable not found", 404),
     RESERVATION_NOT_FOUND("Stock reservation not found", 404),
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
@@ -151,6 +159,8 @@ public enum ErrorCode {
 
     /** The new password is the same as the current one. */
     PASSWORD_UNCHANGED("The new password must differ from the current one", 400),
+    /** BR-STK-003: damaged stock is reported with at least one photo. */
+    DAMAGE_PHOTO_REQUIRED("Damaged stock is reported with at least one photo", 400),
     /** SCRUM-427: commercial terms that contradict themselves (kltn-docs 18 §3). */
     CREDIT_PROFILE_INVALID("These commercial terms are inconsistent", 400),
     /** An assisted design names a customer and an owner account; the owner must be that customer's own login. */
@@ -300,6 +310,23 @@ public enum ErrorCode {
     ISSUE_EXCEEDS_REQUIREMENT("More blanks than the production order still needs", 409),
     /** Review of #109: goods past their expiry cannot move to a new location; they are written off (EXPIRED). */
     STOCK_EXPIRED("This stock is past its expiry date and can only be written off", 409),
+    /**
+     * SCRUM-475: more units reported damaged than the stock row has free. Held units are reported where they are
+     * taken - a picker's damage report (SCRUM-277) - so their order learns of it in the same transaction.
+     */
+    DAMAGE_EXCEEDS_FREE_STOCK("More units reported damaged than this stock has free", 409),
+    /** SCRUM-475: the warehouse has no usable quarantine area that can take these damaged goods. */
+    DAMAGE_AREA_MISSING("This warehouse has no quarantine area that can take these damaged goods", 409),
+    /** SCRUM-475, four eyes: whoever reported damaged stock does not decide what happens to it. */
+    DAMAGE_SELF_DISPOSITION("A damage report cannot be decided by the person who reported it", 409),
+    /** SCRUM-475: a decision covers no more units than the damage report still has waiting. */
+    DAMAGE_DISPOSITION_EXCEEDS_PENDING("More units than this damage report still has waiting for a decision", 409),
+    /** SCRUM-277: damaged units an order still holds (its pick line is short) wait for the order to be reallocated. */
+    DAMAGED_STOCK_HELD("These damaged units are still allocated to an order; reallocate its short pick line first", 409),
+    /** A hand-over to the supplier names a RETURN_TO_SUPPLIER decision whose goods have not left yet. */
+    DAMAGE_RETURN_NOT_SHIPPABLE("Only goods decided for the supplier are handed to it, and once", 409),
+    /** SCRUM-475: restored goods go back onto an active bin of the warehouse they were damaged in. */
+    DAMAGE_RESTORE_LOCATION_INVALID("Restored goods go back onto an active bin of the same warehouse", 409),
     /** SCRUM-409: the location scanned at a blank issue is not where the hold's goods are. */
     ISSUE_LOCATION_MISMATCH("The scanned location is not where this hold's blanks are", 409),
     /** SCRUM-409: the SKU or barcode scanned at a blank issue is not the hold's. */
@@ -328,6 +355,56 @@ public enum ErrorCode {
     CANCELLATION_NEEDS_STAFF("Printing has started: staff decide this order's cancellation", 409),
     ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),
     ORDER_CANCELLATION_REQUEST_NOT_PENDING("This cancellation request has already been decided", 409),
+    // ---- returns (SCRUM-243 / SCRUM-260, 03 §12): each names the rule that refused, so the portal can say what to do
+    /** BR-RMA-001: only goods the customer received can come back. */
+    RETURN_ORDER_NOT_DELIVERED("This order has not been delivered yet; nothing can be returned", 409),
+    /** The order's returns were already settled with money, or it is closed: a new claim needs Sales. */
+    RETURN_ORDER_NOT_RETURNABLE("This order no longer takes a return", 409),
+    /** BR-RMA-001, OQ-07: the return window after delivery has passed. */
+    RETURN_WINDOW_CLOSED("The return window for this order has closed", 409),
+    /** More units than were delivered, less what the line's other returns claim. */
+    RETURN_QUANTITY_EXCEEDED("More units than can still be returned from this order line", 409),
+    /** One open return per order line: the open one is decided first. */
+    RETURN_LINE_ALREADY_OPEN("This order line already has an open return", 409),
+    /** BR-RMA-002: goods printed to the customer's design come back only when defective. */
+    RETURN_CUSTOM_ITEM_NOT_DEFECTIVE("Custom-printed goods are returned only when defective", 409),
+    /** SCRUM-243 (B2B plan 2026-10-06): returns are taken for defects and delivery faults, not a change of mind. */
+    RETURN_REASON_NOT_ACCEPTED("Returns are accepted for defects and delivery faults only", 409),
+    /** 03 §12: the return's status has no such step. */
+    RETURN_INVALID_TRANSITION("This return cannot do that in its current status", 409),
+    /** A defect is approved on evidence: at least one photo of the problem. */
+    RETURN_EVIDENCE_REQUIRED("Add at least one photo of the problem before the return is approved", 409),
+    RETURN_EVIDENCE_LIMIT_REACHED("This return has as many photos as it may hold", 409),
+    /** Goods worth more than the no-return threshold must come back before anything is credited. */
+    RETURN_GOODS_REQUIRED("Goods of this value must be sent back before the return is decided", 409),
+    /** OQ-12 / BR-RMA-002: printed goods never go back on sale; only stock items that pass QC do. */
+    RETURN_RESTOCK_NOT_ALLOWED("Only plain stock goes back on sale; custom-printed goods never do", 409),
+    /**
+     * Four eyes on anything of value (BR-PAY-003 without approver limits): a claim Sales opened, a resolution, the
+     * withdrawal of a replacement - each approved by someone else than who opened or proposed it.
+     */
+    RETURN_SELF_APPROVAL("A return cannot be approved by the person who opened or proposed it", 409),
+    /** Rejected units are still the customer's: scrapped only when the customer agreed, and the consent is recorded. */
+    RETURN_DISPOSAL_CONSENT_REQUIRED("Rejected goods belong to the customer: send them back, or record the customer's "
+            + "consent to scrap them", 409),
+    /** Goods back on sale go to a usable bin of the warehouse that received them, where they can be picked. */
+    RETURN_RESTOCK_LOCATION_INVALID("Returned goods go back on sale at a usable bin of the same warehouse", 409),
+    /** A free replacement order is cancelled only by withdrawing it through its return, which credits the units. */
+    RETURN_REPLACEMENT_ORDER_LOCKED("A replacement order is cancelled through its return, which credits the units "
+            + "instead", 409),
+    /** The replacement order already left for picking or shipping: it can no longer be withdrawn. */
+    RETURN_REPLACEMENT_NOT_WITHDRAWABLE("This replacement order can no longer be withdrawn", 409),
+    /** Approved units have not arrived yet: QC waits, or says no more parcels are coming. */
+    RETURN_PARCELS_OUTSTANDING("Approved units of this return have not arrived yet", 409),
+    /** The order received less money than the refund asks; credit the rest instead. */
+    RETURN_REFUND_EXCEEDS_PAID("The refund is more than the order has received", 409),
+    /** A customer with overdue receivables is credited, never paid out in cash. */
+    RETURN_REFUND_CUSTOMER_OVERDUE("The customer has overdue receivables: credit the return against them instead of "
+            + "refunding cash", 409),
+    /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves and gets no new (replacement) order. */
+    RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
+    /** Returned goods are received into a quarantine or QC area, never straight onto a bin (OQ-12). */
+    RETURN_RECEIVING_LOCATION_INVALID("Returned goods are received into a quarantine or QC area of the warehouse", 409),
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
@@ -469,6 +546,8 @@ public enum ErrorCode {
     PACK_QUANTITY_EXCEEDS_ORDER("More than the order line still wants", 409),
     /** More than was picked (or produced) for the line: the rest has not reached packing. */
     PACK_QUANTITY_EXCEEDS_PICKED("More than reached packing for this line", 409),
+    /** R8: units reported damaged at packing are still in a parcel; they are taken out of it first. */
+    PACK_DAMAGED_UNITS_PACKED("Those units are in a parcel: take them out before reporting them damaged", 409),
     /** Docs 08 BR-01: the lot scanned was not picked for this line, or more of it than was picked. */
     PACK_LOT_MISMATCH("This lot was not picked for this line", 409),
     /** Docs 08 step 2: the serial scanned was not picked for this line, or is packed already. */
@@ -677,6 +756,8 @@ public enum ErrorCode {
 
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
+    /** A provider webhook larger than any real delivery report: read no further (SCRUM-352). */
+    WEBHOOK_PAYLOAD_TOO_LARGE("The webhook body is too large", 413),
     UNSUPPORTED_MEDIA_TYPE("This file type is not accepted", 415),
 
     // ---- 422: understood, but semantically refused
@@ -695,6 +776,8 @@ public enum ErrorCode {
     PORTAL_INVITATION_UNAVAILABLE("Portal invitations cannot be sent right now", 503),
     /** The company bank account customers transfer to is not configured for this deployment (SCRUM-193). */
     TRANSFER_INSTRUCTIONS_UNAVAILABLE("Transfer details cannot be shown right now", 503),
+    /** No webhook signing secret is configured, so no webhook can be verified; the provider retries later. */
+    WEBHOOK_UNAVAILABLE("Webhooks are not accepted right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);

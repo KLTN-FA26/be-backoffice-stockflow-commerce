@@ -92,9 +92,12 @@ class OrderLifecycleMigrationUpgradeTest {
                 // The transition table holds exactly the edges of the enum.
                 assertThat(RawSql.texts(db, "SELECT from_status || '>' || to_status FROM ordering.order_status_transition"))
                         .containsExactlyInAnyOrderElementsOf(OrderStatus.edges().stream()
-                                // V20261022000400 (PACK-EARLY) adds these two later.
-                                .filter(edge -> !edge.equals("IN_PRODUCTION>PARTIALLY_FULFILLED")
-                                        && !edge.equals("READY_TO_FULFILL>PARTIALLY_FULFILLED")).toList());
+                                // V20261022000400 (PACK-EARLY) adds two later, V20261028020000 (returns) three more.
+                                .filter(edge -> !java.util.Set.of("IN_PRODUCTION>PARTIALLY_FULFILLED",
+                                        "READY_TO_FULFILL>PARTIALLY_FULFILLED", "COMPLETED>RETURN_REQUESTED",
+                                        "REFUNDED>RETURN_REQUESTED", "PARTIALLY_REFUNDED>RETURN_REQUESTED")
+                                        .contains(edge))
+                                .toList());
 
                 // The trigger: an edge is accepted, a jump is not, a hold goes back only where it came from.
                 exec(db, "UPDATE ordering.customer_order SET status = 'PACKED', packed_at = NOW() WHERE id = '" + picking + "'");

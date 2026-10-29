@@ -10,7 +10,6 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.payment.api.PayableOrder;
 import com.stockflow.payment.internal.domain.Collector;
 import com.stockflow.payment.internal.domain.CustomerTransfer;
@@ -338,8 +337,9 @@ public class ReceivableService {
                 ReceivableBook.Allocation allocation = book.recordAllocation(transfer.id(), receivable.orderId(),
                         receivable.id(), applied, now, by);
                 made.add(allocation);
+                // A return's credit (SCRUM-260) paying a receivable is announced as what it is, not as a bank transfer.
                 events.publishEvent(new PaymentCaptured(receivable.orderId(), allocation.id(), applied,
-                        receivable.currency(), PaymentMethod.BANK_TRANSFER, sourceOf(receivable)));
+                        receivable.currency(), transfer.channel().paymentMethod(), sourceOf(receivable)));
             }
             book.save(receivable);
         }

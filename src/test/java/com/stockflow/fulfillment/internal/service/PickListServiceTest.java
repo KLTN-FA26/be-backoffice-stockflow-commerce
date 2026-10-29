@@ -69,7 +69,8 @@ class PickListServiceTest {
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final OrderReservations orderReservations = mock(OrderReservations.class);
     private final PickListService service = new PickListService(picks, pickLines, orders, inventory, itemControls,
-            consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations);
+            consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations,
+            mock(com.stockflow.inventory.consumption.PickDamageReporting.class));
 
     private final UUID picker = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(picker, "picker",

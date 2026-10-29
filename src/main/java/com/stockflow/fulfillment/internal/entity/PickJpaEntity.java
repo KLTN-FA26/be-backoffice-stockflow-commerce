@@ -54,9 +54,15 @@ public class PickJpaEntity extends BaseEntity {
         this.warehouseId = java.util.Objects.requireNonNull(warehouseId, "warehouseId");
         this.status = status;
     }
+    /**
+     * Who picks it. While PENDING, and again while PICKING: a picker who went home, or a task reopened for the lines a
+     * damage report made after its picker had finished, is handed to someone who is here; the lines picked stay
+     * picked by whoever picked them.
+     */
     public void assign(UUID userId, Instant now) {
-        if (status != PickStatus.PENDING) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "A pick can only be assigned while pending");
+        if (status != PickStatus.PENDING && status != PickStatus.PICKING) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "A pick is assigned while pending or being picked; it is " + status);
         }
         assignedUserId = java.util.Objects.requireNonNull(userId);
         assignedAt = java.util.Objects.requireNonNull(now);
@@ -85,6 +91,19 @@ public class PickJpaEntity extends BaseEntity {
                     "Picking completes from PICKING; the task is " + status);
         }
         status = PickStatus.PICKED; pickedAt = now;
+    }
+    /**
+     * Units a line brought to packing were found damaged there, and what replaces them is picked again (R8): back to
+     * PICKING, for the same assignee, until the new lines are picked and the task completes again. Packing waits
+     * meanwhile - it works on a PICKED task only.
+     */
+    public void reopen() {
+        if (status != PickStatus.PICKED) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "Only a picked task goes back to picking; the task is " + status);
+        }
+        status = PickStatus.PICKING;
+        pickedAt = null;
     }
     /**
      * The order was cancelled (SCRUM-460). Once picking has started, goods may be off their bins, so

@@ -15,6 +15,11 @@
  * way round. The earlier design called the HTTP {@code consumption} endpoint from fulfillment; that
  * endpoint stays for operations and runs the same implementation.</p>
  *
+ * <p>{@link com.stockflow.inventory.consumption.PickDamageReporting} is the same door for the other thing a picker
+ * finds at a bin (SCRUM-277): units of the line's allocation damaged. Reporting them changes the allocation a pick line
+ * consumes - it gives up the damaged units, which are replaced elsewhere or kept impaired - so it belongs to the module
+ * that confirms picks, and to no other.</p>
+ *
  * <p>The same rules as {@code api} apply: records and interfaces only, nothing from {@code internal}.</p>
  */
 @org.springframework.modulith.NamedInterface("consumption")

@@ -37,7 +37,8 @@ public interface StockMovementLog {
     /**
      * Units a document's ledger lines of these types add up to, 0 when it has none: how much of a putaway task has
      * been put away, counting every part, loose or in a carton. Several types in one query, because a putaway writes
-     * both moves and in-place status changes under one reference.
+     * both moves and in-place status changes under one reference. A document booked in several steps - a return line
+     * whose goods came back in more than one parcel - recognises a retried step by the total it already reached.
      */
     int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
                                StockMovement.ReferenceType referenceType, UUID referenceId);

@@ -48,6 +48,9 @@ public interface StockItemRepository {
      */
     List<StockItem> findWithReservationsForRequest(java.util.UUID rootRequestId);
 
+    /** The same stock items, read without locking: for an answer about what a request made, not for a change. */
+    List<StockItem> findHoldingRequest(java.util.UUID rootRequestId);
+
     /**
      * Read-only projections for the allocation planner: enough to choose lots, and nothing more.
      *
@@ -160,6 +163,13 @@ public interface StockItemRepository {
     List<HoldDetail> findHolds(Collection<java.util.UUID> reservationIds);
 
     StockItem save(StockItem stockItem);
+
+    /**
+     * {@link #save}, written to the database at once rather than at the next flush. For units leaving a row for a
+     * new one: the database checks a serial number's single live row ({@code uk_stock_item_live_serial}) statement by
+     * statement, and a flush inserts new rows before it updates old ones - the serial would briefly be on two rows.
+     */
+    StockItem saveNow(StockItem stockItem);
 
     /**
      * Save a layer that has just taken units of <b>its own receipt</b> back: from another location (a move, a

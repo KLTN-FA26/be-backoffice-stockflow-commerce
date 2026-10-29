@@ -20,8 +20,13 @@ import com.stockflow.fulfillment.internal.repository.PickLineMapper;
 import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.common.storage.FileUpload;
+import com.stockflow.inventory.consumption.DamagePhoto;
 import com.stockflow.inventory.consumption.PickConsumption;
+import com.stockflow.inventory.consumption.PickDamageReporting;
 import com.stockflow.inventory.consumption.PutBackCommand;
+import com.stockflow.inventory.consumption.ReportPickDamageCommand;
+import com.stockflow.inventory.consumption.ReportPickDamageResult;
 import com.stockflow.order.api.OrderReservations;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.inventory.api.ReallocateStockCommand;
@@ -83,11 +88,14 @@ class PickListService implements PickLists {
     private final WarehouseService warehouses;
     private final Clock clock;
     private final OrderReservations orderReservations;
+    private final PickDamageReporting damages;
 
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
-                    WarehouseService warehouses, Clock clock, OrderReservations orderReservations) {
+                    WarehouseService warehouses, Clock clock, OrderReservations orderReservations,
+                    PickDamageReporting damages) {
+        this.damages = damages;
         this.orderReservations = orderReservations;
         this.picks = picks;
         this.pickLines = pickLines;
@@ -206,7 +214,8 @@ class PickListService implements PickLists {
             }
             allowed.ifPresent(ids -> where.add(ids.isEmpty() ? cb.disjunction() : pick.get("warehouseId").in(ids)));
             task.select(pick.get("id")).where(where.toArray(Predicate[]::new));
-            return cb.and(cb.equal(root.get("status"), PickLineStatus.PICKED), cb.exists(task));
+            return cb.and(cb.equal(root.get("status"), PickLineStatus.PICKED),
+                    cb.gt(root.get("pickedQty"), root.<Integer>get("packingDamagedQty")), cb.exists(task));
         };
         Page<PickLineJpaEntity> found = pickLines.findAll(waiting,
                 Pages.of(page, size, Sort.by(Sort.Direction.ASC, "pickedAt", "id")));
@@ -216,7 +225,7 @@ class PickListService implements PickLists {
         return Pages.toResponse(found, row -> {
             PickJpaEntity task = tasks.get(row.getPickId());
             return new PutBackRow(row.getPickId(), task.getOrderNumber(), task.getWarehouseId(), row.getId(),
-                    row.getSku(), row.getLotNumber(), row.getPickedQty(), row.getLocationCode(), row.getPickedAt());
+                    row.getSku(), row.getLotNumber(), row.getGoodQty(), row.getLocationCode(), row.getPickedAt());
         });
     }
 
@@ -313,7 +322,10 @@ class PickListService implements PickLists {
                     carton != null && carton.wholeCarton());
         }).toList();
         List<PickLine> added = list.replaceShort(lineId, holds, Identifiers::newId);
+        // The superseded line first: a restored impaired allocation is kept, so the new line holds the same allocation,
+        // and only one live line may (uk_pick_line_reservation_live) - a flush inserts before it updates.
         writeBack(list, stored, Set.of(lineId));
+        pickLines.flush();
         pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
         if (!list.hasShortLines()) {
             resumeAfterInventory(pick.getOrderId(), actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
@@ -321,6 +333,166 @@ class PickListService implements PickLists {
         log.info("Short line {} of task {} reallocated to {} new line(s)", lineId, taskId, added.size());
         Map<String, String> barcodes = barcodesOf(List.of(shortLine.sku()));
         return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks: the pick first, as every write of the task, so two scans of one line - a confirmation and a damage
+     * report, or the same report twice - are taken one after the other and the second sees the line as the first left
+     * it. The photos are stored under the pick's lock only, before the order and the stock rows are locked: an upload
+     * never holds a lock a checkout or another picker waits on, and they are deleted again if anything after them
+     * fails. Then the order (a cancellation locks the order before the stock rows it releases), then inventory's - the
+     * SKU, the carton, the stock rows. The order line learns its new holds and, when nothing replaced the damaged
+     * units, goes ON_HOLD, under the order's lock already held.</p>
+     *
+     * <p>The same report sent again is recognised from the line itself (superseded by a damage report of that many
+     * units at that bin) before anything is stored, and answered whatever happened to the task since.</p>
+     */
+    @Override
+    public PickDamageView reportDamage(UUID taskId, UUID lineId, PickDamage damage, List<FileUpload> photos,
+                                       CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        pick.requireAssigned(actor.userId());
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        if (list.alreadyReportedDamaged(lineId, damage.locationCode(), damage.damagedQuantity())) {
+            return damageView(taskId, list, list.line(lineId).orElseThrow());
+        }
+        TaskAccess.orderInFulfilment(orders, pick);
+        list.requireDamageable(lineId, damage.locationCode(), damage.damagedQuantity());
+        PickLine line = list.line(lineId).orElseThrow();
+        List<DamagePhoto> evidence = damages.storePhotos(photos);
+        // Pick, then order, then stock rows - the order read again under its lock: cancelled while the photos were
+        // stored, it gets nothing allocated.
+        TaskAccess.requireStillInFulfilment(orders, pick);
+        ReportPickDamageResult result = damages.report(new ReportPickDamageCommand(damage.requestId(),
+                line.reservationId(), line.id(), pick.getOrderId(), damage.damagedQuantity(), damage.reason(),
+                damage.note(), evidence, damage.damageLocationCode(), actor.userId()));
+
+        List<PickList.Hold> replacements = replacementHolds(line.sku(), result);
+        List<PickLine> added = list.replaceDamaged(lineId, damage.damagedQuantity(), result.damageReportId(),
+                result.retainedQuantity(), replacements, result.impairedReservationId(), Identifiers::newId);
+        // The superseded line first: the line for the good units takes over its allocation, and only one live line
+        // may hold an allocation (uk_pick_line_reservation_live) - a flush inserts before it updates.
+        writeBack(list, stored, Set.of(lineId));
+        pickLines.flush();
+        pickLines.saveAll(added.stream().map(row -> PickLineMapper.toNewEntity(pick.getId(), row)).toList());
+        if (!result.holdsAfter().equals(List.of(line.reservationId()))) {
+            orderReservations.replaceHold(pick.getOrderId(), line.reservationId(), result.holdsAfter());
+        }
+        boolean held = result.impairedReservationId() != null;
+        if (held) {
+            // X-SHORT step 02: nothing replaced the damaged units, so the order stops until the coordinator decides.
+            holdForInventory(pick.getOrderId(), actor.userId(), ("Damaged at pick: %d x %s at %s, report %s; no other "
+                    + "stock to replace them").formatted(damage.damagedQuantity(), line.sku(), line.locationCode(),
+                    result.reportNumber()));
+        }
+        log.info("Pick line {} of task {}: {} of {} x {} damaged at {} (report {}), {} new line(s){}", lineId, taskId,
+                damage.damagedQuantity(), line.allocatedQty(), line.sku(), line.locationCode(), result.reportNumber(),
+                added.size(), held ? ", order on hold" : "");
+        Map<String, String> barcodes = barcodesOf(List.of(line.sku()));
+        return new PickDamageView(result.damageReportId(), result.reportNumber(), result.damageLocationCode(),
+                result.quantity(), held, view(taskId, list.line(lineId).orElseThrow(), barcodes.get(line.sku())),
+                added.stream().map(row -> view(taskId, row, barcodes.get(row.sku()))).toList());
+    }
+
+    // ------------------------------------------------------------------ damage found at packing (R8), for PackingService
+
+    /**
+     * The same report of damage at packing sent again: what it made, as it stands now - whatever happened to the task
+     * since. Empty when the request reported nothing. The caller holds the pick.
+     *
+     * @throws BusinessException {@code CONFLICT} when the request made a report of something else
+     */
+    Optional<PickDamageView> damageAfterPickReplay(PickJpaEntity pick, UUID lineId, UUID requestId) {
+        Optional<ReportPickDamageResult> report = damages.reportedFor(requestId);
+        if (report.isEmpty()) {
+            return Optional.empty();
+        }
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        UUID reportId = report.get().damageReportId();
+        PickLine line = list.line(lineId).orElse(null);
+        if (line == null || !list.madeAfterPick(reportId) || !lineId.equals(report.get().pickLineId())) {
+            throw new BusinessException(ErrorCode.CONFLICT, ("Request %s made damage report %s, not one at packing of "
+                    + "this line").formatted(requestId, report.get().reportNumber()));
+        }
+        Map<String, String> barcodes = barcodesOf(List.of(line.sku()));
+        return Optional.of(new PickDamageView(reportId, report.get().reportNumber(),
+                report.get().damageLocationCode(), report.get().quantity(),
+                report.get().impairedReservationId() != null, view(pick.getId(), line, barcodes.get(line.sku())),
+                list.madeByDamage(reportId).stream().map(row -> view(pick.getId(), row, barcodes.get(row.sku())))
+                        .toList()));
+    }
+
+    /** R8: the line can be reported damaged at packing, as far as the pick list knows. The caller holds the pick. */
+    void requireDamageableAfterPick(PickJpaEntity pick, UUID lineId, int damaged) {
+        toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()))
+                .requireDamageableAfterPick(lineId, damaged);
+    }
+
+    /**
+     * R8, the pick list's side: the caller (packing) holds the pick and checked that the units are out of every parcel.
+     * The task is PICKING (the units were in a tote) or PICKED (at the bench); a PICKED one goes back to PICKING.
+     * Photos first, under the pick's lock only; then the order; then inventory's locks. The picked line keeps the
+     * damaged units on record, the lines the report made are added, the task goes back to PICKING, and the order line
+     * holds the replacements (or the impaired share) next to the hold the pick consumed - which still names the good
+     * units that reached packing. With nothing to replace them, the order goes ON_HOLD (INVENTORY) as at picking.
+     */
+    PickDamageView damageAfterPick(PickJpaEntity pick, UUID lineId, Packing.PackDamage damage,
+                                   List<FileUpload> photos, CurrentUser actor) {
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        list.requireDamageableAfterPick(lineId, damage.damagedQuantity());
+        PickLine line = list.line(lineId).orElseThrow();
+        List<DamagePhoto> evidence = damages.storePhotos(photos);
+        // Pick, then order (read again under its lock, as at picking), then stock rows.
+        TaskAccess.requireStillInFulfilment(orders, pick);
+        ReportPickDamageResult result = damages.reportAfterPick(new ReportPickDamageCommand(damage.requestId(),
+                line.reservationId(), line.id(), pick.getOrderId(), damage.damagedQuantity(), damage.reason(),
+                damage.note(), evidence, damage.damageLocationCode(), actor.userId()));
+
+        List<PickList.Hold> replacements = replacementHolds(line.sku(), result);
+        List<PickLine> added = list.replaceDamagedAfterPick(lineId, damage.damagedQuantity(), result.damageReportId(),
+                replacements, result.impairedReservationId(), Identifiers::newId);
+        writeBack(list, stored, Set.of(lineId));
+        pickLines.saveAll(added.stream().map(row -> PickLineMapper.toNewEntity(pick.getId(), row)).toList());
+        if (pick.getStatus() == PickStatus.PICKED) {
+            pick.reopen();
+            picks.save(pick);
+        }
+        List<UUID> holds = new ArrayList<>();
+        holds.add(line.reservationId());
+        holds.addAll(result.holdsAfter());
+        orderReservations.replaceHold(pick.getOrderId(), line.reservationId(), holds);
+        boolean held = result.impairedReservationId() != null;
+        if (held) {
+            holdForInventory(pick.getOrderId(), actor.userId(), ("Damaged at packing: %d x %s picked at %s, report %s; "
+                    + "no other stock to replace them").formatted(damage.damagedQuantity(), line.sku(),
+                    line.locationCode(), result.reportNumber()));
+        }
+        log.info("Pick line {} of task {}: {} of {} picked x {} damaged at packing (report {}), {} new line(s), task "
+                        + "back to picking{}", lineId, pick.getId(), damage.damagedQuantity(), line.pickedQty(),
+                line.sku(), result.reportNumber(), added.size(), held ? ", order on hold" : "");
+        Map<String, String> barcodes = barcodesOf(List.of(line.sku()));
+        return new PickDamageView(result.damageReportId(), result.reportNumber(), result.damageLocationCode(),
+                result.quantity(), held, view(pick.getId(), list.line(lineId).orElseThrow(), barcodes.get(line.sku())),
+                added.stream().map(row -> view(pick.getId(), row, barcodes.get(row.sku()))).toList());
+    }
+
+    /** A report already applied, answered with the lines it made as they stand now and where the units went. */
+    private PickDamageView damageView(UUID taskId, PickList list, PickLine superseded) {
+        List<PickLine> made = list.madeByDamage(superseded.damageReportId());
+        Optional<ReportPickDamageResult> report = damages.reported(superseded.damageReportId());
+        Map<String, String> barcodes = barcodesOf(List.of(superseded.sku()));
+        return new PickDamageView(superseded.damageReportId(),
+                report.map(ReportPickDamageResult::reportNumber).orElse(null),
+                report.map(ReportPickDamageResult::damageLocationCode).orElse(null), superseded.damagedQty(),
+                report.map(r -> r.impairedReservationId() != null).orElse(false),
+                view(taskId, superseded, barcodes.get(superseded.sku())),
+                made.stream().map(row -> view(taskId, row, barcodes.get(row.sku()))).toList());
     }
 
     // ------------------------------------------------------------------ helpers
@@ -375,6 +547,29 @@ class PickListService implements PickLists {
                 .toList();
     }
 
+    /**
+     * The allocations that replaced damaged units, as the pick list plans them: with the warehouse of each location and
+     * the carton each is in (SCRUM-473), read back as the short reallocation does. A hold not read back is planned
+     * loose; were it in a carton after all, tg_pick_line_carton refuses the line rather than let it go unscanned.
+     */
+    private List<PickList.Hold> replacementHolds(String sku, ReportPickDamageResult result) {
+        if (result.replacements().isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, HoldView> cartons = inventory.holds(result.replacements().stream()
+                        .map(ReportPickDamageResult.Allocation::reservationId).toList())
+                .stream().collect(Collectors.toMap(HoldView::reservationId, view -> view));
+        Map<String, UUID> warehouseOf = new HashMap<>();
+        return result.replacements().stream().map(hold -> {
+            HoldView carton = cartons.get(hold.reservationId());
+            return new PickList.Hold(hold.reservationId(), sku, hold.locationCode(),
+                    warehouseOf.computeIfAbsent(hold.locationCode(),
+                            code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
+                    hold.lotNumber(), hold.quantity(), true, carton == null ? null : carton.lpn(),
+                    carton != null && carton.wholeCarton());
+        }).toList();
+    }
+
     /** The holds of the order's stock lines, with the warehouse each one's location belongs to. */
     private Map<UUID, PickList.Hold> holdsOf(OrderSummary order) {
         Set<UUID> ids = order.lines().stream()
@@ -412,6 +607,6 @@ class PickListService implements PickLists {
         return new PickLineView(line.id(), taskId, line.sequenceNo(), line.orderLineId(), line.sku(), barcode,
                 line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(), line.status().name(),
                 line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(), line.shortQty(),
-                line.lpn(), line.wholeCarton());
+                line.lpn(), line.wholeCarton(), line.damagedQty(), line.damageReportId(), line.packingDamagedQty());
     }
 }

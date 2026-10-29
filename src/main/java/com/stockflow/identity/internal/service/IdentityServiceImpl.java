@@ -883,6 +883,15 @@ class IdentityServiceImpl implements IdentityService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<StaffContact> notificationRecipientsHolding(String permission, UUID warehouseId) {
+        if (permission == null || permission.isBlank()) {
+            return List.of();
+        }
+        return notificationRecipients(java.util.Set.copyOf(roles.findCodesGranting(permission.strip())), warehouseId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes) {
         if (userId == null || roleCodes == null || roleCodes.length == 0) {
             return false;

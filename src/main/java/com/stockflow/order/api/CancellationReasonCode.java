@@ -19,6 +19,11 @@ public enum CancellationReasonCode {
     CREDIT_REJECTED,
     DUPLICATE_ORDER,
     PRODUCTION_ISSUE,
+    /**
+     * A free replacement order withdrawn through its return (SCRUM-260): the replaced units are credited instead. The
+     * only way such an order is cancelled - it ships goods a return already promised.
+     */
+    REPLACEMENT_WITHDRAWN,
     /** Needs a note: "other" with no explanation is not a reason. */
     OTHER;
 
