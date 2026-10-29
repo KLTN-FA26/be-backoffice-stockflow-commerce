@@ -408,6 +408,11 @@ class InventoryServiceImpl implements InventoryService {
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
             byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
         }
+        // Allocations are holds on these same rows: counted in reserved above, shown apart below (glossary: a
+        // reservation is a soft hold on the SKU, an allocation a hard hold on a bin), so the two never add up twice.
+        Map<String, Integer> allocatedByWarehouse = new TreeMap<>();
+        repository.findAllocatedBySku(sku).forEach((locationCode, units) ->
+                allocatedByWarehouse.merge(new LocationId(locationCode).warehouseCode(), units, Integer::sum));
         for (var frozen : cycleCounts.frozen(List.of(sku.code()), today)) {
             byWarehouse.computeIfPresent(new LocationId(frozen.locationCode()).warehouseCode(), (code, totals) ->
                     new Totals(totals.onHand(), totals.available(), totals.reserved(),
@@ -423,10 +428,14 @@ class InventoryServiceImpl implements InventoryService {
                 .filter(entry -> com.stockflow.common.security.WarehouseScope.restriction()
                         .map(allowed -> allowed.prefixes().contains(entry.getKey()))
                         .orElse(true))
-                .map(entry -> new StockLevel(sku.code(), entry.getKey(),
-                        entry.getValue().onHand(), entry.getValue().available(),
-                        entry.getValue().reserved(), 0,
-                        Math.min(entry.getValue().atp(), systemWide)))
+                .map(entry -> {
+                    Totals totals = entry.getValue();
+                    int allocated = Math.min(allocatedByWarehouse.getOrDefault(entry.getKey(), 0), totals.reserved());
+                    return new StockLevel(sku.code(), entry.getKey(),
+                            totals.onHand(), totals.available(),
+                            totals.reserved() - allocated, allocated,
+                            Math.min(totals.atp(), systemWide));
+                })
                 .toList();
     }
 

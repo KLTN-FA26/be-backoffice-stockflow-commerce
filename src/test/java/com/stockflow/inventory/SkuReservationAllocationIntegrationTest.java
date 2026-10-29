@@ -224,6 +224,9 @@ class SkuReservationAllocationIntegrationTest {
                         org.assertj.core.groups.Tuple.tuple("HCM-A02-2-A", 2));
         assertThat(allocate(order, "HCM").allocations()).as("allocating again changes nothing").isEmpty();
         assertThat(reservedEverywhere()).isEqualTo(12);
+        // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds, ATP unchanged.
+        assertThat(inventory.levelsOf(new Sku(sku)))
+                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 26, 22, 0, 12, 10));
     }
 
     @Test

@@ -7,6 +7,7 @@ import com.stockflow.procurement.internal.domain.PackingUnit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
+import com.stockflow.procurement.internal.domain.SupplierStatus;
 import com.stockflow.procurement.internal.entity.PoLineJpaEntity;
 import com.stockflow.procurement.internal.entity.PurchaseOrderJpaEntity;
 import jakarta.persistence.EntityManager;
@@ -68,7 +69,8 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     @Override
     public Optional<Supplier> supplier(UUID supplierId) {
         return suppliers.findById(supplierId).map(s -> new Supplier(s.getId(), s.getCode(), s.getName(),
-                s.isPrintSubcontractor(), s.getLossTolerancePercent(), s.getPaymentTermDays(), s.getLeadTimeDays()));
+                s.isPrintSubcontractor(), s.getStatus() == SupplierStatus.ACTIVE, s.getLossTolerancePercent(),
+                s.getPaymentTermDays(), s.getLeadTimeDays()));
     }
 
     @Override

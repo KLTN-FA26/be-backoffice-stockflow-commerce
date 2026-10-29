@@ -70,6 +70,12 @@ public interface StockItemRepository {
     /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
     List<StockLevelLine> findLevelLinesBySku(Sku sku);
 
+    /**
+     * Units of one SKU allocated for picking, per location code: live holds made from a SKU reservation at release.
+     * They are part of the {@code reserved} of {@link #findLevelLinesBySku}; Inventory Level shows them apart.
+     */
+    Map<String, Integer> findAllocatedBySku(Sku sku);
+
     /** Sellable units ({@code onHand − reserved} of AVAILABLE stock) per SKU; absent when none. */
     Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today);
 

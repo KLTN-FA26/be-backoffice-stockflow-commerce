@@ -105,6 +105,11 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
             throw new BusinessException(ErrorCode.SUPPLIER_NOT_SUBCONTRACTOR,
                     "%s is not flagged as a print subcontractor".formatted(supplier.code()));
         }
+        if (!supplier.active()) {
+            // As for any new purchase order (ProcurementServiceImpl.createPurchaseOrder): 03 §16 "active subcontractor".
+            throw new BusinessException(ErrorCode.SUPPLIER_INACTIVE,
+                    "%s is not active and takes no new orders".formatted(supplier.code()));
+        }
         InventoryItemPolicy item = inventory.itemPolicy(command.finishedSku()).orElseThrow(() ->
                 new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND,
                         "%s has no inventory item; complete its logistics data first".formatted(command.finishedSku())));
@@ -345,7 +350,7 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
     @Transactional(readOnly = true)
     public Optional<SubcontractorTerms> subcontractorTerms(UUID supplierId) {
         return store.supplier(supplierId).map(s -> new SubcontractorTerms(s.id(), s.code(), s.name(),
-                s.printSubcontractor(), s.lossTolerancePercent()));
+                s.printSubcontractor(), s.active(), s.lossTolerancePercent()));
     }
 
     /**
