@@ -5,7 +5,7 @@
 -- (17/10); this brings the staff accounts to the same rule.
 --
 -- identity.user_status_change  one row per administrator action on an account's status, with the reason
---   (5-500 characters after trimming, required by the CHECK as the second statement of the service rule),
+--   (5-500 characters after trimming Unicode spaces, required by the CHECK as the second statement of the service rule),
 --   the statuses before and after, and who did it. The automatic lock after too many wrong passwords is
 --   not an administrator's decision and writes no row. Rows are never updated or deleted
 --   (platform.append_only, V20260928002400). Accounts that were locked or disabled before this migration
@@ -42,8 +42,11 @@ CREATE TABLE identity.user_status_change
     CONSTRAINT ck_user_status_change_action CHECK (action IN ('LOCK', 'UNLOCK', 'DISABLE', 'ENABLE')),
     CONSTRAINT ck_user_status_change_from CHECK (from_status IN ('ACTIVE', 'LOCKED', 'DISABLED')),
     CONSTRAINT ck_user_status_change_to CHECK (to_status IN ('ACTIVE', 'LOCKED', 'DISABLED')),
-    CONSTRAINT ck_user_status_change_reason CHECK (char_length(btrim(reason)) BETWEEN 5 AND 500
-        AND reason = btrim(reason))
+    -- Trimmed of ASCII whitespace, every Unicode space separator (NBSP, narrow NBSP, ideographic space...) and the
+    -- zero-width space, exactly the set StatusChangeReason strips in Java.
+    CONSTRAINT ck_user_status_change_reason CHECK (
+        reason = btrim(reason, E' \t\n\r\v\f\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u200b\u2028\u2029\u202f\u205f\u3000')
+        AND char_length(reason) BETWEEN 5 AND 500)
 );
 
 -- The history of one account, newest first, and "the latest change of each account on this page".

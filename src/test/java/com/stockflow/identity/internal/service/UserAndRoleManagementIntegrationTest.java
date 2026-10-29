@@ -326,7 +326,17 @@ class UserAndRoleManagementIntegrationTest {
                                                          actor_username, changed_at)
                 VALUES (gen_random_uuid(), ?, 'LOCK', 'ACTIVE', 'LOCKED', 'abc', 'x', now())""", id)))
                 .hasMessageContaining("ck_user_status_change_reason");
-        assertThat(identity.statusHistory(id, 0, 20).items()).hasSize(1);
+        // ... including for a reason padded with no-break spaces, which btrim without a character set would keep
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> jdbc.update("""
+                INSERT INTO identity.user_status_change (id, user_id, action, from_status, to_status, reason,
+                                                         actor_username, changed_at)
+                VALUES (gen_random_uuid(), ?, 'LOCK', 'ACTIVE', 'LOCKED', ?, 'x', now())""", id, "\u00a0\u00a0abc\u00a0\u00a0")))
+                .hasMessageContaining("ck_user_status_change_reason");
+        refused(ErrorCode.VALIDATION_FAILED,
+                () -> identity.changeUserStatus(id, UserStatusChange.UNLOCK, "\u00a0\u00a0abc\u00a0\u00a0"));
+        identity.changeUserStatus(id, UserStatusChange.UNLOCK, "\u00a0Đã xác minh\u00a0");
+        assertThat(identity.statusHistory(id, 0, 20).items().get(0).reason()).isEqualTo("Đã xác minh");
+        assertThat(identity.statusHistory(id, 0, 20).items()).hasSize(2);
     }
 
     @Test

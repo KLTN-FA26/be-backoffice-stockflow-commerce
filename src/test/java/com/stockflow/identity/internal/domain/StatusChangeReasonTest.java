@@ -53,4 +53,15 @@ class StatusChangeReasonTest {
         refused("🔒".repeat(4));
         refused("🔒".repeat(501));
     }
+
+    @Test
+    @DisplayName("Unicode spaces (NBSP, narrow NBSP, ideographic, zero-width) are trimmed too, not counted")
+    void unicodeSpaces() {
+        assertThat(StatusChangeReason.require("\u00a0\u00a0 abcde \u202f\u3000\u200b")).isEqualTo("abcde");
+        refused("\u00a0".repeat(5));
+        refused("\u00a0\u00a0abcd\u00a0\u00a0");
+        refused("\u3000\u2003\u200b\u202f\u2007\u2009");
+        // inner spaces are content
+        assertThat(StatusChangeReason.require("a\u00a0b\u00a0c")).hasSize(5);
+    }
 }
