@@ -14,6 +14,10 @@ import com.stockflow.identity.api.StaffUser;
 import com.stockflow.identity.api.UpdateRoleCommand;
 import com.stockflow.identity.api.UpdateUserCommand;
 import com.stockflow.identity.api.UserStatusChange;
+import com.stockflow.identity.api.UserStatusChangeEntry;
+import com.stockflow.identity.internal.domain.StatusChangeReason;
+import com.stockflow.identity.internal.entity.UserStatusChangeJpaEntity;
+import com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository;
 import com.stockflow.identity.internal.domain.UserStatus;
 import com.stockflow.identity.internal.entity.UserJpaEntity;
 import com.stockflow.identity.internal.repository.UserJpaRepository;
@@ -127,6 +131,7 @@ class IdentityServiceImpl implements IdentityService {
     private final LoginAttempts loginAttempts;
     private final UserWarehouseJpaRepository userWarehouses;
     private final WarehouseService warehouses;
+    private final UserStatusChangeJpaRepository statusChanges;
 
     private static final SortWhitelist USER_SORT =
             SortWhitelist.of("username", "fullName", "status", "lastLoginAt", "createdAt")
@@ -152,7 +157,7 @@ class IdentityServiceImpl implements IdentityService {
                         UserSessionJpaRepository sessions, RoleAuthorizationCache authorizationCache,
                         AuditorAware<String> auditor, UserJpaRepository users, PrivilegeGuard guard,
                         LoginAttempts loginAttempts, UserWarehouseJpaRepository userWarehouses,
-                        WarehouseService warehouses,
+                        WarehouseService warehouses, UserStatusChangeJpaRepository statusChanges,
                         @Value("${stockflow.security.token-ttl:PT8H}") Duration tokenTtl) {
         if (tokenTtl == null || tokenTtl.isZero() || tokenTtl.isNegative()
                 || tokenTtl.compareTo(MAX_TOKEN_TTL) > 0) {
@@ -176,6 +181,7 @@ class IdentityServiceImpl implements IdentityService {
         this.loginAttempts = loginAttempts;
         this.userWarehouses = userWarehouses;
         this.warehouses = warehouses;
+        this.statusChanges = statusChanges;
         this.tokenTtl = tokenTtl;
         this.dummyPasswordHash = passwordEncoder.encode(Identifiers.newId().toString());
     }
@@ -587,8 +593,12 @@ class IdentityServiceImpl implements IdentityService {
             userWarehouses.findByUserIdIn(ids).forEach(row -> warehousesByUser
                     .computeIfAbsent(row.getUserId(), id -> new java.util.ArrayList<>()).add(row.getWarehouseId()));
         }
+        Map<UUID, UserStatusChangeEntry> latestByUser = new java.util.HashMap<>();
+        if (!ids.isEmpty()) {
+            statusChanges.findLatestOf(ids).forEach(row -> latestByUser.put(row.getUserId(), statusChangeOf(row)));
+        }
         return Pages.toResponse(page, user -> staffUserOf(user, rolesByUser.getOrDefault(user.getId(), List.of()),
-                warehousesByUser.getOrDefault(user.getId(), List.of())));
+                warehousesByUser.getOrDefault(user.getId(), List.of()), latestByUser.get(user.getId())));
     }
 
     @Override
@@ -604,7 +614,8 @@ class IdentityServiceImpl implements IdentityService {
     @Transactional(readOnly = true)
     public StaffUser user(UUID userId) {
         return staffUserOf(requireAccount(userId), codesOf(rolesOf(new UserId(userId))),
-                userWarehouses.findByUserId(userId).stream().map(UserWarehouseJpaEntity::getWarehouseId).toList());
+                userWarehouses.findByUserId(userId).stream().map(UserWarehouseJpaEntity::getWarehouseId).toList(),
+                statusChanges.findLatestOf(userId).map(IdentityServiceImpl::statusChangeOf).orElse(null));
     }
 
     @Override
@@ -684,10 +695,13 @@ class IdentityServiceImpl implements IdentityService {
     }
 
     @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "user", resourceId = "#userId")
-    public StaffUser changeUserStatus(UUID userId, UserStatusChange change) {
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "user", resourceId = "#userId",
+            details = "{change: #change.name(), reason: #reason}")
+    public StaffUser changeUserStatus(UUID userId, UserStatusChange change, String reason) {
+        String why = StatusChangeReason.require(reason);
         requireStaffAccount(userId);
         User user = loadUser(userId);
+        UserStatus before = user.status();
         boolean takesAccess = change == UserStatusChange.LOCK || change == UserStatusChange.DISABLE;
         if (takesAccess && user.status() == com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
             refuseLastSystemAdmin(userId);
@@ -699,12 +713,29 @@ class IdentityServiceImpl implements IdentityService {
             case ENABLE -> user.enable();
         }
         userRepository.save(user);
+        Optional<com.stockflow.common.security.CurrentUser> actor = guard.actor();
+        statusChanges.save(new UserStatusChangeJpaEntity(Identifiers.newId(), userId, change.name(),
+                before.name(), user.status().name(), why, actor.map(com.stockflow.common.security.CurrentUser::userId).orElse(null),
+                actor.map(com.stockflow.common.security.CurrentUser::username).orElse("system"), clock.instant()));
         if (change == UserStatusChange.LOCK) {
             sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_LOCKED);
         } else if (change == UserStatusChange.DISABLE) {
             sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_DISABLED);
         }
         return user(userId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<UserStatusChangeEntry> statusHistory(UUID userId, int page, int size) {
+        requireAccount(userId);
+        return Pages.toResponse(statusChanges.findByUserIdOrderByChangedAtDescIdDesc(userId, Pages.of(page, size)),
+                IdentityServiceImpl::statusChangeOf);
+    }
+
+    private static UserStatusChangeEntry statusChangeOf(UserStatusChangeJpaEntity row) {
+        return new UserStatusChangeEntry(row.getId(), UserStatusChange.valueOf(row.getAction()), row.getFromStatus(),
+                row.getToStatus(), row.getReason(), row.getActorId(), row.getActorUsername(), row.getChangedAt());
     }
 
     /**
@@ -836,10 +867,11 @@ class IdentityServiceImpl implements IdentityService {
         return held.stream().map(RoleJpaEntity::getCode).sorted().toList();
     }
 
-    private static StaffUser staffUserOf(UserJpaEntity user, List<String> roleCodes, List<UUID> warehouseIds) {
+    private static StaffUser staffUserOf(UserJpaEntity user, List<String> roleCodes, List<UUID> warehouseIds,
+                                         UserStatusChangeEntry latestStatusChange) {
         return new StaffUser(user.getId(), user.getUsername(), user.getEmail(), user.getFullName(),
                 user.getStatus().name(), roleCodes, warehouseIds, user.isMustChangePassword(), user.getLockedUntil(),
-                user.getLastLoginAt(), user.getCreatedAt(), user.getCreatedBy(), user.getVersion());
+                user.getLastLoginAt(), user.getCreatedAt(), user.getCreatedBy(), latestStatusChange, user.getVersion());
     }
 
     private static String blankToNull(String value) {

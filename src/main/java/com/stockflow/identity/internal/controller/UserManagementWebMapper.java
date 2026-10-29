@@ -3,9 +3,11 @@ package com.stockflow.identity.internal.controller;
 import com.stockflow.identity.api.CreatedStaffUser;
 import com.stockflow.identity.api.PasswordReset;
 import com.stockflow.identity.api.StaffUser;
+import com.stockflow.identity.api.UserStatusChangeEntry;
 import com.stockflow.identity.internal.controller.dto.CreatedUserResponse;
 import com.stockflow.identity.internal.controller.dto.PasswordResetResponse;
 import com.stockflow.identity.internal.controller.dto.UserResponse;
+import com.stockflow.identity.internal.controller.dto.UserStatusChangeResponse;
 import org.mapstruct.Mapper;
 import org.mapstruct.ReportingPolicy;
 
@@ -14,6 +16,8 @@ import org.mapstruct.ReportingPolicy;
 interface UserManagementWebMapper {
 
     UserResponse toResponse(StaffUser user);
+
+    UserStatusChangeResponse toResponse(UserStatusChangeEntry entry);
 
     CreatedUserResponse toResponse(CreatedStaffUser created);
 
