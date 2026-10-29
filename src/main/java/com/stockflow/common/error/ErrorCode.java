@@ -324,6 +324,15 @@ public enum ErrorCode {
     CANCELLATION_FEE_BEFORE_PRINTING("Printing has not started: the order is refunded in full, no fee is kept", 409),
     /** Work for an order that has been cancelled (printing started, a package completed) is refused. */
     ORDER_CANCELLED("This order is cancelled", 409),
+    /**
+     * Review 2026-10-25 of S6: production completes a print line short only within what the customer agreed with Sales,
+     * recorded on the order line.
+     */
+    PRODUCTION_SHORTFALL_NOT_AGREED("The customer has not agreed to go without these units: Sales records it on the "
+            + "order first", 409),
+    /** The same review: who recorded the customer's agreement does not also close the shortfall (four eyes). */
+    PRODUCTION_SHORTFALL_SELF_APPROVAL("The customer's agreement was recorded by you: someone else completes the job "
+            + "short", 409),
     /** Decision 2026-10-17: once printing started, only staff cancel an order (fee, blanks, printed goods). */
     CANCELLATION_NEEDS_STAFF("Printing has started: staff decide this order's cancellation", 409),
     ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),

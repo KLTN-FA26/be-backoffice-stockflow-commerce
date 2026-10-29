@@ -3,6 +3,7 @@ package com.stockflow.order.internal.service;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.contracts.OrderRemainderClosed;
 import com.stockflow.contracts.ProductionCompleted;
 import com.stockflow.contracts.SampleApproved;
 import com.stockflow.inventory.api.InventoryService;
@@ -17,8 +18,9 @@ import java.time.Clock;
 /**
  * Keeps the order module's own record of what production did (SCRUM-423). Asynchronous and after
  * commit, like the payment listener: production's fact stands whatever the order does with it, and a
- * failure here is retried from the event publication registry. Both events are recorded idempotently,
- * keyed by the producer's id, so a redelivered event changes nothing.
+ * failure here is retried from the event publication registry. Production's events are recorded
+ * idempotently, keyed by the producer's id, and a shortfall's closure only looks at the order again,
+ * so a redelivered event changes nothing.
  */
 @Component("orderProductionEventListener")
 class ProductionEventListener {
@@ -65,5 +67,18 @@ class ProductionEventListener {
             return;
         }
         releases.productionFinished(event.orderId());
+    }
+
+    /**
+     * BR-PRD-06 after a production shortfall (review 2026-10-25 of S6): a job closed with nothing made announces no
+     * completion, yet the units it gave up may leave every print line covered by what its siblings made - a
+     * subcontract's shortfall job the blanks never came for. Looked at again here; a no-op while a line is still short,
+     * and for a job completed short its own completion moves the order instead.
+     */
+    @ApplicationModuleListener
+    public void on(OrderRemainderClosed event) {
+        if (OrderRemainderClosed.PRODUCTION_SHORTFALL.equals(event.reasonCode())) {
+            releases.productionFinished(event.orderId());
+        }
     }
 }

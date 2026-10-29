@@ -226,6 +226,56 @@ class PrintRunService implements PrintRuns {
         log.info("Production order {} cancelled", order.orderNumber());
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One transaction, production order first (its row lock), then the sales order's: the order line gives up the
+     * units that will not be made - refused beyond the customer's agreement, and everything here rolls back - before
+     * production announces the completion, so the order is ready to fulfil for what was made as soon as the
+     * announcement lands. Then the hand-over every completion does - unprinted blanks back, the goods to packing and
+     * out of stock - or, for a job closed with nothing made, its blanks back as for any cancellation; and the line's
+     * blanks never issued are let go.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
+    public ProductionOrders.Detail completeShort(CurrentUser user, UUID productionOrderId, String reason,
+                                                 String packingLocation) {
+        ProductionOrder order = lock(user, productionOrderId);
+        if (order.type() == ProductionOrder.Type.ORDER && salesOrderCancelled(order)) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "The order of production order %s is cancelled, or its line closed; cancel the job instead"
+                            .formatted(order.orderNumber()));
+        }
+        Instant now = now();
+        ProductionOrder.Status from = order.status();
+        int shortfall = order.completeShort(reason, now);
+        boolean delivered = order.status() == ProductionOrder.Status.COMPLETED;
+        if (!delivered) {
+            // Nothing made: the blanks go back free - unlike a cancellation of a live order's job, which keeps them for
+            // the order: the units they were for are given up.
+            if (order.unprintedBlanks() > 0) {
+                stock.returnUnprinted(order, order.unprintedBlanks(), false, user.userId());
+            }
+            stock.releaseUnissued(order);
+        }
+        orders.save(order);
+        orders.recordTransition(order.id(), new ProductionOrder.Transition(from, order.status(), delivered
+                ? "Completed short: %d of %d good, %d not made; %s".formatted(order.good(),
+                        order.work().plannedQuantity(), shortfall, order.shortCompletionReason())
+                : "%d not made; %s".formatted(shortfall, order.cancellationReason())), now, user.userId());
+        salesOrders.closeProductionShortfall(order.salesOrderId(), order.salesOrderLineId(), shortfall,
+                user.userId());
+        if (delivered) {
+            completion.complete(order, packingLocation, user.userId());
+        }
+        stock.letGoUnissuedLineHolds(order, salesOrders.findById(order.salesOrderId()).orElseThrow().lines().stream()
+                .filter(line -> line.lineId().equals(order.salesOrderLineId()))
+                .flatMap(line -> line.reservationIds().stream()).toList());
+        log.info("Production order {} closed short ({}): {} good of {} planned", order.orderNumber(), order.status(),
+                order.good(), order.work().plannedQuantity());
+        return reads.get(user, order.id());
+    }
+
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
     public ProductionOrders.Detail stop(CurrentUser user, UUID productionOrderId, int printed, List<ScrapLine> scrap,

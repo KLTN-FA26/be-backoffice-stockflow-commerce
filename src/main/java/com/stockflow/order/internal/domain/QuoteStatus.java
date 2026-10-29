@@ -12,8 +12,11 @@ public enum QuoteStatus {
     public boolean canTransitionTo(QuoteStatus target) {
         return switch (this) {
             case DRAFT -> target == SENT || target == CANCELLED;
-            case SENT -> target == ACCEPTED || target == CHANGES_REQUESTED || target == EXPIRED;
-            case CHANGES_REQUESTED -> target == DRAFT;
+            // CANCELLED from SENT: Sales withdraws an offer before the customer answers - a price typed wrong, a
+            // design the customer dropped by phone. An offer that cannot be taken back can be accepted as it stands.
+            case SENT -> target == ACCEPTED || target == CHANGES_REQUESTED || target == EXPIRED || target == CANCELLED;
+            // CANCELLED from CHANGES_REQUESTED: the changes asked for are not offered; nothing is revised.
+            case CHANGES_REQUESTED -> target == DRAFT || target == CANCELLED;
             // CANCELLED: decision 2026-10-17 - Sales, with a reason, when a SKU on it stopped (QuoteService).
             case ACCEPTED -> target == CONVERTED || target == CANCELLED;
             case EXPIRED, CANCELLED, CONVERTED -> false;

@@ -132,6 +132,8 @@ public final class ProductionOrder {
     private Instant completedAt;
     private Instant cancelledAt;
     private String cancellationReason;
+    /** Why it completed with fewer good units than planned (S6); null for a job that met its plan. */
+    private String shortCompletionReason;
 
     private ProductionOrder(UUID id, String orderNumber, Type type, Status status, UUID sampleRequestId,
                             UUID salesOrderId, UUID salesOrderLineId, UUID approvedSampleId, Work work) {
@@ -441,6 +443,67 @@ public final class ProductionOrder {
         passed = 0;
         end(text, at);
         return unsold;
+    }
+
+    /** Rehydration of a short completion, after {@link #withProgress}. */
+    public ProductionOrder withShortCompletion(String reason) {
+        this.shortCompletionReason = reason;
+        return this;
+    }
+
+    // ------------------------------------------------------------------ completed short (review 2026-10-25, S6)
+
+    private static final java.util.EnumSet<Status> COMPLETABLE_SHORT = java.util.EnumSet.of(Status.READY,
+            Status.MATERIAL_ISSUED);
+
+    /**
+     * Completed with the good units QC passed, fewer than planned, because the customer agreed to go without the rest:
+     * the blanks ran out, a reprint would come too late. Only an order's in-house job between rounds - READY or
+     * MATERIAL_ISSUED, or held from there - with every printed unit through QC; a job that already has its plan
+     * completes through QC as always. A held job leaves its hold.
+     *
+     * <p>With no good unit there is nothing to deliver (review 2026-10-25 of S6): the job ends CANCELLED instead, its
+     * whole plan given up - PENDING_PREPRESS too - so a shortfall job whose blanks never came does not keep the order
+     * in production for good. The caller returns the blanks not printed, hands the goods over as on any completion (a
+     * COMPLETED job only) and closes the shortfall out of the sales order line.</p>
+     *
+     * @param reason why, as the manager records it - at most 500 characters
+     * @return the units the order line will not get
+     * @throws BusinessException {@code INVALID_PRODUCTION_TRANSITION} for any other job or moment;
+     *         {@code VALIDATION_FAILED} without a reason
+     */
+    public int completeShort(String reason, Instant at) {
+        Objects.requireNonNull(at, "at");
+        if (reason == null || reason.isBlank() || reason.strip().length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A job completed short says why, in at most 500 characters");
+        }
+        if (type != Type.ORDER || mode != Mode.IN_HOUSE) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION, ("Production order %s is not an "
+                    + "order's in-house job; a sample or a subcontracted job ends its own way").formatted(orderNumber));
+        }
+        boolean nothingMade = good == 0 && effectiveStatus() == Status.PENDING_PREPRESS;
+        if (!nothingMade && !COMPLETABLE_SHORT.contains(effectiveStatus()) || awaitingQc() > 0) {
+            throw transition("complete short");
+        }
+        if (good >= work.plannedQuantity()) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s has its %d good units: nothing is short".formatted(orderNumber,
+                            work.plannedQuantity()));
+        }
+        if (good == 0) {
+            // Nothing to hand over: CANCELLED, as the job is, with why - the order line gives up its whole plan.
+            String why = "Closed short, nothing made: " + reason.strip();
+            end(why.length() > 500 ? why.substring(0, 500) : why, at);
+            return work.plannedQuantity();
+        }
+        status = Status.COMPLETED;
+        statusBeforeHold = null;
+        holdReason = null;
+        holdNote = null;
+        completedAt = at;
+        shortCompletionReason = reason.strip();
+        return work.plannedQuantity() - good;
     }
 
     private void requireSubcontracted() {
@@ -806,6 +869,8 @@ public final class ProductionOrder {
     public Subcontract subcontract() { return subcontract; }
     public Instant cancelledAt() { return cancelledAt; }
     public String cancellationReason() { return cancellationReason; }
+    /** Null unless it completed with fewer good units than planned. */
+    public String shortCompletionReason() { return shortCompletionReason; }
 
     /** The id the uniqueness of this order hangs on: the sample request or the order line. */
     public UUID sourceId() {

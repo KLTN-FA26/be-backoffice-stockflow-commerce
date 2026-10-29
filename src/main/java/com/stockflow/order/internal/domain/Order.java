@@ -479,9 +479,9 @@ public final class Order extends AggregateRoot {
         }
         if (status == OrderStatus.CANCELLED && cancellationFeeAmount != null) {
             // Q6a: money arriving after a cancellation with an agreed fee pays that fee first - the receivable its
-            // shortfall became, or a late transfer - so what is kept stays LEAST(fee, paid), as
+            // shortfall became, or a late transfer - so what is kept stays LEAST(fee, money held), as
             // ck_order_cancellation_fee says. Anything above the fee is the customer's, settled as before.
-            this.cancellationRetainedAmount = cancellationFeeAmount.min(paidAmount);
+            this.cancellationRetainedAmount = cancellationFeeAmount.min(moneyHeld());
         }
         if (paidInFullAt == null && paidAmount.compareTo(total().amount()) >= 0) {
             this.paidInFullAt = now;
@@ -548,11 +548,11 @@ public final class Order extends AggregateRoot {
         // heard of it): what was kept, and what was asked back, never exceed what is left of the money (BR-05,
         // ck_order_cancellation_retained, ck_order_billing). The rest is the accountant's to settle by hand; the
         // event is consumed, not retried forever.
-        if (cancellationRetainedAmount != null && cancellationRetainedAmount.compareTo(paidAmount) > 0) {
-            this.cancellationRetainedAmount = paidAmount;
-        }
         if (remainderRefundAmount.compareTo(paidAmount) > 0) {
             this.remainderRefundAmount = paidAmount;
+        }
+        if (cancellationRetainedAmount != null && cancellationRetainedAmount.compareTo(moneyHeld()) > 0) {
+            this.cancellationRetainedAmount = moneyHeld();
         }
         if (termsMet() || !status.mayBePutOnHold()) {
             return false;
@@ -860,7 +860,8 @@ public final class Order extends AggregateRoot {
         if (status != OrderStatus.IN_PRODUCTION && !heldInProduction && !awaitingProduction) {
             return false;
         }
-        // Units closed out of a line are not printed for (closeRemainder after an early shipment).
+        // Units closed out of a line are not printed for (closeRemainder after an early shipment, or a production
+        // shortfall the customer agreed to).
         boolean allDone = printLines().stream()
                 .allMatch(line -> producedByLine.getOrDefault(line.id(), 0) >= line.quantity() - line.cancelledQuantity());
         if (!allDone) {
@@ -1168,8 +1169,9 @@ public final class Order extends AggregateRoot {
      * process is a return — {@code ORDER_NOT_CANCELLABLE}, naming the current status so the caller
      * can tell the user why.</p>
      *
-     * <p>{@code retainedPercent} is the share of the money received kept for work already done — a
-     * print run under way (17 §4.4, 15 §4.4); the rest is refundable. 0 or null keeps nothing.</p>
+     * <p>{@code retainedPercent} is the share of the money held for the order (received, less what closures asked
+     * back) kept for work already done — a print run under way (17 §4.4, 15 §4.4); the rest is refundable. 0 or null
+     * keeps nothing.</p>
      *
      * @param by who cancelled; null when the system did (payment failed, hold expired)
      */
@@ -1179,9 +1181,10 @@ public final class Order extends AggregateRoot {
 
     /**
      * The same, keeping either a percentage or an amount agreed with the customer (decision Q2: Sales enters it,
-     * nothing computes it), whole units of the currency, more than zero, with its reason and detail. The money
-     * received pays it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the
-     * cancellation announces it and payment records a receivable (Q6a). Nothing is collected or marked paid.
+     * nothing computes it), whole units of the currency, more than zero, at most what the order is now worth, with its
+     * reason and detail. The money held for the order (received, less what closures asked back - review of S6) pays
+     * it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the cancellation announces
+     * it and payment records a receivable (Q6a). Nothing is collected or marked paid.
      */
     public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
                        com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant now) {
@@ -1218,10 +1221,13 @@ public final class Order extends AggregateRoot {
         OrderStatus previous = status;
         int scale = total().currency().getDefaultFractionDigits();
         BigDecimal agreed = agreedFee == null ? null : agreedFee.amount().setScale(scale);
-        // Q6a/Q6b: what was received pays the agreed amount first; the rest is refunded, a shortfall is owed.
-        BigDecimal retained = agreed != null ? agreed.min(paidAmount)
+        // Q6a/Q6b: what was received pays the agreed amount first; the rest is refunded, a shortfall is owed. Only the
+        // money still the order's (review 2026-10-25 of S6): a refund a production shortfall already asked for is not
+        // refunded a second time, nor kept.
+        BigDecimal held = moneyHeld();
+        BigDecimal retained = agreed != null ? agreed.min(held)
                 : retainedPercent == null ? BigDecimal.ZERO
-                : paidAmount.multiply(retainedPercent).divide(HUNDRED, scale, RoundingMode.HALF_UP);
+                : held.multiply(retainedPercent).divide(HUNDRED, scale, RoundingMode.HALF_UP);
         this.cancellationFeeAmount = agreed;
         this.cancellationFeeReason = agreedFee == null ? null : agreedFee.reason();
         this.cancellationFeeDetail = agreedFee == null ? null : agreedFee.detail();
@@ -1233,7 +1239,7 @@ public final class Order extends AggregateRoot {
         this.cancellationReason = reasonText;
         this.cancellationRetainedAmount = retained;
         registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
-                previous.name(), code.name(), trimmed, paidAmount, paidAmount.subtract(retained),
+                previous.name(), code.name(), trimmed, paidAmount, held.subtract(retained),
                 total().currency().getCurrencyCode(), by, now,
                 agreed == null ? BigDecimal.ZERO : agreed.subtract(retained))));
     }
@@ -1247,10 +1253,12 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is more than zero, in whole %s"
                     .formatted(digits == 0 ? total().currency().getCurrencyCode() : "units of " + total().currency()));
         }
-        // Decision 2026-10-17: above what was paid the rest is owed, but never above what the order is worth.
-        if (fee.amount().compareTo(total().amount()) > 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is at most the order total, %s %s"
-                    .formatted(total().amount().stripTrailingZeros().toPlainString(), total().currency().getCurrencyCode()));
+        // Decision 2026-10-17: above what was paid the rest is owed, but never above what the order is worth - less
+        // the units a production shortfall closed (review 2026-10-25 of S6).
+        if (fee.amount().compareTo(billable()) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is at most what the order is "
+                    + "worth, %s %s".formatted(billable().stripTrailingZeros().toPlainString(),
+                    total().currency().getCurrencyCode()));
         }
         if (fee.reason() == null || fee.reason().isEmpty() || fee.reason().length() > 500
                 || fee.detail() == null || fee.detail().isEmpty() || fee.detail().length() > 2000) {
@@ -1569,6 +1577,126 @@ public final class Order extends AggregateRoot {
                 orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), paidAmount,
                 refundable, total().currency().getCurrencyCode(), by, at, UUID.randomUUID(), fee, retained, owed)));
         return closed.amount();
+    }
+
+    /**
+     * Sales records what the customer agreed to go without on a print line production cannot finish (review 2026-10-25
+     * of S6): at most {@code units} of it, with the note of the agreement - the call, the message. Lowering what an order
+     * is worth is a sale's decision, so production completes a job short only within it ({@link
+     * #closeProductionShortfall}); the order line keeps who agreed what, and when. A new agreement replaces the last
+     * one, never below what production already closed under it; 0 units withdraws it - recorded on the wrong line, or
+     * the customer changed their mind - while nothing was closed under it. Only while the order is printed for, as the
+     * closure.
+     *
+     * @throws BusinessException {@code NOT_FOUND} for a line not on the order; {@code VALIDATION_FAILED} for a stock
+     *         line, no note, or a quantity not leaving the customer at least one unit; {@code ORDER_INVALID_TRANSITION}
+     *         once the order is not printed for any more
+     */
+    public void agreeProductionShortfall(UUID lineId, int units, String note, UUID by, Instant at) {
+        java.util.Objects.requireNonNull(by, "by");
+        OrderLine line = printedLine(lineId);
+        String text = trimmed(note);
+        if (text == null || text.length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The customer's agreement says how it was given, in at most 500 characters");
+        }
+        if (units == 0 && line.shortfallClosedQuantity() == 0) {
+            line.withdrawShortfall();
+            return;
+        }
+        // At least one unit stays the customer's: a line given up whole is a cancellation, decided as one.
+        if (units < Math.max(1, line.shortfallClosedQuantity()) || units >= line.quantity()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Line %s of order %s has %d unit(s), %d already "
+                    + "closed short: the customer goes without at least that many and keeps at least one; %d asked")
+                    .formatted(lineId, orderNumber, line.quantity(), line.shortfallClosedQuantity(), units));
+        }
+        line.agreeShortfall(new OrderLine.ShortfallAgreement(units, text, by, at));
+    }
+
+    /**
+     * Production completed a print line's job short (review 2026-10-25, S6): {@code units} of the line will not be made,
+     * so they leave the order as a closed remainder does ({@link #closeRemainder}) - the order is worth less, the money
+     * received above that is asked back ({@code OrderRemainderClosed}, reason {@code PRODUCTION_SHORTFALL}, no fee), and
+     * the production delivered now covers the line (BR-PRD-06). Only within what the customer agreed with Sales
+     * ({@link #agreeProductionShortfall}) - and by someone else than who recorded it: lowering what an order is worth
+     * takes two people - and only while the order is still printed for: IN_PRODUCTION, held from there, or waiting
+     * for its prints after its stock shipped early. The status does not move here: the completion announcement moves
+     * it, or - a job closed with nothing made - the closure's own announcement.
+     *
+     * @return the value of the units closed
+     * @throws BusinessException {@code NOT_FOUND} for a line not on the order; {@code VALIDATION_FAILED} for a stock
+     *         line, more units than the line has left, or all of them (a cancellation); {@code
+     *         PRODUCTION_SHORTFALL_NOT_AGREED} beyond the customer's agreement; {@code
+     *         PRODUCTION_SHORTFALL_SELF_APPROVAL} by who recorded it; {@code ORDER_INVALID_TRANSITION} once the order
+     *         is not printed for any more
+     */
+    public BigDecimal closeProductionShortfall(UUID lineId, int units, UUID by, Instant at) {
+        java.util.Objects.requireNonNull(by, "by");
+        OrderLine line = printedLine(lineId);
+        int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
+        if (units < 1 || units > left) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Line %s of order %s has %d unit(s) left; %d asked".formatted(lineId, orderNumber, left, units));
+        }
+        if (line.cancelledQuantity() + units >= line.quantity()) {
+            // Nothing of the line would reach the customer: not a shortfall, a cancellation of what they ordered.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Closing %d unit(s) of line %s of order %s "
+                    + "leaves the customer nothing of it: cancel the order, or have Sales agree on another way")
+                    .formatted(units, lineId, orderNumber));
+        }
+        OrderLine.ShortfallAgreement agreement = line.shortfallAgreement();
+        if (agreement == null || line.shortfallClosedQuantity() + units > agreement.quantity()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_SHORTFALL_NOT_AGREED, agreement == null
+                    ? "Sales has not recorded that the customer of order %s goes without units of line %s"
+                            .formatted(orderNumber, lineId)
+                    : "The customer of order %s agreed to go without %d unit(s) of line %s, %d already closed; %d asked"
+                            .formatted(orderNumber, agreement.quantity(), lineId, line.shortfallClosedQuantity(), units));
+        }
+        if (agreement.agreedBy().equals(by)) {
+            throw new BusinessException(ErrorCode.PRODUCTION_SHORTFALL_SELF_APPROVAL,
+                    "The customer's agreement on order %s was recorded by the user now closing it; someone else closes"
+                            .formatted(orderNumber));
+        }
+        line.closeShortfall(units);
+        Money closed = line.unitPrice().times(units);
+        BigDecimal excess = paidAmount.subtract(billable()).subtract(remainderRefundAmount)
+                .subtract(remainderFeeRetainedAmount).subtract(remainderFeePaidAmount);
+        BigDecimal refundable = excess.max(BigDecimal.ZERO);
+        this.remainderRefundAmount = remainderRefundAmount.add(refundable);
+        registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
+                orderNumber.value(), customerId, com.stockflow.contracts.OrderRemainderClosed.PRODUCTION_SHORTFALL,
+                List.of(new com.stockflow.contracts.OrderRemainderClosed.Line(line.id(), line.sku().code(), units)),
+                closed.amount(), billable(), paidAmount, refundable, total().currency().getCurrencyCode(), by, at,
+                UUID.randomUUID(), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO)));
+        return closed.amount();
+    }
+
+    /** A print line of an order still printed for: the agreement and the closure of a production shortfall. */
+    private OrderLine printedLine(UUID lineId) {
+        OrderLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                        "Line %s does not belong to order %s".formatted(lineId, orderNumber)));
+        boolean printing = status == OrderStatus.IN_PRODUCTION
+                || status == OrderStatus.ON_HOLD && statusBeforeHold == OrderStatus.IN_PRODUCTION || awaitingProduction;
+        if (!printing) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "the order is not waiting for its prints any more");
+        }
+        if (!line.isMadeToOrder()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Line %s of order %s is a stock line: nothing is printed for it".formatted(lineId, orderNumber));
+        }
+        return line;
+    }
+
+    /**
+     * The money received that is still the order's (review 2026-10-25 of S6): what was paid, less the refunds closures
+     * asked for and the closures' fees it paid. A cancellation keeps and refunds out of this, so a refund a closure
+     * already asked for is paid out once; ck_order_cancellation_fee says it again.
+     */
+    private BigDecimal moneyHeld() {
+        return paidAmount.subtract(remainderRefundAmount).subtract(remainderFeeRetainedAmount)
+                .subtract(remainderFeePaidAmount).max(BigDecimal.ZERO);
     }
 
     private void followShipments(ShipmentChange change, Instant at, UUID by) {

@@ -25,6 +25,11 @@ class OrderRemainderClosedListener {
 
     @ApplicationModuleListener
     public void on(OrderRemainderClosed event) {
+        if (OrderRemainderClosed.PRODUCTION_SHORTFALL.equals(event.reasonCode())) {
+            // Production closed those units itself, completing a job short (S6): nothing of it is left to stop, and
+            // the line's other jobs - a split's children - go on.
+            return;
+        }
         Set<UUID> lines = event.lines().stream().map(OrderRemainderClosed.Line::orderLineId)
                 .collect(Collectors.toSet());
         runs.onLinesClosed(event.orderId(), event.orderNumber(), lines, event.closedBy());

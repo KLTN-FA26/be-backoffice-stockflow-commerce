@@ -345,6 +345,69 @@ class ProductionOrderTest {
     }
 
     @Test
+    void aJobShortOfItsPlanCompletesWithItsGoodUnitsOnlyBetweenRoundsAndSayingWhy() {
+        ProductionOrder order = ready();
+        order.issueBlanks(10);
+        order.startPrinting();
+        order.recordOutput(10, 0);
+        assertThatThrownBy(() -> order.completeShort("khách đồng ý", Instant.now())).as("QC first")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        order.recordQc(8, 2, Instant.now());
+        order.hold(ProductionOrder.HoldReason.BLANKS_SHORT, "hết phôi", Instant.now());
+        assertThatThrownBy(() -> order.completeShort(" ", Instant.now())).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        Instant at = Instant.parse("2026-10-25T03:00:00Z");
+        assertThat(order.completeShort("Khách đồng ý nhận 8 ly (Zalo 25/10)", at)).as("2 not made").isEqualTo(2);
+        assertThat(order.status()).isEqualTo(ProductionOrder.Status.COMPLETED);
+        assertThat(order.holdReason()).as("its hold left with it").isNull();
+        assertThat(order.completedAt()).isEqualTo(at);
+        assertThat(order.good()).isEqualTo(8);
+        assertThat(order.shortCompletionReason()).contains("8 ly");
+        assertThatThrownBy(() -> order.completeShort("again", at)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+    }
+
+    @Test
+    void aJobWithNothingGoodIsClosedShortCancelledGivingUpItsWholePlanButNotWhileOnThePress() {
+        ProductionOrder pending = forLine(sample, work);
+        Instant at = Instant.parse("2026-10-25T03:00:00Z");
+        assertThat(pending.completeShort("Khách đồng ý thiếu, không còn phôi", at)).as("nothing made: the plan")
+                .isEqualTo(10);
+        assertThat(pending.status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(pending.cancellationReason()).startsWith("Closed short, nothing made").contains("không còn phôi");
+        assertThat(pending.shortCompletionReason()).as("ck_production_order_short_completion: COMPLETED only").isNull();
+
+        ProductionOrder spoilt = ready();
+        spoilt.issueBlanks(10);
+        spoilt.startPrinting();
+        assertThatThrownBy(() -> spoilt.completeShort("x", at)).as("on the press: stopped, not closed")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        spoilt.recordOutput(10, 0);
+        spoilt.recordQc(0, 10, at);
+        spoilt.hold(ProductionOrder.HoldReason.BLANKS_SHORT, "hết phôi", at);
+        assertThat(spoilt.completeShort("x".repeat(500), at)).isEqualTo(10);
+        assertThat(spoilt.status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(spoilt.holdReason()).isNull();
+        assertThat(spoilt.cancellationReason()).hasSize(500);
+    }
+
+    @Test
+    void aJobThatHasItsPlanOrIsNotAnOrdersInHouseJobIsNotCompletedShort() {
+        ProductionOrder whole = ready();
+        whole.issueBlanks(10);
+        whole.startPrinting();
+        whole.recordOutput(10, 0);
+        whole.recordQc(10, 0, Instant.now());
+        assertThatThrownBy(() -> whole.completeShort("x", Instant.now())).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+
+        ProductionOrder sampleJob = ProductionOrder.forSample(UUID.randomUUID(), "LSX-S", UUID.randomUUID(), work);
+        assertThatThrownBy(() -> sampleJob.completeShort("x", Instant.now())).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+    }
+
+    @Test
     void aRunWhollySpoiltSkipsQcAndGoesBackToReady() {
         ProductionOrder order = ready();
         order.issueBlanks(10);
