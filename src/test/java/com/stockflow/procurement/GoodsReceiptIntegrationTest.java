@@ -378,7 +378,7 @@ class GoodsReceiptIntegrationTest {
         UUID other = receipts.create(new GoodsReceipts.Create(po, null, null), clerk).id();
         assertThat(receipts.cancel(other).status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
         assertThat(poStatus(po)).isEqualTo("PARTIALLY_RECEIVED");
-        assertThat(receipts.list(List.of(GoodsReceiptStatus.CANCELLED), po, null, null, null, null, 0, 20, null)
+        assertThat(receipts.list(List.of(GoodsReceiptStatus.CANCELLED), po, null, null, null, null, null, 0, 20, null)
                 .items()).extracting(GoodsReceipts.Row::id).containsExactly(other);
     }
 
@@ -499,7 +499,7 @@ class GoodsReceiptIntegrationTest {
                 new GoodsReceipts.Decision(2, null, new GoodsReceipts.Part(0, "NO-SUCH-AREA", null)), qc);
         assertThat(inspected.lines().get(0).inspections()).singleElement()
                 .satisfies(i -> assertThat(i.inspectedByName()).isNotBlank());
-        var row = receipts.list(null, po, null, null, null, null, 0, 20, null).items();
+        var row = receipts.list(null, po, null, null, null, null, null, 0, 20, null).items();
         assertThat(row).singleElement().satisfies(r -> {
             assertThat(r.purchaseOrderNumber()).startsWith("PO-");
             assertThat(r.supplierName()).isEqualTo(confirmed.supplierName());

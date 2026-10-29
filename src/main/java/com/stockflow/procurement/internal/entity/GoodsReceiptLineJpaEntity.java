@@ -39,7 +39,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @JoinColumn(name = "receipt_id", nullable = false, updatable = false)
     private GoodsReceiptJpaEntity receipt;
 
-    @Column(name = "po_line_id", nullable = false, updatable = false)
+    @Column(name = "po_line_id", updatable = false)
     private UUID poLineId;
 
     @Column(name = "inventory_item_id", nullable = false, updatable = false)

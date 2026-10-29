@@ -9,12 +9,14 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.procurement.internal.controller.dto.CreateGoodsReceiptRequest;
+import com.stockflow.procurement.internal.controller.dto.CreateGoodsReceiptWithoutPoRequest;
 import com.stockflow.procurement.internal.controller.dto.GoodsReceiptResponse;
 import com.stockflow.procurement.internal.controller.dto.GoodsReceiptRowResponse;
 import com.stockflow.procurement.internal.controller.dto.MoveToQcRequest;
 import com.stockflow.procurement.internal.controller.dto.QcDecisionRequest;
 import com.stockflow.procurement.internal.controller.dto.ReceiptDecisionRequest;
 import com.stockflow.procurement.internal.controller.dto.ReceiptLinesRequest;
+import com.stockflow.procurement.internal.controller.dto.ReferencePurchaseOrderRequest;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import io.swagger.v3.oas.annotations.Operation;
@@ -76,6 +78,23 @@ class GoodsReceiptController {
                 user.userId())));
     }
 
+    @PostMapping("/without-po")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Start a receipt (DRAFT) for goods that arrived with no purchase order (BR-RCP-002)",
+            description = """
+                    Supplier, warehouse and a free-text reason are required. Its lines name items by `sku` (no PO \
+                    line). Confirming it never posts: it becomes `PENDING_APPROVAL` and the warehouse manager \
+                    approves it (`/approval`, stock is counted in only then) or rejects it (`/rejection`, the whole \
+                    receipt is cancelled). A PO can be attached afterwards as a reference \
+                    (`PUT /{id}/referenced-purchase-order`).""")
+    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.CREATE)
+    public ApiResponse<GoodsReceiptResponse> createWithoutPo(@Valid @RequestBody CreateGoodsReceiptWithoutPoRequest request,
+                                                             @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(receipts.createWithoutPurchaseOrder(
+                new GoodsReceipts.CreateWithoutPo(request.supplierId(), request.warehouseId(), request.reason(),
+                        request.deliveryNote(), request.note()), user.userId())));
+    }
+
     @GetMapping
     @Operation(summary = "Goods receipts, newest first")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.READ)
@@ -86,11 +105,12 @@ class GoodsReceiptController {
             @RequestParam(required = false) String search,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant receivedFrom,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant receivedTo,
+            @RequestParam(required = false) Boolean withoutPo,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(receipts.list(statuses, purchaseOrderId, warehouseId, search, receivedFrom, receivedTo,
-                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(mapper::toResponse));
+                withoutPo, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(mapper::toResponse));
     }
 
     @GetMapping("/{receiptId}")
@@ -131,7 +151,7 @@ class GoodsReceiptController {
                 .map(l -> new GoodsReceipts.NewLine(l.purchaseOrderLineId(), l.quantity(), l.lotNumber(),
                         l.expiryDate(), l.locationCode(), l.note(), l.unitOfMeasure(),
                         l.packages() == null ? List.of() : l.packages().stream()
-                                .map(p -> new GoodsReceipts.NewPackage(p.lpn(), p.quantity())).toList()))
+                                .map(p -> new GoodsReceipts.NewPackage(p.lpn(), p.quantity())).toList(), l.sku()))
                 .toList())));
     }
 
@@ -161,6 +181,36 @@ class GoodsReceiptController {
                                                      @Valid @RequestBody ReceiptDecisionRequest request,
                                                      @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(receipts.approve(receiptId, user.userId(), request.reason())));
+    }
+
+    @PostMapping("/{receiptId}/rejection")
+    @Operation(summary = "Reject a receipt without a PO waiting in PENDING_APPROVAL: the whole receipt is cancelled",
+            description = """
+                    BR-RCP-002. The warehouse manager refuses goods that arrived with no purchase order; nothing was \
+                    counted in, so the receipt is `CANCELLED` with the reason, the decider and `approval.decision = \
+                    REJECTED` on it. `reason` is required; same four-eyes rule as the approval. A receipt against a PO \
+                    answers `INVALID_RECEIPT_TRANSITION`: its excess is rejected (`/excess-rejection`), not the receipt.""")
+    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.APPROVE)
+    public ApiResponse<GoodsReceiptResponse> reject(@PathVariable UUID receiptId,
+                                                    @Valid @RequestBody ReceiptDecisionRequest request,
+                                                    @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(receipts.reject(receiptId, user.userId(), request.reason())));
+    }
+
+    @PutMapping("/{receiptId}/referenced-purchase-order")
+    @Operation(summary = "Attach the purchase order a receipt without one belongs to - a reference only",
+            description = """
+                    Owner decision NOPO-ATTACH ("gắn PO bổ sung"): the order's number is stored on the receipt and \
+                    nothing else happens - no received quantity is added to the order, no tolerance, no effect on \
+                    three-way matching. The order must exist (`PURCHASE_ORDER_NOT_FOUND`, 404) and be the receipt's \
+                    supplier's (`RECEIPT_REFERENCE_SUPPLIER_MISMATCH`, 409); the receipt must have no PO of its own \
+                    and not be cancelled (`INVALID_RECEIPT_TRANSITION`, 409). At any stage before cancellation, \
+                    including after it was posted; replaces an earlier reference.""")
+    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    public ApiResponse<GoodsReceiptResponse> referencePurchaseOrder(@PathVariable UUID receiptId,
+                                                                    @Valid @RequestBody ReferencePurchaseOrderRequest request) {
+        return ApiResponse.ok(mapper.toResponse(receipts.referencePurchaseOrder(receiptId,
+                request.purchaseOrderId())));
     }
 
     @PostMapping("/{receiptId}/excess-rejection")

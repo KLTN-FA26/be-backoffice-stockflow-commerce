@@ -137,7 +137,9 @@ stateDiagram-v2
 | DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance | `GoodsReceived` |
 | DRAFT | PENDING_APPROVAL | confirm | Warehouse staff | a PO line goes beyond its over-receipt tolerance (BR-RCP-001, SCRUM-477); nothing is counted in, no event | — |
 | PENDING_APPROVAL | CONFIRMED | approve, or reject the excess | holder of `procurement-goods-receipts:APPROVE` (warehouse manager), not the receiver nor whoever sent it for approval | reason required; approve posts the whole count, reject-excess cuts each PO line to its remaining limit and posts (BR-RCP-001) | `GoodsReceived` |
-| PENDING_APPROVAL | CANCELLED | cancel; or reject the excess with nothing within the tolerance left | Warehouse staff / manager | never confirmed | — |
+| PENDING_APPROVAL | CANCELLED | cancel; or reject the excess with nothing within the tolerance left; or, for a receipt without a PO, reject it | Warehouse staff / manager | never confirmed | — |
+| DRAFT | PENDING_APPROVAL | confirm a receipt **without a PO** (BR-RCP-002, SCRUM-478) | Warehouse staff | always, whatever the count; supplier and reason were required at creation; nothing is counted in | — |
+| PENDING_APPROVAL | CONFIRMED | approve a receipt without a PO | holder of `procurement-goods-receipts:APPROVE`, not the receiver nor whoever sent it | reason required; posts the count, no PO progress; the decision `APPROVED` is a database check for a posted receipt without a PO | `GoodsReceived` (no PO id) |
 | DRAFT | CANCELLED | cancel | Warehouse staff | never confirmed (`ck_goods_receipts_cancelled`) | — |
 | CONFIRMED | IN_QC | — | system | ≥1 line with `qc_required`; a **move-to-QC task** (`move_task.origin = RECEIPT_QC`) is created per such line | — |
 | CONFIRMED | IN_PUTAWAY | — | system | no line needs QC; putaway tasks from `RECEIVING` | — |
@@ -148,6 +150,10 @@ stateDiagram-v2
 Warehouse Manager's exception approval or rejection of the excess" (§4 step 5): it is the form that wait takes (owner
 decision OVER-RCPT, 29/10). A receipt in it holds nothing: no stock, no PO progress, no event, and it does not count
 against the PO line's tolerance until posted.
+
+A receipt without a PO (blind receipt, BR-RCP-002) takes the same `PENDING_APPROVAL` wait on every confirmation, not
+only past a tolerance: it is rejected as a whole (cancelled, decision `REJECTED`) rather than cut back. The PO attached to
+it afterwards is a reference only and changes nothing in this machine or in the order's.
 
 **What confirming does to inventory.** Stock rows appear in the `RECEIVING` area in condition
 **INBOUND** (machine 5). A QC-required line then moves `RECEIVING → QUALITY_CONTROL` (still INBOUND);

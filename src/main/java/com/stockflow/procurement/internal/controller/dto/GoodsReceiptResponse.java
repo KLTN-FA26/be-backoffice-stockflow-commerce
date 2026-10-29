@@ -14,13 +14,21 @@ import java.util.UUID;
  * (30) of the receiving date; the manager decides whether to accept it. {@code OVER_TOLERANCE} (BR-RCP-001): the
  * count, not yet posted, goes beyond the PO line's over-receipt tolerance; confirming it sends the receipt to the
  * warehouse manager ({@code status = PENDING_APPROVAL}). Empty when there is none.</p>
+ *
+ * <p>SCRUM-478 (BR-RCP-002): {@code withoutPurchaseOrder} receipts have no {@code purchaseOrderId} /
+ * {@code purchaseOrderNumber}; their {@code supplierId} is their own, {@code blindReason} says why there is no PO, and
+ * their lines are told apart by {@code sku} ({@code purchaseOrderLineId} is null). They are always sent to the manager
+ * on confirmation ({@code status = PENDING_APPROVAL}); {@code approval.decision} is {@code REJECTED} when refused (the
+ * receipt is then {@code CANCELLED}). {@code referencedPurchaseOrder*}: the PO attached afterwards, a reference only.</p>
  */
 public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber,
                                    UUID supplierId, String supplierName, UUID warehouseId, String warehouseCode,
                                    String warehouseName, String status, String deliveryNote, String note,
                                    Instant receivedAt, UUID receivedBy, String receivedByName, Instant confirmedAt,
                                    UUID confirmedBy, String confirmedByName, Instant closedAt, List<Line> lines,
-                                   List<String> warnings, Approval approval) {
+                                   List<String> warnings, Approval approval, boolean withoutPurchaseOrder,
+                                   String blindReason, UUID referencedPurchaseOrderId,
+                                   String referencedPurchaseOrderNumber) {
 
     /**
      * The warehouse manager's exception approval (SCRUM-477, BR-RCP-001): null for a receipt that never went beyond

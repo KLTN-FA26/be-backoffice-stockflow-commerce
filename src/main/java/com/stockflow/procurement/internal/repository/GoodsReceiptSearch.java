@@ -11,11 +11,14 @@ import java.util.UUID;
 /** Read side of goods receipts for the list screen. Rows carry no lines. */
 public interface GoodsReceiptSearch {
 
+    /** {@code withoutPurchaseOrder}: true keeps only receipts without a PO (SCRUM-478), false only those against one. */
     record Criteria(List<GoodsReceiptStatus> statuses, UUID purchaseOrderId, UUID warehouseId, String number,
-                    Instant receivedFrom, Instant receivedTo) {
+                    Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder) {
     }
 
-    record Row(UUID id, String number, UUID purchaseOrderId, UUID warehouseId, GoodsReceiptStatus status,
+    /** {@code supplierId}: the supplier of a receipt without a PO; null on one against a PO. */
+    record Row(UUID id, String number, UUID purchaseOrderId, UUID supplierId, UUID warehouseId,
+               GoodsReceiptStatus status,
                String deliveryNote, Instant receivedAt, UUID receivedBy, Instant confirmedAt, UUID confirmedBy,
                Instant closedAt) {
     }
@@ -28,4 +31,7 @@ public interface GoodsReceiptSearch {
 
     /** One query for a page of receipts: purchase order id → number and supplier. */
     java.util.Map<UUID, OrderLabel> orderLabels(java.util.Collection<UUID> purchaseOrderIds);
+
+    /** One query: supplier id → name, for the receipts of a page that have no PO to take it from. */
+    java.util.Map<UUID, String> supplierNames(java.util.Collection<UUID> supplierIds);
 }
