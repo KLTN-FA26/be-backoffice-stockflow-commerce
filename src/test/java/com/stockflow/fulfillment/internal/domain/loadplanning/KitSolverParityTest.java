@@ -39,7 +39,7 @@ class KitSolverParityTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"bulk_20dc_first", "bulk_40hc_gusset", "kit_bulk_even", "two_kits_auto",
-            "non_rotatable_20dc", "many_lines_40hc", "kits_even_three_20dc", "bulk_large_40dc"})
+            "non_rotatable_20dc", "many_lines_40hc", "kits_even_three_20dc", "bulk_large_40dc", "distinct_120_40hc"})
     void reproducesThePythonSolver(String name) throws IOException {
         JsonNode fx = read(name + ".fixture.json");
         JsonNode expected = read(name + ".expected.json");

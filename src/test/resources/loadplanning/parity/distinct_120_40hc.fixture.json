@@ -1,0 +1,1099 @@
+{
+ "containers": [
+  {
+   "code": "40HC",
+   "w": 2352,
+   "h": 2698,
+   "d": 12032,
+   "quantity": 64,
+   "payload": 1000000000.0,
+   "gusset": 150
+  }
+ ],
+ "boxes": [
+  {
+   "part": "D0",
+   "w": 990,
+   "h": 470,
+   "d": 1190,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D1",
+   "w": 1080,
+   "h": 980,
+   "d": 1430,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D2",
+   "w": 790,
+   "h": 460,
+   "d": 1080,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D3",
+   "w": 400,
+   "h": 290,
+   "d": 720,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D4",
+   "w": 510,
+   "h": 630,
+   "d": 940,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D5",
+   "w": 510,
+   "h": 160,
+   "d": 1180,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D6",
+   "w": 550,
+   "h": 380,
+   "d": 1420,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D7",
+   "w": 690,
+   "h": 350,
+   "d": 1220,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D8",
+   "w": 370,
+   "h": 940,
+   "d": 1040,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D9",
+   "w": 360,
+   "h": 150,
+   "d": 1490,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D10",
+   "w": 460,
+   "h": 420,
+   "d": 1470,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D11",
+   "w": 410,
+   "h": 520,
+   "d": 650,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D12",
+   "w": 890,
+   "h": 950,
+   "d": 510,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D13",
+   "w": 1080,
+   "h": 400,
+   "d": 1480,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D14",
+   "w": 690,
+   "h": 530,
+   "d": 270,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D15",
+   "w": 410,
+   "h": 330,
+   "d": 580,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D16",
+   "w": 580,
+   "h": 920,
+   "d": 1000,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D17",
+   "w": 1060,
+   "h": 580,
+   "d": 330,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D18",
+   "w": 590,
+   "h": 760,
+   "d": 1140,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D19",
+   "w": 810,
+   "h": 750,
+   "d": 1150,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D20",
+   "w": 520,
+   "h": 170,
+   "d": 1460,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D21",
+   "w": 710,
+   "h": 170,
+   "d": 950,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D22",
+   "w": 660,
+   "h": 630,
+   "d": 990,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D23",
+   "w": 770,
+   "h": 200,
+   "d": 1150,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D24",
+   "w": 450,
+   "h": 300,
+   "d": 1210,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D25",
+   "w": 790,
+   "h": 590,
+   "d": 900,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D26",
+   "w": 870,
+   "h": 470,
+   "d": 1240,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D27",
+   "w": 950,
+   "h": 620,
+   "d": 1350,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D28",
+   "w": 750,
+   "h": 260,
+   "d": 510,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D29",
+   "w": 980,
+   "h": 610,
+   "d": 1420,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D30",
+   "w": 550,
+   "h": 840,
+   "d": 360,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D31",
+   "w": 600,
+   "h": 540,
+   "d": 470,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D32",
+   "w": 1000,
+   "h": 340,
+   "d": 1170,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D33",
+   "w": 810,
+   "h": 350,
+   "d": 1170,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D34",
+   "w": 960,
+   "h": 830,
+   "d": 1430,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D35",
+   "w": 500,
+   "h": 910,
+   "d": 690,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D36",
+   "w": 780,
+   "h": 980,
+   "d": 780,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D37",
+   "w": 1010,
+   "h": 190,
+   "d": 1270,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D38",
+   "w": 460,
+   "h": 310,
+   "d": 1500,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D39",
+   "w": 360,
+   "h": 950,
+   "d": 1390,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D40",
+   "w": 330,
+   "h": 360,
+   "d": 800,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D41",
+   "w": 270,
+   "h": 680,
+   "d": 620,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D42",
+   "w": 990,
+   "h": 360,
+   "d": 1490,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D43",
+   "w": 820,
+   "h": 550,
+   "d": 860,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D44",
+   "w": 800,
+   "h": 660,
+   "d": 1400,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D45",
+   "w": 680,
+   "h": 830,
+   "d": 1470,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D46",
+   "w": 830,
+   "h": 580,
+   "d": 480,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D47",
+   "w": 540,
+   "h": 800,
+   "d": 1250,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D48",
+   "w": 840,
+   "h": 610,
+   "d": 330,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D49",
+   "w": 650,
+   "h": 900,
+   "d": 1090,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D50",
+   "w": 590,
+   "h": 610,
+   "d": 960,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D51",
+   "w": 550,
+   "h": 770,
+   "d": 580,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D52",
+   "w": 1080,
+   "h": 520,
+   "d": 1470,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D53",
+   "w": 1030,
+   "h": 370,
+   "d": 990,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D54",
+   "w": 800,
+   "h": 850,
+   "d": 1240,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D55",
+   "w": 1050,
+   "h": 500,
+   "d": 840,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D56",
+   "w": 840,
+   "h": 970,
+   "d": 1110,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D57",
+   "w": 640,
+   "h": 500,
+   "d": 1070,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D58",
+   "w": 720,
+   "h": 590,
+   "d": 1430,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D59",
+   "w": 1080,
+   "h": 720,
+   "d": 1490,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D60",
+   "w": 620,
+   "h": 810,
+   "d": 430,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D61",
+   "w": 410,
+   "h": 400,
+   "d": 1320,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D62",
+   "w": 810,
+   "h": 510,
+   "d": 1130,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D63",
+   "w": 1050,
+   "h": 680,
+   "d": 460,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D64",
+   "w": 940,
+   "h": 810,
+   "d": 1100,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D65",
+   "w": 580,
+   "h": 940,
+   "d": 950,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D66",
+   "w": 1010,
+   "h": 490,
+   "d": 1170,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D67",
+   "w": 450,
+   "h": 350,
+   "d": 1000,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D68",
+   "w": 1030,
+   "h": 380,
+   "d": 530,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D69",
+   "w": 430,
+   "h": 950,
+   "d": 1160,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D70",
+   "w": 800,
+   "h": 430,
+   "d": 460,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D71",
+   "w": 370,
+   "h": 290,
+   "d": 650,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D72",
+   "w": 810,
+   "h": 390,
+   "d": 950,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D73",
+   "w": 790,
+   "h": 590,
+   "d": 730,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D74",
+   "w": 290,
+   "h": 900,
+   "d": 510,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D75",
+   "w": 670,
+   "h": 150,
+   "d": 690,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D76",
+   "w": 550,
+   "h": 670,
+   "d": 1350,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D77",
+   "w": 900,
+   "h": 620,
+   "d": 1480,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D78",
+   "w": 980,
+   "h": 530,
+   "d": 370,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D79",
+   "w": 850,
+   "h": 580,
+   "d": 1460,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D80",
+   "w": 650,
+   "h": 310,
+   "d": 780,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D81",
+   "w": 920,
+   "h": 970,
+   "d": 930,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D82",
+   "w": 380,
+   "h": 350,
+   "d": 1010,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D83",
+   "w": 810,
+   "h": 400,
+   "d": 1480,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D84",
+   "w": 310,
+   "h": 590,
+   "d": 1300,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D85",
+   "w": 200,
+   "h": 630,
+   "d": 380,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D86",
+   "w": 980,
+   "h": 840,
+   "d": 430,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D87",
+   "w": 920,
+   "h": 630,
+   "d": 790,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D88",
+   "w": 480,
+   "h": 780,
+   "d": 620,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D89",
+   "w": 1100,
+   "h": 630,
+   "d": 740,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D90",
+   "w": 400,
+   "h": 910,
+   "d": 1010,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D91",
+   "w": 580,
+   "h": 780,
+   "d": 570,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D92",
+   "w": 600,
+   "h": 540,
+   "d": 870,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D93",
+   "w": 380,
+   "h": 760,
+   "d": 280,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D94",
+   "w": 990,
+   "h": 710,
+   "d": 560,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D95",
+   "w": 370,
+   "h": 650,
+   "d": 260,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D96",
+   "w": 910,
+   "h": 500,
+   "d": 560,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D97",
+   "w": 240,
+   "h": 460,
+   "d": 870,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D98",
+   "w": 390,
+   "h": 510,
+   "d": 620,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D99",
+   "w": 800,
+   "h": 810,
+   "d": 1070,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D100",
+   "w": 350,
+   "h": 170,
+   "d": 1220,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D101",
+   "w": 560,
+   "h": 830,
+   "d": 1150,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D102",
+   "w": 570,
+   "h": 820,
+   "d": 280,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D103",
+   "w": 660,
+   "h": 900,
+   "d": 410,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D104",
+   "w": 520,
+   "h": 850,
+   "d": 830,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D105",
+   "w": 330,
+   "h": 840,
+   "d": 490,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D106",
+   "w": 740,
+   "h": 910,
+   "d": 980,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D107",
+   "w": 1000,
+   "h": 980,
+   "d": 860,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D108",
+   "w": 690,
+   "h": 750,
+   "d": 750,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D109",
+   "w": 450,
+   "h": 520,
+   "d": 840,
+   "quantity": 1,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "D110",
+   "w": 280,
+   "h": 530,
+   "d": 1320,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D111",
+   "w": 750,
+   "h": 890,
+   "d": 610,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D112",
+   "w": 800,
+   "h": 540,
+   "d": 430,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D113",
+   "w": 1080,
+   "h": 850,
+   "d": 1380,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D114",
+   "w": 620,
+   "h": 830,
+   "d": 440,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D115",
+   "w": 890,
+   "h": 210,
+   "d": 330,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D116",
+   "w": 540,
+   "h": 250,
+   "d": 1260,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D117",
+   "w": 230,
+   "h": 570,
+   "d": 1170,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D118",
+   "w": 280,
+   "h": 660,
+   "d": 1140,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "D119",
+   "w": 350,
+   "h": 300,
+   "d": 530,
+   "quantity": 1,
+   "rotatable": true,
+   "weight": 1.0
+  }
+ ],
+ "kits": [],
+ "distribute": "first",
+ "budget": 6,
+ "ticks_per_second": 0.6666666667
+}
