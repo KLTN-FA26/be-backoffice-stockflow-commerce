@@ -541,7 +541,7 @@ class PurchaseOrderRepositoryAdapter
                 .collect(Collectors.toSet()));
         Map<UUID, Integer> received = receivedByLine(e.getId());
         List<PoLineJpaEntity> live = e.getLines().stream().filter(l -> l.getStatus() != PoLineStatus.WITHDRAWN).toList();
-        Map<UUID, UomConversion> units = lineUnits.units(live);
+        Map<UUID, UomConversion> units = lineUnits.units(live, skus);
         List<PoLine> lines = live.stream()
                 .map(l -> new PoLine(l.getId(), l.getLineNo(), l.getInventoryItemId(),
                 new Sku(skus.getOrDefault(l.getInventoryItemId(), "UNKNOWN")), l.getUom(), l.getDescription(),
