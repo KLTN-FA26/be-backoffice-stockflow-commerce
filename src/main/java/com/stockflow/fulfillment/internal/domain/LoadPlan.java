@@ -101,7 +101,22 @@ public final class LoadPlan {
                            Instant confirmedAt, UUID confirmedBy, Instant reopenedAt, UUID reopenedBy,
                            String reopenReason, Instant dispatchedAt, Instant cancelledAt, UUID cancelledBy,
                            String cancelReason, long version, List<UUID> vehicleTypeIds, List<Member> members,
-                           List<Vehicle> vehicles) { }
+                           List<Vehicle> vehicles, UnloadReasonCode cancelReasonCode) {
+
+        /** Without the code of a controlled cancel (every plan but one called off after loading started). */
+        public Snapshot(UUID id, String code, UUID requestId, UUID warehouseId, String sourceType,
+                        SelectionMode mode, LoadPlanStatus status, String note, Instant calculatedAt,
+                        UUID calculatedBy, Instant acknowledgedAt, UUID acknowledgedBy, String acknowledgeNote,
+                        Instant confirmedAt, UUID confirmedBy, Instant reopenedAt, UUID reopenedBy,
+                        String reopenReason, Instant dispatchedAt, Instant cancelledAt, UUID cancelledBy,
+                        String cancelReason, long version, List<UUID> vehicleTypeIds, List<Member> members,
+                        List<Vehicle> vehicles) {
+            this(id, code, requestId, warehouseId, sourceType, mode, status, note, calculatedAt, calculatedBy,
+                    acknowledgedAt, acknowledgedBy, acknowledgeNote, confirmedAt, confirmedBy, reopenedAt, reopenedBy,
+                    reopenReason, dispatchedAt, cancelledAt, cancelledBy, cancelReason, version, vehicleTypeIds,
+                    members, vehicles, null);
+        }
+    }
 
     public static final String SOURCE_ORDER = "ORDER";
     /** 09 §3 LoadPlan.source_type "TO", §4.2 step 1: the parcels of one transfer order (SCRUM-287 PR T, LP-9). */
@@ -129,6 +144,7 @@ public final class LoadPlan {
     private Instant cancelledAt;
     private UUID cancelledBy;
     private String cancelReason;
+    private UnloadReasonCode cancelReasonCode;
     private final long version;
     private final List<UUID> vehicleTypeIds = new ArrayList<>();
     private final Map<UUID, Member> members = new LinkedHashMap<>();
@@ -159,6 +175,7 @@ public final class LoadPlan {
         this.cancelledAt = s.cancelledAt();
         this.cancelledBy = s.cancelledBy();
         this.cancelReason = s.cancelReason();
+        this.cancelReasonCode = s.cancelReasonCode();
         this.version = s.version();
         if (s.vehicleTypeIds() != null) {
             vehicleTypeIds.addAll(s.vehicleTypeIds());
@@ -540,8 +557,8 @@ public final class LoadPlan {
     }
 
     /**
-     * Calls the plan off before any vehicle is loaded (09 §5; BR-14: once loading started, only the controlled
-     * unloading of PR E). Its parcels go back to the dispatch area. Cancelled already: nothing changes.
+     * Calls the plan off before any vehicle is loaded (09 §5; BR-14: once loading started, only the controlled cancel
+     * {@link #cancelControlled}). Its parcels go back to the dispatch area. Cancelled already: nothing changes.
      */
     public boolean cancel(String reason, boolean loadingStarted, UUID by, Instant at) {
         if (status == LoadPlanStatus.CANCELLED) {
@@ -567,6 +584,48 @@ public final class LoadPlan {
         return true;
     }
 
+    /**
+     * <b>Controlled cancel</b> after loading may have started (SCRUM-474 UNLOAD-DESIGN points 1, 3, 4, 7; kltn-docs 09
+     * BR-14): CONFIRMED &rarr; CANCELLED at once, with a code and a note - never a reopening. Refused once a vehicle left
+     * ({@code LOAD_PLAN_VEHICLE_DISPATCHED}): its vehicles are then cancelled one by one. The plan lets its parcels go like
+     * {@link #cancel}; the parcels still on a vehicle stay locked by that vehicle's pending unloads, which the service
+     * writes with the vehicles' loads. Cancelled already: nothing changes.
+     *
+     * @param vehicleLeft a vehicle of the plan is DISPATCHED
+     * @return whether it changed the plan
+     */
+    public boolean cancelControlled(UnloadReasonCode reasonCode, String reason, boolean vehicleLeft, UUID by,
+                                    Instant at) {
+        if (status == LoadPlanStatus.CANCELLED) {
+            return false;
+        }
+        requireStatus("be cancelled under control (a plan not yet confirmed is cancelled the plain way)",
+                LoadPlanStatus.CONFIRMED);
+        if (vehicleLeft) {
+            throw new BusinessException(ErrorCode.LOAD_PLAN_VEHICLE_DISPATCHED, ("Load plan %s has a vehicle that "
+                    + "already left; it is not cancelled as a whole - cancel its remaining vehicles one by one (BR-14)")
+                    .formatted(code));
+        }
+        String why = trimmed(reason);
+        if (reasonCode == null || why == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A controlled cancel names a reason code and a note",
+                    List.of(new FieldError("reasonCode", "required", "NotNull"),
+                            new FieldError("note", "required", "NotBlank")));
+        }
+        for (Member m : List.copyOf(members.values())) {
+            if (m.active()) {
+                members.put(m.packageId(), m.released(LoadPlanReleaseReason.PLAN_CANCELLED, at));
+            }
+        }
+        status = LoadPlanStatus.CANCELLED;
+        cancelledAt = at;
+        cancelledBy = by;
+        cancelReason = why;
+        cancelReasonCode = reasonCode;
+        changed = true;
+        return true;
+    }
+
     /** Every vehicle handed over and gone (BR-15): PR E calls this when the last dispatch load is DISPATCHED. */
     public void markDispatched(Instant at) {
         requireStatus("be dispatched", LoadPlanStatus.CONFIRMED);
@@ -579,7 +638,7 @@ public final class LoadPlan {
      * The order of a shipment in the plan was cancelled (09 edge "đơn bị huỷ khi kiện đã nằm trong kế hoạch"): its
      * parcels leave the plan and their places are freed; a vehicle left empty leaves the plan. A confirmed plan goes
      * back to PLANNED when no vehicle is loading yet (the service cancels its dispatch loads); while one is loading
-     * the plan stays CONFIRMED and the unloading is PR E's.
+     * the plan stays CONFIRMED and its parcels are unloaded ({@code DispatchLoad#withdrawShipment}).
      *
      * @return whether the plan went back from CONFIRMED to PLANNED
      */
@@ -689,7 +748,7 @@ public final class LoadPlan {
         return new Snapshot(id, code, requestId, warehouseId, sourceType, mode, status, note, calculatedAt,
                 calculatedBy, acknowledgedAt, acknowledgedBy, acknowledgeNote, confirmedAt, confirmedBy, reopenedAt,
                 reopenedBy, reopenReason, dispatchedAt, cancelledAt, cancelledBy, cancelReason, version,
-                List.copyOf(vehicleTypeIds), List.copyOf(members.values()), List.copyOf(vehicles));
+                List.copyOf(vehicleTypeIds), List.copyOf(members.values()), List.copyOf(vehicles), cancelReasonCode);
     }
 
     public UUID id() { return id; }
@@ -704,6 +763,7 @@ public final class LoadPlan {
     public long version() { return version; }
     public List<UUID> vehicleTypeIds() { return List.copyOf(vehicleTypeIds); }
     public Instant acknowledgedAt() { return acknowledgedAt; }
+    public UnloadReasonCode cancelReasonCode() { return cancelReasonCode; }
     public boolean changed() { return changed; }
 
     // ---- internals -------------------------------------------------------------------------------------------------

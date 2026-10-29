@@ -29,9 +29,13 @@ public interface Dispatching {
                    BigDecimal codTotal, Instant loadingStartedAt, Instant dispatchedAt, long version, UUID loadPlanId,
                    String loadPlanCode, Integer vehicleSeq) { }
 
-    /** A parcel of a cancelled order to take off the vehicle before it leaves (SCRUM-392). */
+    /**
+     * A parcel still to take off a vehicle (SCRUM-392: its order was cancelled; SCRUM-474: its vehicle was called off
+     * under control). {@code reasonCode} only for the second kind. On a transfer plan's vehicle the parcel's key is its
+     * transfer order: {@code shipmentId} is null, {@code transferOrderId} and {@code shipmentCode} (its number) are set.
+     */
     record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,
-                         Instant requestedAt) { }
+                         Instant requestedAt, String reasonCode, UUID transferOrderId) { }
 
     /** @param kit the kit it is a part of (SCRUM-287 LP2-6): every part is scanned; null for an ordinary parcel */
     record LoadParcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
@@ -61,7 +65,14 @@ public interface Dispatching {
                       long version, List<LoadShipment> shipments, UUID loadPlanId, String loadPlanCode,
                       Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt, UUID bookedBy,
                       Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads,
-                      boolean carrierBookingToCancel) { }
+                      boolean carrierBookingToCancel, String cancelReasonCode, UUID replacementLoadId,
+                      String replacementLoadCode) { }
+
+    /**
+     * The answer to the controlled cancel of one vehicle: the load, now CANCELLED, and the PLANNED load that took its
+     * place with the same layout (null when the vehicle was called off before and nothing replaced it).
+     */
+    record ControlledCancelResult(LoadDetail cancelled, LoadDetail replacement) { }
 
     /** The printable manifest (09 §3 Output "Biên bản bàn giao"): what both sides sign. */
     record Manifest(String loadCode, String status, String warehouseName, String warehouseAddress, String carrierCode,
@@ -188,4 +199,26 @@ public interface Dispatching {
      * @throws com.stockflow.common.error.BusinessException {@code PACKAGE_NOT_FOUND}, {@code PACKAGE_NOT_IN_LOAD}
      */
     LoadDetail unload(UUID loadId, String packageCode, CurrentUser actor);
+
+    // ---- controlled unload after loading started (SCRUM-474 UNLOAD-DESIGN; 09 BR-14) ---------------------------------
+
+    /**
+     * Calls off ONE vehicle that is being loaded (a broken or wrong truck), under control: its load is CANCELLED at once
+     * with the reason, its scanned parcels stay locked until each is scanned off ({@link #unload}) or confirmed off
+     * ({@link #overrideUnload}), and a new PLANNED load with the same manifest takes its place so another truck can be
+     * booked. The plan and its other vehicles carry on. Cancelled already: answered as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOAD_NOT_FOUND}; {@code INVALID_LOAD_TRANSITION}
+     *         (a parcel load, or not LOADING); {@code INVALID_LOAD_PLAN_TRANSITION}; {@code VALIDATION_FAILED}
+     */
+    ControlledCancelResult cancelControlled(UUID loadId, com.stockflow.fulfillment.internal.domain.UnloadReasonCode code,
+                                            String note, CurrentUser actor);
+
+    /**
+     * A parcel still to unload is confirmed off the vehicle without a scan (its label is damaged): who, when and the
+     * note stay on record. Needs the controlled-cancellation permission, a warehouse manager's.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PACKAGE_NOT_FOUND}, {@code PACKAGE_NOT_IN_LOAD}
+     */
+    LoadDetail overrideUnload(UUID loadId, UUID packageId, String note, CurrentUser actor);
 }

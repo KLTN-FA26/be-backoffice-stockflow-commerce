@@ -56,6 +56,13 @@ public final class FulfillmentPermissions {
     public static final String LOAD_CANCELLATIONS = "fulfillment-load-cancellations";
 
     /**
+     * UPDATE: call a load plan, or one of its vehicles, off AFTER loading started - the controlled cancel, with a reason
+     * code and a note - and confirm a parcel off the vehicle without a scan when its label is damaged (SCRUM-474
+     * UNLOAD-DESIGN points 5-6; V20261029007100). Warehouse manager and system admin only.
+     */
+    public static final String CONTROLLED_CANCELLATIONS = "fulfillment-controlled-cancellations";
+
+    /**
      * UPDATE: record a delivery outcome - on its own, RETURNED only; APPROVE: also DELIVERED and DELIVERY_FAILED, which
      * move the order and bill it (kltn-docs 09 BR-02).
      */

@@ -11,6 +11,8 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.fulfillment.internal.controller.dto.BookingRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CancelLoadRequest;
+import com.stockflow.fulfillment.internal.controller.dto.ControlledCancelRequest;
+import com.stockflow.fulfillment.internal.controller.dto.ControlledCancelResponse;
 import com.stockflow.fulfillment.internal.controller.dto.HandoverRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadResponse;
 import com.stockflow.fulfillment.internal.controller.dto.LoadRowResponse;
@@ -18,6 +20,7 @@ import com.stockflow.fulfillment.internal.controller.dto.LoadScanRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadShipmentsRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ManifestResponse;
 import com.stockflow.fulfillment.internal.controller.dto.OpenLoadRequest;
+import com.stockflow.fulfillment.internal.controller.dto.UnloadOverrideRequest;
 import com.stockflow.fulfillment.internal.controller.dto.UnloadRequest;
 import com.stockflow.fulfillment.internal.service.Dispatching;
 import io.swagger.v3.oas.annotations.Operation;
@@ -40,7 +43,8 @@ import java.util.UUID;
  * Loading and handover, parcel branch (G4-2a, SCRUM-288/292/293; kltn-docs 09 §4.1). {@code fulfillment-shipments:READ}
  * to look (coordinators too); {@code fulfillment-dispatch}: CREATE to open a load, UPDATE to load and sign - seeded for
  * the warehouse (09 §2 Dispatch Staff), not the coordinator. Cancelling a load is {@code fulfillment-load-cancellations
- * :UPDATE}, the warehouse manager's. Every call is limited to the caller's warehouses.
+ * :UPDATE}, the warehouse manager's; calling a plan's vehicle off after loading started, and confirming a parcel
+ * off without a scan, is {@code fulfillment-controlled-cancellations:UPDATE} (SCRUM-474), the same two roles. Every call is limited to the caller's warehouses.
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/loads")
@@ -179,7 +183,7 @@ class DispatchController {
 
     @PostMapping("/{loadId}/loading-start")
     @Operation(summary = "The booked vehicle arrived: LOADING - the plan can no longer be reopened or cancelled "
-            + "(BR-14). 409 INVALID_LOAD_TRANSITION (not booked), INVALID_LOAD_PLAN_TRANSITION")
+            + "the plain way (BR-14; only the controlled cancellation). 409 INVALID_LOAD_TRANSITION (not booked), INVALID_LOAD_PLAN_TRANSITION")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> startLoading(@PathVariable UUID loadId, @AuthenticatedUser CurrentUser actor) {
@@ -187,13 +191,42 @@ class DispatchController {
     }
 
     @PostMapping("/{loadId}/unloads")
-    @Operation(summary = "A parcel of a cancelled order taken off the vehicle (scanned off); with nothing left to "
-            + "carry the vehicle is called off. 404 PACKAGE_NOT_FOUND; 409 PACKAGE_NOT_IN_LOAD")
+    @Operation(summary = "A parcel taken off the vehicle (scanned off): one of a cancelled order, or one of a vehicle "
+            + "called off under control (also on the CANCELLED load); with nothing left to carry the vehicle is called "
+            + "off. 404 PACKAGE_NOT_FOUND; 409 PACKAGE_NOT_IN_LOAD")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> unload(@PathVariable UUID loadId, @Valid @RequestBody UnloadRequest request,
                                             @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(dispatching.unload(loadId, request.packageCode(), actor)));
+    }
+
+    @PostMapping("/{loadId}/controlled-cancellation")
+    @Operation(summary = "Call off ONE load-plan vehicle that is being loaded (a broken or wrong truck) under control "
+            + "(SCRUM-474, 09 BR-14): its load is CANCELLED at once with the reason code (XE_HONG, SAI_XE, "
+            + "KIEN_KHONG_VUA, KHAC) and note, its scanned parcels stay locked until each is scanned off "
+            + "(POST .../unloads) or confirmed off (POST .../unload-overrides), and a PLANNED load with the same layout "
+            + "and manifest replaces it, to book with another truck; the plan and its other vehicles carry on. 409 "
+            + "INVALID_LOAD_TRANSITION (a parcel load, or not LOADING), INVALID_LOAD_PLAN_TRANSITION; 400 "
+            + "VALIDATION_FAILED. Again: answered as it is")
+    @RequiresPermission(resource = FulfillmentResources.CONTROLLED_CANCELLATIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
+    public ApiResponse<ControlledCancelResponse> cancelControlled(@PathVariable UUID loadId,
+            @Valid @RequestBody ControlledCancelRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(dispatching.cancelControlled(loadId, request.reasonCode(),
+                request.note(), actor)));
+    }
+
+    @PostMapping("/{loadId}/unload-overrides")
+    @Operation(summary = "A parcel still to unload confirmed off the vehicle WITHOUT a scan because its label is "
+            + "damaged (SCRUM-474, UNLOAD-DESIGN point 5): who, when and the note stay on record. 404 "
+            + "PACKAGE_NOT_FOUND; 409 PACKAGE_NOT_IN_LOAD (not to be unloaded from this load)")
+    @RequiresPermission(resource = FulfillmentResources.CONTROLLED_CANCELLATIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId")
+    public ApiResponse<LoadResponse> overrideUnload(@PathVariable UUID loadId,
+            @Valid @RequestBody UnloadOverrideRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(dispatching.overrideUnload(loadId, request.packageId(), request.note(),
+                actor)));
     }
 
     @PostMapping("/{loadId}/cancellation")
