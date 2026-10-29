@@ -166,6 +166,7 @@ public enum ErrorCode {
     PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
     /** A line entered in a packing unit is a whole number of that unit (BR-09, V20261020000400). */
     PO_LINE_UNIT_NOT_MULTIPLE("The quantity must be a whole number of the line's unit", 409),
+    PO_LINE_UNIT_INVALID("The unit is retired; order in an active unit", 409),
     PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),

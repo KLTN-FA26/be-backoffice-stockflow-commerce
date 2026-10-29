@@ -47,6 +47,8 @@ interface PurchaseOrderWebMapper {
             List<String> warnings);
 
     @Mapping(target = "openQuantity", expression = "java(summary.openQuantity())")
+    @Mapping(target = "openUnitQuantity", expression = "java(summary.openUnitQuantity())")
+    @Mapping(target = "packingUnitPrice", expression = "java(summary.packingUnitPrice())")
     POLineResponse toResponse(POLineSummary summary);
 
     PurchaseOrderStatusCountResponse toResponse(PurchaseOrderStatusCount count);

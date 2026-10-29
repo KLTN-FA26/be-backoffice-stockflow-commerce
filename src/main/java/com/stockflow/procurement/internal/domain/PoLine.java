@@ -17,6 +17,9 @@ import java.util.UUID;
  * not stored on the line: it is the sum of the confirmed goods receipts against it, read with the
  * order. The amounts follow {@code ck_purchase_order_lines_amounts}: no line discount yet, tax at
  * {@code taxRate} percent of the net, rounded to the cent.</p>
+ *
+ * <p>A line may be ordered in a {@link PackingUnit} (SCRUM-473); its quantity is then exactly what those units hold,
+ * and everything priced or checked against the supplier's terms stays in base units.</p>
  */
 public final class PoLine {
 
@@ -31,9 +34,19 @@ public final class PoLine {
     private final Money unitPrice;
     private final BigDecimal taxRate;
     private PoLineStatus status;
+    private final PackingUnit packingUnit;
 
+    /** A line in base units. */
     public PoLine(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
                   int quantityOrdered, int quantityReceived, Money unitPrice, BigDecimal taxRate, PoLineStatus status) {
+        this(id, lineNo, inventoryItemId, sku, uom, description, quantityOrdered, quantityReceived, unitPrice, taxRate,
+                status, null);
+    }
+
+    /** {@code packingUnit} null: in base units. */
+    public PoLine(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
+                  int quantityOrdered, int quantityReceived, Money unitPrice, BigDecimal taxRate, PoLineStatus status,
+                  PackingUnit packingUnit) {
         this.id = Objects.requireNonNull(id, "id");
         if (lineNo <= 0) {
             throw new IllegalArgumentException("lineNo must be positive");
@@ -60,12 +73,17 @@ public final class PoLine {
             throw new IllegalArgumentException("taxRate must be between 0 and 100");
         }
         this.status = Objects.requireNonNull(status, "status");
+        if (packingUnit != null && packingUnit.quantity() != quantityOrdered) {
+            throw new IllegalArgumentException("%d %s hold %d units, not %d".formatted(packingUnit.count(),
+                    packingUnit.unitOfMeasure(), packingUnit.quantity(), quantityOrdered));
+        }
+        this.packingUnit = packingUnit;
     }
 
     static PoLine draft(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
-                        int quantityOrdered, Money unitPrice, BigDecimal taxRate) {
+                        int quantityOrdered, Money unitPrice, BigDecimal taxRate, PackingUnit packingUnit) {
         return new PoLine(id, lineNo, inventoryItemId, sku, uom, description, quantityOrdered, 0, unitPrice, taxRate,
-                PoLineStatus.OPEN);
+                PoLineStatus.OPEN, packingUnit);
     }
 
     /** Quantity × price, before tax. */
@@ -103,4 +121,6 @@ public final class PoLine {
     public Money unitPrice() { return unitPrice; }
     public BigDecimal taxRate() { return taxRate; }
     public PoLineStatus status() { return status; }
+    /** The packing unit the line was ordered in; null for base units. */
+    public PackingUnit packingUnit() { return packingUnit; }
 }

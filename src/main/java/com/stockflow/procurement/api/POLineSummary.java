@@ -24,9 +24,22 @@ public record POLineSummary(
         String status,
         boolean lotTracked,
         boolean expiryTracked,
-        boolean qcRequired
+        boolean qcRequired,
+        String unitOfMeasure,
+        Integer unitFactor,
+        Integer unitQuantity
 ) {
     public int openQuantity() {
         return Math.max(0, quantityOrdered - quantityReceived);
+    }
+
+    /** Whole packing units still to receive, rounded down; null for a line in base units. */
+    public Integer openUnitQuantity() {
+        return unitFactor == null ? null : openQuantity() / unitFactor;
+    }
+
+    /** The price of one packing unit, for display only - prices are kept per base unit; null for base units. */
+    public BigDecimal packingUnitPrice() {
+        return unitFactor == null ? null : unitPrice.multiply(BigDecimal.valueOf(unitFactor));
     }
 }

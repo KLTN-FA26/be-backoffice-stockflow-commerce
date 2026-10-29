@@ -3,6 +3,7 @@ package com.stockflow.procurement.internal.repository;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.procurement.internal.domain.PackingUnit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
@@ -145,7 +146,7 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
         // check_subcontract_po_single_line: exactly one line.
         PoLineJpaEntity line = orders.findWithLinesById(row.id()).orElseThrow().getLines().get(0);
         Integer unitFactor = lineUnits.factors(java.util.List.of(line)).get(line.getId());
-        Integer unitQuantity = unitFactor == null ? null : PoLineJpaEntity.wholeUnits(row.poNumber(), newQuantity, unitFactor);
+        Integer unitQuantity = unitFactor == null ? null : PackingUnit.wholeUnits(row.poNumber(), newQuantity, unitFactor);
         UUID revisionId = Identifiers.newId();
         entityManager.createNativeQuery("""
                         INSERT INTO procurement.purchase_order_revisions
