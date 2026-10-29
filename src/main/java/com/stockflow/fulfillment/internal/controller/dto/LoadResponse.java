@@ -19,6 +19,8 @@ import java.util.UUID;
  *                             cancellation, whose time and reason are kept in {@code bookingCancelledAt/Reason}
  * @param pendingUnloads       parcels of cancelled orders still on the vehicle: unload them (POST .../unloads) before
  *                             the handover (409 LOAD_UNLOAD_PENDING)
+ * @param cancelReasonCode     XE_HONG, SAI_XE, KIEN_KHONG_VUA or KHAC when it was called off under control (SCRUM-474);
+ *                             {@code cancelReason} is then the note; absent for any other cancellation
  * @param carrierBookingToCancel CANCELLED after it was booked (the plan reopened or cancelled, or the system called it
  *                             off with nothing left to carry - {@code cancelReason} "auto-cancelled: ..."): the
  *                             booking made with the carrier outside the system still exists - cancel it there
@@ -32,11 +34,19 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mo
                            String currency, long version, List<Shipment> shipments, UUID loadPlanId,
                            String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt,
                            UUID bookedBy, Instant bookingCancelledAt, String bookingCancelReason,
-                           List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel) {
+                           List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel,
+                           String cancelReasonCode) {
 
-    /** A parcel of a cancelled order to take off the vehicle (SCRUM-392). */
-    public record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,
-                                Instant requestedAt) {
+    /**
+     * A parcel still to take off the vehicle: its order was cancelled (SCRUM-392) or the vehicle was called off under
+     * control (SCRUM-474; then {@code reasonCode} is set). Locked until scanned off. On a transfer plan's vehicle
+     * {@code shipmentId} is absent and {@code transferOrderId} set ({@code shipmentCode} is its number).
+     */
+    public record PendingUnload(UUID packageId, String labelCode,
+                                @JsonInclude(JsonInclude.Include.NON_NULL) UUID shipmentId, String shipmentCode,
+                                String reason, Instant requestedAt,
+                                @JsonInclude(JsonInclude.Include.NON_NULL) String reasonCode,
+                                @JsonInclude(JsonInclude.Include.NON_NULL) UUID transferOrderId) {
     }
 
     /**

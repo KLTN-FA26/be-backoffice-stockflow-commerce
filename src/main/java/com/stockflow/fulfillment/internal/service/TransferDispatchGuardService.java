@@ -22,9 +22,10 @@ import java.util.UUID;
  * <ul>
  *   <li>Picking cancelled before anything left (inventory refused it already once goods left, {@code
  *       TRANSFER_GOODS_LEFT}): the transfer's load plan is cancelled - refused while a vehicle of it is being loaded
- *       ({@code LOAD_PLAN_LOADING_STARTED}: only the controlled unloading of BR-14, not built yet) - then its parcels
- *       are voided with their labels and the packing session is CANCELLED (08 BR-05/06). The goods were never taken from
- *       stock: nothing is put back.</li>
+ *       ({@code TRANSFER_LOADING_IN_PROGRESS}: the controlled cancel of 09 BR-14 comes first, UNLOAD-DESIGN point 10) and
+ *       while a parcel of it is still to be scanned off a vehicle called off ({@code PACKAGE_UNLOAD_PENDING}) - then its
+ *       parcels are voided with their labels and the packing session is CANCELLED (08 BR-05/06). The goods were never
+ *       taken from stock: nothing is put back.</li>
  * </ul>
  *
  * <p>Lock order: the packing session's row, then (through {@link LoadPlanReleases}) the plans' and the loads'.</p>

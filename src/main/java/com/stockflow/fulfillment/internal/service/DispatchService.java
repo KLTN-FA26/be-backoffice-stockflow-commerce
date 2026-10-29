@@ -16,6 +16,7 @@ import com.stockflow.fulfillment.internal.domain.LoadStatus;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
+import com.stockflow.fulfillment.internal.domain.UnloadReasonCode;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
@@ -386,6 +387,14 @@ class DispatchService implements Dispatching {
                 .filter(l -> !l.getLoadId().equals(loadId))
                 .map(l -> loads.findById(l.getLoadId()).map(DispatchLoadJpaEntity::getCode).orElse("?"))
                 .orElse(null);
+        // SCRUM-474 UNLOAD-DESIGN point 4: a parcel of a vehicle called off stays locked until it is scanned off.
+        Map<UUID, UUID> awaitingUnload = store.pendingUnloadLoads(List.of(parcel.getId()));
+        if (!awaitingUnload.isEmpty()) {
+            throw new BusinessException(ErrorCode.PACKAGE_UNLOAD_PENDING, ("Package %s is still on load %s, which was "
+                    + "called off: scan it off there first").formatted(parcel.getLabelCode(),
+                    loads.findById(awaitingUnload.get(parcel.getId())).map(DispatchLoadJpaEntity::getCode)
+                            .orElse("?")));
+        }
         // SCRUM-392: a vehicle takes only what its plan placed on it (read: placements change under the plan's lock,
         // and an order cancelled meanwhile finds the parcel on board and asks for it to be unloaded).
         DispatchLoad.Placement placement = load.mode() == DeliveryMode.FULL_TRUCKLOAD
@@ -716,23 +725,98 @@ class DispatchService implements Dispatching {
     @Override
     public LoadDetail unload(UUID loadId, String packageCode, CurrentUser actor) {
         Locked locked = lockForChange(loadId);
-        DispatchLoad load = locked.load();
         String code = packageCode == null ? "" : packageCode.trim();
         PackageJpaEntity parcel = packages.findByLabelCode(code)
                 .or(() -> packages.findByLabelCode(code.toUpperCase(Locale.ROOT)))
                 .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND, "No package labelled " + code));
         Instant now = clock.instant();
+        boolean changed = locked.load().confirmUnload(parcel.getId(), parcel.getLabelCode(), actor.userId(), now);
+        return finishUnload(locked, parcel, changed, "scanned off", now);
+    }
+
+    @Override
+    public LoadDetail overrideUnload(UUID loadId, UUID packageId, String note, CurrentUser actor) {
+        Locked locked = lockForChange(loadId);
+        PackageJpaEntity parcel = packages.findById(packageId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND, "No package " + packageId));
+        Instant now = clock.instant();
+        boolean changed = locked.load().confirmUnloadWithoutScan(parcel.getId(), parcel.getLabelCode(), note,
+                actor.userId(), now);
+        return finishUnload(locked, parcel, changed, "confirmed off without a scan (label damaged)", now);
+    }
+
+    /** What follows a parcel coming off: save, call the vehicle off when empty, complete the plan when that was the last. */
+    private LoadDetail finishUnload(Locked locked, PackageJpaEntity parcel, boolean changed, String how, Instant now) {
+        DispatchLoad load = locked.load();
         DispatchLoadJpaEntity header = locked.header();
-        if (load.confirmUnload(parcel.getId(), parcel.getLabelCode(), actor.userId(), now)) {
+        if (changed) {
             boolean calledOff = PlanVehicles.callOffIfEmpty(load, now);
             header = store.save(load, header);
-            log.info("Load {}: package {} unloaded{}", load.code(), parcel.getLabelCode(),
+            log.info("Load {}: package {} unloaded ({}){}", load.code(), parcel.getLabelCode(), how,
                     calledOff ? "; nothing left, the load is called off" : "");
             if (calledOff && locked.plan() != null) {
                 planVehicles.completeIfDispatched(locked.plan().header(), locked.plan().plan(), now);
             }
         }
         return detail(header, load);
+    }
+
+    @Override
+    public ControlledCancelResult cancelControlled(UUID loadId, UnloadReasonCode code, String note, CurrentUser actor) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        PlanVehicles.PlanOfLoad ctx = locked.plan();
+        if (ctx == null) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is a parcel load: it is called off "
+                    + "by its plain cancellation, only a load plan's vehicle is cancelled under control")
+                    .formatted(load.code()));
+        }
+        DispatchLoadJpaEntity header = locked.header();
+        if (load.status() != LoadStatus.CANCELLED) {
+            PlanVehicles.requireConfirmed(ctx);
+        }
+        Instant now = clock.instant();
+        List<UUID> onManifest = load.activeShipments();
+        if (!load.cancelControlled(code, note, actor.userId(), now)) {
+            // Called off before: answered as it is, with the vehicle's live load when another took its place.
+            DispatchLoadJpaEntity live = ctx.vehicle() == null ? null : planVehicles.liveLoads(ctx.plan())
+                    .get(ctx.vehicle().id());
+            return new ControlledCancelResult(detail(header, load), live == null ? null
+                    : detail(live, store.load(live)));
+        }
+        header = store.save(load, header);
+        log.info("Load {} (vehicle {} of plan {}) cancelled under control ({}: {}): {} parcel(s) to scan off",
+                load.code(), ctx.vehicle() == null ? null : ctx.vehicle().seq(), ctx.plan().code(), code,
+                note.trim(), load.pendingUnloads().size());
+        DispatchLoadJpaEntity replacementHeader = openReplacement(ctx, load, onManifest, actor.userId(), now);
+        return new ControlledCancelResult(detail(header, load), detail(replacementHeader,
+                store.load(replacementHeader)));
+    }
+
+    /**
+     * UNLOAD-DESIGN point 2: the vehicle goes back to PLANNED with the same layout - a new load of the same plan vehicle,
+     * with the manifest the called-off load had, to be booked with another truck. The plan's row is locked by the caller;
+     * a shipment on the manifest is on no other plan's load (the plan's own vehicles may share it, LP-3).
+     */
+    private DispatchLoadJpaEntity openReplacement(PlanVehicles.PlanOfLoad ctx, DispatchLoad cancelled,
+                                                  List<UUID> onManifest, UUID by, Instant at) {
+        DispatchLoad replacement = DispatchLoad.planFullTruckload(Identifiers.newId(),
+                numbers.next(LocalDate.ofInstant(at, BUSINESS_ZONE)), Identifiers.newId(), cancelled.warehouseId(),
+                cancelled.loadPlanVehicleId());
+        if (ctx.plan().ofTransfer()) {
+            for (UUID transferId : onManifest) {
+                replacement.addShipment(LoadPlanService.transferFacts(transfers.find(transferId).orElseThrow()),
+                        BigDecimal.ZERO, by, at);
+            }
+            return store.insert(replacement, true);
+        }
+        Map<UUID, ShipmentJpaEntity> rows = shipments.findByIdIn(onManifest).stream()
+                .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
+        for (UUID shipmentId : onManifest) {
+            ShipmentJpaEntity row = rows.get(shipmentId);
+            replacement.addShipment(facts(row, null), row.getLabelCodAmount(), by, at);
+        }
+        return store.insert(replacement);
     }
 
     /**
@@ -1028,8 +1112,9 @@ class DispatchService implements Dispatching {
                 BigDecimal.ZERO, DEFAULT_CURRENCY, header.getVersion(), lines, ctx.header().getId(),
                 ctx.plan().code(), ctx.vehicle() == null ? null : ctx.vehicle().seq(),
                 ctx.vehicle() == null ? null : ctx.vehicle().spec().code(), header.getBookedAt(),
-                header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelReason(), List.of(),
-                load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null);
+                header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelReason(),
+                pendingUnloads(load, true), load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null,
+                header.getCancelReasonCode() == null ? null : header.getCancelReasonCode().name());
     }
 
     /** The manifest of a TRANSFER plan's vehicle: its transfer order, to the destination warehouse; no COD (LP-2). */
@@ -1249,21 +1334,31 @@ class DispatchService implements Dispatching {
                 ctx == null || ctx.vehicle() == null ? null : ctx.vehicle().seq(),
                 ctx == null || ctx.vehicle() == null ? null : ctx.vehicle().spec().code(), header.getBookedAt(),
                 header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelReason(),
-                pendingUnloads(load), load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null);
+                pendingUnloads(load, false), load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null,
+                header.getCancelReasonCode() == null ? null : header.getCancelReasonCode().name());
     }
 
-    private List<PendingUnload> pendingUnloads(DispatchLoad load) {
+    /**
+     * The parcels still to take off; {@code transfer}: a TRANSFER plan's vehicle, whose key is the transfer order
+     * (SCRUM-474), named by its number.
+     */
+    private List<PendingUnload> pendingUnloads(DispatchLoad load, boolean transfer) {
         List<DispatchLoad.Unload> pending = load.pendingUnloads();
         if (pending.isEmpty()) {
             return List.of();
         }
         Map<UUID, String> labels = packages.findAllById(pending.stream().map(DispatchLoad.Unload::packageId).toList())
                 .stream().collect(Collectors.toMap(PackageJpaEntity::getId, PackageJpaEntity::getLabelCode));
-        Map<UUID, String> codes = shipments.findByIdIn(pending.stream().map(DispatchLoad.Unload::shipmentId)
-                .collect(Collectors.toSet())).stream().collect(Collectors.toMap(ShipmentJpaEntity::getId,
-                ShipmentJpaEntity::getCode));
-        return pending.stream().map(u -> new PendingUnload(u.packageId(), labels.get(u.packageId()), u.shipmentId(),
-                codes.get(u.shipmentId()), u.reason(), u.requestedAt())).toList();
+        Map<UUID, String> codes = transfer ? new HashMap<>() : shipments.findByIdIn(pending.stream()
+                .map(DispatchLoad.Unload::shipmentId).collect(Collectors.toSet())).stream()
+                .collect(Collectors.toMap(ShipmentJpaEntity::getId, ShipmentJpaEntity::getCode));
+        if (transfer) {
+            pending.stream().map(DispatchLoad.Unload::shipmentId).distinct().forEach(id -> transfers.find(id)
+                    .ifPresent(t -> codes.put(id, t.number())));
+        }
+        return pending.stream().map(u -> new PendingUnload(u.packageId(), labels.get(u.packageId()),
+                transfer ? null : u.shipmentId(), codes.get(u.shipmentId()), u.reason(), u.requestedAt(),
+                u.reasonCode() == null ? null : u.reasonCode().name(), transfer ? u.shipmentId() : null)).toList();
     }
 
     /** SCRUM-392: the load is a vehicle of a plan whose code contains the term - one subquery, no row per plan. */

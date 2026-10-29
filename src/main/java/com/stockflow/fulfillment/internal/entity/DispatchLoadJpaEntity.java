@@ -4,6 +4,7 @@ import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
+import com.stockflow.fulfillment.internal.domain.UnloadReasonCode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -54,6 +55,9 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     @Column(name = "cancelled_at") private Instant cancelledAt;
     @Column(name = "cancelled_by") private UUID cancelledBy;
     @Column(name = "cancel_reason", length = 500) private String cancelReason;
+    /** SCRUM-474 UNLOAD-DESIGN point 7: set only by a controlled cancel (V20261029007000). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cancel_reason_code", length = 20) private UnloadReasonCode cancelReasonCode;
 
     protected DispatchLoadJpaEntity() {
     }
@@ -92,6 +96,7 @@ public class DispatchLoadJpaEntity extends BaseEntity {
         this.cancelledAt = s.cancelledAt();
         this.cancelledBy = s.cancelledBy();
         this.cancelReason = s.cancelReason();
+        this.cancelReasonCode = s.cancelReasonCode();
     }
 
     public String getCode() { return code; }
@@ -122,4 +127,5 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     public Instant getCancelledAt() { return cancelledAt; }
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancelReason() { return cancelReason; }
+    public UnloadReasonCode getCancelReasonCode() { return cancelReasonCode; }
 }

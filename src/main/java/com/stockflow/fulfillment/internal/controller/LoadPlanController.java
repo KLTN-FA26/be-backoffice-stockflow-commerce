@@ -9,6 +9,7 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.fulfillment.internal.controller.dto.ControlledPlanCancelRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CreateLoadPlanRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadPlacementsRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadPlanInputsRequest;
@@ -196,12 +197,27 @@ class LoadPlanController {
 
     @PostMapping("/load-plans/{loadPlanId}/cancellation")
     @Operation(summary = "Cancel while no vehicle loads (BR-14): packages back to the dispatch area, dispatch loads "
-            + "cancelled. 409 LOAD_PLAN_LOADING_STARTED")
+            + "cancelled. 409 LOAD_PLAN_LOADING_STARTED (once loading started: the controlled-cancellation)")
     @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "load-plan", resourceId = "#loadPlanId")
     public ApiResponse<LoadPlans.PlanDetail> cancel(@PathVariable UUID loadPlanId,
             @Valid @RequestBody LoadPlanReasonRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.cancel(loadPlanId, request.expectedVersion(), request.reason(), actor));
+    }
+
+    @PostMapping("/load-plans/{loadPlanId}/controlled-cancellation")
+    @Operation(summary = "Cancel the WHOLE plan after loading started, under control (SCRUM-474, 09 BR-14): CANCELLED at "
+            + "once with the reason code (XE_HONG, SAI_XE, KIEN_KHONG_VUA, KHAC) and note; the vehicles being loaded "
+            + "are cancelled with their scanned parcels locked until each is scanned off (POST /loads/{id}/unloads) or "
+            + "confirmed off by a warehouse manager; never a reopening. 409 LOAD_PLAN_VEHICLE_DISPATCHED (a vehicle "
+            + "already left: cancel the others one by one), INVALID_LOAD_PLAN_TRANSITION (not CONFIRMED), "
+            + "OPTIMISTIC_LOCK; 400 VALIDATION_FAILED. Again: answered as it is")
+    @RequiresPermission(resource = FulfillmentResources.CONTROLLED_CANCELLATIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "load-plan", resourceId = "#loadPlanId")
+    public ApiResponse<LoadPlans.PlanDetail> cancelControlled(@PathVariable UUID loadPlanId,
+            @Valid @RequestBody ControlledPlanCancelRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(loadPlans.cancelControlled(loadPlanId, request.expectedVersion(), request.reasonCode(),
+                request.note(), actor));
     }
 
     @GetMapping("/load-plans/{loadPlanId}/reconciliation")

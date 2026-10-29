@@ -15,6 +15,7 @@ import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanReleaseReason;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
+import com.stockflow.fulfillment.internal.domain.UnloadReasonCode;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
@@ -33,6 +34,7 @@ import com.stockflow.fulfillment.internal.domain.loadplanning.SelectionMode;
 import com.stockflow.fulfillment.internal.domain.loadplanning.VehicleKind;
 import com.stockflow.fulfillment.internal.domain.loadplanning.VehicleSpec;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
+import com.stockflow.fulfillment.internal.entity.DispatchLoadUnloadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
@@ -182,9 +184,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         }
         List<PackageJpaEntity> sealed = packages.findByShipmentIdIn(waiting.stream().map(ShipmentJpaEntity::getId)
                 .toList()).stream().filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
-        Set<UUID> heldElsewhere = members.findByPackageIdInAndActiveTrue(sealed.stream().map(PackageJpaEntity::getId)
-                        .toList()).stream().filter(m -> !m.getLoadPlanId().equals(loadPlanId))
-                .map(LoadPlanPackageJpaEntity::getPackageId).collect(Collectors.toSet());
+        Set<UUID> heldElsewhere = heldElsewhereOrAwaitingUnload(sealed, loadPlanId);
         Map<UUID, LoadPlanParcels.Parcel> described = parcels.describe(sealed);
         Map<UUID, OrderSummary> orders = parcels.ordersOf(waiting);
         List<CandidateShipment> out = new ArrayList<>();
@@ -237,9 +237,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         List<PackageJpaEntity> sealed = packages.findByTransferOrderIdIn(ready.stream()
                 .map(com.stockflow.inventory.api.TransferFulfillment.TransferView::transferId).toList()).stream()
                 .filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
-        Set<UUID> heldElsewhere = members.findByPackageIdInAndActiveTrue(sealed.stream().map(PackageJpaEntity::getId)
-                        .toList()).stream().filter(m -> !m.getLoadPlanId().equals(loadPlanId))
-                .map(LoadPlanPackageJpaEntity::getPackageId).collect(Collectors.toSet());
+        Set<UUID> heldElsewhere = heldElsewhereOrAwaitingUnload(sealed, loadPlanId);
         Map<UUID, LoadPlanParcels.Parcel> described = parcels.describe(sealed);
         List<CandidateShipment> out = new ArrayList<>();
         for (var t : ready) {
@@ -262,6 +260,42 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     t.transferId(), t.toWarehouseId()));
         }
         return out;
+    }
+
+    /**
+     * The parcels another live plan holds (BR-09), and those still to be scanned off a vehicle that was called off
+     * (UNLOAD-DESIGN point 4): a shipment or transfer with one of them is not offered, whole or not at all (LP-5).
+     */
+    private Set<UUID> heldElsewhereOrAwaitingUnload(List<PackageJpaEntity> sealed, UUID loadPlanId) {
+        List<UUID> ids = sealed.stream().map(PackageJpaEntity::getId).toList();
+        List<LoadPlanPackageJpaEntity> held = members.findByPackageIdInAndActiveTrue(ids);
+        Set<UUID> out = held.stream().filter(m -> !m.getLoadPlanId().equals(loadPlanId))
+                .map(LoadPlanPackageJpaEntity::getPackageId).collect(Collectors.toCollection(HashSet::new));
+        Set<UUID> heldHere = held.stream().filter(m -> m.getLoadPlanId().equals(loadPlanId))
+                .map(LoadPlanPackageJpaEntity::getPackageId).collect(Collectors.toSet());
+        loadStore.pendingUnloadLoads(ids).keySet().stream().filter(id -> !heldHere.contains(id)).forEach(out::add);
+        return out;
+    }
+
+    /**
+     * UNLOAD-DESIGN point 4: a parcel still to be scanned off a vehicle that was called off is not claimed by a plan
+     * (one this plan already holds is not a claim). 409 {@code PACKAGE_UNLOAD_PENDING} naming each parcel.
+     */
+    private void requireNotAwaitingUnload(String of, List<PackageJpaEntity> sealed, UUID planId) {
+        Map<UUID, UUID> pending = loadStore.pendingUnloadLoads(sealed.stream().map(PackageJpaEntity::getId).toList());
+        if (pending.isEmpty()) {
+            return;
+        }
+        Set<UUID> heldHere = members.findByPackageIdInAndActiveTrue(pending.keySet()).stream()
+                .filter(m -> m.getLoadPlanId().equals(planId)).map(LoadPlanPackageJpaEntity::getPackageId)
+                .collect(Collectors.toSet());
+        List<String> labels = sealed.stream().filter(p -> pending.containsKey(p.getId()) && !heldHere.contains(p.getId()))
+                .map(PackageJpaEntity::getLabelCode).sorted().toList();
+        if (!labels.isEmpty()) {
+            throw new BusinessException(ErrorCode.PACKAGE_UNLOAD_PENDING, ("%s has package(s) %s still on a vehicle that "
+                    + "was called off: scan them off first (09 BR-14)").formatted(of, String.join(", ", labels)),
+                    labels.stream().map(l -> FieldError.of("packageCode", l)).toList());
+        }
     }
 
     /** Packed, still being picked (not dispatched), travelling as a full truckload (LP2-8). */
@@ -445,6 +479,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 throw new BusinessException(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN, ("Transfer %s has no package free to "
                         + "plan: held by load plan %s (09 BR-09)").formatted(t.number(), held.isEmpty() ? "-" : held));
             }
+            requireNotAwaitingUnload("Transfer " + t.number(), sealed, plan.id());
             sealed.forEach(p -> chosen.put(p.getId(), id));
             taken.addAll(sealed);
         }
@@ -508,6 +543,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                         + "plan: held by load plan %s (09 BR-09)").formatted(s.getCode(),
                         held.isEmpty() ? "-" : held));
             }
+            requireNotAwaitingUnload("Shipment " + s.getCode(), free, plan.id());
             free.forEach(p -> chosen.put(p.getId(), id));
             taken.addAll(free);
         }
@@ -899,6 +935,37 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         return reread(plan.id(), detail);
     }
 
+    @Override
+    public PlanDetail cancelControlled(UUID loadPlanId, Long expectedVersion, UnloadReasonCode code, String note,
+                                       CurrentUser actor) {
+        LoadPlanJpaEntity header = lock(loadPlanId, expectedVersion);
+        LoadPlan plan = store.load(header);
+        List<DispatchLoadJpaEntity> vehicleLoads = loadsOf(plan);
+        Instant now = clock.instant();
+        boolean vehicleLeft = vehicleLoads.stream().anyMatch(l -> l.getStatus() == LoadStatus.DISPATCHED);
+        if (!plan.cancelControlled(code, note, vehicleLeft, actor.userId(), now)) {
+            return detail(header, plan);
+        }
+        PlanDetail detail = saved(plan, header, now);
+        // Lock order: the plan's row (taken), then its loads' rows in id order. Vehicles being loaded keep their
+        // scanned parcels locked (pending unloads); the others are called off the plain way (LP-11).
+        String why = "Load plan %s cancelled under control (%s): %s".formatted(plan.code(), code, note.trim());
+        vehicleLoads.stream().filter(l -> l.getStatus().isOpen()).map(DispatchLoadJpaEntity::getId).sorted()
+                .forEach(id -> loads.lockById(id).ifPresent(row -> {
+                    DispatchLoad load = loadStore.load(row);
+                    boolean called = load.status() == LoadStatus.LOADING
+                            ? load.cancelControlled(code, note, actor.userId(), now)
+                            : CANCELLABLE.contains(load.status()) && load.cancel(why, actor.userId(), now);
+                    if (called) {
+                        loadStore.save(load, row);
+                        log.info("Load {} cancelled with its plan under control: {} parcel(s) to scan off", load.code(),
+                                load.pendingUnloads().size());
+                    }
+                }));
+        log.info("Load plan {} cancelled under control ({}: {})", plan.code(), code, note.trim());
+        return reread(plan.id(), detail);
+    }
+
     /** The detail again after the loads changed (their status shows on the vehicles). */
     private PlanDetail reread(UUID planId, PlanDetail fallback) {
         return plans.findById(planId).map(h -> detail(h, store.load(h))).orElse(fallback);
@@ -1032,8 +1099,20 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     public void releaseTransfer(UUID transferOrderId, String reason, Instant at) {
         List<UUID> planIds = members.findByTransferOrderIdAndActiveTrue(transferOrderId).stream()
                 .map(LoadPlanPackageJpaEntity::getLoadPlanId).distinct().sorted().toList();
+        Map<UUID, LoadPlanJpaEntity> locked = new java.util.LinkedHashMap<>();
         for (UUID planId : planIds) {
             LoadPlanJpaEntity header = plans.lockById(planId).orElseThrow();
+            locked.put(planId, header);
+            if (loadingStarted(loadsOf(store.load(header)))) {
+                // UNLOAD-DESIGN point 10: never while a vehicle loads - the controlled cancel comes first.
+                throw new BusinessException(ErrorCode.TRANSFER_LOADING_IN_PROGRESS, ("A vehicle of load plan %s is "
+                        + "being loaded: run the controlled cancel of the plan (or of that vehicle) first, scan the "
+                        + "parcels off, then cancel the picking of the transfer").formatted(header.getCode()));
+            }
+        }
+        // Parcels of a plan called off earlier may still be on a truck: they are voided only once they are off.
+        requireTransferParcelsOff(transferOrderId);
+        for (LoadPlanJpaEntity header : locked.values()) {
             LoadPlan plan = store.load(header);
             List<DispatchLoadJpaEntity> vehicleLoads = loadsOf(plan);
             if (plan.cancel(reason, loadingStarted(vehicleLoads), null, at)) {
@@ -1041,6 +1120,21 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 cancelLoads(vehicleLoads, "Load plan %s cancelled: %s".formatted(plan.code(), reason), null, at);
                 log.info("Load plan {} cancelled: {}", plan.code(), reason);
             }
+        }
+    }
+
+    /** UNLOAD-DESIGN point 4: 409 {@code PACKAGE_UNLOAD_PENDING} while a parcel of the transfer is still to be scanned off. */
+    private void requireTransferParcelsOff(UUID transferOrderId) {
+        List<PackageJpaEntity> ofTransfer = packages.findByTransferOrderIdIn(List.of(transferOrderId));
+        Map<UUID, UUID> pending = loadStore.pendingUnloadLoads(ofTransfer.stream().map(PackageJpaEntity::getId)
+                .toList());
+        if (!pending.isEmpty()) {
+            List<String> labels = ofTransfer.stream().filter(p -> pending.containsKey(p.getId()))
+                    .map(PackageJpaEntity::getLabelCode).sorted().toList();
+            throw new BusinessException(ErrorCode.PACKAGE_UNLOAD_PENDING, ("Package(s) %s of this transfer are still on "
+                    + "a vehicle that was called off: scan them off first, then cancel the picking")
+                    .formatted(String.join(", ", labels)),
+                    labels.stream().map(l -> FieldError.of("packageCode", l)).toList());
         }
     }
 
@@ -1292,6 +1386,43 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 plan.activePackageIds().size(), plan.placedPackageIds().size(), plan.unplacedPackageIds().size(), ack,
                 s.calculatedAt(), header.getSolverMeta(), s.confirmedAt(), s.reopenedAt(), s.reopenReason(),
                 s.dispatchedAt(), s.cancelledAt(), s.cancelReason(), header.getCreatedAt(), header.getVersion(),
-                transferView);
+                transferView, plan.cancelReasonCode() == null ? null : plan.cancelReasonCode().name(),
+                pendingUnloads(plan));
+    }
+
+    /**
+     * SCRUM-474: the parcels still to be scanned off the vehicles of this plan that were called off after loading started
+     * (every load of the plan, cancelled or not), oldest first - the screen where each is scanned off or confirmed off.
+     */
+    private List<PendingUnload> pendingUnloads(LoadPlan plan) {
+        List<DispatchLoadJpaEntity> vehicleLoads = loadsOf(plan);
+        if (vehicleLoads.isEmpty()) {
+            return List.of();
+        }
+        List<DispatchLoadUnloadJpaEntity> pending = loadStore.pendingUnloads(vehicleLoads.stream()
+                .map(DispatchLoadJpaEntity::getId).toList());
+        if (pending.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, DispatchLoadJpaEntity> loadById = vehicleLoads.stream()
+                .collect(Collectors.toMap(DispatchLoadJpaEntity::getId, Function.identity()));
+        Map<UUID, Integer> seqOfVehicle = new HashMap<>();
+        plan.vehicles().forEach(v -> seqOfVehicle.put(v.id(), v.seq()));
+        Map<UUID, String> labels = packages.findAllById(pending.stream().map(DispatchLoadUnloadJpaEntity::getPackageId)
+                .toList()).stream().collect(Collectors.toMap(PackageJpaEntity::getId, PackageJpaEntity::getLabelCode));
+        Map<UUID, String> codes = new HashMap<>();
+        shipments.findAllById(pending.stream().map(DispatchLoadUnloadJpaEntity::getShipmentId)
+                .filter(Objects::nonNull).distinct().toList()).forEach(row -> codes.put(row.getId(), row.getCode()));
+        pending.stream().map(DispatchLoadUnloadJpaEntity::getTransferOrderId).filter(Objects::nonNull).distinct()
+                .forEach(id -> transfers.find(id).ifPresent(t -> codes.put(id, t.number())));
+        return pending.stream().sorted(Comparator.comparing(DispatchLoadUnloadJpaEntity::getRequestedAt)
+                        .thenComparing(u -> labels.getOrDefault(u.getPackageId(), "")))
+                .map(u -> {
+                    DispatchLoadJpaEntity l = loadById.get(u.getLoadId());
+                    return new PendingUnload(u.getLoadId(), l.getCode(), seqOfVehicle.get(l.getLoadPlanVehicleId()),
+                            u.getPackageId(), labels.get(u.getPackageId()), u.getShipmentId(), u.getTransferOrderId(),
+                            codes.get(u.getKey()), u.getReasonCode() == null ? null : u.getReasonCode().name(),
+                            u.getReason(), u.getRequestedAt());
+                }).toList();
     }
 }

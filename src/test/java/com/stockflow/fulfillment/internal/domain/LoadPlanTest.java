@@ -248,6 +248,44 @@ class LoadPlanTest {
     }
 
     @Test
+    @DisplayName("UNLOAD-DESIGN points 1, 3, 4, 7: the controlled cancel takes a CONFIRMED plan to CANCELLED at once with "
+            + "a code and a note - never back to PLANNED; refused once a vehicle left (LOAD_PLAN_VEHICLE_DISPATCHED); "
+            + "needs a code and a note; every parcel is released PLAN_CANCELLED; again changes nothing; a plan not "
+            + "confirmed is cancelled the plain way")
+    void controlledCancel() {
+        cube(shipmentA, null);
+        LoadPlan notConfirmed = planned(1);
+        assertThat(code(() -> notConfirmed.cancelControlled(UnloadReasonCode.KHAC, "x", false, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.INVALID_LOAD_PLAN_TRANSITION);
+
+        LoadPlan plan = planned(1);
+        plan.confirm(DISPATCHER, NOW, cartons);
+        assertThat(code(() -> plan.cancelControlled(UnloadReasonCode.XE_HONG, "axle", true, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.LOAD_PLAN_VEHICLE_DISPATCHED);
+        assertThat(code(() -> plan.cancelControlled(null, "axle", false, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(() -> plan.cancelControlled(UnloadReasonCode.XE_HONG, "  ", false, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(plan.status()).isEqualTo(LoadPlanStatus.CONFIRMED);
+
+        assertThat(plan.cancelControlled(UnloadReasonCode.SAI_XE, " the wrong truck ", false, DISPATCHER, NOW)).isTrue();
+        assertThat(plan.status()).isEqualTo(LoadPlanStatus.CANCELLED);
+        assertThat(plan.cancelReasonCode()).isEqualTo(UnloadReasonCode.SAI_XE);
+        assertThat(plan.snapshot().cancelReason()).isEqualTo("the wrong truck");
+        assertThat(plan.snapshot().cancelledBy()).isEqualTo(DISPATCHER);
+        assertThat(plan.activePackageIds()).isEmpty();
+        assertThat(plan.members()).allSatisfy(m -> assertThat(m.releaseReason())
+                .isEqualTo(LoadPlanReleaseReason.PLAN_CANCELLED));
+        assertThat(plan.cancelControlled(UnloadReasonCode.KHAC, "again", false, DISPATCHER, NOW)).isFalse();
+        assertThat(plan.cancelReasonCode()).isEqualTo(UnloadReasonCode.SAI_XE);
+        assertThat(LoadPlan.restore(plan.snapshot()).cancelReasonCode()).isEqualTo(UnloadReasonCode.SAI_XE);
+        // The plain cancel after loading started is still refused: only the controlled one goes through (BR-14).
+        LoadPlan other = planned(1);
+        other.confirm(DISPATCHER, NOW, cartons);
+        assertThat(code(() -> other.cancel("x", true, DISPATCHER, NOW))).isEqualTo(ErrorCode.LOAD_PLAN_LOADING_STARTED);
+    }
+
+    @Test
     @DisplayName("09 edge: an order cancelled out of a confirmed plan - its parcels leave, the plan goes back to "
             + "PLANNED when nothing loads; while a vehicle loads it stays CONFIRMED")
     void anOrderCancelledOutOfAPlan() {

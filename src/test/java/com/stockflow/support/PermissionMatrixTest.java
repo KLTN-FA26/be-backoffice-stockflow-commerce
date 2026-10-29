@@ -199,6 +199,13 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/handover", "fulfillment-dispatch:UPDATE"),
             Map.entry("PUT /api/v1/fulfillment/shipments/{shipmentId}/carrier", "fulfillment-dispatch:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/cancellation", "fulfillment-load-cancellations:UPDATE"),
+            // SCRUM-474 UNLOAD-DESIGN (V20261029007100): the controlled cancel after loading started, and the override.
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/controlled-cancellation",
+                    "fulfillment-controlled-cancellations:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/unload-overrides",
+                    "fulfillment-controlled-cancellations:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/load-plans/{loadPlanId}/controlled-cancellation",
+                    "fulfillment-controlled-cancellations:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome", "fulfillment-delivery-outcomes:UPDATE"),
             Map.entry("POST /api/v1/customers/{customerId}/status", "customer-status:APPROVE"),
             Map.entry("GET /api/v1/catalog/products/availability", "catalog-storefront:READ"),
@@ -245,6 +252,8 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-dispatch:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-dispatch:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-load-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // SCRUM-474 UNLOAD-DESIGN point 6: only the warehouse manager (and the admin) calls off after loading started.
+            Map.entry("fulfillment-controlled-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),

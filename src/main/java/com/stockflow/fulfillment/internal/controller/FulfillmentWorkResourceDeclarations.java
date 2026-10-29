@@ -51,6 +51,11 @@ final class FulfillmentWorkResourceDeclarations {
             actions = {Action.UPDATE})
     static final class LoadCancellations { private LoadCancellations() { } }
 
+    @PermissionResource(code = FulfillmentResources.CONTROLLED_CANCELLATIONS, group = "Fulfillment",
+            label = "Controlled cancel after loading started", route = "/fulfillment/loads",
+            apiPath = "/api/v1/fulfillment", actions = {Action.UPDATE})
+    static final class ControlledCancellations { private ControlledCancellations() { } }
+
     @PermissionResource(code = FulfillmentResources.DELIVERY_OUTCOMES, group = "Fulfillment",
             label = "Delivery outcomes", route = "/fulfillment/shipments", apiPath = "/api/v1/fulfillment/shipments",
             actions = {Action.UPDATE, Action.APPROVE})

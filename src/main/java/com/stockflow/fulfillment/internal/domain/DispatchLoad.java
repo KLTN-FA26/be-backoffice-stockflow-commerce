@@ -72,9 +72,24 @@ public final class DispatchLoad {
      * dỡ kiện"). Pending while {@code unloadedAt} is null.
      */
     public record Unload(UUID packageId, UUID shipmentId, String reason, Instant requestedAt, Instant unloadedAt,
-                         UUID unloadedBy) {
+                         UUID unloadedBy, UnloadReasonCode reasonCode, boolean overridden, String overrideNote) {
+
+        /** A parcel of a cancelled order (no reason code, scanned off normally until it says otherwise). */
+        public Unload(UUID packageId, UUID shipmentId, String reason, Instant requestedAt, Instant unloadedAt,
+                      UUID unloadedBy) {
+            this(packageId, shipmentId, reason, requestedAt, unloadedAt, unloadedBy, null, false, null);
+        }
+
         public boolean pending() {
             return unloadedAt == null;
+        }
+
+        Unload scannedOff(Instant at, UUID by) {
+            return new Unload(packageId, shipmentId, reason, requestedAt, at, by, reasonCode, false, null);
+        }
+
+        Unload confirmedWithoutScan(Instant at, UUID by, String note) {
+            return new Unload(packageId, shipmentId, reason, requestedAt, at, by, reasonCode, true, note);
         }
     }
 
@@ -97,7 +112,23 @@ public final class DispatchLoad {
                            BigDecimal codTotal, Instant cancelledAt, UUID cancelledBy, String cancelReason,
                            long version, List<Member> members, List<Loaded> loaded, Instant bookedAt, UUID bookedBy,
                            Instant bookingCancelledAt, UUID bookingCancelledBy, String bookingCancelReason,
-                           List<Unload> unloads) {
+                           List<Unload> unloads, UnloadReasonCode cancelReasonCode) {
+
+        /** Without the code of a controlled cancel (every load but one called off after loading started). */
+        public Snapshot(UUID id, String code, UUID requestId, UUID warehouseId, DeliveryMode mode, UUID carrierId,
+                        UUID loadPlanVehicleId, String vehiclePlate, String driverName, String driverPhone,
+                        LoadStatus status, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
+                        UUID dispatchedBy, String carrierRepresentative, String signatureRef, String handoverNote,
+                        BigDecimal codTotal, Instant cancelledAt, UUID cancelledBy, String cancelReason,
+                        long version, List<Member> members, List<Loaded> loaded, Instant bookedAt, UUID bookedBy,
+                        Instant bookingCancelledAt, UUID bookingCancelledBy, String bookingCancelReason,
+                        List<Unload> unloads) {
+            this(id, code, requestId, warehouseId, mode, carrierId, loadPlanVehicleId, vehiclePlate, driverName,
+                    driverPhone, status, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
+                    carrierRepresentative, signatureRef, handoverNote, codTotal, cancelledAt, cancelledBy,
+                    cancelReason, version, members, loaded, bookedAt, bookedBy, bookingCancelledAt,
+                    bookingCancelledBy, bookingCancelReason, unloads, null);
+        }
 
         /** Without booking and unloads (parcel loads, and callers written before SCRUM-392). */
         public Snapshot(UUID id, String code, UUID requestId, UUID warehouseId, DeliveryMode mode, UUID carrierId,
@@ -140,6 +171,7 @@ public final class DispatchLoad {
     private Instant cancelledAt;
     private UUID cancelledBy;
     private String cancelReason;
+    private UnloadReasonCode cancelReasonCode;
     private final long version;
     private final Map<UUID, Member> members = new LinkedHashMap<>();
     private final Map<UUID, Loaded> loaded = new LinkedHashMap<>();
@@ -173,6 +205,7 @@ public final class DispatchLoad {
         this.cancelledAt = s.cancelledAt();
         this.cancelledBy = s.cancelledBy();
         this.cancelReason = s.cancelReason();
+        this.cancelReasonCode = s.cancelReasonCode();
         this.version = s.version();
         if (s.members() != null) {
             s.members().forEach(m -> members.put(m.shipmentId(), m));
@@ -323,8 +356,27 @@ public final class DispatchLoad {
         if (!unload.pending()) {
             return false;
         }
-        unloads.put(packageId, new Unload(packageId, unload.shipmentId(), unload.reason(), unload.requestedAt(), at,
-                Objects.requireNonNull(by)));
+        unloads.put(packageId, unload.scannedOff(at, Objects.requireNonNull(by)));
+        return true;
+    }
+
+    /**
+     * A parcel to unload is confirmed off the vehicle <b>without a scan</b>, because its label is damaged (UNLOAD-DESIGN
+     * point 5). The caller has checked the permission; who, when and why (the note, optional) stay on the record, flagged
+     * {@code overridden}. Already unloaded: nothing changes.
+     *
+     * @throws BusinessException {@code PACKAGE_NOT_IN_LOAD} when the parcel is not to be unloaded from this vehicle
+     */
+    public boolean confirmUnloadWithoutScan(UUID packageId, String labelCode, String note, UUID by, Instant at) {
+        Unload unload = unloads.get(packageId);
+        if (unload == null) {
+            throw new BusinessException(ErrorCode.PACKAGE_NOT_IN_LOAD,
+                    "Package %s is not to be unloaded from load %s".formatted(labelCode, code));
+        }
+        if (!unload.pending()) {
+            return false;
+        }
+        unloads.put(packageId, unload.confirmedWithoutScan(at, Objects.requireNonNull(by), trimmed(note)));
         return true;
     }
 
@@ -637,6 +689,54 @@ public final class DispatchLoad {
         return true;
     }
 
+    /**
+     * <b>Controlled cancel</b> of a vehicle being loaded (SCRUM-474 UNLOAD-DESIGN points 2, 4, 7; kltn-docs 09 BR-14):
+     * LOADING &rarr; CANCELLED at once, with a code and a note. Unlike {@link #cancel}, the parcels already on the
+     * vehicle are not simply "back at dispatch": each one is left <b>locked</b> - a pending unload with the reason - until
+     * it is scanned off ({@link #confirmUnload}) or confirmed off by a warehouse manager
+     * ({@link #confirmUnloadWithoutScan}). The shipments leave the manifest; the plan's service opens a PLANNED load
+     * in its place when only this vehicle is called off. Cancelled already: nothing changes.
+     *
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} for a parcel load or any status but LOADING;
+     *         {@code VALIDATION_FAILED} without a code or a note
+     * @return whether it changed the load
+     */
+    public boolean cancelControlled(UnloadReasonCode reasonCode, String note, UUID by, Instant at) {
+        if (status == LoadStatus.CANCELLED) {
+            return false;
+        }
+        requireFullTruckload("be cancelled under control");
+        if (status != LoadStatus.LOADING) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is %s; only a vehicle being loaded "
+                    + "is cancelled under control (before loading: cancel its booking, or reopen or cancel the "
+                    + "plan)").formatted(code, status));
+        }
+        String why = trimmed(note);
+        if (reasonCode == null || why == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A controlled cancel names a reason code and a note");
+        }
+        for (Member member : List.copyOf(members.values())) {
+            if (member.active()) {
+                members.put(member.shipmentId(), new Member(member.shipmentId(), false, member.addedAt(),
+                        member.addedBy(), at, by, member.labelCodAmount(), null));
+            }
+        }
+        for (Loaded parcel : List.copyOf(loaded.values())) {
+            if (parcel.active()) {
+                loaded.put(parcel.packageId(), unloaded(parcel, by, at));
+                unloads.putIfAbsent(parcel.packageId(), new Unload(parcel.packageId(), parcel.shipmentId(), why, at,
+                        null, null, reasonCode, false, null));
+            }
+        }
+        status = LoadStatus.CANCELLED;
+        cancelledAt = at;
+        cancelledBy = by;
+        cancelReason = why;
+        cancelReasonCode = reasonCode;
+        return true;
+    }
+
     // ---- reading -------------------------------------------------------------------------------------------------
 
     public List<UUID> activeShipments() {
@@ -684,7 +784,8 @@ public final class DispatchLoad {
                 driverName, driverPhone, status, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
                 carrierRepresentative, signatureRef, handoverNote, codTotal(), cancelledAt, cancelledBy, cancelReason,
                 version, List.copyOf(members.values()), List.copyOf(loaded.values()), bookedAt, bookedBy,
-                bookingCancelledAt, bookingCancelledBy, bookingCancelReason, List.copyOf(unloads.values()));
+                bookingCancelledAt, bookingCancelledBy, bookingCancelReason, List.copyOf(unloads.values()),
+                cancelReasonCode);
     }
 
     private void requireOpen(String what) {
@@ -728,6 +829,7 @@ public final class DispatchLoad {
     public UUID loadPlanVehicleId() { return loadPlanVehicleId; }
     public LoadStatus status() { return status; }
     public long version() { return version; }
+    public UnloadReasonCode cancelReasonCode() { return cancelReasonCode; }
     public Instant dispatchedAt() { return dispatchedAt; }
     public UUID dispatchedBy() { return dispatchedBy; }
 }

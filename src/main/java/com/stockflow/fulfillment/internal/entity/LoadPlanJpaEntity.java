@@ -3,6 +3,7 @@ package com.stockflow.fulfillment.internal.entity;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
+import com.stockflow.fulfillment.internal.domain.UnloadReasonCode;
 import com.stockflow.fulfillment.internal.domain.loadplanning.SelectionMode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -49,6 +50,9 @@ public class LoadPlanJpaEntity extends BaseEntity {
     @Column(name = "cancelled_at") private Instant cancelledAt;
     @Column(name = "cancelled_by") private UUID cancelledBy;
     @Column(name = "cancel_reason", length = 500) private String cancelReason;
+    /** SCRUM-474 UNLOAD-DESIGN point 7: set only by a controlled cancel (V20261029007000). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cancel_reason_code", length = 20) private UnloadReasonCode cancelReasonCode;
     @Column(name = "revised_at", nullable = false) private Instant revisedAt;
 
     protected LoadPlanJpaEntity() {
@@ -81,6 +85,7 @@ public class LoadPlanJpaEntity extends BaseEntity {
         this.cancelledAt = s.cancelledAt();
         this.cancelledBy = s.cancelledBy();
         this.cancelReason = s.cancelReason();
+        this.cancelReasonCode = s.cancelReasonCode();
         // Strictly later than the last write, so the row is always dirty and the version always moves.
         this.revisedAt = this.revisedAt != null && !revisedAt.isAfter(this.revisedAt)
                 ? this.revisedAt.plusNanos(1_000) : revisedAt;
@@ -112,5 +117,6 @@ public class LoadPlanJpaEntity extends BaseEntity {
     public Instant getCancelledAt() { return cancelledAt; }
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancelReason() { return cancelReason; }
+    public UnloadReasonCode getCancelReasonCode() { return cancelReasonCode; }
     public Instant getRevisedAt() { return revisedAt; }
 }

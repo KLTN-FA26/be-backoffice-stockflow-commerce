@@ -72,7 +72,18 @@ public interface LoadPlans {
                       int packageCount, int placedCount, int unplacedCount, Acknowledgement unplacedAcknowledgement,
                       Instant calculatedAt, Map<String, Object> solverMeta, Instant confirmedAt, Instant reopenedAt,
                       String reopenReason, Instant dispatchedAt, Instant cancelledAt, String cancelReason,
-                      Instant createdAt, long version, TransferInPlan transferOrder) { }
+                      Instant createdAt, long version, TransferInPlan transferOrder, String cancelReasonCode,
+                      List<PendingUnload> pendingUnloads) { }
+
+    /**
+     * A parcel still to be scanned off a vehicle of this plan that was called off after loading started (SCRUM-474
+     * UNLOAD-DESIGN points 4-5): locked until then. {@code loadId} is where to scan it off ({@code POST
+     * /loads/{loadId}/unloads}); {@code shipmentCode} is the shipment's code, or the transfer order's number
+     * (then {@code transferOrderId} is set and {@code shipmentId} null).
+     */
+    record PendingUnload(UUID loadId, String loadCode, Integer vehicleSeq, UUID packageId, String labelCode,
+                         UUID shipmentId, UUID transferOrderId, String shipmentCode, String reasonCode, String reason,
+                         Instant requestedAt) { }
 
     // ---- reconciliation (design v2 §1 "nesting-reconcile": pieces in = placed + unplaced) ---------------------------
 
@@ -214,6 +225,19 @@ public interface LoadPlans {
 
     /** CANCELLED while no vehicle loads (BR-14); its parcels and dispatch loads are released. */
     PlanDetail cancel(UUID loadPlanId, Long expectedVersion, String reason, CurrentUser actor);
+
+    /**
+     * SCRUM-474 UNLOAD-DESIGN (09 BR-14): the whole plan called off after loading started, under control - CANCELLED at
+     * once with a reason code and a note; the vehicles being loaded are cancelled with their scanned parcels locked until
+     * each is scanned off ({@code POST /loads/{id}/unloads}) or confirmed off by a warehouse manager.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOAD_PLAN_VEHICLE_DISPATCHED} when a vehicle already
+     *         left (cancel the others one by one); {@code INVALID_LOAD_PLAN_TRANSITION} when not CONFIRMED;
+     *         {@code OPTIMISTIC_LOCK}; {@code VALIDATION_FAILED}
+     */
+    PlanDetail cancelControlled(UUID loadPlanId, Long expectedVersion,
+                                com.stockflow.fulfillment.internal.domain.UnloadReasonCode code, String note,
+                                CurrentUser actor);
 
     Reconciliation reconciliation(UUID loadPlanId);
 }

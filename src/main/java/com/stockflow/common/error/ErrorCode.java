@@ -578,6 +578,18 @@ public enum ErrorCode {
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),
+    /**
+     * SCRUM-474 UNLOAD-DESIGN point 4: a parcel of a vehicle called off is locked - not scanned onto a load, not planned,
+     * not voided with its transfer's picking - until it is scanned off (or confirmed off by a warehouse manager).
+     */
+    PACKAGE_UNLOAD_PENDING("This package is still to be unloaded from a vehicle that was called off; scan it off first",
+            409),
+    /** SCRUM-474 UNLOAD-DESIGN point 3: a vehicle of the plan already left; cancel the remaining vehicles one by one. */
+    LOAD_PLAN_VEHICLE_DISPATCHED("A vehicle of this load plan already left the warehouse; cancel its remaining "
+            + "vehicles one by one", 409),
+    /** SCRUM-474 UNLOAD-DESIGN point 10: a transfer's picking is not cancelled while a vehicle of its plan is loading. */
+    TRANSFER_LOADING_IN_PROGRESS("A vehicle of this transfer order's load plan is being loaded: run the controlled "
+            + "cancel of the load plan first, then cancel the picking", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

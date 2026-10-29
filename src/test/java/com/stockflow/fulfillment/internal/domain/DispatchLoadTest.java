@@ -334,4 +334,78 @@ class DispatchLoadTest {
         assertThat(booked.withdrawShipment(s, null, NOW)).isTrue();
         assertThat(booked.pendingUnloads()).isEmpty();
     }
+
+    @Test
+    @DisplayName("UNLOAD-DESIGN points 2, 4, 5, 7: a vehicle being loaded is cancelled under control - CANCELLED at once "
+            + "with code, note, actor and time; its shipments leave the manifest; every scanned parcel is left locked "
+            + "as a pending unload carrying the code, until scanned off or confirmed off without a scan (overridden, "
+            + "note); an unload of a cancelled order keeps its own (no code) reason; again changes nothing")
+    void cancelledUnderControl() {
+        DispatchLoad load = vehicle();
+        UUID doomed = UUID.randomUUID();
+        UUID kept = UUID.randomUUID();
+        load.addShipment(ftl(doomed, null, null), null, DISPATCHER, NOW);
+        load.addShipment(ftl(kept, null, null), null, DISPATCHER, NOW);
+        assertThat(code(() -> load.cancelControlled(UnloadReasonCode.XE_HONG, "axle", DISPATCHER, NOW)))
+                .as("not loading yet: the booking is cancelled the plain way").isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        load.book(UUID.randomUUID(), "51C-1", null, null, DISPATCHER, NOW);
+        load.startLoading(DISPATCHER, NOW);
+        UUID p1 = UUID.randomUUID();
+        UUID p2 = UUID.randomUUID();
+        UUID p3 = UUID.randomUUID();
+        load.scan(UUID.randomUUID(), placed(p1, ftl(doomed, null, null), HERE), DISPATCHER, NOW);
+        load.scan(UUID.randomUUID(), placed(p2, ftl(kept, null, null), HERE), DISPATCHER, NOW);
+        load.scan(UUID.randomUUID(), placed(p3, ftl(kept, null, null), HERE), DISPATCHER, NOW);
+        load.withdrawShipment(doomed, "The order was cancelled", NOW);   // its parcel is to unload already (SCRUM-392)
+
+        assertThat(code(() -> load.cancelControlled(null, "axle", DISPATCHER, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(() -> load.cancelControlled(UnloadReasonCode.XE_HONG, " ", DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        Instant later = NOW.plusSeconds(60);
+        assertThat(load.cancelControlled(UnloadReasonCode.XE_HONG, " the rear axle broke ", DISPATCHER, later)).isTrue();
+        assertThat(load.status()).isEqualTo(LoadStatus.CANCELLED);
+        assertThat(load.cancelReasonCode()).isEqualTo(UnloadReasonCode.XE_HONG);
+        assertThat(load.snapshot().cancelReason()).isEqualTo("the rear axle broke");
+        assertThat(load.snapshot().cancelledBy()).isEqualTo(DISPATCHER);
+        assertThat(load.snapshot().cancelledAt()).isEqualTo(later);
+        assertThat(load.activeShipments()).isEmpty();
+        assertThat(load.activeParcels()).isEmpty();
+        assertThat(load.pendingUnloads()).extracting(DispatchLoad.Unload::packageId)
+                .containsExactlyInAnyOrder(p1, p2, p3);
+        assertThat(load.pendingUnloads()).filteredOn(u -> u.packageId().equals(p1)).singleElement().satisfies(u -> {
+            assertThat(u.reasonCode()).as("the cancelled order's parcel keeps its own reason").isNull();
+            assertThat(u.reason()).isEqualTo("The order was cancelled");
+        });
+        assertThat(load.pendingUnloads()).filteredOn(u -> u.packageId().equals(p2)).singleElement().satisfies(u -> {
+            assertThat(u.reasonCode()).isEqualTo(UnloadReasonCode.XE_HONG);
+            assertThat(u.reason()).isEqualTo("the rear axle broke");
+        });
+        assertThat(load.cancelControlled(UnloadReasonCode.KHAC, "again", DISPATCHER, later)).isFalse();
+        assertThat(load.cancelReasonCode()).isEqualTo(UnloadReasonCode.XE_HONG);
+
+        // Scanned off (by the dispatcher), then one confirmed off without a scan (its label is damaged).
+        assertThat(load.confirmUnload(p2, "PKG-2", DISPATCHER, later)).isTrue();
+        UUID manager = UUID.randomUUID();
+        assertThat(code(() -> load.confirmUnloadWithoutScan(UUID.randomUUID(), "PKG-X", null, manager, later)))
+                .isEqualTo(ErrorCode.PACKAGE_NOT_IN_LOAD);
+        assertThat(load.confirmUnloadWithoutScan(p3, "PKG-3", " torn label ", manager, later)).isTrue();
+        assertThat(load.confirmUnloadWithoutScan(p3, "PKG-3", "again", manager, later)).isFalse();
+        assertThat(load.unloads()).filteredOn(u -> u.packageId().equals(p3)).singleElement().satisfies(u -> {
+            assertThat(u.overridden()).isTrue();
+            assertThat(u.overrideNote()).isEqualTo("torn label");
+            assertThat(u.unloadedBy()).isEqualTo(manager);
+        });
+        assertThat(load.unloads()).filteredOn(u -> u.packageId().equals(p2)).singleElement()
+                .satisfies(u -> assertThat(u.overridden()).isFalse());
+        assertThat(load.pendingUnloads()).extracting(DispatchLoad.Unload::packageId).containsExactly(p1);
+        // Nothing of the cancelled load is ever handed over, and it is restored with all of it.
+        assertThat(code(() -> load.handOver(SIGNED, Map.of(), Map.of(), DISPATCHER, later)))
+                .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        assertThat(DispatchLoad.restore(load.snapshot()).snapshot()).isEqualTo(load.snapshot());
+
+        // A parcel load is called off the plain way only.
+        DispatchLoad parcelLoad = open();
+        assertThat(code(() -> parcelLoad.cancelControlled(UnloadReasonCode.KHAC, "x", DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+    }
 }
