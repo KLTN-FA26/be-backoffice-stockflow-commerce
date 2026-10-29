@@ -15,6 +15,7 @@ import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversionService;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.procurement.internal.domain.GoodsReceipt;
 import com.stockflow.procurement.internal.domain.GoodsReceiptRepository;
@@ -1216,6 +1217,286 @@ class GoodsReceiptServiceImplTest {
             ReceiptView view = service.approve(receipt.id(), manager, "ok");
 
             assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
+        }
+    }
+
+    // ------------------------------------------------------------------ receipt without a PO (SCRUM-478, BR-RCP-002)
+
+    @Nested
+    class WithoutPurchaseOrder {
+
+        private final UUID manager = UUID.randomUUID();
+        private final UUID supplier = UUID.randomUUID();
+
+        @BeforeEach
+        void aKnownSupplierAndItem() {
+            when(orders.supplierName(supplier)).thenReturn(Optional.of("ACME"));
+            when(inventory.itemPolicy(new Sku("CUP-01"))).thenReturn(Optional.of(plainItem()));
+        }
+
+        private GoodsReceipt blind(ReceiptLine... lines) {
+            GoodsReceipt receipt = GoodsReceipt.blindDraft(UUID.randomUUID(), "GR-20261022-0002", supplier, warehouse,
+                    user, "sample from the supplier", null, null, NOW);
+            receipt.replaceLines(List.of(lines));
+            when(receipts.findById(receipt.id())).thenReturn(Optional.of(receipt));
+            when(receipts.findByIdForUpdate(receipt.id())).thenReturn(Optional.of(receipt));
+            return receipt;
+        }
+
+        private ReceiptLine item(int qty) {
+            return ReceiptLine.counted(UUID.randomUUID(), null, itemId, receivingBin.id(), qty, null, null, null,
+                    false, null);
+        }
+
+        private GoodsReceipts.CreateWithoutPo create(String reason) {
+            return new GoodsReceipts.CreateWithoutPo(supplier, warehouse, reason, "  DN-1 ", null);
+        }
+
+        @Test
+        @DisplayName("a draft is made for the supplier, with the reason; it names no purchase order")
+        void createsDraft() {
+            ReceiptView view = service.createWithoutPurchaseOrder(create("  urgent: parts for a customer  "), user);
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.DRAFT);
+            assertThat(view.withoutPurchaseOrder()).isTrue();
+            assertThat(view.purchaseOrderId()).isNull();
+            assertThat(view.purchaseOrderNumber()).isNull();
+            assertThat(view.supplierId()).isEqualTo(supplier);
+            assertThat(view.blindReason()).isEqualTo("urgent: parts for a customer");
+            assertThat(view.deliveryNote()).isEqualTo("DN-1");
+            assertThat(view.warehouseId()).isEqualTo(warehouse);
+        }
+
+        @Test
+        @DisplayName("the reason is required (BR-RCP-002), the supplier and the warehouse must exist")
+        void createRules() {
+            for (String blank : new String[]{null, "", "  "}) {
+                assertThat(code(() -> service.createWithoutPurchaseOrder(create(blank), user)))
+                        .isEqualTo(ErrorCode.BLIND_RECEIPT_REASON_REQUIRED);
+            }
+            when(orders.supplierName(supplier)).thenReturn(Optional.empty());
+            assertThat(code(() -> service.createWithoutPurchaseOrder(create("gift"), user)))
+                    .isEqualTo(ErrorCode.SUPPLIER_NOT_FOUND);
+            when(orders.supplierName(supplier)).thenReturn(Optional.of("ACME"));
+            UUID elsewhere = UUID.randomUUID();
+            when(warehouses.findWarehouse(elsewhere)).thenReturn(Optional.empty());
+            assertThat(code(() -> service.createWithoutPurchaseOrder(
+                    new GoodsReceipts.CreateWithoutPo(supplier, elsewhere, "gift", null, null), user)))
+                    .isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
+            verify(receipts, never()).save(any(GoodsReceipt.class));
+        }
+
+        @Test
+        @DisplayName("lines name the item by SKU; the lot, expiry and area rules of a normal count apply")
+        void countsBySku() {
+            GoodsReceipt receipt = blind();
+
+            ReceiptView view = service.replaceLines(receipt.id(), List.of(
+                    new NewLine(null, 7, null, null, "HCM-RCV-01", "gift", null, null, " cup-01 ")));
+
+            assertThat(view.lines()).hasSize(1);
+            assertThat(view.lines().get(0).sku()).isEqualTo("CUP-01");
+            assertThat(view.lines().get(0).purchaseOrderLineId()).isNull();
+            assertThat(view.lines().get(0).quantity()).isEqualTo(7);
+            assertThat(view.warnings()).isEmpty();
+
+            BusinessException wrongArea = thrown(() -> service.replaceLines(receipt.id(), List.of(
+                    new NewLine(null, 7, null, null, "HCM-QC-01", null, null, null, "CUP-01"))));
+            assertThat(wrongArea.fieldErrors()).extracting(FieldError::field).containsExactly("lines[0].locationCode");
+        }
+
+        @Test
+        @DisplayName("each refusal is on its own field: no SKU, an unknown SKU, a PO line, the same item and lot twice")
+        void countRefusals() {
+            GoodsReceipt receipt = blind();
+            when(inventory.itemPolicy(new Sku("NOPE"))).thenReturn(Optional.empty());
+
+            BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
+                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, null),
+                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, "NOPE"),
+                    new NewLine(poLineId, 1, null, null, "HCM-RCV-01", null, null, null, "CUP-01"),
+                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, "CUP-01"),
+                    new NewLine(null, 2, null, null, "HCM-RCV-01", null, null, null, "cup-01"))));
+
+            assertThat(e.fieldErrors()).extracting(f -> f.field() + ":" + f.code()).containsExactly(
+                    "lines[0].sku:VALIDATION_FAILED",
+                    "lines[1].sku:INVENTORY_ITEM_NOT_FOUND",
+                    "lines[2].purchaseOrderLineId:RECEIPT_LINE_NOT_ON_PO",
+                    "lines[4].lotNumber:DUPLICATE_RECEIPT_LINE");
+            assertThat(receipt.lines()).as("nothing was saved").isEmpty();
+        }
+
+        @Test
+        @DisplayName("a lot-tracked item still needs its lot (BR-03), and a line of a receipt against a PO still needs its PO line")
+        void lotRulesAndPoLines() {
+            InventoryItemPolicy tracked = new InventoryItemPolicy(itemId, "CUP-01", true, false, false);
+            when(inventory.itemPolicy(new Sku("CUP-01"))).thenReturn(Optional.of(tracked));
+            GoodsReceipt receipt = blind();
+            BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
+                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, "CUP-01"))));
+            assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
+
+            po(Status.CONFIRMED, "10", null, false);
+            GoodsReceipt withPo = draft();
+            BusinessException bySku = thrown(() -> service.replaceLines(withPo.id(), List.of(
+                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, "CUP-01"))));
+            assertThat(bySku.errorCode()).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_ON_PO);
+        }
+
+        @Test
+        @DisplayName("confirming never posts: the receipt waits for the manager, nothing is counted in, no order is touched")
+        void confirmAlwaysWaits() {
+            GoodsReceipt receipt = blind(item(5));
+
+            ReceiptView view = service.confirm(receipt.id(), user);
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+            assertThat(view.approval().requestedBy()).isEqualTo(user);
+            assertThat(view.confirmedAt()).isNull();
+            verify(inventory, never()).receive(any());
+            verify(orders, never()).lock(any());
+            verify(orders, never()).recordProgress(any(), any(), any(), any(), any(), any());
+            verify(events, never()).publishEvent(any(Object.class));
+        }
+
+        @Test
+        @DisplayName("an empty count cannot be sent for approval")
+        void emptyCount() {
+            GoodsReceipt receipt = blind();
+            assertThat(code(() -> service.confirm(receipt.id(), user))).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("the manager approves: stock is counted in only now, under the supplier, with no order behind it")
+        void approvePosts() {
+            GoodsReceipt receipt = blind(item(5));
+            service.confirm(receipt.id(), user);
+
+            ReceiptView view = service.approve(receipt.id(), manager, "samples, checked at the gate");
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+            assertThat(view.approval().decision()).isEqualTo(ReceiptApproval.Decision.APPROVED);
+            assertThat(view.confirmedBy()).isEqualTo(manager);
+            ArgumentCaptor<ReceiveStockCommand> receive = ArgumentCaptor.forClass(ReceiveStockCommand.class);
+            verify(inventory).receive(receive.capture());
+            assertThat(receive.getValue().quantity()).isEqualTo(5);
+            assertThat(receive.getValue().actorId()).isEqualTo(manager);
+            assertThat(receive.getValue().origin().purchaseOrderId()).isNull();
+            assertThat(receive.getValue().origin().supplierId()).isEqualTo(supplier);
+            assertThat(receive.getValue().origin().supplierName()).isEqualTo("ACME");
+            ArgumentCaptor<GoodsReceiptConfirmed> confirmed = ArgumentCaptor.forClass(GoodsReceiptConfirmed.class);
+            verify(events).publishEvent(confirmed.capture());
+            assertThat(confirmed.getValue().purchaseOrderId()).isNull();
+            assertThat(confirmed.getValue().lines().get(0).purchaseOrderLineId()).isNull();
+            verify(events).publishEvent(any(ReceiptStockReadyForPutaway.class));
+            verify(orders, never()).recordProgress(any(), any(), any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("four eyes and a reason hold: the one who counted, the one who sent it and a blank reason are refused")
+        void decisionRules() {
+            GoodsReceipt receipt = blind(item(5));
+            UUID sender = UUID.randomUUID();
+            service.confirm(receipt.id(), sender);
+
+            assertThat(code(() -> service.approve(receipt.id(), user, "ok"))).isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+            assertThat(code(() -> service.approve(receipt.id(), sender, "ok"))).isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+            assertThat(code(() -> service.reject(receipt.id(), user, "no"))).isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+            assertThat(code(() -> service.reject(receipt.id(), sender, "no"))).isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+            assertThat(code(() -> service.approve(receipt.id(), manager, " ")))
+                    .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
+            assertThat(code(() -> service.reject(receipt.id(), manager, null)))
+                    .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
+            verify(inventory, never()).receive(any());
+        }
+
+        @Test
+        @DisplayName("rejecting cancels the whole receipt with the reason and the decider; its cartons are voided")
+        void rejectCancels() {
+            GoodsReceipt receipt = blind(item(5));
+            service.confirm(receipt.id(), user);
+
+            ReceiptView view = service.reject(receipt.id(), manager, "not ours");
+
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+            assertThat(view.approval().decision()).isEqualTo(ReceiptApproval.Decision.REJECTED);
+            assertThat(view.approval().reason()).isEqualTo("not ours");
+            assertThat(view.approval().decidedBy()).isEqualTo(manager);
+            assertThat(view.confirmedAt()).isNull();
+            verify(inventory).voidStockPackagesOfReceiptLines(anyCollection());
+            verify(inventory, never()).receive(any());
+            assertThat(code(() -> service.approve(receipt.id(), manager, "late")))
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("rejecting only the excess is for receipts against a PO; rejecting the receipt is for those without")
+        void rejectionsBelongToTheirKind() {
+            GoodsReceipt receipt = blind(item(5));
+            service.confirm(receipt.id(), user);
+            assertThat(code(() -> service.rejectExcess(receipt.id(), manager, "x")))
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+            assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+
+            po(Status.CONFIRMED, "100", "5", false);
+            GoodsReceipt withPo = draft(counted(110, false));
+            service.confirm(withPo.id(), user);
+            assertThat(code(() -> service.reject(withPo.id(), manager, "x")))
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("a waiting receipt can be cancelled by whoever counted it, like a draft")
+        void cancelWhileWaiting() {
+            GoodsReceipt receipt = blind(item(5));
+            service.confirm(receipt.id(), user);
+            assertThat(service.cancel(receipt.id()).status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+        }
+
+        @Test
+        @DisplayName("the PO is attached as a reference only: stored, not locked, not written, nothing counted against it")
+        void referenceOnly() {
+            ReceivingPurchaseOrder order = new ReceivingPurchaseOrder(poId, "PO-9", Status.CONFIRMED, supplier,
+                    warehouse, UUID.randomUUID(), null, false, List.of());
+            when(orders.find(poId)).thenReturn(Optional.of(order));
+            GoodsReceipt receipt = blind(item(5));
+
+            ReceiptView view = service.referencePurchaseOrder(receipt.id(), poId);
+
+            assertThat(view.referencedPurchaseOrderId()).isEqualTo(poId);
+            assertThat(receipt.referencedPurchaseOrderId()).isEqualTo(poId);
+            assertThat(view.purchaseOrderId()).as("it is still against no order").isNull();
+            verify(orders, never()).lock(any());
+            verify(orders, never()).recordProgress(any(), any(), any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("the PO must exist and be the supplier's; a receipt against a PO or a cancelled one takes none")
+        void referenceRules() {
+            GoodsReceipt receipt = blind(item(5));
+            UUID missing = UUID.randomUUID();
+            when(orders.find(missing)).thenReturn(Optional.empty());
+            assertThat(code(() -> service.referencePurchaseOrder(receipt.id(), missing)))
+                    .isEqualTo(ErrorCode.PURCHASE_ORDER_NOT_FOUND);
+
+            ReceivingPurchaseOrder other = new ReceivingPurchaseOrder(poId, "PO-9", Status.CONFIRMED,
+                    UUID.randomUUID(), warehouse, UUID.randomUUID(), null, false, List.of());
+            when(orders.find(poId)).thenReturn(Optional.of(other));
+            assertThat(code(() -> service.referencePurchaseOrder(receipt.id(), poId)))
+                    .isEqualTo(ErrorCode.RECEIPT_REFERENCE_SUPPLIER_MISMATCH);
+            assertThat(receipt.referencedPurchaseOrderId()).isNull();
+
+            po(Status.CONFIRMED, "10", null, false);
+            GoodsReceipt withPo = draft(counted(1, false));
+            assertThat(code(() -> service.referencePurchaseOrder(withPo.id(), poId)))
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+
+            ReceivingPurchaseOrder same = new ReceivingPurchaseOrder(poId, "PO-9", Status.CONFIRMED, supplier,
+                    warehouse, UUID.randomUUID(), null, false, List.of());
+            when(orders.find(poId)).thenReturn(Optional.of(same));
+            service.cancel(receipt.id());
+            assertThat(code(() -> service.referencePurchaseOrder(receipt.id(), poId)))
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
         }
     }
 

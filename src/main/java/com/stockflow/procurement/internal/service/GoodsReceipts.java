@@ -29,16 +29,33 @@ public interface GoodsReceipts {
     }
 
     /**
+     * SCRUM-478, BR-RCP-002: goods that arrived with no PO. {@code supplierId} and {@code reason} (free text) are
+     * required; {@code warehouseId} is where they were received.
+     */
+    record CreateWithoutPo(UUID supplierId, UUID warehouseId, String reason, String deliveryNote, String note) {
+    }
+
+    /**
      * One counted line: so many units of a PO line, from one lot, set down at a RECEIVING location (SCRUM-473 design
      * §3). {@code quantity} is the line's total in base units. {@code packages} are the labelled cartons holding part
      * or all of it, the whole list each time; then {@code unitOfMeasure} is the active packing unit they are in. With
      * no cartons the line is loose and {@code unitOfMeasure} is absent or the item's base unit.
+     *
+     * <p>SCRUM-478: on a receipt without a PO there is no PO line; the line names the item by {@code sku}
+     * ({@code purchaseOrderLineId} is then absent). On a receipt against a PO it is the reverse.</p>
      */
     record NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
-                   String locationCode, String note, String unitOfMeasure, List<NewPackage> packages) {
+                   String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {
 
         public NewLine {
             packages = packages == null ? List.of() : List.copyOf(packages);
+        }
+
+        /** A line of a receipt against a PO. */
+        public NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
+                       String locationCode, String note, String unitOfMeasure, List<NewPackage> packages) {
+            this(purchaseOrderLineId, quantity, lotNumber, expiryDate, locationCode, note, unitOfMeasure, packages,
+                    null);
         }
 
         /** A loose line, counted in the base unit. */
@@ -142,25 +159,43 @@ public interface GoodsReceipts {
      * {@code warnings} are non-blocking business warnings: {@code EXPIRY_NEAR} (docs 03 BR-06) when a line's
      * expiry is within the configured window of the receiving date, empty on a cancelled receipt; and
      * {@link #OVER_TOLERANCE} (BR-RCP-001) on a count not yet posted that goes beyond a tolerance. {@code approval}:
-     * null for a receipt that never needed the manager.
+     * null for a receipt that never needed the manager. {@code withoutPurchaseOrder} (SCRUM-478, BR-RCP-002): no PO
+     * (so {@code purchaseOrderId} and {@code purchaseOrderNumber} are null; {@code supplierId} is the receipt's own and
+     * {@code blindReason} says why); {@code referencedPurchaseOrder*} is a PO attached to it afterwards, a reference only.
      */
     record ReceiptView(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
                        String supplierName, UUID warehouseId, String warehouseCode, String warehouseName,
                        GoodsReceiptStatus status, String deliveryNote, String note, Instant receivedAt,
                        UUID receivedBy, String receivedByName, Instant confirmedAt, UUID confirmedBy,
                        String confirmedByName, Instant closedAt, List<LineView> lines, List<String> warnings,
-                       Approval approval) {
+                       Approval approval, boolean withoutPurchaseOrder, String blindReason,
+                       UUID referencedPurchaseOrderId, String referencedPurchaseOrderNumber) {
     }
 
     record Row(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
                String supplierName, UUID warehouseId, String warehouseCode, String warehouseName,
                GoodsReceiptStatus status, String deliveryNote, Instant receivedAt, UUID receivedBy,
                String receivedByName, Instant confirmedAt, UUID confirmedBy, String confirmedByName,
-               Instant closedAt) {
+               Instant closedAt, boolean withoutPurchaseOrder) {
     }
 
     /** A DRAFT receipt for a CONFIRMED or PARTIALLY_RECEIVED order (BR-01), into the order's warehouse. */
     ReceiptView create(Create command, UUID userId);
+
+    /**
+     * SCRUM-478, BR-RCP-002: a DRAFT receipt for goods that arrived with no PO, from this supplier, with a reason. Its
+     * lines name items by SKU. {@link #confirm} always sends it to the warehouse manager: it is posted only once
+     * {@link #approve approved}, and {@link #reject rejected} it is cancelled.
+     */
+    ReceiptView createWithoutPurchaseOrder(CreateWithoutPo command, UUID userId);
+
+    /**
+     * Owner decision NOPO-ATTACH ("gắn PO bổ sung"): the purchase order a receipt without one belongs to, as a
+     * REFERENCE only - nothing is added to the order's received quantity, there is no tolerance and no effect on
+     * three-way matching. The order must exist and be the receipt's supplier's ({@code RECEIPT_REFERENCE_SUPPLIER_MISMATCH});
+     * the receipt must have no PO of its own and not be cancelled. Replaces an earlier reference.
+     */
+    ReceiptView referencePurchaseOrder(UUID receiptId, UUID purchaseOrderId);
 
     /**
      * Replace the whole count of a DRAFT (BR-03 lot and expiry, RECEIVING locations), and label, recount or void each
@@ -197,6 +232,13 @@ public interface GoodsReceipts {
      */
     ReceiptView rejectExcess(UUID receiptId, UUID approverId, String reason);
 
+    /**
+     * BR-RCP-002: the manager refuses a receipt without a PO waiting in PENDING_APPROVAL; the whole receipt is
+     * cancelled, the reason and the decider kept on it. Same refusals as {@link #approve}; a receipt against a PO is
+     * {@code INVALID_RECEIPT_TRANSITION} (its excess is rejected, not the receipt).
+     */
+    ReceiptView reject(UUID receiptId, UUID approverId, String reason);
+
     /** A DRAFT, or a receipt waiting for approval: neither has counted anything in (BR-05). */
     ReceiptView cancel(UUID receiptId);
 
@@ -214,6 +256,8 @@ public interface GoodsReceipts {
 
     ReceiptView get(UUID receiptId);
 
+    /** {@code withoutPurchaseOrder}: true keeps the receipts without a PO (SCRUM-478), false those against one. */
     PageResponse<Row> list(List<GoodsReceiptStatus> statuses, UUID purchaseOrderId, UUID warehouseId, String search,
-                           Instant receivedFrom, Instant receivedTo, int page, int size, String sort);
+                           Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder, int page, int size,
+                           String sort);
 }

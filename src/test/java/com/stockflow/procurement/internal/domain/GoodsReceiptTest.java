@@ -361,4 +361,122 @@ class GoodsReceiptTest {
         assertThatThrownBy(() -> receipt.cutBackTo(Map.of())).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
     }
+
+    // ------------------------------------------------------------------ SCRUM-478: BR-RCP-002
+
+    private static final UUID SUPPLIER = UUID.randomUUID();
+
+    private static GoodsReceipt blindDraft() {
+        return GoodsReceipt.blindDraft(UUID.randomUUID(), "GR-20261029-0009", SUPPLIER, UUID.randomUUID(), USER,
+                "  gift  ", null, null, NOW);
+    }
+
+    private static ReceiptLine itemLine(int qty) {
+        return ReceiptLine.counted(UUID.randomUUID(), null, UUID.randomUUID(), UUID.randomUUID(), qty, null, null, null,
+                false, null);
+    }
+
+    @Test
+    @DisplayName("a receipt without a PO has the supplier and the reason (trimmed), and no PO; one against a PO has neither")
+    void blindShape() {
+        GoodsReceipt receipt = blindDraft();
+        assertThat(receipt.blind()).isTrue();
+        assertThat(receipt.purchaseOrderId()).isNull();
+        assertThat(receipt.supplierId()).isEqualTo(SUPPLIER);
+        assertThat(receipt.blindReason()).isEqualTo("gift");
+        assertThat(draft().blind()).isFalse();
+        assertThat(draft().supplierId()).isNull();
+
+        for (String reason : new String[]{null, "", "  "}) {
+            assertThatThrownBy(() -> GoodsReceipt.blindDraft(UUID.randomUUID(), "GR-1", SUPPLIER, UUID.randomUUID(),
+                    USER, reason, null, null, NOW)).extracting(GoodsReceiptTest::code)
+                    .isEqualTo(ErrorCode.BLIND_RECEIPT_REASON_REQUIRED);
+        }
+        assertThatThrownBy(() -> GoodsReceipt.blindDraft(UUID.randomUUID(), "GR-1", null, UUID.randomUUID(), USER,
+                "gift", null, null, NOW)).isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    @DisplayName("the lines of a receipt without a PO are told apart by item and lot, not by PO line")
+    void blindLinesAreDistinctByItem() {
+        GoodsReceipt receipt = blindDraft();
+        ReceiptLine a = itemLine(2);
+        ReceiptLine same = new ReceiptLine(UUID.randomUUID(), null, a.inventoryItemId(), a.locationId(), 1, null, null,
+                null, false, null, null, null, null, List.of());
+        assertThatThrownBy(() -> receipt.replaceLines(List.of(a, same))).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
+        receipt.replaceLines(List.of(a, itemLine(3)));
+        assertThat(receipt.lines()).hasSize(2);
+        assertThat(receipt.quantityOf(UUID.randomUUID())).isZero();
+    }
+
+    @Test
+    @DisplayName("BR-RCP-002: a receipt without a PO is never confirmed directly; only an approved one is posted")
+    void blindNeverConfirmsDirectly() {
+        GoodsReceipt receipt = blindDraft();
+        receipt.replaceLines(List.of(itemLine(5)));
+        assertThatThrownBy(() -> receipt.confirm(USER, NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.DRAFT);
+
+        receipt.requestApproval(CLERK, NOW);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
+        receipt.approve(MANAGER, "checked", NOW.plusSeconds(60), false);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+        assertThat(receipt.confirmedBy()).isEqualTo(MANAGER);
+        assertThat(receipt.approval()).get().extracting(ReceiptApproval::decision)
+                .isEqualTo(ReceiptApproval.Decision.APPROVED);
+    }
+
+    @Test
+    @DisplayName("rejecting cancels the whole receipt with the decision; four eyes and the reason apply")
+    void blindReject() {
+        GoodsReceipt receipt = blindDraft();
+        receipt.replaceLines(List.of(itemLine(5)));
+        receipt.requestApproval(CLERK, NOW);
+        assertThatThrownBy(() -> receipt.reject(USER, "no", NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+        assertThatThrownBy(() -> receipt.reject(CLERK, "no", NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
+        assertThatThrownBy(() -> receipt.reject(MANAGER, " ", NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
+        assertThatThrownBy(() -> receipt.rejectExcess(MANAGER, "no", NOW, false)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        assertThatThrownBy(() -> receipt.cutBackTo(Map.of())).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+
+        receipt.reject(MANAGER, " not ours ", NOW);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+        assertThat(receipt.confirmedAt()).isNull();
+        assertThat(receipt.approval()).get().satisfies(a -> {
+            assertThat(a.decision()).isEqualTo(ReceiptApproval.Decision.REJECTED);
+            assertThat(a.reason()).isEqualTo("not ours");
+            assertThat(a.decidedBy()).isEqualTo(MANAGER);
+        });
+
+        GoodsReceipt withPo = waiting(line(5, false));
+        assertThatThrownBy(() -> withPo.reject(MANAGER, "no", NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("a PO is referenced on a receipt without one - the supplier's, not on a cancelled one, replaceable")
+    void referencePurchaseOrder() {
+        GoodsReceipt receipt = blindDraft();
+        UUID po = UUID.randomUUID();
+        receipt.referencePurchaseOrder(po, SUPPLIER);
+        assertThat(receipt.referencedPurchaseOrderId()).isEqualTo(po);
+        UUID later = UUID.randomUUID();
+        receipt.referencePurchaseOrder(later, SUPPLIER);
+        assertThat(receipt.referencedPurchaseOrderId()).isEqualTo(later);
+        assertThat(receipt.purchaseOrderId()).as("never the receipt's own PO").isNull();
+
+        assertThatThrownBy(() -> receipt.referencePurchaseOrder(po, UUID.randomUUID()))
+                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.RECEIPT_REFERENCE_SUPPLIER_MISMATCH);
+        assertThatThrownBy(() -> draft().referencePurchaseOrder(po, SUPPLIER)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        receipt.cancel();
+        assertThatThrownBy(() -> receipt.referencePurchaseOrder(po, SUPPLIER)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+    }
 }

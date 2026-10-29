@@ -234,6 +234,35 @@ SELECT pg_temp.expect_fail('R34 item without weight/dimensions received', $q$
     UPDATE inventory.inventory_items SET weight_kg = NULL WHERE sku = 'SOFA-3S-GREY';
     UPDATE procurement.goods_receipt_lines SET note = 'recheck' WHERE id = md5('qa:grl:1')::uuid $q$);
 
+\echo '--- receipt without a PO (BR-RCP-002, SCRUM-478)'
+SELECT pg_temp.expect_fail('R34a a receipt without a PO and without a supplier', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, blind_reason)
+    VALUES (gen_random_uuid(), 'GR-QA-B1', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid, 'gift') $q$);
+SELECT pg_temp.expect_fail('R34b a receipt without a PO and without a reason', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id)
+    VALUES (gen_random_uuid(), 'GR-QA-B2', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid,
+            md5('qa:supplier:OTHER')::uuid) $q$);
+SELECT pg_temp.expect_fail('R34c a receipt without a PO posted without the manager''s approval', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id,
+                                            blind_reason)
+    VALUES (md5('qa:gr:b3')::uuid, 'GR-QA-B3', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid,
+            md5('qa:supplier:OTHER')::uuid, 'gift');
+    UPDATE procurement.goods_receipts SET status = 'IN_PUTAWAY', confirmed_by = md5('demo:user:approver')::uuid,
+        confirmed_at = NOW() WHERE id = md5('qa:gr:b3')::uuid $q$);
+SELECT pg_temp.expect_fail('R34d a PO line on a line of a receipt without a PO', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id,
+                                            blind_reason)
+    VALUES (md5('qa:gr:b4')::uuid, 'GR-QA-B4', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid,
+            md5('qa:supplier:OTHER')::uuid, 'gift');
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
+    VALUES (gen_random_uuid(), md5('qa:gr:b4')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+            md5('demo:loc:HCM-RCV01')::uuid, 1) $q$);
+SELECT pg_temp.expect_fail('R34e a reference to a PO of another supplier', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id,
+                                            blind_reason, referenced_po_id)
+    VALUES (gen_random_uuid(), 'GR-QA-B5', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid,
+            md5('qa:supplier:OTHER')::uuid, 'gift', md5('demo:po:1')::uuid) $q$);
+
 \echo '--- invoicing (docs 04)'
 SELECT pg_temp.expect_fail('R35 invoice for the PO from another supplier', $q$
     INSERT INTO procurement.supplier_invoices (id, invoice_number, supplier_id, po_id, invoice_date)

@@ -215,6 +215,10 @@ public enum ErrorCode {
      * SCRUM-477, four eyes (BR-RCP-001): whoever counted a receipt, or asked for its approval, may not decide it.
      */
     RECEIPT_SELF_APPROVAL("A goods receipt cannot be decided by the person who counted it or asked for its approval", 409),
+    /** SCRUM-478, BR-RCP-002: a receipt without a purchase order needs a reason. */
+    BLIND_RECEIPT_REASON_REQUIRED("A receipt without a purchase order needs a reason", 400),
+    /** SCRUM-478, owner decision NOPO-ATTACH: the purchase order attached to a receipt without one is the supplier's. */
+    RECEIPT_REFERENCE_SUPPLIER_MISMATCH("The purchase order is not the receipt's supplier's", 409),
     /** SCRUM-477: approving a receipt, or rejecting its excess, needs a reason. */
     RECEIPT_APPROVAL_REASON_REQUIRED("Deciding on a goods receipt needs a reason", 400),
     /**

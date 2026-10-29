@@ -5,7 +5,8 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * The warehouse manager's exception approval of a receipt (docs 03 step 5, BR-RCP-001): who asked for it and when, and,
+ * The warehouse manager's exception approval of a receipt (docs 03 step 5, BR-RCP-001; a receipt without a purchase
+ * order, BR-RCP-002): who asked for it and when, and,
  * once decided, what was decided, by whom, when and why. A value of {@link GoodsReceipt}; a receipt that never needed
  * the manager has none.
  *
@@ -17,8 +18,9 @@ public record ReceiptApproval(Instant requestedAt, UUID requestedBy, Decision de
     /**
      * {@code APPROVED}: the manager accepts the whole count, beyond the tolerance. {@code EXCESS_REJECTED}: the
      * manager refuses the part beyond the tolerance; the lines are cut back to it and the rest is posted.
+     * {@code REJECTED}: the manager refuses a receipt without a purchase order (BR-RCP-002); it is cancelled.
      */
-    public enum Decision { APPROVED, EXCESS_REJECTED }
+    public enum Decision { APPROVED, EXCESS_REJECTED, REJECTED }
 
     public ReceiptApproval {
         Objects.requireNonNull(requestedAt, "requestedAt");

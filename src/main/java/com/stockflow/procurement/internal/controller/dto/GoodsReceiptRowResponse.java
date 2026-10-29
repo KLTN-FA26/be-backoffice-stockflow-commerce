@@ -8,5 +8,6 @@ public record GoodsReceiptRowResponse(UUID id, String number, UUID purchaseOrder
                                       UUID supplierId, String supplierName, UUID warehouseId, String warehouseCode,
                                       String warehouseName, String status, String deliveryNote, Instant receivedAt,
                                       UUID receivedBy, String receivedByName, Instant confirmedAt, UUID confirmedBy,
-                                      String confirmedByName, Instant closedAt) {
+                                      String confirmedByName, Instant closedAt,
+                                      boolean withoutPurchaseOrder) {
 }
