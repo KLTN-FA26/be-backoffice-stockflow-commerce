@@ -1,7 +1,8 @@
 # ADR-0010: Trợ lý back-office là một agent gọi tool trên API của các module
 
 Trạng thái: đề xuất (2026-10-24), chờ team chấp nhận; phase 1 và 2 đã xây dựng trên nhánh
-`feature/ai-assistant` (2026-10-25). Thiết kế và lộ trình: [`docs/assistant-design.md`](../assistant-design.md).
+`feature/ai-assistant` (2026-10-25); sửa sau vòng rà soát 28–29/10 (tài liệu thiết kế §16). Thiết kế và lộ trình:
+[`docs/assistant-design.md`](../assistant-design.md).
 
 ## Bối cảnh
 
@@ -14,7 +15,8 @@ nghiệp thật sự duy trì được.
 
 - **Dữ kiện là các dòng dữ liệu, thuộc sáu module, và thay đổi từng phút.** Tồn dùng được, giữ chỗ,
   hold, biến động lô và trạng thái đơn nằm trong `inventory`, `fulfillment`, `order`, `procurement`,
-  `reporting` và `catalog`. Một bản sao của chúng sai ngay khi vừa được chụp.
+  `reporting` và `catalog` (lệnh sản xuất in, thêm ngày 28/10, nằm trong `production`). Một bản sao của chúng sai
+  ngay khi vừa được chụp.
 - **Phần văn bản thì nhỏ.** `docs/business-design/` khoảng 200 KB, gồm mười một file. Danh mục quy định
   (`05-business-rules.md`, 23 KB, 83 mã quy định) viết bằng tiếng Anh; các luồng (`04c-all-flows.md`)
   viết bằng tiếng Việt; nhân viên hỏi bằng tiếng Việt.
@@ -51,8 +53,8 @@ nghiệp thật sự duy trì được.
 
 Module mới `com.stockflow.assistant`, schema `assistant`. Nó khai `allowedDependencies` tới các named
 interface `api` mà nó đọc (`inventory`, `order`, `fulfillment`, `procurement`, `reporting`,
-`catalog`). Không module nào phụ thuộc vào nó. Nếu nó bị tắt hoặc nhà cung cấp model bị sập, không luồng
-nào khác nhận ra.
+`catalog`, và từ 28/10 `production`, để đọc lệnh sản xuất qua `ProductionOrderQueries`, api đầu tiên của module
+đó). Không module nào phụ thuộc vào nó. Nếu nó bị tắt hoặc nhà cung cấp model bị sập, không luồng nào khác nhận ra.
 
 ### Mỗi tool được phân quyền đúng như màn hình hiển thị cùng dữ liệu đó
 
@@ -79,6 +81,18 @@ resource thay vì tên hằng, vì tool dùng mã của module khác dưới tê
 
 Một lời gọi tool bị từ chối không trở thành trang lỗi. Tool trả về kết quả "không có quyền", và model nói
 cho người dùng biết họ thiếu quyền nào.
+
+Từ 28/10, người dùng và model còn được báo trước. Những gì `run()` kiểm thêm ngoài annotation được khai báo ngay
+cạnh chỗ kiểm (quyền bắt buộc thêm, quyền "một trong các", và người bị giới hạn theo kho nhận gì). Từ annotation và
+các khai báo đó, `ToolAvailability` tính ra tool nào người dùng được dùng. Kết quả đi tới hai nơi: endpoint
+`GET /api/v1/assistant/capabilities` cho panel, và ngữ cảnh của mỗi câu hỏi cho model; system prompt kèm danh sách
+quyền của từng tool. Nhờ vậy model thường nói được quyền còn thiếu mà không phải gọi tool. Việc này chỉ là báo cáo:
+mỗi tool vẫn tự kiểm khi chạy, và model vẫn nhận định nghĩa của mọi tool, để phần được cache giống nhau cho mọi người.
+Chỉ gửi những tool được dùng sẽ là một thay đổi của quyết định này (tài liệu thiết kế, AQ-11).
+
+Có một chỗ tool phải hẹp hơn màn hình nó soi chiếu: một tool tìm đơn bán theo số để đọc dữ liệu của module khác (dòng
+nhặt, lệnh sản xuất) không được cho biết trạng thái đơn, hay đơn có tồn tại không, với người không có
+`sales-orders:READ`. Rà soát 28/10 tìm thấy đúng lỗi đó ở `getOrderPicking` và đã sửa.
 
 ### Model chỉ đọc; không bao giờ ghi
 
@@ -117,16 +131,25 @@ Model là Claude của Anthropic, gọi qua SDK Java chính thức (`com.anthrop
 model, qua một interface mà test thay bằng một bản giả chạy theo kịch bản. Định nghĩa tool và system
 prompt được gửi đầu tiên và được đánh dấu để dùng prompt caching.
 
+Từ 28/10 có adapter thứ hai sau cùng port, Gemini của Google (`stockflow.assistant.provider=gemini`), để test và chạy
+bộ câu hỏi chuẩn bằng key miễn phí; Claude vẫn là mặc định. Vòng lặp, tool và lịch sử lưu trữ không phụ thuộc vào
+adapter. Key của mỗi nhà cung cấp chỉ được gửi tới chính nhà cung cấp đó: không có key chung thì lấy biến của
+provider đã chọn, và một key có dạng của nhà cung cấp kia thì không được dùng.
+
 Module tắt trừ khi `stockflow.assistant.enabled=true`, và phải khởi động được khi không có API key. Ứng
 dụng không bao giờ được từ chối khởi động chỉ vì một nhà cung cấp tùy chọn chưa được cấu hình.
 
 ### Mọi thứ đều được ghi lại, và có giới hạn
 
 Mọi hội thoại, tin nhắn và lời gọi tool đều được lưu: tên tool, tham số, thời gian chạy, kết quả và
-lượng token đã dùng. Việc gửi tin nhắn bị giới hạn tần suất theo người dùng (`@RateLimit`). Có một trần
-số tin nhắn mỗi ngày cho mỗi người, cấu hình được, và vòng lặp có số vòng gọi tool tối đa cho mỗi tin
-nhắn. Kết quả tool chỉ mang những trường mà câu trả lời cần. Số điện thoại, địa chỉ và e-mail của khách
-hàng không bao giờ được trả cho model.
+lượng token đã dùng. Một câu hỏi lỗi cũng để lại một lượt đóng mang thông điệp lỗi, để transcript nói được chuyện
+gì đã xảy ra. Việc gửi tin nhắn bị giới hạn tần suất theo người dùng (`@RateLimit`), một bucket chung cho endpoint
+đồng bộ và endpoint streaming. Có một trần số tin nhắn mỗi ngày cho mỗi người, cấu hình được (câu hỏi mà nhà cung
+cấp lỗi ngay ở lần gọi đầu không bị tính), và vòng lặp có số vòng gọi tool tối đa cho mỗi tin nhắn; lần gọi cuối
+không cho gọi tool, để model trả lời từ những gì đã tra. Kết quả tool chỉ mang những trường mà câu trả lời cần. Các
+trường có cấu trúc không bao giờ chứa số điện thoại, địa chỉ hay e-mail của khách hàng. Chữ tự do do người gõ (ghi
+chú, lý do) thì được che số điện thoại, e-mail và mã số thuế theo kiểu best-effort; tên và địa chỉ gõ trong đó không
+bị che, và có gửi chúng hay không là quyết định của doanh nghiệp (tài liệu thiết kế, AQ-01).
 
 ### Chất lượng được đo, không được khẳng định suông
 
@@ -135,7 +158,9 @@ các tool, dữ kiện, trích dẫn và lời từ chối kỳ vọng. Với mo
 tính hệ thống `assistant.eval=true`), không nằm trong `mvn test`, vì nó tốn tiền và không tất định. `mvn test` bao phủ
 những gì tất định: quyền của tool, vòng lặp với model theo kịch bản, sự cô lập scope, và chính bộ câu hỏi
 chuẩn chạy với một model giả (oracle) gọi đúng tool kỳ vọng, để kiểm dữ kiện và việc không lộ dữ liệu ở
-các lớp bên dưới model.
+các lớp bên dưới model. Từ 28/10 bản chạy với model thật chạy được theo từng phần trên một hạn mức miễn phí: chọn ca,
+ghi kết quả từng ca để chạy tiếp hôm sau, và ca không chạy được vì hết hạn mức hay lỗi nhà cung cấp không vào chỉ số
+nào, để một ngày hết hạn mức không bị báo thành chất lượng kém.
 
 ## Hệ quả
 
@@ -154,12 +179,15 @@ các lớp bên dưới model.
   sống lâu hơn quyền của người hỏi. Tài liệu thiết kế có phép tính.
 - Một trợ lý đọc dữ liệu thật có thể đưa ra lời khuyên sai mà không lỗi kỹ thuật nào: đề xuất nhập hàng
   từng bỏ qua hàng đã đặt và lead time cho tới khi một vòng rà soát nghiệp vụ độc lập tìm ra (tài liệu thiết
-  kế §15). Mỗi tool mới cần một lần rà soát như vậy, không chỉ test phân quyền.
+  kế §15); vòng sau tìm thêm giờ UTC bị đọc như giờ Việt Nam, SKU gõ sai bị báo là hết hàng, và PO bị nhà cung cấp từ
+  chối vẫn tính là đang về (§16). Mỗi tool mới cần một lần rà soát như vậy, không chỉ test phân quyền.
 - Câu trả lời không tất định. Cách giảm thiểu: con số chỉ lấy từ kết quả tool; mọi câu trả lời cho thấy
   nó đã dùng tool nào và trích dẫn gì; bộ câu hỏi chuẩn được chạy lại mỗi khi đổi prompt, tool hoặc
   model.
 - Một nhà cung cấp bên ngoài trở thành phụ thuộc lúc chạy của một module lá. Khi nhà cung cấp lỗi, trợ
-  lý trả 503 `ASSISTANT_UNAVAILABLE` và không gì khác bị ảnh hưởng.
+  lý trả 503 `ASSISTANT_UNAVAILABLE` (thử lại được), 429 `ASSISTANT_QUOTA_EXHAUSTED` khi hạn mức đã hết, hoặc 503
+  `ASSISTANT_MISCONFIGURED` khi nhà cung cấp từ chối key hay tên model; hai mã sau báo ngay, không chờ, vì thử lại
+  không đổi được gì. Không gì khác bị ảnh hưởng.
 - Dữ liệu rời khỏi hệ thống: kết quả tool của người đang hỏi được gửi tới nhà cung cấp model. Chủ doanh
   nghiệp phải chấp nhận điều đó trước khi bật tính năng ngoài môi trường phát triển (tài liệu thiết kế,
   phần câu hỏi mở).
