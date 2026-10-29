@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.context.i18n.LocaleContextHolder;
+import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.security.concurrent.DelegatingSecurityContextExecutorService;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -58,7 +59,14 @@ public class AssistantStreams {
      */
     public SseEmitter ask(UUID conversationId, String text, CurrentUser user,
                           java.util.function.Function<AssistantService.Answer, Object> toResponse) {
-        SseEmitter emitter = new SseEmitter(properties.answerLease().toMillis());
+        SseEmitter emitter = new SseEmitter(properties.answerLease().toMillis()) {
+            // Any nginx on the way must pass each event on as it is written; deploy/nginx turns buffering off too.
+            @Override
+            protected void extendResponse(ServerHttpResponse outputMessage) {
+                super.extendResponse(outputMessage);
+                outputMessage.getHeaders().set("X-Accel-Buffering", "no");
+            }
+        };
         Locale locale = LocaleContextHolder.getLocale();
         Map<String, String> mdc = MDC.getCopyOfContextMap();
         executor.execute(() -> {

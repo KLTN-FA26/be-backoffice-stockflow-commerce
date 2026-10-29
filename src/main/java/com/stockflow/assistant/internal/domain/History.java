@@ -15,6 +15,10 @@ import java.util.function.Function;
  * a permission, would get them back by asking "list what you found earlier". The answer text was shown to the user
  * already; the rows behind it are fetched again, under today's permissions, if the new question needs them.</p>
  *
+ * <p><b>The answer as the user saw it, not as the model wrote it.</b> The text goes back through
+ * {@link AnswerText#plain}, as the panel showed it: an image or a link that some tool result talked the model into
+ * writing is not handed back to it as its own earlier answer, which would only teach it to write one again.</p>
+ *
  * <p>The stored history is untouched: the transcript, the tool-call audit and the retention job all read every
  * turn.</p>
  */
@@ -59,11 +63,15 @@ public final class History {
         return List.copyOf(sent);
     }
 
-    /** The last text the model wrote for the exchange, cut to {@value #EARLIER_ANSWER_LENGTH} characters. */
+    /**
+     * The last text the exchange shows, made plain as the panel showed it, cut to {@value #EARLIER_ANSWER_LENGTH}
+     * characters. A closing turn counts: its text is what the user read when the answer stopped or failed.
+     */
     private static String answerOf(List<Turn> exchange) {
         for (int i = exchange.size() - 1; i > 0; i--) {
-            if (exchange.get(i) instanceof Turn.ModelTurn model && model.text() != null && !model.text().isBlank()) {
-                String text = model.text().strip();
+            String text = exchange.get(i) instanceof Turn.ModelTurn model ? AnswerText.plain(model.text()) : null;
+            if (text != null && !text.isBlank()) {
+                text = text.strip();
                 return text.length() > EARLIER_ANSWER_LENGTH ? text.substring(0, EARLIER_ANSWER_LENGTH) + " […]" : text;
             }
         }

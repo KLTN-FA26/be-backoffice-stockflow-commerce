@@ -1,8 +1,11 @@
 package com.stockflow.assistant.internal.service;
 
 import com.anthropic.client.AnthropicClient;
+import com.anthropic.core.DefaultSleeper;
 import com.anthropic.core.JsonValue;
 import com.anthropic.core.ObjectMappers;
+import com.anthropic.core.Sleeper;
+import com.anthropic.core.http.Headers;
 import com.anthropic.errors.AnthropicException;
 import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.models.messages.CacheControlEphemeral;
@@ -15,6 +18,7 @@ import com.anthropic.models.messages.OutputConfig;
 import com.anthropic.models.messages.TextBlock;
 import com.anthropic.models.messages.TextBlockParam;
 import com.anthropic.models.messages.Tool;
+import com.anthropic.models.messages.ToolChoiceNone;
 import com.anthropic.models.messages.ToolResultBlockParam;
 import com.anthropic.models.messages.ToolUseBlock;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -29,9 +33,13 @@ import com.stockflow.common.error.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
@@ -50,9 +58,20 @@ import java.util.stream.Collectors;
  * block carries a cache breakpoint, and the request carries the automatic one so the growing history is reused
  * across the rounds of one answer.</p>
  *
+ * <p><b>A failure says what to do next.</b> The SDK itself retries 408, 409, 429, 5xx and connection failures
+ * {@value AssistantProperties#MAX_RETRIES} times. What reaches the adapter after that: 400 to 404 — the request, the
+ * key, the account's credit, what the key may do, the model name — is {@code ASSISTANT_MISCONFIGURED}, logged as an
+ * error, because waiting changes none of it; a 429 that asks to wait more than a minute is a spent quota,
+ * {@code ASSISTANT_QUOTA_EXHAUSTED}, and so is a wait that long between two attempts ({@link BoundedSleeper});
+ * anything else, a timeout included, is {@code ASSISTANT_UNAVAILABLE}, worth asking again. The provider's own words
+ * stay in the log and never reach the client.</p>
+ *
+ * <p><b>An answer has text.</b> An {@code end_turn} holding nothing but thinking did not answer, so it is
+ * {@code OTHER}, as in {@link GeminiLanguageModel}: {@code END_TURN} always comes with text.</p>
+ *
  * <p>Model behaviour this relies on, checked against the provider's documentation in October 2026: thinking is
  * always on for the default model and must not be configured; forced tool choice is rejected, so the default
- * {@code auto} is used; {@code temperature} is not sent.</p>
+ * {@code auto} is used, and {@code none} on an answer's last call; {@code temperature} is not sent.</p>
  */
 class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
 
@@ -62,6 +81,18 @@ class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
     private static final JsonMapper SDK_JSON = ObjectMappers.jsonMapper();
 
     private static final String FALLBACK_BETA = "server-side-fallback-2026-07-01";
+
+    /**
+     * Refusals no retry changes: the request (400), the key (401), the account's credit (402, {@code billing_error}),
+     * what the key may do (403) and the model name (404).
+     */
+    private static final Set<Integer> MISCONFIGURATION = Set.of(400, 401, 402, 403, 404);
+
+    /**
+     * Longer than this, a wait the API asks for is a spent quota and not a burst: the per-minute limits refill within
+     * the minute, and a user who asked again sooner would only meet the same refusal.
+     */
+    static final Duration QUOTA_WAIT = Duration.ofMinutes(1);
 
     private final AnthropicClient client;
     private final AssistantProperties properties;
@@ -78,6 +109,109 @@ class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
 
     @Override
     public Reply next(Request request) {
+        Message response;
+        try {
+            response = client.messages().create(params(request));
+        } catch (AnthropicServiceException rejected) {
+            throw failure(rejected);
+        } catch (AnthropicException unreachable) {
+            // A connection failure or a timeout, after the SDK's own retries.
+            log.warn("The model provider could not be reached: {}", unreachable.getMessage());
+            throw new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "The model provider could not be reached",
+                    unreachable);
+        }
+        return reply(response);
+    }
+
+    /** What a refusal the SDK gave up on means for the user (class javadoc); logged here with the provider's words. */
+    static BusinessException failure(AnthropicServiceException rejected) {
+        int status = rejected.statusCode();
+        if (MISCONFIGURATION.contains(status)) {
+            log.error("The model provider refused the request with {}: {}", status, rejected.getMessage());
+            return new BusinessException(ErrorCode.ASSISTANT_MISCONFIGURED, "The model provider answered " + status,
+                    rejected);
+        }
+        if (status == 429 && retryAfter(rejected.headers()).filter(wait -> wait.compareTo(QUOTA_WAIT) > 0)
+                .isPresent()) {
+            log.warn("The model provider's quota is used up: {}", rejected.getMessage());
+            return new BusinessException(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED,
+                    "The model provider's quota is used up; the assistant answers again once it is renewed", rejected);
+        }
+        log.warn("The model provider answered {}: {}", status, rejected.getMessage());
+        return new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "The model provider answered " + status,
+                rejected);
+    }
+
+    /** The wait a refusal asks for, read as the SDK reads it: {@code retry-after-ms}, else {@code retry-after}. */
+    static Optional<Duration> retryAfter(Headers headers) {
+        try {
+            List<String> millis = headers.values("retry-after-ms");
+            if (!millis.isEmpty()) {
+                return Optional.of(Duration.ofMillis((long) Double.parseDouble(millis.getFirst())));
+            }
+            List<String> seconds = headers.values("retry-after");
+            if (!seconds.isEmpty()) {
+                return Optional.of(Duration.ofMillis((long) (Double.parseDouble(seconds.getFirst()) * 1000)));
+            }
+        } catch (NumberFormatException httpDate) {
+            // An HTTP date instead of seconds, which the API does not send: read as no wait asked, so still retryable.
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * The SDK's wait between two attempts, refused when it is longer than {@link #QUOTA_WAIT}.
+     *
+     * <p>This SDK version sleeps whatever wait a refusal asks for, with no upper bound: a quota spent until tomorrow
+     * would hold the request thread and the conversation for hours, twice, before the refusal even reached the
+     * adapter. The API asks for a wait on its 429s, so a wait that long is a spent quota, and it fails at once as
+     * {@code ASSISTANT_QUOTA_EXHAUSTED}; the exception passes through the SDK unchanged.</p>
+     */
+    static final class BoundedSleeper implements Sleeper {
+
+        private final Sleeper delegate;
+
+        BoundedSleeper() {
+            this(new DefaultSleeper());
+        }
+
+        BoundedSleeper(Sleeper delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void sleep(Duration duration) {
+            if (duration.compareTo(QUOTA_WAIT) > 0) {
+                throw quotaSpent(duration);
+            }
+            delegate.sleep(duration);
+        }
+
+        @Override
+        public CompletableFuture<Void> sleepAsync(Duration duration) {
+            return duration.compareTo(QUOTA_WAIT) > 0 ? CompletableFuture.failedFuture(quotaSpent(duration))
+                    : delegate.sleepAsync(duration);
+        }
+
+        @Override
+        public void close() {
+            delegate.close();
+        }
+
+        private static BusinessException quotaSpent(Duration asked) {
+            log.warn("The model provider asked to wait {} s before trying again: its quota is used up",
+                    asked.toSeconds());
+            return new BusinessException(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED,
+                    "The model provider's quota is used up; the assistant answers again once it is renewed");
+        }
+    }
+
+    /**
+     * The request as sent. On the answer's last call the tools stay declared, because the history holds
+     * {@code tool_use} blocks, but the model may not call one: {@code tool_choice: none}, which thinking accepts —
+     * only a forced choice is rejected.
+     */
+    MessageCreateParams params(Request request) {
         MessageCreateParams.Builder params = MessageCreateParams.builder()
                 .model(properties.model())
                 .maxTokens(properties.maxOutputTokens())
@@ -87,32 +221,16 @@ class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
                         .build()))
                 .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.of(properties.effort())).build())
                 .cacheControl(CacheControlEphemeral.builder().build())
-                .messages(messages(request.history()));
+                .messages(messages(request.history(), request.note()));
         request.tools().forEach(tool -> params.addTool(tool(tool)));
+        if (!request.toolsAllowed()) {
+            params.toolChoice(ToolChoiceNone.builder().build());
+        }
         if (properties.refusalFallback()) {
             params.putAdditionalHeader("anthropic-beta", FALLBACK_BETA)
                     .putAdditionalBodyProperty("fallbacks", JsonValue.from("default"));
         }
-        Message response;
-        try {
-            response = client.messages().create(params.build());
-        } catch (AnthropicServiceException rejected) {
-            // A 4xx other than 429 is a bug on our side (a malformed request); log it loudly. Either way the caller
-            // gets a retryable 503 and the provider's message never reaches the client.
-            if (rejected.statusCode() >= 400 && rejected.statusCode() < 500 && rejected.statusCode() != 429) {
-                log.error("The model provider rejected the request with {}: {}", rejected.statusCode(),
-                        rejected.getMessage());
-            } else {
-                log.warn("The model provider answered {}: {}", rejected.statusCode(), rejected.getMessage());
-            }
-            throw new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "The model provider answered "
-                    + rejected.statusCode(), rejected);
-        } catch (AnthropicException unreachable) {
-            log.warn("The model provider could not be reached: {}", unreachable.getMessage());
-            throw new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "The model provider could not be reached",
-                    unreachable);
-        }
-        return reply(response);
+        return params.build();
     }
 
     /** An assistant turn holding only {@code text}, in the provider's format, so it replays like any other. */
@@ -143,7 +261,7 @@ class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
                 response.usage().cacheReadInputTokens().orElse(0L),
                 response.usage().cacheCreationInputTokens().orElse(0L));
         StopReason stop = response.stopReason().map(reason -> switch (reason.asString()) {
-            case "end_turn" -> StopReason.END_TURN;
+            case "end_turn" -> text == null ? StopReason.OTHER : StopReason.END_TURN;
             case "tool_use" -> StopReason.TOOL_USE;
             case "max_tokens" -> StopReason.MAX_TOKENS;
             case "refusal" -> StopReason.REFUSAL;
@@ -161,6 +279,14 @@ class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
     }
 
     static List<MessageParam> messages(List<Turn> history) {
+        return messages(history, null);
+    }
+
+    /**
+     * @param note a line from the application, sent as the last block of the last user message, after any tool
+     *             results (which must come first); null for none
+     */
+    static List<MessageParam> messages(List<Turn> history, String note) {
         List<MessageParam> messages = new ArrayList<>();
         List<ContentBlockParam> user = new ArrayList<>();
         for (Turn turn : history) {
@@ -182,6 +308,9 @@ class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
                     messages.add(read(model.providerContent()));
                 }
             }
+        }
+        if (note != null) {
+            user.add(text(note));
         }
         flush(messages, user);
         return messages;

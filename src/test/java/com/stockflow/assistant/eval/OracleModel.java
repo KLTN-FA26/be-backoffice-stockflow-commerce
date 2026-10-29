@@ -12,12 +12,15 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * A scripted stand-in for the model, for the harness: it calls exactly the tool a case names, then answers with the
- * tool results verbatim.
+ * A scripted stand-in for the model, for the harness: for each question of a case it makes exactly the calls the case
+ * names, one per step, then answers with every tool result of that question verbatim.
  *
  * <p>An answer that is nothing but the tool output makes the golden set test the layers under the model: if a fact is
  * missing, the fixture, the fact query or the tool is wrong; if a forbidden value appears, the tool showed a persona
  * data its screen would hide. Neither depends on what a real model would have said.</p>
+ *
+ * <p>Which question is being answered is read from the history the loop sends: the questions in it, this one
+ * included. {@link GoldenSet} keeps a case within the ten earlier questions the loop sends, so the count is exact.</p>
  */
 final class OracleModel {
 
@@ -32,17 +35,31 @@ final class OracleModel {
     }
 
     LanguageModel.Reply next(LanguageModel.Request request) throws JsonProcessingException {
-        Turn last = request.history().getLast();
-        if (last instanceof Turn.ToolResults results) {
-            return answer(results.results().stream().map(ToolResult::content).collect(Collectors.joining("\n")));
+        List<Turn> history = request.history();
+        int questions = 0;
+        int asked = 0;
+        for (int i = 0; i < history.size(); i++) {
+            if (history.get(i) instanceof Turn.Question) {
+                questions++;
+                asked = i;
+            }
         }
-        if (current.oracle() == null) {
+        List<Turn.ToolResults> results = history.subList(asked + 1, history.size()).stream()
+                .filter(Turn.ToolResults.class::isInstance).map(Turn.ToolResults.class::cast).toList();
+        List<GoldenCase.Oracle> steps = questions >= 1 && questions <= current.earlier().size()
+                ? current.earlier().get(questions - 1).oracle() : current.oracle();
+        if (results.size() < steps.size()) {
+            GoldenCase.Oracle step = steps.get(results.size());
+            return new LanguageModel.Reply(new Turn.ModelTurn("{\"oracle\":\"tool_use\"}", null,
+                    List.of(new ToolCall("toolu_" + UUID.randomUUID(), step.tool(),
+                            json.writeValueAsString(step.arguments())))),
+                    LanguageModel.StopReason.TOOL_USE, new LanguageModel.Usage(1, 1, 0, 0), "oracle");
+        }
+        if (results.isEmpty()) {
             return answer(NO_TOOL_ANSWER);
         }
-        return new LanguageModel.Reply(new Turn.ModelTurn("{\"oracle\":\"tool_use\"}", null,
-                List.of(new ToolCall("toolu_" + UUID.randomUUID(), current.oracle().tool(),
-                        json.writeValueAsString(current.oracle().arguments())))),
-                LanguageModel.StopReason.TOOL_USE, new LanguageModel.Usage(1, 1, 0, 0), "oracle");
+        return answer(results.stream().flatMap(turn -> turn.results().stream()).map(ToolResult::content)
+                .collect(Collectors.joining("\n")));
     }
 
     private static LanguageModel.Reply answer(String text) {

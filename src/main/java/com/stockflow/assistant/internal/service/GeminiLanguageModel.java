@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.ToolCall;
@@ -30,6 +31,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * {@link LanguageModel} on Google's Gemini API ({@code generateContent}, REST), the second adapter behind the port
@@ -50,10 +52,19 @@ import java.util.UUID;
  * types and no {@code additionalProperties}. There is no strict mode, so arguments may not match the schema;
  * {@link ToolArguments} validates every one in Java either way.</p>
  *
- * <p><b>Retries.</b> A 429 (the free tier's per-minute quota), a 5xx, or a timeout is tried again
- * {@value AssistantProperties#MAX_RETRIES} times, waiting what the API's {@code RetryInfo} asks, at most
- * {@value #MAX_BACKOFF_SECONDS} seconds. Other 4xx are a bug on our side and fail at once. The waits are not part of
+ * <p><b>A failure says what to do next.</b> A 429 of the free tier's per-minute quota, a 5xx, or a timeout is tried
+ * again {@value AssistantProperties#MAX_RETRIES} times, waiting what the API's {@code RetryInfo} asks, at most
+ * {@value #MAX_BACKOFF_SECONDS} seconds, and then fails as {@code ASSISTANT_UNAVAILABLE}, which a user may retry. A
+ * spent quota fails at once as {@code ASSISTANT_QUOTA_EXHAUSTED}: its {@code QuotaFailure} names a per-day quota, or
+ * its {@code RetryInfo} asks for more than a minute. 400, 401, 403 and 404 are the key, the model name or our own
+ * request; they fail at once as {@code ASSISTANT_MISCONFIGURED}, logged as an error, because no retry changes them and
+ * "try again in a few minutes" would send every user back for nothing. The waits are not part of
  * {@code AssistantProperties#longestModelCall}; at two of a minute each they still fit the default lease.</p>
+ *
+ * <p><b>An answer has text.</b> {@code END_TURN} is a {@code STOP} that wrote something. A candidate with neither text
+ * nor a function call did not answer, whatever its finish reason says — {@code MALFORMED_FUNCTION_CALL} (the model
+ * wrote a call it could not format), {@code UNEXPECTED_TOOL_CALL}, {@code TOO_MANY_TOOL_CALLS}, or a bare
+ * {@code STOP} — so it is {@code OTHER}, never an {@code END_TURN} with nothing in it.</p>
  *
  * <p><b>HTTP through {@code RestClientFactory}</b>, for its correlation id and call log; the log line has the path
  * and status only, and the key travels in the {@code x-goog-api-key} header, never in a URL.</p>
@@ -66,6 +77,20 @@ class GeminiLanguageModel implements LanguageModel {
     static final String LOCAL_ID_PREFIX = "gemini-local-";
     /** A minute: the free tier's quotas are per minute, and a shorter cap only fails the same way again. */
     static final int MAX_BACKOFF_SECONDS = 60;
+
+    private static final Duration MAX_BACKOFF = Duration.ofSeconds(MAX_BACKOFF_SECONDS);
+
+    /**
+     * The key, the model name or our request: Google answers 400 for a key that is not valid, 403 for a suspended
+     * key or an API that is not enabled, 404 for a model it does not serve.
+     */
+    private static final Set<Integer> MISCONFIGURATION = Set.of(400, 401, 403, 404);
+
+    /** The error detail that names the quota a 429 is about ({@code quotaId}, "...PerDay..." or "...PerMinute..."). */
+    private static final String QUOTA_FAILURE = "google.rpc.QuotaFailure";
+
+    /** A Google API key or an Anthropic one, should an error message ever quote it back. */
+    private static final Pattern KEY = Pattern.compile("AIza[0-9A-Za-z_-]{30,}|sk-ant-[0-9A-Za-z_-]+");
 
     private static final Set<String> REFUSALS = Set.of("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT",
             "SPII", "IMAGE_SAFETY", "LANGUAGE");
@@ -128,9 +153,19 @@ class GeminiLanguageModel implements LanguageModel {
             if (status == 200) {
                 return reply(read(response.body()), properties.model());
             }
+            JsonNode error = error(response.body());
+            String reason = errorSummary(error);
+            if (status == 429 && quotaSpent(error)) {
+                log.warn("Gemini's quota for {} is used up: {}", properties.model(), reason);
+                throw new BusinessException(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED,
+                        "The model provider's quota is used up; the assistant answers again once it is renewed");
+            }
+            if (MISCONFIGURATION.contains(status)) {
+                log.error("Gemini refused the key, the model or the request with {}: {}", status, reason);
+                throw new BusinessException(ErrorCode.ASSISTANT_MISCONFIGURED, "The model provider answered " + status);
+            }
             boolean retryable = status == 429 || status >= 500;
-            String reason = errorSummary(response.body());
-            Optional<Duration> wait = retryable ? retryDelay(response.body(), status, attempt) : Optional.empty();
+            Optional<Duration> wait = retryable ? retryDelay(error, status, attempt) : Optional.empty();
             if (wait.isPresent() && attempt < AssistantProperties.MAX_RETRIES) {
                 log.warn("Gemini answered {} (attempt {}): {}", status, attempt + 1, reason);
                 pause(wait.get());
@@ -156,17 +191,24 @@ class GeminiLanguageModel implements LanguageModel {
     ObjectNode body(Request request) {
         ObjectNode body = JsonNodeFactory.instance.objectNode();
         body.putObject("systemInstruction").putArray("parts").addObject().put("text", request.systemPrompt());
-        body.set("contents", contents(request.history()));
+        body.set("contents", contents(request.history(), request.note()));
         if (!request.tools().isEmpty()) {
             ArrayNode declarations = body.putArray("tools").addObject().putArray("functionDeclarations");
             request.tools().forEach(tool -> declarations.add(declaration(tool)));
-            body.putObject("toolConfig").putObject("functionCallingConfig").put("mode", "AUTO");
+            // NONE on the answer's last call: the declarations stay, since the history holds calls to them.
+            body.putObject("toolConfig").putObject("functionCallingConfig")
+                    .put("mode", request.toolsAllowed() ? "AUTO" : "NONE");
         }
         body.putObject("generationConfig").put("maxOutputTokens", properties.maxOutputTokens());
         return body;
     }
 
     ArrayNode contents(List<Turn> history) {
+        return contents(history, null);
+    }
+
+    /** @param note a line from the application, sent as the last part of the last user content; null for none */
+    ArrayNode contents(List<Turn> history, String note) {
         ArrayNode contents = JsonNodeFactory.instance.arrayNode();
         Map<String, String> callNames = new HashMap<>();
         List<ObjectNode> user = new ArrayList<>();
@@ -190,6 +232,9 @@ class GeminiLanguageModel implements LanguageModel {
                     contents.add(read(model.providerContent()));
                 }
             }
+        }
+        if (note != null) {
+            user.add(text(note));
         }
         flush(contents, user);
         return contents;
@@ -284,6 +329,7 @@ class GeminiLanguageModel implements LanguageModel {
             index++;
         }
         String finish = candidate.path("finishReason").asText("");
+        String text = texts.isEmpty() ? null : String.join("\n\n", texts);
         StopReason stop;
         if (REFUSALS.contains(finish)) {
             stop = StopReason.REFUSAL;
@@ -291,12 +337,12 @@ class GeminiLanguageModel implements LanguageModel {
             stop = StopReason.MAX_TOKENS;
         } else if (!calls.isEmpty()) {
             stop = StopReason.TOOL_USE;
-        } else if ("STOP".equals(finish)) {
+        } else if ("STOP".equals(finish) && text != null) {
             stop = StopReason.END_TURN;
         } else {
+            // MALFORMED_FUNCTION_CALL, UNEXPECTED_TOOL_CALL, TOO_MANY_TOOL_CALLS, a bare STOP: nothing was answered.
             stop = StopReason.OTHER;
         }
-        String text = texts.isEmpty() ? null : String.join("\n\n", texts);
         // A candidate with no parts (blocked, or cut before any output) is not a valid turn to send back.
         String providerContent = content.path("parts").isArray() && !content.path("parts").isEmpty()
                 ? write(content) : closingTurn(text == null ? "" : text).providerContent();
@@ -310,40 +356,80 @@ class GeminiLanguageModel implements LanguageModel {
         return new Usage(Math.max(0, prompt - cached), output, cached, 0);
     }
 
-    /**
-     * What {@code RetryInfo} asks ("17s", "1.5s"). Without one: a 429 is the free tier's per-minute quota, which frees
-     * up within the minute, so 15 s then 30 s; a 5xx, a short growing wait.
-     *
-     * @return empty when the API asks for more than {@value #MAX_BACKOFF_SECONDS} seconds: that is a daily quota
-     *         ({@code GenerateRequestsPerDay…}, "retry after 74900s"), and waiting a minute twice only makes the
-     *         user wait two minutes for the same refusal
-     */
-    Optional<Duration> retryDelay(String body, int status, int attempt) {
-        Duration fallback = Duration.ofSeconds((status == 429 ? 15L : 2L) * (attempt + 1));
+    /** The {@code error} object of a refused call's body; a missing node when the body is not the API's JSON. */
+    JsonNode error(String body) {
         try {
-            for (JsonNode detail : json.readTree(body).path("error").path("details")) {
-                String delay = detail.path("retryDelay").asText("");
-                if (delay.endsWith("s")) {
-                    double seconds = Double.parseDouble(delay.substring(0, delay.length() - 1));
-                    return seconds > MAX_BACKOFF_SECONDS ? Optional.empty()
-                            : Optional.of(Duration.ofMillis((long) (seconds * 1000)));
-                }
-            }
-        } catch (IOException | NumberFormatException unreadable) {
-            // Not the API's error shape; the fallback will do.
+            return json.readTree(body).path("error");
+        } catch (IOException notJson) {
+            return MissingNode.getInstance();
         }
-        return Optional.of(fallback);
     }
 
-    private String errorSummary(String body) {
-        try {
-            JsonNode error = json.readTree(body).path("error");
-            String message = error.path("message").asText("");
-            return error.path("status").asText("") + " " + (message.length() > 300 ? message.substring(0, 300)
-                    : message);
-        } catch (IOException notJson) {
+    /**
+     * Whether a 429 is a quota that will not come back within this answer. Two signs, either enough: the
+     * {@code QuotaFailure} detail names a per-day quota ({@code GenerateRequestsPerDayPerProjectPerModel-FreeTier}), or
+     * {@code RetryInfo} asks for more than {@value #MAX_BACKOFF_SECONDS} seconds. The free tier's daily refusal has
+     * come both ways: "retry after 74900s", and a per-day quota beside a {@code RetryInfo} of half a minute, which read
+     * alone would have every question wait out two retries for the same refusal.
+     */
+    static boolean quotaSpent(JsonNode error) {
+        for (JsonNode detail : error.path("details")) {
+            if (detail.path("@type").asText("").endsWith(QUOTA_FAILURE)) {
+                for (JsonNode violation : detail.path("violations")) {
+                    if (violation.path("quotaId").asText("").contains("PerDay")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return requestedDelay(error).filter(delay -> delay.compareTo(MAX_BACKOFF) > 0).isPresent();
+    }
+
+    /**
+     * How long to wait before the next attempt: what {@code RetryInfo} asks ("17s", "1.5s"). Without one, a 429 is
+     * the free tier's per-minute quota, which frees up within the minute, so 15 s then 30 s; a 5xx, a short growing
+     * wait.
+     *
+     * @return empty when the API asks for more than {@value #MAX_BACKOFF_SECONDS} seconds: waiting a minute twice
+     *         would only make the user wait two minutes for the same refusal
+     */
+    static Optional<Duration> retryDelay(JsonNode error, int status, int attempt) {
+        Optional<Duration> asked = requestedDelay(error);
+        if (asked.isPresent()) {
+            return asked.get().compareTo(MAX_BACKOFF) > 0 ? Optional.empty() : asked;
+        }
+        return Optional.of(Duration.ofSeconds((status == 429 ? 15L : 2L) * (attempt + 1)));
+    }
+
+    /** {@code RetryInfo}'s delay, when the error carries one in a form that can be read. */
+    private static Optional<Duration> requestedDelay(JsonNode error) {
+        for (JsonNode detail : error.path("details")) {
+            String delay = detail.path("retryDelay").asText("");
+            if (delay.endsWith("s")) {
+                try {
+                    double seconds = Double.parseDouble(delay.substring(0, delay.length() - 1));
+                    if (seconds >= 0) {
+                        return Optional.of(Duration.ofMillis((long) (seconds * 1000)));
+                    }
+                } catch (NumberFormatException unreadable) {
+                    // Not the API's shape; the caller's fallback will do.
+                }
+                return Optional.empty();
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Google's status and message for the log, at most 300 characters. Anything shaped like a key is blanked first:
+     * the refusal of a suspended key can quote it ("Consumer 'api_key:AIza…' has been suspended").
+     */
+    static String errorSummary(JsonNode error) {
+        if (!error.isObject()) {
             return "(unreadable body)";
         }
+        String message = KEY.matcher(error.path("message").asText("")).replaceAll("[key]");
+        return error.path("status").asText("") + " " + (message.length() > 300 ? message.substring(0, 300) : message);
     }
 
     private void pause(Duration delay) {

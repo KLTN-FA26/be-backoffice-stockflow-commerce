@@ -21,6 +21,10 @@ import java.util.List;
  * {@code reserved} column holds allocations to picks plus production and transfer holds, and {@code StockLevel}'s
  * {@code allocated} is always 0 (the screen's fix is SCRUM-438). Passed through under their old names, a model
  * answered "6,000 available, nothing allocated" for stock already promised to customers.</p>
+ *
+ * <p><b>An unknown SKU is NOT_FOUND</b> ({@link KnownSkus}): nothing to promise and no warehouses is also what a real
+ * SKU with no stock gets, so a mistyped code read as out of stock everywhere. The warehouse list has no cap:
+ * {@code levelsOf} returns one row per warehouse, so it is as long as the business has warehouses.</p>
  */
 @Component
 class GetStockLevelsTool implements AssistantTool {
@@ -32,9 +36,11 @@ class GetStockLevelsTool implements AssistantTool {
                     + "orders belong to no warehouse: they are already subtracted from available to promise, and the "
                     + "warehouse figures of available to promise must not be added together. For 'how many can we "
                     + "still sell' use companyAvailableToPromise. Use it for 'how many X do we have' and 'in which "
-                    + "warehouse'; for lots or locations use getStockLots.",
+                    + "warehouse'; for lots or locations use getStockLots. An unknown SKU comes back as NOT_FOUND: say "
+                    + "the code was not found and should be checked (searchCatalog finds a product by name), never "
+                    + "that it is out of stock.",
             ToolSchema.object()
-                    .string("sku", "The SKU code exactly as printed, for example CUP-12OZ-WHT")
+                    .string("sku", KnownSkus.PARAMETER)
                     .build());
 
     private final InventoryService inventory;
@@ -54,9 +60,14 @@ class GetStockLevelsTool implements AssistantTool {
     }
 
     @Override
+    public ScopeLimit scopeLimit() {
+        return ScopeLimit.PARTIAL;
+    }
+
+    @Override
     @RequiresPermission(resource = ToolPermissions.INVENTORY_STOCK_ITEMS, action = Action.READ)
     public Answer run(ToolArguments arguments) {
-        Sku sku = new Sku(arguments.text("sku", Sku.MAX_LENGTH));
+        Sku sku = KnownSkus.require(inventory, new Sku(arguments.text("sku", Sku.MAX_LENGTH)));
         List<Row> warehouses = inventory.levelsOf(sku).stream().map(Row::of).toList();
         // A user limited to particular warehouses does not see the company figure on any screen.
         Integer company = WarehouseScope.restriction().isPresent() ? null : inventory.availableToPromise(sku);
@@ -66,7 +77,8 @@ class GetStockLevelsTool implements AssistantTool {
     /**
      * @param companyAvailableToPromise what the company may still promise, every warehouse together and checkout
      *                                  reservations subtracted; null for a user limited to particular warehouses
-     * @param warehouses                empty when no warehouse the user may see holds or expects the SKU
+     * @param warehouses                empty when no warehouse the user may see holds or expects the SKU; never
+     *                                  because the SKU is unknown, which is NOT_FOUND
      */
     record Answer(String sku, Integer companyAvailableToPromise, List<Row> warehouses) {
     }

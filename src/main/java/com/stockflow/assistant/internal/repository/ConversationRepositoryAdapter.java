@@ -121,8 +121,13 @@ class ConversationRepositoryAdapter implements ConversationRepository {
     }
 
     @Override
+    public void release(UUID conversationId, Instant claimedAt) {
+        lockOwned(conversationId).release(claimedAt);
+    }
+
+    @Override
     public long questionsSince(UUID ownerUserId, Instant since) {
-        return messages.countQuestionsSince(ownerUserId, since);
+        return messages.countQuestionsSince(ownerUserId, since, PendingMessage.CLOSING_MODEL);
     }
 
     @Override

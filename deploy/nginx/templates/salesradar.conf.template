@@ -15,5 +15,6 @@ server {
         set $salesradar_upstream http://anti-app:8080;
         proxy_pass $salesradar_upstream;
         include /etc/nginx/snippets/proxy-headers.conf;
+        include /etc/nginx/snippets/proxy-timeouts.conf;
     }
 }

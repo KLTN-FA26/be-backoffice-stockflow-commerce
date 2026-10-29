@@ -62,6 +62,30 @@ class ConversationTest {
     }
 
     @Test
+    @DisplayName("an ordinary request lets the model call tools and carries no note; a note is never blank")
+    void requestToolsAndNote() {
+        List<Turn> history = List.of(new Turn.Question("q", "c"));
+        LanguageModel.Request ordinary = new LanguageModel.Request("p", List.of(), history);
+        assertThat(ordinary.toolsAllowed()).isTrue();
+        assertThat(ordinary.note()).isNull();
+        assertThat(new LanguageModel.Request("p", List.of(), history, false, "answer now").toolsAllowed()).isFalse();
+        assertThatThrownBy(() -> new LanguageModel.Request("p", List.of(), history, false, "  "))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("a closing turn is the application's: its model name, no usage, and its text made plain to read")
+    void closingTurns() {
+        PendingMessage closing = PendingMessage.closing(new Turn.ModelTurn("{}", "Lô [A] còn 5.\n\nHết lượt.",
+                List.of()));
+        assertThat(closing.model()).isEqualTo(PendingMessage.CLOSING_MODEL);
+        assertThat(closing.usage()).isEqualTo(LanguageModel.Usage.NONE);
+        assertThat(closing.stopReason()).isEqualTo(LanguageModel.StopReason.OTHER);
+        assertThat(closing.text()).isEqualTo("Lô \\[A\\] còn 5.\n\nHết lượt.");
+        assertThat(closing.role()).isEqualTo(MessageRole.ASSISTANT);
+    }
+
+    @Test
     @DisplayName("only a model turn carries a model, a stop reason and tool executions")
     void pendingMessages() {
         assertThatThrownBy(() -> new PendingMessage(new Turn.Question("q", "c"), "q", "claude",

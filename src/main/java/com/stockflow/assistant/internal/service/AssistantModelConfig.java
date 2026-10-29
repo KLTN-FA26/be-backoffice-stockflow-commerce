@@ -16,11 +16,12 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 
 /**
- * Chooses the {@link LanguageModel}: the provider when the assistant is switched on and has a key, otherwise one that
- * refuses every call with {@code ASSISTANT_DISABLED}.
+ * Chooses the {@link LanguageModel}: the provider when the assistant is switched on and has a key of its own, otherwise
+ * one that refuses every call with {@code ASSISTANT_DISABLED}.
  *
  * <p>A missing key is a WARN, not a startup failure. A deployment that never set the key must keep serving every other
- * module (design §11).</p>
+ * module (design §11). So is a key shaped like the other vendor's: it is not sent, because the first question would
+ * hand that vendor's credential to a company that has no business holding it.</p>
  */
 @Configuration(proxyBeanMethods = false)
 class AssistantModelConfig {
@@ -35,9 +36,16 @@ class AssistantModelConfig {
             log.info("The assistant is switched off (stockflow.assistant.enabled=false)");
             return new Unavailable();
         }
-        if (!properties.usable()) {
-            log.warn("stockflow.assistant.enabled=true but no API key is set (ASSISTANT_API_KEY or ANTHROPIC_API_KEY): "
-                    + "the assistant answers 503 ASSISTANT_DISABLED until one is configured");
+        if (properties.apiKey().isEmpty()) {
+            log.warn("stockflow.assistant.enabled=true but no API key is set for provider {} (ASSISTANT_API_KEY or "
+                    + "{}): the assistant answers 503 ASSISTANT_DISABLED until one is configured",
+                    properties.provider(), properties.keyVariable());
+            return new Unavailable();
+        }
+        if (properties.keyOfAnotherVendor()) {
+            log.warn("The assistant's API key is shaped like another vendor's, not provider {}'s: it is never sent, "
+                    + "and the assistant answers 503 ASSISTANT_DISABLED until ASSISTANT_API_KEY or {} holds a key "
+                    + "of {}", properties.provider(), properties.keyVariable(), properties.provider());
             return new Unavailable();
         }
         if ("gemini".equals(properties.provider())) {
@@ -54,7 +62,9 @@ class AssistantModelConfig {
         AnthropicOkHttpClient.Builder client = AnthropicOkHttpClient.builder()
                 .apiKey(properties.apiKey())
                 .timeout(properties.requestTimeout())
-                .maxRetries(AssistantProperties.MAX_RETRIES);
+                .maxRetries(AssistantProperties.MAX_RETRIES)
+                // The SDK would otherwise sleep any retry-after, however long; a spent quota fails at once instead.
+                .sleeper(new ClaudeLanguageModel.BoundedSleeper());
         if (!properties.baseUrl().isEmpty()) {
             client.baseUrl(properties.baseUrl());
         }

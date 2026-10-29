@@ -112,6 +112,24 @@ server {
         set $app_upstream http://stockflow-app-1:8080;
         proxy_pass $app_upstream;
         include /etc/nginx/snippets/proxy-headers.conf;
+        include /etc/nginx/snippets/proxy-timeouts.conf;
+    }
+
+    # The AI assistant (ADR-0010). One answer is several model calls. The plain endpoint writes
+    # nothing until the last one, so 60 s would cut it with a 504 while the application goes on to
+    # finish, pay for and store the answer - and the user's retry meets 409 ASSISTANT_BUSY. The
+    # streamed endpoint can be silent for longer than a minute between two events (a model call is
+    # up to 3 attempts of 90 s). 900 s is stockflow.assistant.answer-lease, the longest an answer may
+    # run. Server-sent events must reach the browser as they are written, hence no buffering.
+    location /api/v1/assistant/ {
+        set $app_upstream http://stockflow-app-1:8080;
+        proxy_pass $app_upstream;
+        include /etc/nginx/snippets/proxy-headers.conf;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    900s;
+        proxy_buffering off;
+        proxy_cache off;
     }
 }
 

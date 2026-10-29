@@ -7,7 +7,6 @@ import com.stockflow.assistant.internal.domain.Conversation;
 import com.stockflow.assistant.internal.domain.History;
 import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.Message;
-import com.stockflow.assistant.internal.domain.MessageRole;
 import com.stockflow.assistant.internal.domain.PendingMessage;
 import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.ToolExecution;
@@ -23,10 +22,13 @@ import com.stockflow.common.security.RequiresPermission;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
+import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -44,12 +46,24 @@ import java.util.function.Consumer;
  * <p><b>On the request thread.</b> Tools rely on the {@code SecurityContext} and on the data scope the permission
  * aspect installs, both thread-bound, and {@code AsyncConfig} copies neither to another thread (design §5.2).</p>
  *
+ * <p><b>What was looked up is not thrown away.</b> The answer's last call — the tool rounds are spent, or the lease
+ * has room for this one call only — offers the model no tool and says why: it answers from the results it already
+ * has, instead of asking for one more lookup and leaving every result in without an answer. If it asks anyway, or
+ * the time runs out before that call, the answer closes with a message that says so, after what the model wrote.</p>
+ *
  * <p><b>Partial work is kept.</b> If the provider fails halfway, the turns produced so far — tools already run
- * included — are stored before the error goes back, so the audit trail never misses a tool call that happened.</p>
+ * included — are stored before the error goes back, with a closing turn holding the error's message, so the audit
+ * trail never misses a tool call that happened and the transcript says what became of the question. A question the
+ * provider never replied to is left out of the daily cap. If storing fails, the claim is released all the same.</p>
  *
  * <p><b>Every answer closes the history cleanly.</b> A reply that asks for tools the loop will not run (it was cut
- * off, the provider declined, or the rounds ran out) still gets a result for each call and a closing turn, so the
+ * off, the provider declined, or no lookup was left) still gets a result for each call and a closing turn, so the
  * next question is sent after a well-formed history.</p>
+ *
+ * <p><b>An empty reply is asked again, once.</b> A small model sometimes returns nothing at all: a function call the
+ * provider could not parse, an empty stop after tool results. Shown as it is, that reads as "nothing was found". The
+ * same request goes again with a note, not as a tool round; a second empty reply closes with a message that the
+ * assistant could not answer.</p>
  *
  * <p><b>Bounded cost.</b> Earlier questions go to the model with their answers only ({@link History}); one step runs
  * at most {@value #MAX_CALLS_PER_ROUND} tools and one question adds at most {@value #RESULT_BUDGET} characters of
@@ -61,14 +75,21 @@ import java.util.function.Consumer;
 @Service
 public class AssistantService {
 
-    /** The model name recorded on a closing turn: written by the application, not produced by a model call. */
-    static final String CLOSING_TURN_MODEL = "stockflow";
-
     /** Tools one reply may run; a model asking for dozens at once is answered NOT_RUN for the rest. */
     static final int MAX_CALLS_PER_ROUND = 8;
 
     /** Characters of tool results one question may add to what is sent to the model. */
     static final int RESULT_BUDGET = 100_000;
+
+    /**
+     * Stored as the name of a call to a tool that does not exist. Gemini has no strict mode, and a made-up name may
+     * hold a dot, a dash or a colon, which {@code ck_tool_call_name} refuses: one such row would roll the whole answer
+     * back at the very end. The call's result still names what the model asked for.
+     */
+    static final String UNKNOWN_TOOL = "unknownTool";
+
+    /** How a note to the model starts: like the question's context, it is the system speaking, never the user. */
+    private static final String NOTE = "Note from the system, not written by the user:";
 
     private final ConversationService conversations;
     private final LanguageModel model;
@@ -78,10 +99,11 @@ public class AssistantService {
     private final Messages messages;
     private final Clock clock;
     private final ObjectMapper json;
+    private final ToolAvailability availability;
 
     AssistantService(ConversationService conversations, LanguageModel model, AssistantTools tools,
                      SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
-                     ObjectMapper json) {
+                     ObjectMapper json, ToolAvailability availability) {
         this.conversations = conversations;
         this.model = model;
         this.tools = tools;
@@ -90,6 +112,7 @@ public class AssistantService {
         this.messages = messages;
         this.clock = clock;
         this.json = json;
+        this.availability = availability;
     }
 
     /** Told each time a tool finishes, for a streamed answer; on the thread that runs the loop. */
@@ -107,7 +130,8 @@ public class AssistantService {
      * @throws BusinessException {@code ASSISTANT_DISABLED} when the assistant cannot answer at all (nothing is
      *         stored); {@code VALIDATION_FAILED} for an empty or overlong question; {@code ASSISTANT_DAILY_LIMIT};
      *         {@code ASSISTANT_BUSY} while another question in the conversation is being answered;
-     *         {@code ASSISTANT_UNAVAILABLE} when the provider fails (the question and any partial work are stored)
+     *         {@code ASSISTANT_UNAVAILABLE} and the provider's other failures as the adapter reports them (the
+     *         question, any partial work and a closing turn with the error's message are stored)
      * @throws com.stockflow.common.error.NotFoundException when the conversation is not the caller's
      */
     public Answer ask(UUID conversationId, String text, CurrentUser user) {
@@ -162,14 +186,37 @@ public class AssistantService {
         try {
             answer(history, produced::add, progress, claimedAt.plus(properties.answerLease()));
         } catch (RuntimeException failure) {
-            try {
-                conversations.appendAndRelease(conversationId, claimedAt, produced);
-            } catch (RuntimeException alsoFailed) {
-                failure.addSuppressed(alsoFailed);
-            }
+            // The transcript says what became of the question: the turns so far, tools that ran included, then the
+            // error's message. Right after the question, that closing turn also keeps it out of the daily cap.
+            whileFailing(failure, () -> produced.add(closing(failureText(failure))));
+            whileFailing(failure, () -> store(conversationId, claimedAt, produced));
             throw failure;
         }
-        return Answer.of(conversations.appendAndRelease(conversationId, claimedAt, produced), json);
+        return Answer.of(store(conversationId, claimedAt, produced), json);
+    }
+
+    /**
+     * Stores what the loop produced and releases the claim. If that fails, the claim is released on its own: the
+     * failed transaction rolled the release back with the rest, and the conversation would refuse every question for
+     * the rest of the lease with nothing answering. What it held is lost; storing it again without its tool calls
+     * would drop exactly the audit rows this class promises to keep.
+     */
+    private List<Message> store(UUID conversationId, Instant claimedAt, List<PendingMessage> produced) {
+        try {
+            return conversations.appendAndRelease(conversationId, claimedAt, produced);
+        } catch (RuntimeException failed) {
+            whileFailing(failed, () -> conversations.release(conversationId, claimedAt));
+            throw failed;
+        }
+    }
+
+    /** A clean-up step of a failed answer: its own failure is added to the first one instead of hiding it. */
+    private static void whileFailing(RuntimeException failure, Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException alsoFailed) {
+            failure.addSuppressed(alsoFailed);
+        }
     }
 
     private void answer(List<Turn> history, Consumer<PendingMessage> sink, Progress progress, Instant leaseEnds) {
@@ -178,30 +225,38 @@ public class AssistantService {
             sink.accept(message);
         };
         int budget = RESULT_BUDGET;
-        for (int round = 0; ; round++) {
-            if (round > 0 && clock.instant().plus(properties.longestModelCall()).isAfter(leaseEnds)) {
-                // The last step's results are in; another call could outlast the claim. Close instead.
-                Turn.ModelTurn closing = model.closingTurn(closingText(LanguageModel.StopReason.OTHER));
-                record.accept(new PendingMessage(closing, closing.text(), CLOSING_TURN_MODEL,
-                        LanguageModel.StopReason.OTHER, LanguageModel.Usage.NONE, List.of()));
+        int rounds = 0;
+        boolean askedAgain = false;
+        boolean askingAgain = false;
+        for (int call = 0; ; call++) {
+            Instant now = clock.instant();
+            if (call > 0 && !fits(now, 1, leaseEnds)) {
+                // The last step's results are in; another call could outlast the claim. Close, and say so.
+                record.accept(closing(outOfTime()));
                 return;
             }
-            LanguageModel.Reply reply = model.next(new LanguageModel.Request(prompt.text(), tools.specs(), history));
+            // The last call offers no tool: the rounds are spent, or the lease has room for this call only. Not the
+            // first call, whatever the lease: the start-up check leaves room for two, a few milliseconds aside.
+            boolean roundsSpent = rounds >= properties.maxToolRounds();
+            boolean last = roundsSpent || call > 0 && !fits(now, 2, leaseEnds);
+            LanguageModel.Reply reply = model.next(new LanguageModel.Request(prompt.text(), tools.specs(), history,
+                    !last, note(last, askingAgain)));
+            askingAgain = false;
             List<ToolCall> calls = reply.turn().toolCalls();
-            if (reply.stopReason() == LanguageModel.StopReason.TOOL_USE && !calls.isEmpty()
-                    && round < properties.maxToolRounds()) {
+            if (reply.stopReason() == LanguageModel.StopReason.TOOL_USE && !calls.isEmpty() && !last) {
                 List<ToolExecution> executions = new ArrayList<>();
                 List<ToolResult> results = new ArrayList<>();
                 for (int i = 0; i < calls.size(); i++) {
-                    ToolCall call = calls.get(i);
+                    ToolCall toolCall = calls.get(i);
                     if (i >= MAX_CALLS_PER_ROUND) {
-                        results.add(new ToolResult(call.id(), "NOT_RUN: at most " + MAX_CALLS_PER_ROUND
+                        results.add(new ToolResult(toolCall.id(), "NOT_RUN: at most " + MAX_CALLS_PER_ROUND
                                 + " tools run in one step; ask for the rest in the next step", true));
                     } else if (budget <= 0) {
-                        results.add(new ToolResult(call.id(), "NOT_RUN: this question has used up its room for tool "
-                                + "results; answer with what you have, or ask the user to narrow the question", true));
+                        results.add(new ToolResult(toolCall.id(), "NOT_RUN: this question has used up its room for "
+                                + "tool results; answer with what you have, or ask the user to narrow the question",
+                                true));
                     } else {
-                        ToolExecution execution = tools.execute(call);
+                        ToolExecution execution = forTheRecord(tools.execute(toolCall));
                         budget -= execution.result().length();
                         progress.toolRan(ConversationService.ToolCallView.of(execution));
                         executions.add(execution);
@@ -210,7 +265,22 @@ public class AssistantService {
                 }
                 record.accept(PendingMessage.reply(reply, executions));
                 record.accept(PendingMessage.results(new Turn.ToolResults(results)));
+                rounds++;
                 continue;
+            }
+            if (empty(reply)) {
+                // Stored for the audit and the token count, never sent back: the request goes again as it was, with
+                // a note, and is not a tool round.
+                sink.accept(new PendingMessage(reply.turn(), null, reply.model(), reply.stopReason(), reply.usage(),
+                        List.of()));
+                if (!askedAgain) {
+                    askedAgain = true;
+                    askingAgain = true;
+                    continue;
+                }
+                record.accept(closing(messages.get("assistant.noAnswer",
+                        "The assistant did not manage to write an answer this time. Please ask again.")));
+                return;
             }
             if (calls.isEmpty()) {
                 record.accept(new PendingMessage(reply.turn(), displayText(reply), reply.model(), reply.stopReason(),
@@ -222,15 +292,88 @@ public class AssistantService {
             String why = switch (reply.stopReason()) {
                 case MAX_TOKENS -> "NOT_RUN: the reply was cut off before the call was complete";
                 case REFUSAL -> "NOT_RUN: the request was declined";
-                default -> "NOT_RUN: no tool rounds are left for this question";
+                default -> "NOT_RUN: no more lookups can be made for this question";
             };
             record.accept(PendingMessage.results(new Turn.ToolResults(
-                    calls.stream().map(call -> new ToolResult(call.id(), why, true)).toList())));
-            Turn.ModelTurn closing = model.closingTurn(closingText(reply.stopReason()));
-            record.accept(new PendingMessage(closing, closing.text(), CLOSING_TURN_MODEL,
-                    LanguageModel.StopReason.OTHER, LanguageModel.Usage.NONE, List.of()));
+                    calls.stream().map(notRun -> new ToolResult(notRun.id(), why, true)).toList())));
+            String stop = switch (reply.stopReason()) {
+                case MAX_TOKENS, REFUSAL -> closingText(reply.stopReason());
+                // The last call asked for a tool anyway: an adapter that cannot refuse tools, or a model ignoring it.
+                default -> last && !roundsSpent ? outOfTime() : closingText(reply.stopReason());
+            };
+            record.accept(closing(afterReplyText(reply, stop)));
             return;
         }
+    }
+
+    /** Whether {@code calls} more model calls, each as long as the longest one can be, end within the lease. */
+    private boolean fits(Instant now, int calls, Instant leaseEnds) {
+        return !now.plus(properties.longestModelCall().multipliedBy(calls)).isAfter(leaseEnds);
+    }
+
+    /**
+     * What the application tells the model along with this call, or null: that it must answer now, from what the
+     * tools returned, and say what it could not check; and, asking again, that its previous reply was empty.
+     */
+    private static String note(boolean last, boolean askingAgain) {
+        if (!last && !askingAgain) {
+            return null;
+        }
+        String again = askingAgain ? " Your previous reply was empty." : "";
+        String now = last ? " No more lookups can be made for this question: answer now from what the tools returned "
+                + "above, and say plainly what you could not check."
+                : " Answer the question, or call a tool with valid arguments.";
+        return NOTE + again + now;
+    }
+
+    /**
+     * A reply with neither text nor a tool call. A cut-off or declined one is not: it has its own message, and asking
+     * again would only be cut off or declined again.
+     */
+    private static boolean empty(LanguageModel.Reply reply) {
+        String text = reply.turn().text();
+        return reply.turn().toolCalls().isEmpty() && (text == null || text.isBlank())
+                && reply.stopReason() != LanguageModel.StopReason.MAX_TOKENS
+                && reply.stopReason() != LanguageModel.StopReason.REFUSAL;
+    }
+
+    /**
+     * The execution as it is stored and shown: a call to a tool that does not exist goes on record as
+     * {@value #UNKNOWN_TOOL}, its result still naming what the model asked for.
+     */
+    private ToolExecution forTheRecord(ToolExecution execution) {
+        ToolCall call = execution.call();
+        if (tools.specs().stream().anyMatch(spec -> spec.name().equals(call.name()))) {
+            return execution;
+        }
+        return new ToolExecution(new ToolCall(call.id(), UNKNOWN_TOOL, call.arguments()), execution.outcome(),
+                execution.result(), execution.durationMs());
+    }
+
+    private PendingMessage closing(String text) {
+        return PendingMessage.closing(model.closingTurn(text));
+    }
+
+    /**
+     * Closes a reply whose tool calls will not run: what the model wrote before them is part of the answer, and
+     * {@code stop} says why it ends there. A declined reply's text is not shown: the provider declined it. The text
+     * is the model's as written; the closing message makes it plain, once ({@link PendingMessage#closing}).
+     */
+    private static String afterReplyText(LanguageModel.Reply reply, String stop) {
+        String text = reply.stopReason() == LanguageModel.StopReason.REFUSAL ? null : reply.turn().text();
+        String shown = AnswerText.plain(text);
+        return shown == null || shown.isBlank() ? stop : text.strip() + "\n\n" + stop;
+    }
+
+    /** What the transcript shows for a question whose answer failed: the error's message, in the user's language. */
+    private String failureText(RuntimeException failure) {
+        return messages.forCode(failure instanceof BusinessException refused ? refused.errorCode()
+                : ErrorCode.INTERNAL_ERROR);
+    }
+
+    private String outOfTime() {
+        return messages.get("assistant.outOfTime", "This answer took too long, so I stopped before finishing it; "
+                + "the lookups that ran are listed with it. Please ask again, or ask about one part at a time.");
     }
 
     private String displayText(LanguageModel.Reply reply) {
@@ -238,9 +381,14 @@ public class AssistantService {
         if (text != null && !text.isBlank()) {
             return text;
         }
-        return reply.stopReason() == LanguageModel.StopReason.REFUSAL
-                ? messages.get("assistant.refused", "I cannot help with that request.")
-                : messages.get("assistant.noAnswer", "I could not find an answer to that.");
+        return switch (reply.stopReason()) {
+            case REFUSAL -> messages.get("assistant.refused", "I cannot help with that request.");
+            case MAX_TOKENS -> messages.get("assistant.cutShort",
+                    "The answer was too long to finish. Please ask a narrower question.");
+            // Text that held nothing but markup, removed by AnswerText; an empty reply never gets here.
+            default -> messages.get("assistant.noAnswer",
+                    "The assistant did not manage to write an answer this time. Please ask again.");
+        };
     }
 
     private String closingText(LanguageModel.StopReason stopReason) {
@@ -255,9 +403,12 @@ public class AssistantService {
 
     /**
      * What the model needs alongside the question and must not take from the system prompt, which stays
-     * byte-identical: today's date, and who is asking — roles and warehouses, never a name.
+     * byte-identical: the date, with a calendar to turn "yesterday" or "last month" into dates; who is asking — roles
+     * and warehouses, never a name; and the tools they may use. The tool list comes from {@link ToolAvailability},
+     * the same declarations the panel shows, so the model knows a refusal before calling the tool instead of spending
+     * a request to learn it. Stored with the question, so a replay sends it unchanged.
      */
-    private static String context(CurrentUser user, Instant now) {
+    private String context(CurrentUser user, Instant now) {
         LocalDate today = BusinessDate.of(now);
         String warehouses = user.warehouseCodes().isEmpty() ? ""
                 : " (warehouses: " + String.join(", ", user.warehouseCodes().stream().sorted().toList()) + ")";
@@ -265,7 +416,45 @@ public class AssistantService {
                 + "time. The user's roles: %s. Their data scope: %s%s.")
                 .formatted(today, today.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.ENGLISH),
                         String.join(", ", user.roles().stream().map(Enum::name).sorted().toList()),
-                        user.scope(), warehouses);
+                        user.scope(), warehouses)
+                + calendar(now) + access(availability.grantedTo(user), user);
+    }
+
+    /**
+     * The periods people name, as dates: a week runs Monday to Sunday and a month from its first day to its last. A
+     * period still running ends today ("so far"), since no figure exists past today and getSalesSummary refuses a "to"
+     * after it; last week and last month are whole.
+     */
+    static String calendar(Instant now) {
+        LocalDate today = BusinessDate.of(now);
+        LocalDate monday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        LocalDate firstOfMonth = today.withDayOfMonth(1);
+        // A period still running ends today: getSalesSummary refuses a "to" after today, and a model copying the
+        // calendar would otherwise spend a round on a refused call.
+        return (" Calendar (Vietnam time): today %s %s, now %s; yesterday %s; this week %s to %s so far; last week %s "
+                + "to %s; this month %s to %s so far; last month %s to %s.")
+                .formatted(today.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.ENGLISH), today,
+                        now.atZone(BusinessDate.ZONE).toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm")),
+                        today.minusDays(1), monday, today, monday.minusWeeks(1), monday.minusDays(1),
+                        firstOfMonth, today, firstOfMonth.minusMonths(1), firstOfMonth.minusDays(1));
+    }
+
+    /**
+     * The tools the user may use, and for a user limited to warehouses what that hides: told up front, a small model
+     * neither offers figures it cannot get nor reads an empty list as "nothing there".
+     */
+    static String access(List<String> granted, CurrentUser user) {
+        String tools = granted.isEmpty() ? " Tools this user may use: none. Every tool refuses them."
+                : " Tools this user may use: " + String.join(", ", granted) + ". Every other tool refuses them.";
+        if (!ToolAvailability.limitedToWarehouses(user)) {
+            return tools;
+        }
+        List<String> codes = user.warehouseCodes().stream().sorted().toList();
+        return tools + (codes.isEmpty()
+                ? " They are limited to warehouses but assigned to none: they see no warehouse and no company-wide "
+                        + "stock figure."
+                : " They are limited to warehouses " + String.join(", ", codes)
+                        + ": they see no other warehouse and no company-wide stock figure.");
     }
 
     /**
@@ -282,30 +471,24 @@ public class AssistantService {
                          boolean cutShort, LanguageModel.Usage usage, List<String> citations,
                          List<AnswerSources.Proposal> proposals) {
 
+        /** Read as the transcript reads it ({@link ConversationService.TranscriptEntry#answer}), plus what it cost. */
         static Answer of(List<Message> stored, ObjectMapper json) {
-            Message last = stored.stream().filter(message -> message.role() == MessageRole.ASSISTANT
-                    && message.text() != null).reduce((first, second) -> second).orElseThrow(
-                    () -> new IllegalStateException("an answer always ends with an assistant turn holding text"));
+            ConversationService.TranscriptEntry answer = ConversationService.TranscriptEntry.answer(stored, json)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "an answer always ends with an assistant turn holding text"));
             long input = 0;
             long output = 0;
             long cacheRead = 0;
             long cacheWrite = 0;
-            List<ConversationService.ToolCallView> calls = new ArrayList<>();
-            List<ToolExecution> executions = new ArrayList<>();
-            boolean cutShort = false;
             for (Message message : stored) {
                 input += message.usage().inputTokens();
                 output += message.usage().outputTokens();
                 cacheRead += message.usage().cacheReadTokens();
                 cacheWrite += message.usage().cacheWriteTokens();
-                executions.addAll(message.executions());
-                message.executions().forEach(execution -> calls.add(ConversationService.ToolCallView.of(execution)));
-                cutShort |= message.stopReason() == LanguageModel.StopReason.MAX_TOKENS;
             }
-            return new Answer(last.id(), last.text(), List.copyOf(calls), cutShort,
-                    new LanguageModel.Usage(input, output, cacheRead, cacheWrite),
-                    AnswerSources.citations(last.text(), executions, json),
-                    AnswerSources.proposals(executions, json));
+            return new Answer(answer.messageId(), answer.text(), answer.toolCalls(), answer.cutShort(),
+                    new LanguageModel.Usage(input, output, cacheRead, cacheWrite), answer.citations(),
+                    answer.proposals());
         }
     }
 }

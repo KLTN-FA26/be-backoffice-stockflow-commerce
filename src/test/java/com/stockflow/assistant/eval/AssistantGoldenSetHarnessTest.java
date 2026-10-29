@@ -70,15 +70,23 @@ class AssistantGoldenSetHarnessTest {
             oracle.use(resolved);
             results.add(runner.run(resolved));
         }
-        GoldenReport report = new GoldenReport(results, "oracle");
+        GoldenReport report = new GoldenReport(results, List.of(), "oracle");
         Path written = report.write(Path.of("target", "assistant-eval", "oracle"));
 
-        assertThat(results).as("the golden set has its phase-2 size").hasSizeGreaterThanOrEqualTo(40);
+        assertThat(results).as("the golden set has its size after the review of 28/10").hasSizeGreaterThanOrEqualTo(50);
         assertThat(results).filteredOn(r -> !r.passed())
                 .as("cases failing under the oracle (report: %s)", written.toAbsolutePath())
                 .extracting(r -> r.golden().id() + " missing=" + r.missing() + " leaks=" + r.leaks() + " tools="
-                        + r.tools() + " outcomes=" + r.outcomes() + " http=" + r.httpStatus())
+                        + r.tools() + " outcomes=" + r.outcomes() + " http=" + r.httpStatus() + " "
+                        + r.errorCode())
                 .isEmpty();
+        assertThat(results).as("the oracle makes one request per step and one for each answer")
+                .allSatisfy(r -> assertThat(r.modelRequests()).isEqualTo(requests(r.golden())));
         assertThat(report.allGatesHold()).as(report.toString()).isTrue();
+    }
+
+    /** What a case costs the oracle: a request per call it scripts, and one answer per question. */
+    private static int requests(GoldenCase golden) {
+        return golden.oracle().size() + 1 + golden.earlier().stream().mapToInt(turn -> turn.oracle().size() + 1).sum();
     }
 }

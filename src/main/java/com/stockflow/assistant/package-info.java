@@ -7,8 +7,8 @@
  * another module's {@code api}. Every tool carries the permission of the screen that shows the same data, so the
  * assistant never shows anyone what that screen would not. It reads; it never writes.</p>
  *
- * <p><b>May depend on:</b> inventory, order, procurement, reporting, fulfillment and catalog, through their
- * {@code api}. Plus
+ * <p><b>May depend on:</b> inventory, order, procurement, reporting, fulfillment, catalog and production, through
+ * their {@code api}. Plus
  * {@code common} and {@code contracts}, which are available to every module. Nothing depends on it: it is a leaf, so
  * switching it off, or its model provider failing, touches no other flow.</p>
  *
@@ -21,5 +21,5 @@
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {
         "inventory :: api", "order :: api", "procurement :: api", "reporting :: api", "fulfillment :: api",
-        "catalog :: api"})
+        "catalog :: api", "production :: api"})
 package com.stockflow.assistant;

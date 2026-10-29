@@ -10,24 +10,35 @@ import java.util.Map;
  * when the data under it changes. Placeholders such as {@code {otherWarehouse}} are filled from the fixtures before a
  * case runs.</p>
  *
+ * <p>A case may ask {@code earlier} questions first, in the same conversation: a follow-up ("còn lô nào của mã đó?")
+ * is only a test if the model has to take the code from what it answered before. Only the last question is scored,
+ * except for leaks, which no answer of the persona may contain.</p>
+ *
  * @param useCase        U1..U8 of the design, or S (stock), M (must not do)
  * @param variant        how the question is phrased: formal, casual, no-diacritics, typo, refusal, ...
- * @param expectTools    tools the assistant must call (a subset of what it calls)
+ * @param expectTools    tools the assistant must call for the last question (a subset of what it calls)
  * @param forbiddenTools tools it must not call (an injected instruction that names one, for example)
  * @param expectNoTools  the question needs no data, so no tool may be called
  * @param facts          values the answer must contain
  * @param factsQuery     SQL whose single column gives more values the answer must contain
- * @param forbidden      values the answer must never contain: data this persona may not see
+ * @param forbidden      values no answer may ever contain: data this persona may not see
  * @param forbiddenQuery SQL whose single column gives more such values
- * @param expectRefusal  the persona may not have the data; the case passes when nothing forbidden leaks
+ * @param expectRefusal  the persona may not have the data; the case passes when nothing forbidden leaks. Such a case
+ *                       expects no tool: the question context lists the tools the user may use, so the model need not
+ *                       call the refused one to learn that it is refused (its oracle still does, so the harness checks
+ *                       what that tool would have shown)
  * @param invariantQuery SQL returning one value that must be the same before and after: the assistant changed nothing
  * @param expectRetrieved anchors the rule search must return among its five results: recall@5 (design §10.2)
- * @param oracle         what the scripted oracle model calls in the harness; null when it calls nothing
+ * @param earlier        questions asked before this one in the same conversation, oldest first
+ * @param oracle         what the scripted oracle model calls in the harness for the last question, one call per step:
+ *                       an object for one call, an array for a chain; empty when it calls nothing
+ * @param smoke          one of the few cases a run on a free model quota starts with (design §10.3)
  */
 public record GoldenCase(String id, String useCase, String variant, Persona persona, String question,
                          List<String> expectTools, List<String> forbiddenTools, boolean expectNoTools,
                          List<String> facts, String factsQuery, List<String> forbidden, String forbiddenQuery,
-                         boolean expectRefusal, String invariantQuery, List<String> expectRetrieved, Oracle oracle) {
+                         boolean expectRefusal, String invariantQuery, List<String> expectRetrieved,
+                         List<Earlier> earlier, List<Oracle> oracle, boolean smoke) {
 
     public GoldenCase {
         expectTools = expectTools == null ? List.of() : List.copyOf(expectTools);
@@ -35,6 +46,8 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
         facts = facts == null ? List.of() : List.copyOf(facts);
         forbidden = forbidden == null ? List.of() : List.copyOf(forbidden);
         expectRetrieved = expectRetrieved == null ? List.of() : List.copyOf(expectRetrieved);
+        earlier = earlier == null ? List.of() : List.copyOf(earlier);
+        oracle = oracle == null ? List.of() : List.copyOf(oracle);
     }
 
     /** Who asks: a role, and the warehouses they are assigned to (none: not limited by warehouse). */
@@ -45,7 +58,15 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
         }
     }
 
-    /** The tool call the harness's scripted model makes for this case. */
+    /** A question asked before the case's own, with the calls the oracle answers it with. */
+    public record Earlier(String question, List<Oracle> oracle) {
+
+        public Earlier {
+            oracle = oracle == null ? List.of() : List.copyOf(oracle);
+        }
+    }
+
+    /** One tool call the harness's scripted model makes. */
     public record Oracle(String tool, Map<String, Object> arguments) {
     }
 
@@ -57,10 +78,15 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
                 facts.stream().map(f -> fill(f, values)).toList(), fill(factsQuery, values),
                 forbidden.stream().map(f -> fill(f, values)).toList(), fill(forbiddenQuery, values),
                 expectRefusal, fill(invariantQuery, values), expectRetrieved,
-                oracle == null ? null : new Oracle(oracle.tool(),
-                oracle.arguments() == null ? Map.of() : oracle.arguments().entrySet().stream().collect(
-                        java.util.stream.Collectors.toMap(Map.Entry::getKey,
-                                e -> e.getValue() instanceof String s ? fill(s, values) : e.getValue()))));
+                earlier.stream().map(turn -> new Earlier(fill(turn.question(), values), fill(turn.oracle(), values)))
+                        .toList(),
+                fill(oracle, values), smoke);
+    }
+
+    private static List<Oracle> fill(List<Oracle> steps, Map<String, String> values) {
+        return steps.stream().map(step -> new Oracle(step.tool(), step.arguments() == null ? Map.of()
+                : step.arguments().entrySet().stream().collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                        e -> e.getValue() instanceof String s ? fill(s, values) : e.getValue())))).toList();
     }
 
     private static String fill(String text, Map<String, String> values) {

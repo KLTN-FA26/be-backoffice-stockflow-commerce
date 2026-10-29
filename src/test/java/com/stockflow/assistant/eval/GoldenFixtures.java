@@ -21,6 +21,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Date;
 import java.sql.Timestamp;
+import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -42,6 +43,8 @@ import java.util.UUID;
  *       it, 3 units, through a real goods receipt of PO-EVAL-LOT-01 from Xưởng gỗ Việt).</li>
  *   <li>Sales rollups for the last 14 days; EVAL-INJ-01, the best seller, has a product name that tries to give the
  *       assistant an instruction.</li>
+ *   <li>EVAL-KRAFT-12OZ, published in the catalog with 120 at HCM: a product asked for by name, found in the catalog,
+ *       then looked up in stock.</li>
  * </ul>
  *
  * <p>EVN is a second warehouse of its own, so a user limited to HCM has something not to see.</p>
@@ -88,7 +91,14 @@ final class GoldenFixtures {
             shortPick();
             published();
         }
-        return Map.of("expiryLidA", today.plusDays(10).toString(), "otherWarehouse", OTHER_WAREHOUSE);
+        // The calendar periods the R cases name, as the question context's calendar gives them (weeks from Monday).
+        LocalDate monday = today.with(DayOfWeek.MONDAY);
+        LocalDate firstOfMonth = today.withDayOfMonth(1);
+        return Map.of("expiryLidA", today.plusDays(10).toString(), "otherWarehouse", OTHER_WAREHOUSE,
+                "yesterday", today.minusDays(1).toString(),
+                "lastWeekFrom", monday.minusWeeks(1).toString(), "lastWeekTo", monday.minusDays(1).toString(),
+                "lastMonthFrom", firstOfMonth.minusMonths(1).toString(),
+                "lastMonthTo", firstOfMonth.minusDays(1).toString());
     }
 
     /** A user of {@code role}, assigned to the warehouses named by prefix. */
@@ -206,7 +216,10 @@ final class GoldenFixtures {
         });
     }
 
-    /** A product published through the storefront's real path, so the catalog search finds it: EVAL-KRAFT-12OZ. */
+    /**
+     * A product published through the storefront's real path, so the catalog search finds it: EVAL-KRAFT-12OZ, with
+     * stock, so a question that names it in words has a figure at the end of the chain.
+     */
     private void published() {
         UUID product = UUID.randomUUID();
         UUID variant = UUID.randomUUID();
@@ -234,6 +247,7 @@ final class GoldenFixtures {
                     where id=?""", product);
         });
         catalog.project(product);
+        alerts.stock("EVAL-KRAFT-12OZ", AlertFixtures.HCM_BIN_2, 120, "AVAILABLE", null, null);
     }
 
     private void history(UUID order, String from, String to, String reason, Instant at) {
@@ -307,11 +321,18 @@ final class GoldenFixtures {
                 "HCM-RCV01", "HCM-B01-1-A", 3, StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK,
                 Identifiers.newId(), clerk, "putaway", receivedAt)));
         UUID order = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                     currency, placed_at, version, created_at)
-                VALUES (?, 'SO-20991231-900003', ?, ?, 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW())""",
-                order, DemoData.CUSTOMER_ID, UUID.randomUUID()));
+        // With its line: the order aggregate refuses an order without one, so a lineless row breaks every reader that
+        // loads it (findOrder, findOrders, the sales rollup) instead of only the lot trace it was written for.
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
+                                                         currency, placed_at, version, created_at)
+                    VALUES (?, 'SO-20991231-900003', ?, ?, 'PENDING_PAYMENT', 3000, 'VND', NOW(), 0, NOW())""",
+                    order, DemoData.CUSTOMER_ID, UUID.randomUUID());
+            jdbc.update("""
+                    INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
+                    VALUES (?, ?, ?, 3, 1000, 'VND')""", Identifiers.newId(), order, LOT_SKU);
+        });
         tx.executeWithoutResult(s -> inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(LOT_SKU), 3,
                 order)));
         List<StockReservation> allocated = tx.execute(s -> inventory.allocate(new AllocateStockCommand(order, "HCM")))

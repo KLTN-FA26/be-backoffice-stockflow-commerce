@@ -48,4 +48,15 @@ class GoldenScorerTest {
                 "1. Còn 40 cái, hết hạn 04/11/2026; doanh thu 12.500.000 ₫.", sources)).isEmpty();
         assertThat(GoldenScorer.ungroundedNumbers("Còn khoảng 45 cái", sources)).containsExactly("45");
     }
+
+    @Test
+    @DisplayName("what the prompt lets the model work out inside one record is grounded; arithmetic across records is "
+            + "not")
+    void workedOut() {
+        List<String> sources = List.of("{\"lines\":[{\"sku\":\"CUP-12OZ\",\"ordered\":5000,\"shipped\":3000,"
+                + "\"closed\":500},{\"sku\":\"LID-90\",\"ordered\":800,\"shipped\":0,\"closed\":0}],\"total\":14}");
+        assertThat(GoldenScorer.ungroundedNumbers("Còn 1.500 cốc sắp giao", sources)).isEmpty();
+        assertThat(GoldenScorer.ungroundedNumbers("Còn 12 PO chưa liệt kê", sources)).isEmpty();
+        assertThat(GoldenScorer.ungroundedNumbers("Tổng cộng 5.800 cái", sources)).containsExactly("5.800");
+    }
 }

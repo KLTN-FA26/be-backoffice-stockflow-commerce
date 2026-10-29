@@ -11,6 +11,9 @@ import java.util.Objects;
 public record PendingMessage(Turn turn, String text, String model, LanguageModel.StopReason stopReason,
                              LanguageModel.Usage usage, List<ToolExecution> executions) {
 
+    /** The model name recorded on a closing turn: written by the application, not produced by a model call. */
+    public static final String CLOSING_MODEL = "stockflow";
+
     public PendingMessage {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(usage, "usage");
@@ -36,6 +39,17 @@ public record PendingMessage(Turn turn, String text, String model, LanguageModel
 
     public static PendingMessage results(Turn.ToolResults results) {
         return new PendingMessage(results, null, null, null, LanguageModel.Usage.NONE, List.of());
+    }
+
+    /**
+     * A turn the application writes to end an answer ({@link LanguageModel#closingTurn}): it carries
+     * {@link #CLOSING_MODEL} and costs nothing. Its text may begin with what the model wrote before it was stopped,
+     * so the text a person reads is made plain like any reply's. One stored right after a question means the provider
+     * never replied to it, and the daily cap leaves that question out ({@link ConversationRepository#questionsSince}).
+     */
+    public static PendingMessage closing(Turn.ModelTurn turn) {
+        return new PendingMessage(turn, AnswerText.plain(turn.text()), CLOSING_MODEL, LanguageModel.StopReason.OTHER,
+                LanguageModel.Usage.NONE, List.of());
     }
 
     public MessageRole role() {

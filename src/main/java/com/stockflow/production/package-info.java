@@ -11,14 +11,15 @@
  * ACTIVE before a new sample takes it). Plus {@code common} and
  * {@code contracts}, which are available to every module.</p>
  *
- * <p>Nothing depends on this module: the order module learns what production did from
- * {@code SampleApproved} and {@code ProductionCompleted} and keeps its own record, so {@code order} never
- * imports {@code production} and the two cannot form a cycle.</p>
+ * <p>Only the back-office assistant depends on this module, through {@code api}, to read production orders
+ * (ADR-0010); nothing depends on the assistant, so that cannot form a cycle. The order module learns what
+ * production did from {@code SampleApproved} and {@code ProductionCompleted} and keeps its own record, so
+ * {@code order} never imports {@code production} and the two cannot form a cycle either.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
- *   <li>{@code api} — the public API, exposed as a named interface. Empty today: no other module calls
- *       production.</li>
+ *   <li>{@code api} — the public API, exposed as a named interface: {@code ProductionOrderQueries}, production
+ *       orders by number, by sales order or by status, under the rules of the production orders screen.</li>
  *   <li>{@code internal} — everything else, invisible to other modules. The compiler will not stop
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>

@@ -11,12 +11,16 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
+import java.net.SocketTimeoutException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,12 +30,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withException;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /**
  * The Gemini adapter's translation to and from the API's JSON, and its retries, without a network: what a reply
- * becomes, what a history is sent as, what a tool declaration looks like, and when a failed call is tried again.
+ * becomes, what a history is sent as, what a tool declaration looks like, when a failed call is tried again, and which
+ * error a user gets when it is not.
  */
 class GeminiLanguageModelTest {
 
@@ -39,6 +45,7 @@ class GeminiLanguageModelTest {
     private static final AssistantProperties PROPERTIES = new AssistantProperties(true, "test-key",
             "gemini-3.5-flash", "low", 6, 16000, 50, 90, Duration.ofSeconds(90), Duration.ofMinutes(15), true, "",
             "gemini");
+    private static final String PATH = "http://gemini.test/v1beta/models/gemini-3.5-flash:generateContent";
 
     /** A reply the way the API returns one: a function call with an id and a thought signature. */
     private static final String TOOL_REPLY = """
@@ -50,6 +57,36 @@ class GeminiLanguageModelTest {
                               "cachedContentTokenCount":900},
              "modelVersion":"gemini-3.6-flash"}""";
 
+    /**
+     * The free tier's daily refusal in the shape Google has also sent it: a per-day quota beside a {@code RetryInfo}
+     * of half a minute, which read alone looks like the per-minute quota.
+     */
+    private static final String DAY_SPENT_SHORT_RETRY = """
+            {"error":{"code":429,"status":"RESOURCE_EXHAUSTED",
+              "message":"You exceeded your current quota, please check your plan and billing details.",
+              "details":[
+                {"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[
+                  {"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests",
+                   "quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                   "quotaDimensions":{"location":"global","model":"gemini-3.5-flash"},"quotaValue":"20"}]},
+                {"@type":"type.googleapis.com/google.rpc.Help","links":[
+                  {"description":"Learn more about Gemini API quotas",
+                   "url":"https://ai.google.dev/gemini-api/docs/rate-limits"}]},
+                {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"33s"}]}}""";
+
+    /** The daily refusal as the playground received it on 2026-10-28: "retry after 74900s", until midnight Pacific. */
+    private static final String DAY_SPENT_LONG_RETRY = """
+            {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota",
+              "details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"74900s"}]}}""";
+
+    /** The per-minute quota: it frees up within the minute, so it is waited for. */
+    private static final String MINUTE_SPENT = """
+            {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota",
+              "details":[
+                {"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[
+                  {"quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]},
+                {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3s"}]}}""";
+
     private final List<Long> slept = new ArrayList<>();
 
     private GeminiLanguageModel model(RestClient client) {
@@ -58,6 +95,10 @@ class GeminiLanguageModelTest {
 
     private GeminiLanguageModel offline() {
         return model(RestClient.create("http://gemini.test"));
+    }
+
+    private JsonNode error(String body) {
+        return offline().error(body);
     }
 
     @Test
@@ -98,6 +139,34 @@ class GeminiLanguageModelTest {
         assertThat(offline().reply(JSON.readTree("""
                 {"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}"""), "m").stopReason())
                 .isEqualTo(LanguageModel.StopReason.REFUSAL);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "TOO_MANY_TOOL_CALLS", "STOP", "OTHER"})
+    @DisplayName("a candidate with neither text nor a call is OTHER whatever its finish reason, never an empty "
+            + "END_TURN")
+    void silenceIsNotAnAnswer(String finish) throws Exception {
+        LanguageModel.Reply reply = offline().reply(JSON.readTree("""
+                {"candidates":[{"content":{"role":"model"},"finishReason":"%s",
+                  "finishMessage":"Malformed function call: print(default_api.findExpiringLots(days=30))"}]}"""
+                .formatted(finish)), "m");
+
+        assertThat(reply.stopReason()).isEqualTo(LanguageModel.StopReason.OTHER);
+        assertThat(reply.turn().text()).isNull();
+        assertThat(reply.turn().toolCalls()).isEmpty();
+        // Still a valid model content, so the next request's history replays.
+        assertThat(JSON.readTree(reply.turn().providerContent()).path("parts")).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("a STOP holding only thinking answered nothing either")
+    void thinkingIsNotAnAnswer() throws Exception {
+        LanguageModel.Reply reply = offline().reply(JSON.readTree("""
+                {"candidates":[{"content":{"role":"model","parts":[{"text":"weighing it","thought":true}]},
+                  "finishReason":"STOP"}]}"""), "m");
+
+        assertThat(reply.stopReason()).isEqualTo(LanguageModel.StopReason.OTHER);
+        assertThat(reply.turn().text()).isNull();
     }
 
     @Test
@@ -158,17 +227,15 @@ class GeminiLanguageModelTest {
     }
 
     @Test
-    @DisplayName("a 429 waits what RetryInfo asks and tries again; the key travels in a header")
+    @DisplayName("a per-minute 429 waits what RetryInfo asks and tries again; the key travels in a header")
     void retriesQuota() {
         RestClient.Builder builder = RestClient.builder().baseUrl("http://gemini.test");
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        String path = "http://gemini.test/v1beta/models/gemini-3.5-flash:generateContent";
-        server.expect(requestTo(path)).andExpect(method(HttpMethod.POST))
+        server.expect(requestTo(PATH)).andExpect(method(HttpMethod.POST))
                 .andExpect(header("x-goog-api-key", "test-key"))
-                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).contentType(MediaType.APPLICATION_JSON).body("""
-                        {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota",
-                          "details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3s"}]}}"""));
-        server.expect(requestTo(path)).andRespond(withSuccess(TOOL_REPLY, MediaType.APPLICATION_JSON));
+                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).contentType(MediaType.APPLICATION_JSON)
+                        .body(MINUTE_SPENT));
+        server.expect(requestTo(PATH)).andRespond(withSuccess(TOOL_REPLY, MediaType.APPLICATION_JSON));
 
         LanguageModel.Reply reply = model(builder.build()).next(request());
 
@@ -178,52 +245,117 @@ class GeminiLanguageModelTest {
     }
 
     @Test
-    @DisplayName("without RetryInfo a 429 waits out the per-minute quota; a 5xx retries soon; a daily quota is not waited for")
+    @DisplayName("without RetryInfo a 429 waits out the per-minute quota; a 5xx retries soon; a longer wait is not "
+            + "taken")
     void retryDelays() {
-        GeminiLanguageModel model = offline();
-        assertThat(model.retryDelay("{}", 429, 0)).contains(Duration.ofSeconds(15));
-        assertThat(model.retryDelay("{}", 429, 1)).contains(Duration.ofSeconds(30));
-        assertThat(model.retryDelay("not json", 503, 1)).contains(Duration.ofSeconds(4));
-        assertThat(model.retryDelay("""
-                {"error":{"details":[{"retryDelay":"42s"}]}}""", 429, 0)).contains(Duration.ofSeconds(42));
-        // GenerateRequestsPerDayPerProjectPerModel-FreeTier answers "retry after 74900s".
-        assertThat(model.retryDelay("""
-                {"error":{"details":[{"retryDelay":"74900s"}]}}""", 429, 0)).isEmpty();
+        assertThat(GeminiLanguageModel.retryDelay(error("{}"), 429, 0)).contains(Duration.ofSeconds(15));
+        assertThat(GeminiLanguageModel.retryDelay(error("{}"), 429, 1)).contains(Duration.ofSeconds(30));
+        assertThat(GeminiLanguageModel.retryDelay(error("not json"), 503, 1)).contains(Duration.ofSeconds(4));
+        assertThat(GeminiLanguageModel.retryDelay(error("""
+                {"error":{"details":[{"retryDelay":"42s"}]}}"""), 429, 0)).contains(Duration.ofSeconds(42));
+        assertThat(GeminiLanguageModel.retryDelay(error("""
+                {"error":{"details":[{"retryDelay":"-5s"}]}}"""), 503, 0)).contains(Duration.ofSeconds(2));
+        assertThat(GeminiLanguageModel.retryDelay(error(DAY_SPENT_LONG_RETRY), 503, 0)).isEmpty();
     }
 
     @Test
-    @DisplayName("a daily quota fails at once instead of waiting twice for the same 429")
-    void dailyQuota() {
+    @DisplayName("a 429 is a spent quota when QuotaFailure names a per-day quota or RetryInfo asks for over a minute")
+    void quotaSpent() {
+        assertThat(GeminiLanguageModel.quotaSpent(error(DAY_SPENT_SHORT_RETRY))).isTrue();
+        assertThat(GeminiLanguageModel.quotaSpent(error(DAY_SPENT_LONG_RETRY))).isTrue();
+        assertThat(GeminiLanguageModel.quotaSpent(error(MINUTE_SPENT))).isFalse();
+        assertThat(GeminiLanguageModel.quotaSpent(error("{}"))).isFalse();
+        assertThat(GeminiLanguageModel.quotaSpent(error("not json"))).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {DAY_SPENT_LONG_RETRY, DAY_SPENT_SHORT_RETRY})
+    @DisplayName("a spent daily quota fails at once as ASSISTANT_QUOTA_EXHAUSTED: nothing is waited for or retried")
+    void dailyQuota(String body) {
         RestClient.Builder builder = RestClient.builder().baseUrl("http://gemini.test");
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        server.expect(requestTo("http://gemini.test/v1beta/models/gemini-3.5-flash:generateContent"))
-                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).contentType(MediaType.APPLICATION_JSON).body("""
-                        {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota",
-                          "details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"74900s"}]}}"""));
+        server.expect(ExpectedCount.once(), requestTo(PATH))
+                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).contentType(MediaType.APPLICATION_JSON)
+                        .body(body));
 
         assertThatThrownBy(() -> model(builder.build()).next(request()))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE));
+                .isInstanceOfSatisfying(BusinessException.class, e -> {
+                    assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED);
+                    assertThat(e.errorCode().httpStatus()).isEqualTo(429);
+                    assertThat(e.errorCode().isRetryable()).as("asking again meets the same refusal").isFalse();
+                    // A 4xx message reaches the client: nothing of Google's own words is in it.
+                    assertThat(e.getMessage()).doesNotContain("You exceeded", "FreeTier", "gemini");
+                });
+        assertThat(slept).isEmpty();
+        server.verify();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {400, 401, 403, 404})
+    @DisplayName("400, 401, 403 and 404 are the key, the model or our request: ASSISTANT_MISCONFIGURED, never retried")
+    void misconfigured(int status) {
+        RestClient.Builder builder = RestClient.builder().baseUrl("http://gemini.test");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(ExpectedCount.once(), requestTo(PATH))
+                .andRespond(withStatus(HttpStatus.valueOf(status)).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\":{\"code\":" + status + ",\"status\":\"INVALID_ARGUMENT\","
+                                + "\"message\":\"API key not valid. Please pass a valid API key.\"}}"));
+
+        assertThatThrownBy(() -> model(builder.build()).next(request()))
+                .isInstanceOfSatisfying(BusinessException.class, e -> {
+                    assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_MISCONFIGURED);
+                    assertThat(e.errorCode().isRetryable()).isFalse();
+                    assertThat(e.getMessage()).doesNotContain("API key not valid");
+                });
         assertThat(slept).isEmpty();
         server.verify();
     }
 
     @Test
-    @DisplayName("a 400 is our bug: no retry, ASSISTANT_UNAVAILABLE, and the provider's words stay in the log")
-    void rejected() {
+    @DisplayName("a 5xx is tried again twice, then ASSISTANT_UNAVAILABLE, which a user may retry")
+    void serverErrors() {
         RestClient.Builder builder = RestClient.builder().baseUrl("http://gemini.test");
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        server.expect(requestTo("http://gemini.test/v1beta/models/gemini-3.5-flash:generateContent"))
-                .andRespond(withStatus(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
-                        .body("{\"error\":{\"code\":400,\"status\":\"INVALID_ARGUMENT\",\"message\":\"bad schema\"}}"));
+        server.expect(ExpectedCount.times(3), requestTo(PATH))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\",\"message\":\"overloaded\"}}"));
 
         assertThatThrownBy(() -> model(builder.build()).next(request()))
                 .isInstanceOfSatisfying(BusinessException.class, e -> {
                     assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE);
-                    assertThat(e.getMessage()).doesNotContain("bad schema");
+                    assertThat(e.errorCode().isRetryable()).isTrue();
                 });
-        assertThat(slept).isEmpty();
+        assertThat(slept).containsExactly(2000L, 4000L);
         server.verify();
+    }
+
+    @Test
+    @DisplayName("a timeout is tried again twice, then ASSISTANT_UNAVAILABLE")
+    void timeouts() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("http://gemini.test");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(ExpectedCount.times(3), requestTo(PATH))
+                .andRespond(withException(new SocketTimeoutException("Read timed out")));
+
+        assertThatThrownBy(() -> model(builder.build()).next(request()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE));
+        assertThat(slept).containsExactly(2000L, 4000L);
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("the log line keeps Google's status and words, but not a key the message quotes back")
+    void errorSummaryHidesKeys() {
+        // Built at run time, so no key-shaped literal sits in the repository for a secret scanner to flag.
+        String key = "AIza" + "x".repeat(35);
+        String summary = GeminiLanguageModel.errorSummary(error("""
+                {"error":{"code":403,"status":"PERMISSION_DENIED",
+                  "message":"Consumer 'api_key:%s' has been suspended."}}""".formatted(key)));
+
+        assertThat(summary).startsWith("PERMISSION_DENIED").contains("has been suspended", "[key]")
+                .doesNotContain(key);
+        assertThat(GeminiLanguageModel.errorSummary(error("not json"))).isEqualTo("(unreadable body)");
     }
 
     @Test
@@ -235,6 +367,23 @@ class GeminiLanguageModelTest {
         assertThat(content.path("role").asText()).isEqualTo("model");
         assertThat(content.path("parts").path(0).path("text").asText()).isEqualTo("Xin hỏi hẹp hơn.");
         assertThat(closing.toolCalls()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("the answer's last call offers no function, keeps the declarations, and ends with the note")
+    void lastCall() throws Exception {
+        GeminiLanguageModel model = offline();
+        LanguageModel.Request last = new LanguageModel.Request("system", request().tools(), request().history(),
+                false, "Note from the system: answer now.");
+
+        JsonNode body = model.body(last);
+
+        assertThat(body.path("toolConfig").path("functionCallingConfig").path("mode").asText()).isEqualTo("NONE");
+        assertThat(body.path("tools").path(0).path("functionDeclarations")).hasSize(1);
+        JsonNode parts = body.path("contents").path(0).path("parts");
+        assertThat(parts.get(parts.size() - 1).path("text").asText()).isEqualTo("Note from the system: answer now.");
+        assertThat(model.body(request()).path("toolConfig").path("functionCallingConfig").path("mode").asText())
+                .isEqualTo("AUTO");
     }
 
     private static LanguageModel.Request request() {

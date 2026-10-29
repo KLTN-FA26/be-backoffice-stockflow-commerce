@@ -11,6 +11,11 @@ import java.util.List;
  * <p>Company-wide, like available-to-promise, and in base units: a line entered in a packing unit stores its
  * base-unit quantity ({@code ordered_qty = unit_qty × factor}, V20261020000400). Standard purchase orders only: a
  * subcontract order buys printing for one production order, and its goods are spoken for.</p>
+ *
+ * <p><b>The supplier's answer counts, lateness is reported.</b> A refusal is recorded beside the order's status and
+ * does not move it: the order stays CONFIRMED until somebody cancels it, and receiving refuses it. Counted as on order,
+ * those units would hold back the very purchase that replaces them, so they are reported apart. A late order is
+ * different: it usually still arrives, so its units stay on order and are only flagged as overdue.</p>
  */
 public interface OnOrderQueries {
 

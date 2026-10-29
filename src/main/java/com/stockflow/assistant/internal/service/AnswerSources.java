@@ -79,7 +79,11 @@ public final class AnswerSources {
         return value.isTextual() ? value.asText() : null;
     }
 
-    /** Written by the tool's own Jackson, as ISO-8601 text or as epoch seconds, depending on the mapper. */
+    /**
+     * Written by {@code AssistantTools} as Vietnam time with its offset ({@code 2026-10-28T16:54:09+07:00}); a result
+     * stored before that is UTC text. {@code Instant.parse} reads both; epoch seconds are read for a mapper that
+     * writes dates as timestamps.
+     */
     private static Instant instant(JsonNode value) {
         if (value.isTextual()) {
             return Instant.parse(value.asText());

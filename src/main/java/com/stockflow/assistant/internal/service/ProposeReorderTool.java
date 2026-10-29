@@ -9,6 +9,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.api.IncomingStockQueries;
@@ -77,7 +78,11 @@ class ProposeReorderTool implements AssistantTool {
                     + "result is rounded up to the preferred supplier's minimum order and pack size. Returns every "
                     + "input per SKU, warnings, and one proposal per supplier the user can open as a purchase order "
                     + "form. It creates nothing. Explain the numbers and every warning; never change the numbers. "
-                    + "Units on draft or pending-approval purchase orders are reported, not subtracted: mention them.",
+                    + "Units on draft or pending-approval purchase orders are reported, not subtracted: mention them. "
+                    + "Units on purchase orders the supplier refused are not subtracted either (SUPPLIER_REJECTED: the "
+                    + "order still shows CONFIRMED until someone cancels it; say it needs cancelling or replacing). "
+                    + "Units on order past their expected date are subtracted but flagged (PURCHASE_ORDER_OVERDUE: say "
+                    + "they are late and may not arrive in time).",
             ToolSchema.object()
                     .strings("skus", "The SKU codes, 1 to " + MAX_SKUS)
                     .integer("salesDays", "Sales period to average over, in whole days ending yesterday, 7 to 90")
@@ -120,13 +125,24 @@ class ProposeReorderTool implements AssistantTool {
     }
 
     @Override
+    public ScopeLimit scopeLimit() {
+        return ScopeLimit.COMPANY_WIDE_ONLY;
+    }
+
+    /** Sales, stock and supplier terms, each read on its own screen; {@link #run} checks exactly these. */
+    @Override
+    public List<PermissionCode> alsoRequires() {
+        return List.of(PermissionCode.of(ToolPermissions.REPORTS, Action.READ),
+                PermissionCode.of(ToolPermissions.INVENTORY_STOCK_ITEMS, Action.READ),
+                PermissionCode.of(ToolPermissions.SUPPLIER_ITEMS, Action.READ));
+    }
+
+    @Override
     @RequiresPermission(resource = ToolPermissions.PURCHASE_ORDERS, action = Action.CREATE)
     public Answer run(ToolArguments arguments) {
         CurrentUser user = currentUsers.current()
                 .orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHORIZED));
-        user.require(ToolPermissions.REPORTS, Action.READ);
-        user.require(ToolPermissions.INVENTORY_STOCK_ITEMS, Action.READ);
-        user.require(ToolPermissions.SUPPLIER_ITEMS, Action.READ);
+        alsoRequires().forEach(permission -> user.require(permission.resource(), permission.action()));
         Set<String> skus = new LinkedHashSet<>();
         for (String code : arguments.texts("skus", MAX_SKUS, Sku.MAX_LENGTH)) {
             skus.add(new Sku(code).code());
@@ -188,6 +204,12 @@ class ProposeReorderTool implements AssistantTool {
         if (onOrder != null && onOrder.awaitingApproval() > 0) {
             warnings.add("DRAFT_PURCHASE_ORDERS");
         }
+        if (onOrder != null && onOrder.rejectedBySupplier() > 0) {
+            warnings.add("SUPPLIER_REJECTED");
+        }
+        if (onOrder != null && onOrder.overdue() > 0) {
+            warnings.add("PURCHASE_ORDER_OVERDUE");
+        }
         if (arriving != null && arriving.quarantine() > 0) {
             warnings.add("STOCK_ON_QC_HOLD");
         }
@@ -196,10 +218,11 @@ class ProposeReorderTool implements AssistantTool {
                 new Basis(units, salesDays, suggestion.averageDailySales(), firstSoldOn, sinceFirstSale,
                         supplier.isPresent() ? leadTime : null, coverDays, policy.safetyStock(), policy.maxQty(),
                         suggestion.target(), suggestion.cappedAtMax(), available,
-                        onOrder == null ? 0 : onOrder.onOrder(), onOrder == null ? null : onOrder.nextExpectedDate(),
+                        onOrder == null ? 0 : onOrder.onOrder(), onOrder == null ? 0 : onOrder.overdue(),
+                        onOrder == null ? null : onOrder.nextExpectedDate(),
                         arriving == null ? 0 : arriving.inbound(), arriving == null ? 0 : arriving.inTransit(),
                         suggestion.position(), suggestion.need(), onOrder == null ? 0 : onOrder.awaitingApproval(),
-                        arriving == null ? 0 : arriving.quarantine(),
+                        onOrder == null ? 0 : onOrder.rejectedBySupplier(), arriving == null ? 0 : arriving.quarantine(),
                         supplier.map(SkuSupplierSummary::moq).orElse(null),
                         supplier.map(SkuSupplierSummary::packSize).orElse(null), suggestion.roundedFor()),
                 supplier.map(SkuSupplierSummary::supplierCode).orElse(null),
@@ -241,7 +264,9 @@ class ProposeReorderTool implements AssistantTool {
 
     /**
      * @param warnings NOT_PURCHASABLE, NO_ACTIVE_SUPPLIER (no proposal for either), SHORT_HISTORY (the SKU first sold
-     *                 late in the period, so the average understates it), DRAFT_PURCHASE_ORDERS, STOCK_ON_QC_HOLD
+     *                 late in the period, so the average understates it), DRAFT_PURCHASE_ORDERS, STOCK_ON_QC_HOLD,
+     *                 SUPPLIER_REJECTED (units on an order the supplier refused: not counted as coming),
+     *                 PURCHASE_ORDER_OVERDUE (part of onOrder is past its expected date)
      */
     record Line(String sku, long suggestedQuantity, List<String> warnings, Basis basis, String supplierCode,
                 String supplierName) {
@@ -251,8 +276,9 @@ class ProposeReorderTool implements AssistantTool {
     record Basis(long unitsSold, int salesDays, BigDecimal averageDailySales, LocalDate firstSoldOn,
                  BigDecimal averageSinceFirstSale, Integer leadTimeDays, int coverDays, Integer safetyStock,
                  Integer maxQty, long target, boolean cappedAtMax, int availableToPromise, int onOrder,
-                 LocalDate nextExpectedDate, int inbound, int inTransit, long position, long need,
-                 int onDraftPurchaseOrders, int onQcHold, Integer moq, Integer packSize, String roundedFor) {
+                 int overdueOnOrder, LocalDate nextExpectedDate, int inbound, int inTransit, long position, long need,
+                 int onDraftPurchaseOrders, int rejectedBySupplier, int onQcHold, Integer moq, Integer packSize,
+                 String roundedFor) {
     }
 
     /** What the frontend pre-fills into the create-PO form; the user decides and submits. */

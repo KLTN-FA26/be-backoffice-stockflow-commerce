@@ -23,24 +23,34 @@ public interface LanguageModel {
      * One model turn.
      *
      * @throws com.stockflow.common.error.BusinessException {@code ASSISTANT_UNAVAILABLE} when the provider cannot be
-     *         reached or refuses the request after its own retries; {@code ASSISTANT_DISABLED} when
-     *         {@link #available()} is false
+     *         reached, times out or fails after the adapter's own retries (worth asking again);
+     *         {@code ASSISTANT_QUOTA_EXHAUSTED} when its quota is spent and {@code ASSISTANT_MISCONFIGURED} when it
+     *         refuses the key, the model name or the request (neither is worth asking again);
+     *         {@code ASSISTANT_DISABLED} when {@link #available()} is false
      */
     Reply next(Request request);
 
     /**
      * A model turn holding only {@code text}, in the provider's own format, for the loop to close an answer the model
-     * did not finish (it ran out of tool rounds, was cut off, or declined). Stored and replayed like any other turn,
-     * so the history the provider sees next time stays well formed. No call is made.
+     * did not finish (it ran out of lookups or time, was cut off or declined, or the provider failed). Stored and
+     * replayed like any other turn, so the history the provider sees next time stays well formed. No call is made.
      */
     Turn.ModelTurn closingTurn(String text);
 
     /**
      * @param systemPrompt the instructions, byte-identical on every call so the provider can cache them
-     * @param tools        sorted by name, for the same reason
+     * @param tools        sorted by name, for the same reason. Every tool on every call, the last one included: the
+     *                     history holds calls to them, which a provider may refuse to read without their declarations
      * @param history      the conversation so far, oldest first, ending with a user-side turn
+     * @param toolsAllowed false on the answer's last call: the adapter must not let the model call a tool (Anthropic
+     *                     {@code tool_choice: none}, Gemini {@code functionCallingConfig.mode: NONE}). The model then
+     *                     answers from the results it already has, instead of asking for a lookup the loop would not
+     *                     run and leaving every result already in without an answer
+     * @param note         a line from the application, not from the user, that the adapter sends after the history,
+     *                     in its last user-side message: why this call is the last, or that the previous reply was
+     *                     empty. Sent with this call only and not stored; null for none
      */
-    record Request(String systemPrompt, List<ToolSpec> tools, List<Turn> history) {
+    record Request(String systemPrompt, List<ToolSpec> tools, List<Turn> history, boolean toolsAllowed, String note) {
 
         public Request {
             Objects.requireNonNull(systemPrompt, "systemPrompt");
@@ -49,6 +59,14 @@ public interface LanguageModel {
             if (history.isEmpty() || !history.getLast().fromUser()) {
                 throw new IllegalArgumentException("a request ends with a question or tool results");
             }
+            if (note != null && note.isBlank()) {
+                throw new IllegalArgumentException("a note says something, or is null");
+            }
+        }
+
+        /** An ordinary call: any tool may be called, and there is no note. */
+        public Request(String systemPrompt, List<ToolSpec> tools, List<Turn> history) {
+            this(systemPrompt, tools, history, true, null);
         }
     }
 
@@ -65,9 +83,15 @@ public interface LanguageModel {
         }
     }
 
-    /** Why the model stopped. Only {@link #TOOL_USE} lets the loop run the tools it asked for. */
+    /**
+     * Why the model stopped. Only {@link #TOOL_USE} lets the loop run the tools it asked for.
+     *
+     * <p>A reply with neither text nor a tool call is empty whatever its stop reason — a function call the provider
+     * could not parse, an empty stop after tool results — except a cut-off or declined one, which has its own message.
+     * The loop asks again once, then says it could not answer; it never shows such a reply as "no answer found".</p>
+     */
     enum StopReason {
-        /** It answered. */
+        /** It answered: a reply with text. */
         END_TURN,
         /** It asked for tools and waits for their results. */
         TOOL_USE,
@@ -75,7 +99,10 @@ public interface LanguageModel {
         MAX_TOKENS,
         /** The provider's safeguards declined; any tool call in it is never run. */
         REFUSAL,
-        /** Anything else the provider reports. */
+        /**
+         * Anything else, including a reply with neither text nor a tool call (a malformed function call, an empty end
+         * of turn): the model did not answer.
+         */
         OTHER
     }
 

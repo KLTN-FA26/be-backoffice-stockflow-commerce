@@ -59,7 +59,8 @@ class StockAlertQueriesImpl implements StockAlertQueries {
                         .thenComparing(StockAlerts.AlertView::sku))
                 .map(alert -> new ExpiryAlertView(alert.sku(), alert.warehouseCode(), alert.lotNumber(),
                         alert.expiryDate(), alert.daysToExpiry(), alert.observedQty(),
-                        alert.kind() == StockAlert.Kind.EXPIRED, alert.status() == StockAlert.Status.ACKNOWLEDGED))
+                        alert.kind() == StockAlert.Kind.EXPIRED, alert.status() == StockAlert.Status.ACKNOWLEDGED,
+                        alert.lastObservedAt(), alert.reservationImpaired()))
                 .toList();
         List<ExpiryAlertView> expiring = sorted.stream()
                 .filter(alert -> !alert.expired()

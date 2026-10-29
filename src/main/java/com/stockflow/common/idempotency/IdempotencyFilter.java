@@ -16,6 +16,9 @@ import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Role;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.InvalidMediaTypeException;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.util.ContentCachingResponseWrapper;
@@ -25,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -34,7 +38,8 @@ import java.util.Set;
  *
  * <h2>What it does</h2>
  * <ol>
- *   <li>No header, or a safe method (GET/HEAD/OPTIONS) — does nothing at all.</li>
+ *   <li>No header, a safe method (GET/HEAD/OPTIONS), or a request for an event stream — does
+ *       nothing at all (see {@link #asksForStream}).</li>
  *   <li>Claims the key atomically. First arrival wins and proceeds.</li>
  *   <li>A duplicate whose original <b>completed</b> gets the stored status and body back, byte for
  *       byte, and the real handler never runs. That is the whole point: a retried checkout returns
@@ -58,7 +63,8 @@ import java.util.Set;
  * <p>{@code @Order(20)} puts it after {@code CorrelationIdFilter} (so replays are traceable) and
  * before the controller. The response is wrapped so its bytes can be stored — which means the body
  * is held in heap and written out at the end. Acceptable for JSON API responses; the filter skips
- * multipart requests entirely so a file upload is never buffered on either side.</p>
+ * multipart requests entirely so a file upload is never buffered on either side, and an event
+ * stream, which has no end to wait for.</p>
  *
  * <p>Only <i>settled</i> outcomes are stored — see {@link #isStorable(int)}. Anything that means
  * "try again" (5xx, 429, 409, 408) releases the claim instead, so the retry the response asked for
@@ -98,6 +104,12 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
      */
     private static final Duration RETENTION = Duration.ofHours(24);
 
+    /**
+     * How this API names an endpoint that answers as server-sent events: the assistant's
+     * {@code .../messages/stream}.
+     */
+    private static final String STREAM_PATH_END = "/stream";
+
     private final IdempotencyStore store;
     private final CurrentUserProvider currentUserProvider;
     private final ObjectMapper objectMapper;
@@ -119,6 +131,9 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
         if (request.getHeader(IdempotencyKeys.HEADER) == null) {
             return true;
         }
+        if (asksForStream(request)) {
+            return true;
+        }
         String contentType = request.getHeader("Content-Type");
         if (contentType == null) {
             return false;
@@ -135,6 +150,41 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
         // binding bug rather than a filter bug. This API is JSON, so skipping is the honest answer;
         // supporting it means overriding the parameter methods, not relaxing this check.
         return type.startsWith("multipart/") || type.startsWith("application/x-www-form-urlencoded");
+    }
+
+    /**
+     * Whether the request is for a stream of server-sent events, whose response this filter must
+     * leave alone.
+     *
+     * <p>The wrapper holds a response in memory until the handler returns, and a streaming handler
+     * returns as soon as the stream starts: the client would receive none of the events, and the
+     * empty 200 of that moment would be stored and replayed for the whole retention window. Nor
+     * could a stream be replayed if it were stored, so there is no protection to give it here.
+     * It is decided before anything is wrapped, from the request alone: a path ending in
+     * {@code /stream}, because a client may send {@code Accept: *}{@code /*} or none at all and
+     * still reach the stream; or an {@code Accept} that takes {@code text/event-stream} and nothing
+     * else. A client that accepts JSON as well gets JSON from every other endpoint, and keeps its
+     * protection there.</p>
+     *
+     * <p>An endpoint whose retry must not run twice refuses the header itself, so the client learns
+     * at once that it was not honoured: the assistant's stream answers 400.</p>
+     */
+    private static boolean asksForStream(HttpServletRequest request) {
+        if (request.getRequestURI().endsWith(STREAM_PATH_END)) {
+            return true;
+        }
+        String accept = request.getHeader(HttpHeaders.ACCEPT);
+        if (accept == null || accept.isBlank()) {
+            return false;
+        }
+        try {
+            List<MediaType> accepted = MediaType.parseMediaTypes(accept);
+            return !accepted.isEmpty() && accepted.stream()
+                    .allMatch(MediaType.TEXT_EVENT_STREAM::equalsTypeAndSubtype);
+        } catch (InvalidMediaTypeException unreadable) {
+            // Not ours to reject here; the request is guarded like any other.
+            return false;
+        }
     }
 
     @Override
@@ -168,6 +218,17 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
         boolean stored = false;
         try {
             chain.doFilter(buffered, captured);
+
+            if (request.isAsyncStarted()) {
+                // Nothing is settled while the handler answers on another thread: storing now
+                // would keep an empty response for the retention window, and the claim must not
+                // stay IN_PROGRESS either. Only an asynchronous endpoint that asksForStream does
+                // not recognise gets here, which is a defect, so it is logged.
+                log.warn("{} {} carried an Idempotency-Key but answered asynchronously, which this "
+                                + "filter cannot buffer: the key was released", request.getMethod(),
+                        LogSafe.text(request.getRequestURI()));
+                return;
+            }
 
             int status = captured.getStatus();
             if (isStorable(status)) {

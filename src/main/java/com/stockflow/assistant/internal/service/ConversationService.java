@@ -16,6 +16,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.security.CurrentUser;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
@@ -23,6 +24,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -57,38 +59,28 @@ public class ConversationService {
     }
 
     /**
-     * What a person reads: questions and answers, each answer with the tool calls made for it. Tool results and
-     * tool-only turns are not messages to anyone; their calls are folded into the answer that follows them.
+     * What a person reads: each question, then the answer it got — the last text the assistant wrote for it, with
+     * every tool call made for it, read exactly as the live answer is ({@link TranscriptEntry#answer}). Tool results
+     * and tool-only turns are not messages to anyone, and neither is an interim line the model wrote beside a tool
+     * call ("let me check the rule"): its calls, citations and proposals belong to the answer that follows.
      */
     @Transactional(readOnly = true)
     public List<TranscriptEntry> transcript(UUID conversationId) {
         conversations.findInScope(conversationId)
                 .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
         List<TranscriptEntry> entries = new ArrayList<>();
-        List<ToolExecution> calls = new ArrayList<>();
+        List<Message> exchange = new ArrayList<>();
         for (Message message : conversations.messagesInScope(conversationId)) {
-            switch (message.role()) {
-                case USER -> {
-                    calls.clear();
-                    entries.add(new TranscriptEntry(message.id(), message.sequence(), MessageRole.USER,
-                            message.text(), message.createdAt(), List.of(), false, List.of(), List.of()));
-                }
-                case ASSISTANT -> {
-                    calls.addAll(message.executions());
-                    if (message.text() != null) {
-                        entries.add(new TranscriptEntry(message.id(), message.sequence(), MessageRole.ASSISTANT,
-                                message.text(), message.createdAt(), calls.stream().map(ToolCallView::of).toList(),
-                                message.stopReason() == LanguageModel.StopReason.MAX_TOKENS,
-                                AnswerSources.citations(message.text(), calls, json),
-                                AnswerSources.proposals(calls, json)));
-                        calls.clear();
-                    }
-                }
-                case TOOL_RESULTS -> {
-                    // Already folded into the calls of the turn that asked for them.
-                }
+            if (message.role() != MessageRole.USER) {
+                exchange.add(message);
+                continue;
             }
+            TranscriptEntry.answer(exchange, json).ifPresent(entries::add);
+            exchange.clear();
+            entries.add(new TranscriptEntry(message.id(), message.sequence(), MessageRole.USER, message.text(),
+                    message.createdAt(), List.of(), false, List.of(), List.of()));
         }
+        TranscriptEntry.answer(exchange, json).ifPresent(entries::add);
         return entries;
     }
 
@@ -122,6 +114,18 @@ public class ConversationService {
         return conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt);
     }
 
+    /**
+     * Releases the claim made at {@code claimedAt}, in a transaction of its own, after an {@link #appendAndRelease}
+     * that failed: its rollback took the release down with the rest, and the conversation would otherwise refuse every
+     * question for the rest of the lease with nothing answering. A claim a later question took over is left alone.
+     *
+     * @see ConversationRepository#release
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void release(UUID conversationId, Instant claimedAt) {
+        conversations.release(conversationId, claimedAt);
+    }
+
     @Transactional(readOnly = true)
     public long questionsSince(UUID ownerUserId, Instant since) {
         return conversations.questionsSince(ownerUserId, since);
@@ -151,6 +155,39 @@ public class ConversationService {
     public record TranscriptEntry(UUID messageId, int sequence, MessageRole role, String text, Instant at,
                                   List<ToolCallView> toolCalls, boolean cutShort, List<String> citations,
                                   List<AnswerSources.Proposal> proposals) {
+
+        /**
+         * The answer read from the messages stored for one question: its last text, every tool call made for it, the
+         * rules that text cites and the proposals those calls returned; cut short if any of its replies was. The live
+         * answer ({@code AssistantService.Answer}) and the reopened transcript are both read here, so the tool chips,
+         * citations and proposals shown under an answer cannot move to another line when the conversation is
+         * reopened.
+         *
+         * @param exchange the messages after the question, in order
+         * @return empty while the question is still being answered: no message holds text yet
+         */
+        static Optional<TranscriptEntry> answer(List<Message> exchange, ObjectMapper json) {
+            Message last = null;
+            List<ToolExecution> executions = new ArrayList<>();
+            boolean cutShort = false;
+            for (Message message : exchange) {
+                if (message.role() != MessageRole.ASSISTANT) {
+                    continue;
+                }
+                executions.addAll(message.executions());
+                cutShort |= message.stopReason() == LanguageModel.StopReason.MAX_TOKENS;
+                if (message.text() != null && !message.text().isBlank()) {
+                    last = message;
+                }
+            }
+            if (last == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new TranscriptEntry(last.id(), last.sequence(), MessageRole.ASSISTANT, last.text(),
+                    last.createdAt(), executions.stream().map(ToolCallView::of).toList(), cutShort,
+                    AnswerSources.citations(last.text(), executions, json),
+                    AnswerSources.proposals(executions, json)));
+        }
     }
 
     public record ToolCallView(String tool, ToolOutcome outcome) {

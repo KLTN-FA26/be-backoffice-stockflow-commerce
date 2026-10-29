@@ -9,6 +9,9 @@ import com.stockflow.assistant.internal.service.AssistantStreams;
 import com.stockflow.assistant.internal.service.ConversationService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.idempotency.IdempotencyKeys;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
@@ -19,6 +22,7 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -27,6 +31,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -46,6 +51,12 @@ import java.util.UUID;
  *
  * <p><b>Back office only.</b> Every handler refuses a portal customer first, even one granted the permission by
  * mistake: the tools mirror staff screens, several of which rely on exactly this check.</p>
+ *
+ * <p><b>Two ways to ask, one budget.</b> The plain and the streamed endpoint share one rate-limit bucket: each has a
+ * bucket of its own by default, and a client alternating them, or falling back from the stream to the plain one after
+ * an error, would get twice the questions a minute the limit is meant to allow. Only the plain one honours an
+ * {@code Idempotency-Key}; a stream can be neither held back nor replayed, so the streamed one refuses the header
+ * instead of ignoring it.</p>
  */
 @RestController
 @RequestMapping("/api/v1/assistant/conversations")
@@ -59,6 +70,12 @@ import java.util.UUID;
         apiPath = "/api/v1/assistant",
         actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE})
 class AssistantController {
+
+    /** The rate-limit bucket both ways of asking draw on (class javadoc). */
+    private static final String QUESTIONS = "assistant-questions";
+
+    /** Questions one user may ask a minute, whichever endpoint they use (design §3.1). */
+    private static final int QUESTIONS_PER_MINUTE = 10;
 
     private final ConversationService conversations;
     private final AssistantService assistant;
@@ -110,10 +127,13 @@ class AssistantController {
     @Operation(summary = "Ask a question and get the answer",
             description = "Needs assistant-conversations:CREATE; what the answer may contain is decided by the "
                     + "caller's other permissions, tool by tool. Send an Idempotency-Key: a retry must not ask twice. "
-                    + "409 ASSISTANT_BUSY while a question in the same conversation is being answered; 429 "
-                    + "ASSISTANT_DAILY_LIMIT; 503 ASSISTANT_UNAVAILABLE (retry) or ASSISTANT_DISABLED (do not).")
+                    + "10 questions a minute per user, shared with the streamed endpoint. 409 ASSISTANT_BUSY while a "
+                    + "question in the same conversation is being answered; 429 ASSISTANT_DAILY_LIMIT, or "
+                    + "ASSISTANT_QUOTA_EXHAUSTED when the model provider's quota is used up (do not retry until it "
+                    + "is renewed); 503 ASSISTANT_UNAVAILABLE (retry), ASSISTANT_MISCONFIGURED or ASSISTANT_DISABLED "
+                    + "(do not: an administrator must act).")
     @RequiresPermission(resource = AssistantResources.CONVERSATIONS, action = Action.CREATE, scope = DataScope.OWN)
-    @RateLimit(limit = 10, perSeconds = 60, key = RateLimit.Key.USER)
+    @RateLimit(limit = QUESTIONS_PER_MINUTE, perSeconds = 60, key = RateLimit.Key.USER, bucket = QUESTIONS)
     public ApiResponse<AnswerResponse> ask(@AuthenticatedUser CurrentUser user, @PathVariable UUID conversationId,
                                            @Valid @RequestBody AskRequest request) {
         ScopeGuards.requireBackOffice(user);
@@ -122,16 +142,27 @@ class AssistantController {
 
     @PostMapping(path = "/{conversationId}/messages/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Operation(summary = "Ask a question and receive the answer as server-sent events",
-            description = "Needs assistant-conversations:CREATE. Events: 'tool' ({tool, outcome}) as each tool "
-                    + "finishes, then 'answer' (the same body as the non-streamed endpoint's data) or 'error' "
-                    + "({errorCode, message}). Refusals found before the stream starts are ordinary JSON "
-                    + "responses: validation 400, 404, 409 ASSISTANT_BUSY, 429 ASSISTANT_DAILY_LIMIT, 503 "
-                    + "ASSISTANT_DISABLED; only a failure while answering (503 ASSISTANT_UNAVAILABLE) is an event.")
+            description = "Needs assistant-conversations:CREATE; the rate limit is shared with the non-streamed "
+                    + "endpoint. Events: 'tool' ({tool, outcome}) as each tool finishes, then 'answer' (the same "
+                    + "body as the non-streamed endpoint's data) or 'error' ({errorCode, message}). Refusals found "
+                    + "before the stream starts are ordinary JSON responses: validation 400 (an Idempotency-Key "
+                    + "too: a stream is never stored or replayed, so use the non-streamed endpoint for a retry that "
+                    + "must not ask twice), 404, 409 ASSISTANT_BUSY, 429 ASSISTANT_DAILY_LIMIT, 503 "
+                    + "ASSISTANT_DISABLED. A failure while answering is an event: ASSISTANT_UNAVAILABLE (retry), "
+                    + "ASSISTANT_QUOTA_EXHAUSTED or ASSISTANT_MISCONFIGURED (do not).")
     @RequiresPermission(resource = AssistantResources.CONVERSATIONS, action = Action.CREATE, scope = DataScope.OWN)
-    @RateLimit(limit = 10, perSeconds = 60, key = RateLimit.Key.USER)
+    @RateLimit(limit = QUESTIONS_PER_MINUTE, perSeconds = 60, key = RateLimit.Key.USER, bucket = QUESTIONS)
     public SseEmitter askStreaming(@AuthenticatedUser CurrentUser user, @PathVariable UUID conversationId,
+                                   @Parameter(hidden = true)
+                                   @RequestHeader(name = IdempotencyKeys.HEADER, required = false)
+                                   String idempotencyKey,
                                    @Valid @RequestBody AskRequest request) {
         ScopeGuards.requireBackOffice(user);
+        if (idempotencyKey != null) {
+            // Ignoring it would let a client believe its retry is safe; the filter lets streams through untouched.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, IdempotencyKeys.HEADER + " is not accepted on a "
+                    + "streamed answer, which is never stored or replayed; send it to POST .../messages instead");
+        }
         assistant.refuseEarly(conversationId, request.text(), user);
         return streams.ask(conversationId, request.text(), user, answer -> mapper.toResponse(answer));
     }

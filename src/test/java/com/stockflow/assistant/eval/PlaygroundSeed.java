@@ -9,6 +9,7 @@ import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -23,6 +24,8 @@ import java.math.BigDecimal;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,19 +36,32 @@ import static org.assertj.core.api.Assertions.assertThat;
  * needs on top — a month of sales for the reorder proposals, supplier terms, open purchase orders, and one sign-in
  * account per role.
  *
- * <p><b>Not part of {@code mvn test}:</b> it writes into the database the {@code local} profile points at, so it runs
- * only when asked for, and every step is idempotent (a second run changes nothing but the accounts' password):</p>
+ * <p><b>Not part of {@code mvn test}:</b> it writes into a real database, so it runs only when asked for, and every
+ * step is idempotent (a second run changes nothing but the accounts' password). The playground's
+ * {@code scripts\seed.ps1} runs it with the database settings of {@code scripts\env.ps1}:</p>
  * <pre>
- * DB_NAME=stockflow_ai mvn test -Dtest=PlaygroundSeed -Dplayground.seed=true -Dplayground.password=...
+ * mvn test -Dtest=PlaygroundSeed -Dplayground.seed=true -Dplayground.password=...
  * </pre>
  * <p>It goes through the same services and SQL the golden set's fixtures use, so the rows pass every trigger and
  * check a hand-written SQL file would have to imitate.</p>
+ *
+ * <p><b>Only the playground's database.</b> It creates SYSTEM_ADMIN and six more accounts that share one password,
+ * and reactivates them on every run, so it must never reach the database the other branches develop against,
+ * application.yml's default {@code localhost:5432/stockflow}. The datasource defaults to the playground's own
+ * ({@code 127.0.0.1:55432/stockflow_ai}), and {@link #refuseAnyOtherDatabase} stops a run whose {@code DB_NAME} names
+ * another one before the context starts — starting it already runs Flyway, demo seed included, against its database.
+ * {@code -Dplayground.database=<name>} allows one more, by name.</p>
  */
 @Tag("playground")
 @EnabledIfSystemProperty(named = "playground.seed", matches = "true")
-@SpringBootTest(properties = "stockflow.assistant.enabled=false")
+@SpringBootTest(properties = {"stockflow.assistant.enabled=false",
+        "spring.datasource.url=jdbc:postgresql://${DB_HOST:127.0.0.1}:${DB_PORT:55432}/${DB_NAME:"
+                + PlaygroundSeed.PLAYGROUND_DATABASE + "}"})
 @ActiveProfiles("local")
 class PlaygroundSeed {
+
+    /** The database of the playground's docker-compose.yml. */
+    static final String PLAYGROUND_DATABASE = "stockflow_ai";
 
     /** One account per role a staff member signs in with; the warehouse roles are limited to HCM. */
     record Account(String username, String fullName, String role, List<String> warehouses) {
@@ -78,8 +94,46 @@ class PlaygroundSeed {
     @Autowired SupplierItemService supplierItems;
     @Autowired PasswordEncoder passwords;
 
+    /**
+     * Static, so it runs before the test instance is created, and with the instance the Spring context, whose start
+     * runs Flyway against the database. A check in {@link #seed()} alone would stop the accounts and rows but not the
+     * migration.
+     */
+    @BeforeAll
+    static void refuseAnyOtherDatabase() {
+        String database = targetDatabase(System.getProperties(), System.getenv());
+        if (!allowed(database, System.getProperty("playground.database"))) {
+            throw new IllegalStateException("Refusing to seed database '" + database + "': PlaygroundSeed writes "
+                    + "only into the playground's " + PLAYGROUND_DATABASE + ". Run it through the playground's "
+                    + "scripts\\seed.ps1, or pass -Dplayground.database=" + database + " if that database is "
+                    + "really meant to get the playground accounts.");
+        }
+        System.out.println("Playground seed: target database " + database);
+    }
+
+    /**
+     * The database {@code spring.datasource.url} above resolves to, read as Spring reads {@code DB_NAME}: a system
+     * property before an environment variable, the playground's when neither is set. A blank value is kept: Spring
+     * would put it in the URL, and the driver would then connect to the database named after the user.
+     */
+    static String targetDatabase(Properties system, Map<String, String> environment) {
+        String name = system.getProperty("DB_NAME", environment.get("DB_NAME"));
+        return name == null ? PLAYGROUND_DATABASE : name;
+    }
+
+    /** The playground's database, or the one {@code -Dplayground.database} names. */
+    static boolean allowed(String database, String override) {
+        return PLAYGROUND_DATABASE.equals(database) || override != null && !override.isBlank()
+                && override.equals(database);
+    }
+
     @Test
     void seed() {
+        // The same check against the connection itself: what the URL resolved to, whatever set it.
+        String database = jdbc.queryForObject("select current_database()", String.class);
+        System.out.println("Playground seed: writing into database " + database);
+        assertThat(allowed(database, System.getProperty("playground.database")))
+                .as("the connected database %s is not the playground's", database).isTrue();
         String password = System.getProperty("playground.password", "");
         assertThat(password).as("pass -Dplayground.password=... (12+ characters)").hasSizeGreaterThanOrEqualTo(12);
         LocalDate today = LocalDate.now(GoldenFixtures.ZONE);

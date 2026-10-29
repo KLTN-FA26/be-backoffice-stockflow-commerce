@@ -6,24 +6,41 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.function.Predicate;
 
 /**
- * The metrics and gates of design §10.2 over a run, and the report written to {@code target/assistant-eval/}.
+ * The metrics and gates of design §10.2 over a run, and the report written beside its results.
  *
  * <p>Two gates are hard — a permission leak, and a question that changed data — because one occurrence is one too
  * many. The others are rates with a threshold.</p>
+ *
+ * <p><b>A case that did not run is in no gate.</b> A run on a free model quota stops when the day's requests are gone,
+ * and cases may be left out on purpose; counting those as failures reports a quota as poor quality. They are listed
+ * with the reason instead, and every summary says how many of the set ran.</p>
  */
 final class GoldenReport {
 
     private final List<GoldenRunner.CaseResult> results;
+    private final List<NotRun> notRun;
     private final String model;
 
-    GoldenReport(List<GoldenRunner.CaseResult> results, String model) {
+    GoldenReport(List<GoldenRunner.CaseResult> results, List<NotRun> notRun, String model) {
         this.results = List.copyOf(results);
+        this.notRun = List.copyOf(notRun);
         this.model = model;
+    }
+
+    /**
+     * A case of the set with no result in this report.
+     *
+     * @param reason        not selected, the provider's quota or error code, or why the run stopped before it
+     * @param modelRequests what asking it spent before it stopped
+     */
+    record NotRun(GoldenCase golden, String reason, int modelRequests) {
     }
 
     /** One metric: the share of cases it covers that pass, against the threshold that gates it. */
@@ -69,6 +86,16 @@ final class GoldenReport {
         return gates().stream().allMatch(Gate::holds);
     }
 
+    /** Cases with a result. */
+    int run() {
+        return results.size();
+    }
+
+    /** Every case of the set: those with a result and those without. */
+    int total() {
+        return results.size() + notRun.size();
+    }
+
     Path write(Path directory) throws IOException {
         Files.createDirectories(directory);
         Files.writeString(directory.resolve("results.csv"), csv(), StandardCharsets.UTF_8);
@@ -80,8 +107,8 @@ final class GoldenReport {
     String markdown() {
         StringBuilder out = new StringBuilder();
         out.append("# Assistant golden set — ").append(Instant.now()).append("\n\n");
-        out.append("Model: `").append(model).append("` · cases: ").append(results.size()).append(" · passed: ")
-                .append(count(results, GoldenRunner.CaseResult::passed)).append("\n\n");
+        out.append("Model: `").append(model).append("` · run: ").append(run()).append(" of ").append(total())
+                .append(" · passed: ").append(count(results, GoldenRunner.CaseResult::passed)).append("\n\n");
         out.append("| Gate | Passing | Rate | Threshold | Holds |\n|---|---|---|---|---|\n");
         for (Gate gate : gates()) {
             out.append("| %s%s | %d / %d | %.1f%% | %.0f%% | %s |\n".formatted(gate.name(), gate.hard() ? " (hard)" : "",
@@ -97,41 +124,73 @@ final class GoldenReport {
                     results.stream().mapToLong(GoldenRunner.CaseResult::cachedInputTokens).sum(),
                     results.stream().mapToLong(GoldenRunner.CaseResult::outputTokens).sum()));
         }
+        long requests = results.stream().mapToLong(GoldenRunner.CaseResult::modelRequests).sum();
+        long wasted = notRun.stream().mapToLong(NotRun::modelRequests).sum();
+        out.append(String.format(Locale.ROOT, "\nModel requests: %d for the %d cases run (%.1f a case)%s.\n", requests,
+                run(), run() == 0 ? 0.0 : (double) requests / run(),
+                wasted == 0 ? "" : ", and " + wasted + " spent on cases that did not finish"));
         out.append("\n## Cases\n\n| Case | Persona | Tools | Outcomes | Missing | Leaks | Ungrounded | Unsupported "
-                        + "rules | Recall@5 | Pass |\n")
-                .append("|---|---|---|---|---|---|---|---|---|---|\n");
+                        + "rules | Recall@5 | Requests | Pass |\n")
+                .append("|---|---|---|---|---|---|---|---|---|---|---|\n");
         for (GoldenRunner.CaseResult r : results) {
-            out.append("| %s | %s%s | %s | %s | %s | %s | %s | %s | %s | %s |\n".formatted(r.golden().id(),
-                    r.golden().persona().role(), r.golden().persona().warehouses().isEmpty() ? ""
-                            : " " + r.golden().persona().warehouses(),
-                    String.join(", ", r.tools()), String.join(", ", r.outcomes()), cell(r.missing()), cell(r.leaks()),
-                    cell(r.ungrounded()), cell(r.unsupported()),
-                    r.golden().expectRetrieved().isEmpty() ? "" : r.recallOk() ? "yes" : "**no**",
+            out.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %d | %s |\n".formatted(r.golden().id(),
+                    persona(r.golden()), String.join(", ", r.tools()), String.join(", ", r.outcomes()),
+                    cell(r.missing()), cell(r.leaks()), cell(r.ungrounded()), cell(r.unsupported()),
+                    r.golden().expectRetrieved().isEmpty() ? "" : r.recallOk() ? "yes" : "**no**", r.modelRequests(),
                     r.passed() ? "yes" : "**no**"));
+        }
+        if (!notRun.isEmpty()) {
+            out.append("\n## Not run\n\n");
+            Map<String, List<String>> byReason = new LinkedHashMap<>();
+            for (NotRun each : notRun) {
+                byReason.computeIfAbsent(each.reason(), reason -> new ArrayList<>()).add(each.golden().id());
+            }
+            byReason.forEach((reason, ids) -> out.append("- ").append(reason).append(" (").append(ids.size())
+                    .append("): ").append(String.join(", ", ids)).append('\n'));
         }
         out.append("\n## Answers\n");
         for (GoldenRunner.CaseResult r : results) {
-            out.append("\n### ").append(r.golden().id()).append(" — ").append(r.golden().question()).append("\n\n")
-                    .append(r.httpStatus() == 200 ? r.answer() : "HTTP " + r.httpStatus()).append("\n");
+            out.append("\n### ").append(r.golden().id()).append(" — ").append(r.golden().question()).append("\n\n");
+            for (int i = 0; i < r.golden().earlier().size(); i++) {
+                out.append("> ").append(r.golden().earlier().get(i).question()).append("\n>\n> ")
+                        .append(i < r.earlierAnswers().size() ? r.earlierAnswers().get(i).replace("\n", "\n> ")
+                                : "(not answered)").append("\n\n");
+            }
+            out.append(r.httpStatus() == 200 ? r.answer() : "HTTP " + r.httpStatus()
+                    + (r.errorCode() == null ? "" : " " + r.errorCode())).append("\n");
         }
         return out.toString();
     }
 
     private String csv() {
-        StringBuilder out = new StringBuilder("id,use_case,variant,role,http,tools,outcomes,missing,leaks,ungrounded,"
-                + "unsupported_rules,recall_ok,tools_ok,invariant,latency_ms,input_tokens,cached_tokens,output_tokens,"
-                + "passed\n");
+        StringBuilder out = new StringBuilder("id,use_case,variant,role,status,http,tools,outcomes,missing,leaks,"
+                + "ungrounded,unsupported_rules,recall_ok,tools_ok,invariant,latency_ms,model_requests,input_tokens,"
+                + "cached_tokens,output_tokens,note\n");
         for (GoldenRunner.CaseResult r : results) {
             out.append(String.join(",", List.of(r.golden().id(), r.golden().useCase(), r.golden().variant(),
-                    r.golden().persona().role(), String.valueOf(r.httpStatus()), quote(String.join(" ", r.tools())),
-                    quote(String.join(" ", r.outcomes())), quote(String.join(" | ", r.missing())),
-                    quote(String.join(" | ", r.leaks())), quote(String.join(" ", r.ungrounded())),
-                    quote(String.join(" ", r.unsupported())), String.valueOf(r.recallOk()),
-                    String.valueOf(r.toolsOk()), String.valueOf(r.invariantHeld()), String.valueOf(r.latencyMs()),
-                    String.valueOf(r.inputTokens()), String.valueOf(r.cachedInputTokens()),
-                    String.valueOf(r.outputTokens()), String.valueOf(r.passed())))).append('\n');
+                    r.golden().persona().role(), r.passed() ? "PASS" : "FAIL", String.valueOf(r.httpStatus()),
+                    quote(String.join(" ", r.tools())), quote(String.join(" ", r.outcomes())),
+                    quote(String.join(" | ", r.missing())), quote(String.join(" | ", r.leaks())),
+                    quote(String.join(" ", r.ungrounded())), quote(String.join(" ", r.unsupported())),
+                    String.valueOf(r.recallOk()), String.valueOf(r.toolsOk()), String.valueOf(r.invariantHeld()),
+                    String.valueOf(r.latencyMs()), String.valueOf(r.modelRequests()), String.valueOf(r.inputTokens()),
+                    String.valueOf(r.cachedInputTokens()), String.valueOf(r.outputTokens()),
+                    quote(r.errorCode() == null ? "" : r.errorCode())))).append('\n');
+        }
+        for (NotRun each : notRun) {
+            List<String> row = new ArrayList<>(List.of(each.golden().id(), each.golden().useCase(),
+                    each.golden().variant(), each.golden().persona().role(), "NOT_RUN"));
+            row.addAll(java.util.Collections.nCopies(11, ""));
+            row.add(String.valueOf(each.modelRequests()));
+            row.addAll(List.of("", "", "", quote(each.reason())));
+            out.append(String.join(",", row)).append('\n');
         }
         return out.toString();
+    }
+
+    private static String persona(GoldenCase golden) {
+        return golden.persona().role() + (golden.persona().warehouses().isEmpty() ? ""
+                : " " + golden.persona().warehouses());
     }
 
     private List<GoldenRunner.CaseResult> select(Predicate<GoldenRunner.CaseResult> filter) {
@@ -153,6 +212,7 @@ final class GoldenReport {
     @Override
     public String toString() {
         return gates().stream().map(g -> "%s: %d/%d".formatted(g.name(), g.passing(), g.covered()))
-                .reduce((a, b) -> a + "; " + b).orElse("") + String.format(Locale.ROOT, " (%d cases)", results.size());
+                .reduce((a, b) -> a + "; " + b).orElse("")
+                + String.format(Locale.ROOT, " (%d of %d run)", run(), total());
     }
 }

@@ -450,7 +450,11 @@ stockflow:
     enabled: ${ASSISTANT_ENABLED:false}
     # anthropic (ADR-0010) or gemini; the key is the chosen provider's.
     provider: ${ASSISTANT_PROVIDER:anthropic}
-    api-key: ${ASSISTANT_API_KEY:${ANTHROPIC_API_KEY:}}
+    # ASSISTANT_API_KEY, or else the chosen provider's own variable below - never the other vendor's: one vendor's key
+    # sent to the other is a credential disclosed to a third party. A key shaped like the other vendor's is not used.
+    api-key: ${ASSISTANT_API_KEY:}
+    anthropic-api-key: ${ANTHROPIC_API_KEY:}
+    gemini-api-key: ${GEMINI_API_KEY:}
     model: ${ASSISTANT_MODEL:claude-opus-5-5}
     daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
     # low | medium | high | xhigh | max. Low suits chat-style questions; raise it only if the golden set says so.

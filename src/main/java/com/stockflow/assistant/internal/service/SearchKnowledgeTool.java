@@ -25,11 +25,12 @@ class SearchKnowledgeTool implements AssistantTool {
             "Search StockFlow's business rules (ids like BR-RMA-002), glossary and state machines: policies, what "
                     + "is allowed, definitions, and which status changes are possible. The rules and the glossary are "
                     + "written in English, so search with English keywords; add Vietnamese ones if useful. Returns up "
-                    + "to 5 passages, each with its anchor; quote a rule by its anchor. A long state machine is split "
-                    + "into passages ('9. Order — order-service', '... (2)', '... › Who may cancel ...'): when a rule "
-                    + "points elsewhere or a passage is cut, search again for the part you need. Answer a policy "
-                    + "question only from what the passages say; if they do not say it, say no rule was found. Not "
-                    + "for live data such as stock or orders.",
+                    + "to 5 passages, each with its anchor: name the rule you rely on by its anchor, and give what it "
+                    + "lays down in the language of the user's question. A long state machine is split into passages "
+                    + "('9. Order — order-service', '... (2)', '... › Who may cancel ...'): when a rule points "
+                    + "elsewhere or a passage is cut, search again for the part you need. Answer a policy question "
+                    + "only from what the passages say; if they do not say it, say no rule was found. Not for live "
+                    + "data such as stock or orders.",
             ToolSchema.object()
                     .string("query", "Keywords, for example 'custom printed return defective'")
                     .build());

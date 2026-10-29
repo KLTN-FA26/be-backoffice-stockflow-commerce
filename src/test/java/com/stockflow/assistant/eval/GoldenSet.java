@@ -3,6 +3,7 @@ package com.stockflow.assistant.eval;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.assistant.internal.domain.History;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -24,8 +25,10 @@ public final class GoldenSet {
             if (in == null) {
                 throw new IllegalStateException("classpath:" + RESOURCE + " is missing");
             }
+            // One oracle call is written as an object and a chain as an array; both read as a list of steps.
             List<GoldenCase> cases = new ObjectMapper()
                     .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
+                    .configure(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY, true)
                     .readValue(in, new TypeReference<List<GoldenCase>>() { });
             Set<String> ids = new HashSet<>();
             for (GoldenCase each : cases) {
@@ -34,6 +37,12 @@ public final class GoldenSet {
                 }
                 if (each.persona() == null || each.question() == null || each.question().isBlank()) {
                     throw new IllegalStateException(each.id() + " needs a persona and a question");
+                }
+                // The model is sent only the last ten earlier questions; an older one could not be followed up.
+                if (each.earlier().size() > History.EARLIER_QUESTIONS || each.earlier().stream()
+                        .anyMatch(turn -> turn.question() == null || turn.question().isBlank())) {
+                    throw new IllegalStateException(each.id() + " needs at most " + History.EARLIER_QUESTIONS
+                            + " earlier questions, none of them blank");
                 }
             }
             return List.copyOf(cases);

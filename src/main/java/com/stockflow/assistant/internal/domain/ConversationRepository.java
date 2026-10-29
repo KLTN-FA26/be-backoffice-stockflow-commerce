@@ -12,9 +12,9 @@ import java.util.UUID;
  * The conversation store. Every read of a conversation is in the caller's scope (OWN): a user reaches only their own,
  * and another user's id is simply not found.
  *
- * <p>Runs inside the caller's transaction; the application service declares it. The two writes that bracket an
- * answer ({@link #claimAndAsk} and {@link #appendAndRelease}) each expect a transaction of their own, short, and
- * never one around the model calls between them.</p>
+ * <p>Runs inside the caller's transaction; the application service declares it. The writes that bracket an answer
+ * ({@link #claimAndAsk}, {@link #appendAndRelease} and, when that fails, {@link #release}) each expect a transaction
+ * of their own, short, and never one around the model calls between them.</p>
  */
 public interface ConversationRepository {
 
@@ -40,12 +40,24 @@ public interface ConversationRepository {
     List<Turn> claimAndAsk(UUID conversationId, PendingMessage question, Instant at, Duration lease);
 
     /**
-     * Stores what the loop produced and releases the claim, under the same row lock. Called from a {@code finally}: on
-     * a provider failure {@code produced} holds the turns up to it, so tools that already ran are still on record.
+     * Stores what the loop produced and releases the claim, under the same row lock. Called on a failure too: then
+     * {@code produced} holds the turns up to it and a closing turn saying what happened, so tools that already ran
+     * are still on record.
      */
     List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced, Instant at, Instant claimedAt);
 
-    /** Questions the user asked since {@code since}, across all their conversations: the daily cap. */
+    /**
+     * Releases the claim made at {@code claimedAt}, and only that one, without storing anything: for an answer whose
+     * {@link #appendAndRelease} failed and took its own release down with it.
+     */
+    void release(UUID conversationId, Instant claimedAt);
+
+    /**
+     * Questions the user asked since {@code since}, across all their conversations: the daily cap. A question whose
+     * next stored turn is a closing one ({@link PendingMessage#CLOSING_MODEL}) got no reply from the provider — it
+     * failed or refused first — cost nothing, and is not counted. One still being answered has no next turn yet and
+     * is counted: leaving it out until it ends would let a user keep several conversations answering past the cap.
+     */
     long questionsSince(UUID ownerUserId, Instant since);
 
     /** Deletes up to {@code limit} conversations idle since before {@code cutoff}, with their messages and calls. */

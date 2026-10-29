@@ -3,6 +3,7 @@ package com.stockflow.assistant.eval;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.TextNode;
+import com.stockflow.assistant.internal.domain.PendingMessage;
 import com.stockflow.common.security.Role;
 import com.stockflow.support.SecuredMvc;
 import org.springframework.http.MediaType;
@@ -14,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -23,10 +25,17 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  *
  * <p>The tool results are read from {@code assistant.tool_call} rather than from the answer: they are what the model
  * actually saw, which is what an ungrounded number is checked against.</p>
+ *
+ * <p>A case with earlier questions asks them first, in the same conversation. The tools, recall and facts of the case
+ * are those of its last question; numbers may be grounded in any result of the conversation, and a leak counts in
+ * any answer.</p>
  */
 final class GoldenRunner {
 
     private static final String BASE = "/api/v1/assistant/conversations";
+
+    /** A turn the application wrote, not a request to the provider. */
+    private static final String CLOSING_TURN_MODEL = PendingMessage.CLOSING_MODEL;
 
     private final SecuredMvc http;
     private final JdbcTemplate jdbc;
@@ -42,30 +51,49 @@ final class GoldenRunner {
     CaseResult run(GoldenCase golden) throws Exception {
         Role role = Role.valueOf(golden.persona().role());
         UUID user = fixtures.persona(golden.persona().role(), golden.persona().warehouses());
-        String conversation = json.readTree(http.asRole(role, user, post(BASE)).andReturn().getResponse()
-                .getContentAsString(StandardCharsets.UTF_8)).path("data").path("id").asText();
+        long[] tokens = new long[3];
+        MvcResult opened = http.asRole(role, user, post(BASE)).andReturn();
+        JsonNode created = json.readTree(opened.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        if (!created.path("data").path("id").isTextual()) {
+            return CaseResult.unanswered(golden, opened.getResponse().getStatus(), errorCode(created), List.of(), 0,
+                    tokens);
+        }
+        UUID conversation = UUID.fromString(created.path("data").path("id").asText());
         String invariantBefore = golden.invariantQuery() == null ? null
                 : jdbc.queryForObject(golden.invariantQuery(), String.class);
 
+        List<String> earlierAnswers = new ArrayList<>();
+        for (GoldenCase.Earlier earlier : golden.earlier()) {
+            Reply reply = ask(role, user, conversation, earlier.question(), tokens);
+            if (reply.status() != 200) {
+                return CaseResult.unanswered(golden, reply.status(), reply.errorCode(), earlierAnswers,
+                        modelRequests(conversation), tokens);
+            }
+            earlierAnswers.add(reply.answer());
+        }
         long started = System.nanoTime();
-        MvcResult result = http.asRole(role, user, post(BASE + "/" + conversation + "/messages")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"text\":" + TextNode.valueOf(golden.question()) + "}")).andReturn();
+        Reply reply = ask(role, user, conversation, golden.question(), tokens);
         long latencyMs = (System.nanoTime() - started) / 1_000_000;
+        String answer = reply.answer();
 
-        JsonNode body = json.readTree(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
-        String answer = body.path("data").path("answer").asText("");
-        JsonNode usage = body.path("data").path("usage");
-        List<Map<String, Object>> calls = jdbc.queryForList("""
-                select tool_name, outcome, result from assistant.tool_call
-                where conversation_id = ?::uuid order by id""", UUID.fromString(conversation));
+        // Null when the question was refused before it was stored (the assistant off, the daily cap).
+        Integer stored = jdbc.queryForObject("""
+                select max(sequence) from assistant.message where conversation_id = ?::uuid and role = 'USER'""",
+                Integer.class, conversation);
+        int lastQuestion = stored == null ? -1 : stored;
+        List<Map<String, Object>> everyCall = jdbc.queryForList("""
+                select t.tool_name, t.outcome, t.result, m.sequence from assistant.tool_call t
+                join assistant.message m on m.id = t.message_id
+                where t.conversation_id = ?::uuid order by m.sequence, t.id""", conversation);
+        List<Map<String, Object>> calls = everyCall.stream()
+                .filter(call -> ((Number) call.get("sequence")).intValue() > lastQuestion).toList();
         List<String> tools = calls.stream().map(call -> (String) call.get("tool_name")).toList();
         List<String> outcomes = calls.stream().map(call -> (String) call.get("outcome")).toList();
-        List<String> sources = new ArrayList<>(calls.stream().map(call -> (String) call.get("result")).toList());
+        List<String> sources = new ArrayList<>(everyCall.stream().map(call -> (String) call.get("result")).toList());
         sources.add(golden.question());
         sources.addAll(jdbc.queryForList("""
                 select content::text from assistant.message where conversation_id = ?::uuid and role = 'USER'""",
-                String.class, UUID.fromString(conversation)));
+                String.class, conversation));
 
         List<String> facts = new ArrayList<>(golden.facts());
         if (golden.factsQuery() != null) {
@@ -80,24 +108,55 @@ final class GoldenRunner {
 
         List<String> missing = golden.expectRefusal() ? List.of()
                 : facts.stream().filter(Objects::nonNull).filter(fact -> !GoldenScorer.states(answer, fact)).toList();
+        List<String> answers = new ArrayList<>(earlierAnswers);
+        answers.add(answer);
         List<String> leaks = forbidden.stream().filter(Objects::nonNull)
-                .filter(value -> GoldenScorer.states(answer, value)).toList();
+                .filter(value -> answers.stream().anyMatch(each -> GoldenScorer.states(each, value))).toList();
         boolean toolsOk = tools.containsAll(golden.expectTools())
                 && golden.forbiddenTools().stream().noneMatch(tools::contains)
                 && (!golden.expectNoTools() || tools.isEmpty());
         List<String> retrieved = retrieved(calls);
-        // Supported: the rule id is in what the searches returned - as a passage's anchor, or quoted in its text.
-        String searched = calls.stream().filter(call -> "searchKnowledge".equals(call.get("tool_name")))
+        // Supported: the rule id is in what the searches of this conversation returned - as a passage's anchor, or
+        // quoted in its text.
+        String searched = everyCall.stream().filter(call -> "searchKnowledge".equals(call.get("tool_name")))
                 .map(call -> (String) call.get("result")).collect(java.util.stream.Collectors.joining("\n"))
                 .toUpperCase(java.util.Locale.ROOT);
         List<String> unsupported = GoldenScorer.namedRules(answer).stream()
                 .filter(anchor -> !searched.contains(anchor)).toList();
-        return new CaseResult(golden, result.getResponse().getStatus(), answer, tools, outcomes, missing, leaks,
-                GoldenScorer.ungroundedNumbers(answer, sources), toolsOk,
+        return new CaseResult(golden, reply.status(), reply.errorCode(), answer, earlierAnswers, tools, outcomes,
+                missing, leaks, GoldenScorer.ungroundedNumbers(answer, sources), toolsOk,
                 Objects.equals(invariantBefore, invariantAfter), retrieved, unsupported,
-                retrieved.containsAll(golden.expectRetrieved()), latencyMs,
-                usage.path("inputTokens").asLong(), usage.path("cachedInputTokens").asLong(),
-                usage.path("outputTokens").asLong());
+                retrieved.containsAll(golden.expectRetrieved()), latencyMs, modelRequests(conversation), tokens[0],
+                tokens[1], tokens[2]);
+    }
+
+    /** One question, adding its tokens to {@code tokens} (input, cached input, output). */
+    private Reply ask(Role role, UUID user, UUID conversation, String question, long[] tokens) throws Exception {
+        MvcResult result = http.asRole(role, user, post(BASE + "/" + conversation + "/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"text\":" + TextNode.valueOf(question) + "}")).andReturn();
+        JsonNode body = json.readTree(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        JsonNode usage = body.path("data").path("usage");
+        tokens[0] += usage.path("inputTokens").asLong();
+        tokens[1] += usage.path("cachedInputTokens").asLong();
+        tokens[2] += usage.path("outputTokens").asLong();
+        return new Reply(result.getResponse().getStatus(), errorCode(body),
+                body.path("data").path("answer").asText(""));
+    }
+
+    private record Reply(int status, String errorCode, String answer) {
+    }
+
+    private static String errorCode(JsonNode body) {
+        return body.path("errorCode").isTextual() ? body.path("errorCode").asText() : null;
+    }
+
+    /** Requests the case made to the model provider: every model turn but the ones the application closed itself. */
+    private int modelRequests(UUID conversation) {
+        return jdbc.queryForObject("""
+                select count(*) from assistant.message
+                where conversation_id = ?::uuid and role = 'ASSISTANT' and model <> ?""",
+                Integer.class, conversation, CLOSING_TURN_MODEL);
     }
 
     /** Anchors the rule searches of this answer returned, in order. */
@@ -116,17 +175,55 @@ final class GoldenRunner {
     /**
      * One case, scored.
      *
-     * @param missing     expected facts the answer does not state
-     * @param leaks       values the persona may not see that the answer states
-     * @param ungrounded  numbers in the answer that no tool result, question or context contains
-     * @param retrieved   anchors the rule searches returned
-     * @param unsupported rule ids the answer names that no search returned: a citation from memory
-     * @param recallOk    every anchor the case expects was among those retrieved
+     * @param errorCode      the error the endpoint answered with; null for an answer
+     * @param earlierAnswers what the case's earlier questions were answered, in order
+     * @param tools          tools called for the last question
+     * @param missing        expected facts the answer does not state
+     * @param leaks          values the persona may not see that an answer states
+     * @param ungrounded     numbers in the answer that no tool result, question or context contains
+     * @param retrieved      anchors the rule searches of the last question returned
+     * @param unsupported    rule ids the answer names that no search returned: a citation from memory
+     * @param recallOk       every anchor the case expects was among those retrieved
+     * @param latencyMs      the last question's
+     * @param modelRequests  requests to the model provider over the whole case: what it cost of a daily quota
      */
-    record CaseResult(GoldenCase golden, int httpStatus, String answer, List<String> tools, List<String> outcomes,
-                      List<String> missing, List<String> leaks, List<String> ungrounded, boolean toolsOk,
-                      boolean invariantHeld, List<String> retrieved, List<String> unsupported, boolean recallOk,
-                      long latencyMs, long inputTokens, long cachedInputTokens, long outputTokens) {
+    record CaseResult(GoldenCase golden, int httpStatus, String errorCode, String answer, List<String> earlierAnswers,
+                      List<String> tools, List<String> outcomes, List<String> missing, List<String> leaks,
+                      List<String> ungrounded, boolean toolsOk, boolean invariantHeld, List<String> retrieved,
+                      List<String> unsupported, boolean recallOk, long latencyMs, int modelRequests,
+                      long inputTokens, long cachedInputTokens, long outputTokens) {
+
+        /**
+         * Statuses that say nothing about the assistant: the provider's quota or an outage, a busy conversation, a
+         * rate limit. The same set the idempotency filter does not store, for the same reason: such an outcome is
+         * asked again, not recorded.
+         */
+        private static final Set<Integer> UNSETTLED = Set.of(408, 409, 423, 425, 429);
+
+        CaseResult {
+            answer = answer == null ? "" : answer;
+            earlierAnswers = earlierAnswers == null ? List.of() : List.copyOf(earlierAnswers);
+            tools = tools == null ? List.of() : List.copyOf(tools);
+            outcomes = outcomes == null ? List.of() : List.copyOf(outcomes);
+            missing = missing == null ? List.of() : List.copyOf(missing);
+            leaks = leaks == null ? List.of() : List.copyOf(leaks);
+            ungrounded = ungrounded == null ? List.of() : List.copyOf(ungrounded);
+            retrieved = retrieved == null ? List.of() : List.copyOf(retrieved);
+            unsupported = unsupported == null ? List.of() : List.copyOf(unsupported);
+        }
+
+        /** An earlier question of the case got no answer, so its own question was never asked. */
+        static CaseResult unanswered(GoldenCase golden, int httpStatus, String errorCode, List<String> earlierAnswers,
+                                     int modelRequests, long[] tokens) {
+            return new CaseResult(golden, httpStatus, errorCode, "", earlierAnswers, List.of(), List.of(), List.of(),
+                    List.of(), List.of(), false, true, List.of(), List.of(), golden.expectRetrieved().isEmpty(), 0,
+                    modelRequests, tokens[0], tokens[1], tokens[2]);
+        }
+
+        /** A result about the assistant, to be scored and kept; otherwise the case is to be asked again. */
+        boolean settled() {
+            return httpStatus < 500 && !UNSETTLED.contains(httpStatus);
+        }
 
         boolean answered() {
             return httpStatus == 200 && !answer.isBlank();
