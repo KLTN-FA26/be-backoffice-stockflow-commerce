@@ -81,7 +81,7 @@ public final class LoadPlanner {
         List<Bin> usable = new ArrayList<>();
         for (VehicleSpec t : request.vehicleTypes()) {
             if (t.availableCount() > 0) {
-                usable.add(new Bin(t));
+                usable.add(new Bin(t, request.ignorePayload()));
             }
         }
 
@@ -89,7 +89,7 @@ public final class LoadPlanner {
         // set part that can never load must not hold its set-mates back (they load loose instead).
         Map<String, UnplacedReason> unplaced = new LinkedHashMap<>();
         for (CargoPackage c : cartons) {
-            UnplacedReason r = classifyAlone(c, request.vehicleTypes());
+            UnplacedReason r = classifyAlone(c, request.vehicleTypes(), request.ignorePayload());
             if (r != null) {
                 unplaced.put(c.ref(), r);
             }
@@ -175,7 +175,7 @@ public final class LoadPlanner {
         Map<UUID, Integer> usedByType = new HashMap<>();
         for (BinLoad l : loads) {
             List<PlacementValidator.Item> vehicleItems = new ArrayList<>();
-            vehicles.add(vehicle(l, vehicles.size() + 1, binding, vehicleItems));
+            vehicles.add(vehicle(l, vehicles.size() + 1, binding, vehicleItems, request.ignorePayload()));
             items.add(vehicleItems);
             usedByType.merge(l.bin().spec.typeId(), 1, Integer::sum);
         }
@@ -192,7 +192,8 @@ public final class LoadPlanner {
         boolean fleet = request.mode() == SelectionMode.FEWEST_VEHICLES && usable.size() > 1;
         for (int idx : binding.left()) {
             CargoPackage c = cartons.get(idx);
-            UnplacedReason r = classifyLeftover(c, fillType.get(typeOf.get(idx)), scope, usedByType, fleet);
+            UnplacedReason r = classifyLeftover(c, fillType.get(typeOf.get(idx)), scope, usedByType, fleet,
+                    request.ignorePayload());
             // Room was left but the search ran out of time before it could use it: say so, not NO_SPACE.
             unplaced.put(c.ref(), r == UnplacedReason.NO_SPACE && cutOff ? UnplacedReason.SEARCH_CUT_OFF : r);
         }
@@ -549,18 +550,18 @@ public final class LoadPlanner {
         return false;
     }
 
-    private static boolean takes(CargoPackage c, VehicleSpec t) {
-        return fitsEmpty(c, t) && c.weightKg().compareTo(t.maxPayloadKg()) <= 0;
+    private static boolean takes(CargoPackage c, VehicleSpec t, boolean ignorePayload) {
+        return fitsEmpty(c, t) && (ignorePayload || c.weightKg().compareTo(t.maxPayloadKg()) <= 0);
     }
 
     /** The reason a carton can never load, whatever else is in the plan; null when some usable type takes it. */
-    private static UnplacedReason classifyAlone(CargoPackage c, List<VehicleSpec> types) {
+    private static UnplacedReason classifyAlone(CargoPackage c, List<VehicleSpec> types, boolean ignorePayload) {
         boolean fits = false;
         boolean light = false;
         for (VehicleSpec t : types) {
             if (fitsEmpty(c, t)) {
                 fits = true;
-                if (c.weightKg().compareTo(t.maxPayloadKg()) <= 0) {
+                if (ignorePayload || c.weightKg().compareTo(t.maxPayloadKg()) <= 0) {
                     light = true;
                     if (t.availableCount() > 0) {
                         return null;
@@ -574,7 +575,8 @@ public final class LoadPlanner {
 
     /** The reason a carton the solver was offered ended up out, against the types the plan could use. */
     private static UnplacedReason classifyLeftover(CargoPackage c, boolean isFill, List<Bin> scope,
-                                                   Map<UUID, Integer> usedByType, boolean fleet) {
+                                                   Map<UUID, Integer> usedByType, boolean fleet,
+                                                   boolean ignorePayload) {
         boolean fits = false;
         boolean anyFree = false;
         boolean eligible = false;
@@ -583,7 +585,7 @@ public final class LoadPlanner {
             if (fitsEmpty(c, t)) {
                 fits = true;
             }
-            if (takes(c, t)) {
+            if (takes(c, t, ignorePayload)) {
                 eligible = true;
                 int cap = Math.min(t.availableCount(), fleet ? KitSolver.MAX_PER_TYPE_IN_FLEET : KitSolver.MAX_BINS);
                 if (usedByType.getOrDefault(t.typeId(), 0) < cap) {
@@ -610,7 +612,8 @@ public final class LoadPlanner {
         return (int) r;
     }
 
-    private static PlannedVehicle vehicle(BinLoad load, int seq, Binding binding, List<PlacementValidator.Item> items) {
+    private static PlannedVehicle vehicle(BinLoad load, int seq, Binding binding, List<PlacementValidator.Item> items,
+                                          boolean ignorePayload) {
         VehicleSpec spec = load.bin().spec;
         List<Boolean> fills = new ArrayList<>();
         int[] bound = binding.bind(load.placements());
@@ -620,7 +623,7 @@ public final class LoadPlanner {
             items.add(new PlacementValidator.Item(c, mm(p.x), mm(p.y), mm(p.z), mm(p.w), mm(p.h), mm(p.d)));
             fills.add(p.fill);
         }
-        List<PlacementViolation> violations = PlacementValidator.validate(spec, items);
+        List<PlacementViolation> violations = PlacementValidator.validate(spec, items, ignorePayload);
         if (!violations.isEmpty()) {
             throw new IllegalStateException("the solver broke a loading rule in vehicle " + seq + ": " + violations);
         }

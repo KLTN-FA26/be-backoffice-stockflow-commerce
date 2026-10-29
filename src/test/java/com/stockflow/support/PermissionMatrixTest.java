@@ -189,6 +189,7 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/load-plans/{loadPlanId}/cancellation", "fulfillment-load-plans:UPDATE"),
             // SCRUM-287 PR EST (V20261022001200): born permission-guarded; listed so the guards cannot drift.
             Map.entry("POST /api/v1/fulfillment/load-estimates", "fulfillment-load-estimates:CREATE"),
+            Map.entry("POST /api/v1/fulfillment/load-estimates/trial", "fulfillment-load-estimates:CREATE"),
             Map.entry("GET /api/v1/fulfillment/load-estimates/{estimateId}", "fulfillment-load-estimates:READ"),
             Map.entry("GET /api/v1/fulfillment/load-estimates", "fulfillment-load-estimates:READ"),
             Map.entry("POST /api/v1/fulfillment/loads", "fulfillment-dispatch:CREATE"),
