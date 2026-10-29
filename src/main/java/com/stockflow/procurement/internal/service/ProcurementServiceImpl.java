@@ -278,7 +278,11 @@ class ProcurementServiceImpl implements ProcurementService {
         return summaryOf(order, possibleDuplicate);
     }
 
-    /** What the timeline says about a draft edit: the facts that changed, before and after. */
+    /**
+     * What the timeline says about a draft edit: the facts that changed, before and after. A line in a packing unit
+     * names it (SCRUM-473), so an edit that changes only the unit - 5 CARTON to 10 BOX, the same base quantity - is
+     * still a change.
+     */
     private static Map<String, String> timelineFacts(PurchaseOrder order) {
         Map<String, String> facts = new LinkedHashMap<>();
         facts.put("warehouseId", order.warehouseId().toString());
@@ -286,7 +290,10 @@ class ProcurementServiceImpl implements ProcurementService {
         facts.put("lineCount", String.valueOf(order.lines().size()));
         facts.put("totalAmount", order.totalAmount().amount().toPlainString());
         facts.put("lines", order.lines().stream()
-                .map(l -> l.sku().code() + "x" + l.quantityOrdered() + "@" + l.unitPrice().amount().toPlainString())
+                .map(l -> l.sku().code() + "x" + l.quantityOrdered()
+                        + (l.packingUnit() == null ? ""
+                                : "(" + l.packingUnit().count() + " " + l.packingUnit().unitOfMeasure() + ")")
+                        + "@" + l.unitPrice().amount().toPlainString())
                 .reduce((a, b) -> a + "," + b).orElse(""));
         return facts;
     }
