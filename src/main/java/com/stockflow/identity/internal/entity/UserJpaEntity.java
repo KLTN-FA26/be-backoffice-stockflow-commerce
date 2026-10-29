@@ -47,6 +47,10 @@ public class UserJpaEntity extends BaseEntity {
     @Column(name = "must_change_password", nullable = false)
     private boolean mustChangePassword;
 
+    /** When the administrator-set password was set; null once replaced, and for accounts flagged before it existed. */
+    @Column(name = "temporary_password_set_at")
+    private Instant temporaryPasswordSetAt;
+
     @Column(name = "failed_login_count", nullable = false)
     private int failedLoginCount;
 
@@ -72,14 +76,15 @@ public class UserJpaEntity extends BaseEntity {
      * the account exists.
      */
     public void apply(String email, String passwordHash, String fullName, UserStatus status,
-                      Instant lastLoginAt, boolean mustChangePassword, int failedLoginCount,
-                      Instant lockedUntil) {
+                      Instant lastLoginAt, boolean mustChangePassword, Instant temporaryPasswordSetAt,
+                      int failedLoginCount, Instant lockedUntil) {
         this.email = email;
         this.passwordHash = passwordHash;
         this.fullName = fullName;
         this.status = status;
         this.lastLoginAt = lastLoginAt;
         this.mustChangePassword = mustChangePassword;
+        this.temporaryPasswordSetAt = temporaryPasswordSetAt;
         this.failedLoginCount = failedLoginCount;
         this.lockedUntil = lockedUntil;
     }
@@ -91,6 +96,7 @@ public class UserJpaEntity extends BaseEntity {
     public UserStatus getStatus() { return status; }
     public Instant getLastLoginAt() { return lastLoginAt; }
     public boolean isMustChangePassword() { return mustChangePassword; }
+    public Instant getTemporaryPasswordSetAt() { return temporaryPasswordSetAt; }
     public int getFailedLoginCount() { return failedLoginCount; }
     public Instant getLockedUntil() { return lockedUntil; }
 }

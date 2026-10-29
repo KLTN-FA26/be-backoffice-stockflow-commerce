@@ -1,5 +1,7 @@
 package com.stockflow.common.security;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.common.i18n.Messages;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -124,7 +126,9 @@ public class ResourceServerSecurityConfig {
     @Order(2)
     public SecurityFilterChain apiFilterChain(HttpSecurity http,
             @Qualifier(CorsConfig.SOURCE) CorsConfigurationSource cors,
-            StockflowJwtAuthenticationConverter converter) throws Exception {
+            StockflowJwtAuthenticationConverter converter,
+            PasswordChangeRequirement passwordChange, ObjectMapper objectMapper, Messages messages)
+            throws Exception {
         return http
                 // Stateless JWT: there is no session cookie for an attacker to ride, so CSRF
                 // protection buys nothing and only breaks the API clients.
@@ -163,6 +167,10 @@ public class ResourceServerSecurityConfig {
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
+                // After the token is read and its session checked: only a signed-in caller can be forced to
+                // change a password, and it must run before any controller does (SCRUM-474 FIRST-LOGIN).
+                .addFilterAfter(new PasswordChangeGateFilter(passwordChange, authenticationEntryPoint,
+                        objectMapper, messages), BearerTokenAuthenticationFilter.class)
                 .build();
     }
 

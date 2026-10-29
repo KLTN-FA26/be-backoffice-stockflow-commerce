@@ -33,6 +33,13 @@ import java.util.UUID;
  */
 public final class User extends AggregateRoot {
 
+    /**
+     * How long an administrator-set password works (SCRUM-474 FIRST-LOGIN, decision 29/10/2026). After that
+     * sign-in fails until an administrator resets it. A flagged account whose
+     * {@code temporaryPasswordSetAt} is unknown (flagged before the column existed) does not expire.
+     */
+    public static final Duration TEMPORARY_PASSWORD_VALIDITY = Duration.ofHours(72);
+
     private final UserId id;
     private final String username;
     private String email;
@@ -41,6 +48,7 @@ public final class User extends AggregateRoot {
     private UserStatus status;
     private Instant lastLoginAt;
     private boolean mustChangePassword;
+    private Instant temporaryPasswordSetAt;
     private int failedLoginCount;
     private Instant lockedUntil;
     private final long version;
@@ -48,8 +56,8 @@ public final class User extends AggregateRoot {
     private final String createdBy;
 
     public User(UserId id, String username, String email, String passwordHash, String fullName,
-                UserStatus status, Instant lastLoginAt, boolean mustChangePassword, int failedLoginCount,
-                Instant lockedUntil, long version, Instant createdAt, String createdBy) {
+                UserStatus status, Instant lastLoginAt, boolean mustChangePassword, Instant temporaryPasswordSetAt,
+                int failedLoginCount, Instant lockedUntil, long version, Instant createdAt, String createdBy) {
         this.id = Objects.requireNonNull(id, "id");
         this.username = requireNonBlank(username, "username");
         this.email = requireNonBlank(email, "email");
@@ -59,6 +67,7 @@ public final class User extends AggregateRoot {
         this.status = Objects.requireNonNull(status, "status");
         this.lastLoginAt = lastLoginAt;
         this.mustChangePassword = mustChangePassword;
+        this.temporaryPasswordSetAt = temporaryPasswordSetAt;
         this.failedLoginCount = Math.max(0, failedLoginCount);
         this.lockedUntil = lockedUntil;
         this.version = version;
@@ -70,19 +79,21 @@ public final class User extends AggregateRoot {
     public static User register(UUID id, String email, String passwordHash, String fullName) {
         String normalisedEmail = normaliseEmail(email);
         return new User(new UserId(id), normalisedEmail, normalisedEmail, passwordHash, fullName,
-                UserStatus.ACTIVE, null, false, 0, null, 0L, null, null);
+                UserStatus.ACTIVE, null, false, null, 0, null, 0L, null, null);
     }
 
     /**
      * A staff account created by an administrator (SCRUM-454).
      *
      * @param temporaryPassword true when the administrator chose or generated the password, so the
-     *                          user must replace it at the first opportunity
+     *                          user must replace it at the first opportunity (within
+     *                          {@link #TEMPORARY_PASSWORD_VALIDITY} of {@code now})
      */
     public static User createStaff(UUID id, String username, String email, String passwordHash,
-                                   String fullName, boolean temporaryPassword) {
+                                   String fullName, boolean temporaryPassword, Instant now) {
         return new User(new UserId(id), requireNonBlank(username, "username").trim(), normaliseEmail(email),
-                passwordHash, fullName, UserStatus.ACTIVE, null, temporaryPassword, 0, null, 0L, null, null);
+                passwordHash, fullName, UserStatus.ACTIVE, null, temporaryPassword,
+                temporaryPassword ? Objects.requireNonNull(now, "now") : null, 0, null, 0L, null, null);
     }
 
     /**
@@ -93,7 +104,7 @@ public final class User extends AggregateRoot {
     public static User inviteCustomer(UUID id, String email, String fullName) {
         String normalisedEmail = normaliseEmail(email);
         return new User(new UserId(id), normalisedEmail, normalisedEmail, null, fullName,
-                UserStatus.ACTIVE, null, false, 0, null, 0L, null, null);
+                UserStatus.ACTIVE, null, false, null, 0, null, 0L, null, null);
     }
 
     /** No password has been chosen yet: the account of a contact who has not activated. */
@@ -114,6 +125,7 @@ public final class User extends AggregateRoot {
         }
         this.passwordHash = requireNonBlank(newPasswordHash, "passwordHash");
         this.mustChangePassword = false;
+        this.temporaryPasswordSetAt = null;
         this.failedLoginCount = 0;
         this.lockedUntil = null;
     }
@@ -124,7 +136,9 @@ public final class User extends AggregateRoot {
      * {@code lastLoginAt} and forgets earlier wrong passwords.
      *
      * @throws AccountNotActiveException if the account is {@code LOCKED} or {@code DISABLED}
-     * @throws BusinessException {@code ACCOUNT_TEMPORARILY_LOCKED} while a lockout is running
+     * @throws BusinessException {@code ACCOUNT_TEMPORARILY_LOCKED} while a lockout is running;
+     *         {@code TEMPORARY_PASSWORD_EXPIRED} when the password is a temporary one older than
+     *         {@link #TEMPORARY_PASSWORD_VALIDITY}
      */
     public void signIn(Instant now) {
         Objects.requireNonNull(now, "now");
@@ -135,9 +149,19 @@ public final class User extends AggregateRoot {
             throw new BusinessException(ErrorCode.ACCOUNT_TEMPORARILY_LOCKED,
                     "Account %s is locked until %s after too many wrong passwords".formatted(id, lockedUntil));
         }
+        if (temporaryPasswordExpired(now)) {
+            throw new BusinessException(ErrorCode.TEMPORARY_PASSWORD_EXPIRED,
+                    "The temporary password of account %s was set at %s and has expired".formatted(id, temporaryPasswordSetAt));
+        }
         this.lastLoginAt = now;
         this.failedLoginCount = 0;
         this.lockedUntil = null;
+    }
+
+    /** A temporary password whose 72 hours are over. False for a permanent one, and for one set at an unknown time. */
+    public boolean temporaryPasswordExpired(Instant now) {
+        return mustChangePassword && temporaryPasswordSetAt != null
+                && !now.isBefore(temporaryPasswordSetAt.plus(TEMPORARY_PASSWORD_VALIDITY));
     }
 
     public boolean isTemporarilyLocked(Instant now) {
@@ -168,15 +192,18 @@ public final class User extends AggregateRoot {
     public void changePasswordHash(String newHash) {
         this.passwordHash = requireNonBlank(newHash, "passwordHash");
         this.mustChangePassword = false;
+        this.temporaryPasswordSetAt = null;
     }
 
     /**
      * An administrator set a new password. It is temporary by definition — the administrator knows
-     * it — and resetting is also how someone locked out by wrong passwords gets back in.
+     * it — it stops working {@link #TEMPORARY_PASSWORD_VALIDITY} after {@code now}, and resetting is
+     * also how someone locked out by wrong passwords, or by an expired temporary password, gets back in.
      */
-    public void resetPassword(String newHash) {
+    public void resetPassword(String newHash, Instant now) {
         this.passwordHash = requireNonBlank(newHash, "passwordHash");
         this.mustChangePassword = true;
+        this.temporaryPasswordSetAt = Objects.requireNonNull(now, "now");
         this.failedLoginCount = 0;
         this.lockedUntil = null;
     }
@@ -253,6 +280,7 @@ public final class User extends AggregateRoot {
     public UserStatus status() { return status; }
     public Instant lastLoginAt() { return lastLoginAt; }
     public boolean mustChangePassword() { return mustChangePassword; }
+    public Instant temporaryPasswordSetAt() { return temporaryPasswordSetAt; }
     public int failedLoginCount() { return failedLoginCount; }
     public Instant lockedUntil() { return lockedUntil; }
     public long version() { return version; }
