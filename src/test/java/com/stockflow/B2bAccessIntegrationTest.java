@@ -172,9 +172,8 @@ class B2bAccessIntegrationTest {
         mvc.perform(get(AVAILABILITY).param("sku", "TABLE-OAK").header("Authorization", bearer(alice)))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "max-age=10, private"))
-                .andExpect(jsonPath("$.data[0].sku").value("TABLE-OAK"))
-                .andExpect(jsonPath("$.data[0].quantity").doesNotExist())
-                .andExpect(jsonPath("$.data[0].price").doesNotExist());
+                // TABLE-OAK is not on sale here (no published listing): omitted, as if not found (SCRUM-485).
+                .andExpect(jsonPath("$.data").isEmpty());
         mvc.perform(get("/api/v1/public/products/availability").param("sku", "TABLE-OAK"))
                 .andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/public/products/availability").param("sku", "TABLE-OAK")
