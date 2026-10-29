@@ -2,6 +2,7 @@ package com.stockflow.fulfillment.internal.domain.loadplanning;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -30,12 +31,16 @@ public final class LoadPlanner {
 
     /**
      * Candidate evaluations per budget-second ({@link WorkClock.Unit#EVALUATION}): how the original's budget
-     * proportions turn into work. A laptop under load evaluates 56-130 million a second, so a budget-second is 25-55 ms
-     * of real time: the original's minimum budgets (1.5 s a vehicle, 8 s for the tail, 4 s for a fleet) add up to more
-     * budget-seconds than the caller's budget, and this rate keeps that inside the real budget with room for a slower
-     * server. Measured 22/10 on 100-800 cartons with up to 150 sizes (LoadPlannerBenchmarkTest).
+     * proportions turn into work. The original's minimum budgets (1.5 s a vehicle, 8 s for the tail, 4 s for a fleet)
+     * add up to more budget-seconds than the caller's budget, so the rate sets how much search a plan gets.
+     *
+     * <p>3 million until SCRUM-496 (measured 22/10 to finish inside a 5 s real budget). Raised to 20 million by the
+     * owner's decision SOLVER-TICKS (29/10): more restarts per vehicle, which on 800 cartons saves a vehicle (PR for
+     * SCRUM-496 has the table), for a plan that takes about 4-10 s instead of 1-3 s. The real budget is still the hard
+     * cap: a search that needs longer is cut off and returns the best plan found so far ({@code budgetExhausted}), so
+     * the configured budget must leave it the time.</p>
      */
-    static final double TICKS_PER_SECOND = 3_000_000.0;
+    static final double TICKS_PER_SECOND = 20_000_000.0;
 
     /** The original's number of carton orders tried per vehicle type in the single-type drive. */
     static final int ATTEMPTS = 6;
@@ -47,14 +52,27 @@ public final class LoadPlanner {
     static final double QUICK_TICKS_PER_SECOND = 1e-9;
 
     private final double ticksPerSecond;
+    private final SpaceChoice spaceChoice;
+    /** The real time cap, when not the request's budget: the benchmark's, to measure a search to its end. */
+    private final Duration wallCap;
 
     public LoadPlanner() {
         this(TICKS_PER_SECOND);
     }
 
-    /** For the benchmark: the same search at another work rate. */
+    /** For the tests and the benchmark: the same search at another work rate. */
     LoadPlanner(double ticksPerSecond) {
+        this(ticksPerSecond, SpaceChoice.IMPROVED, null);
+    }
+
+    /**
+     * For the benchmark: another work rate, the original's space choice to compare with, and a real time cap other
+     * than the request's budget (null: the budget), so a search can run to its end on a busy machine.
+     */
+    LoadPlanner(double ticksPerSecond, SpaceChoice spaceChoice, Duration wallCap) {
         this.ticksPerSecond = ticksPerSecond;
+        this.spaceChoice = spaceChoice;
+        this.wallCap = wallCap;
     }
 
     /** What a carton type is keyed by: cartons equal on all of these pack alike (see {@link #plan}). */
@@ -75,7 +93,7 @@ public final class LoadPlanner {
         long startNanos = System.nanoTime();
         List<CargoPackage> cartons = request.cartons();
         checkUnique(cartons, request.vehicleTypes());
-        long deadline = startNanos + request.budget().toNanos();
+        long deadline = startNanos + (wallCap != null ? wallCap : request.budget()).toNanos();
         double budget = request.budget().toNanos() / 1e9;
 
         List<Bin> usable = new ArrayList<>();
@@ -211,7 +229,7 @@ public final class LoadPlanner {
 
     private Solved solve(LoadPlanRequest request, List<Bin> usable, List<Box> main, List<Box> fill,
                          List<KitSpec> kits, double budget, WorkClock clock) {
-        KitSolver solver = new KitSolver(clock, request.seed(), true);
+        KitSolver solver = new KitSolver(clock, request.seed(), true, spaceChoice);
         if (main.isEmpty() || usable.isEmpty()) {
             return new Solved(new KitSolver.Outcome(List.of(), new ArrayList<>(main), new KitSolver.Meta("GRASP_KIT",
                     0, 0, request.targetVehicleCount(), false, request.distribution().name(), List.of(), List.of(),
