@@ -59,7 +59,8 @@ class ProductionMaterialIssueController {
 
     @GetMapping("/pending")
     @Operation(summary = "What is still to scan: blanks required, issued and outstanding, and each hold waiting with "
-            + "its location, lot, quantity and barcode (SCRUM-410)")
+            + "its location, lot, quantity and barcode (SCRUM-410), or the carton (LPN) to scan for a hold in one "
+            + "(SCRUM-473)")
     @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.READ)
     public ApiResponse<MaterialIssues.Pending> pending(@PathVariable UUID productionOrderId,
                                                        @AuthenticatedUser CurrentUser user) {

@@ -23,8 +23,9 @@ public interface MaterialIssues {
      * @param reservationId   the hold scanned; null for the next hold of the order not yet issued
      * @param scannedLocation the location scanned where the blanks were taken; when given it must be the hold's
      *                        ({@code ISSUE_LOCATION_MISMATCH}), any case
-     * @param scannedCode     the SKU or barcode scanned on the blanks; when given it must be the hold's SKU (any
-     *                        case) or the SKU's barcode ({@code ISSUE_ITEM_MISMATCH})
+     * @param scannedCode     the code scanned on the blanks; when given it must be the carton's LPN (any case) for a
+     *                        hold in a carton (SCRUM-473), else the hold's SKU (any case) or the SKU's barcode
+     *                        ({@code ISSUE_ITEM_MISMATCH})
      */
     record Issue(UUID requestId, String toLocation, UUID reservationId, String scannedLocation, String scannedCode) {
 
@@ -47,9 +48,15 @@ public interface MaterialIssues {
                    int issued, int outstanding, List<PendingHold> holds) {
     }
 
-    /** One hold to scan: walk to {@code locationCode}, scan it, then the SKU or {@code barcode}. */
+    /**
+     * One hold to scan: walk to {@code locationCode}, scan it, then the SKU or {@code barcode} - or, for a hold in a
+     * carton (SCRUM-473), that carton's label: the hold is deducted from that carton and no other.
+     *
+     * @param lpn         the carton the held blanks are in, null for loose stock
+     * @param wholeCarton the hold is its carton's whole sealed content: the clerk brings the carton as it stands
+     */
     record PendingHold(UUID reservationId, String sku, String lotNumber, String locationCode, int quantity,
-                       String barcode) {
+                       String barcode, String lpn, boolean wholeCarton) {
     }
 
     record Issued(UUID id, UUID productionOrderId, UUID requestId, UUID reservationId, String sku, String lotNumber,
