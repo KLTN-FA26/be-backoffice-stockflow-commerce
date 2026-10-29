@@ -167,7 +167,9 @@ public interface IdentityService {
      *
      * @throws com.stockflow.common.error.BusinessException {@code UNAUTHORIZED} for an unknown
      *         username or a wrong password (never revealing which); {@code ACCOUNT_NOT_ACTIVE} if
-     *         the password was correct but the account is {@code LOCKED}/{@code DISABLED}
+     *         the password was correct but the account is {@code LOCKED}/{@code DISABLED};
+     *         {@code TEMPORARY_PASSWORD_EXPIRED} if the password was correct but is an administrator-set
+     *         one older than 72 hours
      */
     TokenResponse login(LoginCommand command);
 
@@ -198,7 +200,10 @@ public interface IdentityService {
     /**
      * Changes the password after checking the current one.
      *
-     * @return how many other sessions were ended (0 unless {@code logoutOtherDevices})
+     * <p>When the account was flagged "must change password" the change always ends every other session,
+     * whatever {@code logoutOtherDevices} says; the current one is kept.</p>
+     *
+     * @return how many other sessions were ended (0 unless {@code logoutOtherDevices} or the change was forced)
      * @throws com.stockflow.common.error.BusinessException {@code INVALID_CURRENT_PASSWORD} if the
      *         current password is wrong, {@code PASSWORD_UNCHANGED} if the new one equals it,
      *         {@code VALIDATION_FAILED} if the new one breaks the password policy

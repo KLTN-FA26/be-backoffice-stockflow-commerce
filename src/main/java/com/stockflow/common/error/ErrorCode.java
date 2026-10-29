@@ -136,6 +136,12 @@ public enum ErrorCode {
     /** Too many wrong passwords in a row; the lock ends on its own (SCRUM-456). Only revealed to a
      *  caller who then gave the right password, so it cannot be used to probe for accounts. */
     ACCOUNT_TEMPORARILY_LOCKED("Too many failed sign-in attempts; try again later", 403),
+    /** The administrator-set temporary password is older than 72 hours; only a reset by an administrator
+     *  helps (SCRUM-474 FIRST-LOGIN). Like ACCOUNT_NOT_ACTIVE it is only revealed after the right password. */
+    TEMPORARY_PASSWORD_EXPIRED("The temporary password has expired; ask an administrator to reset it", 403),
+    /** The account still has an administrator-set password: every call except changing it (and reading who
+     *  you are, and signing out) is refused until it is changed (SCRUM-474 FIRST-LOGIN). */
+    PASSWORD_CHANGE_REQUIRED("You must change your temporary password before using the system", 403),
     /** You can only hand out what you hold: a role or permission the caller lacks, or managing an
      *  account that holds more than the caller (SCRUM-456). */
     PRIVILEGE_ESCALATION("You cannot grant or manage permissions you do not hold yourself", 403),

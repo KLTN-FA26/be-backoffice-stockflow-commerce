@@ -24,7 +24,7 @@ class UserTest {
 
     private static User userWith(UserStatus status) {
         return new User(UserId.newId(), "jane.doe", "jane@example.com", "{bcrypt}$2b$...",
-                "Jane Doe", status, null, false, 0, null, 0L, Instant.parse("2026-01-01T00:00:00Z"), "seed");
+                "Jane Doe", status, null, false, null, 0, null, 0L, Instant.parse("2026-01-01T00:00:00Z"), "seed");
     }
 
     @Test
@@ -162,7 +162,7 @@ class UserTest {
     @Test
     @DisplayName("an administrator's reset makes the password temporary; the user's own change makes it final")
     void temporaryPasswordFlag() {
-        User user = User.createStaff(UUID.randomUUID(), " lan.nguyen ", " Lan@Example.com ", "{bcrypt}a", "Lan", true);
+        User user = User.createStaff(UUID.randomUUID(), " lan.nguyen ", " Lan@Example.com ", "{bcrypt}a", "Lan", true, NOW);
         assertThat(user.username()).isEqualTo("lan.nguyen");
         assertThat(user.email()).isEqualTo("lan@example.com");
         assertThat(user.mustChangePassword()).isTrue();
@@ -170,9 +170,60 @@ class UserTest {
         user.changePasswordHash("{bcrypt}b");
         assertThat(user.mustChangePassword()).isFalse();
 
-        user.resetPassword("{bcrypt}c");
+        user.resetPassword("{bcrypt}c", NOW);
         assertThat(user.mustChangePassword()).isTrue();
         assertThat(user.passwordHash()).isEqualTo("{bcrypt}c");
+    }
+
+    private static User withTemporaryPasswordSetAt(Instant setAt) {
+        return new User(UserId.newId(), "jane.doe", "jane@example.com", "{bcrypt}$2b$...", "Jane Doe",
+                UserStatus.ACTIVE, null, true, setAt, 0, null, 0L, Instant.parse("2026-01-01T00:00:00Z"), "seed");
+    }
+
+    @Test
+    @DisplayName("a temporary password works for 72 hours and not a second longer")
+    void temporaryPasswordExpiresAfter72Hours() {
+        User user = withTemporaryPasswordSetAt(NOW);
+
+        user.signIn(NOW.plus(User.TEMPORARY_PASSWORD_VALIDITY).minusSeconds(1));
+        assertThat(user.temporaryPasswordExpired(NOW.plusSeconds(72 * 3600 - 1))).isFalse();
+
+        assertThat(user.temporaryPasswordExpired(NOW.plus(User.TEMPORARY_PASSWORD_VALIDITY))).isTrue();
+        assertThatThrownBy(() -> user.signIn(NOW.plus(User.TEMPORARY_PASSWORD_VALIDITY)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.TEMPORARY_PASSWORD_EXPIRED));
+    }
+
+    @Test
+    @DisplayName("an account flagged before the timestamp existed (null) never expires until reset")
+    void unknownSetTimeDoesNotExpire() {
+        User user = withTemporaryPasswordSetAt(null);
+
+        assertThat(user.temporaryPasswordExpired(NOW.plus(java.time.Duration.ofDays(365)))).isFalse();
+        user.signIn(NOW.plus(java.time.Duration.ofDays(365)));
+    }
+
+    @Test
+    @DisplayName("an administrator's reset restarts the 72 hours; the user's own change ends them")
+    void resetRestartsAndChangeEndsTheExpiry() {
+        User user = withTemporaryPasswordSetAt(NOW.minus(java.time.Duration.ofDays(10)));
+        assertThat(user.temporaryPasswordExpired(NOW)).isTrue();
+
+        user.resetPassword("{bcrypt}new", NOW);
+        assertThat(user.temporaryPasswordSetAt()).isEqualTo(NOW);
+        assertThat(user.temporaryPasswordExpired(NOW.plusSeconds(3600))).isFalse();
+
+        user.changePasswordHash("{bcrypt}mine");
+        assertThat(user.temporaryPasswordSetAt()).isNull();
+        assertThat(user.temporaryPasswordExpired(NOW.plus(java.time.Duration.ofDays(30)))).isFalse();
+    }
+
+    @Test
+    @DisplayName("a staff account created without a temporary password has no expiry")
+    void permanentPasswordHasNoExpiry() {
+        User user = User.createStaff(UUID.randomUUID(), "lan", "lan@example.com", "{bcrypt}a", "Lan", false, NOW);
+        assertThat(user.mustChangePassword()).isFalse();
+        assertThat(user.temporaryPasswordSetAt()).isNull();
     }
 
     @Test

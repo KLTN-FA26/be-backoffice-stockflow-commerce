@@ -649,7 +649,7 @@ class IdentityServiceImpl implements IdentityService {
             requireStrong(password);
         }
         User saved = userRepository.save(User.createStaff(Identifiers.newId(), username, email,
-                passwordEncoder.encode(password), blankToNull(command.fullName()), true));
+                passwordEncoder.encode(password), blankToNull(command.fullName()), true, clock.instant()));
         UUID userId = saved.id().value();
         userRoles.saveAll(granted.stream()
                 .map(role -> new UserRoleJpaEntity(Identifiers.newId(), userId, role.getId()))
@@ -767,7 +767,7 @@ class IdentityServiceImpl implements IdentityService {
             requireStrong(password);
         }
         User user = loadUser(userId);
-        user.resetPassword(passwordEncoder.encode(password));
+        user.resetPassword(passwordEncoder.encode(password), clock.instant());
         userRepository.save(user);
         int ended = sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.PASSWORD_RESET);
         return new PasswordReset(temporary, ended);
@@ -943,7 +943,7 @@ class IdentityServiceImpl implements IdentityService {
         UserSessionJpaEntity session = sessions.save(new UserSessionJpaEntity(Identifiers.newId(),
                 user.id().value(), issuedAt, issuedAt.plus(tokenTtl), clientAddress, userAgent));
         return new TokenResponse(issueToken(user, grantedRoles, session),
-                "Bearer", tokenTtl.toSeconds());
+                "Bearer", tokenTtl.toSeconds(), user.mustChangePassword());
     }
 
     @Override
@@ -1000,9 +1000,12 @@ class IdentityServiceImpl implements IdentityService {
         if (passwordEncoder.matches(command.newPassword(), user.passwordHash())) {
             throw new BusinessException(ErrorCode.PASSWORD_UNCHANGED);
         }
+        // A forced change ends every other session whatever the caller asked: the old password was known to an
+        // administrator, and the sessions it opened elsewhere are the ones to close (SCRUM-474 FIRST-LOGIN).
+        boolean forced = user.mustChangePassword();
         user.changePasswordHash(passwordEncoder.encode(command.newPassword()));
         userRepository.save(user);
-        return command.logoutOtherDevices()
+        return forced || command.logoutOtherDevices()
                 ? sessions.revokeLive(command.userId(), command.currentSessionId(), clock.instant(),
                         SessionEndReason.PASSWORD_CHANGED)
                 : 0;

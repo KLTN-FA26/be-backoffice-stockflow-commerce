@@ -79,7 +79,7 @@ class IdentitySessionServiceTest {
 
     private User user(UserStatus status) {
         return new User(new UserId(userId), "jane", "jane@example.com", "{bcrypt}hash", "Jane", status,
-                null, false, 0, null, 0, NOW, "seed");
+                null, false, null, 0, null, 0, NOW, "seed");
     }
 
     @Test
@@ -230,6 +230,65 @@ class IdentitySessionServiceTest {
                 new ChangePasswordCommand(userId, current, "Current-pw1", "Abcdefgh12", true));
 
         assertThat(ended).isEqualTo(2);
+    }
+
+    private User forcedUser(java.time.Instant temporaryPasswordSetAt) {
+        return new User(new UserId(userId), "jane", "jane@example.com", "{bcrypt}hash", "Jane", UserStatus.ACTIVE,
+                null, true, temporaryPasswordSetAt, 0, null, 0, NOW, "seed");
+    }
+
+    @Test
+    void aForcedChangeEndsEveryOtherSessionEvenWithoutTheTick() {
+        UUID current = UUID.randomUUID();
+        when(users.findById(new UserId(userId))).thenReturn(Optional.of(forcedUser(NOW.minusSeconds(3600))));
+        when(encoder.matches("Current-pw1", "{bcrypt}hash")).thenReturn(true);
+        when(sessions.revokeLive(userId, current, NOW, SessionEndReason.PASSWORD_CHANGED)).thenReturn(3);
+
+        int ended = service.changePassword(
+                new ChangePasswordCommand(userId, current, "Current-pw1", "Abcdefgh12", false));
+
+        assertThat(ended).isEqualTo(3);
+        var saved = ArgumentCaptor.forClass(User.class);
+        verify(users).save(saved.capture());
+        assertThat(saved.getValue().mustChangePassword()).isFalse();
+        assertThat(saved.getValue().temporaryPasswordSetAt()).isNull();
+        // the current session is the one passed as "keep": it is never revoked
+        verify(sessions).revokeLive(userId, current, NOW, SessionEndReason.PASSWORD_CHANGED);
+    }
+
+    @Test
+    void loginWithAnExpiredTemporaryPasswordIsRefusedAfterThePasswordWasChecked() {
+        when(users.findByUsername("jane")).thenReturn(Optional.of(forcedUser(NOW.minus(User.TEMPORARY_PASSWORD_VALIDITY))));
+        when(encoder.matches("Passw0rd!x", "{bcrypt}hash")).thenReturn(true);
+
+        assertThatThrownBy(() -> service.login(new LoginCommand("jane", "Passw0rd!x", "10.0.0.7", "Firefox")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.TEMPORARY_PASSWORD_EXPIRED));
+        verify(sessions, never()).save(any());
+    }
+
+    @Test
+    void loginWithAWrongPasswordOnAnExpiredAccountStaysTheGenericAnswer() {
+        when(users.findByUsername("jane")).thenReturn(Optional.of(forcedUser(NOW.minus(User.TEMPORARY_PASSWORD_VALIDITY))));
+        when(encoder.matches("nope", "{bcrypt}hash")).thenReturn(false);
+
+        assertThatThrownBy(() -> service.login(new LoginCommand("jane", "nope", "10.0.0.7", "Firefox")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.UNAUTHORIZED));
+    }
+
+    @Test
+    void loginOfAForcedAccountReportsTheFlagInTheTokenResponse() {
+        when(users.findByUsername("jane")).thenReturn(Optional.of(forcedUser(NOW.minusSeconds(60))));
+        when(encoder.matches("Passw0rd!x", "{bcrypt}hash")).thenReturn(true);
+        when(users.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(sessions.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(jwtEncoder.encode(any())).thenReturn(
+                Jwt.withTokenValue("signed").header("alg", "RS256").subject("x").build());
+
+        var token = service.login(new LoginCommand("jane", "Passw0rd!x", "10.0.0.7", "Firefox"));
+
+        assertThat(token.mustChangePassword()).isTrue();
     }
 
     @Test
