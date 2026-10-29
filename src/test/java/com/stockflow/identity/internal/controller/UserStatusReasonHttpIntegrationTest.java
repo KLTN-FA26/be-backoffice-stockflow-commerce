@@ -38,14 +38,16 @@ class UserStatusReasonHttpIntegrationTest {
 
     private String admin;
     private UUID target;
+    private String targetUsername;
 
     @BeforeEach
     void anAdministratorAndAnAccountToManage() {
         UUID adminId = tx.execute(s -> ReferenceRows.user(entityManager));
         admin = TestTokens.bearer(decoder, adminId, Role.SYSTEM_ADMIN);
-        String name = "reason." + UUID.randomUUID().toString().substring(0, 8);
-        target = identity.createStaffUser(new CreateStaffUserCommand(name, name + "@example.com", "Reason target",
-                null, List.of("WAREHOUSE_STAFF"), null)).user().userId();
+        // unique: every test of the shared database makes its own account, and the list is searched by this name
+        targetUsername = "reason." + UUID.randomUUID().toString().substring(0, 8);
+        target = identity.createStaffUser(new CreateStaffUserCommand(targetUsername, targetUsername + "@example.com",
+                "Reason target", null, List.of("WAREHOUSE_STAFF"), null)).user().userId();
     }
 
     private String url(String action) {
@@ -90,7 +92,7 @@ class UserStatusReasonHttpIntegrationTest {
         mvc.perform(get("/api/v1/identity/users/" + target).header("Authorization", admin))
                 .andExpect(jsonPath("$.data.latestStatusChange.action").value("UNLOCK"))
                 .andExpect(jsonPath("$.data.latestStatusChange.reason").value("Đã xác minh với chủ tài khoản"));
-        mvc.perform(get("/api/v1/identity/users").param("q", "Reason target").header("Authorization", admin))
+        mvc.perform(get("/api/v1/identity/users").param("q", targetUsername).header("Authorization", admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].latestStatusChange.reason").value("Đã xác minh với chủ tài khoản"));
         mvc.perform(get(url("status-changes")).header("Authorization", admin))
