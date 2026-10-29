@@ -56,6 +56,18 @@ public @interface Auditable {
     String resourceId() default "";
 
     /**
+     * SpEL over the method's arguments for what the entry should say beyond "this action happened to
+     * this record": an inline map such as {@code "{change: #change.name(), reason: #reason}"}. The entry's
+     * {@code details} becomes that map as one JSON object (strings quoted, numbers and booleans as
+     * they are). On a failure the object is kept next to the error, under {@code "context"}.
+     *
+     * <p>Callers put in what an auditor would ask for later and nothing more (see {@code AuditEntry}):
+     * never a credential, never a whole entity. A bad expression is logged and the entry is still
+     * written without it. Optional.</p>
+     */
+    String details() default "";
+
+    /**
      * Whether to record an entry when the method throws.
      *
      * <p>Default true, and worth keeping. A <b>refused</b> approval or a failed permission change is

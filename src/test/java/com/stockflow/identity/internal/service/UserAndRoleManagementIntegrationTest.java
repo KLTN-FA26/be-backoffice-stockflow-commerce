@@ -51,6 +51,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class UserAndRoleManagementIntegrationTest {
 
     private static final String STRONG = "Str0ngPassword";
+    private static final String REASON = "Reason given by the test";
 
     @Autowired
     private IdentityService identity;
@@ -159,7 +160,7 @@ class UserAndRoleManagementIntegrationTest {
         refused(ErrorCode.VALIDATION_FAILED,
                 () -> identity.listUsers(new ListUsersQuery(null, "SLEEPING", null, false, 0, 20, null)));
         refused(ErrorCode.STAFF_ACCOUNT_REQUIRED,
-                () -> identity.changeUserStatus(customerId, UserStatusChange.LOCK));
+                () -> identity.changeUserStatus(customerId, UserStatusChange.LOCK, REASON));
     }
 
     @Test
@@ -182,17 +183,160 @@ class UserAndRoleManagementIntegrationTest {
         UUID id = created.user().userId();
         identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "t"));
 
-        assertThat(identity.changeUserStatus(id, UserStatusChange.LOCK).status()).isEqualTo("LOCKED");
+        assertThat(identity.changeUserStatus(id, UserStatusChange.LOCK, REASON).status()).isEqualTo("LOCKED");
         assertThat(liveSessions(id)).isZero();
         refused(ErrorCode.ACCOUNT_NOT_ACTIVE, () -> identity.login(
                 new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "t")));
-        refused(ErrorCode.INVALID_USER_STATUS_TRANSITION, () -> identity.changeUserStatus(id, UserStatusChange.ENABLE));
+        refused(ErrorCode.INVALID_USER_STATUS_TRANSITION, () -> identity.changeUserStatus(id, UserStatusChange.ENABLE, REASON));
 
-        identity.changeUserStatus(id, UserStatusChange.UNLOCK);
-        identity.changeUserStatus(id, UserStatusChange.DISABLE);
+        identity.changeUserStatus(id, UserStatusChange.UNLOCK, REASON);
+        identity.changeUserStatus(id, UserStatusChange.DISABLE, REASON);
         refused(ErrorCode.ACCOUNT_NOT_ACTIVE, () -> identity.login(
                 new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "t")));
-        assertThat(identity.changeUserStatus(id, UserStatusChange.ENABLE).status()).isEqualTo("ACTIVE");
+        assertThat(identity.changeUserStatus(id, UserStatusChange.ENABLE, REASON).status()).isEqualTo("ACTIVE");
+    }
+
+    // ---- SCRUM-474 LOCK-REASON ----------------------------------------------------------------
+
+    private List<String> auditDetails(UUID userId) {
+        return jdbc.queryForList("""
+                SELECT details FROM platform.audit_log
+                 WHERE resource_type = 'user' AND resource_id = ? AND action = 'TRANSITION' AND outcome = 'SUCCESS'
+                 ORDER BY occurred_at, id""", String.class, userId.toString());
+    }
+
+    @Test
+    void everyStatusActionNeedsAReasonOf5To500CharactersAndNothingChangesWithoutOne() {
+        CreatedStaffUser created = create("ACCOUNTANT");
+        UUID id = created.user().userId();
+
+        for (String bad : new String[]{null, "", "    ", "abcd", " abcd ", "x".repeat(501)}) {
+            for (UserStatusChange change : UserStatusChange.values()) {
+                refused(ErrorCode.VALIDATION_FAILED, () -> identity.changeUserStatus(id, change, bad));
+            }
+        }
+
+        assertThat(identity.user(id).status()).isEqualTo("ACTIVE");
+        assertThat(identity.user(id).latestStatusChange()).isNull();
+        assertThat(identity.statusHistory(id, 0, 20).items()).isEmpty();
+        assertThat(auditDetails(id)).isEmpty();
+        // the bounds themselves are fine
+        identity.changeUserStatus(id, UserStatusChange.LOCK, "abcde");
+        identity.changeUserStatus(id, UserStatusChange.UNLOCK, "x".repeat(500));
+    }
+
+    @Test
+    void theHistoryKeepsEveryActionNewestFirstAndTheLatestShowsOnDetailAndList() {
+        CreatedStaffUser created = create("INVENTORY_PLANNER");
+        UUID id = created.user().userId();
+        UUID actorId = create("SALES_STAFF").user().userId();
+        CurrentUser admin = new CurrentUser(actorId, "an.admin", Set.of(Role.SYSTEM_ADMIN),
+                lookup.resolve(List.of(Role.SYSTEM_ADMIN.authority())).permissions(), DataScope.ALL, Set.of());
+
+        as(admin, () -> identity.changeUserStatus(id, UserStatusChange.LOCK, "  Nghi ngờ lộ mật khẩu  "));
+        as(admin, () -> identity.changeUserStatus(id, UserStatusChange.UNLOCK, "Đã xác minh với chủ tài khoản"));
+        as(admin, () -> identity.changeUserStatus(id, UserStatusChange.DISABLE, "Nghỉ việc ngày 29/10"));
+
+        var history = identity.statusHistory(id, 0, 20).items();
+        assertThat(history).extracting(e -> e.action()).containsExactly(
+                UserStatusChange.DISABLE, UserStatusChange.UNLOCK, UserStatusChange.LOCK);
+        assertThat(history).extracting(e -> e.fromStatus() + ">" + e.toStatus())
+                .containsExactly("ACTIVE>DISABLED", "LOCKED>ACTIVE", "ACTIVE>LOCKED");
+        assertThat(history).extracting(e -> e.reason()).containsExactly(
+                "Nghỉ việc ngày 29/10", "Đã xác minh với chủ tài khoản", "Nghi ngờ lộ mật khẩu");
+        assertThat(history).allSatisfy(e -> {
+            assertThat(e.actorId()).isEqualTo(actorId);
+            assertThat(e.actorUsername()).isEqualTo("an.admin");
+            assertThat(e.changedAt()).isNotNull();
+        });
+
+        StaffUser detail = identity.user(id);
+        assertThat(detail.latestStatusChange().action()).isEqualTo(UserStatusChange.DISABLE);
+        assertThat(detail.latestStatusChange().reason()).isEqualTo("Nghỉ việc ngày 29/10");
+        StaffUser inList = identity.listUsers(new ListUsersQuery(created.user().username(), null, null, false, 0, 20, null))
+                .items().get(0);
+        assertThat(inList.latestStatusChange()).isEqualTo(detail.latestStatusChange());
+        // an account nobody touched has none
+        assertThat(create("ACCOUNTANT").user().latestStatusChange()).isNull();
+
+        assertThat(identity.statusHistory(id, 0, 2).items()).hasSize(2);
+        assertThat(identity.statusHistory(id, 1, 2).items()).hasSize(1);
+        refused(ErrorCode.USER_NOT_FOUND, () -> identity.statusHistory(UUID.randomUUID(), 0, 20));
+    }
+
+    @Test
+    void theAuditEntryTellsLockFromDisableAndCarriesTheReason() {
+        UUID id = create("QC_STAFF").user().userId();
+
+        identity.changeUserStatus(id, UserStatusChange.LOCK, "Đăng nhập bất thường");
+        identity.changeUserStatus(id, UserStatusChange.UNLOCK, "Đã kiểm tra, an toàn");
+        identity.changeUserStatus(id, UserStatusChange.DISABLE, "Hết hợp đồng");
+        identity.changeUserStatus(id, UserStatusChange.ENABLE, "Ký lại hợp đồng");
+
+        assertThat(auditDetails(id)).containsExactly(
+                "{\"change\":\"LOCK\",\"reason\":\"Đăng nhập bất thường\"}",
+                "{\"change\":\"UNLOCK\",\"reason\":\"Đã kiểm tra, an toàn\"}",
+                "{\"change\":\"DISABLE\",\"reason\":\"Hết hợp đồng\"}",
+                "{\"change\":\"ENABLE\",\"reason\":\"Ký lại hợp đồng\"}");
+    }
+
+    @Test
+    void aRefusedTransitionLeavesNoHistoryRowAndAFailureAuditEntryWithTheReason() {
+        UUID id = create("QC_STAFF").user().userId();
+
+        identity.changeUserStatus(id, UserStatusChange.DISABLE, "Tạm dừng");
+        refused(ErrorCode.INVALID_USER_STATUS_TRANSITION,
+                () -> identity.changeUserStatus(id, UserStatusChange.LOCK, "Tạm dừng"));
+
+        assertThat(identity.statusHistory(id, 0, 20).items()).extracting(e -> e.action())
+                .containsExactly(UserStatusChange.DISABLE);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM platform.audit_log WHERE resource_type = 'user' AND resource_id = ?
+                   AND outcome = 'FAILURE' AND details LIKE '%"context":{"change":"LOCK","reason":"Tạm dừng"}%'""",
+                Long.class, id.toString())).isEqualTo(1);
+    }
+
+    @Test
+    void theAutomaticLockAfterWrongPasswordsTakesNoReasonAndWritesNoHistory() {
+        CreatedStaffUser created = create("ORDER_COORDINATOR");
+        for (int i = 0; i < 5; i++) {
+            refused(ErrorCode.UNAUTHORIZED,
+                    () -> identity.login(new LoginCommand(created.user().username(), "Wrong0Password", "2.2.2.2", "t")));
+        }
+
+        assertThat(identity.user(created.user().userId()).lockedUntil()).isNotNull();
+        assertThat(identity.statusHistory(created.user().userId(), 0, 20).items()).isEmpty();
+        assertThat(identity.user(created.user().userId()).latestStatusChange()).isNull();
+    }
+
+    @Test
+    void historyRowsCanNeitherBeChangedNorDeleted() {
+        UUID id = create("QC_STAFF").user().userId();
+        identity.changeUserStatus(id, UserStatusChange.LOCK, "Đăng nhập bất thường");
+
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> jdbc.update(
+                "UPDATE identity.user_status_change SET reason = 'rewritten history' WHERE user_id = ?", id)))
+                .hasMessageContaining("append-only");
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> jdbc.update(
+                "DELETE FROM identity.user_status_change WHERE user_id = ?", id)))
+                .hasMessageContaining("append-only");
+        // and the database states the length rule a second time
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> jdbc.update("""
+                INSERT INTO identity.user_status_change (id, user_id, action, from_status, to_status, reason,
+                                                         actor_username, changed_at)
+                VALUES (gen_random_uuid(), ?, 'LOCK', 'ACTIVE', 'LOCKED', 'abc', 'x', now())""", id)))
+                .hasMessageContaining("ck_user_status_change_reason");
+        // ... including for a reason padded with no-break spaces, which btrim without a character set would keep
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> jdbc.update("""
+                INSERT INTO identity.user_status_change (id, user_id, action, from_status, to_status, reason,
+                                                         actor_username, changed_at)
+                VALUES (gen_random_uuid(), ?, 'LOCK', 'ACTIVE', 'LOCKED', ?, 'x', now())""", id, "\u00a0\u00a0abc\u00a0\u00a0")))
+                .hasMessageContaining("ck_user_status_change_reason");
+        refused(ErrorCode.VALIDATION_FAILED,
+                () -> identity.changeUserStatus(id, UserStatusChange.UNLOCK, "\u00a0\u00a0abc\u00a0\u00a0"));
+        identity.changeUserStatus(id, UserStatusChange.UNLOCK, "\u00a0Đã xác minh\u00a0");
+        assertThat(identity.statusHistory(id, 0, 20).items().get(0).reason()).isEqualTo("Đã xác minh");
+        assertThat(identity.statusHistory(id, 0, 20).items()).hasSize(2);
     }
 
     @Test
@@ -227,7 +371,7 @@ class UserAndRoleManagementIntegrationTest {
                 () -> identity.login(new LoginCommand(username, "Wrong0Password", "1.1.1.1", "t")));
         assertThat(identity.user(created.user().userId()).lockedUntil()).isNotNull();
 
-        identity.changeUserStatus(created.user().userId(), UserStatusChange.UNLOCK);
+        identity.changeUserStatus(created.user().userId(), UserStatusChange.UNLOCK, REASON);
         identity.login(new LoginCommand(username, created.temporaryPassword(), "1.1.1.1", "t"));
     }
 
@@ -258,7 +402,7 @@ class UserAndRoleManagementIntegrationTest {
         }));
         refused(ErrorCode.PRIVILEGE_ESCALATION, () -> as(caller, () -> identity.resetPassword(admin.userId(), null)));
         refused(ErrorCode.PRIVILEGE_ESCALATION,
-                () -> as(caller, () -> identity.changeUserStatus(admin.userId(), UserStatusChange.LOCK)));
+                () -> as(caller, () -> identity.changeUserStatus(admin.userId(), UserStatusChange.LOCK, REASON)));
         // SALES_STAFF grants sales permissions the shop admin does not hold.
         refused(ErrorCode.PRIVILEGE_ESCALATION, () -> as(caller, () -> {
             identity.assignRole(clerk.userId(), "SALES_STAFF");
@@ -299,8 +443,8 @@ class UserAndRoleManagementIntegrationTest {
             // admin is now the only active System Admin: the same caller cannot be locked by anyone,
             // and nobody may take the role away from it.
             refused(ErrorCode.LAST_SYSTEM_ADMIN, () -> identity.revokeRole(admin.userId(), "SYSTEM_ADMIN"));
-            refused(ErrorCode.LAST_SYSTEM_ADMIN, () -> identity.changeUserStatus(admin.userId(), UserStatusChange.LOCK));
-            refused(ErrorCode.LAST_SYSTEM_ADMIN, () -> identity.changeUserStatus(admin.userId(), UserStatusChange.DISABLE));
+            refused(ErrorCode.LAST_SYSTEM_ADMIN, () -> identity.changeUserStatus(admin.userId(), UserStatusChange.LOCK, REASON));
+            refused(ErrorCode.LAST_SYSTEM_ADMIN, () -> identity.changeUserStatus(admin.userId(), UserStatusChange.DISABLE, REASON));
         } finally {
             parked.forEach(id -> jdbc.update("UPDATE identity.app_user SET status = 'ACTIVE' WHERE id = ?", id));
         }

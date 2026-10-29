@@ -74,7 +74,8 @@ class IdentitySessionServiceTest {
                 encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
                 () -> java.util.Optional.of("test"), userRows, mock(PrivilegeGuard.class),
                 loginAttempts, mock(UserWarehouseJpaRepository.class),
-                mock(com.stockflow.warehouse.api.WarehouseService.class), TTL);
+                mock(com.stockflow.warehouse.api.WarehouseService.class),
+                mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), TTL);
     }
 
     private User user(UserStatus status) {
@@ -270,7 +271,8 @@ class IdentitySessionServiceTest {
                     encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
                     () -> java.util.Optional.of("test"), mock(UserJpaRepository.class), mock(PrivilegeGuard.class),
                     loginAttempts, mock(UserWarehouseJpaRepository.class),
-                    mock(com.stockflow.warehouse.api.WarehouseService.class), bad)).isInstanceOf(IllegalArgumentException.class);
+                    mock(com.stockflow.warehouse.api.WarehouseService.class),
+                    mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), bad)).isInstanceOf(IllegalArgumentException.class);
         }
     }
 

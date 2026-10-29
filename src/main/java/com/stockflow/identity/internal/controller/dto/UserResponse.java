@@ -24,5 +24,7 @@ public record UserResponse(
         Instant lastLoginAt,
         Instant createdAt,
         String createdBy,
+        @Schema(description = "The last administrator lock / unlock / disable / enable and its reason; absent when "
+                + "none was recorded") UserStatusChangeResponse latestStatusChange,
         @Schema(description = "Send it back with an edit") long version) {
 }

@@ -111,12 +111,25 @@ public interface IdentityService {
     StaffUser updateUser(UpdateUserCommand command);
 
     /**
-     * Lock, unlock, disable or enable an account. Locking and disabling end its sessions.
+     * Lock, unlock, disable or enable an account. Locking and disabling end its sessions. The reason is
+     * kept in the account's status history ({@link #statusHistory}) and in the audit entry, which also says
+     * which of the four it was (SCRUM-474 LOCK-REASON). The automatic lock after too many wrong passwords
+     * is not an administrator's decision and takes no reason.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code INVALID_USER_STATUS_TRANSITION},
+     * @param reason free text, 5 to 500 characters after trimming
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for a missing or
+     *         out-of-range reason, {@code INVALID_USER_STATUS_TRANSITION},
      *         {@code LAST_SYSTEM_ADMIN}, {@code OWN_ACCOUNT_NOT_MANAGEABLE}, {@code PRIVILEGE_ESCALATION}
      */
-    StaffUser changeUserStatus(UUID userId, UserStatusChange change);
+    StaffUser changeUserStatus(UUID userId, UserStatusChange change, String reason);
+
+    /**
+     * Every administrator lock / unlock / disable / enable of the account, newest first, with its reason.
+     * Empty for an account that never had one.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code USER_NOT_FOUND}
+     */
+    PageResponse<UserStatusChangeEntry> statusHistory(UUID userId, int page, int size);
 
     /**
      * Replace the warehouses a staff member is assigned to (SCRUM-457). Applies on their next
