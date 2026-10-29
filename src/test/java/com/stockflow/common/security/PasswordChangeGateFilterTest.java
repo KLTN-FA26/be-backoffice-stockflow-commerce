@@ -124,10 +124,12 @@ class PasswordChangeGateFilterTest {
     }
 
     @Test
-    void aPreflightIsLetThroughWithoutAskingAnything() throws Exception {
+    void aRealPreflightIsLetThroughWithoutAskingAnything() throws Exception {
         signedIn();
+        MockHttpServletRequest request = new MockHttpServletRequest("OPTIONS", "/api/v1/orders");
+        request.addHeader("Access-Control-Request-Method", "GET");
 
-        call("OPTIONS", "/api/v1/orders");
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
 
         verify(chain).doFilter(any(), any());
         verify(requirement, never()).isRequired(any());
@@ -142,5 +144,28 @@ class PasswordChangeGateFilterTest {
 
         verify(unavailable).commence(any(), any(), any(AuthenticationServiceException.class));
         verify(chain, never()).doFilter(any(), any());
+    }
+
+    @Test
+    void anOptionsCallThatIsNotAPreflightIsGatedLikeAnyOther() throws Exception {
+        signedIn();
+        when(requirement.isRequired(user)).thenReturn(true);
+
+        MockHttpServletResponse response = call("OPTIONS", "/api/v1/orders");
+
+        assertThat(response.getStatus()).isEqualTo(403);
+        verify(chain, never()).doFilter(any(), any());
+    }
+
+    @Test
+    void aTokenWhoseSubjectIsNotAnAccountIdFailsClosed() throws Exception {
+        Jwt jwt = Jwt.withTokenValue("t").header("alg", "RS256").subject("not-a-uuid").build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt, List.of(), "not-a-uuid"));
+
+        call("GET", "/api/v1/orders");
+
+        verify(unavailable).commence(any(), any(), any(AuthenticationServiceException.class));
+        verify(chain, never()).doFilter(any(), any());
+        verify(requirement, never()).isRequired(any());
     }
 }

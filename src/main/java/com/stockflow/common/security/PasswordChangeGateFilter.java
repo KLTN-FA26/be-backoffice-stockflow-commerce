@@ -84,7 +84,9 @@ public final class PasswordChangeGateFilter extends OncePerRequestFilter {
         }
         UUID userId = userId(authentication);
         if (userId == null) {
-            chain.doFilter(request, response);   // not one of our accounts: nothing to force
+            // A token whose subject is not an account id cannot be judged: fail closed, like an unreadable flag.
+            unavailableHandler.commence(request, response,
+                    new AuthenticationServiceException("The token subject is not an account id"));
             return;
         }
         boolean required;
@@ -109,9 +111,12 @@ public final class PasswordChangeGateFilter extends OncePerRequestFilter {
                 MDC.get(CorrelationIdFilter.MDC_KEY))));
     }
 
-    /** CORS preflights carry no credentials and are answered before this filter would matter. */
+    /**
+     * Only a real CORS preflight (OPTIONS with {@code Access-Control-Request-Method}) passes unconditionally: it
+     * carries no credentials. Any other OPTIONS is judged like every other call.
+     */
     static boolean isAllowed(HttpServletRequest request) {
-        if ("OPTIONS".equals(request.getMethod())) {
+        if ("OPTIONS".equals(request.getMethod()) && request.getHeader("Access-Control-Request-Method") != null) {
             return true;
         }
         String path = request.getRequestURI();
