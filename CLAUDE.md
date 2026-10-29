@@ -318,6 +318,14 @@ production holds, transfer orders - gets the order. `HoldView` carries the hold'
 copies them onto `pick_line` (`V20261028003000`, checked by `tg_pick_line_carton`), and `PickList.confirm` accepts only
 the LPN for such a line: the deduction is from that carton, and a SKU scan would let the picker take any carton of it.
 
+### Issuing blanks by carton (SCRUM-473)
+
+A blank hold in a carton - a production hold, or an order's released allocation - is issued to the print shop only on
+a scan of its LPN (`MaterialIssueService.requireScanned`), as picking does; an issue that scans nothing still goes
+through (the SCRUM-397 contract), and `PendingHold` shows the carton to bring. The blanks still
+enter the print shop loose, the carton opening or emptying. Finished goods are not put into cartons: G4-Q2 consumes them
+when the production order completes, so nothing is left in stock to pack.
+
 ### Purchase orders by carton (SCRUM-473)
 
 A standard PO line may name `unitOfMeasure` + `unitQuantity` ("5 CARTON"); `ProcurementServiceImpl.sizeLines` turns it
