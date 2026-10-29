@@ -44,7 +44,11 @@ public record PackingUnit(UUID uomConversionId, String unitOfMeasure, int factor
         return new PackingUnit(uomConversionId, unitOfMeasure, factor, wholeUnits(poNumber, quantity, factor));
     }
 
-    /** {@code quantity} in units of {@code factor}; refused when it is not a whole number of them. */
+    /**
+     * How many units of {@code factor} base units {@code quantity} is. BR-09: the factor is a whole number and there
+     * is no part of a carton, so anything else is {@code PO_LINE_UNIT_NOT_MULTIPLE} rather than the generic 409
+     * {@code tg_purchase_order_lines_unit} would turn it into.
+     */
     public static int wholeUnits(String poNumber, int quantity, int factor) {
         if (quantity % factor != 0) {
             throw new BusinessException(ErrorCode.PO_LINE_UNIT_NOT_MULTIPLE,

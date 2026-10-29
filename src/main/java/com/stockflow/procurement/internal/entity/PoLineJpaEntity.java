@@ -1,6 +1,7 @@
 package com.stockflow.procurement.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.procurement.internal.domain.PackingUnit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PoLineStatus;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
@@ -107,6 +108,12 @@ public class PoLineJpaEntity extends BaseEntity {
         this.lineNo = line.lineNo();
         this.inventoryItemId = line.inventoryItemId();
         this.uom = line.uom();
+        this.status = line.status();
+        writeContent(line);
+    }
+
+    /** What the buyer orders - quantity, unit, price, tax, description - and the amounts, as the domain line has them. */
+    private void writeContent(PoLine line) {
         this.orderedQuantity = BigDecimal.valueOf(line.quantityOrdered());
         this.unitPrice = line.unitPrice().amount();
         this.taxRate = line.taxRate();
@@ -114,12 +121,7 @@ public class PoLineJpaEntity extends BaseEntity {
         this.net = line.subtotal();
         this.tax = line.tax();
         this.total = line.total();
-        this.status = line.status();
         this.description = line.description();
-        writeUnit(line);
-    }
-
-    private void writeUnit(PoLine line) {
         this.uomConversionId = line.packingUnit() == null ? null : line.packingUnit().uomConversionId();
         this.unitQuantity = line.packingUnit() == null ? null : line.packingUnit().count();
     }
@@ -133,7 +135,7 @@ public class PoLineJpaEntity extends BaseEntity {
      * them. Refused once the order has left DRAFT: from submission on, the revision snapshot is what
      * the approver approves, and a changed line would no longer match it. {@code unitFactor} is the
      * factor of the line's packing unit, ignored for a line in the base unit: a line in a carton stays
-     * a whole number of cartons ({@link #wholeUnits}).
+     * a whole number of cartons ({@link PackingUnit#wholeUnits}).
      */
     public void reviseDraftQuantity(int quantity, int unitFactor) {
         requireDraft();
@@ -141,7 +143,7 @@ public class PoLineJpaEntity extends BaseEntity {
             throw new IllegalArgumentException("quantity must be positive");
         }
         if (uomConversionId != null) {
-            this.unitQuantity = wholeUnits(purchaseOrder.getPoNumber(), quantity, unitFactor);
+            this.unitQuantity = PackingUnit.wholeUnits(purchaseOrder.getPoNumber(), quantity, unitFactor);
         }
         this.orderedQuantity = BigDecimal.valueOf(quantity);
         this.subtotal = unitPrice.multiply(orderedQuantity).setScale(2, RoundingMode.HALF_UP);
@@ -157,24 +159,7 @@ public class PoLineJpaEntity extends BaseEntity {
      */
     public void reviseDraft(PoLine line) {
         requireDraft();
-        this.unitPrice = line.unitPrice().amount();
-        this.taxRate = line.taxRate();
-        this.description = line.description();
-        writeUnit(line);
-        this.orderedQuantity = BigDecimal.valueOf(line.quantityOrdered());
-        this.subtotal = line.subtotal();
-        this.net = subtotal;
-        this.tax = line.tax();
-        this.total = line.total();
-    }
-
-    /**
-     * How many units of {@code factor} base units {@code quantity} is. BR-09: the factor is a whole
-     * number and there is no part of a carton, so anything else is {@code PO_LINE_UNIT_NOT_MULTIPLE}
-     * rather than the generic 409 {@code tg_purchase_order_lines_unit} would turn it into.
-     */
-    public static int wholeUnits(String poNumber, int quantity, int factor) {
-        return com.stockflow.procurement.internal.domain.PackingUnit.wholeUnits(poNumber, quantity, factor);
+        writeContent(line);
     }
 
     /** Taken off a draft after a revision froze it: the row stays for that revision ({@code ck_purchase_order_lines_withdrawn}). */

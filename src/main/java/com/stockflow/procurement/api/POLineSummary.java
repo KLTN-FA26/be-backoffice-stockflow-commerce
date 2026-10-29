@@ -29,15 +29,6 @@ public record POLineSummary(
         Integer unitFactor,
         Integer unitQuantity
 ) {
-    /** A line in base units. */
-    public POLineSummary(UUID lineId, int lineNo, UUID inventoryItemId, String sku, String description, String uom,
-                         int quantityOrdered, int quantityReceived, BigDecimal unitPrice, BigDecimal taxRate,
-                         BigDecimal lineTotal, String status, boolean lotTracked, boolean expiryTracked,
-                         boolean qcRequired) {
-        this(lineId, lineNo, inventoryItemId, sku, description, uom, quantityOrdered, quantityReceived, unitPrice,
-                taxRate, lineTotal, status, lotTracked, expiryTracked, qcRequired, null, null, null);
-    }
-
     public int openQuantity() {
         return Math.max(0, quantityOrdered - quantityReceived);
     }
