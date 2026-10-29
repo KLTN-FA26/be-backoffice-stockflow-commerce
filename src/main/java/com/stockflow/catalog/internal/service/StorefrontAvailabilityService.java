@@ -2,6 +2,7 @@ package com.stockflow.catalog.internal.service;
 
 import com.stockflow.catalog.internal.domain.Availability;
 import com.stockflow.catalog.internal.domain.SkuAvailability;
+import com.stockflow.catalog.internal.repository.ListingRepository;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -33,12 +34,14 @@ public class StorefrontAvailabilityService {
     private final InventoryService inventory;
     private final AvailabilityProperties properties;
     private final CustomerService customers;
+    private final ListingRepository listings;
 
     public StorefrontAvailabilityService(InventoryService inventory, AvailabilityProperties properties,
-                                        CustomerService customers) {
+                                        CustomerService customers, ListingRepository listings) {
         this.inventory = inventory;
         this.properties = properties;
         this.customers = customers;
+        this.listings = listings;
     }
 
     /**
@@ -52,7 +55,13 @@ public class StorefrontAvailabilityService {
         // Resolve the profile from the authenticated subject; never accept a client customer id.
         customers.findByUserId(userId).filter(customer -> "ACTIVE".equals(customer.status()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.FORBIDDEN));
-        Set<Sku> skus = parse(codes);
+        Set<Sku> asked = parse(codes);
+        // Only SKUs of a published, enabled listing are answered, decided by the same rule as the storefront
+        // catalog (ListingRepository#listedBySku); the rest are dropped before inventory is queried.
+        Set<String> listed = listings.listedBySku(asked.stream().map(Sku::code).toList()).keySet();
+        Set<Sku> skus = asked.stream().filter(sku -> listed.contains(sku.code()))
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        if (skus.isEmpty()) return List.of();
         Map<Sku, Integer> atp = inventory.availableToPromise(skus);
         return skus.stream()
                 .map(sku -> new SkuAvailability(sku,
