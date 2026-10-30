@@ -12,10 +12,12 @@ final class SeededPacker {
 
     private final WorkClock clock;
     private final long seedOffset;
+    private final SpaceChoice spaceChoice;
 
-    SeededPacker(WorkClock clock, long seedOffset) {
+    SeededPacker(WorkClock clock, long seedOffset, SpaceChoice spaceChoice) {
         this.clock = clock;
         this.seedOffset = seedOffset;
+        this.spaceChoice = spaceChoice;
     }
 
     /** What seeding a Mersenne Twister costs, in candidate evaluations (its 624-word state, a few times over). */
@@ -102,7 +104,7 @@ final class SeededPacker {
             List<BoxPlacement> pl = new ArrayList<>();
             List<Integer> idx = new ArrayList<>();
             BlockFiller.recreate(bin, bulk, r, alpha, mind, new ArrayList<>(baseSpaces), baseGrid.copy(), pl, idx,
-                    totals.clone(), KitSolver.SUPPORT_MIN, bin.payloadKg, new double[] {baseWeight}, clock);
+                    totals.clone(), KitSolver.SUPPORT_MIN, bin.payloadKg, new double[] {baseWeight}, clock, spaceChoice);
             double v = 0.0;
             for (BoxPlacement p : pl) {
                 v += p.volume();
@@ -134,7 +136,7 @@ final class SeededPacker {
         }
         List<BoxPlacement> placed = new ArrayList<>();
         BlockFiller.recreate(bin, kitBoxes, r, alpha, mind, spaces, grid, placed, new ArrayList<>(), remaining,
-                KitSolver.SUPPORT_MIN, bin.payloadKg, new double[] {weightOf(obstacles)}, clock);
+                KitSolver.SUPPORT_MIN, bin.payloadKg, new double[] {weightOf(obstacles)}, clock, spaceChoice);
         return placed;
     }
 

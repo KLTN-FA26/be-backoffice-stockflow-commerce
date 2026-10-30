@@ -15,9 +15,15 @@ import java.util.Set;
  * payload); keeps the candidates whose volume is within {@code alpha} of the best; and places one of them at random.
  * {@code alpha} 0 is pure greedy.</p>
  *
- * <p>One deliberate change: the original compared spaces with a 1 mm tolerance, which on integer millimetres let a
- * block overlap a neighbour, or stand out of the vehicle, by exactly 1 mm. Every size here is a whole millimetre, so
- * a half-millimetre tolerance is exact and BR-10's "inside the cargo space, no overlap" holds without slack.</p>
+ * <p>Deliberate deviations from the original:</p>
+ * <ol>
+ *   <li>The original compared spaces with a 1 mm tolerance, which on integer millimetres let a block overlap a
+ *       neighbour, or stand out of the vehicle, by exactly 1 mm. Every size here is a whole millimetre, so a
+ *       half-millimetre tolerance is exact and BR-10's "inside the cargo space, no overlap" holds without slack.</li>
+ *   <li>SCRUM-496: the planner does not draw among every space's blocks. It takes the deepest, then lowest, then
+ *       leftmost space that offers a block, and draws only among that space's blocks ({@link SpaceChoice#IMPROVED},
+ *       which says why). {@link SpaceChoice#PYTHON_PARITY} keeps the original's draw for the parity test.</li>
+ * </ol>
  */
 final class BlockFiller {
 
@@ -317,17 +323,39 @@ final class BlockFiller {
     }
 
     /**
+     * Add one space's blocks that reach {@code threshold} to {@code rcl}, in the original's order (type, then
+     * orientation); returns the work: one per type and one per block looked at.
+     */
+    private static long collect(SpaceCache cache, int[] caps, double threshold, List<Candidate> rcl) {
+        long work = 0;
+        for (int i = 0; i < caps.length; i++) {
+            work++;
+            if (caps[i] <= 0 || cache.byType.get(i).isEmpty() || cache.typeMax[i] < threshold) {
+                continue;
+            }
+            for (Candidate k : cache.byType.get(i)) {
+                work++;
+                if (k.volume >= threshold) {
+                    rcl.add(k);
+                }
+            }
+        }
+        return work;
+    }
+
+    /**
      * {@code _grasp_recreate}: fill {@code spaces} with blocks of the remaining cartons until nothing fits, or the real
      * budget runs out - the blocks placed so far stand, so a cut-off fill is still a valid partial load. Mutates
      * {@code placements}, {@code placedIndex}, {@code grid} and {@code remaining}; returns the updated spaces.
      *
      * @param weightAcc the load already in the vehicle, updated in place. The original honoured a cap only when one
      *                  was given and the kit solver never gave one; BR-10 makes the payload a cap on every call
+     * @param choice    where the next block goes: the original's draw, or deviation 2 of the class comment
      */
     static List<double[]> recreate(Bin bin, List<Box> boxes, PyRandom rng, double alpha, double mind,
                                    List<double[]> spaces, SupportGrid grid, List<BoxPlacement> placements,
                                    List<Integer> placedIndex, int[] remaining, double supportMin, double weightLimit,
-                                   double[] weightAcc, WorkClock clock) {
+                                   double[] weightAcc, WorkClock clock, SpaceChoice choice) {
         clock.construction();
         int types = boxes.size();
         java.util.IdentityHashMap<double[], SpaceCache> caches = new java.util.IdentityHashMap<>();
@@ -385,26 +413,30 @@ final class BlockFiller {
                 clock.evaluated(work + spaces.size());
                 break;
             }
-            // The candidates are not gathered into one list: the original's list (space, type, orientation order) is
-            // walked only where a block can reach the threshold, which picks out the restricted candidate list.
-            double threshold = smax - alpha * (smax - smin);
             List<Candidate> rcl = new ArrayList<>();
-            for (SpaceCache cache : order) {
-                work++;
-                if (cache.spaceMax == Double.NEGATIVE_INFINITY || cache.spaceMax < threshold) {
-                    continue;
-                }
-                for (int i = 0; i < types; i++) {
+            if (choice == SpaceChoice.IMPROVED) {
+                // Deviation 2 (see the class comment): the space first, then the original's draw among its blocks.
+                SpaceCache at = null;
+                for (SpaceCache cache : order) {
                     work++;
-                    if (caps[i] <= 0 || cache.byType.get(i).isEmpty() || cache.typeMax[i] < threshold) {
+                    if (cache.spaceMax != Double.NEGATIVE_INFINITY && (at == null
+                            || SpaceChoice.before(cache.space, at.space))) {
+                        at = cache;
+                    }
+                }
+                java.util.Objects.requireNonNull(at, "some space offers a block: smax is finite");
+                work += collect(at, caps, at.spaceMax - alpha * (at.spaceMax - at.spaceMin), rcl);
+            } else {
+                // The candidates are not gathered into one list: the original's list (space, type, orientation
+                // order) is walked only where a block can reach the threshold, which picks out the restricted
+                // candidate list.
+                double threshold = smax - alpha * (smax - smin);
+                for (SpaceCache cache : order) {
+                    work++;
+                    if (cache.spaceMax == Double.NEGATIVE_INFINITY || cache.spaceMax < threshold) {
                         continue;
                     }
-                    for (Candidate k : cache.byType.get(i)) {
-                        work++;
-                        if (k.volume >= threshold) {
-                            rcl.add(k);
-                        }
-                    }
+                    work += collect(cache, caps, threshold, rcl);
                 }
             }
             clock.evaluated(work + 6L * spaces.size());

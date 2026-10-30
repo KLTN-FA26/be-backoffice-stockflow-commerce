@@ -25,7 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Exact, not "within a tolerance": both draw from the same Mersenne Twister ({@link PyRandom}) and run the same
  * arithmetic on whole millimetres, so any difference is a porting defect. The fixtures stay clear of the deliberate
  * departures (the kit-bypass fix, the docs' fleet ranking, BR-10's payload, the 1 mm tolerance), which have tests of
- * their own; the early stops are switched off here because the original has none.</p>
+ * their own; the early stops are switched off here because the original has none, and the space choice is the
+ * original's ({@link SpaceChoice#PYTHON_PARITY}; the planner's own, SCRUM-496, is a deliberate deviation).</p>
  */
 class KitSolverParityTest {
 
@@ -67,7 +68,7 @@ class KitSolverParityTest {
         WorkClock clock = WorkClock.starting(WorkClock.Unit.CONSTRUCTION, fx.get("ticks_per_second").asDouble(),
                 600_000_000_000L);
 
-        KitSolver.Outcome out = new KitSolver(clock, 0L, false).solve(bins, boxes, kits, null,
+        KitSolver.Outcome out = new KitSolver(clock, 0L, false, SpaceChoice.PYTHON_PARITY).solve(bins, boxes, kits, null,
                 fx.get("budget").asDouble(), LoadPlanner.ATTEMPTS, distribution, List.of(), false);
 
         List<List<List<Object>>> actual = new ArrayList<>();

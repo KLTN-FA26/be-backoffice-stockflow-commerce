@@ -20,10 +20,11 @@ final class LoadPlanAssertions {
     static final UUID TRUCK = new UUID(0, 5);
 
     /**
-     * The tests' work rate: a tenth of the planner's, so the suite stays quick and every run finishes well inside its
-     * budget (reproducible), with enough search for the behaviour under test.
+     * The tests' work rate: a tenth of the planner's before SCRUM-496 raised it (3 million), so the suite stays quick
+     * and every run finishes well inside its budget (reproducible), with enough search for the behaviour under test.
+     * Kept, not tied to the planner's rate, so a slow CI runner does not cut the searches off.
      */
-    static final double TEST_RATE = LoadPlanner.TICKS_PER_SECOND / 10;
+    static final double TEST_RATE = 300_000.0;
 
     private LoadPlanAssertions() {
     }
