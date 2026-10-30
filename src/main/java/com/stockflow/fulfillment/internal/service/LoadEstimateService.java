@@ -11,6 +11,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanMeta;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanRequest;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanResult;
@@ -40,6 +41,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -75,6 +77,12 @@ class LoadEstimateService implements LoadEstimates {
 
     /** The planner's seed for every estimate: 0 draws exactly what the lead's Python solver drew. */
     static final long SEED = 0L;
+
+    /**
+     * The weight of every carton of a trial (LP2-9): the sheet has none, and a carton must weigh something. Tiny on
+     * purpose, so no total of it can look like a load; the payload is not checked in a trial at all.
+     */
+    static final BigDecimal TRIAL_WEIGHT_KG = new BigDecimal("0.001");
 
     /**
      * Where an estimate makes sense: CONFIRMED (the release dialog estimates before releasing, design v2 §2, with the
@@ -170,6 +178,58 @@ class LoadEstimateService implements LoadEstimates {
         });
         // Read back as stored, so the answer is exactly what GET answers later (numbers as the JSON column keeps them).
         return reads.execute(s -> view(estimates.findById(id).orElseThrow()));
+    }
+
+    /**
+     * LP2-9: the trial. Only the vehicle types are read; the planner then runs outside any transaction and its answer
+     * is mapped and returned - there is no write step, so nothing can be left behind (no estimate row, no event). The
+     * cartons weigh a placeholder and the request says {@code ignorePayload}: the sheet has no weights.
+     */
+    @Override
+    public TrialView trial(TrialEstimate command) {
+        List<TrialLine> lines = command.lines();
+        if (lines == null || lines.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A trial estimate needs at least one line",
+                    List.of(new FieldError("lines", "must hold at least one line", "NotEmpty")));
+        }
+        long boxes = 0;
+        for (int i = 0; i < lines.size(); i++) {
+            TrialLine l = lines.get(i);
+            if (l == null || l.lengthMm() <= 0 || l.widthMm() <= 0 || l.heightMm() <= 0 || l.quantity() <= 0) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + (i + 1)
+                        + " needs positive sizes and quantity", List.of(new FieldError("lines[" + i + "]",
+                        "sizes and quantity must be positive", "Positive")));
+            }
+            boxes += l.quantity();
+        }
+        if (boxes > EstimateCartons.MAX_BOXES) {
+            throw new BusinessException(ErrorCode.LOAD_ESTIMATE_TOO_MANY_CARTONS,
+                    "The list makes " + boxes + " boxes; an estimate places at most " + EstimateCartons.MAX_BOXES);
+        }
+        SelectionMode mode = command.selectionMode() == null ? SelectionMode.SINGLE_TYPE : command.selectionMode();
+        List<VehicleSpec> types = reads.execute(s -> vehicleSpecs(command.vehicleTypeIds()));
+
+        List<CargoPackage> cartons = new ArrayList<>();
+        Map<String, String> labels = new HashMap<>();
+        for (int i = 0; i < lines.size(); i++) {
+            TrialLine l = lines.get(i);
+            String group = l.group() == null || l.group().isBlank() ? null : l.group().strip();
+            String name = l.name() != null && !l.name().isBlank() ? l.name().strip()
+                    : group != null ? group : "Line " + (i + 1);
+            String lineRef = "T" + (i + 1);
+            for (int n = 1; n <= l.quantity(); n++) {
+                String ref = lineRef + "#" + n;
+                cartons.add(new CargoPackage(ref, lineRef, l.lengthMm(), l.widthMm(), l.heightMm(), TRIAL_WEIGHT_KG,
+                        l.rotatable(), name, null, group, false));
+                labels.put(ref, name);
+            }
+        }
+        LoadPlanRequest request = new LoadPlanRequest(cartons, types, mode, List.of(), KitDistribution.AUTO, false,
+                null, SEED, budget, true);
+        LoadPlanResult result = planner.plan(request);
+        Layouts.Mapped mapped = Layouts.of(request, result, c -> labels.get(c.ref()));
+        return new TrialView(mode, types.stream().map(VehicleSpec::typeId).toList(), mapped.vehicles(),
+                mapped.unplaced(), meta(result));
     }
 
     /**

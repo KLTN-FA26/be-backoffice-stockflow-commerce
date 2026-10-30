@@ -15,10 +15,20 @@ import java.util.Objects;
  *                           what the original Python solver drew
  * @param budget             the real time cap. The search stops when it has nothing left to improve or the budget is
  *                           spent, and returns the best plan it has
+ * @param ignorePayload      trial mode only (LP2-9): the payload of every vehicle is not a cap - a carton may be heavier
+ *                           than a type's payload and a vehicle may carry more than it. Everything else (size, door,
+ *                           support, counts) holds. False for every real estimate and load plan (BR-10)
  */
 public record LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
                               List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
-                              Integer targetVehicleCount, long seed, Duration budget) {
+                              Integer targetVehicleCount, long seed, Duration budget, boolean ignorePayload) {
+
+    /** A request that honours the payload, which is every request but a trial. */
+    public LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
+                           List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
+                           Integer targetVehicleCount, long seed, Duration budget) {
+        this(cartons, vehicleTypes, mode, kits, distribution, equalizeFill, targetVehicleCount, seed, budget, false);
+    }
 
     /** The default budget; see {@code stockflow.fulfillment.load-planning.solver-budget}. */
     public static final Duration DEFAULT_BUDGET = Duration.ofSeconds(5);
