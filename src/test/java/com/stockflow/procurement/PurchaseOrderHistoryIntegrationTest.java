@@ -311,7 +311,9 @@ class PurchaseOrderHistoryIntegrationTest {
                 .andExpect(jsonPath("$.data.pendingAmendment.reason").value("Supplier can deliver less"))
                 .andExpect(jsonPath("$.data.pendingAmendment.newTotalAmount").value(400000))
                 .andExpect(jsonPath("$.data.amendmentDeliveryStatus").doesNotExist());
-        read(ORDERS + "?size=50&q=" + supplier, buyer).andExpect(status().isOk());
+        read("/api/v1/purchase-orders?size=50&supplierId=" + supplier, buyer).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].purchaseOrderId").value(po.toString()))
+                .andExpect(jsonPath("$.data.items[0].pendingAmendment.revisionNo").value(1));
 
         call(ORDERS + po + "/amendment/approval", approver(personWithLimits()), null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.pendingAmendment").doesNotExist());
@@ -387,7 +389,8 @@ class PurchaseOrderHistoryIntegrationTest {
         // Revision 1 is kind AMENDMENT (a resubmission); the order is PENDING_APPROVAL, so it is not an amendment.
         call(ORDERS + po + "/submission", buyer, null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.pendingAmendment").doesNotExist());
-        read(ORDERS + "?size=50&q=" + supplier, buyer).andExpect(status().isOk())
+        read("/api/v1/purchase-orders?size=50&supplierId=" + supplier, buyer).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].purchaseOrderId").value(po.toString()))
                 .andExpect(jsonPath("$.data.items[0].pendingAmendment").doesNotExist());
     }
 
@@ -409,7 +412,8 @@ class PurchaseOrderHistoryIntegrationTest {
                 UUID.class, po)).as("the pointer the order keeps, which must not read as an amendment").isNotNull();
 
         read(ORDERS + po, buyer).andExpect(jsonPath("$.data.pendingAmendment").doesNotExist());
-        read(ORDERS + "?size=50&q=" + supplier, buyer).andExpect(status().isOk())
+        read("/api/v1/purchase-orders?size=50&supplierId=" + supplier, buyer).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].purchaseOrderId").value(po.toString()))
                 .andExpect(jsonPath("$.data.items[0].pendingAmendment").doesNotExist());
         JsonNode list = data(read(ORDERS + po + "/revisions", buyer).andExpect(status().isOk()));
         assertThat(list).noneSatisfy(r -> assertThat(r.path("state").asText()).isEqualTo("PENDING"));
