@@ -266,4 +266,17 @@ class PurchaseOrderAmendmentTest {
         assertThat(po.revisionNo()).isEqualTo(1);
         assertThat(po.supplierConfirmationStatus()).isEqualTo(SupplierConfirmationStatus.CONFIRMED);
     }
+
+    @Test
+    void supplierRefusalBlocksApprovalButNotDropping() {
+        var po = order(PurchaseOrder.Type.STANDARD, PurchaseOrderStatus.CONFIRMED, SupplierConfirmationStatus.PENDING,
+                UUID.randomUUID(), twoLines());
+        po.recordSupplierConfirmation(SupplierConfirmationStatus.REJECTED, null, "Cannot supply", NOW);
+
+        assertCode(po::requireAmendmentDecidable, ErrorCode.PO_AMENDMENT_NOT_ALLOWED);
+        po.requirePendingAmendment();   // does not throw
+        po.dropAmendment();
+        assertThat(po.pendingRevisionId()).isNull();
+        assertCode(po::dropAmendment, ErrorCode.PO_AMENDMENT_NOT_PENDING);
+    }
 }

@@ -26,6 +26,10 @@ import java.util.UUID;
  * through {@link SupplierItemRepository#listedForShare}, {@link SupplierItem#orderQuantityViolations} and
  * {@link ProductService#purchasability}, so no rule is copied.</p>
  *
+ * <p>A decrease of a SKU the supplier no longer lists passes without a terms check, since there is nothing to
+ * measure it against; being listed is required only to increase (spec section 5). A decrease of a SKU that is still
+ * listed meets the minimum and pack multiple like any change.</p>
+ *
  * <p>Only a line whose quantity changes meets the supplier's minimum and pack multiple again: repricing a line, or
  * removing one, says nothing new about how much is bought. Lowering a line of a discontinued SKU stays possible
  * because goods already ordered are still received whatever happened to the product since; raising it would order
@@ -72,6 +76,9 @@ class AmendmentLineChecks {
             var after = kept.get(i).after();
             SupplierItem item = listed.get(after.inventoryItemId());
             if (item == null) {
+                if (!kept.get(i).quantityIncreased()) {
+                    continue;   // a decrease of a SKU no longer listed: there are no terms to measure it against
+                }
                 notListed.add(new FieldError("lines[" + i + "].sku",
                         "SKU " + after.sku().code() + " is not listed by this supplier",
                         ErrorCode.SUPPLIER_ITEM_NOT_LISTED.name()));

@@ -507,16 +507,23 @@ public final class PurchaseOrder extends AggregateRoot {
     }
 
     /**
-     * What approving, rejecting or withdrawing needs to hold under the order's lock: an amendment waits, and
-     * nothing was received since it was requested (the first receipt withdraws it, but a decision that raced it must
-     * still be refused here rather than rewrite lines goods were received against).
+     * What <em>approving</em> needs to hold under the order's lock: an amendment waits, and the order is still
+     * amendable - nothing was received since it was requested (the first receipt withdraws it, but an approval that
+     * raced it must still be refused rather than rewrite lines goods were received against).
+     * Rejecting and withdrawing need only {@link #requirePendingAmendment}: they change no line, and must stay
+     * possible when the supplier has refused the order meanwhile, or the pointer would be stranded.
      */
     public void requireAmendmentDecidable() {
+        requirePendingAmendment();
+        requireAmendable();
+    }
+
+    /** An amendment waits for a decision; all rejecting or withdrawing it needs. */
+    public void requirePendingAmendment() {
         if (pendingRevisionId == null) {
             throw new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
                     "Purchase order %s has no amendment waiting for a decision".formatted(poNumber));
         }
-        requireAmendable();
     }
 
     /**
@@ -546,6 +553,7 @@ public final class PurchaseOrder extends AggregateRoot {
 
     /** The amendment is rejected or withdrawn: the order keeps its active revision, and only the pointer clears. */
     public void dropAmendment() {
+        requirePendingAmendment();
         this.pendingRevisionId = null;
     }
 

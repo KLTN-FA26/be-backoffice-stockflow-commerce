@@ -108,9 +108,13 @@ class AmendmentLineChecksTest {
         checks.require(order, repriced);   // no quantity changes: the catalog is not even asked
         verify(supplierItems, never()).listedForShare(any(), anyCollection());
 
-        var resized = propose(order, new PurchaseOrder.AmendmentLine(LINE_1, 80, new BigDecimal("900"), null, null),
+        var decreased = propose(order, new PurchaseOrder.AmendmentLine(LINE_1, 80, new BigDecimal("900"), null, null),
                 qty(LINE_2, 100));
-        assertRefused(() -> checks.require(order, resized), ErrorCode.SUPPLIER_ITEM_NOT_LISTED);
+        checks.require(order, decreased);   // a decrease of an unlisted SKU has no terms to meet
+
+        var increased = propose(order, new PurchaseOrder.AmendmentLine(LINE_1, 120, new BigDecimal("900"), null, null),
+                qty(LINE_2, 100));
+        assertRefused(() -> checks.require(order, increased), ErrorCode.SUPPLIER_ITEM_NOT_LISTED);
     }
 
     @Test
