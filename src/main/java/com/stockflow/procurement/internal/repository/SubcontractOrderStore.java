@@ -73,6 +73,11 @@ public interface SubcontractOrderStore {
         }
     }
 
+    /**
+     * The supplement waiting on an order that still takes amendments ({@code PurchaseOrderStatus#takesAmendments}),
+     * under the same rule as {@code PurchaseOrderHistoryRepository.pendingAmendments}: a CANCELLED or CLOSED order may
+     * keep a pointer nobody can decide any more, which must not be approved, rejected or shown as waiting.
+     */
     Optional<Amendment> pendingAmendment(UUID purchaseOrderId);
 
     /**

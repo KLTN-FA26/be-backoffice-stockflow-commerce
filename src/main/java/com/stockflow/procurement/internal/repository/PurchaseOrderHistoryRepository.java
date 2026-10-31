@@ -1,6 +1,7 @@
 package com.stockflow.procurement.internal.repository;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.springframework.stereotype.Repository;
@@ -27,16 +28,18 @@ import java.util.UUID;
 @Repository
 public class PurchaseOrderHistoryRepository {
 
-    /** The pointers of the order header the history is read against. */
-    public record OrderHeader(UUID warehouseId, UUID activeRevisionId, UUID pendingRevisionId) {
+    /** The pointers and status of the order header the history is read against. */
+    public record OrderHeader(UUID warehouseId, UUID activeRevisionId, UUID pendingRevisionId,
+                              PurchaseOrderStatus status) {
     }
 
     /**
-     * One revision with its last decision. {@code submission} is true when a {@code SUBMITTED} event names the
-     * revision; {@code approved} when any approval row of it is {@code APPROVED} or {@code AUTO_APPROVED}; the
+     * One revision with its last decision. {@code submission} is true for revision 0 (kind {@code INITIAL}: a first
+     * submission, or the freeze of a draft cancelled unsubmitted, which has no event) and when a {@code SUBMITTED}
+     * event names the revision; {@code approved} when any approval row of it is {@code APPROVED} or {@code AUTO_APPROVED}; the
      * {@code decision*} fields are those of its last approval row, null when nobody decided it. The three
-     * amounts are read as text with {@code ->>}, which keeps the scale stored (11000000.00): going through a JSON
-     * tree strips trailing zeros and turns it into 1.1E+7.
+     * amounts are read as text with {@code ->>}, which keeps the number exactly as stored: going through a JSON tree
+     * strips trailing zeros and turns 11000000 into 1.1E+7.
      */
     public record RevisionRow(UUID id, long revisionNo, UUID changedBy, Instant changedAt, String reason,
                               String snapshotHeader, boolean submission, boolean approved, String decision,
@@ -64,12 +67,13 @@ public class PurchaseOrderHistoryRepository {
     public Optional<OrderHeader> header(UUID purchaseOrderId) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT warehouse_id, active_revision_id, pending_revision_id
+                        SELECT warehouse_id, active_revision_id, pending_revision_id, status
                           FROM procurement.purchase_orders WHERE id = :po""")
                 .setParameter("po", purchaseOrderId)
                 .getResultList();
         return rows.stream().findFirst()
-                .map(r -> new OrderHeader((UUID) r[0], (UUID) r[1], (UUID) r[2]));
+                .map(r -> new OrderHeader((UUID) r[0], (UUID) r[1], (UUID) r[2],
+                        PurchaseOrderStatus.valueOf((String) r[3])));
     }
 
     /** Newest first. The last decision is the approval row with the highest step. */
@@ -78,8 +82,9 @@ public class PurchaseOrderHistoryRepository {
         List<Object[]> rows = entityManager.createNativeQuery("""
                         SELECT r.id, r.revision_no, r.changed_by, r.changed_at, r.change_summary,
                                CAST(r.snapshot_header AS text),
-                               EXISTS (SELECT 1 FROM procurement.purchase_order_events e
-                                        WHERE e.po_revision_id = r.id AND e.action = 'SUBMITTED'),
+                               r.kind = 'INITIAL'
+                               OR EXISTS (SELECT 1 FROM procurement.purchase_order_events e
+                                           WHERE e.po_revision_id = r.id AND e.action = 'SUBMITTED'),
                                EXISTS (SELECT 1 FROM procurement.purchase_order_approvals x
                                         WHERE x.po_revision_id = r.id AND x.decision IN ('APPROVED', 'AUTO_APPROVED')),
                                a.decision, a.decision_at, a.approver_id, a.reason, a.limit_amount,
@@ -147,9 +152,13 @@ public class PurchaseOrderHistoryRepository {
     }
 
     /**
-     * The amendment waiting on each of these orders, in one statement. The one definition of
-     * "pending": {@code PurchaseOrderRepository.pendingAmendment} delegates here. An order in PENDING_APPROVAL points at its first submission,
-     * which is not an amendment. The total is the revision's lines after tax.
+     * The amendment waiting on each of these orders, in one statement. The one definition of "pending":
+     * {@code PurchaseOrderRepository.pendingAmendment} delegates here, so what the order shows and what
+     * {@code /amendment/withdrawal} acts on cannot disagree. Only an order that still takes amendments
+     * ({@link PurchaseOrderStatus#takesAmendments}): an order in PENDING_APPROVAL points at its submission, which is
+     * not an amendment, and a CANCELLED or CLOSED order may keep a pointer nobody can decide any more (a resubmission
+     * cancelled while it waited, a subcontract supplement left on a cancelled order). The total is the revision's
+     * lines after tax.
      */
     public Map<UUID, PendingRow> pendingAmendments(Collection<UUID> purchaseOrderIds) {
         if (purchaseOrderIds.isEmpty()) {
@@ -162,8 +171,9 @@ public class PurchaseOrderHistoryRepository {
                                  WHERE lr.po_revision_id = r.id)
                           FROM procurement.purchase_orders p
                           JOIN procurement.purchase_order_revisions r ON r.id = p.pending_revision_id
-                         WHERE p.id IN (:ids) AND r.kind = 'AMENDMENT' AND p.status <> 'PENDING_APPROVAL'""")
+                         WHERE p.id IN (:ids) AND r.kind = 'AMENDMENT' AND p.status IN (:open)""")
                 .setParameter("ids", purchaseOrderIds)
+                .setParameter("open", PurchaseOrderStatus.takingAmendments())
                 .getResultList();
         Map<UUID, PendingRow> pending = new HashMap<>();
         for (Object[] r : rows) {

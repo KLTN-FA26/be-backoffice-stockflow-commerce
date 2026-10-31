@@ -11,6 +11,7 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository.RevisionLine;
+import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.RevisionDiff;
 import com.stockflow.procurement.internal.repository.PurchaseOrderHistoryRepository;
 import com.stockflow.procurement.internal.repository.PurchaseOrderHistoryRepository.LineRow;
@@ -40,7 +41,9 @@ import java.util.stream.Collectors;
  * <p>Why {@code purpose} is derived from the events and not stored: a revision of kind {@code AMENDMENT} is also what
  * a resubmission after a rejection writes (the draft is frozen again under the next number), and the revision row has
  * no column for the difference. The {@code SUBMITTED} event names the revision it froze, and it is append-only, so it
- * is the one record that cannot disagree with what happened.</p>
+ * is the one record that cannot disagree with what happened. Revision 0 (kind {@code INITIAL}) is a submission
+ * whatever the events say: a revision frozen by {@code freeze()} or carried over from before the events existed has
+ * no {@code SUBMITTED} event, and an amendment is never revision 0.</p>
  *
  * <p>Why the diff base is the closest earlier <em>approved</em> revision: what a reader wants to know is what changes
  * compared with what the supplier and the warehouse have been working to. A rejected or withdrawn revision never
@@ -187,12 +190,18 @@ public class PurchaseOrderHistory {
                 r.decisionReason(), r.limitAmount());
     }
 
-    /** ACTIVE and PENDING come from the header; otherwise how it ended: rejected, withdrawn, or replaced. */
+    /**
+     * ACTIVE and PENDING come from the header; otherwise how it ended: rejected, withdrawn, or replaced. PENDING only
+     * while the order can still decide it - a submission of an order in PENDING_APPROVAL, an amendment of one that
+     * {@linkplain PurchaseOrderStatus#takesAmendments takes amendments}. A CANCELLED or CLOSED order may keep a
+     * pointer at a revision nobody decided; it ended with the order and reads as any other undecided revision does.
+     */
     private static String state(RevisionRow r, OrderHeader header) {
         if (r.id().equals(header.activeRevisionId())) {
             return "ACTIVE";
         }
-        if (r.id().equals(header.pendingRevisionId())) {
+        if (r.id().equals(header.pendingRevisionId()) && (header.status() == PurchaseOrderStatus.PENDING_APPROVAL
+                || header.status().takesAmendments())) {
             return "PENDING";
         }
         return switch (Objects.toString(r.decision(), "")) {

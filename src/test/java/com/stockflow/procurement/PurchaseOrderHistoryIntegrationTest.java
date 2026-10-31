@@ -390,4 +390,44 @@ class PurchaseOrderHistoryIntegrationTest {
         read(ORDERS + "?size=50&q=" + supplier, buyer).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].pendingAmendment").doesNotExist());
     }
+
+    @Test
+    @DisplayName("a resubmission cancelled while it waited is no pending amendment: not on the order, not PENDING among "
+            + "the revisions, and nothing to withdraw")
+    void cancelledResubmissionIsNoPendingAmendment() throws Exception {
+        String buyer = buyer(personWithLimits());
+        UUID po = draft(buyer);
+        call(ORDERS + po + "/submission", buyer, null).andExpect(status().isOk());
+        call(ORDERS + po + "/rejection", approver(personWithLimits()), "{\"reason\":\"Again\"}")
+                .andExpect(status().isOk());
+        call(ORDERS + po + "/submission", buyer, null).andExpect(status().isOk());
+        call(ORDERS + po + "/cancellation", buyer, "{\"reason\":\"Not needed any more\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.data.pendingAmendment").doesNotExist());
+        assertThat(jdbc.queryForObject("SELECT pending_revision_id FROM procurement.purchase_orders WHERE id = ?",
+                UUID.class, po)).as("the pointer the order keeps, which must not read as an amendment").isNotNull();
+
+        read(ORDERS + po, buyer).andExpect(jsonPath("$.data.pendingAmendment").doesNotExist());
+        read(ORDERS + "?size=50&q=" + supplier, buyer).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].pendingAmendment").doesNotExist());
+        JsonNode list = data(read(ORDERS + po + "/revisions", buyer).andExpect(status().isOk()));
+        assertThat(list).noneSatisfy(r -> assertThat(r.path("state").asText()).isEqualTo("PENDING"));
+        call(ORDERS + po + "/amendment/withdrawal", buyer, "{\"reason\":\"Tidy up\"}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PO_AMENDMENT_NOT_PENDING"));
+    }
+
+    @Test
+    @DisplayName("revision 0 is a submission even when no SUBMITTED event names it: a draft frozen as it is cancelled")
+    void initialRevisionIsASubmission() throws Exception {
+        String buyer = buyer(personWithLimits());
+        UUID po = draft(buyer);
+        call(ORDERS + po + "/cancellation", buyer, "{\"reason\":\"Ordered elsewhere\"}").andExpect(status().isOk());
+
+        JsonNode list = data(read(ORDERS + po + "/revisions", buyer).andExpect(status().isOk()));
+        assertThat(list).hasSize(1);
+        assertThat(revisionNo(list, 0).path("purpose").asText()).isEqualTo("SUBMISSION");
+        assertThat(revisionNo(list, 0).path("state").asText()).isEqualTo("ACTIVE");
+    }
 }

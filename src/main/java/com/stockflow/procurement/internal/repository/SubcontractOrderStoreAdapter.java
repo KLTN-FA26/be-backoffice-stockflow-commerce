@@ -132,8 +132,10 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                           FROM procurement.purchase_orders p
                           JOIN procurement.purchase_order_revisions r ON r.id = p.pending_revision_id
                           JOIN procurement.purchase_order_line_revisions lr ON lr.po_revision_id = r.id
-                         WHERE p.id = :po AND r.kind = 'AMENDMENT' AND p.status <> 'PENDING_APPROVAL'""")
-                .setParameter("po", purchaseOrderId).getResultList();
+                         WHERE p.id = :po AND r.kind = 'AMENDMENT' AND p.status IN (:open)""")
+                .setParameter("po", purchaseOrderId)
+                .setParameter("open", PurchaseOrderStatus.takingAmendments())
+                .getResultList();
         return rows.stream().findFirst().map(row -> new Amendment((UUID) row[0], ((Number) row[1]).longValue(),
                 ((BigDecimal) row[2]).intValueExact(), (BigDecimal) row[3], (UUID) row[4], (String) row[5]));
     }

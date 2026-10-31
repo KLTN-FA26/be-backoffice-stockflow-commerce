@@ -20,6 +20,7 @@ import com.stockflow.procurement.api.SubcontractorTerms;
 import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
+import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.repository.SubcontractOrderStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,8 +64,11 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
      */
     private static final String EDITABLE = "DRAFT";
 
-    /** An approved order still open to receiving gets more quantity through an amendment approved again (BR-02). */
-    private static final Set<String> AMENDABLE = Set.of("APPROVED", "CONFIRMED", "PARTIALLY_RECEIVED", "RECEIVED");
+    /**
+     * An approved order still open to receiving gets more quantity through an amendment approved again (BR-02): the
+     * statuses of {@link PurchaseOrderStatus#takesAmendments}, the same the pending amendment is read under.
+     */
+    private static final Set<String> AMENDABLE = Set.copyOf(PurchaseOrderStatus.takingAmendments());
 
     private final SubcontractOrderStore store;
     private final InventoryService inventory;
