@@ -2,7 +2,6 @@ package com.stockflow.procurement.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
-import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -17,8 +16,9 @@ import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
 import com.stockflow.procurement.api.SubcontractSettlement;
 import com.stockflow.procurement.api.SubcontractorTerms;
-import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
+import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
+import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.repository.SubcontractOrderStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,8 +62,11 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
      */
     private static final String EDITABLE = "DRAFT";
 
-    /** An approved order still open to receiving gets more quantity through an amendment approved again (BR-02). */
-    private static final Set<String> AMENDABLE = Set.of("APPROVED", "CONFIRMED", "PARTIALLY_RECEIVED", "RECEIVED");
+    /**
+     * An approved order still open to receiving gets more quantity through an amendment approved again (BR-02): the
+     * statuses of {@link PurchaseOrderStatus#takesAmendments}, the same the pending amendment is read under.
+     */
+    private static final Set<String> AMENDABLE = Set.copyOf(PurchaseOrderStatus.takingAmendments());
 
     private final SubcontractOrderStore store;
     private final InventoryService inventory;
@@ -71,16 +74,21 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
     private final ProcurementService procurement;
     private final Clock clock;
     private final ApprovalLimits approvalLimits;
+    private final PurchaseOrderRepository purchaseOrders;
+    private final SupplierAmendmentNotice supplierNotice;
 
     SubcontractPurchasingImpl(SubcontractOrderStore store, InventoryService inventory,
                               InventoryControlService inventoryControl, ProcurementService procurement, Clock clock,
-                              ApprovalLimits approvalLimits) {
+                              ApprovalLimits approvalLimits, PurchaseOrderRepository purchaseOrders,
+                              SupplierAmendmentNotice supplierNotice) {
         this.store = store;
         this.inventory = inventory;
         this.inventoryControl = inventoryControl;
         this.procurement = procurement;
         this.clock = clock;
         this.approvalLimits = approvalLimits;
+        this.purchaseOrders = purchaseOrders;
+        this.supplierNotice = supplierNotice;
     }
 
     @Override
@@ -186,7 +194,7 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         approvalLimits.autoApprovalLimit(new PurchaseOrderId(order.id()), requesterId, order.supplierId(), newTotal, now)
                 .ifPresent(limit -> {
                     String reason = "Auto-approved within limit: new total %s, limit %s".formatted(newTotal, limit.amount());
-                    store.approveAmendment(order, amendment, requesterId,
+                    approveAndNotify(order, amendment, requesterId,
                             new SubcontractOrderStore.AutoApproval(requesterId, limit, now, reason));
                     log.info("Amendment of {} to {} auto-approved within the requester's limit", order.poNumber(),
                             amendment.quantity());
@@ -203,23 +211,35 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
     public SubcontractOrder approveAmendment(UUID purchaseOrderId, UUID approverId) {
         SubcontractOrderStore.Row order = lock(purchaseOrderId);
         SubcontractOrderStore.Amendment amendment = store.pendingAmendment(purchaseOrderId).orElseThrow(() ->
-                new BusinessException(ErrorCode.CONFLICT, "%s has no amendment waiting".formatted(order.poNumber())));
+                new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                        "%s has no amendment waiting".formatted(order.poNumber())));
         if (amendment.requestedBy() != null && amendment.requestedBy().equals(approverId)) {
             throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
                     "An amendment is approved by someone other than who asked for it");
         }
-        Currency currency = Currency.getInstance(order.currency());
-        Money newTotal = new Money(amendment.total(), currency);
-        Optional<ApprovalLimit> limit = approvalLimits.limitOf(approverId, currency,
-                BusinessCalendar.date(clock.instant()));
-        if (limit.isPresent() && newTotal.compareTo(limit.get().amount()) > 0) {
+        Money newTotal = new Money(amendment.total(), Currency.getInstance(order.currency()));
+        approvalLimits.limitExceeded(approverId, newTotal, clock.instant()).ifPresent(limit -> {
             throw new BusinessException(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED,
                     "Amendment of %s makes it total %s; your approval limit is %s".formatted(order.poNumber(), newTotal,
-                            limit.get().amount()));
-        }
-        store.approveAmendment(order, amendment, approverId, null);
+                            limit.amount()));
+        });
+        approveAndNotify(order, amendment, approverId, null);
         log.info("Amendment of {} to {} approved", order.poNumber(), amendment.quantity());
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
+    }
+
+    /**
+     * The amendment goes into the order, then a supplier that had the order is told (SCRUM-117 design section 8). The
+     * order row is locked by the caller, so the aggregate read here is what the approval changes: the revision that
+     * was active and the amendment waiting are taken before the store moves them, the order is reloaded after it.
+     */
+    private void approveAndNotify(SubcontractOrderStore.Row order, SubcontractOrderStore.Amendment amendment,
+                                  UUID approverId, SubcontractOrderStore.AutoApproval auto) {
+        PurchaseOrderId id = new PurchaseOrderId(order.id());
+        UUID previousActiveRevisionId = purchaseOrders.findByIdForUpdate(id).orElseThrow().activeRevisionId();
+        PurchaseOrderRepository.PendingAmendment waiting = purchaseOrders.pendingAmendment(id).orElseThrow();
+        store.approveAmendment(order, amendment, approverId, auto);
+        supplierNotice.send(purchaseOrders.findByIdForUpdate(id).orElseThrow(), previousActiveRevisionId, waiting);
     }
 
     @Override
@@ -230,7 +250,8 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         }
         SubcontractOrderStore.Row order = lock(purchaseOrderId);
         SubcontractOrderStore.Amendment amendment = store.pendingAmendment(purchaseOrderId).orElseThrow(() ->
-                new BusinessException(ErrorCode.CONFLICT, "%s has no amendment waiting".formatted(order.poNumber())));
+                new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                        "%s has no amendment waiting".formatted(order.poNumber())));
         store.dropAmendment(order, amendment, approverId, "REJECTED", reason.trim());
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
     }

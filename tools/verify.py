@@ -326,6 +326,8 @@ FREE_TEXT_ALLOWED = {
         "provider failure text, shown to staff only",
     "PurchaseOrderSent.cancellationReason":  # what purchasing typed when cancelling a purchase order.
         "reason printed in the supplier cancellation mail and sent to the supplier API",
+    "PurchaseOrderSent.amendmentReason":  # what purchasing typed when amending an approved purchase order (SCRUM-117).
+        "reason printed in the supplier amendment mail and sent to the supplier API, as the cancellation reason is",
 }
 
 def camel_words(name):

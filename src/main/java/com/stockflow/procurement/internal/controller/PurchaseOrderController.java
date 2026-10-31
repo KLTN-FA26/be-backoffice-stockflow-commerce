@@ -11,6 +11,7 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.notification.api.AmendmentDeliveryStatus;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.procurement.api.ListPurchaseOrdersQuery;
 import com.stockflow.procurement.api.ProcurementService;
@@ -19,9 +20,11 @@ import com.stockflow.procurement.api.RecordSupplierConfirmationCommand;
 import com.stockflow.procurement.api.RecoverPurchaseOrderDeliveryCommand;
 import com.stockflow.procurement.api.SendPurchaseOrderCommand;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
+import com.stockflow.procurement.internal.controller.dto.AmendPurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.CancelPurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.CloseShortRequest;
 import com.stockflow.procurement.internal.controller.dto.CreatePurchaseOrderRequest;
+import com.stockflow.procurement.internal.controller.dto.PendingAmendmentResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderStatusCountResponse;
 import com.stockflow.procurement.internal.controller.dto.RecoverPurchaseOrderDeliveryRequest;
@@ -29,6 +32,9 @@ import com.stockflow.procurement.internal.controller.dto.SendPurchaseOrderReques
 import com.stockflow.procurement.internal.controller.dto.SupplierConfirmationRequest;
 import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
 import com.stockflow.procurement.internal.controller.dto.UpdatePurchaseOrderRequest;
+import com.stockflow.procurement.internal.domain.PurchaseOrder;
+import com.stockflow.procurement.internal.service.PurchaseOrderAmendments;
+import com.stockflow.procurement.internal.service.PurchaseOrderHistory;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -49,6 +55,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Clock;
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -85,22 +92,28 @@ class PurchaseOrderController {
     private final PurchaseOrderWebMapper mapper;
     private final NotificationService notifications;
     private final Clock clock;
-    private final com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
+    private final com.stockflow.procurement.internal.service.SubcontractAmendments subcontractAmendments;
     private final com.stockflow.procurement.api.SubcontractPurchasing subcontracting;
+    private final PurchaseOrderAmendments amendments;
+    private final PurchaseOrderHistory history;
 
     PurchaseOrderController(
             ProcurementService procurementService,
             PurchaseOrderWebMapper mapper,
             NotificationService notifications,
             Clock clock,
-            com.stockflow.procurement.internal.service.SubcontractAmendments amendments,
-            com.stockflow.procurement.api.SubcontractPurchasing subcontracting) {
+            com.stockflow.procurement.internal.service.SubcontractAmendments subcontractAmendments,
+            com.stockflow.procurement.api.SubcontractPurchasing subcontracting,
+            PurchaseOrderAmendments amendments,
+            PurchaseOrderHistory history) {
         this.procurementService = procurementService;
         this.mapper = mapper;
         this.notifications = notifications;
         this.clock = clock;
-        this.amendments = amendments;
+        this.subcontractAmendments = subcontractAmendments;
         this.subcontracting = subcontracting;
+        this.amendments = amendments;
+        this.history = history;
     }
 
     @PostMapping
@@ -173,7 +186,11 @@ class PurchaseOrderController {
                         result.items().stream()
                                 .map(PurchaseOrderSummary::purchaseOrderId)
                                 .toList());
-        return ApiResponse.ok(result.map(po -> response(po, statuses, cancellations)));
+        var ids = result.items().stream().map(PurchaseOrderSummary::purchaseOrderId).toList();
+        var amendmentStatuses = notifications.purchaseOrderAmendmentStatuses(ids);
+        var pending = pendingAmendments(ids);
+        return ApiResponse.ok(
+                result.map(po -> response(po, statuses, cancellations, amendmentStatuses, pending)));
     }
 
     @PostMapping("/{purchaseOrderId}/submission")
@@ -202,26 +219,77 @@ class PurchaseOrderController {
     }
 
     /**
-     * BR-02, 03 §16 "PO supplement": a SUBCONTRACT order already approved got more quantity for a resend after a QC
-     * shortfall; the amendment is approved by someone other than who asked for it, with the approval permission.
+     * BR-02, SCRUM-117: an APPROVED or CONFIRMED standard order changes through a revision approved again - within the
+     * requester's own limit at once, otherwise by someone else. {@code lines} is every line kept.
+     */
+    @PostMapping("/{purchaseOrderId}/amendments")
+    @Operation(
+            summary = "Amend an approved or confirmed standard purchase order",
+            description =
+                    "Send the header as it should read and every line kept, with the version you read. Approved at"
+                        + " once within your approval limit, otherwise it waits for someone else's decision. 409"
+                        + " PO_AMENDMENT_NOT_ALLOWED while a goods receipt is in progress or once anything was"
+                        + " received; 409 PO_AMENDMENT_ALREADY_PENDING while another waits; 400"
+                        + " PO_AMENDMENT_NO_CHANGE.")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> amend(@PathVariable UUID purchaseOrderId,
+                                                    @AuthenticatedUser CurrentUser user,
+                                                    @Valid @RequestBody AmendPurchaseOrderRequest request) {
+        var amendment = new PurchaseOrder.AmendmentRequest(request.expectedDate(), request.note(), request.reason(),
+                request.lines().stream()
+                        .map(line -> line == null ? null : new PurchaseOrder.AmendmentLine(line.lineId(),
+                                line.quantityOrdered(), line.unitPrice(), line.taxRate(), line.description()))
+                        .toList());
+        return ApiResponse.ok(toResponse(
+                amendments.request(purchaseOrderId, request.version(), amendment, user.userId())));
+    }
+
+    /**
+     * The amendment waiting is approved by someone other than who asked for it, with the approval permission: a
+     * standard order's amendment (SCRUM-117), or a SUBCONTRACT order's supplement for a resend after a QC shortfall
+     * (BR-02, 03 §16 "PO supplement"). The two are stored differently, so the order's type picks the service.
      */
     @PostMapping("/{purchaseOrderId}/amendment/approval")
-    @Operation(summary = "Approve the amendment waiting on an approved SUBCONTRACT purchase order (four eyes)")
+    @Operation(summary = "Approve the amendment waiting on an approved purchase order (four eyes)")
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
     public ApiResponse<PurchaseOrderResponse> approveAmendment(@PathVariable UUID purchaseOrderId,
                                                                @AuthenticatedUser CurrentUser user) {
-        amendments.approveAmendment(purchaseOrderId, user.userId());
-        return ApiResponse.ok(toResponse(procurementService.findById(purchaseOrderId).orElseThrow()));
+        if (isSubcontract(purchaseOrderId)) {
+            subcontractAmendments.approveAmendment(purchaseOrderId, user.userId());
+            return ApiResponse.ok(toResponse(procurementService.findById(purchaseOrderId).orElseThrow()));
+        }
+        return ApiResponse.ok(toResponse(amendments.approve(purchaseOrderId, user.userId())));
     }
 
     @PostMapping("/{purchaseOrderId}/amendment/rejection")
-    @Operation(summary = "Reject the amendment waiting on an approved SUBCONTRACT purchase order, with a reason")
+    @Operation(summary = "Reject the amendment waiting on an approved purchase order, with a reason")
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
     public ApiResponse<PurchaseOrderResponse> rejectAmendment(@PathVariable UUID purchaseOrderId,
                                                               @AuthenticatedUser CurrentUser user,
                                                               @Valid @RequestBody CancelPurchaseOrderRequest request) {
-        amendments.rejectAmendment(purchaseOrderId, user.userId(), request.reason());
-        return ApiResponse.ok(toResponse(procurementService.findById(purchaseOrderId).orElseThrow()));
+        if (isSubcontract(purchaseOrderId)) {
+            subcontractAmendments.rejectAmendment(purchaseOrderId, user.userId(), request.reason());
+            return ApiResponse.ok(toResponse(procurementService.findById(purchaseOrderId).orElseThrow()));
+        }
+        return ApiResponse.ok(toResponse(amendments.reject(purchaseOrderId, user.userId(), request.reason())));
+    }
+
+    /** Anyone who may update the order withdraws its amendment, the requester included; a reason is required. */
+    @PostMapping("/{purchaseOrderId}/amendment/withdrawal")
+    @Operation(summary = "Withdraw the amendment waiting on an approved standard purchase order, with a reason")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> withdrawAmendment(@PathVariable UUID purchaseOrderId,
+                                                                @AuthenticatedUser CurrentUser user,
+                                                                @Valid @RequestBody CancelPurchaseOrderRequest request) {
+        return ApiResponse.ok(toResponse(amendments.withdraw(purchaseOrderId, user.userId(), request.reason())));
+    }
+
+    /** Read within the caller's warehouses: another warehouse's order is refused here, before either service runs. */
+    private boolean isSubcontract(UUID purchaseOrderId) {
+        return "SUBCONTRACT".equals(procurementService.findById(purchaseOrderId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND,
+                        "No purchase order with id " + purchaseOrderId))
+                .type());
     }
 
     /**
@@ -326,14 +394,39 @@ class PurchaseOrderController {
 
     private PurchaseOrderResponse toResponse(PurchaseOrderSummary po) {
         var statuses = notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()));
+        var ids = List.of(po.purchaseOrderId());
         return response(
                 po,
                 statuses,
-                notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId())));
+                notifications.purchaseOrderCancellationStatuses(ids),
+                notifications.purchaseOrderAmendmentStatuses(ids),
+                pendingAmendments(ids));
+    }
+
+    /** One query for the page's waiting amendments and one for their requesters' names. */
+    private Map<UUID, PendingAmendmentResponse> pendingAmendments(List<UUID> ids) {
+        var result = new HashMap<UUID, PendingAmendmentResponse>();
+        history.pendingAmendments(ids)
+                .forEach(
+                        (id, p) ->
+                                result.put(
+                                        id,
+                                        new PendingAmendmentResponse(
+                                                p.revisionNo(),
+                                                p.requestedBy(),
+                                                p.requestedByName(),
+                                                p.requestedAt(),
+                                                p.reason(),
+                                                p.newTotalAmount())));
+        return result;
     }
 
     private PurchaseOrderResponse response(
-            PurchaseOrderSummary po, Map<UUID, String> statuses, Map<UUID, String> cancellations) {
+            PurchaseOrderSummary po,
+            Map<UUID, String> statuses,
+            Map<UUID, String> cancellations,
+            Map<UUID, AmendmentDeliveryStatus> amendmentStatuses,
+            Map<UUID, PendingAmendmentResponse> pending) {
         var today = BusinessCalendar.date(clock.instant());
         var warnings =
                 po.expectedAt() != null
@@ -349,7 +442,23 @@ class PurchaseOrderController {
                                         && !"NOT_SENT".equals(po.supplierConfirmationStatus())
                                 ? "UNKNOWN"
                                 : "NOT_REQUIRED");
-        return mapper.toResponse(po, deliveryStatus(po, statuses), cancellation, warnings);
+        return mapper.toResponse(
+                po,
+                deliveryStatus(po, statuses),
+                cancellation,
+                amendmentDeliveryStatus(po, amendmentStatuses),
+                pending.get(po.purchaseOrderId()),
+                warnings);
+    }
+
+    /**
+     * The state of the notice of the amendment now active, or null: the newest notice attempted may announce an earlier
+     * revision when the latest approved one was not attempted yet, and its state is not this one's (SCRUM-117).
+     */
+    private static String amendmentDeliveryStatus(PurchaseOrderSummary po,
+                                                  Map<UUID, AmendmentDeliveryStatus> statuses) {
+        AmendmentDeliveryStatus status = statuses.get(po.purchaseOrderId());
+        return status != null && status.revisionNo() == po.revisionNo() ? status.status() : null;
     }
 
     private static String deliveryStatus(PurchaseOrderSummary po, Map<UUID, String> statuses) {

@@ -29,11 +29,18 @@ public record POLineSummary(
         Integer unitFactor,
         Integer unitQuantity
 ) {
+    /**
+     * What a receiver may still expect on this line: nothing on a CANCELLED, WITHDRAWN or CLOSED line - one an
+     * approved amendment removed (SCRUM-117), or the remainder an order closed short wrote off - whatever was ordered.
+     */
     public int openQuantity() {
+        if ("CANCELLED".equals(status) || "WITHDRAWN".equals(status) || "CLOSED".equals(status)) {
+            return 0;
+        }
         return Math.max(0, quantityOrdered - quantityReceived);
     }
 
-    /** Whole packing units still to receive, rounded down; null for a line in base units. */
+    /** Whole packing units still to receive ({@link #openQuantity}), rounded down; null for a line in base units. */
     public Integer openUnitQuantity() {
         return unitFactor == null ? null : openQuantity() / unitFactor;
     }

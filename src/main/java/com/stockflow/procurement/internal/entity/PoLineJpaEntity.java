@@ -27,8 +27,9 @@ import java.util.UUID;
  * (receiving, closing, cancelling). The one exception is a SUBCONTRACT draft, whose single line is
  * resized before any revision exists ({@link #reviseDraftQuantity}), and a standard draft's lines are
  * edited by the buyer ({@link #reviseDraft}, SCRUM-462); {@code tg_purchase_order_lines_draft_content}
- * refuses either once the order has left DRAFT. {@code po_revision_id} is written by the revision snapshot with native SQL and is not
- * mapped. The amounts satisfy {@code ck_purchase_order_lines_amounts}: no line discount, so net is
+ * refuses either once the order has left DRAFT. {@code po_revision_id} is written by the revision snapshot and by an
+ * approved amendment with native SQL, and mapped read-only ({@link #getRevisionId}): which revision a CANCELLED line
+ * still points at tells whether an amendment removed it (SCRUM-117). The amounts satisfy {@code ck_purchase_order_lines_amounts}: no line discount, so net is
  * the subtotal.</p>
  *
  * <p>The packing unit a line was ordered in ({@code uom_conversion_id} and {@code unit_qty}, V20261020000400) is
@@ -99,6 +100,10 @@ public class PoLineJpaEntity extends BaseEntity {
 
     @Column(name = "unit_qty")
     private Integer unitQuantity;
+
+    /** Read-only: only native SQL moves a line to a revision, in the statement the line guard checks. */
+    @Column(name = "po_revision_id", insertable = false, updatable = false)
+    private UUID revisionId;
 
     protected PoLineJpaEntity() {
     }
@@ -192,4 +197,6 @@ public class PoLineJpaEntity extends BaseEntity {
     public String getDescription() { return description; }
     public UUID getUomConversionId() { return uomConversionId; }
     public Integer getUnitQuantity() { return unitQuantity; }
+    /** The revision that last froze the line; null until one did, and stale until a refresh after native SQL. */
+    public UUID getRevisionId() { return revisionId; }
 }

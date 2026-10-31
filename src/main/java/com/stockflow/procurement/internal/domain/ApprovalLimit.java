@@ -25,6 +25,22 @@ public record ApprovalLimit(UUID id, UUID roleId, Money amount) {
     }
 
     /**
+     * The one rule for whether a configured limit covers a total, after tax: within it, and a limit of zero or less
+     * covers nothing. Every decision asks it - an order approved at submission or by a person, an amendment of a
+     * standard order or a subcontract supplement, automatically or by a person - so a limit means the same everywhere.
+     * Having no limit at all is not a limit of zero and never reaches here (owner decision PO-NOLIMIT): the caller asks
+     * only when one is configured.
+     */
+    public static boolean covers(Money limit, Money total) {
+        return limit.amount().signum() > 0 && total.compareTo(limit) <= 0;
+    }
+
+    /** {@link #covers(Money, Money)} with this limit's amount. */
+    public boolean covers(Money total) {
+        return covers(amount, total);
+    }
+
+    /**
      * What the timeline event of an automatic approval carries about the decision: the order's total, the limit that
      * allowed it (row, amount, role) and whose limit it was; the same facts the approval record has as columns.
      */

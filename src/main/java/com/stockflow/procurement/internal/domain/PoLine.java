@@ -35,6 +35,7 @@ public final class PoLine {
     private final BigDecimal taxRate;
     private PoLineStatus status;
     private final PackingUnit packingUnit;
+    private final boolean removedByAmendment;
 
     /** A line in base units. */
     public PoLine(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
@@ -47,6 +48,19 @@ public final class PoLine {
     public PoLine(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
                   int quantityOrdered, int quantityReceived, Money unitPrice, BigDecimal taxRate, PoLineStatus status,
                   PackingUnit packingUnit) {
+        this(id, lineNo, inventoryItemId, sku, uom, description, quantityOrdered, quantityReceived, unitPrice, taxRate,
+                status, packingUnit, false);
+    }
+
+    /**
+     * As stored, with whether an approved amendment removed the line (SCRUM-117). That is a fact of the line, not of
+     * its status: a cancelled order's lines are CANCELLED too, and only the ones an amendment removed before the
+     * cancellation were no longer ordered when it happened. The adapter knows it from the revision the line still
+     * points at.
+     */
+    public PoLine(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
+                  int quantityOrdered, int quantityReceived, Money unitPrice, BigDecimal taxRate, PoLineStatus status,
+                  PackingUnit packingUnit, boolean removedByAmendment) {
         this.id = Objects.requireNonNull(id, "id");
         if (lineNo <= 0) {
             throw new IllegalArgumentException("lineNo must be positive");
@@ -78,6 +92,10 @@ public final class PoLine {
                     packingUnit.unitOfMeasure(), packingUnit.quantity(), quantityOrdered));
         }
         this.packingUnit = packingUnit;
+        if (removedByAmendment && status != PoLineStatus.CANCELLED) {
+            throw new IllegalArgumentException("A line an amendment removed is CANCELLED");
+        }
+        this.removedByAmendment = removedByAmendment;
     }
 
     static PoLine draft(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
@@ -123,4 +141,6 @@ public final class PoLine {
     public PoLineStatus status() { return status; }
     /** The packing unit the line was ordered in; null for base units. */
     public PackingUnit packingUnit() { return packingUnit; }
+    /** An approved amendment removed it (SCRUM-117); always CANCELLED then. */
+    public boolean removedByAmendment() { return removedByAmendment; }
 }

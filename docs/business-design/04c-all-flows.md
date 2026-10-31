@@ -128,10 +128,10 @@ flowchart LR
 | 04 | `procurement` | `~ purchase_order.sent_at, + outbox_event` | → SENT · PurchaseOrderSent |
 | 05 | `notification` | `+ processed_event, + notification` | gửi PO cho NCC |
 | 06 | `procurement` | `~ purchase_order.confirmed_at` | → CONFIRMED |
-| 07 | `procurement` | `+ po_revision (nếu sửa)` | PurchaseOrderAmended |
+| 07 | `procurement` | `+ po_revision (nếu sửa), ~ purchase_order.pending_revision_id` | duyệt bản sửa → revision mới có hiệu lực; PO đã gửi NCC thì gửi lại PurchaseOrderSent (amendmentRevisionNo) |
 
 > · Hạn mức người duyệt phải ≥ giá trị PO — BR-PO-002, kiểm trong aggregate chứ không ở controller.
-> ⚠ Sửa PO sau khi đã có phiếu nhập là CẤM. Phải tạo revision mới — BR-PO-004.
+> ⚠ Sửa PO chỉ khi APPROVED/CONFIRMED, chưa nhận gì, không có phiếu nhập đang đếm, NCC chưa từ chối. Bản sửa là revision mới và phải được duyệt; phiếu nhập đầu tiên, huỷ hoặc đóng PO sẽ rút bản sửa đang chờ — BR-PO-004.
 
 ---
 

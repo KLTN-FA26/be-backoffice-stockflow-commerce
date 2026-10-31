@@ -22,7 +22,8 @@ interface SupplierItemJpaRepository extends BaseJpaRepository<SupplierItemJpaEnt
     /**
      * Open = still expecting goods or still on its way to the supplier: not received, closed or
      * cancelled. The same list as {@code SupplierJpaRepository.hasOpenPurchaseOrders}, narrowed to one
-     * SKU.
+     * SKU, and to a line still ordered: a line an approved amendment removed (CANCELLED) or one withdrawn
+     * is not asked of the supplier any more, so it does not keep the SKU listed (SCRUM-117).
      */
     @Query(value = """
             SELECT EXISTS (SELECT 1
@@ -30,6 +31,7 @@ interface SupplierItemJpaRepository extends BaseJpaRepository<SupplierItemJpaEnt
                              JOIN procurement.purchase_orders po ON po.id = l.po_id
                             WHERE po.supplier_id = :supplierId
                               AND l.inventory_item_id = :inventoryItemId
+                              AND l.status NOT IN ('CANCELLED', 'WITHDRAWN')
                               AND po.status IN ('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'CONFIRMED', 'PARTIALLY_RECEIVED'))
             """, nativeQuery = true)
     boolean usedByOpenPurchaseOrder(UUID supplierId, UUID inventoryItemId);

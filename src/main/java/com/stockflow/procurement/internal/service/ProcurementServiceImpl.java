@@ -111,7 +111,7 @@ class ProcurementServiceImpl implements ProcurementService {
     private final ApplicationEventPublisher events;
     private final NotificationService notifications;
     private final PoDeliveryDecisionRepository deliveryDecisions;
-    private final PoCommunicationProfile communication;
+    private final PoDeliveryContent content;
     private final ProductService products;
     private final InventoryService inventory;
     private final InventoryControlService inventoryControl;
@@ -124,7 +124,7 @@ class ProcurementServiceImpl implements ProcurementService {
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
                            ApplicationEventPublisher events, NotificationService notifications,
-                           PoDeliveryDecisionRepository deliveryDecisions, PoCommunicationProfile communication,
+                           PoDeliveryDecisionRepository deliveryDecisions, PoDeliveryContent content,
                            ProductService products, InventoryService inventory,
                            InventoryControlService inventoryControl, WarehouseService warehouses,
                            CurrentUserProvider users, SupplierItemRepository supplierItems,
@@ -137,7 +137,7 @@ class ProcurementServiceImpl implements ProcurementService {
         this.events = events;
         this.notifications = notifications;
         this.deliveryDecisions = deliveryDecisions;
-        this.communication = communication;
+        this.content = content;
         this.products = products;
         this.inventory = inventory;
         this.inventoryControl = inventoryControl;
@@ -453,6 +453,17 @@ class ProcurementServiceImpl implements ProcurementService {
         return summaryOf(order, false);
     }
 
+    /**
+     * Whether an amendment was approved since the order was sent (SCRUM-117): the active revision then differs from
+     * the one the CONFIRMED event names, and the supplier is owed the order as it stands rather than the snapshot of
+     * the first send - by a recovery and by a cancellation notice alike. An order with no such event (legacy) answers
+     * false and keeps its snapshot.
+     */
+    private boolean amendedSince(PurchaseOrder order) {
+        return deliveryDecisions.confirmedRevisionId(order.id().value())
+                .map(revision -> !revision.equals(order.activeRevisionId())).orElse(false);
+    }
+
     @Override
     @Transactional(readOnly = true)
     public PageResponse<PurchaseOrderDeliveryDecision> deliveryDecisions(UUID id, int page, int size) {
@@ -464,39 +475,20 @@ class ProcurementServiceImpl implements ProcurementService {
 
     private void publishDelivery(PurchaseOrder saved, boolean recovery, LocalDate previousDate, String reason,
                                  boolean reconciled, boolean acknowledgePastDue) {
-        var supplier = suppliers.findById(saved.supplierId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND,
-                        "No supplier with id " + saved.supplierId()))
-                .details();
-        String recipient = supplier.communicationChannel() == SupplierCommunicationChannel.EMAIL
-                ? supplier.email() : supplier.apiEndpoint();
-        if (supplier.status() != SupplierStatus.ACTIVE || recipient == null || recipient.isBlank()) {
-            throw new BusinessException(ErrorCode.CONFLICT, "An active supplier with a delivery contact is required");
-        }
-        notifications.validateSupplierDelivery(supplier.communicationChannel().name(), recipient);
+        var target = content.target(saved.supplierId());
         int generation = notifications.prepareSupplierDelivery(saved.id().value(), recovery);
         deliveryDecisions.record(saved.id().value(), generation, previousDate, saved.expectedAt(), reason, reconciled,
-                acknowledgePastDue, supplier.communicationChannel().name(), recipient);
+                acknowledgePastDue, target.channel(), target.recipient());
         var previous = deliveryDecisions.latestSnapshot(saved.id().value());
-        var buyer = previous.map(PurchaseOrderSent::buyer).orElseGet(communication::requireBuyer);
-        var lines = previous.map(PurchaseOrderSent::lines).orElseGet(() -> saved.lines().stream()
-                .map(line -> new PurchaseOrderSent.Line(line.sku().code(), description(line), line.quantityOrdered(),
-                        line.unitPrice().amount()))
-                .toList());
+        var buyer = content.buyer(previous);
+        // The snapshot is what the supplier was sent; it is resent unless an amendment approved since changed the lines.
+        var lines = previous.isPresent() && !amendedSince(saved) ? previous.get().lines() : content.lines(saved);
         var event = new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
-                supplier.communicationChannel().name(), recipient, saved.totalAmount().amount(),
+                target.channel(), target.recipient(), saved.totalAmount().amount(),
                 saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays(), lines, generation,
                 buyer, false, null);
         deliveryDecisions.snapshot(event);
         events.publishEvent(event);
-    }
-
-    private String description(PoLine line) {
-        if (line.description() != null && !line.description().isBlank()) return line.description().trim();
-        return products.nameForSku(line.sku().code())
-                .filter(name -> !name.isBlank())
-                .orElseThrow(() -> new BusinessException(ErrorCode.PO_LINE_DESCRIPTION_REQUIRED,
-                        "Missing product description for SKU " + line.sku().code()));
     }
 
     @Override
@@ -518,7 +510,11 @@ class ProcurementServiceImpl implements ProcurementService {
 
     // ------------------------------------------------------------------ ending
 
-    /** A confirmed order was already sent: its supplier is told of the cancellation, at the address it was sent to. */
+    /**
+     * A confirmed order was already sent: its supplier is told of the cancellation, at the address it was sent to. An
+     * amendment still waiting is withdrawn first, in this transaction (SCRUM-117): there is nothing left to amend, and
+     * left pending it would hang on a cancelled order.
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary cancel(UUID purchaseOrderId, UUID userId, String reason) {
@@ -529,6 +525,11 @@ class ProcurementServiceImpl implements ProcurementService {
         }
         PurchaseOrderStatus from = order.status();
         order.requireCancellable(reason);
+        AmendmentDrops.drop(purchaseOrders, order, userId, "WITHDRAWN", "Order cancelled");
+        // Read before cancel() settles every line CANCELLED: after an approved amendment the supplier is told what
+        // was ordered last, as a recovery would resend it, not the snapshot of the first send.
+        List<PurchaseOrderSent.Line> orderedLines = from == PurchaseOrderStatus.CONFIRMED && amendedSince(order)
+                ? content.lines(order) : null;
         if (order.activeRevisionId() == null && order.pendingRevisionId() == null) {
             long revisionNo = purchaseOrders.nextRevisionNo(order.id());
             order.freeze(purchaseOrders.recordRevision(order, revisionNo, userId, revisionNo == 0 ? null : "Cancelled"),
@@ -551,7 +552,8 @@ class ProcurementServiceImpl implements ProcurementService {
                             ? supplier.email() : supplier.apiEndpoint());
             events.publishEvent(new PurchaseOrderSent(purchaseOrderId, order.poNumber(), order.supplierId(), channel,
                     recipient, order.totalAmount().amount(), order.currency().getCurrencyCode(), order.expectedAt(),
-                    order.paymentTermDays(), previous.map(PurchaseOrderSent::lines).orElse(List.of()), 0,
+                    order.paymentTermDays(), orderedLines != null ? orderedLines
+                            : previous.map(PurchaseOrderSent::lines).orElse(List.of()), 0,
                     previous.map(PurchaseOrderSent::buyer).orElse(null), true, reason));
         }
         return summaryOf(order, false);
@@ -562,7 +564,8 @@ class ProcurementServiceImpl implements ProcurementService {
      * CONFIRMED one that will not be received at all; the reason is mandatory in both. A force close behaves like a
      * cancel for what is still in flight: it refuses while a goods receipt of the order is being counted, and it stops
      * the supplier delivery from being retried (the order is closed, there is nothing left to send). The supplier is
-     * not sent a cancellation notice - the order was not cancelled.
+     * not sent a cancellation notice - the order was not cancelled. An amendment still waiting is withdrawn first, as
+     * for a cancellation (SCRUM-117).
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
@@ -574,6 +577,9 @@ class ProcurementServiceImpl implements ProcurementService {
             throw new BusinessException(ErrorCode.CONFLICT,
                     "A goods receipt of this order is being counted or waits for approval; cancel or confirm it first");
         }
+        // Before the status changes, so the withdrawal reads as the order's last act while open; a refused close
+        // rolls it back with the transaction.
+        AmendmentDrops.drop(purchaseOrders, order, userId, "WITHDRAWN", "Order closed");
         order.closeShort(reason, userId, clock.instant());
         if (force) {
             notifications.suppressSupplierDelivery(purchaseOrderId);

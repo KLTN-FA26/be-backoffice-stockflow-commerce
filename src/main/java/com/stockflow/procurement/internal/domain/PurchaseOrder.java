@@ -1,5 +1,6 @@
 package com.stockflow.procurement.internal.domain;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.domain.AggregateRoot;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
@@ -12,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Currency;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -297,6 +299,287 @@ public final class PurchaseOrder extends AggregateRoot {
         this.lines.addAll(revised);
     }
 
+    // ------------------------------------------------------------------ amending an approved order (SCRUM-117)
+
+    /**
+     * One line of an amendment as the buyer now wants it, keyed by the line it changes. Price, tax and description
+     * left null keep the line's own: the price was agreed when the order was approved, so a missing one must never
+     * fall back to the catalog's of today. The quantity is in base units; a line in a packing unit stays in it.
+     */
+    public record AmendmentLine(UUID lineId, Integer quantityOrdered, BigDecimal unitPrice, BigDecimal taxRate,
+                                String description) {
+    }
+
+    /**
+     * An amendment as requested: the header as it should read afterwards, and <b>every line kept</b> - a live line
+     * the request leaves out is removed, as in {@link #reviseDraft}.
+     */
+    public record AmendmentRequest(LocalDate expectedAt, String note, String reason, List<AmendmentLine> lines) {
+    }
+
+    /**
+     * A kept line before and after. {@code after} is a real {@link PoLine} - same id, number, item, SKU and unit,
+     * only the count of the unit follows the quantity - so its amounts come from the one place that computes them.
+     */
+    public record ProposedLine(PoLine before, PoLine after) {
+
+        public boolean quantityChanged() {
+            return before.quantityOrdered() != after.quantityOrdered();
+        }
+
+        /** Only an increase asks the catalog and the SKU's status again: goods already ordered are still received. */
+        public boolean quantityIncreased() {
+            return after.quantityOrdered() > before.quantityOrdered();
+        }
+
+        public boolean changed() {
+            return quantityChanged()
+                    || before.unitPrice().amount().compareTo(after.unitPrice().amount()) != 0
+                    || before.taxRate().compareTo(after.taxRate()) != 0
+                    || !Objects.equals(before.description(), after.description());
+        }
+    }
+
+    /**
+     * What the order would be once the amendment is approved: the content of the revision to record, and the facts
+     * the timeline shows. {@code kept} follows the request's order, so the index of a kept line is the index of the
+     * request line a later check reports a fault on.
+     *
+     * @param changes the facts that differ, before and after, keyed like a draft edit's timeline
+     *                ({@code line3.quantityBefore}, {@code line5.removed}, {@code expectedAtBefore}, ...)
+     */
+    public record ProposedAmendment(LocalDate expectedAt, String note, String reason, List<ProposedLine> kept,
+                                    List<PoLine> removed, Money subtotal, Money taxTotal, Money totalAmount,
+                                    Map<String, String> changes) {
+    }
+
+    /**
+     * Works out what {@code request} would make of this order, changing nothing: nothing is persisted until the
+     * amendment is approved, and a request that fails here must leave no trace. Refused with
+     * {@code PO_AMENDMENT_NOT_ALLOWED} unless the order is a standard one, APPROVED or CONFIRMED, not refused by its
+     * supplier and with nothing received; with {@code PO_AMENDMENT_ALREADY_PENDING} while another amendment waits;
+     * with one {@code VALIDATION_FAILED} naming every field at fault; and with {@code PO_AMENDMENT_NO_CHANGE} when
+     * the result would read exactly as the order does now. The supplier's catalog terms and the SKU's status are the
+     * service's to check, on the lines this returns.
+     */
+    public ProposedAmendment proposeAmendment(AmendmentRequest request) {
+        requireAmendable();
+        if (pendingRevisionId != null) {
+            throw alreadyPending();
+        }
+        List<FieldError> errors = new ArrayList<>();
+        String reason = request.reason() == null ? "" : request.reason().trim();
+        if (reason.isEmpty() || reason.length() > 500) {
+            errors.add(new FieldError("reason", "A reason of 1..500 characters is required", "Size"));
+        }
+        String newNote = request.note() == null || request.note().isBlank() ? null : request.note().trim();
+        if (newNote != null && newNote.length() > 2000) {
+            errors.add(new FieldError("note", "The note must be at most 2000 characters", "Size"));
+        }
+        if (request.expectedAt() == null) {
+            errors.add(new FieldError("expectedDate", "The expected delivery date is required", "NotNull"));
+        } else if (request.expectedAt().isBefore(orderDate)) {
+            errors.add(new FieldError("expectedDate", "The expected delivery date cannot be before the order date",
+                    "DateBeforeOrderDate"));
+        }
+        List<AmendmentLine> wanted = request.lines() == null ? List.of() : request.lines();
+        if (wanted.isEmpty()) {
+            errors.add(new FieldError("lines", "An amended purchase order keeps at least one line", "Size"));
+        }
+
+        Map<UUID, PoLine> current = new HashMap<>();
+        this.lines.stream().filter(this::stillOrdered).forEach(line -> current.put(line.id(), line));
+        Set<UUID> named = new HashSet<>();
+        for (int i = 0; i < wanted.size(); i++) {
+            AmendmentLine line = wanted.get(i);
+            String at = "lines[" + i + "].";
+            if (line == null) {
+                errors.add(new FieldError("lines[" + i + "]", "The line is empty", "NotNull"));
+                continue;
+            }
+            // A line already CANCELLED or WITHDRAWN is not a line of the order any more, so it is as unknown as a
+            // line of another order: a WITHDRAWN one is never loaded, and a CANCELLED one (an earlier amendment
+            // removed it) is left out of `current`.
+            if (line.lineId() == null || !current.containsKey(line.lineId()) || !named.add(line.lineId())) {
+                errors.add(new FieldError(at + "lineId", "Line " + line.lineId() + " is not a live line of "
+                        + poNumber + ", or is named twice", "UnknownLine"));
+            }
+            if (line.quantityOrdered() == null || line.quantityOrdered() < 1 || line.quantityOrdered() > 1_000_000) {
+                errors.add(new FieldError(at + "quantityOrdered", "The quantity must be between 1 and 1,000,000",
+                        "Range"));
+            }
+            if (line.unitPrice() != null && !PurchasePrices.acceptable(line.unitPrice(), currency)) {
+                errors.add(new FieldError(at + "unitPrice", "The unit price must be positive and within what "
+                        + currency.getCurrencyCode() + " can hold", "Range"));
+            }
+            if (line.taxRate() != null && (line.taxRate().signum() < 0
+                    || line.taxRate().compareTo(BigDecimal.valueOf(100)) > 0)) {
+                errors.add(new FieldError(at + "taxRate", "The tax rate must be between 0 and 100", "Range"));
+            }
+        }
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    errors.size() + " field(s) of the amendment are invalid", errors);
+        }
+
+        List<ProposedLine> kept = new ArrayList<>();
+        for (AmendmentLine line : wanted) {
+            PoLine before = current.get(line.lineId());
+            int quantity = line.quantityOrdered();
+            // The count of the unit follows the quantity; one that is not a whole number of it is refused here.
+            PackingUnit unit = before.packingUnit() == null ? null
+                    : before.packingUnit().withQuantity(poNumber, quantity);
+            Money price = line.unitPrice() == null ? before.unitPrice() : new Money(line.unitPrice(), currency);
+            String description = line.description() == null || line.description().isBlank() ? before.description()
+                    : line.description().trim();
+            kept.add(new ProposedLine(before, new PoLine(before.id(), before.lineNo(), before.inventoryItemId(),
+                    before.sku(), before.uom(), description, quantity, 0, price,
+                    line.taxRate() == null ? before.taxRate() : line.taxRate(), before.status(), unit)));
+        }
+        List<PoLine> removed = this.lines.stream().filter(line -> current.containsKey(line.id())
+                && !named.contains(line.id())).toList();
+
+        Money newSubtotal = new Money(kept.stream().map(l -> l.after().subtotal()).reduce(BigDecimal.ZERO,
+                BigDecimal::add), currency);
+        Money newTax = new Money(kept.stream().map(l -> l.after().tax()).reduce(BigDecimal.ZERO, BigDecimal::add),
+                currency);
+        Money newTotal = newSubtotal.plus(newTax);
+        if (newTotal.amount().compareTo(PurchasePrices.MAX) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Purchase order total exceeds the supported limit");
+        }
+
+        Map<String, String> changes = new LinkedHashMap<>();
+        for (ProposedLine line : kept) {
+            String key = "line" + line.before().lineNo() + ".";
+            if (line.quantityChanged()) {
+                putChange(changes, key + "quantity", line.before().quantityOrdered(), line.after().quantityOrdered());
+            }
+            if (line.before().unitPrice().amount().compareTo(line.after().unitPrice().amount()) != 0) {
+                putChange(changes, key + "unitPrice", line.before().unitPrice().amount().toPlainString(),
+                        line.after().unitPrice().amount().toPlainString());
+            }
+            if (line.before().taxRate().compareTo(line.after().taxRate()) != 0) {
+                putChange(changes, key + "taxRate", line.before().taxRate().toPlainString(),
+                        line.after().taxRate().toPlainString());
+            }
+            if (!Objects.equals(line.before().description(), line.after().description())) {
+                putChange(changes, key + "description", line.before().description(), line.after().description());
+            }
+        }
+        removed.forEach(line -> changes.put("line" + line.lineNo() + ".removed", "true"));
+        if (!request.expectedAt().equals(expectedAt)) {
+            putChange(changes, "expectedAt", expectedAt, request.expectedAt());
+        }
+        if (!Objects.equals(note, newNote)) {
+            putChange(changes, "note", note, newNote);
+        }
+        if (newTotal.compareTo(totalAmount()) != 0) {
+            putChange(changes, "totalAmount", totalAmount().amount().toPlainString(),
+                    newTotal.amount().toPlainString());
+        }
+        if (changes.isEmpty()) {
+            throw new BusinessException(ErrorCode.PO_AMENDMENT_NO_CHANGE,
+                    "The amendment of %s changes nothing".formatted(poNumber));
+        }
+        return new ProposedAmendment(request.expectedAt(), newNote, reason, List.copyOf(kept), removed, newSubtotal,
+                newTax, newTotal, changes);
+    }
+
+    private static void putChange(Map<String, String> changes, String key, Object before, Object after) {
+        changes.put(key + "Before", truncated(before));
+        changes.put(key + "After", truncated(after));
+    }
+
+    private static String truncated(Object value) {
+        String text = String.valueOf(value);
+        return text.length() <= 1000 ? text : text.substring(0, 1000) + "…";
+    }
+
+    /**
+     * The amendment awaits its decision: only the pointer moves. The order's content, status and supplier response
+     * stay as they are until it is approved, so a rejected or withdrawn amendment leaves nothing to undo.
+     */
+    public void requestAmendment(UUID revisionId) {
+        Objects.requireNonNull(revisionId, "revisionId");
+        requireAmendable();
+        if (pendingRevisionId != null) {
+            throw alreadyPending();
+        }
+        this.pendingRevisionId = revisionId;
+    }
+
+    /**
+     * What <em>approving</em> needs to hold under the order's lock: an amendment waits, and the order is still
+     * amendable - nothing was received since it was requested (the first receipt withdraws it, but an approval that
+     * raced it must still be refused rather than rewrite lines goods were received against).
+     * Rejecting and withdrawing need only {@link #requirePendingAmendment}: they change no line, and must stay
+     * possible when the supplier has refused the order meanwhile, or the pointer would be stranded.
+     */
+    public void requireAmendmentDecidable() {
+        requirePendingAmendment();
+        requireAmendable();
+    }
+
+    /** An amendment waits for a decision; all rejecting or withdrawing it needs. */
+    public void requirePendingAmendment() {
+        if (pendingRevisionId == null) {
+            throw new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                    "Purchase order %s has no amendment waiting for a decision".formatted(poNumber));
+        }
+    }
+
+    /**
+     * The amendment is approved: it becomes the active revision. The content is not applied here - the adapter
+     * writes the lines and the header in SQL and the service reloads the order - so this moves the pointers and
+     * settles what the supplier was told. A confirmed order the supplier had answered goes back to waiting for an
+     * answer, because what they agreed to is no longer what is ordered (the earlier answer is kept in the event
+     * payload); an order not yet sent has no answer to reset.
+     */
+    public void applyApprovedAmendment(UUID revisionId, long revisionNo) {
+        Objects.requireNonNull(revisionId, "revisionId");
+        if (!revisionId.equals(pendingRevisionId)) {
+            throw new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                    "Revision %s is not the amendment of %s that waits for a decision".formatted(revisionId, poNumber));
+        }
+        this.activeRevisionId = revisionId;
+        this.pendingRevisionId = null;
+        this.revisionNo = revisionNo;
+        if (status == PurchaseOrderStatus.CONFIRMED && (supplierConfirmationStatus == SupplierConfirmationStatus.PENDING
+                || supplierConfirmationStatus == SupplierConfirmationStatus.CONFIRMED)) {
+            this.supplierConfirmationStatus = SupplierConfirmationStatus.PENDING;
+            this.supplierRespondedAt = null;
+            this.supplierReference = null;
+            this.supplierResponseNote = null;
+        }
+    }
+
+    /** The amendment is rejected or withdrawn: the order keeps its active revision, and only the pointer clears. */
+    public void dropAmendment() {
+        requirePendingAmendment();
+        this.pendingRevisionId = null;
+    }
+
+    /**
+     * The conditions an order has to meet to be amended or to have an amendment decided (design D1/D6): a standard
+     * order that is APPROVED or CONFIRMED, whose supplier has not refused it, with nothing received. Once goods
+     * arrive, what was ordered is what receiving counted against, and it changes only by closing the order short.
+     */
+    private void requireAmendable() {
+        if (type != Type.STANDARD
+                || status != PurchaseOrderStatus.APPROVED && status != PurchaseOrderStatus.CONFIRMED
+                || supplierConfirmationStatus == SupplierConfirmationStatus.REJECTED
+                || lines.stream().anyMatch(line -> line.quantityReceived() > 0)) {
+            throw new BusinessException(ErrorCode.PO_AMENDMENT_NOT_ALLOWED,
+                    "Purchase order %s (%s, %s, supplier %s) cannot be amended".formatted(poNumber, type, status,
+                            supplierConfirmationStatus));
+        }
+    }
+
+    private BusinessException alreadyPending() {
+        return new BusinessException(ErrorCode.PO_AMENDMENT_ALREADY_PENDING,
+                "Purchase order %s already has an amendment waiting for a decision".formatted(poNumber));
+    }
+
     // ------------------------------------------------------------------ approval
 
     /**
@@ -314,11 +597,10 @@ public final class PurchaseOrder extends AggregateRoot {
 
     /**
      * Whether {@code limit} (a configured approval limit, in this order's currency) covers the order's total, after
-     * tax: what is paid to the supplier. A limit of zero or less covers nothing. Having no limit at all is not a limit
-     * of zero and never reaches here (owner decision PO-NOLIMIT): the caller asks only when one is configured.
+     * tax: what is paid to the supplier - by the one rule, {@link ApprovalLimit#covers(Money, Money)}.
      */
     public boolean coveredBy(Money limit) {
-        return limit.amount().signum() > 0 && totalAmount().compareTo(limit) <= 0;
+        return ApprovalLimit.covers(limit, totalAmount());
     }
 
     /**
@@ -531,16 +813,37 @@ public final class PurchaseOrder extends AggregateRoot {
 
     // ------------------------------------------------------------------ amounts
 
+    /** Over the lines {@link #stillOrdered still ordered}: what an amendment removed is no longer paid for. */
     public Money subtotal() {
-        return new Money(lines.stream().map(PoLine::subtotal).reduce(BigDecimal.ZERO, BigDecimal::add), currency);
+        return new Money(lines.stream().filter(this::stillOrdered).map(PoLine::subtotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add), currency);
     }
 
     public Money taxTotal() {
-        return new Money(lines.stream().map(PoLine::tax).reduce(BigDecimal.ZERO, BigDecimal::add), currency);
+        return new Money(lines.stream().filter(this::stillOrdered).map(PoLine::tax)
+                .reduce(BigDecimal.ZERO, BigDecimal::add), currency);
     }
 
     public Money totalAmount() {
         return subtotal().plus(taxTotal());
+    }
+
+    /**
+     * Whether a line is still part of what is ordered. A line comes to the aggregate unless it was WITHDRAWN from a
+     * draft. A line an approved amendment removed (SCRUM-117) is not: no longer counted, and not a line a later
+     * amendment can keep or remove again. A cancelled order keeps the total it had when it was cancelled, so the lines
+     * its cancellation settled still count there - but not one an amendment had removed before.
+     *
+     * <p>Two signs, because neither covers every moment. In an order that is not cancelled, CANCELLED alone means an
+     * amendment removed the line; that holds even while an approval runs, before the order points at the new
+     * revision. Once the order is cancelled every line is CANCELLED, and only {@link PoLine#removedByAmendment}, read
+     * from the revision the line still points at, tells them apart.</p>
+     */
+    private boolean stillOrdered(PoLine line) {
+        if (line.status() != PoLineStatus.CANCELLED) {
+            return true;
+        }
+        return status == PurchaseOrderStatus.CANCELLED && !line.removedByAmendment();
     }
 
     private void requireCanTransitionTo(PurchaseOrderStatus target) {

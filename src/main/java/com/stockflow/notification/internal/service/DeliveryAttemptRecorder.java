@@ -29,15 +29,14 @@ class DeliveryAttemptRecorder {
             NotificationChannel channel,
             RuntimeException failure,
             String reference,
+            String templateCode,
             boolean terminal,
             int generation) {
         String message = failureCode(channel, failure);
         var attempt =
                 new DeliveryLogJpaEntity(
                         Identifiers.newId(),
-                        reference.endsWith(":cancellation")
-                                ? "purchase-order.cancelled"
-                                : "purchase-order.sent",
+                        templateCode,
                         channel,
                         recipient,
                         DeliveryStatus.FAILED,
