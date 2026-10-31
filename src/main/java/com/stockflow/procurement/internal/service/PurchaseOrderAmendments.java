@@ -48,14 +48,17 @@ public class PurchaseOrderAmendments {
     private final PurchaseOrderSearchRepository search;
     private final AmendmentLineChecks lineChecks;
     private final ApprovalLimits approvalLimits;
+    private final SupplierAmendmentNotice supplierNotice;
     private final Clock clock;
 
     PurchaseOrderAmendments(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
-                            AmendmentLineChecks lineChecks, ApprovalLimits approvalLimits, Clock clock) {
+                            AmendmentLineChecks lineChecks, ApprovalLimits approvalLimits,
+                            SupplierAmendmentNotice supplierNotice, Clock clock) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.lineChecks = lineChecks;
         this.approvalLimits = approvalLimits;
+        this.supplierNotice = supplierNotice;
         this.clock = clock;
     }
 
@@ -201,6 +204,7 @@ public class PurchaseOrderAmendments {
      */
     private void afterApproved(PurchaseOrder order, UUID previousActiveRevisionId,
                                PurchaseOrderRepository.PendingAmendment amendment) {
+        supplierNotice.send(order, previousActiveRevisionId, amendment);
     }
 
     /** Rejecting and withdrawing: they change no line, so they need only an amendment waiting. */

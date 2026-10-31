@@ -130,11 +130,14 @@ class NotificationSender {
             message.setTo(event.recipient());
             var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
             message.setSubject(
-                    messages.getString(
-                                    event.cancellation()
-                                            ? "po.mail.cancel.subject"
-                                            : "po.mail.subject")
-                            .formatted(event.poNumber()));
+                    event.amendment()
+                            ? messages.getString("po.mail.amend.subject")
+                                    .formatted(event.poNumber(), event.amendmentRevisionNo())
+                            : messages.getString(
+                                            event.cancellation()
+                                                    ? "po.mail.cancel.subject"
+                                                    : "po.mail.subject")
+                                    .formatted(event.poNumber()));
             String lines =
                     event.lines().stream()
                             .map(
@@ -163,7 +166,20 @@ class NotificationSender {
                                             buyer.receivingAddress());
             if (buyer != null) message.setReplyTo(buyer.email());
             message.setText(
-                    event.cancellation()
+                    event.amendment()
+                            ? messages.getString("po.mail.amend.body")
+                                    .formatted(
+                                            event.poNumber(),
+                                            identity,
+                                            event.amendmentRevisionNo(),
+                                            event.amendmentReason(),
+                                            changes(event, messages),
+                                            event.expectedAt(),
+                                            event.paymentTermDays(),
+                                            lines,
+                                            event.totalAmount(),
+                                            event.currency())
+                    : event.cancellation()
                             ? messages.getString("po.mail.cancel.body")
                                     .formatted(
                                             event.poNumber(), identity, event.cancellationReason())
@@ -196,10 +212,11 @@ class NotificationSender {
                                             event.paymentTermDays(),
                                             event.lines(),
                                             event.buyer(),
-                                            event.cancellation()
-                                                    ? "CANCELLATION"
-                                                    : "PURCHASE_ORDER",
-                                            event.cancellationReason()))
+                                            messageType(event),
+                                            event.cancellationReason(),
+                                            event.amendmentRevisionNo(),
+                                            event.amendmentReason(),
+                                            event.changes()))
                             .retrieve()
                             .toBodilessEntity();
             if (!response.getStatusCode().is2xxSuccessful()) {
@@ -212,6 +229,26 @@ class NotificationSender {
                         null);
             }
         } else throw new IllegalArgumentException("Unsupported supplier communication channel");
+    }
+
+    private static String messageType(PurchaseOrderSent event) {
+        if (event.amendment()) return "AMENDMENT";
+        return event.cancellation() ? "CANCELLATION" : "PURCHASE_ORDER";
+    }
+
+    /** What changed against the revision the supplier had, one line per change; a missing side reads as empty. */
+    private static String changes(PurchaseOrderSent event, ResourceBundle messages) {
+        return event.changes().stream()
+                .map(
+                        change ->
+                                messages.getString("po.mail.change")
+                                        .formatted(
+                                                change.lineNo(),
+                                                change.sku(),
+                                                change.field(),
+                                                change.before() == null ? "" : change.before(),
+                                                change.after() == null ? "" : change.after()))
+                .collect(Collectors.joining("\n"));
     }
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);
@@ -243,7 +280,10 @@ class NotificationSender {
             List<PurchaseOrderSent.Line> lines,
             PurchaseOrderSent.Buyer buyer,
             String type,
-            String cancellationReason) {}
+            String cancellationReason,
+            Integer revisionNo,
+            String amendmentReason,
+            List<PurchaseOrderSent.Change> changes) {}
 
     void send(UUID recipientId, String templateCode, String subject, String body) {
         send(recipientId, null, templateCode, subject, body);

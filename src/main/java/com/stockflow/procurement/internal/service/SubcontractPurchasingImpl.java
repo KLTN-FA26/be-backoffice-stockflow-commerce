@@ -19,6 +19,7 @@ import com.stockflow.procurement.api.SubcontractSettlement;
 import com.stockflow.procurement.api.SubcontractorTerms;
 import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
+import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.repository.SubcontractOrderStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,16 +72,21 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
     private final ProcurementService procurement;
     private final Clock clock;
     private final ApprovalLimits approvalLimits;
+    private final PurchaseOrderRepository purchaseOrders;
+    private final SupplierAmendmentNotice supplierNotice;
 
     SubcontractPurchasingImpl(SubcontractOrderStore store, InventoryService inventory,
                               InventoryControlService inventoryControl, ProcurementService procurement, Clock clock,
-                              ApprovalLimits approvalLimits) {
+                              ApprovalLimits approvalLimits, PurchaseOrderRepository purchaseOrders,
+                              SupplierAmendmentNotice supplierNotice) {
         this.store = store;
         this.inventory = inventory;
         this.inventoryControl = inventoryControl;
         this.procurement = procurement;
         this.clock = clock;
         this.approvalLimits = approvalLimits;
+        this.purchaseOrders = purchaseOrders;
+        this.supplierNotice = supplierNotice;
     }
 
     @Override
@@ -186,7 +192,7 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         approvalLimits.autoApprovalLimit(new PurchaseOrderId(order.id()), requesterId, order.supplierId(), newTotal, now)
                 .ifPresent(limit -> {
                     String reason = "Auto-approved within limit: new total %s, limit %s".formatted(newTotal, limit.amount());
-                    store.approveAmendment(order, amendment, requesterId,
+                    approveAndNotify(order, amendment, requesterId,
                             new SubcontractOrderStore.AutoApproval(requesterId, limit, now, reason));
                     log.info("Amendment of {} to {} auto-approved within the requester's limit", order.poNumber(),
                             amendment.quantity());
@@ -218,9 +224,23 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
                     "Amendment of %s makes it total %s; your approval limit is %s".formatted(order.poNumber(), newTotal,
                             limit.get().amount()));
         }
-        store.approveAmendment(order, amendment, approverId, null);
+        approveAndNotify(order, amendment, approverId, null);
         log.info("Amendment of {} to {} approved", order.poNumber(), amendment.quantity());
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
+    }
+
+    /**
+     * The amendment goes into the order, then a supplier that had the order is told (SCRUM-117 design section 8). The
+     * order row is locked by the caller, so the aggregate read here is what the approval changes: the revision that
+     * was active and the amendment waiting are taken before the store moves them, the order is reloaded after it.
+     */
+    private void approveAndNotify(SubcontractOrderStore.Row order, SubcontractOrderStore.Amendment amendment,
+                                  UUID approverId, SubcontractOrderStore.AutoApproval auto) {
+        PurchaseOrderId id = new PurchaseOrderId(order.id());
+        UUID previousActiveRevisionId = purchaseOrders.findByIdForUpdate(id).orElseThrow().activeRevisionId();
+        PurchaseOrderRepository.PendingAmendment waiting = purchaseOrders.pendingAmendment(id).orElseThrow();
+        store.approveAmendment(order, amendment, approverId, auto);
+        supplierNotice.send(purchaseOrders.findByIdForUpdate(id).orElseThrow(), previousActiveRevisionId, waiting);
     }
 
     @Override

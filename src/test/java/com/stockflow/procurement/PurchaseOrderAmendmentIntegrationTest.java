@@ -3,9 +3,11 @@ package com.stockflow.procurement;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SupplierItemFixtures;
@@ -15,7 +17,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -51,11 +55,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>That a SUBCONTRACT supplement survives the first receipt is {@code SubcontractPurchasingIntegrationTest}'s, next
  * to the fixtures a subcontract order needs.</p>
  *
+ * <p>A supplier that had the order is sent the amended one (design section 8), and a resend carries the amendment:
+ * the mail transport is a mock, and the buyer identity those mails carry is configured below.</p>
+ *
  * <p>The idempotency filter is switched on here (the test profile has it off) to replay a request with the same
  * {@code Idempotency-Key}; that costs this class an application context of its own.</p>
  */
 @SecuredIntegrationTest
-@TestPropertySource(properties = "stockflow.idempotency.enabled=true")
+@Import(RecordedEvents.class)
+@TestPropertySource(properties = {
+        "stockflow.idempotency.enabled=true",
+        "PO_BUYER_COMPANY_NAME=Buyer test",
+        "PO_BUYER_COMPANY_ADDRESS=Company test address",
+        "PO_BUYER_CONTACT_NAME=Buyer contact",
+        "PO_BUYER_PHONE=0901234567",
+        "PO_BUYER_EMAIL=buyer@example.com",
+        "PO_RECEIVING_ADDRESS=Test warehouse"})
 class PurchaseOrderAmendmentIntegrationTest {
 
     private static final String SOFA = "SOFA-3S-GREY";   // no QC, no lot: a receipt of it is posted at once
@@ -70,17 +85,20 @@ class PurchaseOrderAmendmentIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ObjectMapper json;
+    @Autowired RecordedEvents.Recorder recorded;
+    @MockitoBean JavaMailSender mail;
 
     private UUID supplier;
     private String other;
 
     @BeforeEach
     void setUp() {
+        recorded.clear();
         supplier = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
-                    INSERT INTO procurement.suppliers (id, code, name, status, version, created_at)
-                    VALUES (?, ?, 'Amendment supplier', 'ACTIVE', 0, NOW())""",
+                    INSERT INTO procurement.suppliers (id, code, name, status, email, version, created_at)
+                    VALUES (?, ?, 'Amendment supplier', 'ACTIVE', 'supplier@example.com', 0, NOW())""",
                     supplier, "AMD-" + supplier.toString().substring(24).toUpperCase());
             other = ReferenceRows.approvedProduct(entityManager).sku();
         });
@@ -561,6 +579,45 @@ class PurchaseOrderAmendmentIntegrationTest {
         assertThat(jdbc.queryForList("""
                 SELECT action FROM procurement.purchase_order_events WHERE po_id = ? AND action IN ('WITHDRAWN', 'CANCELLED')
                  ORDER BY created_at, id""", String.class, po)).containsExactly("WITHDRAWN", "CANCELLED");
+    }
+
+    // ------------------------------------------------------------------ telling the supplier
+
+    @Test
+    @DisplayName("an approved amendment of a confirmed order is sent to the supplier under its own revision reference: "
+            + "the order as amended without the removed line, what changed, and the answer is awaited again")
+    void approvedAmendmentOfConfirmedOrderIsSentToSupplier() throws Exception {
+        UUID po = confirmedOrder();
+
+        amend(po, buyer(personWithLimits(1_000_000)), amendment(po, EXPECTED, "Drop the second line",
+                lineOf(po, SOFA), 8)).andExpect(status().isOk());
+
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).singleElement().satisfies(sent -> {
+            assertThat(sent.amendmentRevisionNo()).isEqualTo(1);
+            assertThat(sent.amendment()).isTrue();
+            assertThat(sent.operationReference()).isEqualTo("purchase-order:" + po + ":revision:1");
+            assertThat(sent.amendmentReason()).isEqualTo("Drop the second line");
+            assertThat(sent.recipient()).isEqualTo("supplier@example.com");
+            assertThat(sent.lines()).extracting(PurchaseOrderSent.Line::sku, PurchaseOrderSent.Line::quantity)
+                    .containsExactly(org.assertj.core.groups.Tuple.tuple(SOFA, 8));
+            assertThat(sent.totalAmount()).isEqualByComparingTo("400000");
+            assertThat(sent.changes()).extracting(PurchaseOrderSent.Change::field)
+                    .containsExactlyInAnyOrder("quantity", "removed");
+        });
+        assertThat(row(po)).containsEntry("supplier_confirmation_status", "PENDING")
+                .containsEntry("supplier_reference", null);
+    }
+
+    @Test
+    @DisplayName("an amendment of an order that was only approved sends nothing: the supplier has not seen it, and "
+            + "confirming it later sends the current content")
+    void amendmentOfApprovedOrderSendsNothing() throws Exception {
+        UUID po = approvedOrder();
+
+        amend(po, buyer(personWithLimits(1_000_000)), lessOfBoth(po)).andExpect(status().isOk());
+
+        assertThat(row(po).get("pending_revision_id")).isNull();
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).isEmpty();
     }
 
     // ------------------------------------------------------------------ permissions

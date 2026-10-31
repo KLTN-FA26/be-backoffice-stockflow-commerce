@@ -133,6 +133,23 @@ class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional(readOnly = true)
+    public Map<UUID, String> purchaseOrderAmendmentStatuses(Collection<UUID> ids) {
+        if (ids.isEmpty()) return Map.of();
+        var result = new HashMap<UUID, String>();
+        for (var row : logs.amendmentStatuses(ids.stream().map(UUID::toString).toList())) {
+            result.put(
+                    UUID.fromString(row.getReference()),
+                    switch (row.getStatus()) {
+                        case "SENT" -> "DELIVERED";
+                        case "QUEUED" -> "QUEUED";
+                        default -> row.getTerminal() ? "FAILED" : "RETRYING";
+                    });
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public PageResponse<DeliveryAttemptSummary> purchaseOrderDeliveries(
             UUID purchaseOrderId, int page, int size) {
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id"));

@@ -111,7 +111,7 @@ class ProcurementServiceImpl implements ProcurementService {
     private final ApplicationEventPublisher events;
     private final NotificationService notifications;
     private final PoDeliveryDecisionRepository deliveryDecisions;
-    private final PoCommunicationProfile communication;
+    private final PoDeliveryContent content;
     private final ProductService products;
     private final InventoryService inventory;
     private final InventoryControlService inventoryControl;
@@ -124,7 +124,7 @@ class ProcurementServiceImpl implements ProcurementService {
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
                            ApplicationEventPublisher events, NotificationService notifications,
-                           PoDeliveryDecisionRepository deliveryDecisions, PoCommunicationProfile communication,
+                           PoDeliveryDecisionRepository deliveryDecisions, PoDeliveryContent content,
                            ProductService products, InventoryService inventory,
                            InventoryControlService inventoryControl, WarehouseService warehouses,
                            CurrentUserProvider users, SupplierItemRepository supplierItems,
@@ -137,7 +137,7 @@ class ProcurementServiceImpl implements ProcurementService {
         this.events = events;
         this.notifications = notifications;
         this.deliveryDecisions = deliveryDecisions;
-        this.communication = communication;
+        this.content = content;
         this.products = products;
         this.inventory = inventory;
         this.inventoryControl = inventoryControl;
@@ -464,39 +464,19 @@ class ProcurementServiceImpl implements ProcurementService {
 
     private void publishDelivery(PurchaseOrder saved, boolean recovery, LocalDate previousDate, String reason,
                                  boolean reconciled, boolean acknowledgePastDue) {
-        var supplier = suppliers.findById(saved.supplierId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND,
-                        "No supplier with id " + saved.supplierId()))
-                .details();
-        String recipient = supplier.communicationChannel() == SupplierCommunicationChannel.EMAIL
-                ? supplier.email() : supplier.apiEndpoint();
-        if (supplier.status() != SupplierStatus.ACTIVE || recipient == null || recipient.isBlank()) {
-            throw new BusinessException(ErrorCode.CONFLICT, "An active supplier with a delivery contact is required");
-        }
-        notifications.validateSupplierDelivery(supplier.communicationChannel().name(), recipient);
+        var target = content.target(saved.supplierId());
         int generation = notifications.prepareSupplierDelivery(saved.id().value(), recovery);
         deliveryDecisions.record(saved.id().value(), generation, previousDate, saved.expectedAt(), reason, reconciled,
-                acknowledgePastDue, supplier.communicationChannel().name(), recipient);
+                acknowledgePastDue, target.channel(), target.recipient());
         var previous = deliveryDecisions.latestSnapshot(saved.id().value());
-        var buyer = previous.map(PurchaseOrderSent::buyer).orElseGet(communication::requireBuyer);
-        var lines = previous.map(PurchaseOrderSent::lines).orElseGet(() -> saved.lines().stream()
-                .map(line -> new PurchaseOrderSent.Line(line.sku().code(), description(line), line.quantityOrdered(),
-                        line.unitPrice().amount()))
-                .toList());
+        var buyer = content.buyer(previous);
+        var lines = previous.map(PurchaseOrderSent::lines).orElseGet(() -> content.lines(saved));
         var event = new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
-                supplier.communicationChannel().name(), recipient, saved.totalAmount().amount(),
+                target.channel(), target.recipient(), saved.totalAmount().amount(),
                 saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays(), lines, generation,
                 buyer, false, null);
         deliveryDecisions.snapshot(event);
         events.publishEvent(event);
-    }
-
-    private String description(PoLine line) {
-        if (line.description() != null && !line.description().isBlank()) return line.description().trim();
-        return products.nameForSku(line.sku().code())
-                .filter(name -> !name.isBlank())
-                .orElseThrow(() -> new BusinessException(ErrorCode.PO_LINE_DESCRIPTION_REQUIRED,
-                        "Missing product description for SKU " + line.sku().code()));
     }
 
     @Override

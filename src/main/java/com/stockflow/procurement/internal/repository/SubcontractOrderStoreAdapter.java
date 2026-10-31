@@ -227,6 +227,14 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                                subtotal = t.subtotal, tax_total = t.tax,
                                total_amount = t.subtotal - p.discount_total + t.tax + p.shipping_fee,
                                status = CASE WHEN p.status = 'RECEIVED' THEN 'PARTIALLY_RECEIVED' ELSE p.status END,
+                               supplier_confirmation_status = CASE WHEN p.supplier_confirmation_status
+                                       IN ('PENDING', 'CONFIRMED') THEN 'PENDING' ELSE p.supplier_confirmation_status END,
+                               supplier_responded_at = CASE WHEN p.supplier_confirmation_status
+                                       IN ('PENDING', 'CONFIRMED') THEN NULL ELSE p.supplier_responded_at END,
+                               supplier_reference = CASE WHEN p.supplier_confirmation_status
+                                       IN ('PENDING', 'CONFIRMED') THEN NULL ELSE p.supplier_reference END,
+                               supplier_response_note = CASE WHEN p.supplier_confirmation_status
+                                       IN ('PENDING', 'CONFIRMED') THEN NULL ELSE p.supplier_response_note END,
                                version = p.version + 1, last_modified_at = NOW()
                           FROM (SELECT SUM(line_subtotal) AS subtotal, SUM(line_tax) AS tax
                                   FROM procurement.purchase_order_lines WHERE po_id = :po AND status <> 'WITHDRAWN') t

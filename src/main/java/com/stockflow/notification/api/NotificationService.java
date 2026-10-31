@@ -23,6 +23,12 @@ public interface NotificationService {
 
     Map<UUID, String> purchaseOrderCancellationStatuses(Collection<UUID> ids);
 
+    /**
+     * The delivery state of the latest notice of an approved amendment, per order: {@code QUEUED}, {@code DELIVERED},
+     * {@code RETRYING} or {@code FAILED}. An order that has none is absent.
+     */
+    Map<UUID, String> purchaseOrderAmendmentStatuses(Collection<UUID> ids);
+
     PageResponse<DeliveryAttemptSummary> purchaseOrderDeliveries(
             UUID purchaseOrderId, int page, int size);
 
