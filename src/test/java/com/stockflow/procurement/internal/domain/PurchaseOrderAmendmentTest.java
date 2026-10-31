@@ -279,4 +279,22 @@ class PurchaseOrderAmendmentTest {
         assertThat(po.pendingRevisionId()).isNull();
         assertCode(po::dropAmendment, ErrorCode.PO_AMENDMENT_NOT_PENDING);
     }
+
+    @Test
+    void aLineAnEarlierAmendmentRemovedNoLongerCounts() {
+        // As the adapter loads an order after an approved amendment removed line 2: still there, CANCELLED.
+        var removedBefore = new PoLine(LINE_2, 2, UUID.randomUUID(), new Sku("CUP-16OZ"), "EACH", "CUP-16OZ", 5, 0,
+                Money.vnd(2000), BigDecimal.ZERO, PoLineStatus.CANCELLED);
+        var po = order(PurchaseOrder.Type.STANDARD, PurchaseOrderStatus.CONFIRMED, SupplierConfirmationStatus.PENDING,
+                null, List.of(line(LINE_1, 1, "CUP-12OZ", 10, 0, 1000), removedBefore));
+
+        assertThat(po.totalAmount().amount()).as("only line 1 is ordered").isEqualByComparingTo("10000");
+        var proposal = po.proposeAmendment(request(keep(LINE_1, 8)));
+        assertThat(proposal.removed()).as("not removed a second time").isEmpty();
+        assertThat(proposal.changes()).doesNotContainKey("line2.removed")
+                .containsEntry("totalAmountBefore", po.totalAmount().amount().toPlainString());
+        assertThatThrownBy(() -> po.proposeAmendment(request(keep(LINE_1, 8), keep(LINE_2, 5))))
+                .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.fieldErrors())
+                        .extracting(FieldError::field).containsExactly("lines[1].lineId"));
+    }
 }

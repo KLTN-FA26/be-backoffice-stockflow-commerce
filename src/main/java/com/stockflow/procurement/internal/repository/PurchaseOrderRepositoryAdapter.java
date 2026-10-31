@@ -231,6 +231,27 @@ class PurchaseOrderRepositoryAdapter
 
     @Override
     public UUID recordRevision(PurchaseOrder order, long revisionNo, UUID actorId, String changeSummary) {
+        UUID revisionId = insertRevision(order, revisionNo, actorId,
+                revisionNo == 0 ? null : changeSummary == null ? "Resubmitted" : truncate(changeSummary, 500),
+                order.expectedAt(), order.note(), order.subtotal(), order.taxTotal(), order.totalAmount(), "{}");
+        for (PoLine line : order.lines()) {
+            insertLineRevision(revisionId, line);
+        }
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_order_lines SET po_revision_id = :revision
+                         WHERE po_id = :po AND status <> 'WITHDRAWN'""")
+                .setParameter("revision", revisionId)
+                .setParameter("po", order.id().value())
+                .executeUpdate();
+        return revisionId;
+    }
+
+    /**
+     * The revision row: {@code snapshot_header} holds the header as the revision states it, plus {@code extraHeader}
+     * (a JSON object, {@code "{}"} for nothing more) merged in.
+     */
+    private UUID insertRevision(PurchaseOrder order, long revisionNo, UUID actorId, String summary, LocalDate expectedAt,
+                                String note, Money subtotal, Money taxTotal, Money totalAmount, String extraHeader) {
         UUID revisionId = Identifiers.newId();
         entityManager.createNativeQuery("""
                         INSERT INTO procurement.purchase_order_revisions
@@ -241,7 +262,8 @@ class PurchaseOrderRepositoryAdapter
                                                    'currency', CAST(:currency AS text), 'orderDate', CAST(:orderDate AS text),
                                                    'expectedDate', CAST(:expected AS text), 'subtotal', CAST(:subtotal AS numeric),
                                                    'taxTotal', CAST(:tax AS numeric), 'totalAmount', CAST(:total AS numeric),
-                                                   'paymentTermDays', CAST(:terms AS integer), 'note', CAST(:note AS text)),
+                                                   'paymentTermDays', CAST(:terms AS integer), 'note', CAST(:note AS text))
+                                || CAST(:extra AS jsonb),
                                 :summary, NOW(), :actor, NOW(), 'procurement')""")
                 .setParameter("id", revisionId)
                 .setParameter("po", order.id().value())
@@ -251,50 +273,175 @@ class PurchaseOrderRepositoryAdapter
                 .setParameter("warehouse", order.warehouseId().toString())
                 .setParameter("currency", order.currency().getCurrencyCode())
                 .setParameter("orderDate", order.orderDate().toString())
-                .setParameter("expected", order.expectedAt() == null ? null : order.expectedAt().toString())
-                .setParameter("subtotal", order.subtotal().amount())
-                .setParameter("tax", order.taxTotal().amount())
-                .setParameter("total", order.totalAmount().amount())
+                .setParameter("expected", expectedAt == null ? null : expectedAt.toString())
+                .setParameter("subtotal", subtotal.amount())
+                .setParameter("tax", taxTotal.amount())
+                .setParameter("total", totalAmount.amount())
                 .setParameter("terms", order.paymentTermDays())
-                .setParameter("note", order.note())
-                .setParameter("summary", revisionNo == 0 ? null
-                        : changeSummary == null ? "Resubmitted" : truncate(changeSummary, 500))
+                .setParameter("note", note)
+                .setParameter("extra", extraHeader)
+                .setParameter("summary", summary)
                 .setParameter("actor", actorId)
                 .executeUpdate();
-        // A revision freezes the line, the unit it was ordered in included (V20261020000400, SCRUM-473): an
-        // amendment is matched against both, so a revision without them would refuse the next amendment of a
-        // line ordered in a carton.
-        for (PoLine line : order.lines()) {
-            entityManager.createNativeQuery("""
-                            INSERT INTO procurement.purchase_order_line_revisions
-                                   (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty, unit_price,
-                                    tax_rate, discount_rate, line_subtotal, line_discount_amount, line_net, line_tax,
-                                    line_total, note, uom_conversion_id, unit_qty)
-                            SELECT :id, :line, :revision, :item, :uom, :qty, :price, :taxRate, 0, :subtotal, 0,
-                                   :subtotal, :tax, :total, :note, CAST(:unit AS uuid), CAST(:unitQty AS integer)""")
-                    .setParameter("unit", line.packingUnit() == null ? null : line.packingUnit().uomConversionId())
-                    .setParameter("unitQty", line.packingUnit() == null ? null : line.packingUnit().count())
-                    .setParameter("id", Identifiers.newId())
-                    .setParameter("line", line.id())
-                    .setParameter("revision", revisionId)
-                    .setParameter("item", line.inventoryItemId())
-                    .setParameter("uom", line.uom())
-                    .setParameter("qty", BigDecimal.valueOf(line.quantityOrdered()))
-                    .setParameter("price", line.unitPrice().amount())
-                    .setParameter("taxRate", line.taxRate())
-                    .setParameter("subtotal", line.subtotal())
-                    .setParameter("tax", line.tax())
-                    .setParameter("total", line.total())
-                    .setParameter("note", line.description())
-                    .executeUpdate();
-        }
-        entityManager.createNativeQuery("""
-                        UPDATE procurement.purchase_order_lines SET po_revision_id = :revision
-                         WHERE po_id = :po AND status <> 'WITHDRAWN'""")
-                .setParameter("revision", revisionId)
-                .setParameter("po", order.id().value())
-                .executeUpdate();
         return revisionId;
+    }
+
+    /**
+     * A revision freezes the line, the unit it was ordered in included (V20261020000400, SCRUM-473): an amendment is
+     * matched against both, so a revision without them would refuse the next amendment of a line ordered in a carton.
+     */
+    private void insertLineRevision(UUID revisionId, PoLine line) {
+        entityManager.createNativeQuery("""
+                        INSERT INTO procurement.purchase_order_line_revisions
+                               (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty, unit_price,
+                                tax_rate, discount_rate, line_subtotal, line_discount_amount, line_net, line_tax,
+                                line_total, note, uom_conversion_id, unit_qty)
+                        SELECT :id, :line, :revision, :item, :uom, :qty, :price, :taxRate, 0, :subtotal, 0,
+                               :subtotal, :tax, :total, :note, CAST(:unit AS uuid), CAST(:unitQty AS integer)""")
+                .setParameter("unit", line.packingUnit() == null ? null : line.packingUnit().uomConversionId())
+                .setParameter("unitQty", line.packingUnit() == null ? null : line.packingUnit().count())
+                .setParameter("id", Identifiers.newId())
+                .setParameter("line", line.id())
+                .setParameter("revision", revisionId)
+                .setParameter("item", line.inventoryItemId())
+                .setParameter("uom", line.uom())
+                .setParameter("qty", BigDecimal.valueOf(line.quantityOrdered()))
+                .setParameter("price", line.unitPrice().amount())
+                .setParameter("taxRate", line.taxRate())
+                .setParameter("subtotal", line.subtotal())
+                .setParameter("tax", line.tax())
+                .setParameter("total", line.total())
+                .setParameter("note", line.description())
+                .executeUpdate();
+    }
+
+    // ------------------------------------------------------------------ amendments (SCRUM-117)
+
+    /**
+     * Native SQL, like {@link #recordRevision}: revisions and their lines are append-only rows written once, never
+     * read back through JPA.
+     */
+    @Override
+    public UUID recordAmendment(PurchaseOrder order, long revisionNo, UUID actorId,
+                                PurchaseOrder.ProposedAmendment proposal) {
+        if (revisionNo < 1) {
+            throw new IllegalArgumentException("Revision 0 is the first submission, never an amendment");
+        }
+        UUID revisionId = insertRevision(order, revisionNo, actorId, truncate(proposal.reason(), 500),
+                proposal.expectedAt(), proposal.note(), proposal.subtotal(), proposal.taxTotal(),
+                proposal.totalAmount(),
+                "{\"previousTotalAmount\":" + order.totalAmount().amount().toPlainString() + "}");
+        proposal.kept().forEach(line -> insertLineRevision(revisionId, line.after()));
+        return revisionId;
+    }
+
+    @Override
+    public Optional<PendingAmendment> pendingAmendment(PurchaseOrderId id) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT r.id, r.revision_no, r.changed_by, r.changed_at, r.change_summary,
+                               (SELECT COALESCE(SUM(lr.line_total), 0) FROM procurement.purchase_order_line_revisions lr
+                                 WHERE lr.po_revision_id = r.id)
+                          FROM procurement.purchase_orders p
+                          JOIN procurement.purchase_order_revisions r ON r.id = p.pending_revision_id
+                         WHERE p.id = :po AND r.kind = 'AMENDMENT' AND p.status <> 'PENDING_APPROVAL'""")
+                .setParameter("po", id.value())
+                .getResultList();
+        return rows.stream().findFirst().map(r -> new PendingAmendment((UUID) r[0], ((Number) r[1]).longValue(),
+                (UUID) r[2], NativeValues.instant(r[3]), (String) r[4], (BigDecimal) r[5]));
+    }
+
+    /**
+     * SQL rather than the entities: a line's content is not editable through {@link PoLineJpaEntity} once the order
+     * left DRAFT, its {@code po_revision_id} is not mapped at all, and the line guard accepts the new content only in
+     * the UPDATE that moves {@code po_revision_id} to the revision that froze it - one statement per concern, over
+     * every line at once. The pending pointer is checked in the header statement, which runs last: a revision that is
+     * not the one waiting fails it, and the exception rolls the line statements back with the transaction.
+     */
+    @Override
+    public void applyAmendment(PurchaseOrderId id, UUID revisionId, long revisionNo) {
+        entityManager.flush();
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_order_lines l
+                           SET ordered_qty = lr.ordered_qty, unit_qty = lr.unit_qty, unit_price = lr.unit_price,
+                               tax_rate = lr.tax_rate, note = lr.note, line_subtotal = lr.line_subtotal,
+                               line_net = lr.line_net, line_tax = lr.line_tax, line_total = lr.line_total,
+                               po_revision_id = lr.po_revision_id, version = l.version + 1, last_modified_at = NOW()
+                          FROM procurement.purchase_order_line_revisions lr
+                         WHERE lr.po_revision_id = :revision AND lr.po_line_id = l.id AND l.po_id = :po""")
+                .setParameter("revision", revisionId)
+                .setParameter("po", id.value())
+                .executeUpdate();
+        // A removed line stays, CANCELLED: earlier revisions and the receipts' history still name it.
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_order_lines l
+                           SET status = 'CANCELLED', version = l.version + 1, last_modified_at = NOW()
+                         WHERE l.po_id = :po AND l.status NOT IN ('CANCELLED', 'WITHDRAWN')
+                           AND NOT EXISTS (SELECT 1 FROM procurement.purchase_order_line_revisions lr
+                                            WHERE lr.po_revision_id = :revision AND lr.po_line_id = l.id)""")
+                .setParameter("revision", revisionId)
+                .setParameter("po", id.value())
+                .executeUpdate();
+        int header = entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_orders p
+                           SET expected_date = CAST(r.snapshot_header ->> 'expectedDate' AS date),
+                               note = r.snapshot_header ->> 'note',
+                               subtotal = t.subtotal, tax_total = t.tax,
+                               total_amount = t.subtotal - p.discount_total + t.tax + p.shipping_fee,
+                               version = p.version + 1, last_modified_at = NOW()
+                          FROM procurement.purchase_order_revisions r,
+                               (SELECT COALESCE(SUM(line_subtotal), 0) AS subtotal, COALESCE(SUM(line_tax), 0) AS tax
+                                  FROM procurement.purchase_order_lines
+                                 WHERE po_id = :po AND status NOT IN ('CANCELLED', 'WITHDRAWN')) t
+                         WHERE p.id = :po AND p.pending_revision_id = :revision AND r.id = :revision
+                           AND r.po_id = p.id AND r.kind = 'AMENDMENT' AND r.revision_no = :no""")
+                .setParameter("revision", revisionId)
+                .setParameter("no", revisionNo)
+                .setParameter("po", id.value())
+                .executeUpdate();
+        if (header != 1) {
+            throw new IllegalStateException("Revision " + revisionId + " (" + revisionNo
+                    + ") is not the amendment waiting on purchase order " + id.value());
+        }
+        refresh(id);
+    }
+
+    @Override
+    public void dropAmendment(PurchaseOrderId id) {
+        entityManager.flush();
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_orders SET pending_revision_id = NULL, version = version + 1,
+                               last_modified_at = NOW() WHERE id = :po""")
+                .setParameter("po", id.value())
+                .executeUpdate();
+        refresh(id);
+    }
+
+    /** The SKU is the inventory item's, read through {@code inventory :: api} in one call, as {@link #toDomain} does. */
+    @Override
+    public List<RevisionLine> revisionLines(UUID revisionId) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT lr.po_line_id, l.line_no, lr.inventory_item_id, lr.ordered_qty, lr.unit_price,
+                               lr.tax_rate, lr.note
+                          FROM procurement.purchase_order_line_revisions lr
+                          JOIN procurement.purchase_order_lines l ON l.id = lr.po_line_id
+                         WHERE lr.po_revision_id = :revision
+                         ORDER BY l.line_no""")
+                .setParameter("revision", revisionId)
+                .getResultList();
+        Map<UUID, String> skus = inventory.skusOf(rows.stream().map(r -> (UUID) r[2]).collect(Collectors.toSet()));
+        return rows.stream().map(r -> new RevisionLine((UUID) r[0], ((Number) r[1]).intValue(),
+                skus.getOrDefault((UUID) r[2], "UNKNOWN"), ((BigDecimal) r[3]).intValueExact(), (BigDecimal) r[4],
+                (BigDecimal) r[5], (String) r[6])).toList();
+    }
+
+    /** The order and its lines as SQL left them, for whoever reads them through JPA later in the transaction. */
+    private void refresh(PurchaseOrderId id) {
+        jpa.findById(id.value()).ifPresent(order -> {
+            entityManager.refresh(order);
+            order.getLines().forEach(entityManager::refresh);
+        });
     }
 
     @Override

@@ -3,6 +3,7 @@ package com.stockflow.procurement.internal.domain;
 import com.stockflow.common.domain.AggregateRepository;
 import com.stockflow.common.domain.Money;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Currency;
@@ -93,4 +94,62 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
     /** As above, with facts for the timeline ({@code payload}): what a draft edit changed. */
     void recordEvent(PurchaseOrderId id, UUID revisionId, String action, UUID actorId, PurchaseOrderStatus from,
                      PurchaseOrderStatus to, String reason, Map<String, String> payload);
+
+    // ------------------------------------------------------------------ amendments (SCRUM-117)
+
+    /**
+     * Freezes an amendment as revision {@code revisionNo} (kind AMENDMENT): the header snapshot of the order as
+     * {@code proposal} would leave it - the keys of {@link #recordRevision} plus {@code previousTotalAmount} - and one
+     * line revision per kept line, with its proposed content and the packing unit it stays in; {@code change_summary}
+     * is the reason. The live lines are not touched: until it is approved, an amendment is a request, and what was
+     * ordered is still what receiving counts against. Returns the revision's id.
+     */
+    UUID recordAmendment(PurchaseOrder order, long revisionNo, UUID actorId, PurchaseOrder.ProposedAmendment proposal);
+
+    /**
+     * The amendment of an approved order that waits for a decision.
+     *
+     * @param requestedBy who asked for it: the approver must be someone else (four eyes)
+     * @param totalAmount what the order totals once it is approved, after tax: what an approval limit is held against
+     */
+    record PendingAmendment(UUID revisionId, long revisionNo, UUID requestedBy, Instant requestedAt, String reason,
+                            BigDecimal totalAmount) {
+    }
+
+    /**
+     * The amendment waiting on an approved order; empty when none waits. A resubmission of a rejected draft is a
+     * pending AMENDMENT revision too, but of an order still PENDING_APPROVAL, which is not an amendment of an approved
+     * order and is left out.
+     */
+    Optional<PendingAmendment> pendingAmendment(PurchaseOrderId id);
+
+    /**
+     * Writes an approved amendment's content into the order, in SQL: each kept line takes its line revision's quantity,
+     * unit count, price, tax rate, description and amounts in the same UPDATE that points it at the revision (the only
+     * shape {@code guard_po_line_content_change} accepts outside DRAFT); a live line the revision does not hold becomes
+     * CANCELLED; the header takes the revision's expected date and note, and totals over the lines still ordered.
+     * The order and its lines are refreshed afterwards, so a later JPA read sees what the SQL wrote.
+     *
+     * <p>The revision pointers, the revision number and the supplier's response are not written here: they are the
+     * aggregate's ({@link PurchaseOrder#applyApprovedAmendment}), which the caller applies to the order it reloads
+     * after this and saves.</p>
+     *
+     * @throws IllegalStateException when {@code revisionId} is not the AMENDMENT number {@code revisionNo} waiting on
+     *                               this order; nothing is written then, since the transaction rolls back
+     */
+    void applyAmendment(PurchaseOrderId id, UUID revisionId, long revisionNo);
+
+    /**
+     * Clears the pending amendment pointer in SQL, for a writer that holds no aggregate (receiving). The caller has
+     * the order locked, found the amendment with {@link #pendingAmendment}, and records the decision itself.
+     */
+    void dropAmendment(PurchaseOrderId id);
+
+    /** One line of a revision as it froze it; {@code description} is the line's note. */
+    record RevisionLine(UUID lineId, int lineNo, String sku, int quantityOrdered, BigDecimal unitPrice,
+                        BigDecimal taxRate, String description) {
+    }
+
+    /** The lines a revision froze, by line number. */
+    List<RevisionLine> revisionLines(UUID revisionId);
 }

@@ -388,7 +388,7 @@ public final class PurchaseOrder extends AggregateRoot {
         }
 
         Map<UUID, PoLine> current = new HashMap<>();
-        this.lines.forEach(line -> current.put(line.id(), line));
+        this.lines.stream().filter(this::stillOrdered).forEach(line -> current.put(line.id(), line));
         Set<UUID> named = new HashSet<>();
         for (int i = 0; i < wanted.size(); i++) {
             AmendmentLine line = wanted.get(i);
@@ -398,7 +398,8 @@ public final class PurchaseOrder extends AggregateRoot {
                 continue;
             }
             // A line already CANCELLED or WITHDRAWN is not a line of the order any more, so it is as unknown as a
-            // line of another order: the aggregate never loads it, and it is not in `current`.
+            // line of another order: a WITHDRAWN one is never loaded, and a CANCELLED one (an earlier amendment
+            // removed it) is left out of `current`.
             if (line.lineId() == null || !current.containsKey(line.lineId()) || !named.add(line.lineId())) {
                 errors.add(new FieldError(at + "lineId", "Line " + line.lineId() + " is not a live line of "
                         + poNumber + ", or is named twice", "UnknownLine"));
@@ -435,7 +436,8 @@ public final class PurchaseOrder extends AggregateRoot {
                     before.sku(), before.uom(), description, quantity, 0, price,
                     line.taxRate() == null ? before.taxRate() : line.taxRate(), before.status(), unit)));
         }
-        List<PoLine> removed = this.lines.stream().filter(line -> !named.contains(line.id())).toList();
+        List<PoLine> removed = this.lines.stream().filter(line -> current.containsKey(line.id())
+                && !named.contains(line.id())).toList();
 
         Money newSubtotal = new Money(kept.stream().map(l -> l.after().subtotal()).reduce(BigDecimal.ZERO,
                 BigDecimal::add), currency);
@@ -812,16 +814,29 @@ public final class PurchaseOrder extends AggregateRoot {
 
     // ------------------------------------------------------------------ amounts
 
+    /** Over the lines {@link #stillOrdered still ordered}: what an amendment removed is no longer paid for. */
     public Money subtotal() {
-        return new Money(lines.stream().map(PoLine::subtotal).reduce(BigDecimal.ZERO, BigDecimal::add), currency);
+        return new Money(lines.stream().filter(this::stillOrdered).map(PoLine::subtotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add), currency);
     }
 
     public Money taxTotal() {
-        return new Money(lines.stream().map(PoLine::tax).reduce(BigDecimal.ZERO, BigDecimal::add), currency);
+        return new Money(lines.stream().filter(this::stillOrdered).map(PoLine::tax)
+                .reduce(BigDecimal.ZERO, BigDecimal::add), currency);
     }
 
     public Money totalAmount() {
         return subtotal().plus(taxTotal());
+    }
+
+    /**
+     * Whether a line is still part of what is ordered. A line comes to the aggregate unless it was WITHDRAWN from a
+     * draft, so a CANCELLED one is either a line of a cancelled order - which keeps the total it had - or, in an
+     * order that is not cancelled, a line an approved amendment removed (SCRUM-117): no longer ordered, no longer
+     * counted, and not a line a later amendment can keep or remove again.
+     */
+    private boolean stillOrdered(PoLine line) {
+        return line.status() != PoLineStatus.CANCELLED || status == PurchaseOrderStatus.CANCELLED;
     }
 
     private void requireCanTransitionTo(PurchaseOrderStatus target) {

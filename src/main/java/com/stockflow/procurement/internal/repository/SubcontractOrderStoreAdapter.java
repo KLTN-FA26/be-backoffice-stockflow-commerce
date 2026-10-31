@@ -325,18 +325,8 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                 ((Number) r[6]).intValue(), ((Number) r[7]).intValue(), (BigDecimal) r[8], ((Number) r[9]).intValue(),
                 ((Number) r[10]).intValue(), ((Number) r[11]).intValue(), ((Number) r[12]).intValue(),
                 (BigDecimal) r[13], ((Number) r[14]).intValue(), ((Number) r[15]).intValue(), (BigDecimal) r[16],
-                (BigDecimal) r[17], (BigDecimal) r[18], (String) r[19], (BigDecimal) r[20], instant(r[21]),
-                (UUID) r[22], instant(r[23]), (UUID) r[24], (String) r[25]));
-    }
-
-    private static java.time.Instant instant(Object value) {
-        return switch (value) {
-            case null -> null;
-            case java.time.Instant i -> i;
-            case java.time.OffsetDateTime o -> o.toInstant();
-            case java.sql.Timestamp t -> t.toInstant();
-            default -> throw new IllegalStateException("Not a timestamp: " + value.getClass());
-        };
+                (BigDecimal) r[17], (BigDecimal) r[18], (String) r[19], (BigDecimal) r[20],
+                NativeValues.instant(r[21]), (UUID) r[22], NativeValues.instant(r[23]), (UUID) r[24], (String) r[25]));
     }
 
     @Override
