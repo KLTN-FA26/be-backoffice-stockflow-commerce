@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.PurchaseOrderSent;
+import com.stockflow.notification.api.NotificationService;
 import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.DemoData;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -30,6 +32,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +40,10 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -85,6 +92,7 @@ class PurchaseOrderAmendmentIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ObjectMapper json;
+    @Autowired NotificationService notifications;
     @Autowired RecordedEvents.Recorder recorded;
     @MockitoBean JavaMailSender mail;
 
@@ -618,6 +626,77 @@ class PurchaseOrderAmendmentIntegrationTest {
 
         assertThat(row(po).get("pending_revision_id")).isNull();
         assertThat(recorded.ofType(PurchaseOrderSent.class)).isEmpty();
+    }
+
+    // ------------------------------------------------------------------ resending
+
+    private void confirmThroughTheApi(UUID po) throws Exception {
+        call(ORDERS + po + "/confirmation", buyer(personWithLimits()), null).andExpect(status().isOk());
+    }
+
+    /** The order's own delivery failed for good: the transport refused it as invalid, which is not retried. */
+    private void deliveryFailsForGood(UUID po) throws Exception {
+        doThrow(new IllegalArgumentException("terminal transport error")).when(mail).send(any(SimpleMailMessage.class));
+        confirmThroughTheApi(po);
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(
+                notifications.purchaseOrderDeliveryStatuses(List.of(po))).containsEntry(po, "FAILED"));
+        doNothing().when(mail).send(any(SimpleMailMessage.class));
+    }
+
+    private ResultActions recover(UUID po) throws Exception {
+        return call(ORDERS + po + "/delivery-recovery", approver(personWithLimits()),
+                "{\"reason\":\"Reconciled with the provider\",\"reconciled\":true}");
+    }
+
+    @Test
+    @DisplayName("recovering a delivery after an amendment was approved resends the order as amended, not the stale "
+            + "quantities of the first send")
+    void recoveryAfterAmendmentSendsAmendedQuantities() throws Exception {
+        UUID po = approvedOrder();
+        deliveryFailsForGood(po);
+        amend(po, buyer(personWithLimits(1_000_000)), amendment(po, EXPECTED, "Fewer sofas", lineOf(po, SOFA), 8,
+                lineOf(po, other), 5)).andExpect(status().isOk());
+        recorded.clear();
+
+        recover(po).andExpect(status().isOk());
+
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).singleElement().satisfies(sent -> {
+            assertThat(sent.amendment()).isFalse();
+            assertThat(sent.deliveryGeneration()).isEqualTo(1);
+            assertThat(sent.lines()).extracting(PurchaseOrderSent.Line::quantity).containsExactlyInAnyOrder(8, 5);
+            assertThat(sent.totalAmount()).isEqualByComparingTo("900000");
+        });
+    }
+
+    @Test
+    @DisplayName("recovering a delivery of an order never amended resends the snapshot of the first send, as before")
+    void recoveryWithoutAmendmentResendsTheSnapshot() throws Exception {
+        UUID po = approvedOrder();
+        deliveryFailsForGood(po);
+        recorded.clear();
+
+        recover(po).andExpect(status().isOk());
+
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).singleElement().satisfies(sent -> {
+            assertThat(sent.deliveryGeneration()).isEqualTo(1);
+            assertThat(sent.lines()).extracting(PurchaseOrderSent.Line::quantity).containsExactlyInAnyOrder(10, 5);
+        });
+    }
+
+    @Test
+    @DisplayName("confirming an order whose line an amendment removed sends the lines still ordered only")
+    void confirmLeavesCancelledLinesOut() throws Exception {
+        UUID po = approvedOrder();
+        amend(po, buyer(personWithLimits(1_000_000)), amendment(po, EXPECTED, "Drop the second line",
+                lineOf(po, SOFA), 10)).andExpect(status().isOk());
+
+        confirmThroughTheApi(po);
+
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).singleElement().satisfies(sent -> {
+            assertThat(sent.amendment()).isFalse();
+            assertThat(sent.lines()).extracting(PurchaseOrderSent.Line::sku).containsExactly(SOFA);
+            assertThat(sent.totalAmount()).isEqualByComparingTo("500000");
+        });
     }
 
     // ------------------------------------------------------------------ permissions

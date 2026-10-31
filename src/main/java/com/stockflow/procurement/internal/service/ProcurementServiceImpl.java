@@ -470,7 +470,11 @@ class ProcurementServiceImpl implements ProcurementService {
                 acknowledgePastDue, target.channel(), target.recipient());
         var previous = deliveryDecisions.latestSnapshot(saved.id().value());
         var buyer = content.buyer(previous);
-        var lines = previous.map(PurchaseOrderSent::lines).orElseGet(() -> content.lines(saved));
+        // The snapshot is what the supplier was sent; it is resent only while the order is still that revision. An
+        // amendment approved since (SCRUM-117) changed the lines, and the supplier is owed the order as it stands.
+        boolean unchanged = previous.isPresent() && deliveryDecisions.confirmedRevisionId(saved.id().value())
+                .map(revision -> revision.equals(saved.activeRevisionId())).orElse(false);
+        var lines = unchanged ? previous.get().lines() : content.lines(saved);
         var event = new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
                 target.channel(), target.recipient(), saved.totalAmount().amount(),
                 saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays(), lines, generation,
