@@ -349,14 +349,14 @@ class PurchaseOrderHistoryIntegrationTest {
         call(ORDERS + po + "/submission", buyer, null).andExpect(status().isOk());
         call(ORDERS + po + "/approval", approver(personWithLimits()), null).andExpect(status().isOk());
 
+        // The raw bodies: a tree read by the mapper turns 11000000.00 into a double and loses the scale asserted here.
         String list = read(ORDERS + po + "/revisions", buyer).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        assertThat(list).doesNotContain("E+").doesNotContain("E7");
-        assertThat(json.readTree(list).path("data").get(0).path("totalAmount").decimalValue().toPlainString())
-                .isEqualTo("11000000.00");
-        JsonNode detail = data(read(ORDERS + po + "/revisions/0", buyer).andExpect(status().isOk()));
-        assertThat(detail.path("subtotal").decimalValue().toPlainString()).isEqualTo("11000000.00");
-        assertThat(detail.path("taxTotal").decimalValue().toPlainString()).isEqualTo("0.00");
+        assertThat(list).contains("\"totalAmount\":11000000.00").doesNotContain("E+");
+        String detail = read(ORDERS + po + "/revisions/0", buyer).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(detail).contains("\"subtotal\":11000000.00").contains("\"taxTotal\":0.00")
+                .contains("\"totalAmount\":11000000.00").doesNotContain("E+");
     }
 
     @Test
