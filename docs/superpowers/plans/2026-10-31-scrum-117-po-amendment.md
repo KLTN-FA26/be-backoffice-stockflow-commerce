@@ -40,7 +40,7 @@ below are the spec's).
    same response. Without: the second answers `PO_AMENDMENT_ALREADY_PENDING`. → Task 4.
 4. **A `PurchaseOrderSent` publication stored before this change** (no amendment fields) still deserializes and is
    delivered as before. → Task 6.
-5. **History of an order in a warehouse the caller is not assigned to.** Expect 404, the same as `findOne`. → Task 8.
+5. **History of an order in a warehouse the caller is not assigned to.** Expect 403 `OUT_OF_DATA_SCOPE`, the same as `findOne`. → Task 8.
 
 ---
 
@@ -408,7 +408,7 @@ below are the spec's).
   - `timelineNewestFirstWithPayloadAndNames` — page size 2 of 5 events; `actorName` filled; draft-edit payload as
     stored; a size of 500 → 400.
   - `orderResponseShowsPendingAmendmentAndNoticeStatus`.
-  - `historyOutsideWarehouseScopeIs404` — Review Focus 5: a warehouse-bound user of another warehouse gets 404 on
+  - `historyOutsideWarehouseScopeIsRefusedAsTheOrderIs` — Review Focus 5: a warehouse-bound user of another warehouse gets 404 on
     all three endpoints.
 
 - [ ] **Step 2: Run** `mvn test -Dtest=PurchaseOrderHistoryIntegrationTest` — expect FAIL.

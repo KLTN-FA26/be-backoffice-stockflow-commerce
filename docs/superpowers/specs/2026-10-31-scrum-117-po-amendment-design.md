@@ -115,7 +115,7 @@ In one transaction:
    - quantity 1–1,000,000; for a line whose quantity changes, MOQ and pack multiple (BR-08) as in `checkLines`;
    - a line whose quantity **increases** must still be purchasable and listed in the supplier's catalog (BR-01:
      `SKU_NOT_PURCHASABLE`, `SUPPLIER_ITEM_NOT_LISTED`). Lowering, repricing or removing a line of a discontinued
-     SKU stays possible (kltn-docs edge case: goods already ordered are still received);
+     SKU stays possible, and a decreased line whose SKU left the supplier catalog passes without any terms check (kltn-docs edge case: goods already ordered are still received);
    - unit price > 0, tax rate 0–100, expected date ≥ order date (a past date only warns, BR-06).
 4. `recordAmendment`: revision `AMENDMENT` n+1 with the header snapshot of the **proposed** order (same keys as
    `recordRevision`, plus `previousTotalAmount`) and one line revision per kept line with the proposed content
@@ -149,7 +149,9 @@ Response: the order (`PurchaseOrderResponse`) with its `pendingAmendment` (§9) 
    `CONFIRMED`, it becomes `PENDING` (response time, reference and note cleared; the previous answer is kept in the
    event payload). Status unchanged.
 6. Approval row `APPROVED`; event `APPROVED` (from = to = current status) with the new total.
-7. If the order had been sent (§8): the amended order goes to the supplier.
+7. If the order had been sent (§8): the amended order goes to the supplier. Approval fails (409, rolled back) when
+   the supplier has no delivery contact: the same rule as sending, and a supplier cannot leave ACTIVE while it has
+   open orders (BR-11), so the approver fixes the contact first.
 
 **Reject** — `POST /{id}/amendment/rejection` (`APPROVE`, existing): reason required; `pending_revision_id = NULL`;
 approval row and event `REJECTED`. The order keeps its active revision. A rejection makes later amendments of this
@@ -157,6 +159,10 @@ order ineligible for auto-approval (`hasBeenRejected`, SCRUM-124 rule 3).
 
 **Withdraw** — `POST /{id}/amendment/withdrawal` (`UPDATE`, new): reason required; anyone who may update the
 order, the requester included. Approval row and event `WITHDRAWN`.
+
+**Withdrawn by cancelling or closing** — `ProcurementServiceImpl.cancel` and `closeShort` (and force close) drop a
+waiting STANDARD amendment in the same transaction (decision `WITHDRAWN`, reason `Order cancelled` / `Order closed`):
+a pending pointer on a terminal order shows a decision nobody can make sensibly.
 
 **Withdrawn by receiving** — where `ReceivingPurchaseOrderAdapter` moves a STANDARD order out of `CONFIRMED`
 (the first receipt posted), in the same transaction and under the order lock receiving already holds: a pending
@@ -205,7 +211,8 @@ deserialize. `lines` carries the order as amended, `CANCELLED` lines left out.
   default bundles): the full order, the revision number, the reason, the before/after table. API channel:
   `type = "AMENDMENT"` with `revisionNo` and `changes`.
 - `NotificationService.purchaseOrderAmendmentStatuses(ids)` → `PurchaseOrderResponse.amendmentDeliveryStatus`
-  (latest amendment notice: `QUEUED` / `DELIVERED` / `RETRYING` / `FAILED`; absent when none).
+  (latest attempt of the highest revision: `DELIVERED` / `RETRYING` / `FAILED`; absent until the first attempt is
+  logged, so there is no `QUEUED`).
 - No recovery for a failed amendment notice in this round (§12). The supplier response is `PENDING` again, which
   is the cue to reach the supplier.
 
@@ -217,7 +224,7 @@ has been approved since the order was sent (the active revision differs from the
 ## 9. Reading the history
 
 New `PurchaseOrderHistoryController`, `procurement-purchase-orders:READ`, warehouse scope as `findOne`
-(another warehouse's order is a 404):
+(another warehouse's order answers what `findOne` answers: 403 `OUT_OF_DATA_SCOPE`):
 
 - `GET /api/v1/purchase-orders/{id}/revisions` — newest first: `revisionNo`, `purpose` (`SUBMISSION` when a
   `SUBMITTED` event names it, else `AMENDMENT`), `state` (`ACTIVE`, `PENDING`, `REJECTED`, `WITHDRAWN`,
