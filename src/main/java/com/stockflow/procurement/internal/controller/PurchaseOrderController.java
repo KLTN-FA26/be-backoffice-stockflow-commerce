@@ -23,6 +23,7 @@ import com.stockflow.procurement.internal.controller.dto.AmendPurchaseOrderReque
 import com.stockflow.procurement.internal.controller.dto.CancelPurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.CloseShortRequest;
 import com.stockflow.procurement.internal.controller.dto.CreatePurchaseOrderRequest;
+import com.stockflow.procurement.internal.controller.dto.PendingAmendmentResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderStatusCountResponse;
 import com.stockflow.procurement.internal.controller.dto.RecoverPurchaseOrderDeliveryRequest;
@@ -32,6 +33,7 @@ import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
 import com.stockflow.procurement.internal.controller.dto.UpdatePurchaseOrderRequest;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.service.PurchaseOrderAmendments;
+import com.stockflow.procurement.internal.service.PurchaseOrderHistory;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -52,6 +54,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Clock;
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -91,6 +94,7 @@ class PurchaseOrderController {
     private final com.stockflow.procurement.internal.service.SubcontractAmendments subcontractAmendments;
     private final com.stockflow.procurement.api.SubcontractPurchasing subcontracting;
     private final PurchaseOrderAmendments amendments;
+    private final PurchaseOrderHistory history;
 
     PurchaseOrderController(
             ProcurementService procurementService,
@@ -99,7 +103,8 @@ class PurchaseOrderController {
             Clock clock,
             com.stockflow.procurement.internal.service.SubcontractAmendments subcontractAmendments,
             com.stockflow.procurement.api.SubcontractPurchasing subcontracting,
-            PurchaseOrderAmendments amendments) {
+            PurchaseOrderAmendments amendments,
+            PurchaseOrderHistory history) {
         this.procurementService = procurementService;
         this.mapper = mapper;
         this.notifications = notifications;
@@ -107,6 +112,7 @@ class PurchaseOrderController {
         this.subcontractAmendments = subcontractAmendments;
         this.subcontracting = subcontracting;
         this.amendments = amendments;
+        this.history = history;
     }
 
     @PostMapping
@@ -179,7 +185,11 @@ class PurchaseOrderController {
                         result.items().stream()
                                 .map(PurchaseOrderSummary::purchaseOrderId)
                                 .toList());
-        return ApiResponse.ok(result.map(po -> response(po, statuses, cancellations)));
+        var ids = result.items().stream().map(PurchaseOrderSummary::purchaseOrderId).toList();
+        var amendmentStatuses = notifications.purchaseOrderAmendmentStatuses(ids);
+        var pending = pendingAmendments(ids);
+        return ApiResponse.ok(
+                result.map(po -> response(po, statuses, cancellations, amendmentStatuses, pending)));
     }
 
     @PostMapping("/{purchaseOrderId}/submission")
@@ -383,14 +393,39 @@ class PurchaseOrderController {
 
     private PurchaseOrderResponse toResponse(PurchaseOrderSummary po) {
         var statuses = notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()));
+        var ids = List.of(po.purchaseOrderId());
         return response(
                 po,
                 statuses,
-                notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId())));
+                notifications.purchaseOrderCancellationStatuses(ids),
+                notifications.purchaseOrderAmendmentStatuses(ids),
+                pendingAmendments(ids));
+    }
+
+    /** One query for the page's waiting amendments and one for their requesters' names. */
+    private Map<UUID, PendingAmendmentResponse> pendingAmendments(List<UUID> ids) {
+        var result = new HashMap<UUID, PendingAmendmentResponse>();
+        history.pendingAmendments(ids)
+                .forEach(
+                        (id, p) ->
+                                result.put(
+                                        id,
+                                        new PendingAmendmentResponse(
+                                                p.revisionNo(),
+                                                p.requestedBy(),
+                                                p.requestedByName(),
+                                                p.requestedAt(),
+                                                p.reason(),
+                                                p.newTotalAmount())));
+        return result;
     }
 
     private PurchaseOrderResponse response(
-            PurchaseOrderSummary po, Map<UUID, String> statuses, Map<UUID, String> cancellations) {
+            PurchaseOrderSummary po,
+            Map<UUID, String> statuses,
+            Map<UUID, String> cancellations,
+            Map<UUID, String> amendmentStatuses,
+            Map<UUID, PendingAmendmentResponse> pending) {
         var today = BusinessCalendar.date(clock.instant());
         var warnings =
                 po.expectedAt() != null
@@ -406,7 +441,13 @@ class PurchaseOrderController {
                                         && !"NOT_SENT".equals(po.supplierConfirmationStatus())
                                 ? "UNKNOWN"
                                 : "NOT_REQUIRED");
-        return mapper.toResponse(po, deliveryStatus(po, statuses), cancellation, warnings);
+        return mapper.toResponse(
+                po,
+                deliveryStatus(po, statuses),
+                cancellation,
+                amendmentStatuses.get(po.purchaseOrderId()),
+                pending.get(po.purchaseOrderId()),
+                warnings);
     }
 
     private static String deliveryStatus(PurchaseOrderSummary po, Map<UUID, String> statuses) {
