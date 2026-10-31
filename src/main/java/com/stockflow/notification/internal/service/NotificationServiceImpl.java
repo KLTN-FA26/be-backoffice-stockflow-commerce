@@ -141,7 +141,6 @@ class NotificationServiceImpl implements NotificationService {
                     UUID.fromString(row.getReference()),
                     switch (row.getStatus()) {
                         case "SENT" -> "DELIVERED";
-                        case "QUEUED" -> "QUEUED";
                         default -> row.getTerminal() ? "FAILED" : "RETRYING";
                     });
         }

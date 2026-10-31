@@ -1,5 +1,6 @@
 package com.stockflow.notification.internal.service;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.stockflow.contracts.CustomerActedOnQuote;
 import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.common.http.RestClientFactory;
@@ -266,7 +267,11 @@ class NotificationSender {
         mail.send(message);
     }
 
-    /** Internal recovery generations must not change the supplier's idempotent PO payload. */
+    /**
+     * Internal recovery generations must not change the supplier's idempotent PO payload. The amendment fields are
+     * omitted when empty (only those: the existing nulls stay as they were), so an order or a cancellation is posted as
+     * before SCRUM-117.
+     */
     private record SupplierPurchaseOrderMessage(
             UUID purchaseOrderId,
             String poNumber,
@@ -281,9 +286,9 @@ class NotificationSender {
             PurchaseOrderSent.Buyer buyer,
             String type,
             String cancellationReason,
-            Integer revisionNo,
-            String amendmentReason,
-            List<PurchaseOrderSent.Change> changes) {}
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) Integer revisionNo,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) String amendmentReason,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) List<PurchaseOrderSent.Change> changes) {}
 
     void send(UUID recipientId, String templateCode, String subject, String body) {
         send(recipientId, null, templateCode, subject, body);

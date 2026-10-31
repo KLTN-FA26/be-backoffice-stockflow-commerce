@@ -72,6 +72,25 @@ class PurchaseOrderAmendmentNoticeTest {
     }
 
     @Test
+    void failedAmendmentAttemptIsLoggedUnderTheAmendmentTemplate() {
+        var control = mock(PoDeliveryControlRepository.class);
+        var logs = mock(DeliveryLogJpaRepository.class);
+        var sender = mock(NotificationSender.class);
+        var event = amendment("EMAIL", "supplier@example.com");
+        when(control.lock(PO)).thenReturn(new PoDeliveryControlRepository.Control(0, false));
+        when(logs.tryLockDelivery(anyString())).thenReturn(true);
+        org.mockito.Mockito.doThrow(new IllegalArgumentException("invalid")).when(sender).sendPurchaseOrder(event);
+
+        new PurchaseOrderNotificationListener(sender, logs, Clock.systemUTC(), new DeliveryAttemptRecorder(logs),
+                control).on(event);
+
+        var logged = ArgumentCaptor.forClass(DeliveryLogJpaEntity.class);
+        verify(logs).saveAndFlush(logged.capture());
+        assertThat(logged.getValue().getStatus()).isEqualTo(DeliveryStatus.FAILED);
+        assertThat(logged.getValue().getTemplateCode()).isEqualTo("purchase-order.amended");
+    }
+
+    @Test
     void emailCarriesTheRevisionTheReasonAndTheChanges() {
         var mail = mock(JavaMailSender.class);
         var sender = new NotificationSender(mail, mock(RestClientFactory.class), "buyer@example.com", "");

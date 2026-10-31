@@ -87,6 +87,7 @@ class PurchaseOrderNotificationListener {
                     channel,
                     failure,
                     reference,
+                    event.templateCode(),
                     terminal,
                     event.deliveryGeneration());
             if (!terminal) throw failure;
