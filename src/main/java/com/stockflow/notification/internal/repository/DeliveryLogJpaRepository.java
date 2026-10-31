@@ -67,16 +67,22 @@ where c.cancellation_requested and 'purchase-order:' || c.purchase_order_id || '
             nativeQuery = true)
     List<LatestStatus> cancellationStatuses(Collection<String> references);
 
+    /** {@link LatestStatus} with the amendment revision the notice announced. */
+    interface AmendmentStatus extends LatestStatus {
+        int getRevision();
+    }
+
     /**
      * The latest delivery attempt of the highest revision among the amendment notices of each order
-     * ({@code purchase-order:{id}:revision:{n}}, SCRUM-117); {@code reference} is the order id. An order none of whose
-     * notices was attempted yet has no row.
+     * ({@code purchase-order:{id}:revision:{n}}, SCRUM-117); {@code reference} is the order id, {@code revision} the
+     * n. An order none of whose notices was attempted yet has no row.
      */
     @Query(
             value =
                     """
 select distinct on (split_part(operation_reference, ':', 2))
-       split_part(operation_reference, ':', 2) as reference, status, terminal
+       split_part(operation_reference, ':', 2) as reference, status, terminal,
+       cast(split_part(operation_reference, ':', 4) as integer) as revision
 from notification.delivery_log
 where operation_reference like 'purchase-order:%:revision:%'
   and split_part(operation_reference, ':', 2) in (:orderIds)
@@ -84,7 +90,7 @@ order by split_part(operation_reference, ':', 2),
          cast(split_part(operation_reference, ':', 4) as integer) desc, created_at desc, id desc
 """,
             nativeQuery = true)
-    List<LatestStatus> amendmentStatuses(Collection<String> orderIds);
+    List<AmendmentStatus> amendmentStatuses(Collection<String> orderIds);
 
     Page<DeliveryLogJpaEntity> findByOperationReferenceIn(
             Collection<String> references, Pageable pageable);

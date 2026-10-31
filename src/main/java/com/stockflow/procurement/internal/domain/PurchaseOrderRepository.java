@@ -152,4 +152,11 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
 
     /** The lines a revision froze, by line number. */
     List<RevisionLine> revisionLines(UUID revisionId);
+
+    /** The header fields an amendment may change, as a revision froze them in its {@code snapshot_header}. */
+    record RevisionHeader(java.time.LocalDate expectedDate, String note) {
+    }
+
+    /** The header a revision froze. */
+    RevisionHeader revisionHeader(UUID revisionId);
 }

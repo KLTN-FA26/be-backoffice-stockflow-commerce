@@ -720,4 +720,25 @@ class PurchaseOrderAmendmentIntegrationTest {
         withdraw(po, colleague, "Asked twice by mistake").andExpect(status().isOk());
         assertThat(row(po).get("pending_revision_id")).isNull();
     }
+
+    @Test
+    @DisplayName("cancelling a sent order after an amendment tells the supplier the lines ordered last, not those of the "
+            + "first send")
+    void cancellationAfterAmendmentCarriesTheAmendedLines() throws Exception {
+        UUID po = approvedOrder();
+        confirmThroughTheApi(po);
+        amend(po, buyer(personWithLimits(1_000_000)), amendment(po, EXPECTED, "Drop the second line",
+                lineOf(po, SOFA), 8)).andExpect(status().isOk());
+        recorded.clear();
+
+        call(ORDERS + po + "/cancellation", buyer(personWithLimits()), "{\"reason\":\"Customer order dropped\"}")
+                .andExpect(status().isOk());
+
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).filteredOn(PurchaseOrderSent::cancellation)
+                .singleElement().satisfies(sent -> {
+                    assertThat(sent.lines()).extracting(PurchaseOrderSent.Line::sku, PurchaseOrderSent.Line::quantity)
+                            .containsExactly(org.assertj.core.groups.Tuple.tuple(SOFA, 8));
+                    assertThat(sent.totalAmount()).isEqualByComparingTo("400000");
+                });
+    }
 }

@@ -430,4 +430,38 @@ class PurchaseOrderHistoryIntegrationTest {
         assertThat(revisionNo(list, 0).path("purpose").asText()).isEqualTo("SUBMISSION");
         assertThat(revisionNo(list, 0).path("state").asText()).isEqualTo("ACTIVE");
     }
+
+    @Test
+    @DisplayName("the amendment delivery status is that of the active revision's notice: a later amendment whose notice "
+            + "was not attempted yet shows none, not the previous one's")
+    void amendmentDeliveryStatusBelongsToTheActiveRevision() throws Exception {
+        String buyer = buyer(personWithLimits());
+        UUID po = approvedOrder(buyer);
+        amendToEight(po, buyer).andExpect(status().isOk());
+        call(ORDERS + po + "/amendment/approval", approver(personWithLimits()), null).andExpect(status().isOk());
+        noticeDelivered(po, 1);
+        read(ORDERS + po, buyer).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.amendmentDeliveryStatus").value("DELIVERED"));
+
+        String body = """
+                {"version":%d,"reason":"Seven after all","expectedDate":"%s",
+                 "lines":[{"lineId":"%s","quantityOrdered":7}]}""".formatted(version(po), EXPECTED.plusDays(3),
+                lineOf(po, SOFA));
+        call(ORDERS + po + "/amendments", buyer, body).andExpect(status().isOk());
+        call(ORDERS + po + "/amendment/approval", approver(personWithLimits()), null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.amendmentDeliveryStatus").doesNotExist());
+        read(ORDERS + po, buyer).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.amendmentDeliveryStatus").doesNotExist());
+    }
+
+    /** A delivered notice of amendment revision {@code revisionNo}, as the notification listener logs one. */
+    private void noticeDelivered(UUID po, int revisionNo) {
+        String reference = "purchase-order:" + po + ":revision:" + revisionNo;
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO notification.delivery_log (id, template_code, channel, recipient, status, sent_at,
+                       external_reference, operation_reference, terminal, delivery_generation, attempt_number,
+                       version, created_at)
+                VALUES (?, 'purchase-order.amended', 'EMAIL', 'supplier@example.com', 'SENT', NOW(), ?, ?, FALSE, 0,
+                        1, 0, NOW())""", Identifiers.newId(), reference, reference));
+    }
 }

@@ -66,4 +66,16 @@ class RevisionDiffTest {
                         org.assertj.core.groups.Tuple.tuple(1, "unitPrice"),
                         org.assertj.core.groups.Tuple.tuple(2, "quantity"));
     }
+
+    @Test
+    void headerChangesAreTheDateThenTheNoteWithBlankAsNone() {
+        var before = new PurchaseOrderRepository.RevisionHeader(java.time.LocalDate.of(2026, 11, 1), "  ");
+        var after = new PurchaseOrderRepository.RevisionHeader(java.time.LocalDate.of(2026, 11, 4), "Mornings only");
+
+        assertThat(RevisionDiff.header(before, after)).containsExactly(
+                new RevisionDiff.HeaderChange("expectedDate", "2026-11-01", "2026-11-04"),
+                new RevisionDiff.HeaderChange("note", null, "Mornings only"));
+        assertThat(RevisionDiff.header(after, new PurchaseOrderRepository.RevisionHeader(
+                java.time.LocalDate.of(2026, 11, 4), " Mornings only "))).as("trimmed alike").isEmpty();
+    }
 }

@@ -10,6 +10,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.procurement.internal.domain.PurchaseOrderRepository.RevisionHeader;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository.RevisionLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.RevisionDiff;
@@ -246,16 +247,10 @@ public class PurchaseOrderHistory {
         JsonNode was = snapshot(before);
         JsonNode now = snapshot(after);
         List<Change> changes = new ArrayList<>();
-        String oldDate = text(was, "expectedDate");
-        String newDate = text(now, "expectedDate");
-        if (!Objects.equals(oldDate, newDate)) {
-            changes.add(new Change("HEADER", null, null, "CHANGED", "expectedDate", oldDate, newDate));
-        }
-        String oldNote = blankToNull(text(was, "note"));
-        String newNote = blankToNull(text(now, "note"));
-        if (!Objects.equals(oldNote, newNote)) {
-            changes.add(new Change("HEADER", null, null, "CHANGED", "note", oldNote, newNote));
-        }
+        RevisionDiff.header(new RevisionHeader(date(was, "expectedDate"), text(was, "note")),
+                        new RevisionHeader(date(now, "expectedDate"), text(now, "note")))
+                .forEach(c -> changes.add(new Change("HEADER", null, null, "CHANGED", c.field(), c.before(),
+                        c.after())));
         BigDecimal oldTotal = before.totalAmount();
         BigDecimal newTotal = after.totalAmount();
         if (oldTotal == null || newTotal == null ? oldTotal != newTotal : oldTotal.compareTo(newTotal) != 0) {
@@ -310,9 +305,5 @@ public class PurchaseOrderHistory {
     private static LocalDate date(JsonNode node, String field) {
         String value = text(node, field);
         return value == null ? null : LocalDate.parse(value);
-    }
-
-    private static String blankToNull(String value) {
-        return value == null || value.isBlank() ? null : value.trim();
     }
 }

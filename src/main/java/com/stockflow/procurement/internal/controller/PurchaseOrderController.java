@@ -11,6 +11,7 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.notification.api.AmendmentDeliveryStatus;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.procurement.api.ListPurchaseOrdersQuery;
 import com.stockflow.procurement.api.ProcurementService;
@@ -424,7 +425,7 @@ class PurchaseOrderController {
             PurchaseOrderSummary po,
             Map<UUID, String> statuses,
             Map<UUID, String> cancellations,
-            Map<UUID, String> amendmentStatuses,
+            Map<UUID, AmendmentDeliveryStatus> amendmentStatuses,
             Map<UUID, PendingAmendmentResponse> pending) {
         var today = BusinessCalendar.date(clock.instant());
         var warnings =
@@ -445,9 +446,19 @@ class PurchaseOrderController {
                 po,
                 deliveryStatus(po, statuses),
                 cancellation,
-                amendmentStatuses.get(po.purchaseOrderId()),
+                amendmentDeliveryStatus(po, amendmentStatuses),
                 pending.get(po.purchaseOrderId()),
                 warnings);
+    }
+
+    /**
+     * The state of the notice of the amendment now active, or null: the newest notice attempted may announce an earlier
+     * revision when the latest approved one was not attempted yet, and its state is not this one's (SCRUM-117).
+     */
+    private static String amendmentDeliveryStatus(PurchaseOrderSummary po,
+                                                  Map<UUID, AmendmentDeliveryStatus> statuses) {
+        AmendmentDeliveryStatus status = statuses.get(po.purchaseOrderId());
+        return status != null && status.revisionNo() == po.revisionNo() ? status.status() : null;
     }
 
     private static String deliveryStatus(PurchaseOrderSummary po, Map<UUID, String> statuses) {

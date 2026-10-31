@@ -237,19 +237,39 @@ class NotificationSender {
         return event.cancellation() ? "CANCELLATION" : "PURCHASE_ORDER";
     }
 
-    /** What changed against the revision the supplier had, one line per change; a missing side reads as empty. */
+    /**
+     * What changed against the revision the supplier had, one line per change, in the supplier's words: a header
+     * change (no line) under its field's name, a line change with its line and SKU, a removed or added line as such.
+     * The event carries field codes, which the API channel passes on untouched; they become labels here only, and a
+     * code this deployment has no label for is written as it is.
+     */
     private static String changes(PurchaseOrderSent event, ResourceBundle messages) {
         return event.changes().stream()
-                .map(
-                        change ->
-                                messages.getString("po.mail.change")
-                                        .formatted(
-                                                change.lineNo(),
-                                                change.sku(),
-                                                change.field(),
-                                                change.before() == null ? "" : change.before(),
-                                                change.after() == null ? "" : change.after()))
+                .map(change -> change(change, messages))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private static String change(PurchaseOrderSent.Change change, ResourceBundle messages) {
+        String key = "po.mail.field." + change.field();
+        String label = messages.containsKey(key) ? messages.getString(key) : change.field();
+        if (change.lineNo() == null) {
+            return messages.getString("po.mail.change.header")
+                    .formatted(label, value(change.before(), messages), value(change.after(), messages));
+        }
+        return switch (change.field()) {
+            case "removed" -> messages.getString("po.mail.change.line")
+                    .formatted(change.lineNo(), change.sku(), label, value(change.before(), messages));
+            case "added" -> messages.getString("po.mail.change.line")
+                    .formatted(change.lineNo(), change.sku(), label, value(change.after(), messages));
+            default -> messages.getString("po.mail.change")
+                    .formatted(change.lineNo(), change.sku(), label, value(change.before(), messages),
+                            value(change.after(), messages));
+        };
+    }
+
+    /** A side that has no value - a note added or cleared - reads as such, not as a blank the reader may miss. */
+    private static String value(String value, ResourceBundle messages) {
+        return value == null || value.isBlank() ? messages.getString("po.mail.change.empty") : value;
     }
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);

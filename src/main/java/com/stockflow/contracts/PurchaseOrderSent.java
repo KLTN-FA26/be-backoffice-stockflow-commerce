@@ -48,8 +48,13 @@ public record PurchaseOrderSent(UUID purchaseOrderId, String poNumber, UUID supp
     public record Line(String sku, String description, int quantity, BigDecimal unitPrice) { }
     public record Buyer(String companyName, String companyAddress, String contactName,
             String phone, String email, String receivingAddress) { }
-    /** One line of an amendment against the revision the supplier had; {@code before} / {@code after} may be null. */
-    public record Change(int lineNo, String sku, String field, String before, String after) { }
+    /**
+     * One change of an amendment against the revision the supplier had; {@code before} / {@code after} may be null.
+     * A line change names its line and SKU, {@code field} being quantity, unitPrice, taxRate, description, removed or
+     * added; a header change ({@code expectedDate}, {@code note}) has neither. The field stays a code: a supplier API
+     * reads it, and the e-mail puts it into words.
+     */
+    public record Change(Integer lineNo, String sku, String field, String before, String after) { }
     public boolean amendment() { return amendmentRevisionNo != null; }
     public String operationReference() {
         if (amendment()) return "purchase-order:" + purchaseOrderId + ":revision:" + amendmentRevisionNo;

@@ -1,6 +1,7 @@
 package com.stockflow.notification;
 
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.notification.api.AmendmentDeliveryStatus;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.internal.domain.DeliveryStatus;
 import com.stockflow.notification.internal.domain.NotificationChannel;
@@ -19,7 +20,10 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** SCRUM-117: the amendment delivery state of an order is that of the latest attempt of its highest revision. */
+/**
+ * SCRUM-117: the amendment delivery state of an order is that of the latest attempt of its highest revision, and names
+ * that revision.
+ */
 @IntegrationTest
 @Import(PostgresContainer.class)
 class PurchaseOrderAmendmentStatusIntegrationTest {
@@ -46,7 +50,8 @@ class PurchaseOrderAmendmentStatusIntegrationTest {
         attempt(po, 2, DeliveryStatus.FAILED, true);
         attempt(po, 1, DeliveryStatus.SENT, false);   // written later, but revision 1 is not the newest notice
 
-        assertThat(notifications.purchaseOrderAmendmentStatuses(List.of(po))).containsEntry(po, "FAILED");
+        assertThat(notifications.purchaseOrderAmendmentStatuses(List.of(po)))
+                .containsEntry(po, new AmendmentDeliveryStatus(2, "FAILED"));
     }
 
     @Test
@@ -57,6 +62,6 @@ class PurchaseOrderAmendmentStatusIntegrationTest {
 
         var statuses = notifications.purchaseOrderAmendmentStatuses(List.of(sent, none));
 
-        assertThat(statuses).containsEntry(sent, "DELIVERED").doesNotContainKey(none);
+        assertThat(statuses).containsEntry(sent, new AmendmentDeliveryStatus(1, "DELIVERED")).doesNotContainKey(none);
     }
 }

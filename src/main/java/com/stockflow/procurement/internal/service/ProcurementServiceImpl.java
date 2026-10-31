@@ -453,6 +453,17 @@ class ProcurementServiceImpl implements ProcurementService {
         return summaryOf(order, false);
     }
 
+    /**
+     * Whether an amendment was approved since the order was sent (SCRUM-117): the active revision then differs from
+     * the one the CONFIRMED event names, and the supplier is owed the order as it stands rather than the snapshot of
+     * the first send - by a recovery and by a cancellation notice alike. An order with no such event (legacy) answers
+     * false and keeps its snapshot.
+     */
+    private boolean amendedSince(PurchaseOrder order) {
+        return deliveryDecisions.confirmedRevisionId(order.id().value())
+                .map(revision -> !revision.equals(order.activeRevisionId())).orElse(false);
+    }
+
     @Override
     @Transactional(readOnly = true)
     public PageResponse<PurchaseOrderDeliveryDecision> deliveryDecisions(UUID id, int page, int size) {
@@ -470,12 +481,8 @@ class ProcurementServiceImpl implements ProcurementService {
                 acknowledgePastDue, target.channel(), target.recipient());
         var previous = deliveryDecisions.latestSnapshot(saved.id().value());
         var buyer = content.buyer(previous);
-        // The snapshot is what the supplier was sent; it is resent unless an amendment approved since (SCRUM-117)
-        // changed the lines: the active revision then differs from the one the CONFIRMED event names, and the supplier
-        // is owed the order as it stands. An order with no such event (legacy) keeps resending its snapshot.
-        boolean amendedSince = deliveryDecisions.confirmedRevisionId(saved.id().value())
-                .map(revision -> !revision.equals(saved.activeRevisionId())).orElse(false);
-        var lines = previous.isPresent() && !amendedSince ? previous.get().lines() : content.lines(saved);
+        // The snapshot is what the supplier was sent; it is resent unless an amendment approved since changed the lines.
+        var lines = previous.isPresent() && !amendedSince(saved) ? previous.get().lines() : content.lines(saved);
         var event = new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
                 target.channel(), target.recipient(), saved.totalAmount().amount(),
                 saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays(), lines, generation,
@@ -519,6 +526,10 @@ class ProcurementServiceImpl implements ProcurementService {
         PurchaseOrderStatus from = order.status();
         order.requireCancellable(reason);
         AmendmentDrops.drop(purchaseOrders, order, userId, "WITHDRAWN", "Order cancelled");
+        // Read before cancel() settles every line CANCELLED: after an approved amendment the supplier is told what
+        // was ordered last, as a recovery would resend it, not the snapshot of the first send.
+        List<PurchaseOrderSent.Line> orderedLines = from == PurchaseOrderStatus.CONFIRMED && amendedSince(order)
+                ? content.lines(order) : null;
         if (order.activeRevisionId() == null && order.pendingRevisionId() == null) {
             long revisionNo = purchaseOrders.nextRevisionNo(order.id());
             order.freeze(purchaseOrders.recordRevision(order, revisionNo, userId, revisionNo == 0 ? null : "Cancelled"),
@@ -541,7 +552,8 @@ class ProcurementServiceImpl implements ProcurementService {
                             ? supplier.email() : supplier.apiEndpoint());
             events.publishEvent(new PurchaseOrderSent(purchaseOrderId, order.poNumber(), order.supplierId(), channel,
                     recipient, order.totalAmount().amount(), order.currency().getCurrencyCode(), order.expectedAt(),
-                    order.paymentTermDays(), previous.map(PurchaseOrderSent::lines).orElse(List.of()), 0,
+                    order.paymentTermDays(), orderedLines != null ? orderedLines
+                            : previous.map(PurchaseOrderSent::lines).orElse(List.of()), 0,
                     previous.map(PurchaseOrderSent::buyer).orElse(null), true, reason));
         }
         return summaryOf(order, false);

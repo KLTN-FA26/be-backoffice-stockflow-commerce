@@ -77,9 +77,10 @@ public record PurchaseOrderResponse(
                 String cancellationDeliveryStatus,
         @Schema(
                         description =
-                                "The notice of an approved amendment to a supplier that had the order: DELIVERED,"
-                                    + " RETRYING or FAILED; null until the first attempt is logged, and for an order"
-                                    + " nobody was told about")
+                                "The notice of the active amendment to a supplier that had the order: DELIVERED,"
+                                    + " RETRYING or FAILED; null until that notice's first attempt is logged (an"
+                                    + " earlier amendment's state is not shown), and for an order nobody was told"
+                                    + " about")
                 String amendmentDeliveryStatus,
         @Schema(description = "The amendment waiting for approval, or null") PendingAmendmentResponse pendingAmendment,
         @Schema(description = "Non-blocking business warnings, e.g. DELIVERY_DATE_IN_PAST (BR-06)")

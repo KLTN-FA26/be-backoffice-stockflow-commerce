@@ -1,5 +1,6 @@
 package com.stockflow.procurement.internal.domain;
 
+import com.stockflow.procurement.internal.domain.PurchaseOrderRepository.RevisionHeader;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository.RevisionLine;
 
 import java.math.BigDecimal;
@@ -11,7 +12,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * What differs between two revisions of an order, line by line: what a supplier is told when an amendment is
+ * What differs between two revisions of an order, line by line and in the header fields an amendment changes: what a supplier is told when an amendment is
  * approved (SCRUM-117), and what the revision history shows. Pure, so both read it the same way.
  *
  * <p>Lines are matched by their id, not by line number or SKU: a line keeps its id across revisions, and an amendment
@@ -21,6 +22,10 @@ public final class RevisionDiff {
 
     /** {@code field}: quantity, unitPrice, taxRate, description, removed or added. */
     public record LineChange(int lineNo, String sku, String field, String before, String after) {
+    }
+
+    /** {@code field}: expectedDate or note; a cleared note is a null {@code after}. */
+    public record HeaderChange(String field, String before, String after) {
     }
 
     private static final List<String> FIELD_ORDER =
@@ -74,6 +79,26 @@ public final class RevisionDiff {
         });
         changes.sort(Comparator.comparingInt(LineChange::lineNo)
                 .thenComparingInt(change -> FIELD_ORDER.indexOf(change.field())));
+        return List.copyOf(changes);
+    }
+
+    /**
+     * The header fields an amendment may change that differ between {@code base} and {@code target}: the expected
+     * date, then the note (blank and absent alike, compared trimmed). What the supplier is told and what the history
+     * shows, so the two never disagree on whether the date moved.
+     */
+    public static List<HeaderChange> header(RevisionHeader base, RevisionHeader target) {
+        List<HeaderChange> changes = new ArrayList<>();
+        String oldDate = base.expectedDate() == null ? null : base.expectedDate().toString();
+        String newDate = target.expectedDate() == null ? null : target.expectedDate().toString();
+        if (!java.util.Objects.equals(oldDate, newDate)) {
+            changes.add(new HeaderChange("expectedDate", oldDate, newDate));
+        }
+        String oldNote = blankToNull(base.note());
+        String newNote = blankToNull(target.note());
+        if (!java.util.Objects.equals(oldNote, newNote)) {
+            changes.add(new HeaderChange("note", oldNote, newNote));
+        }
         return List.copyOf(changes);
     }
 

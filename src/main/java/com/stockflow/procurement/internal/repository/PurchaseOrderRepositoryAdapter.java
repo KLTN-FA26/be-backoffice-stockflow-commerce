@@ -433,6 +433,16 @@ class PurchaseOrderRepositoryAdapter
                 (BigDecimal) r[5], (String) r[6])).toList();
     }
 
+    @Override
+    public RevisionHeader revisionHeader(UUID revisionId) {
+        Object[] row = (Object[]) entityManager.createNativeQuery("""
+                        SELECT snapshot_header ->> 'expectedDate', snapshot_header ->> 'note'
+                          FROM procurement.purchase_order_revisions WHERE id = :revision""")
+                .setParameter("revision", revisionId)
+                .getSingleResult();
+        return new RevisionHeader(row[0] == null ? null : java.time.LocalDate.parse((String) row[0]), (String) row[1]);
+    }
+
     /** The order and its lines as SQL left them, for whoever reads them through JPA later in the transaction. */
     private void refresh(PurchaseOrderId id) {
         jpa.findById(id.value()).ifPresent(order -> {

@@ -200,19 +200,28 @@ both the manual and the automatic approval.
 **Contract** `PurchaseOrderSent` gains `Integer amendmentRevisionNo` (null for the order itself and the
 cancellation), `String amendmentReason` and `List<Change> changes` (`lineNo`, `sku`, `field`, `before`, `after`),
 with the existing compatibility constructors kept so publications already stored in `event_publication` still
-deserialize. `lines` carries the order as amended, `CANCELLED` lines left out.
+deserialize. `lines` carries the order as amended, `CANCELLED` lines left out. `changes` lists the header changes
+first (`expectedDate`, `note`; `lineNo` and `sku` null), then the line changes, from the same `RevisionDiff` the
+history shows; `field` is a code on the event and on the API channel.
 
 - `operationReference()` = `purchase-order:{id}:revision:{n}` for an amendment — a reference of its own, so
   neither "already sent successfully" nor the supplier API's `Idempotency-Key` swallows it.
 - `templateCode()` = `purchase-order.amended`.
 - `PurchaseOrderNotificationListener` treats an amendment like a cancellation: not skipped for
   `suppressed` or for another delivery generation.
-- `NotificationSender`: e-mail keys `po.mail.amend.subject` / `po.mail.amend.body` / `po.mail.change` (vi and
-  default bundles): the full order, the revision number, the reason, the before/after table. API channel:
-  `type = "AMENDMENT"` with `revisionNo` and `changes`.
+- `NotificationSender`: e-mail keys `po.mail.amend.subject` / `po.mail.amend.body` / `po.mail.change` /
+  `po.mail.change.line` / `po.mail.change.header` and the field labels `po.mail.field.*` (vi and default bundles):
+  the full order, the revision number, the reason, the before/after table with the field codes put into words. API
+  channel: `type = "AMENDMENT"` with `revisionNo` and `changes`, codes as they are.
 - `NotificationService.purchaseOrderAmendmentStatuses(ids)` → `PurchaseOrderResponse.amendmentDeliveryStatus`
-  (latest attempt of the highest revision: `DELIVERED` / `RETRYING` / `FAILED`; absent until the first attempt is
-  logged, so there is no `QUEUED`).
+  (latest attempt of the highest revision attempted, with that revision: `DELIVERED` / `RETRYING` / `FAILED`; the
+  controller shows it only when that revision is the order's active one, so it is absent until the active
+  amendment's notice was first attempted and there is no `QUEUED`).
+- `NotificationService.supersedeSupplierDelivery(id, channel, recipient)`, called right before the notice is
+  published: an own delivery of the order that has not succeeded and is not suppressed or terminally failed gets
+  its generation advanced (the listener drops the older events) and the new generation closed by one terminal
+  attempt `SUPERSEDED_BY_AMENDMENT`, so the pre-amendment order cannot reach the supplier after the notice and a
+  recovery, which needs a terminal current generation, still resends the order as it stands.
 - No recovery for a failed amendment notice in this round (§12). The supplier response is `PENDING` again, which
   is the cue to reach the supplier.
 
@@ -226,10 +235,12 @@ has been approved since the order was sent (the active revision differs from the
 New `PurchaseOrderHistoryController`, `procurement-purchase-orders:READ`, warehouse scope as `findOne`
 (another warehouse's order answers what `findOne` answers: 403 `OUT_OF_DATA_SCOPE`):
 
-- `GET /api/v1/purchase-orders/{id}/revisions` — newest first: `revisionNo`, `purpose` (`SUBMISSION` when a
-  `SUBMITTED` event names it, else `AMENDMENT`), `state` (`ACTIVE`, `PENDING`, `REJECTED`, `WITHDRAWN`,
-  `SUPERSEDED`), `changedBy` (id and name), `changedAt`, `reason`, `totalAmount`, decision (`decidedBy`,
-  `decidedAt`, `decision`, `reason`, auto-approval limit when there was one).
+- `GET /api/v1/purchase-orders/{id}/revisions` — newest first: `revisionNo`, `purpose` (`SUBMISSION` for revision
+  0 or when a `SUBMITTED` event names it, else `AMENDMENT`), `state` (`ACTIVE`, `PENDING`, `REJECTED`, `WITHDRAWN`,
+  `SUPERSEDED`; `PENDING` only while the order can still decide it - a submission of a `PENDING_APPROVAL` order, an
+  amendment of an `APPROVED` / `CONFIRMED` / `PARTIALLY_RECEIVED` / `RECEIVED` one), `changedBy` (id and name),
+  `changedAt`, `reason`, `totalAmount`, decision (`decidedBy`, `decidedAt`, `decision`, `reason`, auto-approval
+  limit when there was one).
 - `GET /api/v1/purchase-orders/{id}/revisions/{revisionNo}` — the header snapshot and its lines (line no, SKU,
   description, unit, quantity, price, tax, amounts), and `changes` against the closest earlier **approved**
   revision (the immediately earlier one when none was approved): per line `CHANGED` with fields before/after,
@@ -238,7 +249,8 @@ New `PurchaseOrderHistoryController`, `procurement-purchase-orders:READ`, wareho
   from/to status, actor (id and name), reason, revision number, `payload` as stored, time. Size ≤ 100.
 
 `PurchaseOrderResponse` gains `pendingAmendment` (`revisionNo`, `requestedBy`, `requestedAt`, `reason`,
-`newTotalAmount`) and `amendmentDeliveryStatus`. Both are assembled in the controller next to the delivery
+`newTotalAmount`; only on an order in those four statuses - a `CANCELLED` or `CLOSED` order may keep a pointer
+nobody can decide any more) and `amendmentDeliveryStatus`. Both are assembled in the controller next to the delivery
 statuses, as the cancellation status is; `PurchaseOrderSummary` (in `procurement :: api`) does not change. Reads are plain JPQL/native projections in
 `internal/repository`, paged by the database; the actor names are fetched once per page through `identity :: api`
 (no N+1).

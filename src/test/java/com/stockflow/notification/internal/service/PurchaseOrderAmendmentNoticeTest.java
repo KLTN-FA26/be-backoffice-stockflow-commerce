@@ -47,7 +47,10 @@ class PurchaseOrderAmendmentNoticeTest {
                 "VND", LocalDate.of(2026, 10, 1), 30,
                 List.of(new PurchaseOrderSent.Line("CHAIR-1", "Chair", 2, BigDecimal.valueOf(80))), 0, BUYER, false,
                 null, 2, "Supplier can deliver less",
-                List.of(new PurchaseOrderSent.Change(1, "CHAIR-1", "quantity", "3", "2")));
+                List.of(new PurchaseOrderSent.Change(null, null, "expectedDate", "2026-09-25", "2026-10-01"),
+                        new PurchaseOrderSent.Change(null, null, "note", null, "Deliver mornings"),
+                        new PurchaseOrderSent.Change(1, "CHAIR-1", "quantity", "3", "2"),
+                        new PurchaseOrderSent.Change(2, "TABLE-1", "removed", "4", null)));
     }
 
     @Test
@@ -100,8 +103,12 @@ class PurchaseOrderAmendmentNoticeTest {
         var message = ArgumentCaptor.forClass(SimpleMailMessage.class);
         verify(mail).send(message.capture());
         assertThat(message.getValue().getSubject()).contains("PO-1", "sửa đổi", "bản 2");
-        assertThat(message.getValue().getText()).contains("Supplier can deliver less", "Dòng 1 CHAIR-1: quantity 3",
-                "→ 2", "Buyer Company", "CHAIR-1", "160 VND", "30 ngày");
+        // Field codes are put into words: the header changes too, and a removed line as such.
+        assertThat(message.getValue().getText()).contains("Supplier can deliver less",
+                "Ngày giao dự kiến: 2026-09-25 → 2026-10-01", "Ghi chú: (trống) → Deliver mornings",
+                "Dòng 1 CHAIR-1: Số lượng 3 → 2", "Dòng 2 TABLE-1: Bỏ dòng (số lượng 4)", "Buyer Company", "160 VND",
+                "30 ngày")
+                .doesNotContain("quantity 3", "removed", "expectedDate");
     }
 
     @Test
@@ -116,7 +123,11 @@ class PurchaseOrderAmendmentNoticeTest {
                 .andExpect(header("Idempotency-Key", "purchase-order:" + PO + ":revision:2"))
                 .andExpect(jsonPath("$.type").value("AMENDMENT"))
                 .andExpect(jsonPath("$.revisionNo").value(2))
-                .andExpect(jsonPath("$.changes[0].field").value("quantity"))
+                // The API keeps the codes: a supplier system reads them, not a person.
+                .andExpect(jsonPath("$.changes[0].field").value("expectedDate"))
+                .andExpect(jsonPath("$.changes[0].lineNo").doesNotExist())
+                .andExpect(jsonPath("$.changes[2].field").value("quantity"))
+                .andExpect(jsonPath("$.changes[2].lineNo").value(1))
                 .andRespond(withSuccess());
 
         sender.sendPurchaseOrder(amendment("API", "https://supplier.example.com/po"));
