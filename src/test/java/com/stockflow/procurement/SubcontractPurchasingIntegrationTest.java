@@ -228,6 +228,11 @@ class SubcontractPurchasingIntegrationTest {
                     assertThat(o.quantity()).isEqualTo(460);
                     assertThat(o.pendingQuantity()).isNull();
                 });
+        // Nothing waits any more: the same code as for a standard order's amendment (SCRUM-117).
+        assertThatThrownBy(() -> amendments.approveAmendment(created.purchaseOrderId(), approver))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.PO_AMENDMENT_NOT_PENDING);
+        assertThatThrownBy(() -> amendments.rejectAmendment(created.purchaseOrderId(), approver, "again"))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.PO_AMENDMENT_NOT_PENDING);
     }
 
     @Test

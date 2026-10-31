@@ -203,7 +203,8 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
     public SubcontractOrder approveAmendment(UUID purchaseOrderId, UUID approverId) {
         SubcontractOrderStore.Row order = lock(purchaseOrderId);
         SubcontractOrderStore.Amendment amendment = store.pendingAmendment(purchaseOrderId).orElseThrow(() ->
-                new BusinessException(ErrorCode.CONFLICT, "%s has no amendment waiting".formatted(order.poNumber())));
+                new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                        "%s has no amendment waiting".formatted(order.poNumber())));
         if (amendment.requestedBy() != null && amendment.requestedBy().equals(approverId)) {
             throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
                     "An amendment is approved by someone other than who asked for it");
@@ -230,7 +231,8 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         }
         SubcontractOrderStore.Row order = lock(purchaseOrderId);
         SubcontractOrderStore.Amendment amendment = store.pendingAmendment(purchaseOrderId).orElseThrow(() ->
-                new BusinessException(ErrorCode.CONFLICT, "%s has no amendment waiting".formatted(order.poNumber())));
+                new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                        "%s has no amendment waiting".formatted(order.poNumber())));
         store.dropAmendment(order, amendment, approverId, "REJECTED", reason.trim());
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
     }
