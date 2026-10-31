@@ -831,12 +831,20 @@ public final class PurchaseOrder extends AggregateRoot {
 
     /**
      * Whether a line is still part of what is ordered. A line comes to the aggregate unless it was WITHDRAWN from a
-     * draft, so a CANCELLED one is either a line of a cancelled order - which keeps the total it had - or, in an
-     * order that is not cancelled, a line an approved amendment removed (SCRUM-117): no longer ordered, no longer
-     * counted, and not a line a later amendment can keep or remove again.
+     * draft. A line an approved amendment removed (SCRUM-117) is not: no longer counted, and not a line a later
+     * amendment can keep or remove again. A cancelled order keeps the total it had when it was cancelled, so the lines
+     * its cancellation settled still count there - but not one an amendment had removed before.
+     *
+     * <p>Two signs, because neither covers every moment. In an order that is not cancelled, CANCELLED alone means an
+     * amendment removed the line; that holds even while an approval runs, before the order points at the new
+     * revision. Once the order is cancelled every line is CANCELLED, and only {@link PoLine#removedByAmendment}, read
+     * from the revision the line still points at, tells them apart.</p>
      */
     private boolean stillOrdered(PoLine line) {
-        return line.status() != PoLineStatus.CANCELLED || status == PurchaseOrderStatus.CANCELLED;
+        if (line.status() != PoLineStatus.CANCELLED) {
+            return true;
+        }
+        return status == PurchaseOrderStatus.CANCELLED && !line.removedByAmendment();
     }
 
     private void requireCanTransitionTo(PurchaseOrderStatus target) {

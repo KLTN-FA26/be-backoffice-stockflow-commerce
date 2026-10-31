@@ -297,4 +297,29 @@ class PurchaseOrderAmendmentTest {
                 .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.fieldErrors())
                         .extracting(FieldError::field).containsExactly("lines[1].lineId"));
     }
+
+    @Test
+    void cancellingAnAmendedOrderKeepsTheTotalItHad() {
+        // As loaded after an approved amendment removed line 2: CANCELLED, and flagged from the revision it points at.
+        var removed = new PoLine(LINE_2, 2, UUID.randomUUID(), new Sku("CUP-16OZ"), "EACH", "CUP-16OZ", 5, 0,
+                Money.vnd(2000), BigDecimal.ZERO, PoLineStatus.CANCELLED, null, true);
+        var po = order(PurchaseOrder.Type.STANDARD, PurchaseOrderStatus.CONFIRMED, SupplierConfirmationStatus.PENDING,
+                null, List.of(line(LINE_1, 1, "CUP-12OZ", 10, 0, 1000), removed));
+        var before = po.totalAmount();
+
+        po.cancel("Supplier closed the line");
+
+        assertThat(po.lines()).allSatisfy(line -> assertThat(line.status()).isEqualTo(PoLineStatus.CANCELLED));
+        assertThat(po.totalAmount().amount()).as("the removed line does not count again")
+                .isEqualByComparingTo(before.amount()).isEqualByComparingTo("10000");
+    }
+
+    @Test
+    void cancellingAnOrderNeverAmendedKeepsEveryLine() {
+        var po = confirmed(SupplierConfirmationStatus.PENDING);
+
+        po.cancel("Supplier closed the line");
+
+        assertThat(po.totalAmount().amount()).isEqualByComparingTo("20000");
+    }
 }

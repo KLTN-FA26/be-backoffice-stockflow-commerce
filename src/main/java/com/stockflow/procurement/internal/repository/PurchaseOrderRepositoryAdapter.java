@@ -243,6 +243,8 @@ class PurchaseOrderRepositoryAdapter
                 .setParameter("revision", revisionId)
                 .setParameter("po", order.id().value())
                 .executeUpdate();
+        // The lines' read-only po_revision_id, as the SQL left it: toDomain reads it (removedByAmendment).
+        jpa.findById(order.id().value()).ifPresent(entity -> entity.getLines().forEach(entityManager::refresh));
         return revisionId;
     }
 
@@ -694,7 +696,7 @@ class PurchaseOrderRepositoryAdapter
                 new Sku(skus.getOrDefault(l.getInventoryItemId(), "UNKNOWN")), l.getUom(), l.getDescription(),
                 l.getOrderedQuantity().intValueExact(), received.getOrDefault(l.getId(), 0),
                 new Money(l.getUnitPrice(), currency), l.getTaxRate(), l.getStatus(),
-                packingUnit(units.get(l.getId()), l.getUnitQuantity()))).toList();
+                packingUnit(units.get(l.getId()), l.getUnitQuantity()), removedByAmendment(e, l))).toList();
         return new PurchaseOrder(new PurchaseOrder.State(new PurchaseOrderId(e.getId()), e.getPoNumber(), e.getType(),
                 e.getProductionOrderId(), e.getSupplierId(), e.getWarehouseId(), e.getStatus(), currency, lines,
                 e.getOrderDate(), e.getExpectedAt(), e.getNote(), e.getPaymentTermDays(), e.getLeadTimeDays(),
@@ -704,6 +706,20 @@ class PurchaseOrderRepositoryAdapter
                 e.getSupplierConfirmationStatus(), e.getSupplierRespondedAt(), e.getSupplierReference(),
                 e.getSupplierResponseNote(), e.getVersion(), e.getCreatedAt(), e.getCreatedBy(), e.getLastModifiedAt(),
                 e.getLastModifiedBy()));
+    }
+
+    /**
+     * A CANCELLED line an approved amendment removed (SCRUM-117). An amendment points every line it keeps at its own
+     * revision and leaves a removed one at the revision before, so once the order points at the amendment, a cancelled
+     * line still at another revision - neither the active one nor one waiting - was removed by it, or by an earlier
+     * one. A line the order's cancellation settled points at the active revision (or at the pending one of an order
+     * cancelled while it waited for approval). No revision known (not frozen yet) is never a removal.
+     */
+    private static boolean removedByAmendment(PurchaseOrderJpaEntity order, PoLineJpaEntity line) {
+        return line.getStatus() == PoLineStatus.CANCELLED && line.getRevisionId() != null
+                && order.getActiveRevisionId() != null
+                && !line.getRevisionId().equals(order.getActiveRevisionId())
+                && !line.getRevisionId().equals(order.getPendingRevisionId());
     }
 
     /** Counted in by a confirmed receipt (not a draft, not a cancelled one). */

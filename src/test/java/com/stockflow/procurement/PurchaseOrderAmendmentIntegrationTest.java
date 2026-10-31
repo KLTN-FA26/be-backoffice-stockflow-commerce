@@ -523,6 +523,46 @@ class PurchaseOrderAmendmentIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("PO_AMENDMENT_NOT_PENDING"));
     }
 
+    // ------------------------------------------------------------------ ending the order
+
+    @Test
+    @DisplayName("cancelling an amended order keeps the total it had: the line the amendment removed does not count "
+            + "again once the cancellation settles every line")
+    void cancellingAnAmendedOrderKeepsItsTotal() throws Exception {
+        UUID po = approvedOrder();
+        amend(po, buyer(personWithLimits(1_000_000)), amendment(po, EXPECTED, "Only six sofas", lineOf(po, SOFA), 6))
+                .andExpect(status().isOk());
+        assertThat((BigDecimal) row(po).get("total_amount")).isEqualByComparingTo("300000");
+
+        call(ORDERS + po + "/cancellation", buyer(personWithLimits()), "{\"reason\":\"Customer order dropped\"}")
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"));
+
+        assertThat(row(po)).containsEntry("status", "CANCELLED");
+        assertThat((BigDecimal) row(po).get("total_amount")).isEqualByComparingTo("300000");
+    }
+
+    @Test
+    @DisplayName("cancelling an order withdraws the amendment waiting on it, by whoever cancels, before the status "
+            + "changes")
+    void cancellingWithdrawsPendingAmendment() throws Exception {
+        UUID po = approvedOrder();
+        amend(po, buyer(personWithLimits(100_000)), lessOfBoth(po)).andExpect(status().isOk());
+        UUID revision = (UUID) row(po).get("pending_revision_id");
+        UUID canceller = personWithLimits();
+
+        call(ORDERS + po + "/cancellation", buyer(canceller), "{\"reason\":\"Customer order dropped\"}")
+                .andExpect(status().isOk());
+
+        assertThat(row(po)).containsEntry("status", "CANCELLED").containsEntry("pending_revision_id", null);
+        assertThat(decisionsOf(revision)).singleElement().satisfies(d -> assertThat(d)
+                .containsEntry("decision", "WITHDRAWN").containsEntry("approver_id", canceller)
+                .containsEntry("reason", "Order cancelled"));
+        assertThat(eventsOf(revision)).containsExactly("REVISED", "WITHDRAWN");
+        assertThat(jdbc.queryForList("""
+                SELECT action FROM procurement.purchase_order_events WHERE po_id = ? AND action IN ('WITHDRAWN', 'CANCELLED')
+                 ORDER BY created_at, id""", String.class, po)).containsExactly("WITHDRAWN", "CANCELLED");
+    }
+
     // ------------------------------------------------------------------ permissions
 
     @Test

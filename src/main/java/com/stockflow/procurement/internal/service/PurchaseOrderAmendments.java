@@ -214,12 +214,10 @@ public class PurchaseOrderAmendments {
                     "A subcontract supplement of %s is decided as a subcontract amendment".formatted(order.poNumber()));
         }
         order.requirePendingAmendment();
-        PendingAmendment amendment = pending(order);
-        order.dropAmendment();
+        if (!AmendmentDrops.drop(purchaseOrders, order, actorId, decision, reason.trim())) {
+            throw notPending(order);
+        }
         purchaseOrders.save(order);
-        purchaseOrders.recordApproval(amendment.revisionId(), actorId, decision, reason.trim());
-        purchaseOrders.recordEvent(order.id(), amendment.revisionId(), decision, actorId, order.status(),
-                order.status(), reason);
         return summaryOf(order);
     }
 
@@ -228,9 +226,12 @@ public class PurchaseOrderAmendments {
      * then PENDING_APPROVAL), which is not an amendment and is decided by {@code approve} / {@code reject} of the order.
      */
     private PendingAmendment pending(PurchaseOrder order) {
-        return purchaseOrders.pendingAmendment(order.id()).orElseThrow(() -> new BusinessException(
-                ErrorCode.PO_AMENDMENT_NOT_PENDING,
-                "Purchase order %s has no amendment waiting for a decision".formatted(order.poNumber())));
+        return purchaseOrders.pendingAmendment(order.id()).orElseThrow(() -> notPending(order));
+    }
+
+    private static BusinessException notPending(PurchaseOrder order) {
+        return new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                "Purchase order %s has no amendment waiting for a decision".formatted(order.poNumber()));
     }
 
     /** D5: receiving is never blocked by an amendment; an amendment waits for receiving instead. */

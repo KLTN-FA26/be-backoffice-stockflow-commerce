@@ -518,7 +518,11 @@ class ProcurementServiceImpl implements ProcurementService {
 
     // ------------------------------------------------------------------ ending
 
-    /** A confirmed order was already sent: its supplier is told of the cancellation, at the address it was sent to. */
+    /**
+     * A confirmed order was already sent: its supplier is told of the cancellation, at the address it was sent to. An
+     * amendment still waiting is withdrawn first, in this transaction (SCRUM-117): there is nothing left to amend, and
+     * left pending it would hang on a cancelled order.
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary cancel(UUID purchaseOrderId, UUID userId, String reason) {
@@ -529,6 +533,7 @@ class ProcurementServiceImpl implements ProcurementService {
         }
         PurchaseOrderStatus from = order.status();
         order.requireCancellable(reason);
+        AmendmentDrops.drop(purchaseOrders, order, userId, "WITHDRAWN", "Order cancelled");
         if (order.activeRevisionId() == null && order.pendingRevisionId() == null) {
             long revisionNo = purchaseOrders.nextRevisionNo(order.id());
             order.freeze(purchaseOrders.recordRevision(order, revisionNo, userId, revisionNo == 0 ? null : "Cancelled"),
@@ -562,7 +567,8 @@ class ProcurementServiceImpl implements ProcurementService {
      * CONFIRMED one that will not be received at all; the reason is mandatory in both. A force close behaves like a
      * cancel for what is still in flight: it refuses while a goods receipt of the order is being counted, and it stops
      * the supplier delivery from being retried (the order is closed, there is nothing left to send). The supplier is
-     * not sent a cancellation notice - the order was not cancelled.
+     * not sent a cancellation notice - the order was not cancelled. An amendment still waiting is withdrawn first, as
+     * for a cancellation (SCRUM-117).
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
@@ -574,6 +580,9 @@ class ProcurementServiceImpl implements ProcurementService {
             throw new BusinessException(ErrorCode.CONFLICT,
                     "A goods receipt of this order is being counted or waits for approval; cancel or confirm it first");
         }
+        // Before the status changes, so the withdrawal reads as the order's last act while open; a refused close
+        // rolls it back with the transaction.
+        AmendmentDrops.drop(purchaseOrders, order, userId, "WITHDRAWN", "Order closed");
         order.closeShort(reason, userId, clock.instant());
         if (force) {
             notifications.suppressSupplierDelivery(purchaseOrderId);
