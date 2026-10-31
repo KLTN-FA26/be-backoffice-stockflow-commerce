@@ -2,7 +2,6 @@ package com.stockflow.procurement.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
-import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -111,7 +110,7 @@ public class PurchaseOrderAmendments {
      * @throws BusinessException {@code PO_AMENDMENT_NOT_PENDING}, {@code PO_AMENDMENT_NOT_ALLOWED},
      *                           {@code SELF_APPROVAL_NOT_ALLOWED}, {@code PO_APPROVAL_LIMIT_EXCEEDED}
      */
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
         order.requireAmendmentDecidable();
@@ -123,14 +122,11 @@ public class PurchaseOrderAmendments {
         }
         Instant now = clock.instant();
         Money newTotal = new Money(amendment.totalAmount(), order.currency());
-        Optional<ApprovalLimit> limit = approvalLimits.limitOf(approverId, order.currency(), BusinessCalendar.date(now));
-        // As PurchaseOrder.coveredBy: a configured limit of zero or less covers nothing.
-        if (limit.isPresent() && (limit.get().amount().amount().signum() <= 0
-                || newTotal.compareTo(limit.get().amount()) > 0)) {
+        approvalLimits.limitExceeded(approverId, newTotal, now).ifPresent(limit -> {
             throw new BusinessException(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED,
                     "The amendment of %s makes it total %s; your approval limit is %s".formatted(order.poNumber(),
-                            newTotal, limit.get().amount()));
-        }
+                            newTotal, limit.amount()));
+        });
         approveAndApply(order, amendment, approverId, null, now);
         return summaryOf(order);
     }
@@ -140,7 +136,7 @@ public class PurchaseOrderAmendments {
      * is decided by a person whatever it totals ({@code hasBeenRejected}, SCRUM-124 rule 3). Possible also when the
      * supplier has refused the order meanwhile: nothing is rewritten, and the pointer must not be stranded.
      */
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    @Auditable(action = AuditAction.REJECT, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary reject(UUID purchaseOrderId, UUID approverId, String reason) {
         return drop(purchaseOrderId, approverId, "REJECTED", reason);
     }
@@ -188,12 +184,20 @@ public class PurchaseOrderAmendments {
         afterApproved(amended, previousActiveRevisionId, amendment);
     }
 
-    /** The supplier's answer as it stands, for the timeline when an approval sends it back to PENDING. */
+    /**
+     * The supplier's answer as it stands, for the timeline when an approval sends it back to PENDING. A reference or
+     * time the supplier never gave is left out rather than written as the text "null", which a reader would take for
+     * a value.
+     */
     private static Map<String, String> supplierAnswer(PurchaseOrder order) {
         Map<String, String> answer = new LinkedHashMap<>();
         answer.put("supplierConfirmationBefore", order.supplierConfirmationStatus().name());
-        answer.put("supplierReferenceBefore", String.valueOf(order.supplierReference()));
-        answer.put("supplierRespondedAtBefore", String.valueOf(order.supplierRespondedAt()));
+        if (order.supplierReference() != null) {
+            answer.put("supplierReferenceBefore", order.supplierReference());
+        }
+        if (order.supplierRespondedAt() != null) {
+            answer.put("supplierRespondedAtBefore", order.supplierRespondedAt().toString());
+        }
         return answer;
     }
 

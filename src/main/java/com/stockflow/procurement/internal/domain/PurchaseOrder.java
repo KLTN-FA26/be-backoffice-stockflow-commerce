@@ -597,11 +597,10 @@ public final class PurchaseOrder extends AggregateRoot {
 
     /**
      * Whether {@code limit} (a configured approval limit, in this order's currency) covers the order's total, after
-     * tax: what is paid to the supplier. A limit of zero or less covers nothing. Having no limit at all is not a limit
-     * of zero and never reaches here (owner decision PO-NOLIMIT): the caller asks only when one is configured.
+     * tax: what is paid to the supplier - by the one rule, {@link ApprovalLimit#covers(Money, Money)}.
      */
     public boolean coveredBy(Money limit) {
-        return limit.amount().signum() > 0 && totalAmount().compareTo(limit) <= 0;
+        return ApprovalLimit.covers(limit, totalAmount());
     }
 
     /**

@@ -2,7 +2,6 @@ package com.stockflow.procurement.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
-import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -17,7 +16,6 @@ import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
 import com.stockflow.procurement.api.SubcontractSettlement;
 import com.stockflow.procurement.api.SubcontractorTerms;
-import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
@@ -219,15 +217,12 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
             throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
                     "An amendment is approved by someone other than who asked for it");
         }
-        Currency currency = Currency.getInstance(order.currency());
-        Money newTotal = new Money(amendment.total(), currency);
-        Optional<ApprovalLimit> limit = approvalLimits.limitOf(approverId, currency,
-                BusinessCalendar.date(clock.instant()));
-        if (limit.isPresent() && newTotal.compareTo(limit.get().amount()) > 0) {
+        Money newTotal = new Money(amendment.total(), Currency.getInstance(order.currency()));
+        approvalLimits.limitExceeded(approverId, newTotal, clock.instant()).ifPresent(limit -> {
             throw new BusinessException(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED,
                     "Amendment of %s makes it total %s; your approval limit is %s".formatted(order.poNumber(), newTotal,
-                            limit.get().amount()));
-        }
+                            limit.amount()));
+        });
         approveAndNotify(order, amendment, approverId, null);
         log.info("Amendment of {} to {} approved", order.poNumber(), amendment.quantity());
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());

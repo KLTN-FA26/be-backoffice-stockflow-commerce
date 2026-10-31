@@ -24,7 +24,8 @@ public record AmendPurchaseOrderRequest(
         @NotBlank @Size(max = 500) String reason,
         @Schema(description = "The expected delivery date as it should read afterwards; required")
         LocalDate expectedDate,
-        @Schema(description = "The order note as it should read afterwards; empty clears it")
-        @Size(max = 1000) String note,
+        @Schema(description = "The order note as it should read afterwards; empty clears it. Up to 2000 characters, as "
+                + "when the order was created: the note is restated here, so any note the order can hold must fit")
+        @Size(max = 2000) String note,
         @Schema(description = "Every line kept; a line left out is removed")
         @NotEmpty List<@Valid AmendPurchaseOrderLineRequest> lines) {}
