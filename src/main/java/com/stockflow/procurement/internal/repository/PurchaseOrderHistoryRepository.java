@@ -34,11 +34,14 @@ public class PurchaseOrderHistoryRepository {
     /**
      * One revision with its last decision. {@code submission} is true when a {@code SUBMITTED} event names the
      * revision; {@code approved} when any approval row of it is {@code APPROVED} or {@code AUTO_APPROVED}; the
-     * {@code decision*} fields are those of its last approval row, null when nobody decided it.
+     * {@code decision*} fields are those of its last approval row, null when nobody decided it. The three
+     * amounts are read as text with {@code ->>}, which keeps the scale stored (11000000.00): going through a JSON
+     * tree strips trailing zeros and turns it into 1.1E+7.
      */
     public record RevisionRow(UUID id, long revisionNo, UUID changedBy, Instant changedAt, String reason,
                               String snapshotHeader, boolean submission, boolean approved, String decision,
-                              Instant decidedAt, UUID decidedBy, String decisionReason, BigDecimal limitAmount) {
+                              Instant decidedAt, UUID decidedBy, String decisionReason, BigDecimal limitAmount,
+                              BigDecimal totalAmount, BigDecimal subtotal, BigDecimal taxTotal) {
     }
 
     /** A revision's line as it froze it; the SKU is the inventory item's, resolved by the caller. */
@@ -79,7 +82,9 @@ public class PurchaseOrderHistoryRepository {
                                         WHERE e.po_revision_id = r.id AND e.action = 'SUBMITTED'),
                                EXISTS (SELECT 1 FROM procurement.purchase_order_approvals x
                                         WHERE x.po_revision_id = r.id AND x.decision IN ('APPROVED', 'AUTO_APPROVED')),
-                               a.decision, a.decision_at, a.approver_id, a.reason, a.limit_amount
+                               a.decision, a.decision_at, a.approver_id, a.reason, a.limit_amount,
+                               r.snapshot_header ->> 'totalAmount', r.snapshot_header ->> 'subtotal',
+                               r.snapshot_header ->> 'taxTotal'
                           FROM procurement.purchase_order_revisions r
                           LEFT JOIN LATERAL (SELECT z.decision, z.decision_at, z.approver_id, z.reason, z.limit_amount
                                                FROM procurement.purchase_order_approvals z
@@ -91,7 +96,12 @@ public class PurchaseOrderHistoryRepository {
                 .getResultList();
         return rows.stream().map(r -> new RevisionRow((UUID) r[0], ((Number) r[1]).longValue(), (UUID) r[2],
                 NativeValues.instant(r[3]), (String) r[4], (String) r[5], (Boolean) r[6], (Boolean) r[7],
-                (String) r[8], NativeValues.instant(r[9]), (UUID) r[10], (String) r[11], (BigDecimal) r[12])).toList();
+                (String) r[8], NativeValues.instant(r[9]), (UUID) r[10], (String) r[11], (BigDecimal) r[12],
+                decimal(r[13]), decimal(r[14]), decimal(r[15]))).toList();
+    }
+
+    private static BigDecimal decimal(Object text) {
+        return text == null ? null : new BigDecimal((String) text);
     }
 
     /** The lines of one revision, by line number. */

@@ -2,7 +2,6 @@ package com.stockflow.procurement.internal.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.PageResponse;
@@ -138,13 +137,12 @@ public class PurchaseOrderHistory {
 
         List<Change> changes = new ArrayList<>();
         if (base != null) {
-            changes.addAll(headerChanges(snapshot(base), snapshot));
+            changes.addAll(headerChanges(base, row));
             RevisionDiff.between(revisionLines(baseLines, skus), revisionLines(lines, skus))
                     .forEach(c -> changes.add(lineChange(c)));
         }
         return new RevisionDetail(revision(row, header, names), text(snapshot, "currency"),
-                date(snapshot, "expectedDate"), text(snapshot, "note"), amount(snapshot, "subtotal"),
-                amount(snapshot, "taxTotal"),
+                date(snapshot, "expectedDate"), text(snapshot, "note"), row.subtotal(), row.taxTotal(),
                 lines.stream().map(l -> new Line(l.lineNo(), skus.getOrDefault(l.inventoryItemId(), "UNKNOWN"),
                         l.note(), l.unit(), l.quantity(), l.unitPrice(), l.taxRate(), l.lineSubtotal(), l.lineTax(),
                         l.lineTotal())).toList(),
@@ -184,7 +182,7 @@ public class PurchaseOrderHistory {
 
     private Revision revision(RevisionRow r, OrderHeader header, Map<UUID, String> names) {
         return new Revision(r.revisionNo(), r.submission() ? SUBMISSION : AMENDMENT, state(r, header), r.changedBy(),
-                names.get(r.changedBy()), r.changedAt(), r.reason(), amount(snapshot(r), "totalAmount"), r.decision(),
+                names.get(r.changedBy()), r.changedAt(), r.reason(), r.totalAmount(), r.decision(),
                 r.decidedBy(), r.decidedBy() == null ? null : names.get(r.decidedBy()), r.decidedAt(),
                 r.decisionReason(), r.limitAmount());
     }
@@ -235,20 +233,22 @@ public class PurchaseOrderHistory {
         };
     }
 
-    private static List<Change> headerChanges(JsonNode before, JsonNode after) {
+    private List<Change> headerChanges(RevisionRow before, RevisionRow after) {
+        JsonNode was = snapshot(before);
+        JsonNode now = snapshot(after);
         List<Change> changes = new ArrayList<>();
-        String oldDate = text(before, "expectedDate");
-        String newDate = text(after, "expectedDate");
+        String oldDate = text(was, "expectedDate");
+        String newDate = text(now, "expectedDate");
         if (!Objects.equals(oldDate, newDate)) {
             changes.add(new Change("HEADER", null, null, "CHANGED", "expectedDate", oldDate, newDate));
         }
-        String oldNote = blankToNull(text(before, "note"));
-        String newNote = blankToNull(text(after, "note"));
+        String oldNote = blankToNull(text(was, "note"));
+        String newNote = blankToNull(text(now, "note"));
         if (!Objects.equals(oldNote, newNote)) {
             changes.add(new Change("HEADER", null, null, "CHANGED", "note", oldNote, newNote));
         }
-        BigDecimal oldTotal = amount(before, "totalAmount");
-        BigDecimal newTotal = amount(after, "totalAmount");
+        BigDecimal oldTotal = before.totalAmount();
+        BigDecimal newTotal = after.totalAmount();
         if (oldTotal == null || newTotal == null ? oldTotal != newTotal : oldTotal.compareTo(newTotal) != 0) {
             changes.add(new Change("HEADER", null, null, "CHANGED", "totalAmount",
                     oldTotal == null ? null : oldTotal.toPlainString(),
@@ -273,10 +273,10 @@ public class PurchaseOrderHistory {
         return ids.isEmpty() ? Map.of() : identity.displayNames(ids);
     }
 
-    /** Read with exact decimals: a double turns 11000000.00 into 1.1E7 and loses cents above about 9e15. */
+    /** Text fields only: amounts come from the repository as text, because a JSON tree does not keep their scale. */
     private JsonNode snapshot(RevisionRow row) {
         try {
-            return json.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(row.snapshotHeader());
+            return json.readTree(row.snapshotHeader());
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("A revision's snapshot_header is a JSON object (ck_purchase_order_revisions_snapshot)", e);
         }
@@ -296,11 +296,6 @@ public class PurchaseOrderHistory {
     private static String text(JsonNode node, String field) {
         JsonNode value = node.path(field);
         return value.isMissingNode() || value.isNull() ? null : value.asText();
-    }
-
-    private static BigDecimal amount(JsonNode node, String field) {
-        JsonNode value = node.path(field);
-        return value.isNumber() ? value.decimalValue() : null;
     }
 
     private static LocalDate date(JsonNode node, String field) {
