@@ -51,7 +51,7 @@ public class PurchaseOrderHistoryRepository {
                            Long revisionNo, String payload, Instant occurredAt) {
     }
 
-    public record PendingRow(UUID purchaseOrderId, long revisionNo, UUID requestedBy, Instant requestedAt,
+    public record PendingRow(UUID purchaseOrderId, UUID revisionId, long revisionNo, UUID requestedBy, Instant requestedAt,
                              String reason, BigDecimal totalAmount) {
     }
 
@@ -137,8 +137,8 @@ public class PurchaseOrderHistoryRepository {
     }
 
     /**
-     * The amendment waiting on each of these orders, in one statement. Same predicate as
-     * {@code PurchaseOrderRepository.pendingAmendment}: an order in PENDING_APPROVAL points at its first submission,
+     * The amendment waiting on each of these orders, in one statement. The one definition of
+     * "pending": {@code PurchaseOrderRepository.pendingAmendment} delegates here. An order in PENDING_APPROVAL points at its first submission,
      * which is not an amendment. The total is the revision's lines after tax.
      */
     public Map<UUID, PendingRow> pendingAmendments(Collection<UUID> purchaseOrderIds) {
@@ -147,7 +147,7 @@ public class PurchaseOrderHistoryRepository {
         }
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT p.id, r.revision_no, r.changed_by, r.changed_at, r.change_summary,
+                        SELECT p.id, r.id, r.revision_no, r.changed_by, r.changed_at, r.change_summary,
                                (SELECT COALESCE(SUM(lr.line_total), 0) FROM procurement.purchase_order_line_revisions lr
                                  WHERE lr.po_revision_id = r.id)
                           FROM procurement.purchase_orders p
@@ -157,8 +157,8 @@ public class PurchaseOrderHistoryRepository {
                 .getResultList();
         Map<UUID, PendingRow> pending = new HashMap<>();
         for (Object[] r : rows) {
-            pending.put((UUID) r[0], new PendingRow((UUID) r[0], ((Number) r[1]).longValue(), (UUID) r[2],
-                    NativeValues.instant(r[3]), (String) r[4], (BigDecimal) r[5]));
+            pending.put((UUID) r[0], new PendingRow((UUID) r[0], (UUID) r[1], ((Number) r[2]).longValue(),
+                    (UUID) r[3], NativeValues.instant(r[4]), (String) r[5], (BigDecimal) r[6]));
         }
         return pending;
     }

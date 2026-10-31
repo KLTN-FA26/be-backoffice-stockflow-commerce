@@ -335,4 +335,46 @@ class PurchaseOrderHistoryIntegrationTest {
         read(ORDERS + po + "/revisions/1", elsewhere).andExpect(status().is(expected));
         read(ORDERS + po + "/timeline", elsewhere).andExpect(status().is(expected));
     }
+
+    @Test
+    @DisplayName("amounts of 10 million and more are plain decimals, exact to the cent, not scientific notation")
+    void largeAmountsArePlain() throws Exception {
+        String buyer = buyer(personWithLimits());
+        String body = """
+                {"supplierId":"%s","warehouseId":"%s","currency":"VND","expectedAt":"%s",
+                 "lines":[{"sku":"%s","quantityOrdered":220,"unitPrice":50000}]}""".formatted(supplier,
+                DemoData.WAREHOUSE_HCM, EXPECTED, SOFA);
+        UUID po = UUID.fromString(data(call("/api/v1/purchase-orders", buyer, body)
+                .andExpect(status().isCreated())).path("purchaseOrderId").asText());
+        call(ORDERS + po + "/submission", buyer, null).andExpect(status().isOk());
+        call(ORDERS + po + "/approval", approver(personWithLimits()), null).andExpect(status().isOk());
+
+        String list = read(ORDERS + po + "/revisions", buyer).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(list).doesNotContain("E+").doesNotContain("E7");
+        assertThat(json.readTree(list).path("data").get(0).path("totalAmount").decimalValue().toPlainString())
+                .isEqualTo("11000000.00");
+        JsonNode detail = data(read(ORDERS + po + "/revisions/0", buyer).andExpect(status().isOk()));
+        assertThat(detail.path("subtotal").decimalValue().toPlainString()).isEqualTo("11000000.00");
+        assertThat(detail.path("taxTotal").decimalValue().toPlainString()).isEqualTo("0.00");
+    }
+
+    @Test
+    @DisplayName("a first submission or a resubmission waiting in PENDING_APPROVAL is not a pending amendment")
+    void submissionWaitingIsNotAPendingAmendment() throws Exception {
+        String buyer = buyer(personWithLimits());
+        UUID po = draft(buyer);
+        call(ORDERS + po + "/submission", buyer, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"))
+                .andExpect(jsonPath("$.data.pendingAmendment").doesNotExist());
+        read(ORDERS + po, buyer).andExpect(jsonPath("$.data.pendingAmendment").doesNotExist());
+
+        call(ORDERS + po + "/rejection", approver(personWithLimits()), "{\"reason\":\"Again\"}")
+                .andExpect(status().isOk());
+        // Revision 1 is kind AMENDMENT (a resubmission); the order is PENDING_APPROVAL, so it is not an amendment.
+        call(ORDERS + po + "/submission", buyer, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.pendingAmendment").doesNotExist());
+        read(ORDERS + "?size=50&q=" + supplier, buyer).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].pendingAmendment").doesNotExist());
+    }
 }

@@ -2,6 +2,7 @@ package com.stockflow.procurement.internal.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.PageResponse;
@@ -272,9 +273,10 @@ public class PurchaseOrderHistory {
         return ids.isEmpty() ? Map.of() : identity.displayNames(ids);
     }
 
+    /** Read with exact decimals: a double turns 11000000.00 into 1.1E7 and loses cents above about 9e15. */
     private JsonNode snapshot(RevisionRow row) {
         try {
-            return json.readTree(row.snapshotHeader());
+            return json.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(row.snapshotHeader());
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("A revision's snapshot_header is a JSON object (ck_purchase_order_revisions_snapshot)", e);
         }
@@ -297,8 +299,8 @@ public class PurchaseOrderHistory {
     }
 
     private static BigDecimal amount(JsonNode node, String field) {
-        String value = text(node, field);
-        return value == null ? null : new BigDecimal(value);
+        JsonNode value = node.path(field);
+        return value.isNumber() ? value.decimalValue() : null;
     }
 
     private static LocalDate date(JsonNode node, String field) {

@@ -79,13 +79,15 @@ class PurchaseOrderRepositoryAdapter
     private final WarehouseService warehouses;
     private final PurchaseOrderEventLog events;
     private final PoLineUnits lineUnits;
+    private final PurchaseOrderHistoryRepository history;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     PurchaseOrderRepositoryAdapter(PurchaseOrderJpaRepository jpa, SupplierJpaRepository suppliers,
                                    PoNumberSequence poNumberSequence, InventoryService inventory,
-                                   WarehouseService warehouses, PurchaseOrderEventLog events, PoLineUnits lineUnits) {
+                                   WarehouseService warehouses, PurchaseOrderEventLog events, PoLineUnits lineUnits,
+                                   PurchaseOrderHistoryRepository history) {
         this.jpa = jpa;
         this.suppliers = suppliers;
         this.poNumberSequence = poNumberSequence;
@@ -93,6 +95,7 @@ class PurchaseOrderRepositoryAdapter
         this.warehouses = warehouses;
         this.events = events;
         this.lineUnits = lineUnits;
+        this.history = history;
     }
 
     // ------------------------------------------------------------------ aggregate
@@ -337,20 +340,12 @@ class PurchaseOrderRepositoryAdapter
         return revisionId;
     }
 
+    /** The batch read of the history endpoints with one id, so there is one statement that says what "pending" means. */
     @Override
     public Optional<PendingAmendment> pendingAmendment(PurchaseOrderId id) {
-        @SuppressWarnings("unchecked")
-        List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT r.id, r.revision_no, r.changed_by, r.changed_at, r.change_summary,
-                               (SELECT COALESCE(SUM(lr.line_total), 0) FROM procurement.purchase_order_line_revisions lr
-                                 WHERE lr.po_revision_id = r.id)
-                          FROM procurement.purchase_orders p
-                          JOIN procurement.purchase_order_revisions r ON r.id = p.pending_revision_id
-                         WHERE p.id = :po AND r.kind = 'AMENDMENT' AND p.status <> 'PENDING_APPROVAL'""")
-                .setParameter("po", id.value())
-                .getResultList();
-        return rows.stream().findFirst().map(r -> new PendingAmendment((UUID) r[0], ((Number) r[1]).longValue(),
-                (UUID) r[2], NativeValues.instant(r[3]), (String) r[4], (BigDecimal) r[5]));
+        return Optional.ofNullable(history.pendingAmendments(List.of(id.value())).get(id.value()))
+                .map(r -> new PendingAmendment(r.revisionId(), r.revisionNo(), r.requestedBy(), r.requestedAt(),
+                        r.reason(), r.totalAmount()));
     }
 
     /**
