@@ -41,6 +41,7 @@ class SubcontractPurchasingIntegrationTest {
 
     @Autowired SubcontractPurchasing subcontracting;
     @Autowired com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
+    @Autowired com.stockflow.procurement.internal.domain.ReceivingPurchaseOrders receiving;
     @Autowired com.stockflow.procurement.api.ProcurementService procurement;
     @Autowired com.stockflow.product.api.ProductService products;
     @Autowired JdbcTemplate jdbc;
@@ -418,6 +419,36 @@ class SubcontractPurchasingIntegrationTest {
 
         assertThat(asked.pendingQuantity()).isEqualTo(410);
         assertThat(asked.quantity()).isEqualTo(400);
+    }
+
+    @Test
+    @DisplayName("SCRUM-117 D5: the first receipt posted leaves a SUBCONTRACT supplement waiting - unlike a standard "
+            + "order's amendment, it is a resend meant for an order being received")
+    void subcontractAmendmentSurvivesReceiving() {
+        UUID po = approvedOrder().purchaseOrderId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE procurement.purchase_orders SET status = 'CONFIRMED', confirmed_at = NOW(), confirmed_by = approved_by
+                 WHERE id = ?""", po));
+        subcontracting.supplement(po, 10, "QC shortfall resend", manager);
+        UUID pending = jdbc.queryForObject("SELECT pending_revision_id FROM procurement.purchase_orders WHERE id = ?",
+                UUID.class, po);
+        assertThat(pending).as("waits: the requester has no limit").isNotNull();
+
+        // What posting the first receipt writes, through receiving's own port: the order leaves CONFIRMED.
+        tx.executeWithoutResult(s -> {
+            var view = receiving.lock(po).orElseThrow();
+            receiving.recordProgress(view,
+                    Map.of(view.lines().get(0).id(),
+                            com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder.LineStatus.PARTIALLY_RECEIVED),
+                    com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder.Status.PARTIALLY_RECEIVED, manager,
+                    Identifiers.newId(), "GR-TEST-000001");
+        });
+
+        assertThat(jdbc.queryForMap("SELECT status, pending_revision_id FROM procurement.purchase_orders WHERE id = ?", po))
+                .containsEntry("status", "PARTIALLY_RECEIVED").containsEntry("pending_revision_id", pending);
+        assertThat(subcontracting.findById(po).orElseThrow().pendingQuantity()).isEqualTo(410);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM procurement.purchase_order_approvals WHERE po_revision_id = ?",
+                Integer.class, pending)).as("no decision recorded").isZero();
     }
 
     @Test

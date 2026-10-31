@@ -48,6 +48,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * do: confirming through the API sends the order to the supplier, which needs a configured buyer identity and a
  * notification transport this class has nothing to say about.</p>
  *
+ * <p>That a SUBCONTRACT supplement survives the first receipt is {@code SubcontractPurchasingIntegrationTest}'s, next
+ * to the fixtures a subcontract order needs.</p>
+ *
  * <p>The idempotency filter is switched on here (the test profile has it off) to replay a request with the same
  * {@code Idempotency-Key}; that costs this class an application context of its own.</p>
  */
@@ -488,6 +491,36 @@ class PurchaseOrderAmendmentIntegrationTest {
         postReceipt(clerk, receipt).andExpect(status().isOk());
 
         assertThat(row(po).get("status")).isEqualTo("RECEIVED");
+    }
+
+    @Test
+    @DisplayName("D5: the first receipt posted withdraws the amendment still waiting - WITHDRAWN by whoever posted it, "
+            + "naming the receipt - and approving it afterwards finds nothing waiting")
+    void firstPostedReceiptWithdrawsPendingAmendment() throws Exception {
+        UUID po = confirmedOrder();
+        amend(po, buyer(personWithLimits(100_000)), lessOfBoth(po)).andExpect(status().isOk());
+        UUID revision = (UUID) row(po).get("pending_revision_id");
+
+        Clerk clerk = clerk();
+        String receipt = draftReceipt(clerk, po);
+        count(clerk, receipt, lineOf(po, SOFA), 4).andExpect(status().isOk());
+        postReceipt(clerk, receipt).andExpect(status().isOk());
+
+        assertThat(row(po)).containsEntry("status", "PARTIALLY_RECEIVED").containsEntry("pending_revision_id", null);
+        assertThat(ordered(lineOf(po, SOFA))).as("received against the revision in force").isEqualByComparingTo("10");
+        String number = jdbc.queryForObject("SELECT receipt_number FROM procurement.goods_receipts WHERE id = ?",
+                String.class, UUID.fromString(receipt));
+        String reason = "Goods received (receipt " + number + ")";
+        assertThat(decisionsOf(revision)).singleElement().satisfies(d -> assertThat(d)
+                .containsEntry("decision", "WITHDRAWN").containsEntry("approver_id", clerk.id())
+                .containsEntry("reason", reason));
+        assertThat(eventsOf(revision)).containsExactly("REVISED", "WITHDRAWN");
+        assertThat(jdbc.queryForObject("""
+                SELECT reason FROM procurement.purchase_order_events WHERE po_revision_id = ? AND action = 'WITHDRAWN'""",
+                String.class, revision)).isEqualTo(reason);
+
+        approve(po, approver(personWithLimits())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PO_AMENDMENT_NOT_PENDING"));
     }
 
     // ------------------------------------------------------------------ permissions
