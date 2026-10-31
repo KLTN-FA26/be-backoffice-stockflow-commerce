@@ -28,6 +28,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -63,9 +64,14 @@ class PurchaseOrderHistoryIntegrationTest {
         supplier = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
-                    INSERT INTO procurement.suppliers (id, code, name, status, email, version, created_at)
-                    VALUES (?, ?, 'History supplier', 'ACTIVE', 'supplier@example.com', 0, NOW())""",
+                    INSERT INTO procurement.suppliers (id, code, name, status, version, created_at)
+                    VALUES (?, ?, 'History supplier', 'ACTIVE', 0, NOW())""",
                     supplier, "HST-" + supplier.toString().substring(24).toUpperCase());
+            // The delivery contact lives in supplier_contacts: an EMAIL supplier is sent its orders there.
+            jdbc.update("""
+                    INSERT INTO procurement.supplier_contacts (id, supplier_id, full_name, email, is_primary, version, created_at)
+                    VALUES (?, ?, 'History supplier', 'supplier@example.com', TRUE, 0, NOW())""",
+                    Identifiers.newId(), supplier);
             other = ReferenceRows.approvedProduct(entityManager).sku();
         });
         SupplierItemFixtures.list(catalog, supplier, SOFA);
@@ -198,7 +204,8 @@ class PurchaseOrderHistoryIntegrationTest {
         assertThat(revisionNo(list, 0).path("decidedByName").asText()).isNotBlank();
         assertThat(revisionNo(list, 2).path("reason").asText()).isEqualTo("Supplier can deliver less");
         assertThat(revisionNo(list, 2).path("changedByName").asText()).isNotBlank();
-        assertThat(revisionNo(list, 2).path("decision").isNull()).isTrue();
+        // Undecided: the field is left out (default-property-inclusion non_null), not written as null.
+        assertThat(revisionNo(list, 2).path("decision").isMissingNode()).isTrue();
 
         call(ORDERS + po + "/amendment/approval", approver(personWithLimits()), null).andExpect(status().isOk());
         JsonNode after = data(read(ORDERS + po + "/revisions", buyer));
@@ -337,7 +344,7 @@ class PurchaseOrderHistoryIntegrationTest {
     }
 
     @Test
-    @DisplayName("amounts of 10 million and more are plain decimals, exact to the cent, not scientific notation")
+    @DisplayName("amounts of 10 million and more are plain numbers as stored, not scientific notation")
     void largeAmountsArePlain() throws Exception {
         String buyer = buyer(personWithLimits());
         String body = """
@@ -349,14 +356,20 @@ class PurchaseOrderHistoryIntegrationTest {
         call(ORDERS + po + "/submission", buyer, null).andExpect(status().isOk());
         call(ORDERS + po + "/approval", approver(personWithLimits()), null).andExpect(status().isOk());
 
-        // The raw bodies: a tree read by the mapper turns 11000000.00 into a double and loses the scale asserted here.
+        // The raw bodies: a tree read by the mapper would turn the number into a double, hiding what is asserted here.
+        // VND has no minor unit, so Money stores scale 0 and the snapshot holds 11000000, not 11000000.00.
         String list = read(ORDERS + po + "/revisions", buyer).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        assertThat(list).contains("\"totalAmount\":11000000.00").doesNotContain("E+");
+        assertThat(list).containsPattern(plain("totalAmount", "11000000")).doesNotContain("E+");
         String detail = read(ORDERS + po + "/revisions/0", buyer).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        assertThat(detail).contains("\"subtotal\":11000000.00").contains("\"taxTotal\":0.00")
-                .contains("\"totalAmount\":11000000.00").doesNotContain("E+");
+        assertThat(detail).containsPattern(plain("subtotal", "11000000")).containsPattern(plain("taxTotal", "0"))
+                .containsPattern(plain("totalAmount", "11000000")).doesNotContain("E+");
+    }
+
+    /** {@code "field":value} and the end of the value: 11000000 must not match 110000000 or 11000000.50. */
+    private static String plain(String field, String value) {
+        return Pattern.quote("\"" + field + "\":" + value) + "[,}]";
     }
 
     @Test

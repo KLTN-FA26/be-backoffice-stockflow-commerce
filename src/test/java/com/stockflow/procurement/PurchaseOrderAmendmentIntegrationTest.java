@@ -21,7 +21,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.mail.SimpleMailMessage;
-import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -94,7 +94,7 @@ class PurchaseOrderAmendmentIntegrationTest {
     @Autowired ObjectMapper json;
     @Autowired NotificationService notifications;
     @Autowired RecordedEvents.Recorder recorded;
-    @MockitoBean JavaMailSender mail;
+    @MockitoBean JavaMailSenderImpl mail;   // the concrete type: the actuator's mail health check needs it
 
     private UUID supplier;
     private String other;
@@ -105,9 +105,14 @@ class PurchaseOrderAmendmentIntegrationTest {
         supplier = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
-                    INSERT INTO procurement.suppliers (id, code, name, status, email, version, created_at)
-                    VALUES (?, ?, 'Amendment supplier', 'ACTIVE', 'supplier@example.com', 0, NOW())""",
+                    INSERT INTO procurement.suppliers (id, code, name, status, version, created_at)
+                    VALUES (?, ?, 'Amendment supplier', 'ACTIVE', 0, NOW())""",
                     supplier, "AMD-" + supplier.toString().substring(24).toUpperCase());
+            // The delivery contact lives in supplier_contacts: an EMAIL supplier is sent its orders there.
+            jdbc.update("""
+                    INSERT INTO procurement.supplier_contacts (id, supplier_id, full_name, email, is_primary, version, created_at)
+                    VALUES (?, ?, 'Amendment supplier', 'supplier@example.com', TRUE, 0, NOW())""",
+                    Identifiers.newId(), supplier);
             other = ReferenceRows.approvedProduct(entityManager).sku();
         });
         SupplierItemFixtures.list(catalog, supplier, SOFA);

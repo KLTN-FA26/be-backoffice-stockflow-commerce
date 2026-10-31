@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -60,7 +60,7 @@ class SubcontractPurchasingIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
     @Autowired RecordedEvents.Recorder recorded;
-    @MockitoBean JavaMailSender mail;
+    @MockitoBean JavaMailSenderImpl mail;   // the concrete type: the actuator's mail health check needs it
 
     private UUID hcm;
     private UUID innhanh;
@@ -471,7 +471,9 @@ class SubcontractPurchasingIntegrationTest {
     void subcontractSupplementOfConfirmedOrderIsSentAndResetsResponse() {
         UUID po = approvedOrder().purchaseOrderId();
         tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE procurement.suppliers SET email = 'xuong@innhanh.example' WHERE id = ?", innhanh);
+            jdbc.update("""
+                    UPDATE procurement.supplier_contacts SET email = 'xuong@innhanh.example'
+                     WHERE supplier_id = ? AND is_primary""", innhanh);
             jdbc.update("""
                     UPDATE procurement.purchase_orders SET status = 'CONFIRMED', confirmed_at = NOW(),
                            confirmed_by = approved_by, supplier_confirmation_status = 'CONFIRMED',
