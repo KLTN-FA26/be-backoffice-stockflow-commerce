@@ -101,6 +101,7 @@ public enum ErrorCode {
     PACKAGE_NOT_FOUND("Package not found", 404),
     SHIPMENT_NOT_FOUND("Shipment not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
+    SUPPLIER_INVOICE_NOT_FOUND("Supplier invoice not found", 404),
     /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
     NOTIFICATION_NOT_FOUND("Notification not found", 404),
     /** An alert of a warehouse outside the caller's scope is {@code OUT_OF_DATA_SCOPE}, not this. */
@@ -221,6 +222,19 @@ public enum ErrorCode {
     RECEIPT_REFERENCE_SUPPLIER_MISMATCH("The purchase order is not the receipt's supplier's", 409),
     /** SCRUM-477: approving a receipt, or rejecting its excess, needs a reason. */
     RECEIPT_APPROVAL_REASON_REQUIRED("Deciding on a goods receipt needs a reason", 400),
+    /** SCRUM-308, BR-INV-001: the supplier already has an invoice with this number (case aside): paying it twice. */
+    SUPPLIER_INVOICE_NUMBER_TAKEN("The supplier already has an invoice with this number", 409),
+    /** SCRUM-308/309: changed, matched or voided in a status that does not allow it. */
+    SUPPLIER_INVOICE_INVALID_TRANSITION("This supplier invoice cannot do that in its current status", 409),
+    /**
+     * SCRUM-308: a line bills a PO line that does not exist or is not the supplier's (or not the invoice's order), or
+     * names a receipt line of another PO line.
+     */
+    SUPPLIER_INVOICE_LINE_INVALID("An invoice line does not bill a purchase order line of this supplier", 422),
+    /** SCRUM-308: the invoice is not in the currency of the orders it bills. */
+    SUPPLIER_INVOICE_CURRENCY_MISMATCH("The invoice is not in the currency of the purchase orders it bills", 422),
+    /** SCRUM-308: the order was never approved, or was cancelled - there is nothing to bill on it. */
+    PURCHASE_ORDER_NOT_INVOICEABLE("This purchase order cannot be invoiced in its current status", 409),
     /**
      * BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. Since SCRUM-477 a count beyond
      * it is no longer refused - the receipt waits for the warehouse manager - so the service does not answer with

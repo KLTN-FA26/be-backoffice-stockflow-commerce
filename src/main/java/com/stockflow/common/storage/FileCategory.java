@@ -44,6 +44,13 @@ public enum FileCategory {
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
 
+    /**
+     * A supplier's invoice as received (SCRUM-308): the PDF it came as, or a photo or scan of the paper. A financial
+     * record - a replaced scan is kept in storage, not deleted.
+     */
+    SUPPLIER_INVOICE("supplier-invoices", 15 * 1024 * 1024,
+            Set.of("application/pdf", "image/jpeg", "image/png")),
+
     /** Photographs taken during goods receipt and QC. Evidence - never deleted casually. */
     QC_EVIDENCE("qc-evidence", 20 * 1024 * 1024,
             Set.of("image/jpeg", "image/png")),
