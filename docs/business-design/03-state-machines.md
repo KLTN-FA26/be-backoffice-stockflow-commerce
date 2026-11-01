@@ -97,9 +97,14 @@ stateDiagram-v2
 | CONFIRMED | CLOSED (`FORCE_CLOSE`) | force close | Procurement staff | reason given; nothing received and none expected (kltn-docs 02 §5); refused while a goods receipt is being counted | — |
 | RECEIVED | CLOSED | invoice approved | Accountant | three-way match passed or override approved (BR-INV-003) | `PurchaseOrderClosed` |
 
-**Amendment (WBS 3.2.5)** is not a state. Amending a PO in `SENT` or later creates
-**revision n+1** of the same PO number and emits `PurchaseOrderAmended`; the previous revision is
-retained for the audit trail. Amendment is forbidden once any receipt exists (BR-PO-004).
+**Amendment (WBS 3.2.5)** is not a state. A STANDARD PO in `APPROVED` or `CONFIRMED` can be amended while nothing
+has been received, no goods receipt is being counted and the supplier has not rejected it: the request records
+**revision n+1** of the same PO number as a pending revision, and approving it (automatically within the requester's
+limit, otherwise by someone else) makes it the active one; the previous revision is retained for the audit trail.
+There is no `SENT` status and no `PurchaseOrderAmended` event: when the order had already been sent, the supplier
+is told with `PurchaseOrderSent` carrying `amendmentRevisionNo`, and the supplier response returns to `PENDING`.
+A waiting amendment is withdrawn by the first posted receipt, by cancelling and by closing the order. Amendment is
+forbidden once any receipt exists (BR-PO-004).
 
 ---
 

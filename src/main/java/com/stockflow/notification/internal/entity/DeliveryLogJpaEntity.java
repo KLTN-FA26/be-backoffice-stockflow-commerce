@@ -134,6 +134,10 @@ public class DeliveryLogJpaEntity extends BaseEntity {
         this.terminal = true;
     }
 
+    public boolean isTerminal() {
+        return terminal;
+    }
+
     public void recordGeneration(int generation) {
         this.deliveryGeneration = generation;
     }

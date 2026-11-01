@@ -96,4 +96,18 @@ class ApprovalLimitsTest {
         assertThat(limits.autoApprovalLimit(order, holder, supplier, Money.vnd(1), NOW)).isEmpty();
         verify(rows, never()).highestLimit(any(), any(), any());
     }
+
+    @Test
+    @DisplayName("limitExceeded: the approver's limit when it does not cover the total, a zero limit covering nothing, "
+            + "and no limit configured bounding nobody - the rule an automatic approval uses")
+    void approverLimitIsTheSameRule() {
+        ApprovalLimit limit = configured(Money.VND, 1_000);
+        assertThat(limits.limitExceeded(holder, Money.vnd(1_000), NOW)).as("inclusive").isEmpty();
+        assertThat(limits.limitExceeded(holder, Money.vnd(1_001), NOW)).contains(limit);
+        assertThat(limits.limitExceeded(holder, new Money(BigDecimal.ONE, USD), NOW)).as("none in USD").isEmpty();
+
+        ApprovalLimit zero = configured(Money.VND, 0);
+        assertThat(limits.limitExceeded(holder, Money.vnd(1), NOW)).contains(zero);
+        assertThat(zero.covers(Money.zero(Money.VND))).as("a zero limit covers nothing, not even zero").isFalse();
+    }
 }
