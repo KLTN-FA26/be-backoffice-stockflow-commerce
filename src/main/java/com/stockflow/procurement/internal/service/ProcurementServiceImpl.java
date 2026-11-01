@@ -42,7 +42,6 @@ import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.PurchasePrices;
-import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
 import com.stockflow.procurement.internal.domain.SupplierConfirmationStatus;
 import com.stockflow.procurement.internal.domain.SupplierDetails;
 import com.stockflow.procurement.internal.domain.SupplierItem;
@@ -548,8 +547,7 @@ class ProcurementServiceImpl implements ProcurementService {
                     .details();
             String channel = previous.map(PurchaseOrderSent::channel).orElse(supplier.communicationChannel().name());
             String recipient = previous.map(PurchaseOrderSent::recipient)
-                    .orElse(supplier.communicationChannel() == SupplierCommunicationChannel.EMAIL
-                            ? supplier.email() : supplier.apiEndpoint());
+                    .orElse(PoDeliveryContent.recipient(supplier));
             events.publishEvent(new PurchaseOrderSent(purchaseOrderId, order.poNumber(), order.supplierId(), channel,
                     recipient, order.totalAmount().amount(), order.currency().getCurrencyCode(), order.expectedAt(),
                     order.paymentTermDays(), orderedLines != null ? orderedLines

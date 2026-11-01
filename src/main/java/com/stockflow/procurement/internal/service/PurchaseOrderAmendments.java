@@ -181,7 +181,8 @@ public class PurchaseOrderAmendments {
         }
         purchaseOrders.recordEvent(amended.id(), amendment.revisionId(), autoLimit == null ? "APPROVED" : "AUTO_APPROVED",
                 approverId, amended.status(), amended.status(), reason, facts);
-        afterApproved(amended, previousActiveRevisionId, amendment);
+        // Design section 8: a supplier that already had the order is sent the amended one, set against what they had.
+        supplierNotice.send(amended, previousActiveRevisionId, amendment);
     }
 
     /**
@@ -199,16 +200,6 @@ public class PurchaseOrderAmendments {
             answer.put("supplierRespondedAtBefore", order.supplierRespondedAt().toString());
         }
         return answer;
-    }
-
-    /**
-     * What follows an approved amendment, by a person or automatically, once it is in the order and saved: the place
-     * where a supplier that already had the order is sent the amended one (design section 8). It is given the revision
-     * that was active before, so what the supplier is told can be set against what they had.
-     */
-    private void afterApproved(PurchaseOrder order, UUID previousActiveRevisionId,
-                               PurchaseOrderRepository.PendingAmendment amendment) {
-        supplierNotice.send(order, previousActiveRevisionId, amendment);
     }
 
     /** Rejecting and withdrawing: they change no line, so they need only an amendment waiting. */

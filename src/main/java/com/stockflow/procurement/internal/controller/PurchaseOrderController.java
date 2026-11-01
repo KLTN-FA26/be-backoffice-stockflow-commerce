@@ -176,17 +176,9 @@ class PurchaseOrderController {
                         search,
                         sort);
         var result = procurementService.list(query);
-        var statuses =
-                notifications.purchaseOrderDeliveryStatuses(
-                        result.items().stream()
-                                .map(PurchaseOrderSummary::purchaseOrderId)
-                                .toList());
-        var cancellations =
-                notifications.purchaseOrderCancellationStatuses(
-                        result.items().stream()
-                                .map(PurchaseOrderSummary::purchaseOrderId)
-                                .toList());
         var ids = result.items().stream().map(PurchaseOrderSummary::purchaseOrderId).toList();
+        var statuses = notifications.purchaseOrderDeliveryStatuses(ids);
+        var cancellations = notifications.purchaseOrderCancellationStatuses(ids);
         var amendmentStatuses = notifications.purchaseOrderAmendmentStatuses(ids);
         var pending = pendingAmendments(ids);
         return ApiResponse.ok(
@@ -393,11 +385,10 @@ class PurchaseOrderController {
     }
 
     private PurchaseOrderResponse toResponse(PurchaseOrderSummary po) {
-        var statuses = notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()));
         var ids = List.of(po.purchaseOrderId());
         return response(
                 po,
-                statuses,
+                notifications.purchaseOrderDeliveryStatuses(ids),
                 notifications.purchaseOrderCancellationStatuses(ids),
                 notifications.purchaseOrderAmendmentStatuses(ids),
                 pendingAmendments(ids));

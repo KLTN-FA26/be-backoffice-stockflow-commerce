@@ -8,6 +8,7 @@ import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PoLineStatus;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
+import com.stockflow.procurement.internal.domain.SupplierDetails;
 import com.stockflow.procurement.internal.domain.SupplierRepository;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
 import com.stockflow.product.api.ProductService;
@@ -54,13 +55,18 @@ class PoDeliveryContent {
                 .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND,
                         "No supplier with id " + supplierId))
                 .details();
-        String recipient = supplier.communicationChannel() == SupplierCommunicationChannel.EMAIL
-                ? supplier.email() : supplier.apiEndpoint();
+        String recipient = recipient(supplier);
         if (supplier.status() != SupplierStatus.ACTIVE || recipient == null || recipient.isBlank()) {
             throw new BusinessException(ErrorCode.CONFLICT, "An active supplier with a delivery contact is required");
         }
         notifications.validateSupplierDelivery(supplier.communicationChannel().name(), recipient);
         return new Target(supplier.communicationChannel().name(), recipient);
+    }
+
+    /** The address on the supplier's channel, unchecked: the cancellation notice falls back to it without refusing. */
+    static String recipient(SupplierDetails supplier) {
+        return supplier.communicationChannel() == SupplierCommunicationChannel.EMAIL
+                ? supplier.email() : supplier.apiEndpoint();
     }
 
     /** The buyer the order was first sent under (the latest snapshot), else the deployment's own identity. */
