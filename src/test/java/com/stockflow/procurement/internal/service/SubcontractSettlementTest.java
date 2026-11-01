@@ -44,7 +44,9 @@ class SubcontractSettlementTest {
 
     private final SubcontractOrderStore store = mock(SubcontractOrderStore.class);
     private final SubcontractPurchasingImpl purchasing = new SubcontractPurchasingImpl(store, mock(InventoryService.class),
-            mock(InventoryControlService.class), mock(ProcurementService.class), Clock.fixed(NOW, ZoneOffset.UTC), mock(ApprovalLimits.class));
+            mock(InventoryControlService.class), mock(ProcurementService.class), Clock.fixed(NOW, ZoneOffset.UTC), mock(ApprovalLimits.class),
+            mock(com.stockflow.procurement.internal.domain.PurchaseOrderRepository.class),
+            mock(SupplierAmendmentNotice.class));
 
     private final UUID po = UUID.randomUUID();
     private final UUID productionOrder = UUID.randomUUID();

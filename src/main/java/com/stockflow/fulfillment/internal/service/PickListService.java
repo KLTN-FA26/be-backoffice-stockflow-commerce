@@ -300,10 +300,18 @@ class PickListService implements PickLists {
         orderReservations.replaceHold(pick.getOrderId(), shortLine.reservationId(),
                 allocated.stream().map(StockReservation::reservationId).toList());
         Map<String, UUID> warehouseOf = new HashMap<>();
-        List<PickList.Hold> holds = allocated.stream().map(hold -> new PickList.Hold(hold.reservationId(),
-                shortLine.sku(), hold.locationCode(), warehouseOf.computeIfAbsent(hold.locationCode(),
-                        code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
-                hold.lotNumber(), hold.quantity(), true)).toList();
+        // The new holds' cartons (SCRUM-473): a line drawn from a carton must name it. A hold not read back is planned
+        // loose; were it in a carton after all, tg_pick_line_carton refuses the line rather than let it go unscanned.
+        Map<UUID, HoldView> cartons = inventory.holds(allocated.stream().map(StockReservation::reservationId).toList())
+                .stream().collect(Collectors.toMap(HoldView::reservationId, view -> view));
+        List<PickList.Hold> holds = allocated.stream().map(hold -> {
+            HoldView carton = cartons.get(hold.reservationId());
+            return new PickList.Hold(hold.reservationId(), shortLine.sku(), hold.locationCode(),
+                    warehouseOf.computeIfAbsent(hold.locationCode(),
+                            code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
+                    hold.lotNumber(), hold.quantity(), true, carton == null ? null : carton.lpn(),
+                    carton != null && carton.wholeCarton());
+        }).toList();
         List<PickLine> added = list.replaceShort(lineId, holds, Identifiers::newId);
         writeBack(list, stored, Set.of(lineId));
         pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
@@ -382,7 +390,8 @@ class PickListService implements PickLists {
             UUID where = warehouseOf.computeIfAbsent(hold.locationCode(), code -> warehouses.findLocation(code)
                     .map(StorageLocationView::warehouseId).orElse(null));
             holds.put(hold.reservationId(), new PickList.Hold(hold.reservationId(), hold.sku(), hold.locationCode(),
-                    where, hold.lotNumber(), hold.quantity(), hold.status() == HoldView.Status.HELD));
+                    where, hold.lotNumber(), hold.quantity(), hold.status() == HoldView.Status.HELD, hold.lpn(),
+                    hold.wholeCarton()));
         }
         return holds;
     }
@@ -402,6 +411,7 @@ class PickListService implements PickLists {
     private static PickLineView view(UUID taskId, PickLine line, String barcode) {
         return new PickLineView(line.id(), taskId, line.sequenceNo(), line.orderLineId(), line.sku(), barcode,
                 line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(), line.status().name(),
-                line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(), line.shortQty());
+                line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(), line.shortQty(),
+                line.lpn(), line.wholeCarton());
     }
 }

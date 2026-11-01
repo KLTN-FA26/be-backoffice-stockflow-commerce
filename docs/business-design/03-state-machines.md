@@ -97,9 +97,14 @@ stateDiagram-v2
 | CONFIRMED | CLOSED (`FORCE_CLOSE`) | force close | Procurement staff | reason given; nothing received and none expected (kltn-docs 02 §5); refused while a goods receipt is being counted | — |
 | RECEIVED | CLOSED | invoice approved | Accountant | three-way match passed or override approved (BR-INV-003) | `PurchaseOrderClosed` |
 
-**Amendment (WBS 3.2.5)** is not a state. Amending a PO in `SENT` or later creates
-**revision n+1** of the same PO number and emits `PurchaseOrderAmended`; the previous revision is
-retained for the audit trail. Amendment is forbidden once any receipt exists (BR-PO-004).
+**Amendment (WBS 3.2.5)** is not a state. A STANDARD PO in `APPROVED` or `CONFIRMED` can be amended while nothing
+has been received, no goods receipt is being counted and the supplier has not rejected it: the request records
+**revision n+1** of the same PO number as a pending revision, and approving it (automatically within the requester's
+limit, otherwise by someone else) makes it the active one; the previous revision is retained for the audit trail.
+There is no `SENT` status and no `PurchaseOrderAmended` event: when the order had already been sent, the supplier
+is told with `PurchaseOrderSent` carrying `amendmentRevisionNo`, and the supplier response returns to `PENDING`.
+A waiting amendment is withdrawn by the first posted receipt, by cancelling and by closing the order. Amendment is
+forbidden once any receipt exists (BR-PO-004).
 
 ---
 
@@ -118,6 +123,9 @@ the inventory item's **QC required** flag (snapshotted on the receipt line):
 stateDiagram-v2
     [*] --> DRAFT
     DRAFT --> CONFIRMED: confirm counts
+    DRAFT --> PENDING_APPROVAL: confirm, a PO line beyond its tolerance (BR-RCP-001)
+    PENDING_APPROVAL --> CONFIRMED: manager approves / rejects the excess
+    PENDING_APPROVAL --> CANCELLED: cancel, or nothing within the tolerance is left
     DRAFT --> CANCELLED: cancel
     CONFIRMED --> IN_QC: a QC-required line has no verdict yet
     CONFIRMED --> IN_PUTAWAY: no line needs QC
@@ -131,12 +139,26 @@ stateDiagram-v2
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
 | — | DRAFT | create from PO | Warehouse staff | PO `CONFIRMED` / `PARTIALLY_RECEIVED` (BR-RCP-001) | — |
-| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance, else manager approval | `GoodsReceived` |
+| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance | `GoodsReceived` |
+| DRAFT | PENDING_APPROVAL | confirm | Warehouse staff | a PO line goes beyond its over-receipt tolerance (BR-RCP-001, SCRUM-477); nothing is counted in, no event | — |
+| PENDING_APPROVAL | CONFIRMED | approve, or reject the excess | holder of `procurement-goods-receipts:APPROVE` (warehouse manager), not the receiver nor whoever sent it for approval | reason required; approve posts the whole count, reject-excess cuts each PO line to its remaining limit and posts (BR-RCP-001) | `GoodsReceived` |
+| PENDING_APPROVAL | CANCELLED | cancel; or reject the excess with nothing within the tolerance left; or, for a receipt without a PO, reject it | Warehouse staff / manager | never confirmed | — |
+| DRAFT | PENDING_APPROVAL | confirm a receipt **without a PO** (BR-RCP-002, SCRUM-478) | Warehouse staff | always, whatever the count; supplier and reason were required at creation; nothing is counted in | — |
+| PENDING_APPROVAL | CONFIRMED | approve a receipt without a PO | holder of `procurement-goods-receipts:APPROVE`, not the receiver nor whoever sent it | reason required; posts the count, no PO progress; the decision `APPROVED` is a database check for a posted receipt without a PO | `GoodsReceived` (no PO id) |
 | DRAFT | CANCELLED | cancel | Warehouse staff | never confirmed (`ck_goods_receipts_cancelled`) | — |
 | CONFIRMED | IN_QC | — | system | ≥1 line with `qc_required`; a **move-to-QC task** (`move_task.origin = RECEIPT_QC`) is created per such line | — |
 | CONFIRMED | IN_PUTAWAY | — | system | no line needs QC; putaway tasks from `RECEIVING` | — |
 | IN_QC | IN_PUTAWAY | last QC verdict | QC staff | QC only on goods already in the QC area (BR-08); accepted + quarantined + rejected = moved quantity | `QcCompleted` |
 | IN_PUTAWAY / IN_QC | CLOSED | — | system | every line handled | — |
+
+`PENDING_APPROVAL` is not in kltn-docs 03 §5.1, which says only that a count beyond the tolerance "needs the
+Warehouse Manager's exception approval or rejection of the excess" (§4 step 5): it is the form that wait takes (owner
+decision OVER-RCPT, 29/10). A receipt in it holds nothing: no stock, no PO progress, no event, and it does not count
+against the PO line's tolerance until posted.
+
+A receipt without a PO (blind receipt, BR-RCP-002) takes the same `PENDING_APPROVAL` wait on every confirmation, not
+only past a tolerance: it is rejected as a whole (cancelled, decision `REJECTED`) rather than cut back. The PO attached to
+it afterwards is a reference only and changes nothing in this machine or in the order's.
 
 **What confirming does to inventory.** Stock rows appear in the `RECEIVING` area in condition
 **INBOUND** (machine 5). A QC-required line then moves `RECEIVING → QUALITY_CONTROL` (still INBOUND);

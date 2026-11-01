@@ -50,12 +50,18 @@ spring:
           jwk-set-uri: ${JWT_JWK_SET_URI}
 
 server:
-  # Behind a reverse proxy that terminates TLS. Without this, Spring sees the proxy's address as the
-  # client address and http as the scheme - so rate limiting keys every request to the proxy, and
-  # generated links come out as http.
-  forward-headers-strategy: framework
+  # Behind a reverse proxy (nginx) that terminates TLS and OVERWRITES X-Forwarded-For. NATIVE makes
+  # Tomcat apply the forwarded headers itself - and only when the connection comes from a trusted
+  # proxy (below). Without it Spring sees the proxy's address and http, so rate limiting keys every
+  # request to the proxy; with FRAMEWORK instead, the filter believes every caller (SCRUM-483).
+  forward-headers-strategy: native
   shutdown: graceful
   tomcat:
+    remoteip:
+      # Who may set the client address: connections from these addresses only. The default is the
+      # private ranges, i.e. the compose network nginx and the application share; the application
+      # publishes no port, so nothing else can connect from one. Override with TRUSTED_PROXIES.
+      internal-proxies: '${TRUSTED_PROXIES:10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|127\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0:0:0:0:0:0:0:1|::1}'
     # Bounded, so a burst queues rather than exhausting memory creating threads.
     threads:
       max: 200

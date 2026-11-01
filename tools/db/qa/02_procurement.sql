@@ -144,22 +144,30 @@ SELECT pg_temp.expect_fail('R22 receiving into a location of another warehouse',
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
     VALUES (gen_random_uuid(), md5('qa:gr:1')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
             md5('qa:loc:HN-RCV')::uuid, 1) $q$);
-SELECT pg_temp.expect_fail('R23 receiving 11 of 10 at 5% tolerance (BR-04)', $q$
-    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
-    VALUES (gen_random_uuid(), md5('qa:gr:1')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
-            md5('demo:loc:HCM-RCV01')::uuid, 11) $q$);
--- Received under the 3-step flow (qc_required snapshot), so QC below has goods to decide on.
-SELECT pg_temp.expect_ok('R24 receiving 10.5 of 10 (exactly at tolerance)', $q$
+-- SCRUM-477 (BR-RCP-001): a draft is a worksheet and may count past the tolerance; BR-04 is checked when the receipt is
+-- POSTED (tg_goods_receipts_tolerance), and only the warehouse manager's approval lets an excess through.
+SELECT pg_temp.expect_ok('R23 a draft counting 11 of 10 at 5% tolerance (accepted: the manager decides)', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty,
                                                  qc_required)
     VALUES (md5('qa:grl:1')::uuid, md5('qa:gr:1')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
-            md5('demo:loc:HCM-RCV01')::uuid, 10.5, TRUE) $q$);
-SELECT pg_temp.expect_fail('R25 a second receipt pushing the total past tolerance', $q$
-    INSERT INTO procurement.goods_receipts (id, receipt_number, po_id, po_revision_id, warehouse_id, received_at, received_by)
-    VALUES (md5('qa:gr:2')::uuid, 'GR-QA-2', md5('demo:po:1')::uuid, md5('qa:po:1:rev0')::uuid, md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid);
-    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
-    VALUES (gen_random_uuid(), md5('qa:gr:2')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
-            md5('demo:loc:HCM-RCV01')::uuid, 0.5) $q$);
+            md5('demo:loc:HCM-RCV01')::uuid, 11, TRUE) $q$);
+SELECT pg_temp.expect_fail('R23b posting 11 of 10 without the manager''s approval (BR-04)', $q$
+    UPDATE procurement.goods_receipts SET status = 'IN_QC', confirmed_by = md5('demo:user:approver')::uuid,
+        confirmed_at = NOW() WHERE id = md5('qa:gr:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R23c waiting for approval without having asked for it', $q$
+    UPDATE procurement.goods_receipts SET status = 'PENDING_APPROVAL' WHERE id = md5('qa:gr:1')::uuid $q$);
+SELECT pg_temp.expect_ok('R23d sent for approval: lines may still be cut back', $q$
+    UPDATE procurement.goods_receipts SET status = 'PENDING_APPROVAL', approval_requested_by = md5('demo:user:editor')::uuid,
+        approval_requested_at = NOW() WHERE id = md5('qa:gr:1')::uuid;
+    UPDATE procurement.goods_receipt_lines SET received_qty = 10.5 WHERE id = md5('qa:grl:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R23e a decision by the person who asked (four eyes)', $q$
+    UPDATE procurement.goods_receipts SET status = 'IN_QC', confirmed_by = md5('demo:user:editor')::uuid, confirmed_at = NOW(),
+        approval_decision = 'EXCESS_REJECTED', approval_decided_by = md5('demo:user:editor')::uuid,
+        approval_decided_at = NOW(), approval_reason = 'cut to the tolerance' WHERE id = md5('qa:gr:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R23f a decision without a reason', $q$
+    UPDATE procurement.goods_receipts SET status = 'IN_QC', confirmed_by = md5('demo:user:approver')::uuid, confirmed_at = NOW(),
+        approval_decision = 'EXCESS_REJECTED', approval_decided_by = md5('demo:user:approver')::uuid,
+        approval_decided_at = NOW() WHERE id = md5('qa:gr:1')::uuid $q$);
 SELECT pg_temp.expect_fail('R26 the same PO line and lot twice on one receipt', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty, lot_number, expiry_date)
     VALUES (gen_random_uuid(), md5('qa:gr:1')::uuid, md5('qa:po:1:line:2')::uuid, md5('demo:item:TABLE-OAK-160')::uuid,
@@ -169,11 +177,24 @@ SELECT pg_temp.expect_fail('R26 the same PO line and lot twice on one receipt', 
             md5('demo:loc:HCM-RCV01')::uuid, 1, 'LOT-QA', '2030-01-01') $q$);
 SELECT pg_temp.expect_fail('R27 CONFIRMED receipt without who/when', $q$
     UPDATE procurement.goods_receipts SET status = 'CONFIRMED' WHERE id = md5('qa:gr:1')::uuid $q$);
-SELECT pg_temp.expect_ok('R27b receipt confirmed, the line moved to the QC area (BR-08 precondition)', $q$
+-- Rejecting the excess: the line was cut to 10.5 (exactly at tolerance, R23d); the receipt is posted with the decision, and
+-- received under the 3-step flow (the qc_required snapshot), so QC below has goods to decide on.
+SELECT pg_temp.expect_ok('R27b excess rejected: 10.5 of 10 posted, the line moved to the QC area (BR-08 precondition)', $q$
     UPDATE procurement.goods_receipts SET status = 'IN_QC', confirmed_by = md5('demo:user:approver')::uuid,
-        confirmed_at = NOW() WHERE id = md5('qa:gr:1')::uuid;
+        confirmed_at = NOW(), approval_decision = 'EXCESS_REJECTED', approval_decided_by = md5('demo:user:approver')::uuid,
+        approval_decided_at = NOW(), approval_reason = 'cut to the tolerance' WHERE id = md5('qa:gr:1')::uuid;
     UPDATE procurement.goods_receipt_lines SET qc_location_id = md5('demo:loc:HCM-QCA01')::uuid, moved_to_qc_at = NOW(),
         moved_to_qc_by = md5('demo:user:editor')::uuid WHERE id = md5('qa:grl:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R27c the line of a posted receipt is frozen (BR-05)', $q$
+    UPDATE procurement.goods_receipt_lines SET received_qty = 11 WHERE id = md5('qa:grl:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R25 a second receipt posted past the tolerance (10.5 posted, 0.5 more)', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, po_id, po_revision_id, warehouse_id, received_at, received_by)
+    VALUES (md5('qa:gr:2')::uuid, 'GR-QA-2', md5('demo:po:1')::uuid, md5('qa:po:1:rev0')::uuid, md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid);
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
+    VALUES (gen_random_uuid(), md5('qa:gr:2')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+            md5('demo:loc:HCM-RCV01')::uuid, 0.5);
+    UPDATE procurement.goods_receipts SET status = 'IN_PUTAWAY', confirmed_by = md5('demo:user:approver')::uuid,
+        confirmed_at = NOW() WHERE id = md5('qa:gr:2')::uuid $q$);
 SELECT pg_temp.expect_fail('R28 QC inspects more than received', $q$
     INSERT INTO procurement.qc_inspections (id, receipt_line_id, outcome, quantity, inspected_by)
     VALUES (gen_random_uuid(), md5('qa:grl:1')::uuid, 'ACCEPTED', 11, md5('demo:user:editor')::uuid) $q$);
@@ -212,6 +233,35 @@ SELECT pg_temp.expect_fail('R33b expiry-tracked item received without an expiry 
 SELECT pg_temp.expect_fail('R34 item without weight/dimensions received', $q$
     UPDATE inventory.inventory_items SET weight_kg = NULL WHERE sku = 'SOFA-3S-GREY';
     UPDATE procurement.goods_receipt_lines SET note = 'recheck' WHERE id = md5('qa:grl:1')::uuid $q$);
+
+\echo '--- receipt without a PO (BR-RCP-002, SCRUM-478)'
+SELECT pg_temp.expect_fail('R34a a receipt without a PO and without a supplier', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, blind_reason)
+    VALUES (gen_random_uuid(), 'GR-QA-B1', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid, 'gift') $q$);
+SELECT pg_temp.expect_fail('R34b a receipt without a PO and without a reason', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id)
+    VALUES (gen_random_uuid(), 'GR-QA-B2', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid,
+            md5('qa:supplier:OTHER')::uuid) $q$);
+SELECT pg_temp.expect_fail('R34c a receipt without a PO posted without the manager''s approval', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id,
+                                            blind_reason)
+    VALUES (md5('qa:gr:b3')::uuid, 'GR-QA-B3', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid,
+            md5('qa:supplier:OTHER')::uuid, 'gift');
+    UPDATE procurement.goods_receipts SET status = 'IN_PUTAWAY', confirmed_by = md5('demo:user:approver')::uuid,
+        confirmed_at = NOW() WHERE id = md5('qa:gr:b3')::uuid $q$);
+SELECT pg_temp.expect_fail('R34d a PO line on a line of a receipt without a PO', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id,
+                                            blind_reason)
+    VALUES (md5('qa:gr:b4')::uuid, 'GR-QA-B4', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid,
+            md5('qa:supplier:OTHER')::uuid, 'gift');
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
+    VALUES (gen_random_uuid(), md5('qa:gr:b4')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+            md5('demo:loc:HCM-RCV01')::uuid, 1) $q$);
+SELECT pg_temp.expect_fail('R34e a reference to a PO of another supplier', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id,
+                                            blind_reason, referenced_po_id)
+    VALUES (gen_random_uuid(), 'GR-QA-B5', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid,
+            md5('qa:supplier:OTHER')::uuid, 'gift', md5('demo:po:1')::uuid) $q$);
 
 \echo '--- invoicing (docs 04)'
 SELECT pg_temp.expect_fail('R35 invoice for the PO from another supplier', $q$

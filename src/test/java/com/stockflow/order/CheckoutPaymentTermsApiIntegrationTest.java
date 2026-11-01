@@ -229,10 +229,16 @@ class CheckoutPaymentTermsApiIntegrationTest {
 
     // ------------------------------------------------------------------ SCRUM-193: the balance policy on the portal
 
+    /** SCRUM-484: terms that exist are changed against the version read; the first set carries none. */
+    private Long currentTermsVersion() {
+        var terms = customers.creditTerms(customer);
+        return terms.configured() ? terms.version() : null;
+    }
+
     private void depositTerms(boolean credit, String limit, com.stockflow.customer.api.DepositBalancePolicy policy) {
         customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, credit, CommercialTerm.DEPOSIT,
                 new BigDecimal("30"), credit ? new BigDecimal(limit) : null, credit ? 30 : null, "test terms", approver,
-                null, policy));
+                currentTermsVersion(), policy));
     }
 
     private ResultActions placeTwo(String extra) throws Exception {

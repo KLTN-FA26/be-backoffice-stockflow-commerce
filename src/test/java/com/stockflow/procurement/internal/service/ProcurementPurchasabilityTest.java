@@ -113,7 +113,7 @@ class ProcurementPurchasabilityTest {
                 Clock.fixed(Instant.parse("2026-10-14T03:00:00Z"), ZoneOffset.UTC), suppliers,
                 mock(ApplicationEventPublisher.class), mock(NotificationService.class),
                 mock(PoDeliveryDecisionRepository.class), null, products, inventory, inventoryControl, warehouses,
-                mock(CurrentUserProvider.class), supplierItems, noLimits());
+                mock(CurrentUserProvider.class), supplierItems, noLimits(), org.mockito.Mockito.mock(com.stockflow.inventory.api.UomConversionService.class));
     }
 
     private CreatePurchaseOrderCommand create(String... skus) {

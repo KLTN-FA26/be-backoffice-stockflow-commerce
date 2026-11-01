@@ -41,6 +41,16 @@ class ApprovalLimits {
     }
 
     /**
+     * The approver's own limit when it does not cover {@code total} - what an amendment, of a standard order or a
+     * subcontract supplement, is refused with (SCRUM-124 rule 5) - or empty when they may approve it: their limit
+     * covers it ({@link ApprovalLimit#covers(Money, Money)}, the rule every decision uses), or none of their roles has
+     * one configured in that currency today, which bounds them by the approve permission alone (PO-NOLIMIT).
+     */
+    Optional<ApprovalLimit> limitExceeded(UUID approverId, Money total, Instant now) {
+        return limitOf(approverId, total.currency(), BusinessCalendar.date(now)).filter(limit -> !limit.covers(total));
+    }
+
+    /**
      * The anti-splitting window (SCRUM-124 rule 4): the automatic approvals of one holder to one supplier in the 7 days
      * ending at the moment of the decision are added up with the order being decided.
      */
@@ -78,8 +88,7 @@ class ApprovalLimits {
             return Optional.empty();
         }
         Optional<ApprovalLimit> limit = limitOf(limitHolder, total.currency(), BusinessCalendar.date(now));
-        if (limit.isEmpty() || limit.get().amount().amount().signum() <= 0
-                || total.compareTo(limit.get().amount()) > 0) {
+        if (limit.isEmpty() || !limit.get().covers(total)) {
             return Optional.empty();
         }
         Money alreadyApproved = purchaseOrders.autoApprovedTotal(limitHolder, supplierId, total.currency(),

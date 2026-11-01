@@ -2,6 +2,7 @@ package com.stockflow.catalog.internal.service;
 
 import com.stockflow.catalog.internal.domain.Availability;
 import com.stockflow.catalog.internal.domain.SkuAvailability;
+import com.stockflow.catalog.internal.repository.ListingRepository;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -23,6 +24,7 @@ import java.util.stream.IntStream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -37,13 +39,25 @@ class StorefrontAvailabilityServiceTest {
     private final UUID userId = UUID.randomUUID();
     private final CustomerService customers = mock(CustomerService.class);
     private final InventoryService inventory = mock(InventoryService.class);
+    private final ListingRepository listings = mock(ListingRepository.class);
     private final StorefrontAvailabilityService service =
-            new StorefrontAvailabilityService(inventory, new AvailabilityProperties(5, 3), customers);
+            new StorefrontAvailabilityService(inventory, new AvailabilityProperties(5, 3), customers, listings);
+
+    private static ListingRepository.ListedSku listed(Sku sku) {
+        return new ListingRepository.ListedSku(sku.code(), UUID.randomUUID(), "slug", "Title");
+    }
 
     @BeforeEach
     void activeCustomer() {
         when(customers.findByUserId(userId)).thenReturn(Optional.of(new CustomerSummary(
                 UUID.randomUUID(), userId, "Customer", "customer@example.test", null, null, null, "ACTIVE", 0, null)));
+        // By default every SKU used below is on sale.
+        when(listings.listedBySku(any())).thenAnswer(call -> {
+            Collection<String> codes = call.getArgument(0);
+            Map<String, ListingRepository.ListedSku> all = new java.util.HashMap<>();
+            codes.forEach(code -> all.put(code, listed(new Sku(code))));
+            return all;
+        });
     }
 
     @Test
@@ -71,6 +85,27 @@ class StorefrontAvailabilityServiceTest {
     }
 
     @Test
+    void unpublishedOrInternalSkuIsOmittedAndNeverReachesInventory() {
+        doReturn(Map.of()).when(listings).listedBySku(any());
+
+        assertThat(service.availabilityOf(userId, List.of("SOFA-3S-GREY", "INTERNAL-BLANK"))).isEmpty();
+        verifyNoInteractions(inventory);
+    }
+
+    @Test
+    void mixedRequestAnswersOnlyThePublishedSkusInTheOrderAsked() {
+        doReturn(Map.of(SOFA.code(), listed(SOFA), CHAIR.code(), listed(CHAIR))).when(listings).listedBySku(any());
+        when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of(SOFA, 33, CHAIR, 0, TABLE, 9));
+
+        List<SkuAvailability> result = service.availabilityOf(userId, List.of("CHAIR-01", "TABLE-OAK-160", "SOFA-3S-GREY"));
+
+        assertThat(result).containsExactly(
+                new SkuAvailability(CHAIR, Availability.OUT_OF_STOCK),
+                new SkuAvailability(SOFA, Availability.IN_STOCK));
+        verify(inventory).availableToPromise(new LinkedHashSet<>(List.of(CHAIR, SOFA)));
+    }
+
+    @Test
     void refusedBeforeReachingInventory() {
         List<String> tooMany = new ArrayList<>(IntStream.rangeClosed(1, 4).mapToObj(i -> "SKU-00" + i).toList());
 
@@ -81,6 +116,7 @@ class StorefrontAvailabilityServiceTest {
         }
         assertThatThrownBy(() -> service.availabilityOf(userId, null)).isInstanceOf(BusinessException.class);
         verifyNoInteractions(inventory);
+        verifyNoInteractions(listings);
     }
     @Test
     void missingOrBlockedCustomerCannotQueryInventory() {

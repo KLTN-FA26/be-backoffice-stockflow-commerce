@@ -21,9 +21,17 @@ import java.util.UUID;
  *
  * <pre>
  *   DRAFT ──confirm──▶ IN_QC ──every QC line decided──▶ IN_PUTAWAY ──(putaway, SCRUM-92)──▶ CLOSED
- *     │        └──────(no QC line)────────────────────────▲
- *     └──cancel──▶ CANCELLED            IN_QC ──nothing left to put away──▶ CLOSED
+ *     │ │      └──────(no QC line)────────────────────────▲
+ *     │ └──cancel──▶ CANCELLED            IN_QC ──nothing left to put away──▶ CLOSED
+ *     │
+ *     └──confirm, count beyond a PO line's tolerance──▶ PENDING_APPROVAL ──manager approves / rejects the excess──▶ (as confirm)
+ *                                                          └──cancel──▶ CANCELLED
  * </pre>
+ *
+ * <p>SCRUM-477 (BR-RCP-001): a count beyond the over-receipt tolerance is not refused, and not posted either. It waits
+ * in PENDING_APPROVAL, counted in nowhere, until a user other than the receiver decides: <em>approve</em> posts the
+ * whole count; <em>reject the excess</em> cuts the lines back to the tolerance and posts what is left (a receipt with
+ * nothing left is cancelled). The decision, its maker and its reason stay on the receipt ({@link ReceiptApproval}).</p>
  *
  * <p>What the aggregate decides: the order of the steps, that a confirmed count is never edited
  * (BR-05), that QC decides only on goods already in the QC area and accounts for every unit of them
@@ -41,6 +49,9 @@ public final class GoodsReceipt extends AggregateRoot {
     private final UUID purchaseOrderId;
     private final UUID purchaseOrderRevisionId;
     private final UUID warehouseId;
+    private final UUID supplierId;
+    private final String blindReason;
+    private UUID referencedPurchaseOrderId;
     private final Instant receivedAt;
     private final UUID receivedBy;
     private final String deliveryNote;
@@ -51,16 +62,37 @@ public final class GoodsReceipt extends AggregateRoot {
     private Instant confirmedAt;
     private UUID confirmedBy;
     private Instant closedAt;
+    private ReceiptApproval approval;
     private final long version;
 
+    /**
+     * {@code purchaseOrderId} and {@code purchaseOrderRevisionId} are both null on a blind receipt (SCRUM-478), which
+     * then names its {@code supplierId} and {@code blindReason} instead; {@code referencedPurchaseOrderId} is the PO
+     * attached to it afterwards, a reference only.
+     */
     public GoodsReceipt(UUID id, String number, UUID purchaseOrderId, UUID purchaseOrderRevisionId, UUID warehouseId,
+                        UUID supplierId, String blindReason, UUID referencedPurchaseOrderId,
                         Instant receivedAt, UUID receivedBy, String deliveryNote, String note, List<ReceiptLine> lines,
                         GoodsReceiptStatus status, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
-                        long version) {
+                        ReceiptApproval approval, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.number = Objects.requireNonNull(number, "number");
-        this.purchaseOrderId = Objects.requireNonNull(purchaseOrderId, "purchaseOrderId");
-        this.purchaseOrderRevisionId = Objects.requireNonNull(purchaseOrderRevisionId, "purchaseOrderRevisionId");
+        if ((purchaseOrderId == null) != (purchaseOrderRevisionId == null)) {
+            throw new IllegalArgumentException("A receipt has a PO and its revision, or neither");
+        }
+        this.purchaseOrderId = purchaseOrderId;
+        this.purchaseOrderRevisionId = purchaseOrderRevisionId;
+        if (purchaseOrderId == null) {
+            Objects.requireNonNull(supplierId, "supplierId");
+            if (blindReason == null || blindReason.isBlank()) {
+                throw new IllegalArgumentException("A receipt without a PO has a reason");
+            }
+        } else if (supplierId != null || blindReason != null || referencedPurchaseOrderId != null) {
+            throw new IllegalArgumentException("A receipt against a PO has no blind supplier, reason or reference");
+        }
+        this.supplierId = supplierId;
+        this.blindReason = blindReason;
+        this.referencedPurchaseOrderId = referencedPurchaseOrderId;
         this.warehouseId = Objects.requireNonNull(warehouseId, "warehouseId");
         this.receivedAt = Objects.requireNonNull(receivedAt, "receivedAt");
         this.receivedBy = Objects.requireNonNull(receivedBy, "receivedBy");
@@ -71,6 +103,7 @@ public final class GoodsReceipt extends AggregateRoot {
         this.confirmedAt = confirmedAt;
         this.confirmedBy = confirmedBy;
         this.closedAt = closedAt;
+        this.approval = approval;
         this.version = version;
         requireDistinctLines(this.lines);
     }
@@ -78,8 +111,30 @@ public final class GoodsReceipt extends AggregateRoot {
     public static GoodsReceipt draft(UUID id, String number, UUID purchaseOrderId, UUID purchaseOrderRevisionId,
                                      UUID warehouseId, UUID receivedBy, String deliveryNote, String note,
                                      Instant now) {
-        return new GoodsReceipt(id, number, purchaseOrderId, purchaseOrderRevisionId, warehouseId, now, receivedBy,
-                deliveryNote, note, List.of(), GoodsReceiptStatus.DRAFT, null, null, null, 0L);
+        return new GoodsReceipt(id, number, Objects.requireNonNull(purchaseOrderId, "purchaseOrderId"),
+                Objects.requireNonNull(purchaseOrderRevisionId, "purchaseOrderRevisionId"), warehouseId, null, null,
+                null, now, receivedBy, deliveryNote, note, List.of(), GoodsReceiptStatus.DRAFT, null, null, null, null,
+                0L);
+    }
+
+    /**
+     * SCRUM-478, BR-RCP-002 (kltn-docs 03 edge cases): goods that arrived with no PO. The supplier and the reason are
+     * required; it can be posted only with the warehouse manager's approval.
+     */
+    public static GoodsReceipt blindDraft(UUID id, String number, UUID supplierId, UUID warehouseId, UUID receivedBy,
+                                          String reason, String deliveryNote, String note, Instant now) {
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException(ErrorCode.BLIND_RECEIPT_REASON_REQUIRED,
+                    "A receipt without a purchase order needs a reason (BR-RCP-002)");
+        }
+        return new GoodsReceipt(id, number, null, null, warehouseId, Objects.requireNonNull(supplierId, "supplierId"),
+                reason.strip(), null, now, receivedBy, deliveryNote, note, List.of(), GoodsReceiptStatus.DRAFT, null,
+                null, null, null, 0L);
+    }
+
+    /** True for a receipt with no purchase order (BR-RCP-002). */
+    public boolean blind() {
+        return purchaseOrderId == null;
     }
 
     // ------------------------------------------------------------------ counting
@@ -107,10 +162,122 @@ public final class GoodsReceipt extends AggregateRoot {
      */
     public void confirm(UUID userId, Instant now, boolean handedToProduction) {
         requireStatus(GoodsReceiptStatus.DRAFT, "confirm");
-        if (lines.isEmpty()) {
+        if (blind()) {
             throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
-                    "Receipt %s has no lines to confirm".formatted(number));
+                    "Receipt %s has no purchase order: it is posted only after the warehouse manager approves it (BR-RCP-002)"
+                            .formatted(number));
         }
+        post(userId, now, handedToProduction);
+    }
+
+    /**
+     * BR-RCP-001: the count goes beyond a PO line's tolerance, so it is not counted in. It waits for a user who may
+     * decide it (never the one who counted it or the one asking now) and nothing downstream sees it until then.
+     */
+    public void requestApproval(UUID userId, Instant now) {
+        requireStatus(GoodsReceiptStatus.DRAFT, "send for approval");
+        requireLines();
+        this.approval = ReceiptApproval.requested(Objects.requireNonNull(userId, "userId"),
+                Objects.requireNonNull(now, "now"));
+        this.status = GoodsReceiptStatus.PENDING_APPROVAL;
+    }
+
+    /** The manager accepts the whole count; it is posted exactly as {@link #confirm} posts a count. */
+    public void approve(UUID approverId, String reason, Instant now, boolean handedToProduction) {
+        requireDecidable(approverId, reason);
+        this.approval = approval.decided(ReceiptApproval.Decision.APPROVED, approverId, now, reason.strip());
+        post(approverId, now, handedToProduction);
+    }
+
+    /**
+     * The manager refuses the part beyond the tolerance: the lines are cut back to {@code allowedByPoLine} (units each
+     * PO line may still receive on this receipt) first, by {@link #cutBackTo}, then this posts what is left. With
+     * nothing left the receipt is cancelled: nothing was received that the tolerance allows.
+     */
+    public void rejectExcess(UUID approverId, String reason, Instant now, boolean handedToProduction) {
+        requireDecidable(approverId, reason);
+        requirePurchaseOrder("reject the excess of");
+        this.approval = approval.decided(ReceiptApproval.Decision.EXCESS_REJECTED, approverId, now, reason.strip());
+        if (lines.isEmpty()) {
+            this.status = GoodsReceiptStatus.CANCELLED;
+            return;
+        }
+        post(approverId, now, handedToProduction);
+    }
+
+    /**
+     * Cuts each named PO line's units on this receipt down to what it may still receive: the excess comes off the
+     * lines of that PO line from the last one counted backwards, a line left with nothing is removed. Only a receipt
+     * waiting for approval is cut, and only by the rejection of its excess.
+     */
+    public void cutBackTo(Map<UUID, Integer> allowedByPoLine) {
+        requireStatus(GoodsReceiptStatus.PENDING_APPROVAL, "cut back");
+        requirePurchaseOrder("cut back");
+        List<ReceiptLine> kept = new ArrayList<>();
+        Map<UUID, Integer> toCut = new java.util.HashMap<>();
+        for (Map.Entry<UUID, Integer> allowed : allowedByPoLine.entrySet()) {
+            toCut.put(allowed.getKey(), Math.max(quantityOf(allowed.getKey()) - Math.max(allowed.getValue(), 0), 0));
+        }
+        for (int i = lines.size() - 1; i >= 0; i--) {
+            ReceiptLine line = lines.get(i);
+            int cut = Math.min(toCut.getOrDefault(line.poLineId(), 0), line.receivedQuantity());
+            toCut.computeIfPresent(line.poLineId(), (k, v) -> v - cut);
+            if (cut < line.receivedQuantity()) {
+                kept.add(0, cut == 0 ? line : line.withReceivedQuantity(line.receivedQuantity() - cut));
+            }
+        }
+        lines.clear();
+        lines.addAll(kept);
+    }
+
+    /**
+     * BR-RCP-002: the manager refuses a receipt without a purchase order: the whole receipt is cancelled, with the
+     * decision, who made it and why on it. (Rejecting only the excess is for a receipt against a PO.)
+     */
+    public void reject(UUID approverId, String reason, Instant now) {
+        requireDecidable(approverId, reason);
+        if (!blind()) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
+                    "Receipt %s is against a purchase order: its excess is rejected, the receipt is not".formatted(number));
+        }
+        this.approval = approval.decided(ReceiptApproval.Decision.REJECTED, approverId, now, reason.strip());
+        this.status = GoodsReceiptStatus.CANCELLED;
+    }
+
+    /**
+     * SCRUM-478, owner decision NOPO-ATTACH: the PO a receipt without one turned out to belong to. A reference only:
+     * it changes nothing about the PO and nothing is counted against it. The caller has checked that the PO exists;
+     * it must be the receipt's supplier's ({@code RECEIPT_REFERENCE_SUPPLIER_MISMATCH}). Not for a cancelled receipt.
+     */
+    public void referencePurchaseOrder(UUID purchaseOrderId, UUID purchaseOrderSupplierId) {
+        requirePurchaseOrderless("reference a purchase order on");
+        if (status == GoodsReceiptStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
+                    "Receipt %s is cancelled: no purchase order is attached to it".formatted(number));
+        }
+        if (!supplierId.equals(purchaseOrderSupplierId)) {
+            throw new BusinessException(ErrorCode.RECEIPT_REFERENCE_SUPPLIER_MISMATCH,
+                    "The purchase order is not a purchase order of the supplier of receipt %s".formatted(number));
+        }
+        this.referencedPurchaseOrderId = Objects.requireNonNull(purchaseOrderId, "purchaseOrderId");
+    }
+
+    private void requirePurchaseOrder(String verb) {
+        if (blind()) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
+                    "Cannot %s receipt %s: it has no purchase order".formatted(verb, number));
+        }
+    }
+
+    private void requirePurchaseOrderless(String verb) {
+        if (!blind()) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
+                    "Cannot %s receipt %s: it is against a purchase order".formatted(verb, number));
+        }
+    }
+
+    private void post(UUID userId, Instant now, boolean handedToProduction) {
+        requireLines();
         this.confirmedBy = Objects.requireNonNull(userId, "userId");
         this.confirmedAt = Objects.requireNonNull(now, "now");
         if (handedToProduction) {
@@ -125,9 +292,34 @@ public final class GoodsReceipt extends AggregateRoot {
                 ? GoodsReceiptStatus.IN_QC : GoodsReceiptStatus.IN_PUTAWAY;
     }
 
-    /** Only a draft: once counted in, a receipt is corrected by an adjustment or a reversal (BR-05). */
+    private void requireLines() {
+        if (lines.isEmpty()) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
+                    "Receipt %s has no lines to confirm".formatted(number));
+        }
+    }
+
+    /** Waiting for a decision, a reason given, and a decider who is neither the receiver nor the one who asked. */
+    private void requireDecidable(UUID approverId, String reason) {
+        requireStatus(GoodsReceiptStatus.PENDING_APPROVAL, "decide");
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED,
+                    "Deciding on receipt %s needs a reason".formatted(number));
+        }
+        Objects.requireNonNull(approverId, "approverId");
+        if (approverId.equals(receivedBy) || approverId.equals(approval.requestedBy())) {
+            throw new BusinessException(ErrorCode.RECEIPT_SELF_APPROVAL,
+                    "Receipt %s cannot be decided by the person who counted it or asked for its approval"
+                            .formatted(number));
+        }
+    }
+
+    /** Only before the count is posted: once counted in, a receipt is corrected by an adjustment or a reversal (BR-05). */
     public void cancel() {
-        requireStatus(GoodsReceiptStatus.DRAFT, "cancel");
+        if (status != GoodsReceiptStatus.DRAFT && status != GoodsReceiptStatus.PENDING_APPROVAL) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
+                    "Cannot cancel receipt %s: it is %s, not DRAFT or PENDING_APPROVAL".formatted(number, status));
+        }
         this.status = GoodsReceiptStatus.CANCELLED;
     }
 
@@ -231,7 +423,7 @@ public final class GoodsReceipt extends AggregateRoot {
 
     /** Units of one PO line on this receipt. */
     public int quantityOf(UUID poLineId) {
-        return lines.stream().filter(l -> l.poLineId().equals(poLineId)).mapToInt(ReceiptLine::receivedQuantity).sum();
+        return lines.stream().filter(l -> poLineId.equals(l.poLineId())).mapToInt(ReceiptLine::receivedQuantity).sum();
     }
 
     private void requireStatus(GoodsReceiptStatus expected, String verb) {
@@ -245,10 +437,12 @@ public final class GoodsReceipt extends AggregateRoot {
     private static void requireDistinctLines(List<ReceiptLine> candidate) {
         Set<String> keys = new HashSet<>();
         for (ReceiptLine line : candidate) {
-            if (!keys.add(line.poLineId() + "|" + Objects.toString(line.lotNumber(), ""))) {
+            // One line per PO line and lot; a blind receipt has no PO line, so one per item and lot.
+            String what = line.poLineId() == null ? "item " + line.inventoryItemId() : "PO line " + line.poLineId();
+            if (!keys.add(what + "|" + Objects.toString(line.lotNumber(), ""))) {
                 throw new BusinessException(ErrorCode.DUPLICATE_RECEIPT_LINE,
-                        "PO line %s%s appears twice; put the whole quantity of a lot on one line".formatted(
-                                line.poLineId(), line.lotNumber() == null ? "" : " lot " + line.lotNumber()));
+                        "%s%s appears twice; put the whole quantity of a lot on one line".formatted(
+                                what, line.lotNumber() == null ? "" : " lot " + line.lotNumber()));
             }
         }
     }
@@ -258,6 +452,12 @@ public final class GoodsReceipt extends AggregateRoot {
     public UUID purchaseOrderId() { return purchaseOrderId; }
     public UUID purchaseOrderRevisionId() { return purchaseOrderRevisionId; }
     public UUID warehouseId() { return warehouseId; }
+    /** The supplier of a receipt without a PO; null on a receipt against one (the PO names the supplier). */
+    public UUID supplierId() { return supplierId; }
+    /** Why goods arrived with no PO (BR-RCP-002); null on a receipt against a PO. */
+    public String blindReason() { return blindReason; }
+    /** The PO attached afterwards to a receipt without one; a reference only. */
+    public UUID referencedPurchaseOrderId() { return referencedPurchaseOrderId; }
     public Instant receivedAt() { return receivedAt; }
     public UUID receivedBy() { return receivedBy; }
     public String deliveryNote() { return deliveryNote; }
@@ -267,5 +467,7 @@ public final class GoodsReceipt extends AggregateRoot {
     public Instant confirmedAt() { return confirmedAt; }
     public UUID confirmedBy() { return confirmedBy; }
     public Instant closedAt() { return closedAt; }
+    /** The exception approval this receipt asked for; empty when it never went beyond a tolerance. */
+    public Optional<ReceiptApproval> approval() { return Optional.ofNullable(approval); }
     public long version() { return version; }
 }

@@ -32,6 +32,10 @@ import java.util.stream.Collectors;
 @Repository
 class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsReceiptSearch {
 
+    /** Receipts that have counted nothing in: a draft, one waiting for the manager, a cancelled one. */
+    private static final List<GoodsReceiptStatus> NOT_POSTED = List.of(GoodsReceiptStatus.DRAFT,
+            GoodsReceiptStatus.PENDING_APPROVAL, GoodsReceiptStatus.CANCELLED);
+
     private final GoodsReceiptJpaRepository jpa;
     private final EntityManager entityManager;
 
@@ -83,18 +87,22 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
      * Hibernate orders inserts ahead of deletes, and a new line for the PO line and lot of a removed one
      * would otherwise collide with it on {@code uk_goods_receipt_lines_lot}.
      *
-     * <p>The over-receipt tolerance is a deferred constraint trigger
-     * ({@code tg_goods_receipt_lines_tolerance}, V20261020000800): it checks the PO line's totals as
-     * they end up, so the order of the updates does not matter. Setting it IMMEDIATE once the lines are
-     * flushed runs it here, and a refusal is a {@code DataIntegrityViolationException} from this call
-     * (a 409) rather than a failed commit (a 500).</p>
+     * <p>The over-receipt tolerance is a deferred constraint trigger on the receipt
+     * ({@code tg_goods_receipts_tolerance}, V20261029002000), run when a receipt is posted, on the PO line's totals of
+     * the receipts posted by then. Setting it IMMEDIATE once the receipt is flushed runs it here, and a refusal is a
+     * {@code DataIntegrityViolationException} from this call (a 409) rather than a failed commit (a 500). A receipt
+     * waiting for approval, or one whose excess the manager approved, is not refused by it.</p>
+     *
+     * <p>The lines of a draft, and of a receipt waiting for approval (whose excess may be cut back), are recounted in
+     * place; those of a posted one are not touched here (BR-05).</p>
      */
     @Override
     public GoodsReceipt save(GoodsReceipt receipt) {
         GoodsReceiptJpaEntity entity = jpa.findByIdWithLines(receipt.id()).orElseGet(() ->
                 new GoodsReceiptJpaEntity(receipt.id(), receipt.number(), receipt.purchaseOrderId(),
-                        receipt.purchaseOrderRevisionId(), receipt.warehouseId(), receipt.receivedAt(),
-                        receipt.receivedBy(), receipt.deliveryNote(), receipt.note()));
+                        receipt.purchaseOrderRevisionId(), receipt.warehouseId(), receipt.supplierId(),
+                        receipt.blindReason(), receipt.receivedAt(), receipt.receivedBy(), receipt.deliveryNote(),
+                        receipt.note()));
 
         Set<UUID> wanted = receipt.lines().stream().map(ReceiptLine::id).collect(Collectors.toSet());
         if (entity.getLines().removeIf(row -> !wanted.contains(row.getId())) && !entity.isNew()) {
@@ -109,7 +117,8 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
                         line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.lotNumber(),
                         line.expiryDate(), line.note(), line.qcRequired(), line.uomConversionId());
                 entity.addLine(row);
-            } else if (receipt.status() == GoodsReceiptStatus.DRAFT) {
+            } else if (receipt.status() == GoodsReceiptStatus.DRAFT
+                    || receipt.status() == GoodsReceiptStatus.PENDING_APPROVAL) {
                 row.recount(line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.expiryDate(),
                         line.note(), line.qcRequired(), line.uomConversionId());
             }
@@ -126,14 +135,17 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
                 }
             }
         }
-        entity.apply(receipt.status(), receipt.confirmedAt(), receipt.confirmedBy(), receipt.closedAt());
+        entity.apply(receipt.status(), receipt.confirmedAt(), receipt.confirmedBy(), receipt.closedAt(),
+                receipt.approval().orElse(null), receipt.referencedPurchaseOrderId());
         GoodsReceiptJpaEntity saved = jpa.saveAndFlush(entity);
         // IMMEDIATE runs the pending checks now; DEFERRED again, so a later save in this transaction is
         // checked on its final totals too, not row by row.
-        entityManager.createNativeQuery("SET CONSTRAINTS procurement.tg_goods_receipt_lines_tolerance IMMEDIATE")
-                .executeUpdate();
-        entityManager.createNativeQuery("SET CONSTRAINTS procurement.tg_goods_receipt_lines_tolerance DEFERRED")
-                .executeUpdate();
+        entityManager.createNativeQuery("""
+                SET CONSTRAINTS procurement.tg_goods_receipts_tolerance, procurement.tg_goods_receipts_tolerance_insert
+                IMMEDIATE""").executeUpdate();
+        entityManager.createNativeQuery("""
+                SET CONSTRAINTS procurement.tg_goods_receipts_tolerance, procurement.tg_goods_receipts_tolerance_insert
+                DEFERRED""").executeUpdate();
         return toDomain(saved);
     }
 
@@ -144,13 +156,12 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
         if (ids.isEmpty()) {
             return Map.of();
         }
-        return toTotals(jpa.sumByPoLineExcluding(ids, excludingReceiptId, GoodsReceiptStatus.CANCELLED));
+        return toTotals(jpa.sumByPoLineExcluding(ids, excludingReceiptId, NOT_POSTED));
     }
 
     @Override
     public Map<UUID, Integer> confirmedQuantities(UUID purchaseOrderId) {
-        return toTotals(jpa.sumByPoLineOfOrder(purchaseOrderId,
-                List.of(GoodsReceiptStatus.DRAFT, GoodsReceiptStatus.CANCELLED)));
+        return toTotals(jpa.sumByPoLineOfOrder(purchaseOrderId, NOT_POSTED));
     }
 
     @Override
@@ -161,10 +172,11 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
                 .and(Specs.contains("receiptNumber", criteria.number()))
                 .and(criteria.statuses() == null || criteria.statuses().isEmpty()
                         ? null : Specs.in("status", criteria.statuses()))
+                .and(withoutPurchaseOrder(criteria.withoutPurchaseOrder()))
                 .and(receivedBetween(criteria.receivedFrom(), criteria.receivedTo()))
                 .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
         return jpa.findAll(spec, pageable).map(e -> new Row(e.getId(), e.getReceiptNumber(), e.getPurchaseOrderId(),
-                e.getWarehouseId(), e.getStatus(), e.getDeliveryNote(), e.getReceivedAt(), e.getReceivedBy(),
+                e.getSupplierId(), e.getWarehouseId(), e.getStatus(), e.getDeliveryNote(), e.getReceivedAt(), e.getReceivedBy(),
                 e.getConfirmedAt(), e.getConfirmedBy(), e.getClosedAt()));
     }
 
@@ -183,6 +195,29 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
         Map<UUID, OrderLabel> labels = new HashMap<>();
         rows.forEach(r -> labels.put((UUID) r[0], new OrderLabel((String) r[1], (UUID) r[2], (String) r[3])));
         return labels;
+    }
+
+    private static Specification<GoodsReceiptJpaEntity> withoutPurchaseOrder(Boolean without) {
+        if (without == null) {
+            return null;
+        }
+        return (root, query, cb) -> without ? cb.isNull(root.get("purchaseOrderId"))
+                : cb.isNotNull(root.get("purchaseOrderId"));
+    }
+
+    @Override
+    public Map<UUID, String> supplierNames(java.util.Collection<UUID> supplierIds) {
+        if (supplierIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery(
+                        "SELECT id, name FROM procurement.suppliers WHERE id IN (:ids)")
+                .setParameter("ids", java.util.Set.copyOf(supplierIds))
+                .getResultList();
+        Map<UUID, String> names = new HashMap<>();
+        rows.forEach(r -> names.put((UUID) r[0], (String) r[1]));
+        return names;
     }
 
     private static Specification<GoodsReceiptJpaEntity> receivedBetween(Instant from, Instant to) {
@@ -216,8 +251,9 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
                         i.getQuantity().intValueExact(), i.getTargetLocationId(), i.getReason(), i.getInspectedBy(),
                         i.getInspectedAt())).toList())).toList();
         return new GoodsReceipt(e.getId(), e.getReceiptNumber(), e.getPurchaseOrderId(),
-                e.getPurchaseOrderRevisionId(), e.getWarehouseId(), e.getReceivedAt(), e.getReceivedBy(),
+                e.getPurchaseOrderRevisionId(), e.getWarehouseId(), e.getSupplierId(), e.getBlindReason(),
+                e.getReferencedPurchaseOrderId(), e.getReceivedAt(), e.getReceivedBy(),
                 e.getDeliveryNote(), e.getNote(), lines, e.getStatus(), e.getConfirmedAt(), e.getConfirmedBy(),
-                e.getClosedAt(), e.getVersion());
+                e.getClosedAt(), e.approval(), e.getVersion());
     }
 }

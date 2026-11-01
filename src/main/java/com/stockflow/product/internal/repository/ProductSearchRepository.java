@@ -4,6 +4,7 @@ import com.stockflow.product.api.ProductSummary;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -26,4 +27,10 @@ public interface ProductSearchRepository {
 
     /** As stored now: called after a write, it reads what the write left, flushed and refreshed. */
     Optional<ProductSummary> summary(UUID productId);
+
+    /**
+     * Every product of this brand whose primary category is this one, except the discontinued: the
+     * candidates a possible duplicate is looked for among (SCRUM-88). Both ids are required.
+     */
+    List<ProductSummary> sameBrandAndCategory(UUID brandId, UUID categoryId);
 }

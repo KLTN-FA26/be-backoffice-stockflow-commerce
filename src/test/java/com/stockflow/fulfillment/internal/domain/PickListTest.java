@@ -368,4 +368,118 @@ class PickListTest {
             assertThat(list.cancelOpenLines()).isEmpty();
         }
     }
+
+    /**
+     * SCRUM-473: a line drawn from a carton is deducted from that carton, so it is confirmed by the carton's LPN - the
+     * SKU or barcode would let the picker take any carton of the SKU off the bin.
+     */
+    @Nested
+    @DisplayName("lines drawn from a carton")
+    class CartonLines {
+
+        private static final String LPN = "LPN-20261028-000001";
+
+        private PickLine openCartonLine(String sku, String location, int quantity, String lpn) {
+            return new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), sku, location, null, 1,
+                    quantity, 0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null, null, 0, lpn, false);
+        }
+
+        @Test
+        @DisplayName("planning copies the hold's carton onto the line")
+        void planCopiesTheCartonOfTheHold() {
+            UUID h = UUID.randomUUID();
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
+
+            List<PickLine> added = list.plan(
+                    List.of(new PickList.OrderLine(UUID.randomUUID(), "CUP-12", false, List.of(h))),
+                    Map.of(h, new PickList.Hold(h, "CUP-12", "HCM-A02-1-A", HCM, null, 10, true, LPN, true)),
+                    UUID::randomUUID);
+
+            assertThat(added).singleElement().satisfies(line -> {
+                assertThat(line.lpn()).isEqualTo(LPN);
+                assertThat(line.wholeCarton()).isTrue();
+            });
+        }
+
+        @Test
+        @DisplayName("a hold on loose units plans a line with no carton")
+        void looseHoldPlansNoCarton() {
+            UUID h = UUID.randomUUID();
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
+
+            List<PickLine> added = list.plan(
+                    List.of(new PickList.OrderLine(UUID.randomUUID(), "CUP-12", false, List.of(h))),
+                    Map.of(h, hold(h, "CUP-12", "HCM-A02-1-A", HCM, 3)), UUID::randomUUID);
+
+            assertThat(added).singleElement().satisfies(line -> {
+                assertThat(line.lpn()).isNull();
+                assertThat(line.wholeCarton()).isFalse();
+            });
+        }
+
+        @Test
+        @DisplayName("the carton's LPN confirms the line")
+        void cartonLineConfirmsWithItsLpn() {
+            PickLine line = openCartonLine("CUP-12", "HCM-A02-1-A", 10, LPN);
+
+            picking(line).confirm(line.id(), "HCM-A02-1-A", LPN, 10, BARCODE, PICKER, NOW);
+
+            assertThat(line.status()).isEqualTo(PickLineStatus.PICKED);
+            assertThat(line.scannedCode()).isEqualTo(LPN);
+        }
+
+        @Test
+        @DisplayName("the LPN in any case, with spaces around it, is the same carton")
+        void cartonLineAcceptsTheLpnInAnyCase() {
+            PickLine line = openCartonLine("CUP-12", "HCM-A02-1-A", 10, LPN);
+
+            picking(line).confirm(line.id(), "HCM-A02-1-A", " lpn-20261028-000001 ", 10, BARCODE, PICKER, NOW);
+
+            assertThat(line.status()).isEqualTo(PickLineStatus.PICKED);
+        }
+
+        @Test
+        @DisplayName("the SKU is not enough on a carton line, and the refusal names the carton")
+        void cartonLineRefusesTheSku() {
+            PickLine line = openCartonLine("CUP-12", "HCM-A02-1-A", 10, LPN);
+            var list = picking(line);
+
+            Throwable thrown = catchThrowable(() -> list.confirm(line.id(), "HCM-A02-1-A", "CUP-12", 10, BARCODE,
+                    PICKER, NOW));
+
+            assertThat(((BusinessException) thrown).errorCode()).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+            assertThat(thrown).hasMessageContaining(LPN);
+            assertThat(line.status()).isEqualTo(PickLineStatus.OPEN);
+        }
+
+        @Test
+        @DisplayName("nor is the barcode")
+        void cartonLineRefusesTheBarcode() {
+            PickLine line = openCartonLine("CUP-12", "HCM-A02-1-A", 10, LPN);
+
+            assertThat(refusal(() -> picking(line).confirm(line.id(), "HCM-A02-1-A", BARCODE, 10, BARCODE, PICKER,
+                    NOW))).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+        }
+
+        @Test
+        @DisplayName("another carton of the same SKU on the same bin is refused")
+        void cartonLineRefusesAnotherLpn() {
+            PickLine line = openCartonLine("CUP-12", "HCM-A02-1-A", 10, LPN);
+
+            assertThat(refusal(() -> picking(line).confirm(line.id(), "HCM-A02-1-A", "LPN-20261028-000002", 10,
+                    BARCODE, PICKER, NOW))).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+        }
+
+        @Test
+        @DisplayName("a repeat of a carton line is the LPN scan again; the SKU is not a repeat")
+        void replayOfACartonLineNeedsTheLpn() {
+            PickLine line = openCartonLine("CUP-12", "HCM-A02-1-A", 10, LPN);
+            var list = picking(line);
+            list.confirm(line.id(), "HCM-A02-1-A", LPN, 10, BARCODE, PICKER, NOW);
+
+            assertThat(list.confirm(line.id(), "HCM-A02-1-A", LPN, 10, BARCODE, PICKER, NOW).repeated()).isTrue();
+            assertThat(refusal(() -> list.confirm(line.id(), "HCM-A02-1-A", "CUP-12", 10, BARCODE, PICKER, NOW)))
+                    .isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
+        }
+    }
 }

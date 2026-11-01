@@ -87,7 +87,7 @@ public interface PickLists {
     record PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                         String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                         Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
-                        int shortQty) { }
+                        int shortQty, String lpn, boolean wholeCarton) { }
 
     /** A picked line of a cancelled task, waiting to go back onto a bin. */
     record PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,

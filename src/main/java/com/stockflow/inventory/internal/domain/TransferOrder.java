@@ -57,6 +57,9 @@ public final class TransferOrder extends AggregateRoot {
     private TransferDeliveryMode deliveryMode = TransferDeliveryMode.FULL_TRUCKLOAD;
     private Instant packedAt;
     private Instant goodsLeftAt;
+    private UUID rejectedBy;
+    private Instant rejectedAt;
+    private String rejectionReason;
     private final long version;
     private final Instant createdAt;
 
@@ -135,6 +138,14 @@ public final class TransferOrder extends AggregateRoot {
         return this;
     }
 
+    /** Read back from the table: the last rejection, who made it, when, and why (kltn-docs 10 §5, issue 206). */
+    public TransferOrder restoreRejection(UUID rejectedBy, Instant rejectedAt, String rejectionReason) {
+        this.rejectedBy = rejectedBy;
+        this.rejectedAt = rejectedAt;
+        this.rejectionReason = rejectionReason;
+        return this;
+    }
+
     /** LP2-8: how it travels; chosen while DRAFT, as its warehouses are. Null keeps it. */
     public void travelAs(TransferDeliveryMode mode) {
         if (mode == null || mode == deliveryMode) {
@@ -185,8 +196,15 @@ public final class TransferOrder extends AggregateRoot {
         this.approvedAt = now;
     }
 
-    /** Back to DRAFT for the planner to change and resubmit. */
-    public void reject(UUID approverId) {
+    /**
+     * Back to DRAFT for the planner to change and resubmit. The reason, the rejecting person and the time are kept on
+     * the order (kltn-docs 10 §5): the planner reads them while it is DRAFT. A later rejection replaces them - the
+     * order shows its last one.
+     */
+    public void reject(UUID approverId, String reason, Instant now) {
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A rejection must say why");
+        }
         requireStatus(TransferStatus.PENDING_APPROVAL);
         if (Objects.equals(approverId, submittedBy)) {
             throw new BusinessException(ErrorCode.TRANSFER_SELF_APPROVAL,
@@ -195,6 +213,9 @@ public final class TransferOrder extends AggregateRoot {
         moveTo(TransferStatus.DRAFT);
         this.submittedBy = null;
         this.submittedAt = null;
+        this.rejectedBy = Objects.requireNonNull(approverId, "approverId");
+        this.rejectedAt = Objects.requireNonNull(now, "now");
+        this.rejectionReason = reason.trim();
     }
 
     public void startPicking() {
@@ -326,6 +347,9 @@ public final class TransferOrder extends AggregateRoot {
     public TransferDeliveryMode deliveryMode() { return deliveryMode; }
     public Instant packedAt() { return packedAt; }
     public Instant goodsLeftAt() { return goodsLeftAt; }
+    public UUID rejectedBy() { return rejectedBy; }
+    public Instant rejectedAt() { return rejectedAt; }
+    public String rejectionReason() { return rejectionReason; }
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
 }

@@ -40,6 +40,21 @@ public enum PurchaseOrderStatus {
         };
     }
 
+    /**
+     * Approved and not finished: an amendment asked of an order in this status can still be decided (SCRUM-117). A
+     * standard order narrows it further - nothing received yet ({@code PurchaseOrder#requireAmendable}) - while a
+     * subcontract supplement may be asked for through receipt. On a CANCELLED or CLOSED order a revision still named
+     * pending is one nobody can decide any more, so it is not shown or treated as a pending amendment.
+     */
+    public boolean takesAmendments() {
+        return this == APPROVED || this == CONFIRMED || this == PARTIALLY_RECEIVED || this == RECEIVED;
+    }
+
+    /** The names of the statuses that {@linkplain #takesAmendments take amendments}, for a query's IN list. */
+    public static java.util.List<String> takingAmendments() {
+        return java.util.Arrays.stream(values()).filter(PurchaseOrderStatus::takesAmendments).map(Enum::name).toList();
+    }
+
     /** Still to be received or still on its way to the supplier: a supplier cannot be retired under it. */
     public boolean isOpen() {
         return this != RECEIVED && this != CLOSED && this != CANCELLED;

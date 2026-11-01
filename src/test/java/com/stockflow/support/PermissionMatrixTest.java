@@ -257,9 +257,10 @@ class PermissionMatrixTest {
             Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
                     Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
+            // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
                     Role.INVENTORY_PLANNER, Role.PROCUREMENT_STAFF, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
-                    Role.SYSTEM_ADMIN)));
+                    Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -668,6 +669,28 @@ class PermissionMatrixTest {
         // Spring validates a body before the guard runs (400), so the refused writes are read from the grants.
         assertThat(roles.resolve(List.of(Role.ORDER_COORDINATOR.authority())).permissions())
                 .contains(PermissionCode.parse("warehouse-warehouses:READ"))
+                .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
+                        PermissionCode.parse("warehouse-warehouses:CREATE"),
+                        PermissionCode.parse("warehouse-warehouses:UPDATE"));
+    }
+
+    /**
+     * SCRUM-474 5b (V20261029004000): the staff user-management screen picks roles and warehouses, so every role that
+     * can read users also reads roles and warehouses - READ only.
+     */
+    @Test
+    void everyRoleThatReadsUsersAlsoReadsRolesAndWarehouses() {
+        PermissionCode users = PermissionCode.parse("identity-users:READ");
+        List<Role> holders = Arrays.stream(Role.values())
+                .filter(role -> roles.resolve(List.of(role.authority())).permissions().contains(users))
+                .toList();
+        assertThat(holders).containsExactlyInAnyOrder(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN);
+        for (Role role : holders) {
+            assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
+                    .contains(PermissionCode.parse("identity-roles:READ"),
+                            PermissionCode.parse("warehouse-warehouses:READ"));
+        }
+        assertThat(roles.resolve(List.of(Role.ECOMMERCE_ADMIN.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
                         PermissionCode.parse("warehouse-warehouses:CREATE"),
                         PermissionCode.parse("warehouse-warehouses:UPDATE"));

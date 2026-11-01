@@ -247,7 +247,7 @@ class PurchaseOrderDraftEditIntegrationTest {
         PurchaseOrderSummary order = draft(DemoData.WAREHOUSE_HCM);
         UUID lineA = line(order, skuA).lineId();
         UUID pair = Identifiers.newId();
-        // The application does not order in a packing unit yet; the line is put in one as a draft may be.
+        // Put in the unit with SQL so this test pins one rule alone; ordering in a unit is PurchaseOrderUnitIntegrationTest.
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
@@ -273,7 +273,7 @@ class PurchaseOrderDraftEditIntegrationTest {
         PurchaseOrderSummary order = draft(DemoData.WAREHOUSE_HCM);
         UUID lineA = line(order, skuA).lineId();
         UUID pair = Identifiers.newId();
-        // The application does not order in a packing unit yet; the line is put in one as a draft may be.
+        // Put in the unit with SQL so this test pins one rule alone; ordering in a unit is PurchaseOrderUnitIntegrationTest.
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
@@ -295,7 +295,7 @@ class PurchaseOrderDraftEditIntegrationTest {
         PurchaseOrderSummary order = draft(DemoData.WAREHOUSE_HCM);
         UUID lineA = line(order, skuA).lineId();
         UUID pair = Identifiers.newId();
-        // The application does not order in a packing unit yet; the line is put in one as a draft may be.
+        // Put in the unit with SQL so this test pins one rule alone; ordering in a unit is PurchaseOrderUnitIntegrationTest.
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)

@@ -321,6 +321,11 @@ FROM inventory.stock_movement WHERE movement_type = 'TRANSFER_OUT' AND reference
         TransferOrders.Transfer rejected =
                 transfers.reject(created.transferId(), approver, "Fewer, and to another date");
         assertThat(rejected.status()).isEqualTo(TransferStatus.DRAFT);
+        // Issue 206: the planner reads why, by whom and when from the DRAFT, through the table.
+        TransferOrders.Transfer reread = transfers.get(created.transferId());
+        assertThat(reread.rejectedBy()).isEqualTo(approver);
+        assertThat(reread.rejectedAt()).isNotNull();
+        assertThat(reread.rejectionReason()).isEqualTo("Fewer, and to another date");
 
         java.time.LocalDate date = java.time.LocalDate.now().plusDays(5);
         TransferOrders.Transfer revised =

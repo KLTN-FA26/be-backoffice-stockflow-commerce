@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CycleCount;
 import com.stockflow.inventory.internal.domain.CycleCount.CountLineDraft;
@@ -246,8 +247,8 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
             params.addValue(name, escapeLike(prefix) + "%");
         }
         if (locations.isEmpty()) {
-            conditions.add(alias + ".location_code LIKE :warehousePrefix ESCAPE '\\'");
-            params.addValue("warehousePrefix", escapeLike(warehousePrefix) + "-%");
+            conditions.add(WarehouseScope.locationsInSql(alias + ".location_code", List.of(warehousePrefix),
+                    "warehousePrefix", params));
         } else {
             conditions.add("(" + String.join(" OR ", locations) + ")");
         }

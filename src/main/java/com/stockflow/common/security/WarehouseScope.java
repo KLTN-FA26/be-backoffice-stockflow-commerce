@@ -5,9 +5,12 @@ import com.stockflow.common.error.ErrorCode;
 
 import jakarta.persistence.criteria.Predicate;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -27,6 +30,8 @@ import java.util.UUID;
  * it, only forget to call this — which a review of the service can see.</p>
  */
 public final class WarehouseScope {
+
+    private static final char LIKE_ESCAPE = '\\';
 
     private WarehouseScope() {
     }
@@ -82,11 +87,39 @@ public final class WarehouseScope {
             List<Predicate> any = new ArrayList<>();
             for (String attribute : attributes) {
                 for (String prefix : allowed.prefixes()) {
-                    any.add(cb.like(root.get(attribute), prefix + "-%"));
+                    any.add(cb.like(root.get(attribute), locationPattern(prefix), LIKE_ESCAPE));
                 }
             }
             return any.isEmpty() ? cb.disjunction() : cb.or(any.toArray(Predicate[]::new));
         }).orElse(null);
+    }
+
+    /**
+     * {@link #locationsIn} for plain SQL: {@code column} lies in one of {@code warehousePrefixes}, one bound parameter
+     * per prefix, named {@code parameter0}, {@code parameter1}… on {@code params}. No prefix matches nothing - the
+     * limited caller assigned to no warehouse. The caller resolves the prefixes, from {@link #restriction()} or a
+     * document's own warehouse, so the query stays a pure function of its criteria.
+     */
+    public static String locationsInSql(String column, Collection<String> warehousePrefixes, String parameter,
+                                        MapSqlParameterSource params) {
+        List<String> any = new ArrayList<>();
+        int index = 0;
+        for (String prefix : warehousePrefixes) {
+            String name = parameter + index++;
+            any.add(column + " LIKE :" + name + " ESCAPE '" + LIKE_ESCAPE + "'");
+            params.addValue(name, locationPattern(prefix));
+        }
+        return any.isEmpty() ? "FALSE" : "(" + String.join(" OR ", any) + ")";
+    }
+
+    /**
+     * The LIKE pattern, escape character {@code '\'}, of every location in a warehouse: its prefix, a dash, anything.
+     * The one statement of that rule (docs 06 BR-13) for queries; {@link #prefixOf} is its inverse. A prefix is
+     * letters and digits ({@code ck_warehouse_prefix}), escaped all the same since the pattern is a LIKE.
+     */
+    public static String locationPattern(String warehousePrefix) {
+        return warehousePrefix.toUpperCase(Locale.ROOT).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                + "-%";
     }
 
     /** Rows naming an assigned warehouse in any of {@code attributes}; null when not limited. */
@@ -113,7 +146,7 @@ public final class WarehouseScope {
         if (locationCode == null) {
             return null;
         }
-        String code = locationCode.trim().toUpperCase(java.util.Locale.ROOT);
+        String code = locationCode.trim().toUpperCase(Locale.ROOT);
         int dash = code.indexOf('-');
         return dash > 0 ? code.substring(0, dash) : code;
     }
