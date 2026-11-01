@@ -54,6 +54,31 @@ class PurchaseOrderAmendmentStatusIntegrationTest {
                 .containsEntry(po, new AmendmentDeliveryStatus(2, "FAILED"));
     }
 
+    /**
+     * What the listener asks before sending a notice: a later revision's notice, of this order only, compared as a
+     * number (10 is later than 9), with the order's own and cancellation rows of the same order kept away from the cast.
+     */
+    @Test
+    void laterAmendmentNoticeIsTheOrdersAndComparedAsANumber() {
+        UUID po = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        for (String reference : List.of("purchase-order:" + po, "purchase-order:" + po + ":cancellation")) {
+            var row = new DeliveryLogJpaEntity(Identifiers.newId(), "purchase-order.sent", NotificationChannel.EMAIL,
+                    "supplier@example.com", DeliveryStatus.FAILED, "MAIL_SEND_FAILED", null);
+            row.correlate(reference);
+            row.recordGeneration(0);
+            row.recordAttempt(1);
+            tx.executeWithoutResult(s -> logs.saveAndFlush(row));
+        }
+        attempt(po, 10, DeliveryStatus.FAILED, false);
+        attempt(other, 20, DeliveryStatus.SENT, false);
+
+        assertThat(logs.existsLaterAmendmentNotice(po.toString(), 9)).isTrue();
+        assertThat(logs.existsLaterAmendmentNotice(po.toString(), 10)).isFalse();
+        assertThat(logs.existsLaterAmendmentNotice(other.toString(), 19)).isTrue();
+        assertThat(logs.existsLaterAmendmentNotice(UUID.randomUUID().toString(), 0)).isFalse();
+    }
+
     @Test
     void onlyRevisionOneReportsItsOwnStatusAndAnUnattemptedOrderIsAbsent() {
         UUID sent = UUID.randomUUID();

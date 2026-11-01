@@ -24,7 +24,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
@@ -91,6 +93,71 @@ class PurchaseOrderAmendmentNoticeTest {
         verify(logs).saveAndFlush(logged.capture());
         assertThat(logged.getValue().getStatus()).isEqualTo(DeliveryStatus.FAILED);
         assertThat(logged.getValue().getTemplateCode()).isEqualTo("purchase-order.amended");
+    }
+
+    /**
+     * Revision 2's notice was still retrying when revision 3 was approved and its notice attempted: sent now, it would
+     * reach the supplier after revision 3 and restate the order as it no longer is.
+     */
+    @Test
+    void amendmentNoticeOvertakenByALaterRevisionIsClosedUnsent() {
+        var control = mock(PoDeliveryControlRepository.class);
+        var logs = mock(DeliveryLogJpaRepository.class);
+        var sender = mock(NotificationSender.class);
+        var event = amendment("EMAIL", "supplier@example.com");
+        when(control.lock(PO)).thenReturn(new PoDeliveryControlRepository.Control(0, false));
+        when(logs.tryLockDelivery(anyString())).thenReturn(true);
+        when(logs.existsLaterAmendmentNotice(PO.toString(), 2)).thenReturn(true);
+        when(logs.countByOperationReferenceAndDeliveryGeneration("purchase-order:" + PO + ":revision:2", 0))
+                .thenReturn(2L);
+
+        new PurchaseOrderNotificationListener(sender, logs, Clock.systemUTC(), mock(DeliveryAttemptRecorder.class),
+                control).on(event);
+
+        verifyNoInteractions(sender);
+        var logged = ArgumentCaptor.forClass(DeliveryLogJpaEntity.class);
+        verify(logs).saveAndFlush(logged.capture());
+        assertThat(logged.getValue().getStatus()).isEqualTo(DeliveryStatus.FAILED);
+        assertThat(logged.getValue().getError()).isEqualTo(NotificationServiceImpl.SUPERSEDED_BY_AMENDMENT);
+        assertThat(logged.getValue().isTerminal()).as("terminal, so the registry stops retrying it").isTrue();
+        assertThat(logged.getValue().getAttemptNumber()).isEqualTo(3);
+        assertThat(logged.getValue().getTemplateCode()).isEqualTo("purchase-order.amended");
+    }
+
+    /** The order was cancelled while its amendment notice was retrying: the supplier is told only the cancellation. */
+    @Test
+    void amendmentNoticeOfACancelledOrderIsClosedUnsent() {
+        var control = mock(PoDeliveryControlRepository.class);
+        var logs = mock(DeliveryLogJpaRepository.class);
+        var sender = mock(NotificationSender.class);
+        when(control.lock(PO)).thenReturn(new PoDeliveryControlRepository.Control(0, true, true));
+        when(logs.tryLockDelivery(anyString())).thenReturn(true);
+
+        new PurchaseOrderNotificationListener(sender, logs, Clock.systemUTC(), mock(DeliveryAttemptRecorder.class),
+                control).on(amendment("EMAIL", "supplier@example.com"));
+
+        verifyNoInteractions(sender);
+        var logged = ArgumentCaptor.forClass(DeliveryLogJpaEntity.class);
+        verify(logs).saveAndFlush(logged.capture());
+        assertThat(logged.getValue().getError()).isEqualTo(NotificationServiceImpl.SUPERSEDED_BY_CANCELLATION);
+        assertThat(logged.getValue().isTerminal()).isTrue();
+    }
+
+    /** A notice already delivered is left as it is: nothing to close, and no second row. */
+    @Test
+    void deliveredAmendmentNoticeIsNotClosedAgain() {
+        var control = mock(PoDeliveryControlRepository.class);
+        var logs = mock(DeliveryLogJpaRepository.class);
+        var sender = mock(NotificationSender.class);
+        when(control.lock(PO)).thenReturn(new PoDeliveryControlRepository.Control(0, true, true));
+        when(logs.tryLockDelivery(anyString())).thenReturn(true);
+        when(logs.existsByExternalReference("purchase-order:" + PO + ":revision:2")).thenReturn(true);
+
+        new PurchaseOrderNotificationListener(sender, logs, Clock.systemUTC(), mock(DeliveryAttemptRecorder.class),
+                control).on(amendment("EMAIL", "supplier@example.com"));
+
+        verifyNoInteractions(sender);
+        verify(logs, never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
     }
 
     @Test

@@ -4,15 +4,12 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.notification.api.AmendmentDeliveryStatus;
 import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.PortalInvitationMail;
-import com.stockflow.notification.internal.domain.DeliveryStatus;
 import com.stockflow.notification.internal.domain.NotificationChannel;
 import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
-import com.stockflow.notification.internal.entity.DeliveryLogJpaEntity;
 import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
 import com.stockflow.notification.internal.repository.PoDeliveryControlRepository;
 
@@ -35,6 +32,9 @@ class NotificationServiceImpl implements NotificationService {
 
     /** The failure code of the attempt that closes an own delivery an amendment notice superseded. */
     static final String SUPERSEDED_BY_AMENDMENT = "SUPERSEDED_BY_AMENDMENT";
+
+    /** The failure code of an amendment notice closed unsent because the order was cancelled meanwhile. */
+    static final String SUPERSEDED_BY_CANCELLATION = "SUPERSEDED_BY_CANCELLATION";
 
     private final DeliveryLogJpaRepository logs;
     private final SupplierEndpointPolicy policy;
@@ -104,20 +104,15 @@ class NotificationServiceImpl implements NotificationService {
                         reference, control.generation())) return;
         int generation = Math.addExact(control.generation(), 1);
         controls.advance(id, generation);
-        var closing =
-                new DeliveryLogJpaEntity(
-                        Identifiers.newId(),
+        logs.saveAndFlush(
+                DeliveryAttemptRecorder.superseded(
+                        reference,
                         "purchase-order.sent",
                         NotificationChannel.valueOf(channel),
                         recipient,
-                        DeliveryStatus.FAILED,
                         SUPERSEDED_BY_AMENDMENT,
-                        null);
-        closing.correlate(reference);
-        closing.recordGeneration(generation);
-        closing.recordAttempt(1);
-        closing.stopRetrying();
-        logs.saveAndFlush(closing);
+                        generation,
+                        1));
     }
 
     @Override

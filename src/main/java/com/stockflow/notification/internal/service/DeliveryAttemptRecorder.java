@@ -54,6 +54,34 @@ class DeliveryAttemptRecorder {
                 .error("Supplier notification failed: {} ({})", reference, message, failure);
     }
 
+    /**
+     * A terminal FAILED attempt for a delivery that is closed without being sent because something newer replaced it
+     * ({@code failureCode} says what): it never reached the supplier, and terminal is what stops it being retried.
+     */
+    static DeliveryLogJpaEntity superseded(
+            String reference,
+            String templateCode,
+            NotificationChannel channel,
+            String recipient,
+            String failureCode,
+            int generation,
+            int attempt) {
+        var closing =
+                new DeliveryLogJpaEntity(
+                        Identifiers.newId(),
+                        templateCode,
+                        channel,
+                        recipient,
+                        DeliveryStatus.FAILED,
+                        failureCode,
+                        null);
+        closing.correlate(reference);
+        closing.recordGeneration(generation);
+        closing.recordAttempt(attempt);
+        closing.stopRetrying();
+        return closing;
+    }
+
     static String failureCode(NotificationChannel channel, RuntimeException failure) {
         if (failure instanceof IllegalArgumentException) return "DELIVERY_INVALID";
         if (channel == NotificationChannel.EMAIL) return "MAIL_SEND_FAILED";

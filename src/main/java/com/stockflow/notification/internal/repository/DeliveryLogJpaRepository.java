@@ -92,6 +92,22 @@ order by split_part(operation_reference, ':', 2),
             nativeQuery = true)
     List<AmendmentStatus> amendmentStatuses(Collection<String> orderIds);
 
+    /**
+     * Whether a notice of a later amendment of the order than {@code revision} was attempted at all, delivered or not
+     * (SCRUM-117). The revision is parsed inside a CASE, the one construct whose evaluation order SQL guarantees, so
+     * the order's own and cancellation references never reach the cast.
+     */
+    @Query(
+            value =
+                    """
+select exists (select 1 from notification.delivery_log
+               where case when operation_reference like 'purchase-order:' || :orderId || ':revision:%'
+                          then cast(split_part(operation_reference, ':', 4) as integer) > :revision
+                          else false end)
+""",
+            nativeQuery = true)
+    boolean existsLaterAmendmentNotice(String orderId, int revision);
+
     Page<DeliveryLogJpaEntity> findByOperationReferenceIn(
             Collection<String> references, Pageable pageable);
 
