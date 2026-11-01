@@ -74,6 +74,47 @@ where c.cancellation_requested and 'purchase-order:' || c.purchase_order_id || '
             nativeQuery = true)
     List<LatestStatus> cancellationStatuses(Collection<String> references);
 
+    /** {@link LatestStatus} with the amendment revision the notice announced. */
+    interface AmendmentStatus extends LatestStatus {
+        int getRevision();
+    }
+
+    /**
+     * The latest delivery attempt of the highest revision among the amendment notices of each order
+     * ({@code purchase-order:{id}:revision:{n}}, SCRUM-117); {@code reference} is the order id, {@code revision} the
+     * n. An order none of whose notices was attempted yet has no row.
+     */
+    @Query(
+            value =
+                    """
+select distinct on (split_part(operation_reference, ':', 2))
+       split_part(operation_reference, ':', 2) as reference, status, terminal,
+       cast(split_part(operation_reference, ':', 4) as integer) as revision
+from notification.delivery_log
+where operation_reference like 'purchase-order:%:revision:%'
+  and split_part(operation_reference, ':', 2) in (:orderIds)
+order by split_part(operation_reference, ':', 2),
+         cast(split_part(operation_reference, ':', 4) as integer) desc, created_at desc, id desc
+""",
+            nativeQuery = true)
+    List<AmendmentStatus> amendmentStatuses(Collection<String> orderIds);
+
+    /**
+     * Whether a notice of a later amendment of the order than {@code revision} was attempted at all, delivered or not
+     * (SCRUM-117). The revision is parsed inside a CASE, the one construct whose evaluation order SQL guarantees, so
+     * the order's own and cancellation references never reach the cast.
+     */
+    @Query(
+            value =
+                    """
+select exists (select 1 from notification.delivery_log
+               where case when operation_reference like 'purchase-order:' || :orderId || ':revision:%'
+                          then cast(split_part(operation_reference, ':', 4) as integer) > :revision
+                          else false end)
+""",
+            nativeQuery = true)
+    boolean existsLaterAmendmentNotice(String orderId, int revision);
+
     Page<DeliveryLogJpaEntity> findByOperationReferenceIn(
             Collection<String> references, Pageable pageable);
 

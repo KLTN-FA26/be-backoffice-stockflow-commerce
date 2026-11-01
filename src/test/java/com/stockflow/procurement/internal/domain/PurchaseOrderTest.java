@@ -512,4 +512,103 @@ class PurchaseOrderTest {
             assertThat(po.lines()).extracting(PoLine::lineNo).containsExactly(2);
         }
     }
+
+    /**
+     * SCRUM-473: a line may be ordered in a packing unit ("5 CARTON"); its quantity is still in base units, and a
+     * draft revision that names no unit keeps the line's own.
+     */
+    @Nested
+    @DisplayName("packing units")
+    class PackingUnits {
+
+        private final UUID carton = UUID.randomUUID();
+        private final UUID box = UUID.randomUUID();
+
+        private PoLine inCartons(int count) {
+            PackingUnit unit = new PackingUnit(carton, "CARTON", 1000, count);
+            return PurchaseOrder.line(1, UUID.randomUUID(), new Sku("CUP-12OZ"), "EACH", "Cup", unit.quantity(),
+                    Money.vnd(10), null, unit);
+        }
+
+        private PurchaseOrder draftWith(PoLine line) {
+            return PurchaseOrder.draft("PO-20261001-000002", UUID.randomUUID(), UUID.randomUUID(), Money.VND,
+                    List.of(line), ORDER_DATE, ORDER_DATE.plusDays(7), null, 30, 7);
+        }
+
+        private PoLine revised(PurchaseOrder po, PoLine line, int quantity, PackingUnit unit, boolean unitNamed) {
+            po.reviseDraft(po.warehouseId(), po.expectedAt(), null, List.of(new PurchaseOrder.DraftLine(line.id(),
+                    line.inventoryItemId(), line.sku(), "EACH", "Cup", quantity, Money.vnd(10), null, unit,
+                    unitNamed)), 2, 7);
+            return po.lines().getFirst();
+        }
+
+        @Test
+        @DisplayName("a packing unit holds count times factor base units")
+        void packingUnitQuantityIsCountTimesFactor() {
+            assertThat(new PackingUnit(carton, "CARTON", 1000, 5).quantity()).isEqualTo(5000);
+        }
+
+        @Test
+        @DisplayName("a packing unit of one base unit is legal (ck_uom_conversions_factor)")
+        void factorOneUnitIsAllowed() {
+            assertThat(new PackingUnit(carton, "PIECE", 1, 7).quantity()).isEqualTo(7);
+        }
+
+        @Test
+        @DisplayName("a packing unit counts at least one, of at least one base unit")
+        void packingUnitBounds() {
+            assertThatThrownBy(() -> new PackingUnit(carton, "CARTON", 1000, 0)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new PackingUnit(carton, "CARTON", 0, 1)).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("a line's quantity is what its packing unit holds")
+        void lineQuantityMustMatchItsUnit() {
+            assertThatThrownBy(() -> PurchaseOrder.line(1, UUID.randomUUID(), new Sku("CUP-12OZ"), "EACH", "Cup", 4999,
+                    Money.vnd(10), null, new PackingUnit(carton, "CARTON", 1000, 5)))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("a revision naming no unit keeps the line's unit, counted again")
+        void revisionWithoutUnitKeepsTheLinesUnit() {
+            PoLine line = inCartons(5);
+            var po = draftWith(line);
+
+            PoLine after = revised(po, line, 6000, null, false);
+
+            assertThat(after.packingUnit()).isEqualTo(new PackingUnit(carton, "CARTON", 1000, 6));
+            assertThat(after.quantityOrdered()).isEqualTo(6000);
+        }
+
+        @Test
+        @DisplayName("a revision naming no unit is refused part of the line's unit")
+        void revisionWithoutUnitRefusesAPartUnit() {
+            PoLine line = inCartons(5);
+            var po = draftWith(line);
+
+            assertThatThrownBy(() -> revised(po, line, 5500, null, false))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PO_LINE_UNIT_NOT_MULTIPLE));
+        }
+
+        @Test
+        @DisplayName("a revision naming the base unit leaves the packing unit")
+        void revisionNamingNoUnitGoesToBase() {
+            PoLine line = inCartons(5);
+            var po = draftWith(line);
+
+            assertThat(revised(po, line, 5500, null, true).packingUnit()).isNull();
+        }
+
+        @Test
+        @DisplayName("a revision naming another unit takes it")
+        void revisionNamingAnotherUnitTakesIt() {
+            PoLine line = inCartons(5);
+            var po = draftWith(line);
+            PackingUnit boxes = new PackingUnit(box, "BOX", 10, 30);
+
+            assertThat(revised(po, line, 300, boxes, true).packingUnit()).isEqualTo(boxes);
+        }
+    }
 }

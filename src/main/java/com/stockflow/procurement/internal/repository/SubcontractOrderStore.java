@@ -73,6 +73,11 @@ public interface SubcontractOrderStore {
         }
     }
 
+    /**
+     * The supplement waiting on an order that still takes amendments ({@code PurchaseOrderStatus#takesAmendments}),
+     * under the same rule as {@code PurchaseOrderHistoryRepository.pendingAmendments}: a CANCELLED or CLOSED order may
+     * keep a pointer nobody can decide any more, which must not be approved, rejected or shown as waiting.
+     */
     Optional<Amendment> pendingAmendment(UUID purchaseOrderId);
 
     /**
@@ -83,7 +88,9 @@ public interface SubcontractOrderStore {
 
     /**
      * The pending amendment becomes the active revision: the line takes its quantity and amounts, a fully received
-     * line and order are partially received again, header totals follow; one approval row and one event.
+     * line and order are partially received again, header totals follow; one approval row and one event. A supplier
+     * answer of PENDING or CONFIRMED goes back to PENDING (what they agreed to is no longer what is ordered, as for a
+     * standard order); one that was never sent or was refused stays as it is.
      * {@code auto} is null for a decision by a person (decision {@code APPROVED}); otherwise the approval is
      * {@code AUTO_APPROVED} on the limit it names and {@code approverId} is who asked.
      */

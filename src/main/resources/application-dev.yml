@@ -52,10 +52,16 @@ spring:
           jwk-set-uri: ${JWT_JWK_SET_URI}
 
 server:
-  # Behind the same reverse proxy as prod: without this Spring sees the proxy's address and http
-  # scheme, so rate-limit keys and generated links come out wrong.
-  forward-headers-strategy: framework
+  # Behind a reverse proxy (nginx) that terminates TLS and OVERWRITES X-Forwarded-For. NATIVE makes
+  # Tomcat apply the forwarded headers itself - and only when the connection comes from a trusted
+  # proxy (below). Without it Spring sees the proxy's address and http, so rate limiting keys every
+  # request to the proxy; with FRAMEWORK instead, the filter believes every caller (SCRUM-483).
+  forward-headers-strategy: native
   shutdown: graceful
+  tomcat:
+    remoteip:
+      # See application-prod.yml: only these connections may set the client address.
+      internal-proxies: '${TRUSTED_PROXIES:10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|127\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0:0:0:0:0:0:0:1|::1}'
 
 management:
   endpoints:

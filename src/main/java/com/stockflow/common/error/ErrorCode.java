@@ -176,6 +176,7 @@ public enum ErrorCode {
     PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
     /** A line entered in a packing unit is a whole number of that unit (BR-09, V20261020000400). */
     PO_LINE_UNIT_NOT_MULTIPLE("The quantity must be a whole number of the line's unit", 409),
+    PO_LINE_UNIT_INVALID("The unit is retired; order in an active unit", 409),
     PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
@@ -220,7 +221,21 @@ public enum ErrorCode {
     /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
     PURCHASE_ORDER_NOT_RECEIVABLE("Goods cannot be received against this purchase order now", 409),
     INVALID_RECEIPT_TRANSITION("This goods receipt cannot move to that status right now", 409),
-    /** BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. */
+    /**
+     * SCRUM-477, four eyes (BR-RCP-001): whoever counted a receipt, or asked for its approval, may not decide it.
+     */
+    RECEIPT_SELF_APPROVAL("A goods receipt cannot be decided by the person who counted it or asked for its approval", 409),
+    /** SCRUM-478, BR-RCP-002: a receipt without a purchase order needs a reason. */
+    BLIND_RECEIPT_REASON_REQUIRED("A receipt without a purchase order needs a reason", 400),
+    /** SCRUM-478, owner decision NOPO-ATTACH: the purchase order attached to a receipt without one is the supplier's. */
+    RECEIPT_REFERENCE_SUPPLIER_MISMATCH("The purchase order is not the receipt's supplier's", 409),
+    /** SCRUM-477: approving a receipt, or rejecting its excess, needs a reason. */
+    RECEIPT_APPROVAL_REASON_REQUIRED("Deciding on a goods receipt needs a reason", 400),
+    /**
+     * BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. Since SCRUM-477 a count beyond
+     * it is no longer refused - the receipt waits for the warehouse manager - so the service does not answer with
+     * this; it stays for clients that still map it, and for the database trigger's own refusal.
+     */
     OVER_RECEIPT_TOLERANCE("The quantity exceeds what the purchase order line allows", 409),
     /** The location exists but is not the kind of area this step needs (RECEIVING, QUALITY_CONTROL,
      *  QUARANTINE), or is in another warehouse. */
@@ -696,6 +711,12 @@ public enum ErrorCode {
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
     /** Only a DRAFT standard order is edited in place; afterwards changes go through a revision (BR-02, BR-10). */
     PURCHASE_ORDER_NOT_EDITABLE("Only a draft standard purchase order can be edited", 409),
+    /** An approved or confirmed standard order is changed by an amendment, and only while nothing was received (SCRUM-117). */
+    PO_AMENDMENT_NOT_ALLOWED("This purchase order cannot be amended now", 409),
+    /** One amendment waits for a decision at a time; the next is requested after it is approved, rejected or withdrawn. */
+    PO_AMENDMENT_ALREADY_PENDING("An amendment of this purchase order already waits for a decision", 409),
+    PO_AMENDMENT_NOT_PENDING("No amendment of this purchase order waits for a decision", 409),
+    PO_AMENDMENT_NO_CHANGE("The amendment changes nothing", 400),
     /** Only a DRAFT transfer is edited; a rejected one is back in DRAFT for that (docs 10 §5). */
     TRANSFER_ORDER_NOT_EDITABLE("Only a draft transfer order can be edited", 409),
     /** The warehouse exists but is not ACTIVE: nothing new is received into or sent from it (SCRUM-390). */

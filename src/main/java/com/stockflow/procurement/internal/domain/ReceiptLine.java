@@ -9,7 +9,8 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * One counted line of a goods receipt: so many units of one PO line, from one lot, set down at one
+ * One counted line of a goods receipt: so many units of one PO line (of the item itself on a receipt without a PO,
+ * where {@code poLineId} is null), from one lot, set down at one
  * receiving location. Part of the {@link GoodsReceipt} aggregate; changed only through it.
  *
  * <p>{@code qcRequired} is a snapshot of the item's flag at the time of counting: changing the flag
@@ -41,7 +42,7 @@ public final class ReceiptLine {
                        String lotNumber, LocalDate expiryDate, String note, boolean qcRequired, UUID uomConversionId,
                        UUID qcLocationId, Instant movedToQcAt, UUID movedToQcBy, List<QcInspection> inspections) {
         this.id = Objects.requireNonNull(id, "id");
-        this.poLineId = Objects.requireNonNull(poLineId, "poLineId");
+        this.poLineId = poLineId;
         this.inventoryItemId = Objects.requireNonNull(inventoryItemId, "inventoryItemId");
         this.locationId = Objects.requireNonNull(locationId, "locationId");
         if (receivedQuantity <= 0) {
@@ -64,6 +65,16 @@ public final class ReceiptLine {
                                       UUID uomConversionId) {
         return new ReceiptLine(id, poLineId, inventoryItemId, locationId, quantity, lotNumber, expiryDate, note,
                 qcRequired, uomConversionId, null, null, null, List.of());
+    }
+
+    /**
+     * The same line counting {@code quantity} units: the cut the manager's rejection of an excess makes (SCRUM-477).
+     * Only a line nothing has happened to yet - not moved to QC, not inspected - is cut; the aggregate cuts only
+     * receipts that are waiting for approval, which have none of either.
+     */
+    ReceiptLine withReceivedQuantity(int quantity) {
+        return new ReceiptLine(id, poLineId, inventoryItemId, locationId, quantity, lotNumber, expiryDate, note,
+                qcRequired, uomConversionId, qcLocationId, movedToQcAt, movedToQcBy, inspections);
     }
 
     public boolean movedToQc() {

@@ -4,12 +4,14 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.procurement.api.CreateSubcontractOrderCommand;
 import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,6 +20,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
@@ -34,18 +39,28 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * root production order and subcontracted child.
  */
 @IntegrationTest
-@Import(PostgresContainer.class)
+@Import({PostgresContainer.class, RecordedEvents.class})
+@TestPropertySource(properties = {
+        "PO_BUYER_COMPANY_NAME=Buyer test",
+        "PO_BUYER_COMPANY_ADDRESS=Company test address",
+        "PO_BUYER_CONTACT_NAME=Buyer contact",
+        "PO_BUYER_PHONE=0901234567",
+        "PO_BUYER_EMAIL=buyer@example.com",
+        "PO_RECEIVING_ADDRESS=Test warehouse"})
 class SubcontractPurchasingIntegrationTest {
 
     private static final Sku CUP = new Sku("SOFA-3S-GREY");
 
     @Autowired SubcontractPurchasing subcontracting;
     @Autowired com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
+    @Autowired com.stockflow.procurement.internal.domain.ReceivingPurchaseOrders receiving;
     @Autowired com.stockflow.procurement.api.ProcurementService procurement;
     @Autowired com.stockflow.product.api.ProductService products;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
+    @Autowired RecordedEvents.Recorder recorded;
+    @MockitoBean JavaMailSenderImpl mail;   // the concrete type: the actuator's mail health check needs it
 
     private UUID hcm;
     private UUID innhanh;
@@ -228,6 +243,11 @@ class SubcontractPurchasingIntegrationTest {
                     assertThat(o.quantity()).isEqualTo(460);
                     assertThat(o.pendingQuantity()).isNull();
                 });
+        // Nothing waits any more: the same code as for a standard order's amendment (SCRUM-117).
+        assertThatThrownBy(() -> amendments.approveAmendment(created.purchaseOrderId(), approver))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.PO_AMENDMENT_NOT_PENDING);
+        assertThatThrownBy(() -> amendments.rejectAmendment(created.purchaseOrderId(), approver, "again"))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.PO_AMENDMENT_NOT_PENDING);
     }
 
     @Test
@@ -413,6 +433,78 @@ class SubcontractPurchasingIntegrationTest {
 
         assertThat(asked.pendingQuantity()).isEqualTo(410);
         assertThat(asked.quantity()).isEqualTo(400);
+    }
+
+    @Test
+    @DisplayName("SCRUM-117 D5: the first receipt posted leaves a SUBCONTRACT supplement waiting - unlike a standard "
+            + "order's amendment, it is a resend meant for an order being received")
+    void subcontractAmendmentSurvivesReceiving() {
+        UUID po = approvedOrder().purchaseOrderId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE procurement.purchase_orders SET status = 'CONFIRMED', confirmed_at = NOW(), confirmed_by = approved_by
+                 WHERE id = ?""", po));
+        subcontracting.supplement(po, 10, "QC shortfall resend", manager);
+        UUID pending = jdbc.queryForObject("SELECT pending_revision_id FROM procurement.purchase_orders WHERE id = ?",
+                UUID.class, po);
+        assertThat(pending).as("waits: the requester has no limit").isNotNull();
+
+        // What posting the first receipt writes, through receiving's own port: the order leaves CONFIRMED.
+        tx.executeWithoutResult(s -> {
+            var view = receiving.lock(po).orElseThrow();
+            receiving.recordProgress(view,
+                    Map.of(view.lines().get(0).id(),
+                            com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder.LineStatus.PARTIALLY_RECEIVED),
+                    com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder.Status.PARTIALLY_RECEIVED, manager,
+                    Identifiers.newId(), "GR-TEST-000001");
+        });
+
+        assertThat(jdbc.queryForMap("SELECT status, pending_revision_id FROM procurement.purchase_orders WHERE id = ?", po))
+                .containsEntry("status", "PARTIALLY_RECEIVED").containsEntry("pending_revision_id", pending);
+        assertThat(subcontracting.findById(po).orElseThrow().pendingQuantity()).isEqualTo(410);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM procurement.purchase_order_approvals WHERE po_revision_id = ?",
+                Integer.class, pending)).as("no decision recorded").isZero();
+    }
+
+    @Test
+    @DisplayName("SCRUM-117: a supplement of an order the subcontractor already had is sent to them, whether it is "
+            + "approved at once or by someone else, and their answer is awaited again")
+    void subcontractSupplementOfConfirmedOrderIsSentAndResetsResponse() {
+        UUID po = approvedOrder().purchaseOrderId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    UPDATE procurement.supplier_contacts SET email = 'xuong@innhanh.example'
+                     WHERE supplier_id = ? AND is_primary""", innhanh);
+            jdbc.update("""
+                    UPDATE procurement.purchase_orders SET status = 'CONFIRMED', confirmed_at = NOW(),
+                           confirmed_by = approved_by, supplier_confirmation_status = 'CONFIRMED',
+                           supplier_responded_at = NOW(), supplier_reference = 'SUP-1' WHERE id = ?""", po);
+        });
+        recorded.clear();
+
+        subcontracting.supplement(po, 50, "QC shortfall resend", personWithLimit(400_000L));   // within the limit
+
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).singleElement().satisfies(sent -> {
+            assertThat(sent.amendmentRevisionNo()).isEqualTo(1);
+            assertThat(sent.operationReference()).isEqualTo("purchase-order:" + po + ":revision:1");
+            assertThat(sent.amendmentReason()).isEqualTo("QC shortfall resend");
+            assertThat(sent.recipient()).isEqualTo("xuong@innhanh.example");
+            assertThat(sent.lines()).extracting(PurchaseOrderSent.Line::quantity).containsExactly(450);
+        });
+        assertThat(jdbc.queryForMap("""
+                SELECT supplier_confirmation_status, supplier_reference, supplier_responded_at
+                  FROM procurement.purchase_orders WHERE id = ?""", po))
+                .containsEntry("supplier_confirmation_status", "PENDING").containsEntry("supplier_reference", null)
+                .containsEntry("supplier_responded_at", null);
+
+        // Waiting for a person: nothing is sent until it is approved.
+        recorded.clear();
+        subcontracting.supplement(po, 10, "More", personWithLimit(null));
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).isEmpty();
+        amendments.approveAmendment(po, personWithLimit(null));
+        assertThat(recorded.ofType(PurchaseOrderSent.class)).singleElement().satisfies(sent -> {
+            assertThat(sent.amendmentRevisionNo()).isEqualTo(2);
+            assertThat(sent.lines()).extracting(PurchaseOrderSent.Line::quantity).containsExactly(460);
+        });
     }
 
     @Test

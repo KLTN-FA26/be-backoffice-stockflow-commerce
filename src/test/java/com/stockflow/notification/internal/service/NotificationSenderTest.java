@@ -66,6 +66,9 @@ class NotificationSenderTest {
                 .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.header("Idempotency-Key", "purchase-order:" + event.purchaseOrderId()))
                 .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.lines[0].sku").value("CHAIR-1"))
                 .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.deliveryGeneration").doesNotExist())
+                .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.revisionNo").doesNotExist())
+                .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.amendmentReason").doesNotExist())
+                .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.changes").doesNotExist())
                 .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withStatus(org.springframework.http.HttpStatus.FOUND));
         assertThatThrownBy(() -> sender.sendPurchaseOrder(event))
                 .isInstanceOfSatisfying(org.springframework.web.client.RestClientResponseException.class,

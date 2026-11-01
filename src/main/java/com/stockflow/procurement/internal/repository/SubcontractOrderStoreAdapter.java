@@ -3,6 +3,7 @@ package com.stockflow.procurement.internal.repository;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.procurement.internal.domain.PackingUnit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
@@ -118,7 +119,7 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                         SELECT COALESCE(SUM(l.received_qty), 0) FROM procurement.goods_receipt_lines l
                           JOIN procurement.goods_receipts r ON r.id = l.receipt_id
                           JOIN procurement.purchase_order_lines pl ON pl.id = l.po_line_id
-                         WHERE pl.po_id = :po AND r.status NOT IN ('DRAFT', 'CANCELLED')""")
+                         WHERE pl.po_id = :po AND r.status NOT IN ('DRAFT', 'PENDING_APPROVAL', 'CANCELLED')""")
                 .setParameter("po", purchaseOrderId).getSingleResult();
         return received.intValue();
     }
@@ -131,8 +132,10 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                           FROM procurement.purchase_orders p
                           JOIN procurement.purchase_order_revisions r ON r.id = p.pending_revision_id
                           JOIN procurement.purchase_order_line_revisions lr ON lr.po_revision_id = r.id
-                         WHERE p.id = :po AND r.kind = 'AMENDMENT' AND p.status <> 'PENDING_APPROVAL'""")
-                .setParameter("po", purchaseOrderId).getResultList();
+                         WHERE p.id = :po AND r.kind = 'AMENDMENT' AND p.status IN (:open)""")
+                .setParameter("po", purchaseOrderId)
+                .setParameter("open", PurchaseOrderStatus.takingAmendments())
+                .getResultList();
         return rows.stream().findFirst().map(row -> new Amendment((UUID) row[0], ((Number) row[1]).longValue(),
                 ((BigDecimal) row[2]).intValueExact(), (BigDecimal) row[3], (UUID) row[4], (String) row[5]));
     }
@@ -145,7 +148,7 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
         // check_subcontract_po_single_line: exactly one line.
         PoLineJpaEntity line = orders.findWithLinesById(row.id()).orElseThrow().getLines().get(0);
         Integer unitFactor = lineUnits.factors(java.util.List.of(line)).get(line.getId());
-        Integer unitQuantity = unitFactor == null ? null : PoLineJpaEntity.wholeUnits(row.poNumber(), newQuantity, unitFactor);
+        Integer unitQuantity = unitFactor == null ? null : PackingUnit.wholeUnits(row.poNumber(), newQuantity, unitFactor);
         UUID revisionId = Identifiers.newId();
         entityManager.createNativeQuery("""
                         INSERT INTO procurement.purchase_order_revisions
@@ -226,6 +229,14 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                                subtotal = t.subtotal, tax_total = t.tax,
                                total_amount = t.subtotal - p.discount_total + t.tax + p.shipping_fee,
                                status = CASE WHEN p.status = 'RECEIVED' THEN 'PARTIALLY_RECEIVED' ELSE p.status END,
+                               supplier_confirmation_status = CASE WHEN p.supplier_confirmation_status
+                                       IN ('PENDING', 'CONFIRMED') THEN 'PENDING' ELSE p.supplier_confirmation_status END,
+                               supplier_responded_at = CASE WHEN p.supplier_confirmation_status
+                                       IN ('PENDING', 'CONFIRMED') THEN NULL ELSE p.supplier_responded_at END,
+                               supplier_reference = CASE WHEN p.supplier_confirmation_status
+                                       IN ('PENDING', 'CONFIRMED') THEN NULL ELSE p.supplier_reference END,
+                               supplier_response_note = CASE WHEN p.supplier_confirmation_status
+                                       IN ('PENDING', 'CONFIRMED') THEN NULL ELSE p.supplier_response_note END,
                                version = p.version + 1, last_modified_at = NOW()
                           FROM (SELECT SUM(line_subtotal) AS subtotal, SUM(line_tax) AS tax
                                   FROM procurement.purchase_order_lines WHERE po_id = :po AND status <> 'WITHDRAWN') t
@@ -324,18 +335,8 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                 ((Number) r[6]).intValue(), ((Number) r[7]).intValue(), (BigDecimal) r[8], ((Number) r[9]).intValue(),
                 ((Number) r[10]).intValue(), ((Number) r[11]).intValue(), ((Number) r[12]).intValue(),
                 (BigDecimal) r[13], ((Number) r[14]).intValue(), ((Number) r[15]).intValue(), (BigDecimal) r[16],
-                (BigDecimal) r[17], (BigDecimal) r[18], (String) r[19], (BigDecimal) r[20], instant(r[21]),
-                (UUID) r[22], instant(r[23]), (UUID) r[24], (String) r[25]));
-    }
-
-    private static java.time.Instant instant(Object value) {
-        return switch (value) {
-            case null -> null;
-            case java.time.Instant i -> i;
-            case java.time.OffsetDateTime o -> o.toInstant();
-            case java.sql.Timestamp t -> t.toInstant();
-            default -> throw new IllegalStateException("Not a timestamp: " + value.getClass());
-        };
+                (BigDecimal) r[17], (BigDecimal) r[18], (String) r[19], (BigDecimal) r[20],
+                NativeValues.instant(r[21]), (UUID) r[22], NativeValues.instant(r[23]), (UUID) r[24], (String) r[25]));
     }
 
     @Override

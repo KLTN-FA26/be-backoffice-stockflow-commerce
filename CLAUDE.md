@@ -318,6 +318,24 @@ production holds, transfer orders - gets the order. `HoldView` carries the hold'
 copies them onto `pick_line` (`V20261028003000`, checked by `tg_pick_line_carton`), and `PickList.confirm` accepts only
 the LPN for such a line: the deduction is from that carton, and a SKU scan would let the picker take any carton of it.
 
+### Issuing blanks by carton (SCRUM-473)
+
+A blank hold in a carton - a production hold, or an order's released allocation - is issued to the print shop only on
+a scan of its LPN (`MaterialIssueService.requireScanned`), as picking does; an issue that sends no item scan (no
+`scannedCode`, a location scan or none) still goes through (the SCRUM-397 contract), and `PendingHold` shows the
+carton to bring. The blanks still
+enter the print shop loose, the carton opening or emptying. Finished goods are not put into cartons: G4-Q2 consumes them
+when the production order completes, so nothing is left in stock to pack.
+
+### Purchase orders by carton (SCRUM-473)
+
+A standard PO line may name `unitOfMeasure` + `unitQuantity` ("5 CARTON"); `ProcurementServiceImpl.sizeLines` turns it
+into base units before the supplier's MOQ / pack multiple are checked, and the line keeps a `PackingUnit` (written to
+`uom_conversion_id` / `unit_qty`). Price, totals and approval limits stay per base unit. Naming the base unit means base
+units; a draft revision that names no unit keeps the line's own, so a client that knows nothing of units cannot drop
+one. Receiving takes the ordered unit for cartons listed with none (`GoodsReceiptServiceImpl.cartonUnit`) - a default,
+never a rule.
+
 ---
 
 ## 5. Known traps — do not reintroduce these

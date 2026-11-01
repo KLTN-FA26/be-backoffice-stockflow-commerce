@@ -77,6 +77,10 @@ import java.util.UUID;
  * transaction: the goods become INBOUND stock (inventory, same transaction through
  * {@code inventory :: api}), the purchase order's lines and status move on, and the events go out
  * after commit. A failure anywhere leaves the receipt a DRAFT with nothing counted in.</p>
+ *
+ * <p>SCRUM-477 (BR-RCP-001): a count beyond a PO line's over-receipt tolerance is not refused. Confirming it sends the
+ * receipt to PENDING_APPROVAL, with nothing counted in; {@link #approve} posts the whole count, {@link #rejectExcess}
+ * cuts it back to the tolerance and posts the rest, both for a user other than the receiver.</p>
  */
 @Service
 @Transactional
@@ -150,10 +154,58 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     /**
      * {@inheritDoc}
      *
+     * <p>The supplier is required and must exist, the reason is required, and the warehouse is one the caller is
+     * assigned to (BR-SEC-002).</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "goods-receipt", resourceId = "#result?.id()")
+    public ReceiptView createWithoutPurchaseOrder(CreateWithoutPo command, UUID userId) {
+        if (command.reason() == null || command.reason().isBlank()) {
+            throw new BusinessException(ErrorCode.BLIND_RECEIPT_REASON_REQUIRED,
+                    "A receipt without a purchase order needs a reason (BR-RCP-002)",
+                    List.of(new FieldError("reason", "A reason is required", ErrorCode.BLIND_RECEIPT_REASON_REQUIRED.name())));
+        }
+        if (orders.supplierName(command.supplierId()).isEmpty()) {
+            throw new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND, "No supplier " + command.supplierId());
+        }
+        warehouses.findWarehouse(command.warehouseId()).orElseThrow(() ->
+                new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + command.warehouseId()));
+        com.stockflow.common.security.WarehouseScope.requireWarehouse(command.warehouseId());
+        Instant now = clock.instant();
+        GoodsReceipt receipt = GoodsReceipt.blindDraft(Identifiers.newId(),
+                receipts.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), command.supplierId(),
+                command.warehouseId(), userId, command.reason(), blankToNull(command.deliveryNote()),
+                blankToNull(command.note()), now);
+        return view(receipts.save(receipt), null);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A reference only (owner decision NOPO-ATTACH): the order is not locked, not read for its state and not
+     * written; nothing is counted against it.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "goods-receipt", resourceId = "#receiptId")
+    public ReceiptView referencePurchaseOrder(UUID receiptId, UUID purchaseOrderId) {
+        GoodsReceipt receipt = load(receiptId);
+        ReceivingPurchaseOrder order = orders.find(purchaseOrderId).orElseThrow(() ->
+                new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No purchase order " + purchaseOrderId));
+        receipt.referencePurchaseOrder(purchaseOrderId, order.supplierId());
+        return view(receipts.save(receipt), null);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
      * <p>Every line is checked before anything is refused (SCRUM-464): the form gets one answer
      * naming each field at fault — {@code lines[i].purchaseOrderLineId}, {@code .locationCode},
-     * {@code .lotNumber}, {@code .expiryDate}, {@code .quantity} — and the top-level error code is the
+     * {@code .lotNumber}, {@code .expiryDate} — and the top-level error code is the
      * first one found, line by line. {@code check_goods_receipt_line} checks the same again.</p>
+     *
+     * <p>A count beyond a PO line's over-receipt tolerance is not refused here (SCRUM-477): a draft is a worksheet, and
+     * what the receiver counted is what the manager decides on. The response flags the lines concerned
+     * ({@link GoodsReceipts#OVER_TOLERANCE}); confirming the receipt sends it to the manager.</p>
      *
      * <p>A line counted again for the same PO line and lot keeps its id: the draft's line is recounted,
      * not replaced. Stock packages labelled during receiving point at their receipt line
@@ -174,11 +226,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     @Auditable(action = AuditAction.UPDATE, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView replaceLines(UUID receiptId, List<NewLine> newLines) {
         GoodsReceipt receipt = load(receiptId);
-        ReceivingPurchaseOrder order = orderOf(receipt);
+        // SCRUM-478: a receipt without a PO has no order; its lines name the item by SKU.
+        ReceivingPurchaseOrder order = receipt.blind() ? null : orderOf(receipt);
         LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
         Map<String, ReceiptLine> current = new HashMap<>();
         for (ReceiptLine line : receipt.lines()) {
-            current.put(lineKey(line.poLineId(), line.lotNumber()), line);
+            current.put(lineKey(line.poLineId(), line.inventoryItemId(), line.lotNumber()), line);
         }
         // The cartons labelled so far, read once: rule 7, and which lines inventory must count again.
         Map<UUID, List<StockPackageView>> labelled = receipt.lines().isEmpty() ? Map.of()
@@ -187,68 +240,110 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Map<UUID, InventoryItemPolicy> items = new HashMap<>();
         // The policies of every item the lines name, in one read (maxShelfLifeDays is part of it); an item it does
         // not return falls back to the single read below.
-        items.putAll(inventory.itemPolicies(newLines.stream()
-                .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
-                .map(ReceivingPurchaseOrder.Line::inventoryItemId).distinct().toList()));
+        if (order != null) {
+            items.putAll(inventory.itemPolicies(newLines.stream()
+                    .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
+                    .map(ReceivingPurchaseOrder.Line::inventoryItemId).distinct().toList()));
+        }
+        // The items of a receipt without a PO by SKU, one read each; an unknown or malformed SKU is that line's error.
+        Map<String, InventoryItemPolicy> bySku = new HashMap<>();
+        if (order == null) {
+            for (NewLine in : newLines) {
+                String sku = blankToNull(in.sku());
+                if (sku != null && !bySku.containsKey(sku)) {
+                    itemBySku(sku).ifPresent(policy -> {
+                        bySku.put(sku, policy);
+                        items.put(policy.inventoryItemId(), policy);
+                    });
+                }
+            }
+        }
+        // A line's units are needed when it names one, or lists cartons whose unit defaults to the line's own or the
+        // ordered one (SCRUM-473).
         List<Sku> unitSkus = newLines.stream()
-                .filter(in -> blankToNull(in.unitOfMeasure()) != null)
-                .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
-                .map(poLine -> new Sku(items.computeIfAbsent(poLine.inventoryItemId(), this::policy).sku()))
+                .filter(in -> blankToNull(in.unitOfMeasure()) != null || !in.packages().isEmpty())
+                .map(in -> order != null
+                        ? order.line(in.purchaseOrderLineId()).map(poLine ->
+                                items.computeIfAbsent(poLine.inventoryItemId(), this::policy).sku()).orElse(null)
+                        : Optional.ofNullable(bySku.get(blankToNull(in.sku()))).map(InventoryItemPolicy::sku)
+                                .orElse(null))
+                .filter(Objects::nonNull).map(Sku::new)
                 .distinct().toList();
         Map<String, List<UomConversion>> unitsBySku = unitSkus.isEmpty() ? Map.of() : units.conversionsOf(unitSkus);
 
         LineErrors errors = new LineErrors();
         List<ReceiptLine> counted = new ArrayList<>();
         List<CartonCount> cartonCounts = new ArrayList<>();
-        Map<UUID, Integer> perPoLine = new LinkedHashMap<>();
-        Map<UUID, List<Integer>> indexesOf = new LinkedHashMap<>();
         Set<String> seen = new HashSet<>();
         for (int i = 0; i < newLines.size(); i++) {
             NewLine in = newLines.get(i);
-            Optional<ReceivingPurchaseOrder.Line> found = order.line(in.purchaseOrderLineId());
-            if (found.isEmpty()) {
-                errors.add(i, "purchaseOrderLineId", ErrorCode.RECEIPT_LINE_NOT_ON_PO,
-                        "Line %s is not a line of %s".formatted(in.purchaseOrderLineId(), order.number()));
-                continue;
+            ReceivingPurchaseOrder.Line poLine = null;
+            UUID itemId;
+            String lineLabel;
+            if (order == null) {
+                // BR-RCP-002: no PO line on a receipt without a PO; the line is the item, by SKU.
+                if (in.purchaseOrderLineId() != null) {
+                    errors.add(i, "purchaseOrderLineId", ErrorCode.RECEIPT_LINE_NOT_ON_PO,
+                            "Receipt %s has no purchase order: count the item by its SKU".formatted(receipt.number()));
+                    continue;
+                }
+                String sku = blankToNull(in.sku());
+                if (sku == null) {
+                    errors.add(i, "sku", ErrorCode.VALIDATION_FAILED, "The SKU of the item received is required");
+                    continue;
+                }
+                InventoryItemPolicy found = bySku.get(sku);
+                if (found == null) {
+                    errors.add(i, "sku", ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item with SKU " + sku);
+                    continue;
+                }
+                itemId = found.inventoryItemId();
+                lineLabel = found.sku();
+            } else {
+                Optional<ReceivingPurchaseOrder.Line> found = in.purchaseOrderLineId() == null
+                        ? Optional.empty() : order.line(in.purchaseOrderLineId());
+                if (found.isEmpty()) {
+                    errors.add(i, "purchaseOrderLineId", ErrorCode.RECEIPT_LINE_NOT_ON_PO,
+                            "Line %s is not a line of %s".formatted(in.purchaseOrderLineId(), order.number()));
+                    continue;
+                }
+                poLine = found.get();
+                if (!poLine.open()) {
+                    errors.add(i, "purchaseOrderLineId", ErrorCode.PO_LINE_NOT_OPEN,
+                            "Line %d of %s is %s".formatted(poLine.lineNo(), order.number(), poLine.status()));
+                    continue;
+                }
+                itemId = poLine.inventoryItemId();
+                lineLabel = "Line %d of %s".formatted(poLine.lineNo(), order.number());
             }
-            ReceivingPurchaseOrder.Line poLine = found.get();
-            if (!poLine.open()) {
-                errors.add(i, "purchaseOrderLineId", ErrorCode.PO_LINE_NOT_OPEN,
-                        "Line %d of %s is %s".formatted(poLine.lineNo(), order.number(), poLine.status()));
-                continue;
-            }
-            InventoryItemPolicy item = items.computeIfAbsent(poLine.inventoryItemId(), this::policy);
+            UUID poLineId = poLine == null ? null : poLine.id();
+            boolean subcontract = order != null && order.subcontract();
+            InventoryItemPolicy item = items.computeIfAbsent(itemId, this::policy);
             String lot = blankToNull(in.lotNumber());
             int before = errors.size();
             ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());
             checkLotData(errors, i, item, lot, in.expiryDate(), receivedOn);
-            if (!seen.add(lineKey(poLine.id(), lot))) {
+            if (!seen.add(lineKey(poLineId, itemId, lot))) {
                 errors.add(i, "lotNumber", ErrorCode.DUPLICATE_RECEIPT_LINE,
-                        "Line %d of %s with this lot is already counted above; put the whole quantity of a lot on one line"
-                                .formatted(poLine.lineNo(), order.number()));
+                        "%s with this lot is already counted above; put the whole quantity of a lot on one line"
+                                .formatted(lineLabel));
             }
-            perPoLine.merge(poLine.id(), in.quantity(), Integer::sum);
-            indexesOf.computeIfAbsent(poLine.id(), id -> new ArrayList<>()).add(i);
-            ReceiptLine was = current.get(lineKey(poLine.id(), lot));
+            ReceiptLine was = current.get(lineKey(poLineId, itemId, lot));
             UUID lineId = was == null ? Identifiers.newId() : was.id();
             List<StockPackageView> cartonsBefore = labelled.getOrDefault(lineId, List.of());
             UomConversion unit = cartonUnit(errors, i, in, item, unitsBySku.getOrDefault(item.sku(), List.of()),
-                    order.subcontract(), was == null ? null : was.uomConversionId(), cartonsBefore);
+                    subcontract, was == null ? null : was.uomConversionId(),
+                    poLine == null ? null : poLine.uomConversionId(), cartonsBefore);
             if (errors.size() == before) {
                 // A SUBCONTRACT order's goods get one inspection, the production QC against the approved sample
                 // (user decision 2026-10-13): receiving counts them and does not inspect the same goods again.
-                counted.add(ReceiptLine.counted(lineId, poLine.id(), poLine.inventoryItemId(),
+                counted.add(ReceiptLine.counted(lineId, poLineId, itemId,
                         location.id(), in.quantity(), lot, in.expiryDate(), blankToNull(in.note()),
-                        item.qcRequired() && !order.subcontract(), unit == null ? null : unit.id()));
+                        item.qcRequired() && !subcontract, unit == null ? null : unit.id()));
                 if (!in.packages().isEmpty() || !cartonsBefore.isEmpty()) {
                     cartonCounts.add(new CartonCount(lineId, item.sku(), unit == null ? null : unit.id(),
                             location.code(), in.packages()));
                 }
-            }
-        }
-        for (var over : overTolerance(order, receipt.id(), perPoLine)) {
-            for (int i : indexesOf.get(over.poLineId())) {
-                errors.add(i, "quantity", ErrorCode.OVER_RECEIPT_TOLERANCE, over.message());
             }
         }
         errors.throwIfAny();
@@ -288,10 +383,17 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * unit was retired is still recounted in it, as {@code tg_goods_receipt_lines_unit} and
      * {@code tg_stock_package_created} allow. Refused here, the retired unit is an answer naming the field; let
      * through, it would be a check violation from the database.</p>
+     *
+     * <p>Cartons listed with no unit are in the line's own unit when it has been counted in one, else in
+     * {@code orderedUnitId}, the unit the PO line was ordered in (SCRUM-473). That is the default, never a rule: a
+     * supplier that ships another pack size is counted in the unit the clerk names, and every rule below holds the
+     * defaulted unit as it holds a named one. A unit retired since the PO line was ordered in it is still accepted, as
+     * {@code tg_goods_receipt_lines_unit} allows: goods ordered before the supplier changed its carton arrive in the
+     * old one.</p>
      */
     private UomConversion cartonUnit(LineErrors errors, int index, NewLine in, InventoryItemPolicy item,
                                      List<UomConversion> itemUnits, boolean subcontract, UUID lineUnitId,
-                                     List<StockPackageView> cartonsBefore) {
+                                     UUID orderedUnitId, List<StockPackageView> cartonsBefore) {
         String code = blankToNull(in.unitOfMeasure());
         if (in.packages().isEmpty()) {
             if (code != null) {
@@ -332,6 +434,13 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             errors.add(index, "packages", ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE,
                     "The cartons hold %d units, more than the line's %d".formatted(total, in.quantity()));
         }
+        // The line's own unit first: a recount of a line counted in another unit than ordered must not switch it and
+        // void its labelled cartons.
+        UUID fallback = lineUnitId != null ? lineUnitId : orderedUnitId;
+        if (code == null && fallback != null) {
+            code = itemUnits.stream().filter(unit -> unit.id().equals(fallback)).findFirst()
+                    .map(UomConversion::unitOfMeasure).orElse(null);
+        }
         if (code == null) {
             errors.add(index, "unitOfMeasure", ErrorCode.VALIDATION_FAILED, "Cartons need the packing unit they are in");
             return null;
@@ -348,7 +457,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     "Cartons are labelled in a packing unit, not in the base unit %s".formatted(code));
             return null;
         }
-        if (!unit.active() && !unit.id().equals(lineUnitId)) {
+        if (!unit.active() && !unit.id().equals(lineUnitId) && !unit.id().equals(orderedUnitId)) {
             errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID,
                     "%s is retired; cartons are labelled in an active packing unit".formatted(code));
             return null;
@@ -389,8 +498,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     }
 
     /** What identifies a line within one receipt: its PO line and lot ({@code uk_goods_receipt_lines_lot}). */
-    private static String lineKey(UUID poLineId, String lot) {
-        return poLineId + "|" + Objects.toString(lot, "");
+    private static String lineKey(UUID poLineId, UUID itemId, String lot) {
+        // A receipt without a PO has no PO line: its lines are told apart by item (and lot).
+        return (poLineId == null ? "item:" + itemId : poLineId.toString()) + "|" + Objects.toString(lot, "");
     }
 
     /**
@@ -455,36 +565,150 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView confirm(UUID receiptId, UUID userId) {
         GoodsReceipt receipt = load(receiptId);
+        if (receipt.blind()) {
+            // BR-RCP-002: a receipt without a PO is never posted by whoever counted it - it always waits for the manager.
+            requireQcArea(receipt, null);
+            receipt.requestApproval(userId, clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+            GoodsReceipt waiting = receipts.save(receipt);
+            log.info("Receipt {} has no purchase order: waiting for the warehouse manager", waiting.number());
+            return view(waiting, null);
+        }
         // Lock the order first: two receipts of one order confirmed together must not both compute
         // its status from totals that miss the other.
-        ReceivingPurchaseOrder order = orders.lock(receipt.purchaseOrderId()).orElseThrow(() ->
-                new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No purchase order " + receipt.purchaseOrderId()));
+        ReceivingPurchaseOrder order = lockOrder(receipt);
         requireReceivable(order);
-        Map<UUID, Integer> perPoLine = new LinkedHashMap<>();
-        receipt.lines().forEach(l -> perPoLine.merge(l.poLineId(), l.receivedQuantity(), Integer::sum));
-        overTolerance(order, receipt.id(), perPoLine).stream().findFirst().ifPresent(over -> {
-            throw new BusinessException(ErrorCode.OVER_RECEIPT_TOLERANCE, over.message());
-        });
-        // A SUBCONTRACT order's goods wait for production QC in the QUALITY_CONTROL area as well.
-        if ((order.subcontract() || receipt.lines().stream().anyMatch(ReceiptLine::qcRequired))
+        requireQcArea(receipt, order);
+        Map<UUID, Integer> perPoLine = countedPerPoLine(receipt);
+        if (!overTolerance(order, receipt.id(), perPoLine).isEmpty()) {
+            // BR-RCP-001: beyond the tolerance the count is not refused and not posted - the manager decides.
+            Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+            receipt.requestApproval(userId, now);
+            GoodsReceipt waiting = receipts.save(receipt);
+            log.info("Receipt {} against {} goes beyond the over-receipt tolerance: waiting for the warehouse manager",
+                    waiting.number(), order.number());
+            return view(waiting, order);
+        }
+        // Microseconds, as the database keeps them: the confirmation time is also the receipt time of
+        // the stock layers this creates, and the QC steps find their layer again by it.
+        Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        receipt.confirm(userId, now, order.subcontract());
+        return post(receipt, order, userId);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks the order first, like {@link #confirm}, then the receipt: the posting moves the order's lines on from
+     * totals that must not miss another receipt's, and a second decision on the same receipt waits here and finds it
+     * posted.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.APPROVE, resourceType = "goods-receipt", resourceId = "#receiptId")
+    public ReceiptView approve(UUID receiptId, UUID approverId, String reason) {
+        GoodsReceipt receipt = load(receiptId);
+        ReceivingPurchaseOrder order = lockOrder(receipt);
+        receipt = loadForUpdate(receiptId);
+        Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        // The receipt's own state, the reason and the four eyes are answered before the order's state is.
+        receipt.approve(approverId, reason, now, order != null && order.subcontract());
+        if (order != null) {
+            requireReceivable(order);
+        }
+        requireQcArea(receipt, order);
+        return post(receipt, order, approverId);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Each PO line of the receipt may take what its limit leaves after the receipts already posted; the excess comes
+     * off the receipt's lines of that PO line from the last one counted backwards. The cut is saved while the receipt
+     * still waits (the lines of a posted receipt are frozen, BR-05) and the receipt is then posted. A line that
+     * labelled cartons were counted into cannot be cut below them, nor removed: the manager approves instead, or the
+     * receipt is cancelled and counted again.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.REJECT, resourceType = "goods-receipt", resourceId = "#receiptId")
+    public ReceiptView rejectExcess(UUID receiptId, UUID approverId, String reason) {
+        GoodsReceipt receipt = load(receiptId);
+        ReceivingPurchaseOrder order = lockOrder(receipt);
+        receipt = loadForUpdate(receiptId);
+        Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        List<ReceiptLine> before = List.copyOf(receipt.lines());
+        receipt.cutBackTo(allowedPerPoLine(order, receipt));
+        requireCartonsFitTheCut(receipt, before);
+        // The cut is saved while the receipt still waits: the lines of a posted receipt are frozen (BR-05). The reason
+        // and the four eyes are answered in the aggregate first, so a refusal leaves nothing behind either way (it is
+        // one transaction).
+        if (!before.equals(receipt.lines())) {
+            receipts.save(receipt);
+        }
+        receipt.rejectExcess(approverId, reason, now, order.subcontract());
+        if (receipt.status() == GoodsReceiptStatus.CANCELLED) {
+            // Nothing within the tolerance is left: the receipt is cancelled, with the manager's reason on it.
+            GoodsReceipt cancelled = receipts.save(receipt);
+            log.info("Receipt {} against {}: the excess was rejected and nothing within the tolerance is left; cancelled",
+                    cancelled.number(), order.number());
+            return view(cancelled, order);
+        }
+        requireReceivable(order);
+        requireQcArea(receipt, order);
+        return post(receipt, order, approverId);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>BR-RCP-002: nothing was counted in, so there is nothing to undo beyond the cartons labelled while counting,
+     * which are voided as on any cancellation.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.REJECT, resourceType = "goods-receipt", resourceId = "#receiptId")
+    public ReceiptView reject(UUID receiptId, UUID approverId, String reason) {
+        GoodsReceipt receipt = loadForUpdate(receiptId);
+        receipt.reject(approverId, reason, clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+        inventory.voidStockPackagesOfReceiptLines(receipt.lines().stream().map(ReceiptLine::id).toList());
+        GoodsReceipt cancelled = receipts.save(receipt);
+        log.info("Receipt {} without a purchase order was rejected by the warehouse manager: cancelled",
+                cancelled.number());
+        return view(cancelled, null);
+    }
+
+    /** The receipt's order, locked; null for a receipt without one (SCRUM-478). */
+    private ReceivingPurchaseOrder lockOrder(GoodsReceipt receipt) {
+        if (receipt.blind()) {
+            return null;
+        }
+        return orders.lock(receipt.purchaseOrderId()).orElseThrow(() ->
+                new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No purchase order " + receipt.purchaseOrderId()));
+    }
+
+    /** A SUBCONTRACT order's goods wait for production QC in the QUALITY_CONTROL area as well. */
+    private void requireQcArea(GoodsReceipt receipt, ReceivingPurchaseOrder order) {
+        if (((order != null && order.subcontract()) || receipt.lines().stream().anyMatch(ReceiptLine::qcRequired))
                 && !locations.hasArea(receipt.warehouseId(), QUALITY_CONTROL)) {
             // Docs 03 edge case: the 3-step flow has nowhere to go.
             throw new BusinessException(ErrorCode.QC_AREA_MISSING,
                     "This receipt has items that need QC, and the warehouse has no QUALITY_CONTROL area yet");
         }
+    }
 
-        // Microseconds, as the database keeps them: the confirmation time is also the receipt time of
-        // the stock layers this creates, and the QC steps find their layer again by it.
-        Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
-        receipt.confirm(userId, now, order.subcontract());
+    /**
+     * The count is final and the receipt has already moved on in the aggregate (confirmed, or decided by the manager):
+     * save it, count the goods in as INBOUND stock, move the order's progress and send the events.
+     */
+    private ReceiptView post(GoodsReceipt receipt, ReceivingPurchaseOrder order, UUID userId) {
         GoodsReceipt saved = receipts.save(receipt);
 
         Map<UUID, ReceivingLocation> where = locations.byIds(
                 saved.lines().stream().map(ReceiptLine::locationId).toList());
         Map<UUID, InventoryItemPolicy> items = new HashMap<>();
         // SCRUM-142: the lots this receipt opens remember it, its order and its supplier as they read now.
-        ReceiptOrigin origin = new ReceiptOrigin(saved.id(), saved.number(), order.id(), order.number(),
-                order.supplierId(), orders.supplierName(order.supplierId()).orElse(null), saved.warehouseId());
+        // A receipt without a PO (BR-RCP-002) names no order, and the supplier it carries itself.
+        UUID supplierId = order == null ? saved.supplierId() : order.supplierId();
+        ReceiptOrigin origin = new ReceiptOrigin(saved.id(), saved.number(), order == null ? null : order.id(),
+                order == null ? null : order.number(), supplierId, orders.supplierName(supplierId).orElse(null),
+                saved.warehouseId());
         saved.lines().forEach(line -> items.computeIfAbsent(line.inventoryItemId(), this::policy));
         // Each receive takes its SKU's advisory lock: in replaceLines' order - SKU, then line id - so a confirm and a
         // count of two receipts sharing SKUs cannot take them in opposite orders and deadlock.
@@ -505,29 +729,33 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     line.receivedQuantity(), line.qcRequired(), locationCode));
             // A SUBCONTRACT order's goods are held for their production order in this transaction (production's
             // BEFORE_COMMIT listener) and wait for its QC: nothing of them is for putaway.
-            if (!line.qcRequired() && !order.subcontract()) {
+            if (!line.qcRequired() && (order == null || !order.subcontract())) {
                 readyLines.add(new ReceiptStockReadyForPutaway.Line(line.id(), item.sku(), line.lotNumber(),
                         locationCode, line.receivedQuantity()));
             }
         }
 
-        Map<UUID, Integer> confirmed = receipts.confirmedQuantities(order.id());
-        Map<UUID, ReceivingPurchaseOrder.LineStatus> lineStatuses = new LinkedHashMap<>();
-        for (UUID poLineId : perPoLine.keySet()) {
-            ReceivingPurchaseOrder.Line poLine = order.line(poLineId).orElseThrow();
-            lineStatuses.put(poLineId, ReceivingPurchaseOrder.lineStatusFor(poLine, confirmed.getOrDefault(poLineId, 0)));
+        // A receipt without a PO moves no order: nothing is counted against any PO (BR-RCP-002).
+        String orderLabel = "no purchase order";
+        if (order != null) {
+            Map<UUID, Integer> confirmed = receipts.confirmedQuantities(order.id());
+            Map<UUID, ReceivingPurchaseOrder.LineStatus> lineStatuses = new LinkedHashMap<>();
+            for (UUID poLineId : countedPerPoLine(saved).keySet()) {
+                ReceivingPurchaseOrder.Line poLine = order.line(poLineId).orElseThrow();
+                lineStatuses.put(poLineId, ReceivingPurchaseOrder.lineStatusFor(poLine, confirmed.getOrDefault(poLineId, 0)));
+            }
+            ReceivingPurchaseOrder.Status orderStatus = order.statusAfter(lineStatuses);
+            orders.recordProgress(order, lineStatuses, orderStatus, userId, saved.id(), saved.number());
+            orderLabel = "against %s, order now %s".formatted(order.number(), orderStatus);
         }
-        ReceivingPurchaseOrder.Status orderStatus = order.statusAfter(lineStatuses);
-        orders.recordProgress(order, lineStatuses, orderStatus, userId, saved.id(), saved.number());
 
-        events.publishEvent(new GoodsReceiptConfirmed(saved.id(), saved.number(), order.id(), saved.warehouseId(),
-                confirmedLines, saved.confirmedAt()));
+        events.publishEvent(new GoodsReceiptConfirmed(saved.id(), saved.number(), order == null ? null : order.id(),
+                saved.warehouseId(), confirmedLines, saved.confirmedAt()));
         if (!readyLines.isEmpty()) {
             events.publishEvent(new ReceiptStockReadyForPutaway(saved.id(), saved.number(), saved.warehouseId(),
                     readyLines));
         }
-        log.info("Confirmed receipt {} against {}: {} line(s), order now {}", saved.number(), order.number(),
-                saved.lines().size(), orderStatus);
+        log.info("Confirmed receipt {} ({}): {} line(s)", saved.number(), orderLabel, saved.lines().size());
         return view(saved, order);
     }
 
@@ -690,25 +918,31 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<Row> list(List<GoodsReceiptStatus> statuses, UUID purchaseOrderId, UUID warehouseId,
-                                  String text, Instant receivedFrom, Instant receivedTo, int page, int size,
-                                  String sort) {
+                                  String text, Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder,
+                                  int page, int size, String sort) {
         var criteria = new GoodsReceiptSearch.Criteria(statuses, purchaseOrderId, warehouseId, blankToNull(text),
-                receivedFrom, receivedTo);
+                receivedFrom, receivedTo, withoutPurchaseOrder);
         var rows = search.search(criteria, Pages.of(page, size, SORT.parse(sort)));
         // SCRUM-464: one query each for the orders, the people and the warehouses of the page.
-        var labels = search.orderLabels(rows.stream().map(GoodsReceiptSearch.Row::purchaseOrderId).toList());
+        var labels = search.orderLabels(rows.stream().map(GoodsReceiptSearch.Row::purchaseOrderId)
+                .filter(Objects::nonNull).toList());
+        // A receipt without a PO (SCRUM-478) carries its supplier itself.
+        var supplierNames = search.supplierNames(rows.stream().map(GoodsReceiptSearch.Row::supplierId)
+                .filter(Objects::nonNull).toList());
         var names = identity.displayNames(rows.stream()
                 .flatMap(r -> java.util.stream.Stream.of(r.receivedBy(), r.confirmedBy())).toList());
         Map<UUID, Optional<WarehouseView>> where = new HashMap<>();
         return Pages.toResponse(rows.map(r -> {
-            var label = labels.get(r.purchaseOrderId());
+            var label = r.purchaseOrderId() == null ? null : labels.get(r.purchaseOrderId());
             var warehouse = where.computeIfAbsent(r.warehouseId(), warehouses::findWarehouse);
             return new Row(r.id(), r.number(), r.purchaseOrderId(), label == null ? null : label.purchaseOrderNumber(),
-                    label == null ? null : label.supplierId(), label == null ? null : label.supplierName(),
+                    r.purchaseOrderId() == null ? r.supplierId() : label == null ? null : label.supplierId(),
+                    r.purchaseOrderId() == null ? supplierNames.get(r.supplierId())
+                            : label == null ? null : label.supplierName(),
                     r.warehouseId(), warehouse.map(WarehouseView::prefix).orElse(null),
                     warehouse.map(WarehouseView::name).orElse(null), r.status(), r.deliveryNote(), r.receivedAt(),
                     r.receivedBy(), names.get(r.receivedBy()), r.confirmedAt(), r.confirmedBy(),
-                    names.get(r.confirmedBy()), r.closedAt());
+                    names.get(r.confirmedBy()), r.closedAt(), r.purchaseOrderId() == null);
         }));
     }
 
@@ -725,7 +959,19 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private record OverTolerance(UUID poLineId, String message) {
     }
 
-    /** BR-02, counted the way {@code check_goods_receipt_line} counts it: every receipt not cancelled. */
+    /** Units of each PO line on this receipt, in the order the lines were counted. */
+    private static Map<UUID, Integer> countedPerPoLine(GoodsReceipt receipt) {
+        Map<UUID, Integer> perPoLine = new LinkedHashMap<>();
+        receipt.lines().stream().filter(l -> l.poLineId() != null)
+                .forEach(l -> perPoLine.merge(l.poLineId(), l.receivedQuantity(), Integer::sum));
+        return perPoLine;
+    }
+
+    /**
+     * BR-02 (BR-RCP-001): the PO lines whose total - what the receipts posted so far hold, plus this receipt's count -
+     * goes beyond the supplier's tolerance. Counted the way {@code check_goods_receipt_tolerance} counts it: a draft, a
+     * receipt waiting for approval and a cancelled one hold nothing.
+     */
     private List<OverTolerance> overTolerance(ReceivingPurchaseOrder order, UUID receiptId,
                                               Map<UUID, Integer> perPoLine) {
         if (perPoLine.isEmpty()) {
@@ -746,6 +992,53 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             }
         }
         return over;
+    }
+
+    /** What each PO line of the receipt may still receive on it: its limit less what other posted receipts hold. */
+    private Map<UUID, Integer> allowedPerPoLine(ReceivingPurchaseOrder order, GoodsReceipt receipt) {
+        Map<UUID, Integer> perPoLine = countedPerPoLine(receipt);
+        if (perPoLine.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, Integer> elsewhere = receipts.receivedOnOtherReceipts(perPoLine.keySet(), receipt.id());
+        Map<UUID, Integer> allowed = new LinkedHashMap<>();
+        for (UUID poLineId : perPoLine.keySet()) {
+            int limit = order.line(poLineId).orElseThrow().receivableLimit(order.tolerancePercent());
+            allowed.put(poLineId, Math.max(limit - elsewhere.getOrDefault(poLineId, 0), 0));
+        }
+        return allowed;
+    }
+
+    /**
+     * Cutting a line back must leave the cartons counted into it where they were: a carton is part of the line
+     * ({@code RECEIPT_PACKAGES_EXCEED_LINE} when the cut goes below what they hold), and a line they were ever labelled
+     * on cannot be removed ({@code RECEIPT_LINE_HAS_PACKAGES}). Either way the manager approves the count, or the
+     * receipt is cancelled and counted again.
+     */
+    private void requireCartonsFitTheCut(GoodsReceipt receipt, List<ReceiptLine> before) {
+        Map<UUID, ReceiptLine> after = new HashMap<>();
+        receipt.lines().forEach(l -> after.put(l.id(), l));
+        List<UUID> cut = before.stream().filter(l -> !after.containsKey(l.id())
+                || after.get(l.id()).receivedQuantity() < l.receivedQuantity()).map(ReceiptLine::id).toList();
+        if (cut.isEmpty()) {
+            return;
+        }
+        List<UUID> dropped = cut.stream().filter(id -> !after.containsKey(id)).toList();
+        if (!dropped.isEmpty() && !inventory.receiptLinesWithStockPackages(dropped).isEmpty()) {
+            throw new BusinessException(ErrorCode.RECEIPT_LINE_HAS_PACKAGES,
+                    ("Receipt %s: rejecting the excess would remove a line that labelled cartons were counted into;"
+                            + " approve the receipt, or cancel it and count it again").formatted(receipt.number()));
+        }
+        List<UUID> shrunk = cut.stream().filter(after::containsKey).toList();
+        Map<UUID, List<StockPackageView>> cartons = shrunk.isEmpty() ? Map.of() : inventory.receivingPackagesOf(shrunk);
+        for (UUID id : cut) {
+            if (after.containsKey(id) && countedIntoCartons(cartons.getOrDefault(id, List.of()))
+                    > after.get(id).receivedQuantity()) {
+                throw new BusinessException(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE,
+                        ("Receipt %s: rejecting the excess would cut a line below the units its cartons hold;"
+                                + " approve the receipt, or cancel it and count it again").formatted(receipt.number()));
+            }
+        }
     }
 
     /**
@@ -914,6 +1207,15 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         }
     }
 
+    /** The item with this SKU, or empty for an unknown or malformed one. */
+    private Optional<InventoryItemPolicy> itemBySku(String sku) {
+        try {
+            return inventory.itemPolicy(new Sku(sku));
+        } catch (IllegalArgumentException malformed) {
+            return Optional.empty();
+        }
+    }
+
     private InventoryItemPolicy policy(UUID inventoryItemId) {
         return inventory.itemPolicy(inventoryItemId).orElseThrow(() ->
                 new BusinessException(ErrorCode.NOT_FOUND, "No inventory item " + inventoryItemId));
@@ -935,7 +1237,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         return receipt;
     }
 
+    /** The receipt's order; null for a receipt without one ({@link GoodsReceipt#blind}, SCRUM-478). */
     private ReceivingPurchaseOrder orderOf(GoodsReceipt receipt) {
+        if (receipt.blind()) {
+            return null;
+        }
         return orders.find(receipt.purchaseOrderId()).orElseThrow(() ->
                 new IllegalStateException("Receipt %s points at a missing order".formatted(receipt.number())));
     }
@@ -955,6 +1261,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Set<UUID> people = new HashSet<>();
         Optional.ofNullable(receipt.receivedBy()).ifPresent(people::add);
         Optional.ofNullable(receipt.confirmedBy()).ifPresent(people::add);
+        receipt.approval().ifPresent(a -> {
+            people.add(a.requestedBy());
+            Optional.ofNullable(a.decidedBy()).ifPresent(people::add);
+        });
         receipt.lines().forEach(l -> l.inspections().forEach(i -> Optional.ofNullable(i.inspectedBy()).ifPresent(people::add)));
         Map<UUID, String> names = identity.displayNames(people);
         // SCRUM-473: every line's cartons in one call, and every unit of the receipt's items in another - the line's
@@ -970,10 +1280,24 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         boolean flags = receipt.status() != GoodsReceiptStatus.CANCELLED;
         LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
         int window = flags ? inventoryControl.expiryWarningDays() : 0;
+        // SCRUM-477: a count not yet posted that goes beyond a PO line's tolerance is flagged, on the lines concerned
+        // and on the receipt: confirming it sends it to the manager, and the manager sees which lines to decide on.
+        Set<UUID> overPoLines = new HashSet<>();
+        if (order != null && (receipt.status() == GoodsReceiptStatus.DRAFT
+                || receipt.status() == GoodsReceiptStatus.PENDING_APPROVAL)) {
+            overTolerance(order, receipt.id(), countedPerPoLine(receipt))
+                    .forEach(over -> overPoLines.add(over.poLineId()));
+        }
+        boolean subcontract = order != null && order.subcontract();
         List<LineView> lines = receipt.lines().stream().map(line -> {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
-            List<String> lineWarnings = flags && ExpiryWarning.isNear(line.expiryDate(), receivedOn, window)
-                    ? List.of(ExpiryWarning.EXPIRY_NEAR) : List.of();
+            List<String> lineWarnings = new ArrayList<>();
+            if (flags && ExpiryWarning.isNear(line.expiryDate(), receivedOn, window)) {
+                lineWarnings.add(ExpiryWarning.EXPIRY_NEAR);
+            }
+            if (overPoLines.contains(line.poLineId())) {
+                lineWarnings.add(GoodsReceipts.OVER_TOLERANCE);
+            }
             List<PackageView> packages = cartons.getOrDefault(line.id(), List.of()).stream()
                     .map(c -> new PackageView(c.id(), c.lpn(), c.quantity() == null ? 0 : c.quantity(),
                             c.receivedQty() == null ? 0 : c.receivedQty(), c.nominalQty(), c.status(),
@@ -983,12 +1307,13 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             // confirmed receipt is frozen (BR-05), and units picked from a carton later were never loose.
             int inCartons = packages.stream().mapToInt(PackageView::receivedQty).sum();
             return new LineView(line.id(), line.poLineId(),
-                    order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::lineNo).orElse(null),
+                    order == null ? null
+                            : order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::lineNo).orElse(null),
                     line.inventoryItemId(), item == null ? null : item.sku(), line.receivedQuantity(),
                     line.lotNumber(), line.expiryDate(), code(where, line.locationId()), line.note(),
                     line.qcRequired(), item != null && item.lotTracked(), item != null && item.expiryTracked(),
-                    progress(line, order.subcontract()), code(where, line.qcLocationId()), line.movedToQcAt(),
-                    order.subcontract() || line.qcRequired() && !line.inspected() ? 0 : line.quantityForPutaway(),
+                    progress(line, subcontract), code(where, line.qcLocationId()), line.movedToQcAt(),
+                    subcontract || line.qcRequired() && !line.inspected() ? 0 : line.quantityForPutaway(),
                     line.inspections().stream().map(i -> new InspectionView(i.id(), i.outcome(), i.quantity(),
                             code(where, i.targetLocationId()), i.reason(), i.inspectedBy(), names.get(i.inspectedBy()),
                             i.inspectedAt())).toList(),
@@ -997,18 +1322,42 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()
                             .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.base(), u.active(),
                                     u.defaultPurchase()))
-                            .toList());
+                            .toList(),
+                    order == null ? null : order.line(line.poLineId())
+                            .map(ReceivingPurchaseOrder.Line::uomConversionId).map(unitCodes::get).orElse(null));
         }).toList();
-        List<String> warnings = lines.stream().anyMatch(l -> !l.warnings().isEmpty())
-                ? List.of(ExpiryWarning.EXPIRY_NEAR) : List.of();
-        var label = search.orderLabels(List.of(receipt.purchaseOrderId())).get(receipt.purchaseOrderId());
+        List<String> warnings = new ArrayList<>();
+        if (lines.stream().anyMatch(l -> l.warnings().contains(ExpiryWarning.EXPIRY_NEAR))) {
+            warnings.add(ExpiryWarning.EXPIRY_NEAR);
+        }
+        if (!overPoLines.isEmpty()) {
+            warnings.add(GoodsReceipts.OVER_TOLERANCE);
+        }
+        // The supplier comes from the PO, or from the receipt itself when it has none (SCRUM-478); the PO attached to
+        // such a receipt afterwards is read for its number only.
+        List<UUID> labelled = new ArrayList<>();
+        Optional.ofNullable(receipt.purchaseOrderId()).ifPresent(labelled::add);
+        Optional.ofNullable(receipt.referencedPurchaseOrderId()).ifPresent(labelled::add);
+        var labels = labelled.isEmpty() ? Map.<UUID, GoodsReceiptSearch.OrderLabel>of() : search.orderLabels(labelled);
+        var label = receipt.blind() ? null : labels.get(receipt.purchaseOrderId());
+        var referenced = receipt.referencedPurchaseOrderId() == null ? null
+                : labels.get(receipt.referencedPurchaseOrderId());
+        UUID supplierId = receipt.blind() ? receipt.supplierId() : order.supplierId();
+        String supplierName = receipt.blind()
+                ? search.supplierNames(List.of(receipt.supplierId())).get(receipt.supplierId())
+                : label == null ? null : label.supplierName();
         var warehouse = warehouses.findWarehouse(receipt.warehouseId());
-        return new ReceiptView(receipt.id(), receipt.number(), receipt.purchaseOrderId(), order.number(),
-                order.supplierId(), label == null ? null : label.supplierName(), receipt.warehouseId(),
+        return new ReceiptView(receipt.id(), receipt.number(), receipt.purchaseOrderId(),
+                order == null ? null : order.number(), supplierId, supplierName, receipt.warehouseId(),
                 warehouse.map(WarehouseView::prefix).orElse(null), warehouse.map(WarehouseView::name).orElse(null),
                 receipt.status(), receipt.deliveryNote(), receipt.note(), receipt.receivedAt(), receipt.receivedBy(),
                 names.get(receipt.receivedBy()), receipt.confirmedAt(), receipt.confirmedBy(),
-                names.get(receipt.confirmedBy()), receipt.closedAt(), lines, warnings);
+                names.get(receipt.confirmedBy()), receipt.closedAt(), lines, warnings,
+                receipt.approval().map(a -> new Approval(a.requestedAt(), a.requestedBy(),
+                        names.get(a.requestedBy()), a.decision(), a.decidedAt(), a.decidedBy(),
+                        a.decidedBy() == null ? null : names.get(a.decidedBy()), a.reason())).orElse(null),
+                receipt.blind(), receipt.blindReason(), receipt.referencedPurchaseOrderId(),
+                referenced == null ? null : referenced.purchaseOrderNumber());
     }
 
     private static QcProgress progress(ReceiptLine line, boolean subcontract) {

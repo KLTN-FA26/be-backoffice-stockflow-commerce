@@ -166,12 +166,12 @@ public class DeliveryLogJpaEntity extends BaseEntity {
         this.nextAttemptAt = null;
     }
 
-    public void recordGeneration(int generation) {
-        this.deliveryGeneration = generation;
-    }
-
     public boolean isTerminal() {
         return terminal;
+    }
+
+    public void recordGeneration(int generation) {
+        this.deliveryGeneration = generation;
     }
 
     public EmailProvider getProvider() {

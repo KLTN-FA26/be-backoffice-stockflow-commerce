@@ -1,8 +1,7 @@
 package com.stockflow.procurement.internal.entity;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.procurement.internal.domain.PackingUnit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PoLineStatus;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
@@ -28,14 +27,16 @@ import java.util.UUID;
  * (receiving, closing, cancelling). The one exception is a SUBCONTRACT draft, whose single line is
  * resized before any revision exists ({@link #reviseDraftQuantity}), and a standard draft's lines are
  * edited by the buyer ({@link #reviseDraft}, SCRUM-462); {@code tg_purchase_order_lines_draft_content}
- * refuses either once the order has left DRAFT. {@code po_revision_id} is written by the revision snapshot with native SQL and is not
- * mapped. The amounts satisfy {@code ck_purchase_order_lines_amounts}: no line discount, so net is
+ * refuses either once the order has left DRAFT. {@code po_revision_id} is written by the revision snapshot and by an
+ * approved amendment with native SQL, and mapped read-only ({@link #getRevisionId}): which revision a CANCELLED line
+ * still points at tells whether an amendment removed it (SCRUM-117). The amounts satisfy {@code ck_purchase_order_lines_amounts}: no line discount, so net is
  * the subtotal.</p>
  *
- * <p>The packing unit a line was entered in ({@code uom_conversion_id}, V20261020000400) is read here and
- * never written: the application still orders in the base unit. A draft line already in one keeps it
- * when it is resized, and {@code unit_qty} is recomputed with it, since {@code tg_purchase_order_lines_unit}
- * refuses an {@code ordered_qty} that is not {@code unit_qty} times the unit's factor.</p>
+ * <p>The packing unit a line was ordered in ({@code uom_conversion_id} and {@code unit_qty}, V20261020000400) is
+ * the domain line's {@code PackingUnit} (SCRUM-473), written on insert and by a draft revision, which may change it.
+ * A SUBCONTRACT draft resized by {@link #reviseDraftQuantity} keeps its unit and recomputes {@code unit_qty}, since
+ * {@code tg_purchase_order_lines_unit} refuses an {@code ordered_qty} that is not {@code unit_qty} times the unit's
+ * factor.</p>
  *
  * <p>{@code @DynamicUpdate}: an UPDATE writes only the columns that changed. The amendment of a
  * subcontract order rewrites {@code ordered_qty} and {@code unit_qty} with native SQL; a full-row
@@ -94,11 +95,15 @@ public class PoLineJpaEntity extends BaseEntity {
     private String description;
 
     /** NULL = the base unit. */
-    @Column(name = "uom_conversion_id", insertable = false, updatable = false)
+    @Column(name = "uom_conversion_id")
     private UUID uomConversionId;
 
-    @Column(name = "unit_qty", insertable = false)
+    @Column(name = "unit_qty")
     private Integer unitQuantity;
+
+    /** Read-only: only native SQL moves a line to a revision, in the statement the line guard checks. */
+    @Column(name = "po_revision_id", insertable = false, updatable = false)
+    private UUID revisionId;
 
     protected PoLineJpaEntity() {
     }
@@ -108,6 +113,12 @@ public class PoLineJpaEntity extends BaseEntity {
         this.lineNo = line.lineNo();
         this.inventoryItemId = line.inventoryItemId();
         this.uom = line.uom();
+        this.status = line.status();
+        writeContent(line);
+    }
+
+    /** What the buyer orders - quantity, unit, price, tax, description - and the amounts, as the domain line has them. */
+    private void writeContent(PoLine line) {
         this.orderedQuantity = BigDecimal.valueOf(line.quantityOrdered());
         this.unitPrice = line.unitPrice().amount();
         this.taxRate = line.taxRate();
@@ -115,8 +126,9 @@ public class PoLineJpaEntity extends BaseEntity {
         this.net = line.subtotal();
         this.tax = line.tax();
         this.total = line.total();
-        this.status = line.status();
         this.description = line.description();
+        this.uomConversionId = line.packingUnit() == null ? null : line.packingUnit().uomConversionId();
+        this.unitQuantity = line.packingUnit() == null ? null : line.packingUnit().count();
     }
 
     void attachTo(PurchaseOrderJpaEntity order) {
@@ -128,7 +140,7 @@ public class PoLineJpaEntity extends BaseEntity {
      * them. Refused once the order has left DRAFT: from submission on, the revision snapshot is what
      * the approver approves, and a changed line would no longer match it. {@code unitFactor} is the
      * factor of the line's packing unit, ignored for a line in the base unit: a line in a carton stays
-     * a whole number of cartons ({@link #wholeUnits}).
+     * a whole number of cartons ({@link PackingUnit#wholeUnits}).
      */
     public void reviseDraftQuantity(int quantity, int unitFactor) {
         requireDraft();
@@ -136,7 +148,7 @@ public class PoLineJpaEntity extends BaseEntity {
             throw new IllegalArgumentException("quantity must be positive");
         }
         if (uomConversionId != null) {
-            this.unitQuantity = wholeUnits(purchaseOrder.getPoNumber(), quantity, unitFactor);
+            this.unitQuantity = PackingUnit.wholeUnits(purchaseOrder.getPoNumber(), quantity, unitFactor);
         }
         this.orderedQuantity = BigDecimal.valueOf(quantity);
         this.subtotal = unitPrice.multiply(orderedQuantity).setScale(2, RoundingMode.HALF_UP);
@@ -146,28 +158,13 @@ public class PoLineJpaEntity extends BaseEntity {
     }
 
     /**
-     * The buyer's new quantity, price, tax and description for a line of a DRAFT order (SCRUM-462);
-     * {@code unitFactor} as in {@link #reviseDraftQuantity}.
+     * The buyer's new quantity, unit, price, tax and description for a line of a DRAFT order (SCRUM-462,
+     * SCRUM-473). The domain line already says which packing unit it is in and how many, so nothing is
+     * worked out here.
      */
-    public void reviseDraft(PoLine line, int unitFactor) {
+    public void reviseDraft(PoLine line) {
         requireDraft();
-        this.unitPrice = line.unitPrice().amount();
-        this.taxRate = line.taxRate();
-        this.description = line.description();
-        reviseDraftQuantity(line.quantityOrdered(), unitFactor);
-    }
-
-    /**
-     * How many units of {@code factor} base units {@code quantity} is. BR-09: the factor is a whole
-     * number and there is no part of a carton, so anything else is {@code PO_LINE_UNIT_NOT_MULTIPLE}
-     * rather than the generic 409 {@code tg_purchase_order_lines_unit} would turn it into.
-     */
-    public static int wholeUnits(String poNumber, int quantity, int factor) {
-        if (quantity % factor != 0) {
-            throw new BusinessException(ErrorCode.PO_LINE_UNIT_NOT_MULTIPLE,
-                    "%s is ordered in units of %d; %d is not a whole number of them".formatted(poNumber, factor, quantity));
-        }
-        return quantity / factor;
+        writeContent(line);
     }
 
     /** Taken off a draft after a revision froze it: the row stays for that revision ({@code ck_purchase_order_lines_withdrawn}). */
@@ -199,4 +196,7 @@ public class PoLineJpaEntity extends BaseEntity {
     public PoLineStatus getStatus() { return status; }
     public String getDescription() { return description; }
     public UUID getUomConversionId() { return uomConversionId; }
+    public Integer getUnitQuantity() { return unitQuantity; }
+    /** The revision that last froze the line; null until one did, and stale until a refresh after native SQL. */
+    public UUID getRevisionId() { return revisionId; }
 }
