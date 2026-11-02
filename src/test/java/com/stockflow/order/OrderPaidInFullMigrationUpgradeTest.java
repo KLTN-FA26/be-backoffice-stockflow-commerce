@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class OrderPaidInFullMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261101050000";
+    private static final String BEFORE = "20261102020200";
     private static final String MIGRATION = "20261102030100";
 
     @Test
