@@ -33,7 +33,10 @@ import static org.mockito.Mockito.verify;
  */
 // A mocked mail sender leaves the mail health indicator with nothing to check, so it is switched off for this context.
 @SecuredIntegrationTest
-@org.springframework.test.context.TestPropertySource(properties = "management.health.mail.enabled=false")
+// SMTP over the mocked sender, so "nothing sent" is checked on the transport that would send it (the test profile's
+// default is the in-memory recorder); customer order mail is off, it is not what this test is about.
+@org.springframework.test.context.TestPropertySource(properties = {"management.health.mail.enabled=false",
+        "stockflow.notification.email.provider=smtp", "stockflow.notification.email.customer.enabled=false"})
 class InventoryAlertEmailDisabledIntegrationTest {
 
     @Autowired ApplicationEventPublisher publisher;

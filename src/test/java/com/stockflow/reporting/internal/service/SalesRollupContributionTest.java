@@ -53,6 +53,18 @@ class SalesRollupContributionTest {
     }
 
     @Test
+    @DisplayName("a free replacement order is not a sale: its goods were sold, and counted, on the original order")
+    void replacementOrderIsLeftOut() {
+        OrderSummary plain = order(OrderStatus.CONFIRMED, Money.vnd(0), Instant.parse("2026-10-24T05:00:00Z"));
+        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, null, null,
+                null, null, List.of(), List.of(), null, null, false, false, null, false, null, UUID.randomUUID());
+        OrderSummary replacement = new OrderSummary(plain.orderId(), plain.orderNumber(), plain.customerId(),
+                plain.status(), plain.total(), plain.lines(), plain.placedAt(), null, null, null, null, null, null, null,
+                null, null, null, null, null, null, lifecycle);
+        assertThat(SalesRollupService.contributionOf(replacement)).isEmpty();
+    }
+
+    @Test
     @DisplayName("an order in another currency is left out of the single-currency VND totals")
     void otherCurrencyIsLeftOut() {
         assertThat(SalesRollupService.contributionOf(order(OrderStatus.CONFIRMED,

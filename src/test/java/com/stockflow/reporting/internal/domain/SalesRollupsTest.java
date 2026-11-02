@@ -60,6 +60,31 @@ class SalesRollupsTest {
     }
 
     @Test
+    @DisplayName("a return's credited value and units come off the paying order's placed day; the order count stays; "
+            + "the same return twice changes nothing; a replacement-only resolution takes nothing")
+    void returnTakesTheCreditOff() {
+        UUID id = UUID.randomUUID();
+        UUID returnId = UUID.randomUUID();
+        rollups.place(order(id, D24, 36_000_000, line("CUP", 2, 24_000_000), line("LID", 4, 12_000_000)));
+
+        assertThat(rollups.returned(returnId, "RESOLVED", order(id, D24, 12_000_000, line("CUP", 1, 12_000_000))))
+                .isTrue();
+        assertThat(rollups.returned(returnId, "RESOLVED", order(id, D24, 12_000_000, line("CUP", 1, 12_000_000))))
+                .as("delivered again").isFalse();
+        assertThat(rollups.returned(UUID.randomUUID(), "RESOLVED", order(id, D24, 0))).as("nothing credited")
+                .isFalse();
+
+        assertThat(day(D24)).isEqualTo(new InMemoryLedger.Day(1, BigDecimal.valueOf(24_000_000)));
+        assertThat(ledger.products.get("CUP@" + D24)).isEqualTo(new InMemoryLedger.Product(1, BigDecimal.valueOf(12_000_000)));
+
+        // The withdrawal of a replacement is a second adjustment of the same return.
+        assertThat(rollups.returned(returnId, "REPLACEMENT_WITHDRAWN", order(id, D24, 3_000_000,
+                line("LID", 1, 3_000_000)))).isTrue();
+        assertThat(day(D24).revenue()).isEqualByComparingTo("21000000");
+        assertThat(ledger.returnsOf(D24)).hasSize(2);
+    }
+
+    @Test
     @DisplayName("a cancellation takes the order out again, on the day it was PLACED")
     void cancelReversesOnThePlacedDay() {
         UUID id = UUID.randomUUID();

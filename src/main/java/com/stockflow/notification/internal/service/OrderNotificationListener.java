@@ -1,84 +1,92 @@
 package com.stockflow.notification.internal.service;
 
+import com.stockflow.contracts.OrderCancelled;
+import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.OrderPlaced;
-import com.stockflow.contracts.PaymentFailed;
+import com.stockflow.contracts.OrderRemainderClosed;
 import com.stockflow.contracts.ShipmentStatusChanged;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.modulith.events.ApplicationModuleListener;
+
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionalEventListener;
+
+import java.util.Optional;
 
 /**
- * Sends the customer-facing messages that follow an order's milestones.
+ * Sends the customer the e-mails that follow its order (SCRUM-352): placed, handed to the carrier, delivered, not
+ * delivered, cancelled, part of it closed. What each says is {@link CustomerEmailComposer}'s; how it is sent once and
+ * recorded is {@link CustomerEmailDelivery}'s.
  *
- * <p><b>This class is the payoff for using events at all.</b> Notification depends on nothing —
- * its {@code allowedDependencies} is empty — and no module knows it exists. Adding an SMS on
- * shipment, or a webhook to a partner, means adding a method here; not one line changes in
- * {@code order}, {@code payment} or {@code fulfillment}. Had {@code order} called
- * {@code notificationService.sendConfirmation(...)} directly, every new channel would be an edit
- * to the checkout path, and a mail server outage would fail checkouts.</p>
+ * <p><b>This class is the payoff for using events at all.</b> No module knows it exists. Adding an SMS on shipment, or
+ * a webhook to a partner, means adding a method here; not one line changes in {@code order} or {@code fulfillment}.
+ * Had {@code order} called notification directly, a mail provider outage would fail checkouts.</p>
  *
- * <p><b>Why it is safe to be slow here.</b> {@code @ApplicationModuleListener} runs asynchronously
- * in its own transaction after the publisher commits, so an SMTP timeout delays the email and
- * nothing else. The order is already placed.</p>
+ * <h2>{@code @Async @TransactionalEventListener}, not {@code @ApplicationModuleListener}</h2>
  *
- * <p><b>The handler methods are public.</b> {@code @ApplicationModuleListener} is a composition of
- * {@code @Async}, {@code @Transactional(REQUIRES_NEW)} and {@code @TransactionalEventListener}, and
- * the transactional half of that is proxy-based advice, which Spring applies to public methods
- * only. A package-private handler still receives the event and still runs asynchronously — it just
- * runs with no transaction, which is exactly the kind of defect that never shows up until
- * something needs to roll back.</p>
+ * <p>{@code @ApplicationModuleListener} is the same pair plus {@code @Transactional(REQUIRES_NEW)}, and that last part is
+ * what this listener must not have. A transaction around the handler holds a database connection from its first query
+ * until it returns - across the call to the mail provider, which may take seconds, on listeners that run on virtual
+ * threads with no bound of their own. A busy dispatch would drain the connection pool the checkout needs. So the
+ * handler runs outside any transaction and {@link CustomerEmailLog} opens a short one for each read and write.
+ * Spring Modulith keeps the event publication for an {@code AFTER_COMMIT} transactional listener either way: it is
+ * marked complete when the handler returns, and stays for a retry when it throws.</p>
  *
- * <p><b>Failures are not lost.</b> Modulith keeps the {@code event_publication} row until this
- * method returns normally. A mail server that is down when the order is placed leaves the row
- * behind, and {@code republish-outstanding-events-on-restart} sends the email after the next
- * restart. That is durability a plain {@code @EventListener} does not have — an exception there
- * would be logged and the notification silently lost.</p>
+ * <p><b>The handler methods are public</b>: {@code @Async} is proxy-based advice, applied to public methods only.</p>
+ *
+ * <p><b>Failures are not lost.</b> A failure worth retrying throws (see {@link CustomerEmailDelivery}); the publication
+ * stays in {@code event_publication}, {@link CustomerEmailRetry} dispatches it again once its back-off has passed, and a
+ * restart republishes it too. A redelivery of a message already sent changes nothing.</p>
+ *
+ * <p><b>No e-mail for {@code PaymentFailed}.</b> There was one, saying "your payment failed, the items were released".
+ * Nothing publishes {@code PaymentFailed} since the B2B decision (2026-10-06): customers pay by transfer, there is no
+ * payment gateway to fail, and an order not paid in time is cancelled - which {@link #on(OrderCancelled)} tells the
+ * customer, with the reason. Inventory still listens to {@code PaymentFailed} to release stock; a message nobody can
+ * trigger was dead code that looked like a feature.</p>
  */
 @Component
 class OrderNotificationListener {
 
-    private static final Logger log = LoggerFactory.getLogger(OrderNotificationListener.class);
+    private final CustomerEmailComposer composer;
+    private final CustomerEmailDelivery delivery;
 
-    private final NotificationSender sender;
-
-    OrderNotificationListener(NotificationSender sender) {
-        this.sender = sender;
+    OrderNotificationListener(CustomerEmailComposer composer, CustomerEmailDelivery delivery) {
+        this.composer = composer;
+        this.delivery = delivery;
     }
 
-    @ApplicationModuleListener
+    @Async
+    @TransactionalEventListener
     public void on(OrderPlaced event) {
-        sender.send(event.customerId(), event.contactEmail(), "order.placed",
-                "Order %s received".formatted(event.orderNumber()),
-                "We have received order %s for a total of %s %s."
-                        .formatted(event.orderNumber(), event.totalAmount(), event.currency()));
-        log.debug("Queued order confirmation for {}", event.orderNumber());
+        deliver(composer.orderPlaced(event));
     }
 
-    @ApplicationModuleListener
-    public void on(PaymentFailed event) {
-        sender.send(null, "payment.failed",
-                "Payment could not be completed",
-                "Payment for your order failed (%s). The items have been released."
-                        .formatted(event.failureMessage()));
-    }
-
-    /**
-     * kltn-docs 09 §4.1 step 3: the customer is told when their goods are handed to the carrier - which carrier, no
-     * tracking number (none exists, 09 §1) - and when staff record them delivered. The other steps are the shop's.
-     */
-    @ApplicationModuleListener
+    /** kltn-docs 09 §4.1 step 3 and §4.3: handed to the carrier, delivered, not delivered. The rest says nothing. */
+    @Async
+    @TransactionalEventListener
     public void on(ShipmentStatusChanged event) {
-        switch (event.status()) {
-            case "HANDED_OVER" -> sender.send(event.customerId(), "shipment.dispatched",
-                    "Order %s has been handed to the carrier".formatted(event.orderNumber()),
-                    "Shipment %s of order %s (%d package(s)) was handed to %s.".formatted(event.shipmentCode(),
-                            event.orderNumber(), event.packageCount(),
-                            event.carrierName() == null ? "the carrier" : event.carrierName()));
-            case "DELIVERED" -> sender.send(event.customerId(), "shipment.delivered",
-                    "Order %s delivered".formatted(event.orderNumber()),
-                    "Shipment %s of order %s was delivered.".formatted(event.shipmentCode(), event.orderNumber()));
-            default -> log.debug("Shipment {} is {}: no customer message", event.shipmentCode(), event.status());
-        }
+        deliver(composer.shipmentChanged(event));
+    }
+
+    /** Only an order delivered without shipments; with shipments each one was told already. */
+    @Async
+    @TransactionalEventListener
+    public void on(OrderDelivered event) {
+        deliver(composer.orderDelivered(event));
+    }
+
+    @Async
+    @TransactionalEventListener
+    public void on(OrderCancelled event) {
+        deliver(composer.orderCancelled(event));
+    }
+
+    @Async
+    @TransactionalEventListener
+    public void on(OrderRemainderClosed event) {
+        deliver(composer.remainderClosed(event));
+    }
+
+    private void deliver(Optional<CustomerMessage> message) {
+        message.ifPresent(delivery::deliver);
     }
 }
