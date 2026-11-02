@@ -43,9 +43,9 @@ that a Kafka consumer bypasses. Rules that protect an invariant belong in the ag
 | Id | Rule | Enforced in | WBS |
 |---|---|---|---|
 | BR-SLT-001 | A location that violates any hard constraint (hazmat, temperature, single-SKU, incompatible neighbour) is eliminated before scoring, never merely down-ranked. | `SlottingEngine.suggest()` | 3.5.2.3 |
-| BR-SLT-002 | Putting away to a location other than the suggested one requires a reason; outside the ranked list it requires manager approval. | `PutawayTask.complete()` | 3.5.4.3 |
+| BR-SLT-002 | Putting away to a location other than the suggested ones is allowed when that bin passes the hard constraints (BR-SLT-001, BR-SLT-003), checked again at the scanned bin; no reason is asked. A reason code, and manager approval outside the ranked list, are later scope (KLTN-FA26/docs 05 BR-07, open question C18). | `PutawayService.confirm()` | 3.5.4.3 |
 | BR-SLT-003 | Putaway never takes a storage location past its `capacity_units`, nor a shelf level past its `max_weight` / `usable_height`. How full a location is is derived from stock, never stored. | slotting hard constraints ([module 06 BR-01](https://github.com/KLTN-FA26/docs/blob/b11945a/docs/warehouse/06-warehouse-map-slotting/README.md)), SCRUM-91 | 3.5.1.4 |
-| BR-SLT-004 | Every slotting suggestion must carry a stated reason, and the reason is stored with the task. | `SlottingEngine.suggest()` | 3.5.3.3 |
+| BR-SLT-004 | Every slotting suggestion carries a stated reason (same lot, same SKU, empty, has room: consolidate before spreading). Suggestions are computed from the stock of the moment on every read of the task and never stored, since one is stale as soon as someone else puts goods away (KLTN-FA26/docs 05 §3, BR-05). | `PutawayRanker.rank()` | 3.5.3.3 |
 
 ### The warehouse map (module 06, BR-06 → BR-14)
 
