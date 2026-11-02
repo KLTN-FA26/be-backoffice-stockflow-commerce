@@ -64,7 +64,7 @@ class LoadEstimateServiceTest {
     private final TransferFulfillment transfers = mock(TransferFulfillment.class);
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
     private final LoadEstimateService service = new LoadEstimateService(estimates, vehicleTypes, orders, warehouses,
-            packaging, json, transactions, Duration.ofSeconds(2), transfers);
+            packaging, json, transactions, Duration.ofSeconds(2), Duration.ofSeconds(12), transfers);
 
     private final UUID orderId = UUID.randomUUID();
     private final UUID lineId = UUID.randomUUID();
@@ -124,9 +124,9 @@ class LoadEstimateServiceTest {
     @DisplayName("a solver budget that is not positive is refused at start-up")
     void budgetMustBePositive() {
         assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, warehouses, packaging, json,
-                transactions, Duration.ZERO, transfers)).isInstanceOf(IllegalArgumentException.class);
+                transactions, Duration.ZERO, Duration.ofSeconds(12), transfers)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, warehouses, packaging, json,
-                transactions, null, transfers)).isInstanceOf(IllegalArgumentException.class);
+                transactions, null, Duration.ofSeconds(12), transfers)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Nested

@@ -104,7 +104,7 @@ class LoadPlanServiceTest {
     private final PackJpaRepository packs = mock(PackJpaRepository.class);
     private final LoadPlanService service = new LoadPlanService(plans, members, planVehicles, store, numbers, parcels,
             packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers, warehouses, estimates, picks,
-            packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), transfers, packs);
+            packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), transfers, packs);
 
     private final CurrentUser actor = FulfillmentFixtures.user();
     private FulfillmentFixtures.PlannedPlan planned;
