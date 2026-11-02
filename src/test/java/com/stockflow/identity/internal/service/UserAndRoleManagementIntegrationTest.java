@@ -297,6 +297,49 @@ class UserAndRoleManagementIntegrationTest {
     }
 
     @Test
+    void anActionThatChangesNothingIsRefusedAndWritesNoHistoryRow() {
+        UUID id = create("QC_STAFF").user().userId();
+
+        // an active account: enabling it, or unlocking it with no lockout running, changes nothing
+        refused(ErrorCode.USER_STATUS_UNCHANGED, () -> identity.changeUserStatus(id, UserStatusChange.ENABLE, REASON));
+        refused(ErrorCode.USER_STATUS_UNCHANGED, () -> identity.changeUserStatus(id, UserStatusChange.UNLOCK, REASON));
+        assertThat(identity.statusHistory(id, 0, 20).items()).isEmpty();
+
+        identity.changeUserStatus(id, UserStatusChange.LOCK, REASON);
+        refused(ErrorCode.USER_STATUS_UNCHANGED, () -> identity.changeUserStatus(id, UserStatusChange.LOCK, REASON));
+        assertThat(identity.user(id).status()).isEqualTo("LOCKED");
+
+        identity.changeUserStatus(id, UserStatusChange.UNLOCK, REASON);
+        identity.changeUserStatus(id, UserStatusChange.DISABLE, REASON);
+        refused(ErrorCode.USER_STATUS_UNCHANGED, () -> identity.changeUserStatus(id, UserStatusChange.DISABLE, REASON));
+        assertThat(identity.user(id).status()).isEqualTo("DISABLED");
+        identity.changeUserStatus(id, UserStatusChange.ENABLE, REASON);
+
+        // only the four real changes left a row, newest first; every refusal rolled back
+        assertThat(identity.statusHistory(id, 0, 20).items()).extracting(e -> e.action())
+                .containsExactly(UserStatusChange.ENABLE, UserStatusChange.DISABLE, UserStatusChange.UNLOCK,
+                        UserStatusChange.LOCK);
+    }
+
+    @Test
+    void unlockingAnActiveAccountStillEndsARunningWrongPasswordLockout() {
+        CreatedStaffUser created = create("ORDER_COORDINATOR");
+        UUID id = created.user().userId();
+        for (int i = 0; i < 5; i++) {
+            refused(ErrorCode.UNAUTHORIZED,
+                    () -> identity.login(new LoginCommand(created.user().username(), "Wrong0Password", "3.3.3.3", "t")));
+        }
+        assertThat(identity.user(id).lockedUntil()).isNotNull();
+
+        // the account is ACTIVE but locked out: unlock is a real change, so it is accepted and recorded
+        assertThat(identity.changeUserStatus(id, UserStatusChange.UNLOCK, REASON).lockedUntil()).isNull();
+        assertThat(identity.statusHistory(id, 0, 20).items()).extracting(e -> e.action())
+                .containsExactly(UserStatusChange.UNLOCK);
+        // and doing it again changes nothing
+        refused(ErrorCode.USER_STATUS_UNCHANGED, () -> identity.changeUserStatus(id, UserStatusChange.UNLOCK, REASON));
+    }
+
+    @Test
     void theAutomaticLockAfterWrongPasswordsTakesNoReasonAndWritesNoHistory() {
         CreatedStaffUser created = create("ORDER_COORDINATOR");
         for (int i = 0; i < 5; i++) {

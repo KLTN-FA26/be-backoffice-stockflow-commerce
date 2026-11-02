@@ -105,6 +105,29 @@ class UserStatusReasonHttpIntegrationTest {
     }
 
     @Test
+    void anActionThatChangesNothingIsRefusedWith409AndLeavesNoRow() throws Exception {
+        // the account is active: "enable" and "unlock" (no lockout running) change nothing
+        for (String action : List.of("enable", "unlock")) {
+            mvc.perform(post(url(action)).header("Authorization", admin).contentType("application/json")
+                            .content(body("Một lý do hợp lệ")))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("USER_STATUS_UNCHANGED"));
+        }
+        mvc.perform(post(url("lock")).header("Authorization", admin).contentType("application/json")
+                        .content(body("Một lý do hợp lệ")))
+                .andExpect(status().isOk());
+        mvc.perform(post(url("lock")).header("Authorization", admin)
+                        .contentType("application/json").content(body("Một lý do hợp lệ")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("USER_STATUS_UNCHANGED"));
+
+        mvc.perform(get(url("status-changes")).header("Authorization", admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].action").value("LOCK"));
+    }
+
+    @Test
     void theHistoryNeedsTheUserReadPermissionAndTheActionsTheUpdateOne() throws Exception {
         String customer = TestTokens.bearer(decoder, UUID.randomUUID(), Role.CUSTOMER);
 

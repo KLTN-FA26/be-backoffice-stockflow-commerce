@@ -114,11 +114,13 @@ public interface IdentityService {
      * Lock, unlock, disable or enable an account. Locking and disabling end its sessions. The reason is
      * kept in the account's status history ({@link #statusHistory}) and in the audit entry, which also says
      * which of the four it was (SCRUM-474 LOCK-REASON). The automatic lock after too many wrong passwords
-     * is not an administrator's decision and takes no reason.
+     * is not an administrator's decision and takes no reason. An action that would change nothing (lock a
+     * locked account, enable an active one, ...) is refused and leaves no history row; unlocking an active
+     * account is accepted only while a wrong-password lockout is running.
      *
      * @param reason free text, 5 to 500 characters after trimming
      * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for a missing or
-     *         out-of-range reason, {@code INVALID_USER_STATUS_TRANSITION},
+     *         out-of-range reason, {@code INVALID_USER_STATUS_TRANSITION}, {@code USER_STATUS_UNCHANGED},
      *         {@code LAST_SYSTEM_ADMIN}, {@code OWN_ACCOUNT_NOT_MANAGEABLE}, {@code PRIVILEGE_ESCALATION}
      */
     StaffUser changeUserStatus(UUID userId, UserStatusChange change, String reason);

@@ -702,6 +702,10 @@ class IdentityServiceImpl implements IdentityService {
         requireStaffAccount(userId);
         User user = loadUser(userId);
         UserStatus before = user.status();
+        if (changesNothing(user, change, clock.instant())) {
+            throw new BusinessException(ErrorCode.USER_STATUS_UNCHANGED,
+                    "Account %s is already %s: %s changes nothing".formatted(userId, before, change));
+        }
         boolean takesAccess = change == UserStatusChange.LOCK || change == UserStatusChange.DISABLE;
         if (takesAccess && user.status() == com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
             refuseLastSystemAdmin(userId);
@@ -723,6 +727,20 @@ class IdentityServiceImpl implements IdentityService {
             sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_DISABLED);
         }
         return user(userId);
+    }
+
+    /**
+     * True when the account already is where the action would put it, so the action would only add a history
+     * row that says nothing happened (SCRUM-474 LOCK-NOOP, owner decision 02/11/2026). Unlocking an active
+     * account is not "nothing" while a wrong-password lockout is running: unlock ends that lock early.
+     */
+    private static boolean changesNothing(User user, UserStatusChange change, Instant now) {
+        return switch (change) {
+            case LOCK -> user.status() == UserStatus.LOCKED;
+            case UNLOCK -> user.status() == UserStatus.ACTIVE && !user.isTemporarilyLocked(now);
+            case DISABLE -> user.status() == UserStatus.DISABLED;
+            case ENABLE -> user.status() == UserStatus.ACTIVE;
+        };
     }
 
     @Override
