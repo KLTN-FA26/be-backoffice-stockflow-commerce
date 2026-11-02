@@ -72,6 +72,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import(RecordedEvents.class)
 @TestPropertySource(properties = {
         "stockflow.idempotency.enabled=true",
+        // The SMTP transport over the mocked sender: a delivery that fails for good is the sender refusing the message.
+        "stockflow.notification.email.provider=smtp",
         "PO_BUYER_COMPANY_NAME=Buyer test",
         "PO_BUYER_COMPANY_ADDRESS=Company test address",
         "PO_BUYER_CONTACT_NAME=Buyer contact",

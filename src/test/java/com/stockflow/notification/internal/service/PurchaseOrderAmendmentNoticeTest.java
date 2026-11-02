@@ -163,7 +163,7 @@ class PurchaseOrderAmendmentNoticeTest {
     @Test
     void emailCarriesTheRevisionTheReasonAndTheChanges() {
         var mail = mock(JavaMailSender.class);
-        var sender = new NotificationSender(mail, mock(RestClientFactory.class), "buyer@example.com", "");
+        var sender = new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "buyer@example.com", "");
 
         sender.sendPurchaseOrder(amendment("EMAIL", "supplier@example.com"));
 
@@ -184,7 +184,7 @@ class PurchaseOrderAmendmentNoticeTest {
         var builder = RestClient.builder().baseUrl("https://supplier.example.com/po");
         var server = MockRestServiceServer.bindTo(builder).build();
         when(factory.forService("supplier-po-api", "https://supplier.example.com/po")).thenReturn(builder);
-        var sender = new NotificationSender(mock(JavaMailSender.class), factory, "buyer@example.com",
+        var sender = new NotificationSender(new SmtpEmailTransport(mock(JavaMailSender.class)), factory, "buyer@example.com",
                 "supplier.example.com");
         server.expect(requestTo("https://supplier.example.com/po"))
                 .andExpect(header("Idempotency-Key", "purchase-order:" + PO + ":revision:2"))
@@ -221,7 +221,7 @@ class PurchaseOrderAmendmentNoticeTest {
         assertThat(read.operationReference()).isEqualTo("purchase-order:" + PO);
         assertThat(read.templateCode()).isEqualTo("purchase-order.sent");
         var mail = mock(JavaMailSender.class);
-        new NotificationSender(mail, mock(RestClientFactory.class), "buyer@example.com", "").sendPurchaseOrder(read);
+        new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "buyer@example.com", "").sendPurchaseOrder(read);
         var message = ArgumentCaptor.forClass(SimpleMailMessage.class);
         verify(mail).send(message.capture());
         assertThat(message.getValue().getSubject()).doesNotContain("sửa đổi").contains("PO-1");

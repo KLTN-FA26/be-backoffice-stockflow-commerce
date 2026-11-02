@@ -35,6 +35,9 @@ public interface StockOperations {
 
     StockMove receive(ReceiveStockCommand command);
 
+    /** See {@code InventoryService#receiveReturn}. */
+    StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command);
+
     /** See {@code InventoryService#countReceivingPackages}. */
     List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command);
 

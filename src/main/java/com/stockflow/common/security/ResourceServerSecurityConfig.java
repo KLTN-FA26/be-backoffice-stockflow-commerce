@@ -154,6 +154,9 @@ public class ResourceServerSecurityConfig {
                         // A Sales-invited contact has no password yet; the invitation token in the
                         // body is the credential (SCRUM-450). POST only: nothing else lives there.
                         .requestMatchers(HttpMethod.POST, "/api/v1/customers/portal-activation").permitAll()
+                        // The mail provider's delivery reports (SCRUM-352): it cannot hold a token, so its Svix
+                        // signature is the credential, checked by the endpoint. POST only.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/notifications/webhooks/resend").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(converter))

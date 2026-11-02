@@ -50,4 +50,32 @@ final class InMemoryLedger implements SalesRollupLedger {
         products.keySet().removeIf(key -> key.endsWith("@" + day));
         applied.values().removeIf(c -> c.day().equals(day));
     }
+
+    record ReturnKey(UUID returnRequestId, String event) {
+    }
+
+    final Map<ReturnKey, OrderContribution> returns = new java.util.LinkedHashMap<>();
+
+    @Override
+    public boolean markReturnApplied(UUID returnRequestId, String event, OrderContribution taken) {
+        return returns.putIfAbsent(new ReturnKey(returnRequestId, event), taken) == null;
+    }
+
+    @Override
+    public void applyReturn(OrderContribution taken) {
+        Day day = days.get(taken.day());
+        if (day == null) {
+            throw new IllegalStateException("No day " + taken.day());
+        }
+        days.put(taken.day(), new Day(day.orders(), day.revenue().subtract(taken.total())));
+        for (OrderContribution.Line line : taken.lines()) {
+            products.merge(line.sku() + "@" + taken.day(), new Product(-line.quantity(), line.revenue().negate()),
+                    (a, b) -> new Product(a.quantity() + b.quantity(), a.revenue().add(b.revenue())));
+        }
+    }
+
+    @Override
+    public java.util.List<OrderContribution> returnsOf(LocalDate day) {
+        return returns.values().stream().filter(c -> c.day().equals(day)).toList();
+    }
 }

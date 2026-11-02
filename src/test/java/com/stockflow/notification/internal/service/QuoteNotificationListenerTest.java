@@ -38,7 +38,7 @@ class QuoteNotificationListenerTest {
             mock(com.stockflow.identity.api.IdentityService.class);
     private final Inbox inbox = mock(Inbox.class);
     private final QuoteNotificationListener listener = new QuoteNotificationListener(
-            new NotificationSender(mail, mock(RestClientFactory.class), "noreply@stockflow.local", ""),
+            new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "noreply@stockflow.local", ""),
             new StaffDirectory(identity), new StaffNotices(inbox));
 
     @BeforeEach
