@@ -61,8 +61,17 @@ public record PlaceOrderCommand(
      * @param designSnapshotId set only for print-on-demand items; identifies the frozen design the
      *                         customer approved, so a later edit to the design cannot change what
      *                         was ordered
+     * @param requestedDeliveryDate the date the customer asked to receive a print line (SCRUM-502, from its
+     *                         quote); it becomes the production order's due date. Null when none was asked;
+     *                         never set on a stock line
      */
-    public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId) {
+    public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId,
+                       java.time.LocalDate requestedDeliveryDate) {
+
+        /** Without a requested delivery date. */
+        public Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId) {
+            this(sku, quantity, unitPrice, designSnapshotId, null);
+        }
 
         public Line {
             if (sku == null) throw new IllegalArgumentException("sku is required");
@@ -70,6 +79,9 @@ public record PlaceOrderCommand(
             if (unitPrice == null) throw new IllegalArgumentException("unitPrice is required");
             if (unitPrice.isNegative()) {
                 throw new IllegalArgumentException("unitPrice must not be negative");
+            }
+            if (requestedDeliveryDate != null && designSnapshotId == null) {
+                throw new IllegalArgumentException("only a print line has a requested delivery date");
             }
         }
     }

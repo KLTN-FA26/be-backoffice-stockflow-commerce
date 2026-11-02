@@ -876,7 +876,7 @@ public final class Order extends AggregateRoot {
                     id.value(), orderNumber.value(), warehouse,
                     printLines().stream().map(line -> new com.stockflow.contracts.OrderLinesReleasedForProduction.Line(
                             line.id(), line.sku().code(), line.quantity(), line.designSnapshotId(),
-                            line.designChecksum(), approvedSamples.get(line.id()), null)).toList())));
+                            line.designChecksum(), approvedSamples.get(line.id()), line.requestedDeliveryDate())).toList())));
         } else {
             registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(
                     id.value(), warehouseCode, now)));

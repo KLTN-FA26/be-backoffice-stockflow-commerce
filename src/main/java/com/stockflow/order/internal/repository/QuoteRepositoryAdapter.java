@@ -93,7 +93,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         entity.apply(quote.status(), quote.revision(), offer.paymentTerm(), offer.depositPercent(),
                 offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
                 quote.respondedBy(), quote.customerFeedback(), quote.cancellationReason(), quote.convertedOrderId(),
-                quote.convertedAt());
+                quote.convertedAt(), offer.requestedDeliveryDate());
         Map<UUID, QuoteLineJpaEntity> existing = entity.getLines().stream()
                 .collect(Collectors.toMap(QuoteLineJpaEntity::getId, Function.identity()));
         // A revised draft may drop lines: they go (orphan removal), the others are written in place.
@@ -215,7 +215,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 .toList();
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
                 e.getRevision(), new Quote.Offer(e.getPaymentTerm(), e.getDepositPercent(), e.getValidUntil(),
-                        e.getTerms(), lines),
+                        e.getTerms(), e.getRequestedDeliveryDate(), lines),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
                 e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt());
     }
