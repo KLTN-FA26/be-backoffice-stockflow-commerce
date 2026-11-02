@@ -110,6 +110,10 @@ class SubcontractService implements Subcontracting {
             throw new BusinessException(ErrorCode.SUPPLIER_NOT_SUBCONTRACTOR,
                     "%s does not print for us".formatted(terms.name()));
         }
+        if (!terms.active()) {
+            throw new BusinessException(ErrorCode.SUPPLIER_INACTIVE,
+                    "%s is not an active supplier and takes no new work".formatted(terms.name()));
+        }
         Instant now = now();
         if (parent.wholeOrder(split.quantity())) {
             return convert(user, parent, split, now);
@@ -197,6 +201,7 @@ class SubcontractService implements Subcontracting {
     public ProductionOrders.Detail sendOut(CurrentUser user, UUID childId) {
         ProductionOrder child = lock(user, childId);
         requireSubcontracted(child);
+        requireActiveSubcontractor(child);
         SubcontractOrder po = purchasing.findById(child.subcontract().purchaseOrderId()).orElseThrow();
         if (!po.approved()) {
             throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
@@ -519,6 +524,7 @@ class SubcontractService implements Subcontracting {
             throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
                     "Production order %s is %s".formatted(child.orderNumber(), child.status()));
         }
+        requireActiveSubcontractor(child);
         SubcontractOrder po = purchasing.supplement(child.subcontract().purchaseOrderId(), quantity,
                 requireReason(reason), user.userId());
         log.info("Production order {}: PO {} supplemented by {} ({})", child.orderNumber(), po.poNumber(), quantity,
@@ -577,6 +583,19 @@ class SubcontractService implements Subcontracting {
                     .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,
                             "No storage location %s in the warehouse of production order %s".formatted(returnLocation,
                                     child.orderNumber())));
+        }
+    }
+
+    /**
+     * BR-PRD-13 when work leaves, not only when it was split: a subcontractor deactivated or blacklisted since the split
+     * gets neither the work and our blanks nor a bigger order. What it holds already is recalled or taken in house.
+     */
+    private void requireActiveSubcontractor(ProductionOrder child) {
+        var terms = purchasing.subcontractorTerms(child.subcontract().subcontractorId()).orElseThrow();
+        if (!terms.active()) {
+            throw new BusinessException(ErrorCode.SUPPLIER_INACTIVE, ("%s is no longer an active supplier and takes no "
+                    + "new work; recall what it holds or take production order %s in house")
+                    .formatted(terms.name(), child.orderNumber()));
         }
     }
 

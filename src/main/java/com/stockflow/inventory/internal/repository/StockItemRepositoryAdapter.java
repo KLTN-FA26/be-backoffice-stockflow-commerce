@@ -142,6 +142,12 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public Map<String, Integer> findAllocatedBySku(Sku sku) {
+        return jpa.findAllocatedRowsBySku(sku.code()).stream()
+                .collect(java.util.stream.Collectors.toMap(AllocatedRow::locationCode, row -> (int) row.quantity()));
+    }
+
+    @Override
     public Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today) {
         if (skus.isEmpty()) {
             return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask

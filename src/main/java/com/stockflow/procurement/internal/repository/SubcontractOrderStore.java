@@ -18,9 +18,12 @@ public interface SubcontractOrderStore {
                BigDecimal totalAmount, LocalDate expectedDate) {
     }
 
-    /** The supplier as subcontracting needs it, with the commercial terms a new order captures. */
-    record Supplier(UUID id, String code, String name, boolean printSubcontractor, BigDecimal lossTolerancePercent,
-                    int paymentTermDays, int leadTimeDays) {
+    /**
+     * The supplier as subcontracting needs it, with the commercial terms a new order captures; {@code active} is its
+     * status being {@code ACTIVE}, the condition for any new order.
+     */
+    record Supplier(UUID id, String code, String name, boolean printSubcontractor, boolean active,
+                    BigDecimal lossTolerancePercent, int paymentTermDays, int leadTimeDays) {
     }
 
     record NewOrder(String poNumber, UUID productionOrderId, Supplier supplier, UUID warehouseId,
