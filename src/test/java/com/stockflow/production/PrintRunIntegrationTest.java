@@ -515,7 +515,8 @@ class PrintRunIntegrationTest {
         issueAll(line.productionOrderId());
         runs.startPrinting(printer, line.productionOrderId());
         runs.recordOutput(printer, line.productionOrderId(), 10, List.of());
-        ProductionOrders.Detail afterQc = runs.recordQc(inspector, line.productionOrderId(), 8, 2, "2 lem mực", null);
+        ProductionOrders.Detail afterQc = runs.recordQc(inspector, line.productionOrderId(), 8, 2, "2 lem mực", null,
+                sampleOf(line.productionOrderId()));
         assertThat(afterQc.summary().status()).isIn(ProductionOrder.Status.READY, ProductionOrder.Status.ON_HOLD);
 
         int holdsAfterQc = inventory.productionHolds(line.productionOrderId()).size();
@@ -578,7 +579,7 @@ class PrintRunIntegrationTest {
         issueAll(line.productionOrderId());
         runs.startPrinting(printer, line.productionOrderId());
         runs.recordOutput(printer, line.productionOrderId(), 10, List.of());
-        runs.recordQc(inspector, line.productionOrderId(), 8, 2, "2 lem mực", null);
+        runs.recordQc(inspector, line.productionOrderId(), 8, 2, "2 lem mực", null, sampleOf(line.productionOrderId()));
         agreeShortfall(line, lineId, 2, "Khách đồng ý nhận 8 ly");
         runs.completeShort(manager, line.productionOrderId(), "Hết phôi", null);
         Await.until("the shortfall is asked back", ASYNC, () -> jdbc.queryForObject("""
@@ -623,14 +624,14 @@ class PrintRunIntegrationTest {
         sendPurchaseOrder(poId);
         UUID receipt = receiveSubcontracted(poId, 3);
         subcontracts.reconcile(storekeeper, childId, receipt, 0, 0, null);
-        runs.recordQc(inspector, childId, 3, 0, null, PACKING);
+        runs.recordQc(inspector, childId, 3, 0, null, PACKING, sampleOf(childId));
         subcontracts.recall(storekeeper, childId, new Subcontracting.Recall(UUID.randomUUID(), 0, 1, null,
                 "lost in transit"));
         UUID gap = subcontracts.takeInHouse(manager, childId, 1, "subcontractor out of ink", PACKING).summary().id();
         issueAll(line.productionOrderId());
         runs.startPrinting(printer, line.productionOrderId());
         runs.recordOutput(printer, line.productionOrderId(), 6, List.of());
-        runs.recordQc(inspector, line.productionOrderId(), 6, 0, null, PACKING);
+        runs.recordQc(inspector, line.productionOrderId(), 6, 0, null, PACKING, sampleOf(line.productionOrderId()));
         Await.until("9 of 10 made, recorded", ASYNC, () -> jdbc.queryForObject("""
                 SELECT COALESCE(SUM(p.good_quantity), 0) FROM ordering.order_line_production p
                   JOIN ordering.order_line l ON l.id = p.order_line_id WHERE l.order_id = ?""",
