@@ -8,6 +8,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.WarehouseScope;
@@ -667,7 +668,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                         decision.supplierName() == null ? "(supplier not on the lot)" : decision.supplierName(),
                         shipment.deliveryNote())), command.shippedBy(), now).ofLot(damaged.lotId()));
         log.info("Damage report {}: {} x {} handed back to the supplier from {} (delivery note {})", report.number(),
-                handed, damaged.sku(), damaged.location(), shipment.deliveryNote());
+                handed, damaged.sku(), damaged.location(), LogSafe.text(shipment.deliveryNote()));
         return view(saved);
     }
 
