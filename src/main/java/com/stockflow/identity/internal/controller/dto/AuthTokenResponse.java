@@ -11,6 +11,11 @@ public record AuthTokenResponse(
         @Schema(example = "Bearer")
         String tokenType,
 
-        long expiresInSeconds
+        long expiresInSeconds,
+
+        @Schema(description = "The password was set by an administrator: send the user to change it; "
+                + "until then every call but GET /me, GET /me/permissions, PUT /auth/password and "
+                + "POST /auth/logout answers 403 PASSWORD_CHANGE_REQUIRED")
+        boolean mustChangePassword
 ) {
 }

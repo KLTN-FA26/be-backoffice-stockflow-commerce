@@ -213,6 +213,69 @@ class UserAndRoleManagementIntegrationTest {
     }
 
     @Test
+    void aTemporaryPasswordStopsWorkingAfter72HoursAndAnAdministratorResetRestartsTheClock() {
+        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        UUID id = created.user().userId();
+        String username = created.user().username();
+        assertThat(jdbc.queryForObject("SELECT temporary_password_set_at FROM identity.app_user WHERE id = ?",
+                java.sql.Timestamp.class, id)).isNotNull();
+
+        setTemporaryPasswordSetAt(id, "now() - interval '71 hours'");
+        assertThat(identity.login(new LoginCommand(username, created.temporaryPassword(), "127.0.0.1", "t"))
+                .mustChangePassword()).isTrue();
+
+        setTemporaryPasswordSetAt(id, "now() - interval '73 hours'");
+        refused(ErrorCode.TEMPORARY_PASSWORD_EXPIRED,
+                () -> identity.login(new LoginCommand(username, created.temporaryPassword(), "127.0.0.1", "t")));
+        // a wrong password is still only "wrong": the expiry is not a way to probe for the account
+        refused(ErrorCode.UNAUTHORIZED,
+                () -> identity.login(new LoginCommand(username, "Wrong0Password", "127.0.0.1", "t")));
+
+        PasswordReset reset = identity.resetPassword(id, null);
+        assertThat(identity.login(new LoginCommand(username, reset.temporaryPassword(), "127.0.0.1", "t"))
+                .accessToken()).isNotBlank();
+    }
+
+    @Test
+    void anAccountFlaggedBeforeTheTimestampExistedDoesNotExpire() {
+        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        setTemporaryPasswordSetAt(created.user().userId(), "NULL");
+
+        assertThat(identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(),
+                "127.0.0.1", "t")).accessToken()).isNotBlank();
+    }
+
+    @Test
+    void theForcedChangeKeepsTheCurrentSessionAndEndsEveryOtherOneWithoutBeingAsked() {
+        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        UUID id = created.user().userId();
+        for (int i = 0; i < 3; i++) {
+            identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "d" + i));
+        }
+        List<UUID> sessionIds = jdbc.queryForList(
+                "SELECT id FROM identity.user_session WHERE user_id = ? ORDER BY issued_at, id", UUID.class, id);
+        assertThat(sessionIds).hasSize(3);
+        UUID current = sessionIds.get(1);
+
+        int ended = identity.changePassword(new com.stockflow.identity.api.ChangePasswordCommand(id, current,
+                created.temporaryPassword(), "Chosen-by-me-1", false));
+
+        assertThat(ended).isEqualTo(2);
+        assertThat(jdbc.queryForList("SELECT id FROM identity.user_session WHERE user_id = ? AND revoked_at IS NULL",
+                UUID.class, id)).containsExactly(current);
+        assertThat(identity.profile(id).mustChangePassword()).isFalse();
+        assertThat(jdbc.queryForObject("SELECT temporary_password_set_at FROM identity.app_user WHERE id = ?",
+                java.sql.Timestamp.class, id)).isNull();
+
+        // a voluntary change afterwards leaves other sessions alone unless asked
+        identity.login(new LoginCommand(created.user().username(), "Chosen-by-me-1", "127.0.0.1", "again"));
+        int voluntary = identity.changePassword(new com.stockflow.identity.api.ChangePasswordCommand(id, current,
+                "Chosen-by-me-1", "Chosen-by-me-2", false));
+        assertThat(voluntary).isZero();
+        assertThat(liveSessions(id)).isEqualTo(2);
+    }
+
+    @Test
     void fiveWrongPasswordsLockTheAccountUntilUnlocked() {
         CreatedStaffUser created = create("ORDER_COORDINATOR");
         String username = created.user().username();
@@ -443,6 +506,12 @@ class UserAndRoleManagementIntegrationTest {
     }
 
     // ---- helpers -------------------------------------------------------------------------------
+
+    /** Committed, like every other write here: outside a transaction the pool rolls the connection back. */
+    private void setTemporaryPasswordSetAt(UUID userId, String sqlExpression) {
+        tx.executeWithoutResult(status -> jdbc.update(
+                "UPDATE identity.app_user SET temporary_password_set_at = " + sqlExpression + " WHERE id = ?", userId));
+    }
 
     private int liveSessions(UUID userId) {
         return jdbc.queryForObject("SELECT count(*) FROM identity.user_session WHERE user_id = ? AND revoked_at IS NULL",
