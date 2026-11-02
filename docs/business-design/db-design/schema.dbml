@@ -2784,6 +2784,7 @@ Table ordering.order_line [headercolor: #C0392B] {
   design_snapshot_id uuid
   design_checksum    varchar(64)
   cancelled_quantity int [not null, default: 0]
+  requested_delivery_date date
 }
 
 Table ordering.order_line_production [headercolor: #C0392B] {
@@ -2909,6 +2910,7 @@ Table ordering.quote [headercolor: #C0392B] {
   created_by          varchar(100)
   last_modified_at    timestamptz
   last_modified_by    varchar(100)
+  requested_delivery_date date
 }
 
 Table ordering.quote_line [headercolor: #C0392B] {

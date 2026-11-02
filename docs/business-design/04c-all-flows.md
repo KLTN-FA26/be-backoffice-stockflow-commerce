@@ -350,12 +350,12 @@ flowchart LR
 
 | # | Module | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `order` | `+ quote, + quote_line` | DRAFT → SENT; giá mặc định từ bảng giá riêng của khách |
+| 01 | `order` | `+ quote, + quote_line` | DRAFT → SENT; giá mặc định từ bảng giá riêng của khách; Sale nhập **ngày giao khách yêu cầu** (`quote.requested_delivery_date`, không bắt buộc, không ở quá khứ) khi còn DRAFT |
 | 02 | `production` | `+ sample_request` | chỉ khi cặp (thiết kế, phôi) chưa có mẫu APPROVED — xem `F-SAMPLE` |
 | 03 | `order` | `~ quote.status` | → ACCEPTED; bị chặn nếu thiết kế mới chưa có mẫu APPROVED |
 | 04 | `order` | `→ customer: phương thức thanh toán được phép, hạn mức, dư nợ` | kiểm MOQ, phương thức, hạn mức |
 | 05 | `inventory` | `+ stock_reservation, ~ stock_item.reserved` | giữ chỗ **phôi** |
-| 06 | `order` | `+ order, + order_line × N, + order_status_history` | trả trước / cọc → PENDING_PAYMENT; công nợ trong hạn mức → CONFIRMED; vượt hạn mức → ON_HOLD |
+| 06 | `order` | `+ order, + order_line × N, + order_status_history` | trả trước / cọc → PENDING_PAYMENT; công nợ trong hạn mức → CONFIRMED; vượt hạn mức → ON_HOLD; mỗi dòng in **chép** ngày giao yêu cầu của báo giá (`order_line.requested_delivery_date`) và không đổi sau đó |
 | 07 | `order` | `~ quote.status, + outbox_event` | → CONVERTED · OrderPlaced |
 
 > ★ Đơn chỉ được tạo sau khi MỌI dòng đã giữ chỗ xong. Đơn giữ chỗ một phần không bao giờ được lưu — BR-ORD-001.
@@ -534,7 +534,7 @@ flowchart LR
 
 | # | Module | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `production` | `+ processed_event, + production_order (type = ORDER)` | một LSX cho mỗi dòng in · PENDING_PREPRESS — BR-PRD-01 |
+| 01 | `production` | `+ processed_event, + production_order (type = ORDER)` | một LSX cho mỗi dòng in · PENDING_PREPRESS — BR-PRD-01; `due_date` = ngày giao yêu cầu của dòng đơn (trống nếu không có) |
 | 02 | `production` | `~ production_order` | prepress đạt → READY; lỗi → ON_HOLD (lý do) |
 | 03 | `inventory` | `~ stock_item (chuyển sang khu PRODUCTION)` | → MATERIAL_ISSUED; không vượt số còn thiếu — BR-PRD-03 |
 | 04 | `production` | `~ production_order` | → PRINTING; ghi số in, số phế phẩm + lý do |
