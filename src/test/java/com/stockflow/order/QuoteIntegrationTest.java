@@ -722,6 +722,8 @@ class QuoteIntegrationTest {
         Quotes.QuoteView changed = quotes.requestChanges(portal, sent.id(), sent.version(), "2,400 from 5 units?");
         assertThat(changed.status()).isEqualTo(QuoteStatus.CHANGES_REQUESTED);
         assertThat(changed.customerFeedback()).isEqualTo("2,400 from 5 units?");
+        assertThatThrownBy(() -> quotes.cancel(sales, sent.id(), changed.version(), "x"))
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
 
         Quotes.QuoteView reopened = quotes.reopen(sales, sent.id(), changed.version());
         assertThat(reopened.status()).isEqualTo(QuoteStatus.DRAFT);
@@ -744,40 +746,16 @@ class QuoteIntegrationTest {
     }
 
     @Test
-    @DisplayName("Sales withdraws a sent quote before the customer answers: it can no longer be accepted, the customer "
-            + "sees it withdrawn with the reason; changes asked for may be declined the same way")
-    void withdrawal() throws Exception {
+    @DisplayName("A sent quote cannot be withdrawn; a revision reopened and dropped before it was sent ends the quote "
+            + "for the customer with the offer they were last sent, and a stale answer is told why")
+    void droppedRevision() throws Exception {
         ConfirmedDesigns.Design design = design();
         Quotes.QuoteView sent = sentQuote(design);
-        assertThatThrownBy(() -> quotes.cancel(sales, sent.id(), sent.version(), " "))
-                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        Quotes.QuoteView withdrawn = quotes.cancel(sales, sent.id(), sent.version(),
-                "Giá nhập nhầm 250đ thay vì 2.500đ, báo giá mới sẽ gửi lại");
-        assertThat(withdrawn.status()).isEqualTo(QuoteStatus.CANCELLED);
-
-        Quotes.QuoteView seen = quotes.get(portal, sent.id());
-        assertThat(seen.status()).isEqualTo(QuoteStatus.CANCELLED);
-        assertThat(seen.cancellationReason()).contains("250");
-        assertThatThrownBy(() -> quotes.accept(portal, sent.id(), new Quotes.Acceptance(withdrawn.version(), Map.of())))
+        assertThatThrownBy(() -> quotes.cancel(sales, sent.id(), sent.version(), "Giá nhập nhầm"))
+                .as("a sent offer is answered, revised or expires - Sales does not withdraw it")
                 .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
-        assertThatThrownBy(() -> quotes.accept(portal, sent.id(), new Quotes.Acceptance(sent.version(), Map.of())))
-                .as("the version the customer still has: told why, not that it changed")
-                .hasMessageContaining("withdrawn").hasMessageContaining("250")
-                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
-        assertThatThrownBy(() -> quotes.requestChanges(portal, sent.id(), sent.version(), "giảm giá?"))
-                .hasMessageContaining("withdrawn")
-                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.quote_status_history WHERE quote_id = ? "
-                + "AND from_status = 'SENT' AND to_status = 'CANCELLED'", Integer.class, sent.id())).isEqualTo(1);
 
-        Quotes.QuoteView other = sentQuote(design);
-        Quotes.QuoteView changed = quotes.requestChanges(portal, other.id(), other.version(), "half the price?");
-        assertThat(quotes.cancel(sales, other.id(), changed.version(), "Không giảm được giá").status())
-                .isEqualTo(QuoteStatus.CANCELLED);
-        assertThat(quotes.get(portal, other.id()).priced()).as("the prices the customer was sent").isTrue();
-
-        // A revision reopened and dropped before it was sent: the customer sees the quote end with the offer they
-        // were last sent, not the draft's working terms.
+        // The customer sees the quote end with the offer they were last sent, not the draft's working terms.
         Quotes.QuoteView third = sentQuote(design);
         Quotes.QuoteView asked = quotes.requestChanges(portal, third.id(), third.version(), "giảm giá được không?");
         Quotes.QuoteView reopened = quotes.reopen(sales, third.id(), asked.version());
@@ -799,6 +777,10 @@ class QuoteIntegrationTest {
         Quotes.QuoteView staffView = quotes.get(sales, third.id());
         assertThat(staffView.revision()).as("Sales sees its draft").isEqualTo(2);
         assertThat(staffView.validUntil()).isEqualTo(draftValidity);
+        assertThatThrownBy(() -> quotes.accept(portal, third.id(), new Quotes.Acceptance(third.version(), Map.of())))
+                .as("the version the customer still has: told why, not that it changed")
+                .hasMessageContaining("withdrawn").hasMessageContaining("Không giảm")
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
     }
 
     @Test

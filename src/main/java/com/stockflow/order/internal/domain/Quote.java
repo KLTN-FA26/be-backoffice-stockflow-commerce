@@ -255,10 +255,9 @@ public final class Quote {
     }
 
     /**
-     * Withdrawn or dropped, with a reason the customer reads too: a DRAFT (the first nobody saw; for a later revision
-     * the customer sees the quote end with the offer they were last sent - the service's view), a SENT offer Sales
-     * takes back before the customer answers (it can no longer be accepted, even if its validity has not run out), a
-     * CHANGES_REQUESTED one whose changes are not offered, or - Sales' service decides when - an ACCEPTED one.
+     * Cancelled with a reason the customer reads too: a DRAFT (the first nobody saw; for a later revision the customer
+     * sees the quote end with the offer they were last sent - the service's view) or - Sales' service decides when -
+     * an ACCEPTED one. A SENT or CHANGES_REQUESTED quote is not cancelled: it is answered, revised or expires.
      */
     public void cancel(String reason) {
         String text = reason == null ? "" : reason.strip();

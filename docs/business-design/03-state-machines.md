@@ -980,8 +980,6 @@ stateDiagram-v2
     SENT --> EXPIRED: validity ends
     ACCEPTED --> CONVERTED: sales order created
     ACCEPTED --> CANCELLED: a SKU on it stopped (Sales, reason)
-    SENT --> CANCELLED: withdrawn before the customer answers (Sales, reason)
-    CHANGES_REQUESTED --> CANCELLED: the changes are not offered (Sales, reason)
     DRAFT --> CANCELLED
     CONVERTED --> [*]
     EXPIRED --> [*]
@@ -994,8 +992,6 @@ stateDiagram-v2
 | SENT | ACCEPTED | accept | Customer (portal) | within validity; every new design has an APPROVED sample (BR-PRD-08) | — |
 | ACCEPTED | CONVERTED | create order | Sales staff or order coordinator (`sales-quote-conversions:CREATE`; editing a quote is Sales' - `sales-quotes:UPDATE`, which the coordinator does not hold, decision 2026-10-17) | lines reserved (BR-ORD-001) | `OrderPlaced` |
 | ACCEPTED | CANCELLED | cancel | Sales staff | a SKU on the quote is INACTIVE/DISCONTINUED, so it can never be converted; reason required and kept in the history; the customer still sees it; a new quote follows if the goods are still wanted (decision 2026-10-17) | — |
-| SENT | CANCELLED | withdraw | Sales staff (`sales-quotes:UPDATE`) | reason required - the customer reads it with the quote, which stays visible to them as withdrawn and can no longer be accepted (a price typed wrong, a design the customer dropped; a corrected offer is a new quote). A customer's acceptance and Sales' withdrawal of the same version are taken one after the other: whichever is first wins, the other is refused - the customer told it was withdrawn and why, not that the quote changed (review 2026-10-25, S8) | — |
-| CHANGES_REQUESTED | CANCELLED | decline the changes | Sales staff | reason required, shown to the customer | — |
-| DRAFT (revision 2 or later) | CANCELLED | drop the revision | Sales staff | reason required; the customer, who saw the earlier revision, sees the quote ended with its lines but without the dropped draft's prices - they were never offered (review 2026-10-25, S8) | — |
+| DRAFT (revision 2 or later) | CANCELLED | drop the revision | Sales staff | reason required; the customer, who saw the earlier revision, sees the quote ended with its lines but without the dropped draft's prices - they were never offered; a customer answering the version they still hold is told it was withdrawn and why, not that it changed (review 2026-10-25) | — |
 | SENT | EXPIRED | validity ends | system | — | — |
 

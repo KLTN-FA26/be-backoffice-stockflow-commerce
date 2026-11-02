@@ -409,8 +409,9 @@ class QuoteService implements Quotes {
     }
 
     /**
-     * The customer's answer (accept, ask for changes) to a quote Sales withdrew: told so, with Sales' reason, before
-     * the version - which the withdrawal itself moved - so they read why and not "changed since" (review of S8).
+     * The customer's answer (accept, ask for changes) to a quote Sales cancelled meanwhile - a revision reopened and
+     * dropped: told so, with Sales' reason, before the version - which the cancellation itself moved - so they read why
+     * and not "changed since".
      */
     private Quote lockToAnswer(CurrentUser user, UUID quoteId, long version) {
         Quote quote = lockVisible(user, quoteId);
@@ -671,7 +672,7 @@ class QuoteService implements Quotes {
 
     /**
      * @param forCustomer read by the customer (portal): a revision Sales reopened and then dropped before sending it
-     *                    was never offered (review 2026-10-25 of S8) - the customer sees the quote end with the offer
+     *                    was never offered - the customer sees the quote end with the offer
      *                    they were last sent, as its SENT history row kept it, not the draft's working terms
      */
     private QuoteView view(Quote quote, boolean forCustomer) {
