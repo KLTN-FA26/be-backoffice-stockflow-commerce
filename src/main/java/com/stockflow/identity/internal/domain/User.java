@@ -35,8 +35,9 @@ public final class User extends AggregateRoot {
 
     /**
      * How long an administrator-set password works (SCRUM-474 FIRST-LOGIN, decision 29/10/2026). After that
-     * sign-in fails until an administrator resets it. A flagged account whose
-     * {@code temporaryPasswordSetAt} is unknown (flagged before the column existed) does not expire.
+     * sign-in fails until an administrator resets it. Accounts already flagged when the column was added were
+     * stamped with the migration time (PWD-LEGACY, 02/11/2026), so they expire 72 hours after the deploy; a
+     * flagged account whose {@code temporaryPasswordSetAt} is still null is treated as not expiring.
      */
     public static final Duration TEMPORARY_PASSWORD_VALIDITY = Duration.ofHours(72);
 

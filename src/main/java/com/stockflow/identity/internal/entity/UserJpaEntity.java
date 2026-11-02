@@ -47,7 +47,7 @@ public class UserJpaEntity extends BaseEntity {
     @Column(name = "must_change_password", nullable = false)
     private boolean mustChangePassword;
 
-    /** When the administrator-set password was set; null once replaced, and for accounts flagged before it existed. */
+    /** When the administrator-set password was set; null once replaced. Accounts flagged before the column existed were stamped with the migration time. */
     @Column(name = "temporary_password_set_at")
     private Instant temporaryPasswordSetAt;
 
