@@ -240,7 +240,7 @@ flowchart LR
 
 | # | Service | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `procurement` | `+ supplier_invoices, + supplier_invoice_lines × N` (mỗi dòng trỏ dòng PO, có thể kèm dòng phiếu nhập) | status = RECEIVED (bản nháp) — SCRUM-308 |
+| 01 | `procurement` | `+ supplier_invoices, + supplier_invoice_lines × N` (mỗi dòng trỏ dòng PO, có thể kèm dòng phiếu nhập) | status = DRAFT (bản nháp) — SCRUM-308 |
 | 02 | `procurement` | đọc dòng PO (giá ròng, thuế), phiếu nhập đã ghi sổ và kết quả QC, các hoá đơn đã MATCHED; khoá các PO theo thứ tự id | `GET /supplier-invoices/match-basis/{poId}` cho kế toán xem trước |
 | 03 | `procurement` | `~ supplier_invoices, + supplier_invoice_variances × N` | MATCHED, hoặc EXCEPTION kèm từng chênh lệch (số lượng / chờ QC / giá ngoài dung sai 2% / thuế suất / quyết toán gia công) — SCRUM-309, BR-INV-002 |
 | 04 | `procurement` | `+ invoice_override (nếu lệch)` | cần hạn mức ≥ chênh lệch |

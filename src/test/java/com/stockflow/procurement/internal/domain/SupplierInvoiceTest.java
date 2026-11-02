@@ -60,7 +60,7 @@ class SupplierInvoiceTest {
         assertThat(invoice.subtotal()).isEqualByComparingTo("3201.55");
         assertThat(invoice.taxTotal()).isEqualByComparingTo("300.16");
         assertThat(invoice.total()).isEqualByComparingTo("3501.71");
-        assertThat(invoice.status()).isEqualTo(SupplierInvoiceStatus.RECEIVED);
+        assertThat(invoice.status()).isEqualTo(SupplierInvoiceStatus.DRAFT);
         assertThat(invoice.invoiceNumber()).isEqualTo("HD-001");
     }
 
@@ -114,7 +114,7 @@ class SupplierInvoiceTest {
     }
 
     @Test
-    @DisplayName("correcting an EXCEPTION drops its variances and takes it back to RECEIVED, to be matched afresh")
+    @DisplayName("correcting an EXCEPTION drops its variances and takes it back to DRAFT, to be matched afresh")
     void reviseException() {
         SupplierInvoice invoice = entered();
         invoice.recordMatch(List.of(new SupplierInvoice.Variance(UUID.randomUUID(), invoice.lines().getFirst().id(),
@@ -122,7 +122,7 @@ class SupplierInvoiceTest {
                 new BigDecimal("2.00"), ACCOUNTANT, NOW);
         invoice.revise(header("HD-001", TODAY, null), List.of(line(PO_LINE, 1, "1000", "10")), TODAY,
                 UUID::randomUUID);
-        assertThat(invoice.status()).isEqualTo(SupplierInvoiceStatus.RECEIVED);
+        assertThat(invoice.status()).isEqualTo(SupplierInvoiceStatus.DRAFT);
         assertThat(invoice.variances()).isEmpty();
         assertThat(invoice.matchedAt()).isNull();
         assertThat(invoice.priceTolerancePercent()).isNull();
@@ -135,7 +135,7 @@ class SupplierInvoiceTest {
         SupplierInvoice invoice = entered();
         assertThat(refusal(() -> invoice.voidInvoice("  ", ACCOUNTANT, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
         invoice.voidInvoice(" nhập nhầm ", ACCOUNTANT, NOW);
-        assertThat(invoice.status()).isEqualTo(SupplierInvoiceStatus.VOID);
+        assertThat(invoice.status()).isEqualTo(SupplierInvoiceStatus.CANCELLED);
         assertThat(invoice.voidReason()).isEqualTo("nhập nhầm");
         assertThat(refusal(() -> invoice.attach(new SupplierInvoice.Document("k", "a.pdf", "application/pdf"))))
                 .isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);

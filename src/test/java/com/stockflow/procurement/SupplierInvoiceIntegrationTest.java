@@ -3,6 +3,7 @@ package com.stockflow.procurement;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.storage.FileStorage;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.procurement.internal.domain.InvoiceVarianceKind;
 import com.stockflow.procurement.internal.domain.SupplierInvoiceStatus;
@@ -21,6 +22,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.ByteArrayInputStream;
@@ -35,6 +37,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.groups.Tuple.tuple;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 
 /**
  * SCRUM-308/309 against a real database: invoices entered against orders received through the real receiving flow,
@@ -52,6 +57,9 @@ class SupplierInvoiceIntegrationTest {
 
     @Autowired SupplierInvoices invoices;
     @Autowired GoodsReceipts receipts;
+    // The test profile stores files locally, which hands out no browser link; the scan's download link needs one. Signing
+    // itself is MinioMediaIntegrationTest's; here the link only has to look like the S3 provider's.
+    @MockitoSpyBean FileStorage storage;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -65,6 +73,8 @@ class SupplierInvoiceIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        doAnswer(call -> "http://objects.test/" + call.getArgument(0)).when(storage).presignedDownloadUrl(anyString(),
+                any());
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         qc = tx.execute(s -> ReferenceRows.user(entityManager));
         accountant = tx.execute(s -> ReferenceRows.user(entityManager));
@@ -152,7 +162,7 @@ class SupplierInvoiceIntegrationTest {
         String number = number();
 
         SupplierInvoices.InvoiceView first = enter(po, number, billed(poLine(po, SOFA), 4, "1000", "10"));
-        assertThat(first.status()).isEqualTo(SupplierInvoiceStatus.RECEIVED);
+        assertThat(first.status()).isEqualTo(SupplierInvoiceStatus.DRAFT);
         assertThat(first.subtotal()).isEqualByComparingTo("4000");
         assertThat(first.taxTotal()).isEqualByComparingTo("400");
         assertThat(first.total()).isEqualByComparingTo("4400");
@@ -209,7 +219,7 @@ class SupplierInvoiceIntegrationTest {
                 invoice.invoiceNumber(), today, null, "only the accepted units",
                 List.of(new SupplierInvoices.LineInput(poLine(po, TABLE), line, 3, new BigDecimal("1000"),
                         BigDecimal.ZERO)), null), accountant);
-        assertThat(corrected.status()).isEqualTo(SupplierInvoiceStatus.RECEIVED);
+        assertThat(corrected.status()).isEqualTo(SupplierInvoiceStatus.DRAFT);
         assertThat(corrected.variances()).isEmpty();
         assertThat(invoices.match(invoice.id(), accountant).status()).isEqualTo(SupplierInvoiceStatus.MATCHED);
     }
@@ -246,10 +256,11 @@ class SupplierInvoiceIntegrationTest {
         UUID po = order("CONFIRMED", "0", SOFA, 2, TABLE, 1);
         GoodsReceipts.ReceiptView receipt = received(po, SOFA, 2);
         UUID other = Identifiers.newId();
-        jdbc.update("""
+        // In a transaction, as every write of these tests: the pool does not commit a statement run outside one.
+        tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO procurement.suppliers (id, code, name, status, currency, version, created_at)
                 VALUES (?, ?, 'Other supplier', 'ACTIVE', 'VND', 0, NOW())""", other, "OT" + other.toString()
-                .substring(30).toUpperCase());
+                .substring(30).toUpperCase()));
 
         assertThat(code(() -> invoices.enter(new SupplierInvoices.Enter(other, null, number(), today, null, null, null,
                 List.of(billed(poLine(po, SOFA), 1, "1000", "0"))), accountant)))
@@ -317,7 +328,7 @@ class SupplierInvoiceIntegrationTest {
 
         assertThat(code(() -> invoices.voidInvoice(invoice.id(), " ", accountant))).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(invoices.voidInvoice(invoice.id(), "Nhà cung cấp thu hồi hoá đơn", accountant).status())
-                .isEqualTo(SupplierInvoiceStatus.VOID);
+                .isEqualTo(SupplierInvoiceStatus.CANCELLED);
         assertThat(code(() -> invoices.match(invoice.id(), accountant)))
                 .isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
     }
@@ -335,7 +346,7 @@ class SupplierInvoiceIntegrationTest {
             jdbc.execute("SET CONSTRAINTS ALL IMMEDIATE");
         })).isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE procurement.supplier_invoices SET status = 'VOID' WHERE id = ?", invoice.id())))
+                "UPDATE procurement.supplier_invoices SET status = 'CANCELLED' WHERE id = ?", invoice.id())))
                 .isInstanceOf(DataAccessException.class);
         assertThat(jdbc.queryForObject("SELECT status FROM procurement.supplier_invoices WHERE id = ?", String.class,
                 invoice.id())).isEqualTo("EXCEPTION");

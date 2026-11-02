@@ -173,38 +173,38 @@ confirmed receipt is never deleted; mistakes are reversals or adjustments with a
 WBS 3.4.1 (entry, SCRUM-308), 3.4.2 (three-way match, SCRUM-309), 3.4.3 (exceptions and payment, SCRUM-310).
 
 Built: entering, correcting, matching and voiding (`/api/v1/supplier-invoices`, `procurement-supplier-invoices`). The
-entered, not yet matched invoice is `RECEIVED` - the "Draft" below; matching is a step the accountant runs, again after
+entered, not yet matched invoice is `DRAFT`; matching is a step the accountant runs, again after
 QC concluded or goods arrived. Override, dispute, approval for payment and payment are SCRUM-310's (not built).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> RECEIVED: enter
-    RECEIVED --> MATCHED: match, no variance
-    RECEIVED --> EXCEPTION: match, variances
+    [*] --> DRAFT: enter
+    DRAFT --> MATCHED: match, no variance
+    DRAFT --> EXCEPTION: match, variances
     EXCEPTION --> MATCHED: match again, none left
-    EXCEPTION --> RECEIVED: correct
-    RECEIVED --> RECEIVED: correct
+    EXCEPTION --> DRAFT: correct
+    DRAFT --> DRAFT: correct
     EXCEPTION --> MATCHED: override approved (SCRUM-310)
     EXCEPTION --> DISPUTED: raise with supplier (SCRUM-310)
-    DISPUTED --> RECEIVED: supplier issues credit note (SCRUM-310)
+    DISPUTED --> DRAFT: supplier issues credit note (SCRUM-310)
     MATCHED --> APPROVED_FOR_PAYMENT: approve (SCRUM-310)
     APPROVED_FOR_PAYMENT --> PAID: payment recorded (SCRUM-310)
     PAID --> [*]
-    RECEIVED --> VOID: void
-    EXCEPTION --> VOID: void
-    VOID --> [*]
+    DRAFT --> CANCELLED: void
+    EXCEPTION --> CANCELLED: void
+    CANCELLED --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | RECEIVED | enter · `POST /supplier-invoices` | Accountant, procurement staff (`:CREATE`) | number unique per supplier, case aside (BR-INV-001); every line bills a PO line of the supplier (of the invoice's order when it names one; none named: lines of several of its orders), on an order past approval (not DRAFT, PENDING_APPROVAL, CANCELLED), in one currency; a named receipt line is a delivery of that PO line; dated today or earlier, due not before it; amounts worked out from the lines (net, tax per line rounded half up) | — |
-| RECEIVED, EXCEPTION | RECEIVED | correct · `PUT /supplier-invoices/{id}` | `:UPDATE` | the whole header and lines again, `version` as read; an EXCEPTION's variances are dropped | — |
-| RECEIVED, EXCEPTION | MATCHED | match · `POST /supplier-invoices/{id}/match` | `:UPDATE` | no variance (BR-INV-002): from then on its units count as billed | — |
-| RECEIVED, EXCEPTION | EXCEPTION | match | `:UPDATE` | variances, kept per line with expected, invoiced and the amount at stake (`supplier_invoice_variances`), with the tolerance used | — |
-| RECEIVED, EXCEPTION | VOID | void · `POST /supplier-invoices/{id}/void` | `:UPDATE` | reason required (entered by mistake, withdrawn by the supplier) | — |
+| — | DRAFT | enter · `POST /supplier-invoices` | Accountant only (`:CREATE`); procurement staff only read (decision 2026-11-02, kltn-docs 04 §2) | number unique per supplier, case aside (BR-INV-001); every line bills a PO line of the supplier (of the invoice's order when it names one; none named: lines of several of its orders), on an order past approval (not DRAFT, PENDING_APPROVAL, CANCELLED), in one currency; a named receipt line is a delivery of that PO line; dated today or earlier, due not before it; amounts worked out from the lines (net, tax per line rounded half up) | — |
+| DRAFT, EXCEPTION | DRAFT | correct · `PUT /supplier-invoices/{id}` | `:UPDATE` | the whole header and lines again, `version` as read; an EXCEPTION's variances are dropped | — |
+| DRAFT, EXCEPTION | MATCHED | match · `POST /supplier-invoices/{id}/match` | `:UPDATE` | no variance (BR-INV-002): from then on its units count as billed | — |
+| DRAFT, EXCEPTION | EXCEPTION | match | `:UPDATE` | variances, kept per line with expected, invoiced and the amount at stake (`supplier_invoice_variances`), with the tolerance used | — |
+| DRAFT, EXCEPTION | CANCELLED | void · `POST /supplier-invoices/{id}/void` | `:UPDATE` | reason required (entered by mistake, withdrawn by the supplier) | — |
 | EXCEPTION | MATCHED | override (SCRUM-310) | Accountant with approval limit | approver's limit ≥ variance (BR-INV-003) | `InvoiceOverrideApproved` |
 | EXCEPTION | DISPUTED | dispute (SCRUM-310) | Accountant | reason recorded | — |
-| DISPUTED | RECEIVED | credit note posted (SCRUM-310) | Accountant | credit note linked; matched again | — |
+| DISPUTED | DRAFT | credit note posted (SCRUM-310) | Accountant | credit note linked; matched again | — |
 | MATCHED | APPROVED_FOR_PAYMENT | approve (SCRUM-310) | Accountant | within payment approval limit | `InvoiceApprovedForPayment` |
 | APPROVED_FOR_PAYMENT | PAID | record payment (SCRUM-310) | Accountant | — | `SupplierInvoicePaid` |
 

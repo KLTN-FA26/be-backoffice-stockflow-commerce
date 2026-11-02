@@ -64,7 +64,7 @@ class SupplierInvoiceController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Enter a supplier invoice (RECEIVED) with its lines, as on the paper",
+    @Operation(summary = "Enter a supplier invoice (DRAFT) with its lines, as on the paper",
             description = """
                     Each line bills a purchase order line of the supplier (`purchaseOrderLineId`), optionally one \
                     delivery of it (`receiptLineId`); `purchaseOrderId` names the one order the invoice bills, or is \
@@ -115,7 +115,7 @@ class SupplierInvoiceController {
     }
 
     @PutMapping("/{invoiceId}")
-    @Operation(summary = "Correct a RECEIVED or EXCEPTION invoice: the whole header and lines again; it is RECEIVED "
+    @Operation(summary = "Correct a DRAFT or EXCEPTION invoice: the whole header and lines again; it is DRAFT "
             + "again, to be matched afresh",
             description = "`version` is the one read: a change made meanwhile is refused (`OPTIMISTIC_LOCK`, 409).")
     @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.UPDATE)
@@ -144,7 +144,7 @@ class SupplierInvoiceController {
     }
 
     @PostMapping("/{invoiceId}/void")
-    @Operation(summary = "Void a RECEIVED or EXCEPTION invoice entered by mistake or withdrawn by the supplier")
+    @Operation(summary = "Void a DRAFT or EXCEPTION invoice entered by mistake or withdrawn by the supplier")
     @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.UPDATE)
     public ApiResponse<SupplierInvoiceResponses.Invoice> voidInvoice(
             @PathVariable UUID invoiceId, @Valid @RequestBody SupplierInvoiceRequests.VoidInvoice request,

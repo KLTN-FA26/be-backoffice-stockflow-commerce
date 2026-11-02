@@ -5,14 +5,16 @@
 -- supplier_invoices / supplier_invoice_lines already exist (V20260928002300) with the PO, PO line and receipt line
 -- references and their triggers. This adds what entering and matching need:
 --
---   status EXCEPTION   the match found variances (kltn-docs 04 §5 "Exception"); RECEIVED is the entered, not yet
---                      matched invoice (its "Draft"). DISPUTED and PAID stay for the resolution and payment story
---                      (SCRUM-310), which starts from EXCEPTION and MATCHED.
+--   statuses           named as kltn-docs 04 §5 names them (decision 2026-11-02): DRAFT (was RECEIVED) is the entered,
+--                      not yet matched invoice, CANCELLED (was VOID) one entered by mistake or withdrawn by the
+--                      supplier, EXCEPTION the outcome of a match that found variances. DISPUTED, APPROVED_FOR_PAYMENT
+--                      and PAID stay for the resolution and payment story (SCRUM-310), which starts from EXCEPTION
+--                      and MATCHED. Rows already carrying the old names are renamed.
 --   received_by        who entered it (created_by is the audit's text, not a user reference)
 --   note, file_*       the accountant's note; the scanned invoice in object storage (file_url holds its storage key)
 --   matched_*          when and by whom the last match ran, and the price tolerance it used, so a result can be
 --                      explained after the configured tolerance changes
---   voided_*           who voided an invoice entered by mistake, and why (kltn-docs 04 "Cancelled")
+--   voided_*           who cancelled an invoice entered by mistake, and why (kltn-docs 04 "Cancelled")
 --   supplier_invoice_variances
 --                      what the last match found, one row per variance: the review queue of SCRUM-310 reads it, and an
 --                      override (BR-INV-003) compares its amount with the approver's limit
@@ -24,8 +26,16 @@
 
 ALTER TABLE procurement.supplier_invoices
     DROP CONSTRAINT ck_supplier_invoices_status,
+    ALTER COLUMN status TYPE VARCHAR(32),   -- APPROVED_FOR_PAYMENT does not fit 16
+    ALTER COLUMN status SET DEFAULT 'DRAFT';
+
+UPDATE procurement.supplier_invoices
+   SET status = CASE status WHEN 'RECEIVED' THEN 'DRAFT' ELSE 'CANCELLED' END
+ WHERE status IN ('RECEIVED', 'VOID');
+
+ALTER TABLE procurement.supplier_invoices
     ADD CONSTRAINT ck_supplier_invoices_status
-        CHECK (status IN ('RECEIVED', 'MATCHED', 'EXCEPTION', 'DISPUTED', 'VOID', 'PAID')),
+        CHECK (status IN ('DRAFT', 'MATCHED', 'EXCEPTION', 'DISPUTED', 'APPROVED_FOR_PAYMENT', 'PAID', 'CANCELLED')),
     ADD COLUMN received_by             UUID,
     ADD COLUMN note                    VARCHAR(500),
     ADD COLUMN file_name               VARCHAR(255),
@@ -40,14 +50,14 @@ ALTER TABLE procurement.supplier_invoices
     ADD CONSTRAINT fk_supplier_invoices_matched_by FOREIGN KEY (matched_by) REFERENCES identity.app_user (id),
     ADD CONSTRAINT fk_supplier_invoices_voided_by FOREIGN KEY (voided_by) REFERENCES identity.app_user (id),
     -- An unmatched invoice carries no match; an EXCEPTION is a match's outcome, with the tolerance it used.
-    ADD CONSTRAINT ck_supplier_invoices_unmatched CHECK (status <> 'RECEIVED'
+    ADD CONSTRAINT ck_supplier_invoices_unmatched CHECK (status <> 'DRAFT'
         OR (matched_at IS NULL AND matched_by IS NULL AND price_tolerance_percent IS NULL)),
     ADD CONSTRAINT ck_supplier_invoices_exception CHECK (status <> 'EXCEPTION'
         OR (matched_at IS NOT NULL AND matched_by IS NOT NULL AND price_tolerance_percent IS NOT NULL)),
     ADD CONSTRAINT ck_supplier_invoices_tolerance CHECK (price_tolerance_percent IS NULL
         OR price_tolerance_percent BETWEEN 0 AND 100),
-    -- A void says who and why; only a VOID invoice says so.
-    ADD CONSTRAINT ck_supplier_invoices_void CHECK ((status = 'VOID')
+    -- A cancellation says who and why; only a CANCELLED invoice says so.
+    ADD CONSTRAINT ck_supplier_invoices_void CHECK ((status = 'CANCELLED')
         = (voided_at IS NOT NULL AND voided_by IS NOT NULL AND void_reason IS NOT NULL)),
     ADD CONSTRAINT ck_supplier_invoices_file CHECK (file_url IS NOT NULL OR (file_name IS NULL AND file_content_type IS NULL));
 
@@ -129,3 +139,22 @@ CREATE CONSTRAINT TRIGGER tg_supplier_invoices_match
     AFTER INSERT OR UPDATE OF status, matched_at ON procurement.supplier_invoices
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION procurement.check_supplier_invoice_match();
+
+
+-- Who enters and matches invoices (decision 2026-11-02, kltn-docs 04 §2): the accountant. Procurement staff only read
+-- them, to follow a variance of their order. V20260903000100 had seeded procurement-supplier-invoices:CREATE and
+-- :UPDATE (and APPROVE, never granted to them) to PROCUREMENT_STAFF; the two are taken back. VIEW_PAGE and READ stay,
+-- and ACCOUNTANT keeps its own grants. Only the seeded grant is removed: an administrator can still grant a permission
+-- to any role at run time.
+DELETE FROM identity.role_permission rp
+USING identity.app_role role, identity.permission permission
+WHERE rp.role_id = role.id
+  AND rp.permission_id = permission.id
+  AND role.code = 'PROCUREMENT_STAFF'
+  AND permission.resource = 'procurement-supplier-invoices'
+  AND permission.action IN ('CREATE', 'UPDATE');
+
+-- ADR-0008: the role's permission cache must change generation in this same transaction.
+UPDATE identity.app_role
+SET version = version + 1, last_modified_at = NOW(), last_modified_by = 'flyway'
+WHERE code = 'PROCUREMENT_STAFF';

@@ -157,7 +157,7 @@ public final class SupplierInvoice extends AggregateRoot {
     }
 
     /**
-     * An invoice as entered: RECEIVED, not matched yet. The header's {@code purchaseOrderId} is the one order it bills,
+     * An invoice as entered: DRAFT, not matched yet. The header's {@code purchaseOrderId} is the one order it bills,
      * or null for an invoice over several orders of the supplier (kltn-docs 04 edge case "NCC gộp nhiều PO"); its lines
      * name the PO lines either way.
      *
@@ -169,17 +169,17 @@ public final class SupplierInvoice extends AggregateRoot {
                                         List<NewLine> lines, UUID by, Instant now, LocalDate today,
                                         java.util.function.Supplier<UUID> ids) {
         SupplierInvoice invoice = new SupplierInvoice(new State(id, supplierId, null, currency, null, null,
-                null, null, SupplierInvoiceStatus.RECEIVED, List.of(), List.of(), null, now,
+                null, null, SupplierInvoiceStatus.DRAFT, List.of(), List.of(), null, now,
                 Objects.requireNonNull(by, "by"), null, null, null, null, null, null, 0L));
         invoice.write(header, lines, today, ids);
         return invoice;
     }
 
     /**
-     * The accountant corrects the header and the lines - the whole set each time. An EXCEPTION goes back to RECEIVED
+     * The accountant corrects the header and the lines - the whole set each time. An EXCEPTION goes back to DRAFT
      * and its variances are dropped: they were found on the lines as they were, and are matched afresh.
      *
-     * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION} unless RECEIVED or EXCEPTION; as
+     * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION} unless DRAFT or EXCEPTION; as
      *         {@link #enter}
      */
     public void revise(Header header, List<NewLine> newLines, LocalDate today, java.util.function.Supplier<UUID> ids) {
@@ -192,7 +192,7 @@ public final class SupplierInvoice extends AggregateRoot {
      * Records a three-way match: no variance makes it MATCHED (its lines now count as billed against the receipts),
      * any makes it EXCEPTION with the list (BR-INV-002). The tolerance the match used is kept with it.
      *
-     * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION} unless RECEIVED or EXCEPTION
+     * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION} unless DRAFT or EXCEPTION
      */
     public void recordMatch(List<Variance> found, BigDecimal tolerancePercent, UUID by, Instant at) {
         requireOpen("matched");
@@ -215,7 +215,7 @@ public final class SupplierInvoice extends AggregateRoot {
      * voided here: it already counts as billed, and taking it back is the resolution story's (SCRUM-310).
      *
      * @throws BusinessException {@code VALIDATION_FAILED} without a reason; {@code SUPPLIER_INVOICE_INVALID_TRANSITION}
-     *         unless RECEIVED or EXCEPTION
+     *         unless DRAFT or EXCEPTION
      */
     public void voidInvoice(String reason, UUID by, Instant at) {
         requireOpen("voided");
@@ -226,7 +226,7 @@ public final class SupplierInvoice extends AggregateRoot {
         if (why.length() > 500) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The reason is at most 500 characters");
         }
-        this.status = SupplierInvoiceStatus.VOID;
+        this.status = SupplierInvoiceStatus.CANCELLED;
         this.voidReason = why;
         this.voidedBy = Objects.requireNonNull(by, "by");
         this.voidedAt = Objects.requireNonNull(at, "at");
@@ -234,12 +234,12 @@ public final class SupplierInvoice extends AggregateRoot {
 
     /**
      * Attaches the scanned invoice, replacing an earlier scan - which stays in storage: it is a financial record.
-     * Allowed until the invoice is VOID or PAID: a MATCHED invoice may still be waiting for its paper copy.
+     * Allowed until the invoice is CANCELLED or PAID: a MATCHED invoice may still be waiting for its paper copy.
      *
-     * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION} when VOID or PAID
+     * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION} when CANCELLED or PAID
      */
     public void attach(Document scan) {
-        if (status == SupplierInvoiceStatus.VOID || status == SupplierInvoiceStatus.PAID) {
+        if (status == SupplierInvoiceStatus.CANCELLED || status == SupplierInvoiceStatus.PAID) {
             throw transition("given a scan");
         }
         this.document = Objects.requireNonNull(scan, "scan");
@@ -300,7 +300,7 @@ public final class SupplierInvoice extends AggregateRoot {
     }
 
     private void clearMatch() {
-        this.status = SupplierInvoiceStatus.RECEIVED;
+        this.status = SupplierInvoiceStatus.DRAFT;
         this.variances = List.of();
         this.matchedAt = null;
         this.matchedBy = null;
@@ -308,7 +308,7 @@ public final class SupplierInvoice extends AggregateRoot {
     }
 
     /**
-     * Refuses unless RECEIVED or EXCEPTION, saying what was attempted: callers check it before reading the orders, so a
+     * Refuses unless DRAFT or EXCEPTION, saying what was attempted: callers check it before reading the orders, so a
      * closed invoice is refused for being closed rather than for whatever else the request carries.
      *
      * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION}

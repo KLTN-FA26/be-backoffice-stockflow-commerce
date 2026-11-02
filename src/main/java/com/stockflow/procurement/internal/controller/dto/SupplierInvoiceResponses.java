@@ -29,8 +29,9 @@ public final class SupplierInvoiceResponses {
     }
 
     /**
-     * {@code status}: RECEIVED (entered, not matched), MATCHED, EXCEPTION (see {@code variances}), VOID; DISPUTED and
-     * PAID come with resolving and paying (SCRUM-310). {@code priceTolerancePercent} is the one the last match used.
+     * {@code status}: DRAFT (entered, not matched), MATCHED, EXCEPTION (see {@code variances}), CANCELLED; DISPUTED,
+     * APPROVED_FOR_PAYMENT and PAID come with resolving and paying (SCRUM-310). {@code priceTolerancePercent} is the
+     * one the last match used.
      */
     public record Invoice(UUID id, UUID supplierId, String supplierName, UUID purchaseOrderId, String invoiceNumber,
                           LocalDate invoiceDate, LocalDate dueDate, String currency, String note, String status,
