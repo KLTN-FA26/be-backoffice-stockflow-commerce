@@ -208,6 +208,77 @@ class PlanVehiclesTest {
     }
 
     @Nested
+    @DisplayName("UNLOAD-DROP: a vehicle is dropped from its plan once every other vehicle left")
+    class Dropping {
+
+        private LoadPlan twoVehicles;
+        private LoadPlanJpaEntity twoHeader;
+        private LoadPlan.Vehicle first;
+        private LoadPlan.Vehicle second;
+
+        @BeforeEach
+        void aConfirmedPlanOfTwoVehicles() {
+            var planned = FulfillmentFixtures.plannedPlan(4, 2);
+            twoVehicles = planned.plan();
+            twoVehicles.confirm(planned.dispatcher(), NOW, planned.cartons());
+            twoHeader = new LoadPlanJpaEntity(twoVehicles.snapshot());
+            first = twoVehicles.activeVehicles().get(0);
+            second = twoVehicles.activeVehicles().get(1);
+        }
+
+        private PlanVehicles.PlanOfLoad ofSecond() {
+            return new PlanVehicles.PlanOfLoad(twoHeader, twoVehicles, second);
+        }
+
+        private void otherIs(LoadStatus status) {
+            DispatchLoadJpaEntity other = load(status, first.id());
+            DispatchLoadJpaEntity own = load(LoadStatus.PLANNED, second.id());
+            when(loads.findByLoadPlanVehicleIdIn(List.of(first.id(), second.id()))).thenReturn(List.of(other, own));
+            // After the drop only the first vehicle is left in the plan.
+            when(loads.findByLoadPlanVehicleIdIn(List.of(first.id()))).thenReturn(List.of(other));
+        }
+
+        @Test
+        @DisplayName("another vehicle that is booked, loading or not yet booked holds the drop back: "
+                + "LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT")
+        void anotherVehicleHasNotLeft() {
+            for (LoadStatus status : List.of(LoadStatus.PLANNED, LoadStatus.VEHICLE_BOOKED, LoadStatus.LOADING)) {
+                otherIs(status);
+                assertThat(refusal(() -> planVehicles.requireOtherVehiclesLeft(ofSecond())).errorCode())
+                        .as(status.name()).isEqualTo(ErrorCode.LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT);
+            }
+        }
+
+        @Test
+        @DisplayName("with no other vehicle carrying anything (its load cancelled) nothing left either: refused - cancel "
+                + "the plan under control instead")
+        void noOtherVehicleLeft() {
+            otherIs(LoadStatus.CANCELLED);
+
+            assertThat(refusal(() -> planVehicles.requireOtherVehiclesLeft(ofSecond())).errorCode())
+                    .isEqualTo(ErrorCode.LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT);
+        }
+
+        @Test
+        @DisplayName("every other vehicle DISPATCHED: allowed; the drop releases the vehicle's parcels, retires it, saves "
+                + "the plan and turns it DISPATCHED (BR-15)")
+        void everyOtherVehicleLeft() {
+            otherIs(LoadStatus.DISPATCHED);
+            Set<UUID> onSecond = ofSecond().placedHere();
+            planVehicles.requireOtherVehiclesLeft(ofSecond());
+
+            assertThat(planVehicles.drop(ofSecond(), NOW)).isTrue();
+
+            assertThat(twoVehicles.status()).isEqualTo(LoadPlanStatus.DISPATCHED);
+            assertThat(twoVehicles.activeVehicles()).extracting(LoadPlan.Vehicle::id).containsExactly(first.id());
+            assertThat(twoVehicles.members()).filteredOn(m -> onSecond.contains(m.packageId()))
+                    .allSatisfy(m -> assertThat(m.releaseReason())
+                            .isEqualTo(com.stockflow.fulfillment.internal.domain.LoadPlanReleaseReason.VEHICLE_DROPPED));
+            verify(planStore, org.mockito.Mockito.atLeastOnce()).save(twoVehicles, twoHeader, NOW);
+        }
+    }
+
+    @Nested
     @DisplayName("BR-15: the plan is DISPATCHED when every vehicle that carries something has left")
     class Completing {
 

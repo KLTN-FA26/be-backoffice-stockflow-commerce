@@ -145,6 +145,12 @@ public enum ErrorCode {
     /** Too many wrong passwords in a row; the lock ends on its own (SCRUM-456). Only revealed to a
      *  caller who then gave the right password, so it cannot be used to probe for accounts. */
     ACCOUNT_TEMPORARILY_LOCKED("Too many failed sign-in attempts; try again later", 403),
+    /** The administrator-set temporary password is older than 72 hours; only a reset by an administrator
+     *  helps (SCRUM-474 FIRST-LOGIN). Like ACCOUNT_NOT_ACTIVE it is only revealed after the right password. */
+    TEMPORARY_PASSWORD_EXPIRED("The temporary password has expired; ask an administrator to reset it", 403),
+    /** The account still has an administrator-set password: every call except changing it (and reading who
+     *  you are, and signing out) is refused until it is changed (SCRUM-474 FIRST-LOGIN). */
+    PASSWORD_CHANGE_REQUIRED("You must change your temporary password before using the system", 403),
     /** You can only hand out what you hold: a role or permission the caller lacks, or managing an
      *  account that holds more than the caller (SCRUM-456). */
     PRIVILEGE_ESCALATION("You cannot grant or manage permissions you do not hold yourself", 403),
@@ -639,6 +645,12 @@ public enum ErrorCode {
     LOAD_PLAN_UNPLACED_NOT_ACKNOWLEDGED("Acknowledge the packages left unplaced before confirming", 409),
     /** Docs 09 BR-14: once a vehicle of the plan started loading, the plan is neither reopened nor cancelled here. */
     LOAD_PLAN_LOADING_STARTED("A vehicle of this load plan is already being loaded", 409),
+    /**
+     * SCRUM-474 UNLOAD-REOPEN: a vehicle of the plan was once called off under control, so the plan counts as "loading
+     * started" for good: it is neither reopened nor cancelled the plain way.
+     */
+    LOAD_PLAN_CONTROLLED_CANCELLED("A vehicle of this load plan was called off under control: the plan can no longer be "
+            + "reopened or cancelled the normal way", 409),
     /** SCRUM-287 PR T (LP2-8): only a transfer that travels as a full truckload is packed for a load plan. */
     TRANSFER_NOT_FULL_TRUCKLOAD("This transfer order does not travel as a full truckload", 409),
     /** Docs 10 BR-04: goods of the transfer left on a load plan's vehicle; its picking is no longer cancelled. */
@@ -680,6 +692,30 @@ public enum ErrorCode {
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),
+    /**
+     * SCRUM-474 UNLOAD-DESIGN point 4: a parcel of a vehicle called off is locked - not scanned onto a load, not planned,
+     * not voided with its transfer's picking - until it is scanned off (or confirmed off by a warehouse manager).
+     */
+    PACKAGE_UNLOAD_PENDING("This package is still to be unloaded from a vehicle that was called off; scan it off first",
+            409),
+    /** SCRUM-474 UNLOAD-DESIGN point 3: a vehicle of the plan already left; cancel the remaining vehicles one by one. */
+    LOAD_PLAN_VEHICLE_DISPATCHED("A vehicle of this load plan already left the warehouse; cancel its remaining "
+            + "vehicles one by one", 409),
+    /** SCRUM-474 UNLOAD-DESIGN point 10: a transfer's picking is not cancelled while a vehicle of its plan is loading. */
+    TRANSFER_LOADING_IN_PROGRESS("A vehicle of this transfer order's load plan is being loaded: run the controlled "
+            + "cancel of the load plan first, then cancel the picking", 409),
+    /**
+     * SCRUM-474 UNLOAD-DROP: a vehicle is dropped from its plan only when the plan's other vehicles all left (and at
+     * least one did); before that it is booked, loaded or called off like the others.
+     */
+    LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT("Another vehicle of this load plan has not left yet: a vehicle is dropped from "
+            + "the plan only once every other vehicle left", 409),
+    /**
+     * SCRUM-474 UNLOAD-DROP: the vehicle carries parcels of a shipment, a transfer order, or an order that may not ship in
+     * parts, whose other parcels are on a vehicle that already left: they cannot be left behind for a new plan.
+     */
+    LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order or transfer that also left on another "
+            + "vehicle: it cannot be dropped from the plan", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),
@@ -783,6 +819,8 @@ public enum ErrorCode {
     /** CUSTOMER belongs to customer accounts only, and staff roles to staff accounts only. */
     ROLE_NOT_ASSIGNABLE("This role cannot be assigned to this account", 409),
     INVALID_USER_STATUS_TRANSITION("This account cannot move to that status", 409),
+    /** The administrator asked for a status the account already has (lock a locked account, enable an active one). */
+    USER_STATUS_UNCHANGED("The account is already in this status", 409),
     INVALID_ALERT_TRANSITION("This alert cannot be acknowledged in its current state", 409),
     /** User management acts on staff accounts; customer accounts belong to the customer screens. */
     STAFF_ACCOUNT_REQUIRED("Customer accounts are managed from the customer screens", 409),

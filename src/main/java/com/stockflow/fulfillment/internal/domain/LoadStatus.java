@@ -8,6 +8,8 @@ package com.stockflow.fulfillment.internal.domain;
  *   parcel:  (driver arrives) LOADING ─both sides sign─▶ DISPATCHED
  *   FTL:     PLANNED ─vehicle booked─▶ VEHICLE_BOOKED ─vehicle arrives─▶ LOADING ─▶ DISPATCHED   (G4-1 / G4-2b)
  *   any open status ─▶ CANCELLED (its parcels go back to the dispatch area, untouched)
+ *   LOADING ─controlled cancel (SCRUM-474)─▶ CANCELLED, its scanned parcels locked (pending unloads) until scanned off;
+ *             a new PLANNED load of the same plan vehicle takes its place
  * </pre>
  */
 public enum LoadStatus {

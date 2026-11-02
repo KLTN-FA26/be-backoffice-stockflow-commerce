@@ -111,12 +111,27 @@ public interface IdentityService {
     StaffUser updateUser(UpdateUserCommand command);
 
     /**
-     * Lock, unlock, disable or enable an account. Locking and disabling end its sessions.
+     * Lock, unlock, disable or enable an account. Locking and disabling end its sessions. The reason is
+     * kept in the account's status history ({@link #statusHistory}) and in the audit entry, which also says
+     * which of the four it was (SCRUM-474 LOCK-REASON). The automatic lock after too many wrong passwords
+     * is not an administrator's decision and takes no reason. An action that would change nothing (lock a
+     * locked account, enable an active one, ...) is refused and leaves no history row; unlocking an active
+     * account is accepted only while a wrong-password lockout is running.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code INVALID_USER_STATUS_TRANSITION},
+     * @param reason free text, 5 to 500 characters after trimming
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for a missing or
+     *         out-of-range reason, {@code INVALID_USER_STATUS_TRANSITION}, {@code USER_STATUS_UNCHANGED},
      *         {@code LAST_SYSTEM_ADMIN}, {@code OWN_ACCOUNT_NOT_MANAGEABLE}, {@code PRIVILEGE_ESCALATION}
      */
-    StaffUser changeUserStatus(UUID userId, UserStatusChange change);
+    StaffUser changeUserStatus(UUID userId, UserStatusChange change, String reason);
+
+    /**
+     * Every administrator lock / unlock / disable / enable of the account, newest first, with its reason.
+     * Empty for an account that never had one.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code USER_NOT_FOUND}
+     */
+    PageResponse<UserStatusChangeEntry> statusHistory(UUID userId, int page, int size);
 
     /**
      * Replace the warehouses a staff member is assigned to (SCRUM-457). Applies on their next
@@ -173,7 +188,9 @@ public interface IdentityService {
      *
      * @throws com.stockflow.common.error.BusinessException {@code UNAUTHORIZED} for an unknown
      *         username or a wrong password (never revealing which); {@code ACCOUNT_NOT_ACTIVE} if
-     *         the password was correct but the account is {@code LOCKED}/{@code DISABLED}
+     *         the password was correct but the account is {@code LOCKED}/{@code DISABLED};
+     *         {@code TEMPORARY_PASSWORD_EXPIRED} if the password was correct but is an administrator-set
+     *         one older than 72 hours
      */
     TokenResponse login(LoginCommand command);
 
@@ -204,7 +221,10 @@ public interface IdentityService {
     /**
      * Changes the password after checking the current one.
      *
-     * @return how many other sessions were ended (0 unless {@code logoutOtherDevices})
+     * <p>When the account was flagged "must change password" the change always ends every other session,
+     * whatever {@code logoutOtherDevices} says; the current one is kept.</p>
+     *
+     * @return how many other sessions were ended (0 unless {@code logoutOtherDevices} or the change was forced)
      * @throws com.stockflow.common.error.BusinessException {@code INVALID_CURRENT_PASSWORD} if the
      *         current password is wrong, {@code PASSWORD_UNCHANGED} if the new one equals it,
      *         {@code VALIDATION_FAILED} if the new one breaks the password policy

@@ -9,5 +9,10 @@ public enum LoadPlanReleaseReason {
     /** The plan was cancelled: its parcels return to the dispatch area (09 §5). */
     PLAN_CANCELLED,
     /** Its order was cancelled (09 edge "đơn bị huỷ khi kiện đã nằm trong kế hoạch chuyến xe"). */
-    ORDER_CANCELLED
+    ORDER_CANCELLED,
+    /**
+     * Its vehicle was dropped from a confirmed plan whose other vehicles already left, no truck coming for it (SCRUM-474
+     * UNLOAD-DROP): the parcel waits for a new plan, as one not planned yet.
+     */
+    VEHICLE_DROPPED
 }
