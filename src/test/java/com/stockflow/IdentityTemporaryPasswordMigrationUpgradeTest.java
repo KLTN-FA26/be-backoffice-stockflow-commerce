@@ -17,7 +17,7 @@ import static com.stockflow.support.RawSql.update;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261029006000 on a database that already holds accounts flagged "must change password" (SCRUM-474, owner
+ * V20261102010000 on a database that already holds accounts flagged "must change password" (SCRUM-474, owner
  * decision PWD-LEGACY of 02/11/2026): those accounts have no known time the temporary password was set, so the
  * migration stamps them with the moment it runs and their 72 hours end 72 hours after the deploy. Accounts that
  * are not flagged are left alone.
@@ -28,7 +28,7 @@ class IdentityTemporaryPasswordMigrationUpgradeTest {
     void accountsFlaggedBeforeTheDeployExpireSeventyTwoHoursAfterIt() throws Exception {
         try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
             pg.start();
-            var underTest = MigrationVersion.fromVersion("20261029006000");
+            var underTest = MigrationVersion.fromVersion("20261102010000");
             String before = Arrays.stream(Flyway.configure()
                             .dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
                             .locations("classpath:db/migration").load().info().all())
@@ -43,8 +43,8 @@ class IdentityTemporaryPasswordMigrationUpgradeTest {
                 UUID ordinary = user(sql, "ordinary", false);
 
                 var migrated = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                        .locations("classpath:db/migration").target("20261029006000").load();
-                assertThat(migrated.migrate().migrations).extracting(m -> m.version).containsExactly("20261029006000");
+                        .locations("classpath:db/migration").target("20261102010000").load();
+                assertThat(migrated.migrate().migrations).extracting(m -> m.version).containsExactly("20261102010000");
 
                 // both flagged accounts carry the migration time: within the last minute, never in the future
                 assertThat(number(sql, "select count(*) from identity.app_user where must_change_password"
