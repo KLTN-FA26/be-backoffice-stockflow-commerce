@@ -215,6 +215,19 @@ public interface Dispatching {
                                             String note, CurrentUser actor);
 
     /**
+     * SCRUM-474 UNLOAD-DROP: drops a vehicle that has not loaded - its load still PLANNED, no truck booked - from its
+     * confirmed plan, when every other vehicle of the plan already left. Its load is CANCELLED with the reason code and
+     * the note (required); the vehicle leaves the plan and the parcels placed on it wait for a new plan (nothing was
+     * scanned, so nothing is locked); the plan is DISPATCHED. Dropped already: answered as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOAD_NOT_FOUND}; {@code INVALID_LOAD_TRANSITION} (a
+     *         parcel load, or not PLANNED); {@code INVALID_LOAD_PLAN_TRANSITION}; {@code LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT};
+     *         {@code LOAD_PLAN_VEHICLE_SHARES_ORDER}; {@code VALIDATION_FAILED}
+     */
+    LoadDetail removeFromPlan(UUID loadId, com.stockflow.fulfillment.internal.domain.UnloadReasonCode code, String note,
+                              CurrentUser actor);
+
+    /**
      * A parcel still to unload is confirmed off the vehicle without a scan (its label is damaged): who, when and the
      * note stay on record. Needs the controlled-cancellation permission, a warehouse manager's.
      *

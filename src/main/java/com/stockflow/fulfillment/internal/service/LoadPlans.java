@@ -66,6 +66,10 @@ public interface LoadPlans {
 
     record Acknowledgement(Instant at, UUID by, String note) { }
 
+    /**
+     * {@code controlledCancelled}: the plan, or a vehicle of it, was once called off under control (SCRUM-474
+     * UNLOAD-REOPEN): it counts as "loading started" for good - neither reopened nor cancelled the plain way.
+     */
     record PlanDetail(UUID loadPlanId, String code, UUID warehouseId, String sourceType, String selectionMode,
                       String status, String note, List<VehicleTypeChoice> vehicleTypes,
                       List<ShipmentInPlan> shipments, List<VehicleSummary> vehicles, List<ParcelView> packages,
@@ -73,7 +77,7 @@ public interface LoadPlans {
                       Instant calculatedAt, Map<String, Object> solverMeta, Instant confirmedAt, Instant reopenedAt,
                       String reopenReason, Instant dispatchedAt, Instant cancelledAt, String cancelReason,
                       Instant createdAt, long version, TransferInPlan transferOrder, String cancelReasonCode,
-                      List<PendingUnload> pendingUnloads) { }
+                      List<PendingUnload> pendingUnloads, boolean controlledCancelled) { }
 
     /**
      * A parcel still to be scanned off a vehicle of this plan that was called off after loading started (SCRUM-474

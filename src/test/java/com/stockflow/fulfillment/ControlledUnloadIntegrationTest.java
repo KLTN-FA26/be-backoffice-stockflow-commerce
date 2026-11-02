@@ -879,5 +879,142 @@ class ControlledUnloadIntegrationTest {
         assertThat(load(v1).path("status").asText()).isEqualTo("CANCELLED");
     }
 
+    // ---- decisions of 02/11/2026 ----------------------------------------------------------------
+
+    private ResultActions dropVehicle(String loadId, String content) throws Exception {
+        return wm(body(post(LOADS + "/" + loadId + "/plan-removal"), content));
+    }
+
+    @Test
+    @DisplayName("UNLOAD-REOPEN: once a vehicle was called off under control the plan counts as loading started for good - "
+            + "with no vehicle loading or gone it is neither reopened nor cancelled the plain way (409 "
+            + "LOAD_PLAN_CONTROLLED_CANCELLED), the plan detail says controlledCancelled, nothing changes; only the "
+            + "controlled cancel of the whole plan is left; a plan never called off under control still reopens")
+    void controlledCancellationCountsAsLoadingStarted() throws Exception {
+        UUID shipment = packed(ftlOrder(2), true)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        assertThat(planOf(plan).path("controlledCancelled").asBoolean()).isFalse();
+        String v1 = loadOf(plan, 1);
+        loadAll(v1, ghn);
+        data(cancelVehicle(v1, XE_HONG).andExpect(status().isOk()));
+        // The loading truck was called off: nothing loads now, nothing left - a replacement is only PLANNED.
+        JsonNode now = planOf(plan);
+        assertThat(now.path("controlledCancelled").asBoolean()).isTrue();
+        assertThat(now.path("vehicles")).allSatisfy(v -> assertThat(v.path("load").path("status").asText())
+                .isIn("PLANNED"));
+
+        dispatch(body(post(PLANS + "/" + plan.path("loadPlanId").asText() + "/reopening"), "{\"expectedVersion\":"
+                + now.path("version").asLong() + ",\"reason\":\"changed my mind\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_CONTROLLED_CANCELLED"));
+        dispatch(body(post(PLANS + "/" + plan.path("loadPlanId").asText() + "/cancellation"), "{\"expectedVersion\":"
+                + now.path("version").asLong() + ",\"reason\":\"changed my mind\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_CONTROLLED_CANCELLED"));
+        assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
+        assertThat(planOf(plan).path("version").asLong()).isEqualTo(now.path("version").asLong());
+
+        // Only the controlled cancel of the whole plan is left.
+        cancelPlan(plan, "KHAC", "no truck is coming").andExpect(status().isOk());
+        assertThat(planStatus(plan)).isEqualTo("CANCELLED");
+        assertThat(planOf(plan).path("controlledCancelled").asBoolean()).isTrue();
+    }
+
+    @Test
+    @DisplayName("UNLOAD-DROP: the other vehicle left and no truck comes for the PLANNED one - 'Bo xe khoi ke hoach' "
+            + "(KHAC + note): its load is CANCELLED with code, note and actor, the vehicle leaves the plan, the "
+            + "shipment on it is a candidate again (the state before planning), the plan is DISPATCHED; again is answered "
+            + "as it is; the dispatcher may not (the controlled-cancellation permission); a note is required")
+    void aPlannedVehicleIsDroppedOnceTheOthersLeft() throws Exception {
+        UUID shipmentA = packed(ftlOrder(1), true)[0];
+        UUID shipmentB = packed(ftlOrder(1), true)[0];
+        JsonNode plan = confirmed(List.of(shipmentA, shipmentB), truck1t25);
+        assertThat(plan.path("vehicles")).hasSize(2);
+        String v1 = loadOf(plan, 1);
+        String v2 = loadOf(plan, 2);
+        UUID dropped = UUID.fromString(load(v2).path("shipments").get(0).path("shipmentId").asText());
+        UUID leaving = UUID.fromString(load(v1).path("shipments").get(0).path("shipmentId").asText());
+        assertThat(dropped).isNotEqualTo(leaving);
+        String note = "{\"reasonCode\":\"KHAC\",\"note\":\"no truck is free today\"}";
+
+        // Another vehicle has not left yet.
+        dropVehicle(v2, note).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT"));
+        loadAll(v1, ghn);
+        handOver(v1).andExpect(status().isOk());
+        assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
+
+        dispatch(body(post(LOADS + "/" + v2 + "/plan-removal"), note)).andExpect(status().isForbidden());
+        dropVehicle(v2, "{\"reasonCode\":\"KHAC\",\"note\":\"  \"}").andExpect(status().isBadRequest());
+        dropVehicle(v2, "{\"note\":\"no truck\"}").andExpect(status().isBadRequest());
+        assertThat(load(v2).path("status").asText()).isEqualTo("PLANNED");
+
+        JsonNode droppedLoad = data(dropVehicle(v2, note).andExpect(status().isOk()));
+        assertThat(droppedLoad.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(droppedLoad.path("cancelReasonCode").asText()).isEqualTo("KHAC");
+        assertThat(droppedLoad.path("cancelReason").asText()).isEqualTo("no truck is free today");
+        assertThat(jdbc.queryForObject("SELECT cancelled_by FROM fulfillment.dispatch_load WHERE id = ?::uuid",
+                UUID.class, v2)).isEqualTo(manager);
+        assertThat(droppedLoad.path("pendingUnloads")).isEmpty();
+        assertThat(planStatus(plan)).as("every vehicle that carries something left (BR-15)").isEqualTo("DISPATCHED");
+        JsonNode after = planOf(plan);
+        assertThat(after.path("vehicles")).extracting(v -> v.path("seq").asInt()).containsExactly(1);
+        // The parcels are free again: not held by any plan, nothing locked, the shipment still waits for dispatch.
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM fulfillment.load_plan_package lpp
+                  JOIN fulfillment.package p ON p.id = lpp.package_id
+                 WHERE p.shipment_id = ? AND lpp.active""", Integer.class, dropped)).isZero();
+        assertThat(jdbc.queryForList("""
+                SELECT lpp.release_reason FROM fulfillment.load_plan_package lpp
+                  JOIN fulfillment.package p ON p.id = lpp.package_id
+                 WHERE p.shipment_id = ?""", String.class, dropped)).containsOnly("VEHICLE_DROPPED");
+        assertThat(shipmentStatus(dropped)).isEqualTo("READY_TO_DISPATCH");
+        assertThat(shipmentStatus(leaving)).isEqualTo("HANDED_OVER");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM fulfillment.dispatch_load_unload u JOIN fulfillment.package p ON p.id = u.package_id
+                 WHERE p.shipment_id = ?""", Integer.class, dropped)).isZero();
+        JsonNode candidates = data(dispatch(get(BASE + "/load-plan-candidates?warehouseId=" + HCM))
+                .andExpect(status().isOk()));
+        assertThat(candidates.toString()).contains(dropped.toString()).doesNotContain(leaving.toString());
+        JsonNode again = plan(List.of(dropped), truck1t25);
+        assertThat(again.path("status").asText()).isEqualTo("DRAFT");
+
+        // Again: answered as it is.
+        JsonNode replay = data(dropVehicle(v2, note).andExpect(status().isOk()));
+        assertThat(replay.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(replay.path("cancelReasonCode").asText()).isEqualTo("KHAC");
+    }
+
+    @Test
+    @DisplayName("UNLOAD-DROP refusals: a vehicle carrying parcels of a shipment that also left on the other vehicle is not "
+            + "dropped (LOAD_PLAN_VEHICLE_SHARES_ORDER, nothing changes); a booked vehicle (cancel its booking first), a "
+            + "vehicle being loaded (cancel it under control) and a parcel load are INVALID_LOAD_TRANSITION")
+    void aDropIsRefusedWhenItWouldSplitAShipmentOrTheVehicleIsNotPlanned() throws Exception {
+        UUID shipment = packed(ftlOrder(2), true)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        String v1 = loadOf(plan, 1);
+        String v2 = loadOf(plan, 2);
+        String note = "{\"reasonCode\":\"KHAC\",\"note\":\"no truck is free today\"}";
+        loadAll(v1, ghn);
+        handOver(v1).andExpect(status().isOk());
+
+        // The shipment's parcels are on both vehicles; the one on v1 left.
+        dropVehicle(v2, note).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_SHARES_ORDER"));
+        assertThat(load(v2).path("status").asText()).isEqualTo("PLANNED");
+        assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
+        assertThat(planOf(plan).path("vehicles")).hasSize(2);
+
+        book(v2, ghtk, "51C-333.33");
+        dropVehicle(v2, note).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+        dispatch(post(LOADS + "/" + v2 + "/loading-start")).andExpect(status().isOk());
+        dropVehicle(v2, note).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+        dropVehicle(v1, note).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+        dropVehicle(parcelLoad("51C-999.99"), note).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+        assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
+    }
+
     // ---- the transfer's parcels are unloaded too (point 10 is in TransferLoadPlanningIntegrationTest) -----------
 }

@@ -737,6 +737,38 @@ public final class DispatchLoad {
         return true;
     }
 
+    /**
+     * <b>Drops a vehicle that has not loaded from its plan</b> (SCRUM-474 UNLOAD-DROP; kltn-docs 09 BR-14, BR-15): the
+     * plan's other vehicles already left and no truck is coming for this one. PLANNED &rarr; CANCELLED with a reason code
+     * and a note (required, as at every controlled cancel); its shipments leave the manifest and its parcels were never
+     * scanned, so nothing is locked - they wait for a new plan. The plan's service retires the vehicle with it.
+     * Cancelled this way already: nothing changes.
+     *
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} for a parcel load or any status but PLANNED (a booked
+     *         vehicle has its booking cancelled first; one loading is called off under control);
+     *         {@code VALIDATION_FAILED} without a code or a note
+     * @return whether it changed the load
+     */
+    public boolean dropFromPlan(UnloadReasonCode reasonCode, String note, UUID by, Instant at) {
+        if (status == LoadStatus.CANCELLED && cancelReasonCode != null) {
+            return false;
+        }
+        requireFullTruckload("be dropped from its plan");
+        if (status != LoadStatus.PLANNED) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is %s; only a vehicle still "
+                    + "PLANNED is dropped from its plan (a booked vehicle: cancel its booking first; one being loaded: "
+                    + "cancel it under control)").formatted(code, status));
+        }
+        String why = trimmed(note);
+        if (reasonCode == null || why == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Dropping a vehicle from its plan names a reason code and a note");
+        }
+        cancel(why, by, at);
+        cancelReasonCode = reasonCode;
+        return true;
+    }
+
     // ---- reading -------------------------------------------------------------------------------------------------
 
     public List<UUID> activeShipments() {

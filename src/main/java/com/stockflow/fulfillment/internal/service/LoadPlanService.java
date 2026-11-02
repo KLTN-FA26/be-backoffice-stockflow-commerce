@@ -5,6 +5,7 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.common.security.CurrentUser;
@@ -912,7 +913,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         LoadPlan plan = store.load(header);
         List<DispatchLoadJpaEntity> vehicleLoads = loadsOf(plan);
         Instant now = clock.instant();
-        plan.reopen(reason, loadingStarted(vehicleLoads), actor.userId(), now);
+        plan.reopen(reason, loadingStarted(vehicleLoads), controlledCancelled(vehicleLoads), actor.userId(), now);
         PlanDetail detail = saved(plan, header, now);
         cancelLoads(vehicleLoads, "Load plan %s reopened: %s".formatted(plan.code(), reason.trim()),
                 actor.userId(), now);
@@ -925,7 +926,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         LoadPlan plan = store.load(header);
         List<DispatchLoadJpaEntity> vehicleLoads = loadsOf(plan);
         Instant now = clock.instant();
-        if (!plan.cancel(reason, loadingStarted(vehicleLoads), actor.userId(), now)) {
+        if (!plan.cancel(reason, loadingStarted(vehicleLoads), controlledCancelled(vehicleLoads), actor.userId(),
+                now)) {
             return detail(header, plan);
         }
         PlanDetail detail = saved(plan, header, now);
@@ -962,7 +964,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                                 load.pendingUnloads().size());
                     }
                 }));
-        log.info("Load plan {} cancelled under control ({}: {})", plan.code(), code, note.trim());
+        log.info("Load plan {} cancelled under control ({}: {})", plan.code(), code, LogSafe.text(note.trim()));
         return reread(plan.id(), detail);
     }
 
@@ -984,7 +986,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             if (m.active() || plan.status() == LoadPlanStatus.CANCELLED
                     && m.releaseReason() == LoadPlanReleaseReason.PLAN_CANCELLED) {
                 counted.put(m.packageId(), false);
-            } else if (m.releaseReason() == LoadPlanReleaseReason.LEFT_BEHIND) {
+            } else if (m.releaseReason() == LoadPlanReleaseReason.LEFT_BEHIND
+                    || m.releaseReason() == LoadPlanReleaseReason.VEHICLE_DROPPED) {
+                // Left in the warehouse: at the confirmation, or with a vehicle dropped from the plan (SCRUM-474).
                 counted.put(m.packageId(), true);
             }
         }
@@ -1083,7 +1087,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             LoadPlanJpaEntity header = plans.lockById(planId).orElseThrow();
             LoadPlan plan = store.load(header);
             List<DispatchLoadJpaEntity> vehicleLoads = loadsOf(plan);
-            boolean reopened = plan.dropShipment(shipmentId, loadingStarted(vehicleLoads), at);
+            // SCRUM-474 UNLOAD-REOPEN: a plan that had a vehicle called off under control counts as loading started for good.
+            boolean reopened = plan.dropShipment(shipmentId,
+                    loadingStarted(vehicleLoads) || controlledCancelled(vehicleLoads), at);
             plan.refreshUsage(cartons(parcels.of(plan.placedPackageIds())));
             store.save(plan, header, at);
             if (reopened) {
@@ -1250,6 +1256,14 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         return vehicleLoads.stream().anyMatch(l -> LOADING.contains(l.getStatus()));
     }
 
+    /**
+     * SCRUM-474 UNLOAD-REOPEN: a vehicle of the plan was once called off under control (its load carries the reason
+     * code): the plan counts as "loading started" for good, though no vehicle is loading now.
+     */
+    private static boolean controlledCancelled(List<DispatchLoadJpaEntity> vehicleLoads) {
+        return vehicleLoads.stream().anyMatch(l -> l.getCancelReasonCode() != null);
+    }
+
     /** LP-11: the vehicles' loads not loading yet - booked ones included - are cancelled with the reason. */
     private void cancelLoads(List<DispatchLoadJpaEntity> vehicleLoads, String reason, UUID by, Instant at) {
         vehicleLoads.stream().filter(l -> CANCELLABLE.contains(l.getStatus())).map(DispatchLoadJpaEntity::getId)
@@ -1371,7 +1385,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 .map(t -> new VehicleTypeChoice(t.getId(), t.getCode(), t.getName(), t.getKind(),
                         t.getAvailableCount(), t.getStatus())).toList();
         Map<UUID, DispatchLoadJpaEntity> loadOf = new HashMap<>();
-        loadsOf(plan).stream().sorted(Comparator.comparing(DispatchLoadJpaEntity::getCreatedAt,
+        List<DispatchLoadJpaEntity> allLoads = loadsOf(plan);
+        allLoads.stream().sorted(Comparator.comparing(DispatchLoadJpaEntity::getCreatedAt,
                         Comparator.nullsFirst(Comparator.naturalOrder())))
                 .forEach(l -> loadOf.merge(l.getLoadPlanVehicleId(), l, (a, b) ->
                         a.getStatus() != LoadStatus.CANCELLED && b.getStatus() == LoadStatus.CANCELLED ? a : b));
@@ -1391,7 +1406,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 s.calculatedAt(), header.getSolverMeta(), s.confirmedAt(), s.reopenedAt(), s.reopenReason(),
                 s.dispatchedAt(), s.cancelledAt(), s.cancelReason(), header.getCreatedAt(), header.getVersion(),
                 transferView, plan.cancelReasonCode() == null ? null : plan.cancelReasonCode().name(),
-                pendingUnloads(plan));
+                pendingUnloads(plan), plan.cancelReasonCode() != null || controlledCancelled(allLoads));
     }
 
     /**

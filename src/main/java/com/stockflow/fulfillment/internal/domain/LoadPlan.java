@@ -541,8 +541,17 @@ public final class LoadPlan {
      * dispatch loads - booked ones included, with the reason (LP-11).
      */
     public void reopen(String reason, boolean loadingStarted, UUID by, Instant at) {
+        reopen(reason, loadingStarted, false, by, at);
+    }
+
+    /**
+     * {@link #reopen(String, boolean, UUID, Instant)} where a vehicle of the plan may have been called off under control
+     * (SCRUM-474 UNLOAD-REOPEN): such a plan counts as "loading started" for good - 409
+     * {@code LOAD_PLAN_CONTROLLED_CANCELLED}.
+     */
+    public void reopen(String reason, boolean loadingStarted, boolean controlledCancelled, UUID by, Instant at) {
         requireStatus("be reopened", LoadPlanStatus.CONFIRMED);
-        requireNotLoading(loadingStarted, "reopened");
+        requireNotLoading(loadingStarted, controlledCancelled, "reopened");
         String why = trimmed(reason);
         if (why == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Reopening a load plan says why",
@@ -561,11 +570,20 @@ public final class LoadPlan {
      * {@link #cancelControlled}). Its parcels go back to the dispatch area. Cancelled already: nothing changes.
      */
     public boolean cancel(String reason, boolean loadingStarted, UUID by, Instant at) {
+        return cancel(reason, loadingStarted, false, by, at);
+    }
+
+    /**
+     * {@link #cancel(String, boolean, UUID, Instant)} where a vehicle of the plan may have been called off under control
+     * (SCRUM-474 UNLOAD-REOPEN): such a plan counts as "loading started" for good - only the controlled cancel is left
+     * (409 {@code LOAD_PLAN_CONTROLLED_CANCELLED}).
+     */
+    public boolean cancel(String reason, boolean loadingStarted, boolean controlledCancelled, UUID by, Instant at) {
         if (status == LoadPlanStatus.CANCELLED) {
             return false;
         }
         requireStatus("be cancelled", LoadPlanStatus.DRAFT, LoadPlanStatus.PLANNED, LoadPlanStatus.CONFIRMED);
-        requireNotLoading(loadingStarted, "cancelled");
+        requireNotLoading(loadingStarted, controlledCancelled, "cancelled");
         String why = trimmed(reason);
         if (why == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Cancelling a load plan says why",
@@ -624,6 +642,34 @@ public final class LoadPlan {
         cancelReasonCode = reasonCode;
         changed = true;
         return true;
+    }
+
+    /**
+     * <b>Drops a vehicle from a confirmed plan</b> (SCRUM-474 UNLOAD-DROP; BR-14, BR-15): the vehicle leaves the plan, with
+     * its place in the layout, and the parcels placed on it are released ({@link LoadPlanReleaseReason#VEHICLE_DROPPED}):
+     * the plan stops holding them, so they wait for a new plan like any parcel not planned yet. The service refuses it
+     * before, unless every other vehicle left and the vehicle's load is cancelled with it.
+     *
+     * @return the parcels released
+     */
+    public Set<UUID> dropVehicle(int seq, Instant at) {
+        requireStatus("have a vehicle dropped", LoadPlanStatus.CONFIRMED);
+        Vehicle vehicle = requireVehicle(seq);
+        Set<UUID> released = new LinkedHashSet<>();
+        for (Placed p : vehicle.placements()) {
+            Member m = members.get(p.packageId());
+            if (m != null && m.active()) {
+                members.put(m.packageId(), m.released(LoadPlanReleaseReason.VEHICLE_DROPPED, at));
+                released.add(m.packageId());
+            }
+        }
+        for (int i = 0; i < vehicles.size(); i++) {
+            if (vehicles.get(i).id().equals(vehicle.id())) {
+                vehicles.set(i, vehicle.retired());
+            }
+        }
+        changed = true;
+        return released;
     }
 
     /** Every vehicle handed over and gone (BR-15): PR E calls this when the last dispatch load is DISPATCHED. */
@@ -825,10 +871,15 @@ public final class LoadPlan {
         }
     }
 
-    private void requireNotLoading(boolean loadingStarted, String what) {
+    private void requireNotLoading(boolean loadingStarted, boolean controlledCancelled, String what) {
         if (loadingStarted) {
             throw new BusinessException(ErrorCode.LOAD_PLAN_LOADING_STARTED, ("Load plan %s has a vehicle being "
                     + "loaded or gone; it is not %s here (BR-14)").formatted(code, what));
+        }
+        if (controlledCancelled) {
+            throw new BusinessException(ErrorCode.LOAD_PLAN_CONTROLLED_CANCELLED, ("Load plan %s had a vehicle called "
+                    + "off under control, so it counts as loading started; it is not %s the plain way (BR-14) - only "
+                    + "the controlled cancellation is left").formatted(code, what));
         }
     }
 

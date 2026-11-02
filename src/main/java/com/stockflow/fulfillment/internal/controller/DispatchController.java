@@ -217,6 +217,22 @@ class DispatchController {
                 request.note(), actor)));
     }
 
+    @PostMapping("/{loadId}/plan-removal")
+    @Operation(summary = "Drop a load-plan vehicle that has not loaded (its load still PLANNED, no truck booked) from its "
+            + "confirmed plan once every other vehicle of the plan left (SCRUM-474, UNLOAD-DROP): its load is CANCELLED "
+            + "with the reason code (XE_HONG, SAI_XE, KIEN_KHONG_VUA, KHAC) and note (required), the vehicle leaves the "
+            + "plan, the parcels placed on it wait for a new plan and the plan is DISPATCHED. 409 "
+            + "INVALID_LOAD_TRANSITION (a parcel load, or not PLANNED), INVALID_LOAD_PLAN_TRANSITION, "
+            + "LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT, LOAD_PLAN_VEHICLE_SHARES_ORDER; 400 VALIDATION_FAILED. Again: "
+            + "answered as it is")
+    @RequiresPermission(resource = FulfillmentResources.CONTROLLED_CANCELLATIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
+    public ApiResponse<LoadResponse> removeFromPlan(@PathVariable UUID loadId,
+            @Valid @RequestBody ControlledCancelRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(dispatching.removeFromPlan(loadId, request.reasonCode(),
+                request.note(), actor)));
+    }
+
     @PostMapping("/{loadId}/unload-overrides")
     @Operation(summary = "A parcel still to unload confirmed off the vehicle WITHOUT a scan because its label is "
             + "damaged (SCRUM-474, UNLOAD-DESIGN point 5): who, when and the note stay on record. 404 "

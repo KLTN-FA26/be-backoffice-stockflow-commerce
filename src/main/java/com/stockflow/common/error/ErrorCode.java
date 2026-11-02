@@ -537,6 +537,12 @@ public enum ErrorCode {
     LOAD_PLAN_UNPLACED_NOT_ACKNOWLEDGED("Acknowledge the packages left unplaced before confirming", 409),
     /** Docs 09 BR-14: once a vehicle of the plan started loading, the plan is neither reopened nor cancelled here. */
     LOAD_PLAN_LOADING_STARTED("A vehicle of this load plan is already being loaded", 409),
+    /**
+     * SCRUM-474 UNLOAD-REOPEN: a vehicle of the plan was once called off under control, so the plan counts as "loading
+     * started" for good: it is neither reopened nor cancelled the plain way.
+     */
+    LOAD_PLAN_CONTROLLED_CANCELLED("A vehicle of this load plan was called off under control: the plan can no longer be "
+            + "reopened or cancelled the normal way", 409),
     /** SCRUM-287 PR T (LP2-8): only a transfer that travels as a full truckload is packed for a load plan. */
     TRANSFER_NOT_FULL_TRUCKLOAD("This transfer order does not travel as a full truckload", 409),
     /** Docs 10 BR-04: goods of the transfer left on a load plan's vehicle; its picking is no longer cancelled. */
@@ -590,6 +596,18 @@ public enum ErrorCode {
     /** SCRUM-474 UNLOAD-DESIGN point 10: a transfer's picking is not cancelled while a vehicle of its plan is loading. */
     TRANSFER_LOADING_IN_PROGRESS("A vehicle of this transfer order's load plan is being loaded: run the controlled "
             + "cancel of the load plan first, then cancel the picking", 409),
+    /**
+     * SCRUM-474 UNLOAD-DROP: a vehicle is dropped from its plan only when the plan's other vehicles all left (and at
+     * least one did); before that it is booked, loaded or called off like the others.
+     */
+    LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT("Another vehicle of this load plan has not left yet: a vehicle is dropped from "
+            + "the plan only once every other vehicle left", 409),
+    /**
+     * SCRUM-474 UNLOAD-DROP: the vehicle carries parcels of a shipment, a transfer order, or an order that may not ship in
+     * parts, whose other parcels are on a vehicle that already left: they cannot be left behind for a new plan.
+     */
+    LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order or transfer that also left on another "
+            + "vehicle: it cannot be dropped from the plan", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

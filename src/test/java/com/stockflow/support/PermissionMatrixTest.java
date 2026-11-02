@@ -202,6 +202,8 @@ class PermissionMatrixTest {
             // SCRUM-474 UNLOAD-DESIGN (V20261029007100): the controlled cancel after loading started, and the override.
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/controlled-cancellation",
                     "fulfillment-controlled-cancellations:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/plan-removal",
+                    "fulfillment-controlled-cancellations:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/unload-overrides",
                     "fulfillment-controlled-cancellations:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/load-plans/{loadPlanId}/controlled-cancellation",

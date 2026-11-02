@@ -408,4 +408,42 @@ class DispatchLoadTest {
         assertThat(code(() -> parcelLoad.cancelControlled(UnloadReasonCode.KHAC, "x", DISPATCHER, NOW)))
                 .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
     }
+
+    @Test
+    @DisplayName("UNLOAD-DROP: a vehicle still PLANNED is dropped from its plan - CANCELLED with code, note, actor and "
+            + "time, its shipments leave the manifest, nothing is locked (nothing was scanned); a code and a note are "
+            + "required; a booked or loading vehicle and a parcel load are refused; again changes nothing")
+    void droppedFromItsPlan() {
+        DispatchLoad load = vehicle();
+        UUID shipment = UUID.randomUUID();
+        load.addShipment(ftl(shipment, null, null), null, DISPATCHER, NOW);
+        assertThat(code(() -> load.dropFromPlan(null, "no truck", DISPATCHER, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(() -> load.dropFromPlan(UnloadReasonCode.KHAC, "  ", DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(load.status()).isEqualTo(LoadStatus.PLANNED);
+
+        Instant later = NOW.plusSeconds(60);
+        assertThat(load.dropFromPlan(UnloadReasonCode.KHAC, " no truck is free ", DISPATCHER, later)).isTrue();
+        assertThat(load.status()).isEqualTo(LoadStatus.CANCELLED);
+        assertThat(load.cancelReasonCode()).isEqualTo(UnloadReasonCode.KHAC);
+        assertThat(load.snapshot().cancelReason()).isEqualTo("no truck is free");
+        assertThat(load.snapshot().cancelledBy()).isEqualTo(DISPATCHER);
+        assertThat(load.snapshot().cancelledAt()).isEqualTo(later);
+        assertThat(load.activeShipments()).isEmpty();
+        assertThat(load.pendingUnloads()).isEmpty();
+        assertThat(load.dropFromPlan(UnloadReasonCode.XE_HONG, "again", DISPATCHER, later)).isFalse();
+        assertThat(load.cancelReasonCode()).isEqualTo(UnloadReasonCode.KHAC);
+        assertThat(DispatchLoad.restore(load.snapshot()).cancelReasonCode()).isEqualTo(UnloadReasonCode.KHAC);
+
+        DispatchLoad booked = vehicle();
+        booked.book(UUID.randomUUID(), "51C-1", null, null, DISPATCHER, NOW);
+        assertThat(code(() -> booked.dropFromPlan(UnloadReasonCode.KHAC, "x", DISPATCHER, NOW)))
+                .as("a booked vehicle has its booking cancelled first").isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        booked.startLoading(DISPATCHER, NOW);
+        assertThat(code(() -> booked.dropFromPlan(UnloadReasonCode.KHAC, "x", DISPATCHER, NOW)))
+                .as("a vehicle being loaded is cancelled under control").isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        DispatchLoad parcelLoad = open();
+        assertThat(code(() -> parcelLoad.dropFromPlan(UnloadReasonCode.KHAC, "x", DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+    }
 }

@@ -5,6 +5,7 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.common.security.CurrentUser;
@@ -793,7 +794,7 @@ class DispatchService implements Dispatching {
         header = store.save(load, header);
         log.info("Load {} (vehicle {} of plan {}) cancelled under control ({}: {}): {} parcel(s) to scan off",
                 load.code(), ctx.vehicle() == null ? null : ctx.vehicle().seq(), ctx.plan().code(), code,
-                note.trim(), load.pendingUnloads().size());
+                LogSafe.text(note.trim()), load.pendingUnloads().size());
         if (onManifest.isEmpty()) {
             // Nothing left to carry (every order on it was cancelled; only parcels to scan off remain): no replacement,
             // as when the system calls an emptied vehicle off. It must not hold the plan back (BR-15): the plan is
@@ -806,6 +807,84 @@ class DispatchService implements Dispatching {
         DispatchLoadJpaEntity replacementHeader = openReplacement(ctx, load, onManifest, actor.userId(), now);
         return new ControlledCancelResult(detail(header, load), detail(replacementHeader,
                 store.load(replacementHeader)));
+    }
+
+    @Override
+    public LoadDetail removeFromPlan(UUID loadId, UnloadReasonCode code, String note, CurrentUser actor) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        PlanVehicles.PlanOfLoad ctx = locked.plan();
+        if (ctx == null || ctx.vehicle() == null) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is a parcel load: only a load "
+                    + "plan's vehicle is dropped from its plan").formatted(load.code()));
+        }
+        DispatchLoadJpaEntity header = locked.header();
+        if (!ctx.vehicle().active()) {
+            // Dropped before: answered as it is. A retired vehicle of any other cause is not a drop.
+            if (load.status() == LoadStatus.CANCELLED && load.cancelReasonCode() != null) {
+                return detail(header, load);
+            }
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s belongs to a vehicle that is no "
+                    + "longer part of its plan").formatted(load.code()));
+        }
+        PlanVehicles.requireConfirmed(ctx);
+        Instant now = clock.instant();
+        // In memory only until saved below: a refusal of the load (not PLANNED, no code or note) or of the plan leaves
+        // everything as it was.
+        load.dropFromPlan(code, note, actor.userId(), now);
+        planVehicles.requireOtherVehiclesLeft(ctx);
+        requireNothingLeftSplit(ctx);
+        header = store.save(load, header);
+        boolean planDone = planVehicles.drop(ctx, now);
+        log.info("Load {} (vehicle {} of plan {}) dropped from its plan ({}: {}){}", load.code(), ctx.vehicle().seq(),
+                ctx.plan().code(), code, LogSafe.text(note), planDone ? "; plan dispatched" : "");
+        return detail(header, load);
+    }
+
+    /**
+     * UNLOAD-DROP: parcels on this vehicle go back to wait for a new plan only when nothing of theirs left on a vehicle
+     * that departed: a shipment (or a transfer order) with parcels on both, or an order that may not ship in parts with
+     * a shipment on a departed vehicle, would be left half gone. 409 {@code LOAD_PLAN_VEHICLE_SHARES_ORDER}.
+     */
+    private void requireNothingLeftSplit(PlanVehicles.PlanOfLoad ctx) {
+        LoadPlan plan = ctx.plan();
+        Set<UUID> here = ctx.placedHere();
+        Set<UUID> hereShipments = new HashSet<>();
+        Set<UUID> elsewhereShipments = new HashSet<>();
+        Set<UUID> elsewhere = new HashSet<>(plan.placedPackageIds());
+        elsewhere.removeAll(here);
+        for (LoadPlan.Member m : plan.members()) {
+            if (!m.active()) {
+                continue;
+            }
+            if (here.contains(m.packageId())) {
+                hereShipments.add(m.shipmentId());
+            } else if (elsewhere.contains(m.packageId())) {
+                elsewhereShipments.add(m.shipmentId());
+            }
+        }
+        Set<UUID> shared = new HashSet<>(hereShipments);
+        shared.retainAll(elsewhereShipments);
+        if (!shared.isEmpty()) {
+            throw new BusinessException(ErrorCode.LOAD_PLAN_VEHICLE_SHARES_ORDER, ("Vehicle %d of load plan %s carries "
+                    + "parcels of %d shipment(s) or transfer(s) whose other parcels are on a vehicle that left")
+                    .formatted(ctx.vehicle().seq(), plan.code(), shared.size()));
+        }
+        if (plan.ofTransfer() || hereShipments.isEmpty() || elsewhereShipments.isEmpty()) {
+            return;
+        }
+        Map<UUID, UUID> orderOf = shipments.findByIdIn(hereShipments).stream()
+                .collect(Collectors.toMap(ShipmentJpaEntity::getId, ShipmentJpaEntity::getOrderId));
+        Set<UUID> elsewhereOrders = shipments.findByIdIn(elsewhereShipments).stream()
+                .map(ShipmentJpaEntity::getOrderId).collect(Collectors.toSet());
+        for (UUID orderId : new java.util.TreeSet<>(orderOf.values())) {
+            if (elsewhereOrders.contains(orderId) && !PartialShipments.mayShipInParts(orders.findById(orderId)
+                    .orElse(null))) {
+                throw new BusinessException(ErrorCode.LOAD_PLAN_VEHICLE_SHARES_ORDER, ("Vehicle %d of load plan %s "
+                        + "carries a shipment of an order that may not ship in parts, and another shipment of that "
+                        + "order is on a vehicle that left").formatted(ctx.vehicle().seq(), plan.code()));
+            }
+        }
     }
 
     /**

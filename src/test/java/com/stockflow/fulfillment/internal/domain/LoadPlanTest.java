@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -283,6 +284,78 @@ class LoadPlanTest {
         LoadPlan other = planned(1);
         other.confirm(DISPATCHER, NOW, cartons);
         assertThat(code(() -> other.cancel("x", true, DISPATCHER, NOW))).isEqualTo(ErrorCode.LOAD_PLAN_LOADING_STARTED);
+    }
+
+    @Test
+    @DisplayName("UNLOAD-REOPEN: a plan that had a vehicle called off under control counts as loading started for good - "
+            + "neither reopened nor cancelled the plain way (LOAD_PLAN_CONTROLLED_CANCELLED), though no vehicle loads "
+            + "now; a vehicle loading or gone still says LOAD_PLAN_LOADING_STARTED; a plan already cancelled is "
+            + "answered as it is")
+    void controlledCancellationCountsAsLoadingStarted() {
+        cube(shipmentA, null);
+        LoadPlan plan = planned(1);
+        plan.confirm(DISPATCHER, NOW, cartons);
+
+        assertThat(code(() -> plan.reopen("truck changed", false, true, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.LOAD_PLAN_CONTROLLED_CANCELLED);
+        assertThat(code(() -> plan.cancel("x", false, true, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.LOAD_PLAN_CONTROLLED_CANCELLED);
+        assertThat(code(() -> plan.reopen("truck changed", true, true, DISPATCHER, NOW)))
+                .as("a vehicle loading says so first").isEqualTo(ErrorCode.LOAD_PLAN_LOADING_STARTED);
+        assertThat(plan.status()).isEqualTo(LoadPlanStatus.CONFIRMED);
+        assertThat(plan.activePackageIds()).hasSize(1);
+
+        // The plain way is open as before for a plan with no controlled cancellation behind it.
+        plan.reopen("truck changed", false, false, DISPATCHER, NOW);
+        assertThat(plan.status()).isEqualTo(LoadPlanStatus.PLANNED);
+        assertThat(plan.cancel("customer called off", false, false, DISPATCHER, NOW)).isTrue();
+        assertThat(plan.cancel("again", false, true, DISPATCHER, NOW)).as("cancelled already: as it is").isFalse();
+    }
+
+    @Test
+    @DisplayName("UNLOAD-DROP: a vehicle is dropped from a CONFIRMED plan - it leaves the plan and the parcels placed on "
+            + "it are released VEHICLE_DROPPED (waiting for a new plan) while the other vehicle keeps its own; only a "
+            + "confirmed plan, only an active vehicle")
+    void droppedVehicle() {
+        UUID a1 = cube(shipmentA, null);
+        UUID a2 = cube(shipmentA, null);
+        UUID b = cube(shipmentB, null);
+        LoadPlan notConfirmed = planned(2);
+        assertThat(code(() -> notConfirmed.dropVehicle(1, NOW))).isEqualTo(ErrorCode.INVALID_LOAD_PLAN_TRANSITION);
+
+        LoadPlan plan = planned(2);
+        plan.confirm(DISPATCHER, NOW, cartons);
+        assertThat(plan.activeVehicles()).hasSize(2);
+        LoadPlan.Vehicle dropped = plan.activeVehicles().get(1);
+        LoadPlan.Vehicle kept = plan.activeVehicles().getFirst();
+        Set<UUID> onDropped = dropped.placements().stream().map(LoadPlan.Placed::packageId)
+                .collect(java.util.stream.Collectors.toSet());
+        Set<UUID> onKept = kept.placements().stream().map(LoadPlan.Placed::packageId)
+                .collect(java.util.stream.Collectors.toSet());
+        assertThat(onDropped).isNotEmpty();
+        assertThat(onKept).isNotEmpty();
+        Instant later = NOW.plusSeconds(60);
+
+        assertThat(code(() -> plan.dropVehicle(9, later))).isEqualTo(ErrorCode.LOAD_PLAN_VEHICLE_NOT_FOUND);
+        assertThat(plan.dropVehicle(dropped.seq(), later)).isEqualTo(onDropped);
+
+        assertThat(plan.status()).as("the plan itself stays CONFIRMED").isEqualTo(LoadPlanStatus.CONFIRMED);
+        assertThat(plan.activeVehicles()).extracting(LoadPlan.Vehicle::seq).containsExactly(kept.seq());
+        assertThat(plan.placedPackageIds()).isEqualTo(onKept);
+        assertThat(plan.activePackageIds()).isEqualTo(onKept);
+        assertThat(plan.members()).filteredOn(m -> onDropped.contains(m.packageId())).hasSize(onDropped.size())
+                .allSatisfy(m -> {
+                    assertThat(m.active()).isFalse();
+                    assertThat(m.releaseReason()).isEqualTo(LoadPlanReleaseReason.VEHICLE_DROPPED);
+                    assertThat(m.releasedAt()).isEqualTo(later);
+                });
+        assertThat(plan.members()).filteredOn(m -> onKept.contains(m.packageId()))
+                .allSatisfy(m -> assertThat(m.active()).isTrue());
+        assertThat(plan.changed()).isTrue();
+        assertThat(code(() -> plan.dropVehicle(dropped.seq(), later))).as("no longer an active vehicle")
+                .isEqualTo(ErrorCode.LOAD_PLAN_VEHICLE_NOT_FOUND);
+        assertThat(LoadPlan.restore(plan.snapshot()).activePackageIds()).isEqualTo(onKept);
+        assertThat(java.util.List.of(a1, a2, b)).containsAll(onDropped);
     }
 
     @Test
