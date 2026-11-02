@@ -58,7 +58,10 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -126,6 +129,12 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     private final Duration wallLimit;
     private final com.stockflow.inventory.api.TransferFulfillment transfers;
     private final com.stockflow.fulfillment.internal.repository.PackJpaRepository packs;
+    /** The short read transaction before the search (SCRUM-496, SOLVER-TX). */
+    private final TransactionTemplate reads;
+    /** The short write transaction after the search. */
+    private final TransactionTemplate writes;
+    /** The search. A seam for the tests: they check no transaction is open while it runs. */
+    private Function<LoadPlanRequest, LoadPlanResult> solver = new LoadPlanner()::plan;
 
     @SuppressWarnings("java:S107")
     LoadPlanService(LoadPlanJpaRepository plans, LoadPlanPackageJpaRepository members,
@@ -143,7 +152,11 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
                     @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit,
                     com.stockflow.inventory.api.TransferFulfillment transfers,
-                    com.stockflow.fulfillment.internal.repository.PackJpaRepository packs) {
+                    com.stockflow.fulfillment.internal.repository.PackJpaRepository packs,
+                    PlatformTransactionManager transactionManager) {
+        this.reads = new TransactionTemplate(transactionManager);
+        this.reads.setReadOnly(true);
+        this.writes = new TransactionTemplate(transactionManager);
         this.transfers = transfers;
         this.packs = packs;
         this.plans = plans;
@@ -167,6 +180,11 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         this.clock = clock;
         this.budget = budget;
         this.wallLimit = wallLimit == null ? LoadPlanRequest.DEFAULT_WALL_LIMIT : wallLimit;
+    }
+
+    /** For the tests: the search to run in place of the planner. */
+    void solveWith(Function<LoadPlanRequest, LoadPlanResult> search) {
+        this.solver = search;
     }
 
     // ------------------------------------------------------------------ candidates (09 §4.2 step 1, LP-5, LP2-1)
@@ -543,9 +561,38 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
 
     // ------------------------------------------------------------------ calculation (09 §4.2 step 2)
 
+    /** What the read step hands the search, and the write step needs after it. */
+    private record Calculation(LoadPlanRequest request, Map<UUID, VehicleSpec> specs,
+                               Map<UUID, CargoPackage> cartons) { }
+
+    /**
+     * SCRUM-496, SOLVER-TX: the search runs with no transaction, so it holds no row lock and no connection for the
+     * seconds it takes. The inputs are read in a short read transaction; the search runs outside any; a short write
+     * transaction then takes the plan's row lock and checks the version the calculation was asked on again - the
+     * existing optimistic check, with its error - before it writes the result. A change made to the plan meanwhile
+     * fails the write ({@code OPTIMISTIC_LOCK}), and nothing of the calculation is stored.
+     */
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public PlanDetail calculate(UUID loadPlanId, Long expectedVersion, CurrentUser actor) {
-        LoadPlanJpaEntity header = lock(loadPlanId, expectedVersion);
+        Calculation in = reads.execute(status -> calculationInputs(loadPlanId, expectedVersion));
+        LoadPlanResult result = solver.apply(in.request());
+        return writes.execute(status -> {
+            LoadPlanJpaEntity header = lock(loadPlanId, expectedVersion);
+            LoadPlan plan = store.load(header);
+            Instant now = clock.instant();
+            plan.applyCalculation(result, in.specs(), Identifiers::newId, actor.userId(), now, in.cartons());
+            header.setSolverMeta(meta(result.meta()));
+            log.info("Load plan {} calculated: {} vehicle(s), {} placed, {} unplaced in {} ms{}", plan.code(),
+                    result.vehicles().size(), result.placedCount(), result.unplaced().size(),
+                    result.meta().elapsedMillis(), result.meta().budgetExhausted() ? " (budget exhausted)" : "");
+            return saved(plan, header, now);
+        });
+    }
+
+    private Calculation calculationInputs(UUID loadPlanId, Long expectedVersion) {
+        LoadPlanJpaEntity header = read(loadPlanId);
+        requireVersion(header, expectedVersion);
         LoadPlan plan = store.load(header);
         if (plan.status() != LoadPlanStatus.DRAFT && plan.status() != LoadPlanStatus.PLANNED) {
             throw new BusinessException(ErrorCode.INVALID_LOAD_PLAN_TRANSITION,
@@ -562,21 +609,32 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             specs.put(t.getId(), spec(t));
         }
         Map<UUID, CargoPackage> cartons = cartons(held);
-        LoadPlanResult result = new LoadPlanner().plan(new LoadPlanRequest(List.copyOf(cartons.values()),
-                List.copyOf(specs.values()), plan.mode(), List.of(), KitDistribution.AUTO, false, null, 0L, budget, wallLimit));
-        Instant now = clock.instant();
-        plan.applyCalculation(result, specs, Identifiers::newId, actor.userId(), now, cartons);
-        header.setSolverMeta(meta(result.meta()));
-        log.info("Load plan {} calculated: {} vehicle(s), {} placed, {} unplaced in {} ms{}", plan.code(),
-                result.vehicles().size(), result.placedCount(), result.unplaced().size(),
-                result.meta().elapsedMillis(), result.meta().budgetExhausted() ? " (budget exhausted)" : "");
-        return saved(plan, header, now);
+        LoadPlanRequest request = new LoadPlanRequest(List.copyOf(cartons.values()), List.copyOf(specs.values()),
+                plan.mode(), List.of(), KitDistribution.AUTO, false, null, 0L, budget, wallLimit);
+        return new Calculation(request, specs, cartons);
     }
 
+    /** As {@link #calculate}: read, search with no transaction, write after the version check. */
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public PlanDetail recalculateVehicle(UUID loadPlanId, int seq, Long expectedVersion, List<UUID> addPackageIds,
                                         CurrentUser actor) {
-        LoadPlanJpaEntity header = lock(loadPlanId, expectedVersion);
+        Calculation in = reads.execute(status -> vehicleInputs(loadPlanId, seq, expectedVersion, addPackageIds));
+        LoadPlanResult result = solver.apply(in.request());
+        return writes.execute(status -> {
+            LoadPlanJpaEntity header = lock(loadPlanId, expectedVersion);
+            LoadPlan plan = store.load(header);
+            Instant now = clock.instant();
+            plan.applyVehicleRecalculation(seq, result, in.cartons(), now);
+            log.info("Load plan {} vehicle {} recalculated: {} placed, {} unplaced", plan.code(), seq,
+                    result.placedCount(), result.unplaced().size());
+            return saved(plan, header, now);
+        });
+    }
+
+    private Calculation vehicleInputs(UUID loadPlanId, int seq, Long expectedVersion, List<UUID> addPackageIds) {
+        LoadPlanJpaEntity header = read(loadPlanId);
+        requireVersion(header, expectedVersion);
         LoadPlan plan = store.load(header);
         if (plan.status() != LoadPlanStatus.PLANNED) {
             throw new BusinessException(ErrorCode.INVALID_LOAD_PLAN_TRANSITION,
@@ -615,13 +673,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         });
         Map<UUID, CargoPackage> cartons = cartons(all);
         List<CargoPackage> offered = given.stream().map(cartons::get).toList();
-        LoadPlanResult result = new LoadPlanner().plan(new LoadPlanRequest(offered, List.of(vehicle.spec()),
-                SelectionMode.SINGLE_TYPE, List.of(), KitDistribution.AUTO, false, null, 0L, budget, wallLimit));
-        Instant now = clock.instant();
-        plan.applyVehicleRecalculation(seq, result, cartons, now);
-        log.info("Load plan {} vehicle {} recalculated: {} placed, {} unplaced", plan.code(), seq,
-                result.placedCount(), result.unplaced().size());
-        return saved(plan, header, now);
+        LoadPlanRequest request = new LoadPlanRequest(offered, List.of(vehicle.spec()), SelectionMode.SINGLE_TYPE,
+                List.of(), KitDistribution.AUTO, false, null, 0L, budget, wallLimit);
+        return new Calculation(request, Map.of(), cartons);
     }
 
     // ------------------------------------------------------------------ layouts (FE #71)
@@ -1063,11 +1117,16 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         LoadPlanJpaEntity header = plans.lockById(loadPlanId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.LOAD_PLAN_NOT_FOUND));
         WarehouseScope.requireWarehouse(header.getWarehouseId());
+        requireVersion(header, expectedVersion);
+        return header;
+    }
+
+    /** The version the change was decided on is still the plan's. */
+    private static void requireVersion(LoadPlanJpaEntity header, Long expectedVersion) {
         if (expectedVersion == null || expectedVersion != header.getVersion()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, ("Load plan %s changed since version %s (now %d): "
                     + "reload it").formatted(header.getCode(), expectedVersion, header.getVersion()));
         }
-        return header;
     }
 
     private PlanDetail saved(LoadPlan plan, LoadPlanJpaEntity header, Instant at) {

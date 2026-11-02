@@ -9,6 +9,9 @@ import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
+import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanRequest;
+import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanResult;
+import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanner;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.PackageType;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
@@ -48,16 +51,24 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.AbstractPlatformTransactionManager;
+import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 
 import static com.stockflow.fulfillment.internal.service.FulfillmentFixtures.NOW;
 import static com.stockflow.fulfillment.internal.service.FulfillmentFixtures.OTHER_WAREHOUSE;
@@ -104,7 +115,7 @@ class LoadPlanServiceTest {
     private final PackJpaRepository packs = mock(PackJpaRepository.class);
     private final LoadPlanService service = new LoadPlanService(plans, members, planVehicles, store, numbers, parcels,
             packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers, warehouses, estimates, picks,
-            packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), transfers, packs);
+            packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), transfers, packs, mock(PlatformTransactionManager.class));
 
     private final CurrentUser actor = FulfillmentFixtures.user();
     private FulfillmentFixtures.PlannedPlan planned;
@@ -581,6 +592,120 @@ class LoadPlanServiceTest {
             assertThat(detail.unplacedCount()).isEqualTo(1);
             assertThat(detail.packages()).filteredOn(p -> p.unplacedReason() != null).singleElement()
                     .satisfies(p -> assertThat(p.unplacedReason()).isEqualTo("NO_VEHICLE_AVAILABLE"));
+        }
+    }
+
+    /** A transaction manager that only keeps a log of what was begun, committed and rolled back. */
+    private static final class RecordingTransactions extends AbstractPlatformTransactionManager {
+        private final List<String> events = new ArrayList<>();
+
+        @Override
+        protected Object doGetTransaction() {
+            return new Object();
+        }
+
+        @Override
+        protected void doBegin(Object transaction, TransactionDefinition definition) {
+            events.add(definition.isReadOnly() ? "begin read" : "begin write");
+        }
+
+        @Override
+        protected void doCommit(DefaultTransactionStatus status) {
+            events.add("commit");
+        }
+
+        @Override
+        protected void doRollback(DefaultTransactionStatus status) {
+            events.add("rollback");
+        }
+    }
+
+    @Nested
+    @DisplayName("the search runs outside the transaction (SCRUM-496, SOLVER-TX)")
+    class SolverOutsideTheTransaction {
+
+        private final RecordingTransactions transactions = new RecordingTransactions();
+        private final LoadPlanService withTransactions = new LoadPlanService(plans, members, planVehicles, store,
+                numbers, parcels, packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers,
+                warehouses, estimates, picks, packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC),
+                Duration.ofSeconds(2), Duration.ofSeconds(12), transfers, packs, transactions);
+        private final List<Boolean> activeDuringSearch = new ArrayList<>();
+        private final List<List<String>> eventsAtSearch = new ArrayList<>();
+
+        /** The real planner, watched: whether a transaction was open when it ran, and what had run before it. */
+        private Function<LoadPlanRequest, LoadPlanResult> watched(Runnable meanwhile) {
+            var planner = new LoadPlanner();
+            return request -> {
+                activeDuringSearch.add(TransactionSynchronizationManager.isActualTransactionActive());
+                eventsAtSearch.add(List.copyOf(transactions.events));
+                meanwhile.run();
+                return planner.plan(request);
+            };
+        }
+
+        @Test
+        @DisplayName("calculate: a short read transaction, the search with none, then a short write transaction")
+        void calculateSearchesWithNoTransaction() {
+            withTransactions.solveWith(watched(() -> { }));
+
+            var detail = withTransactions.calculate(plan.id(), 0L, actor);
+
+            assertThat(detail.status()).isEqualTo("PLANNED");
+            assertThat(detail.placedCount()).isEqualTo(2);
+            assertThat(activeDuringSearch).containsExactly(false);
+            // Only the read transaction had come and gone when the search ran; the write came after.
+            assertThat(eventsAtSearch).containsExactly(List.of("begin read", "commit"));
+            assertThat(transactions.events).containsExactly("begin read", "commit", "begin write", "commit");
+            verify(store).save(any(), eq(header), eq(NOW));
+        }
+
+        @Test
+        @DisplayName("calculate: the plan changed during the search - the write fails with OPTIMISTIC_LOCK, nothing stored")
+        void calculateFailsCleanlyWhenThePlanChangedMeanwhile() {
+            withTransactions.solveWith(watched(() -> ReflectionTestUtils.setField(header, "version", 1L)));
+
+            assertThat(refusal(() -> withTransactions.calculate(plan.id(), 0L, actor)).errorCode())
+                    .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+
+            assertThat(transactions.events).containsExactly("begin read", "commit", "begin write", "rollback");
+            verify(store, never()).save(any(), any(), any());
+            assertThat(header.getSolverMeta()).isNullOrEmpty();
+        }
+
+        @Test
+        @DisplayName("calculate: a stale version is refused in the read step, before any search")
+        void staleVersionIsRefusedBeforeTheSearch() {
+            withTransactions.solveWith(watched(() -> { }));
+
+            assertThat(refusal(() -> withTransactions.calculate(plan.id(), 7L, actor)).errorCode())
+                    .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+
+            assertThat(activeDuringSearch).isEmpty();
+            assertThat(transactions.events).containsExactly("begin read", "rollback");
+            verify(store, never()).save(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("recalculate one vehicle: also searches with no transaction")
+        void recalculateVehicleSearchesWithNoTransaction() {
+            withTransactions.solveWith(watched(() -> { }));
+
+            var detail = withTransactions.recalculateVehicle(plan.id(), 1, 0L, null, actor);
+
+            assertThat(detail.placedCount()).isEqualTo(2);
+            assertThat(activeDuringSearch).containsExactly(false);
+            assertThat(transactions.events).containsExactly("begin read", "commit", "begin write", "commit");
+        }
+
+        @Test
+        @DisplayName("recalculate one vehicle: the plan changed during the search - OPTIMISTIC_LOCK, nothing stored")
+        void recalculateVehicleFailsCleanlyWhenThePlanChangedMeanwhile() {
+            withTransactions.solveWith(watched(() -> ReflectionTestUtils.setField(header, "version", 1L)));
+
+            assertThat(refusal(() -> withTransactions.recalculateVehicle(plan.id(), 1, 0L, null, actor)).errorCode())
+                    .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+
+            verify(store, never()).save(any(), any(), any());
         }
     }
 
