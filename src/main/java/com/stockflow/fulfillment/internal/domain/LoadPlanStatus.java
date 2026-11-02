@@ -8,6 +8,7 @@ package com.stockflow.fulfillment.internal.domain;
  *     ▲                  │  ▲ edit / recalculate a vehicle    │
  *     └─change inputs────┘  └──────reopen (no vehicle loading yet, BR-14)
  *   DRAFT, PLANNED, CONFIRMED ─▶ CANCELLED (no vehicle loading yet)
+ *   CONFIRMED ─controlled cancel (SCRUM-474, BR-14)─▶ CANCELLED, also while vehicles load, none left yet; never a reopening
  * </pre>
  */
 public enum LoadPlanStatus {
