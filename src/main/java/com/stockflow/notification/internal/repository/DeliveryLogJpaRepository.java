@@ -2,14 +2,21 @@ package com.stockflow.notification.internal.repository;
 
 import com.stockflow.common.persistence.BaseJpaRepository;
 import com.stockflow.notification.internal.domain.DeliveryStatus;
+import com.stockflow.notification.internal.domain.EmailProvider;
 import com.stockflow.notification.internal.entity.DeliveryLogJpaEntity;
+
+import jakarta.persistence.LockModeType;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 /** Delivery evidence and bounded status projections shared by services inside notification. */
 public interface DeliveryLogJpaRepository extends BaseJpaRepository<DeliveryLogJpaEntity> {
@@ -67,6 +74,47 @@ where c.cancellation_requested and 'purchase-order:' || c.purchase_order_id || '
             nativeQuery = true)
     List<LatestStatus> cancellationStatuses(Collection<String> references);
 
+    /** {@link LatestStatus} with the amendment revision the notice announced. */
+    interface AmendmentStatus extends LatestStatus {
+        int getRevision();
+    }
+
+    /**
+     * The latest delivery attempt of the highest revision among the amendment notices of each order
+     * ({@code purchase-order:{id}:revision:{n}}, SCRUM-117); {@code reference} is the order id, {@code revision} the
+     * n. An order none of whose notices was attempted yet has no row.
+     */
+    @Query(
+            value =
+                    """
+select distinct on (split_part(operation_reference, ':', 2))
+       split_part(operation_reference, ':', 2) as reference, status, terminal,
+       cast(split_part(operation_reference, ':', 4) as integer) as revision
+from notification.delivery_log
+where operation_reference like 'purchase-order:%:revision:%'
+  and split_part(operation_reference, ':', 2) in (:orderIds)
+order by split_part(operation_reference, ':', 2),
+         cast(split_part(operation_reference, ':', 4) as integer) desc, created_at desc, id desc
+""",
+            nativeQuery = true)
+    List<AmendmentStatus> amendmentStatuses(Collection<String> orderIds);
+
+    /**
+     * Whether a notice of a later amendment of the order than {@code revision} was attempted at all, delivered or not
+     * (SCRUM-117). The revision is parsed inside a CASE, the one construct whose evaluation order SQL guarantees, so
+     * the order's own and cancellation references never reach the cast.
+     */
+    @Query(
+            value =
+                    """
+select exists (select 1 from notification.delivery_log
+               where case when operation_reference like 'purchase-order:' || :orderId || ':revision:%'
+                          then cast(split_part(operation_reference, ':', 4) as integer) > :revision
+                          else false end)
+""",
+            nativeQuery = true)
+    boolean existsLaterAmendmentNotice(String orderId, int revision);
+
     Page<DeliveryLogJpaEntity> findByOperationReferenceIn(
             Collection<String> references, Pageable pageable);
 
@@ -79,4 +127,30 @@ where c.cancellation_requested and 'purchase-order:' || c.purchase_order_id || '
     boolean existsByExternalReference(String externalReference);
 
     Page<DeliveryLogJpaEntity> findByOperationReference(String reference, Pageable pageable);
+
+    /**
+     * When the next attempt of a delivery may run: the latest {@code next_attempt_at} of its failed attempts, null when
+     * none waits. Each failure sets a later time than the one before, so the maximum is the latest failure's.
+     */
+    @Query("select max(l.nextAttemptAt) from DeliveryLogJpaEntity l where l.operationReference = :reference")
+    Instant nextAttemptAt(@Param("reference") String reference);
+
+    /**
+     * Pushes the retryable failures of a message to {@code until} at least ({@code CustomerEmailLog.lease}); only
+     * those rows may wait ({@code ck_delivery_log_next_attempt}).
+     */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update DeliveryLogJpaEntity l set l.nextAttemptAt = :until
+            where l.operationReference = :reference
+              and l.status = com.stockflow.notification.internal.domain.DeliveryStatus.FAILED and l.terminal = false
+              and (l.nextAttemptAt is null or l.nextAttemptAt < :until)""")
+    int leaseNextAttempt(@Param("reference") String reference, @Param("until") Instant until);
+
+    /**
+     * The sent message a delivery webhook reports on, locked: two reports on one message (delivered, then a complaint)
+     * arrive together often enough, and each decides against what the other may just have written.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<DeliveryLogJpaEntity> findByProviderAndProviderMessageId(EmailProvider provider, String providerMessageId);
 }

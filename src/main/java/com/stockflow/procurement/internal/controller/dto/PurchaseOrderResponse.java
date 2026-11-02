@@ -75,6 +75,14 @@ public record PurchaseOrderResponse(
                                 "Cancellation notice only: NOT_REQUIRED, UNKNOWN (legacy), QUEUED,"
                                     + " RETRYING, FAILED, DELIVERED")
                 String cancellationDeliveryStatus,
+        @Schema(
+                        description =
+                                "The notice of the active amendment to a supplier that had the order: DELIVERED,"
+                                    + " RETRYING or FAILED; null until that notice's first attempt is logged (an"
+                                    + " earlier amendment's state is not shown), and for an order nobody was told"
+                                    + " about")
+                String amendmentDeliveryStatus,
+        @Schema(description = "The amendment waiting for approval, or null") PendingAmendmentResponse pendingAmendment,
         @Schema(description = "Non-blocking business warnings, e.g. DELIVERY_DATE_IN_PAST (BR-06)")
                 List<String> warnings,
         @Schema(description = "Send it back when editing the draft; a changed draft answers 409 OPTIMISTIC_LOCK")

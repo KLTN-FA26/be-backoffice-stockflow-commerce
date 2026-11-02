@@ -48,6 +48,14 @@ public enum FileCategory {
     QC_EVIDENCE("qc-evidence", 20 * 1024 * 1024,
             Set.of("image/jpeg", "image/png")),
 
+    /**
+     * Photographs of a return (SCRUM-243): the customer's of the defect, the warehouse's and QC's of what came back.
+     * Private, served only through a short presigned link; a phone photo, so WebP too, and no documents - a delivery
+     * note is photographed like the goods.
+     */
+    RETURN_EVIDENCE("return-evidence", 15 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp")),
+
     /** Generated reports awaiting download. Short-lived; the retention job clears them. */
     EXPORT("exports", 100 * 1024 * 1024,
             Set.of("text/csv",

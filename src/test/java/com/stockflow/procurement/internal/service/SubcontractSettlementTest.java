@@ -44,7 +44,9 @@ class SubcontractSettlementTest {
 
     private final SubcontractOrderStore store = mock(SubcontractOrderStore.class);
     private final SubcontractPurchasingImpl purchasing = new SubcontractPurchasingImpl(store, mock(InventoryService.class),
-            mock(InventoryControlService.class), mock(ProcurementService.class), Clock.fixed(NOW, ZoneOffset.UTC), mock(ApprovalLimits.class));
+            mock(InventoryControlService.class), mock(ProcurementService.class), Clock.fixed(NOW, ZoneOffset.UTC), mock(ApprovalLimits.class),
+            mock(com.stockflow.procurement.internal.domain.PurchaseOrderRepository.class),
+            mock(SupplierAmendmentNotice.class));
 
     private final UUID po = UUID.randomUUID();
     private final UUID productionOrder = UUID.randomUUID();
@@ -58,7 +60,7 @@ class SubcontractSettlementTest {
                 productionOrder, supplier, UUID.randomUUID(), "RECEIVED", UUID.randomUUID(), new BigDecimal("1000.000"),
                 new BigDecimal("1500.00"), "VND", new BigDecimal("1500000"), LocalDate.of(2026, 10, 20))));
         when(store.supplier(supplier)).thenReturn(Optional.of(new SubcontractOrderStore.Supplier(supplier, "INNHANH",
-                "In Nhanh", true, new BigDecimal("2.00"), 30, 7)));
+                "In Nhanh", true, true, new BigDecimal("2.00"), 30, 7)));
         when(store.settlement(eq(po), anyBoolean())).thenAnswer(call -> Optional.ofNullable(stored.get()));
         doAnswer(call -> {
             stored.set(call.getArgument(0));

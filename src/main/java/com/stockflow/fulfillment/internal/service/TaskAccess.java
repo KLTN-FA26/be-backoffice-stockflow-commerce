@@ -71,6 +71,20 @@ final class TaskAccess {
      * order releases its stock but leaves the pick and pack rows behind, so without this check a
      * warehouse user could go on picking and packing goods that were already returned to stock.
      */
+    /**
+     * The order's status read again under its row lock, after work that took no lock (photos stored): an order
+     * cancelled meanwhile is refused here, before anything is allocated for it - a replacement allocation for a
+     * cancelled order would be held for nobody, for good.
+     */
+    static void requireStillInFulfilment(OrderService orders, PickJpaEntity pick) {
+        com.stockflow.order.api.OrderStatus status = orders.lockedStatus(pick.getOrderId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        if (!WORKABLE.contains(status)) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "The order is " + status + "; this fulfillment task is closed");
+        }
+    }
+
     static OrderSummary orderInFulfilment(OrderService orders, PickJpaEntity pick) {
         var order = orders.findById(pick.getOrderId()).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         // G3-2: the warehouse's statuses - picking, packed, the rest of a split order - or held from one of them.

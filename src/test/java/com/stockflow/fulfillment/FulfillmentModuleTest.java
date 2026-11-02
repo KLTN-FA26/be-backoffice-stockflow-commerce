@@ -36,6 +36,7 @@ class FulfillmentModuleTest {
     @Autowired ApplicationContext context;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.payment.api.PaymentService paymentServiceMock;
+    @MockitoBean com.stockflow.payment.api.ReturnSettlement returnSettlementMock;
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @MockitoBean com.stockflow.customer.api.CustomerService customerServiceMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
