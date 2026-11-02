@@ -5,8 +5,9 @@
  *
  * <p><b>May depend on:</b> order, inventory, warehouse, design, identity. Plus {@code common} and {@code contracts}, which are
  * available to every module. From inventory it uses two named interfaces: {@code api}, and
- * {@code consumption} — the narrow one that deducts picked stock and books put-backs, in the pick
- * line's own transaction (SCRUM-275). No other module may use {@code consumption}.</p>
+ * {@code consumption} — the narrow one that deducts picked stock, books put-backs and reports damage found at a
+ * pick line's bin, in the pick line's own transaction (SCRUM-275, SCRUM-277). No other module may use
+ * {@code consumption}.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>

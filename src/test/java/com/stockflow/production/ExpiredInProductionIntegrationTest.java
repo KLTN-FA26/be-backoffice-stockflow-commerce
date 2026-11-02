@@ -175,10 +175,17 @@ class ExpiredInProductionIntegrationTest {
         assertThat(layerOf(hold)).as("nothing moved").isEqualTo(layerBefore);
 
         // The way out: QC records them as failed, which writes them off as scrap; the order goes back for a reprint.
-        ProductionOrders.Detail failed = runs.recordQc(inspector, order, 0, 2, "Blanks past their expiry", null);
+        ProductionOrders.Detail failed = runs.recordQc(inspector, order, 0, 2, "Blanks past their expiry", null,
+                sampleOf(order));
         assertThat(failed.summary().status()).isNotEqualTo(ProductionOrder.Status.COMPLETED);
         assertThat(jdbc.queryForObject("""
                 SELECT COALESCE(SUM(quantity), 0)::int FROM production.production_scrap
                  WHERE production_order_id = ? AND reason = 'QC_FAILED'""", Integer.class, order)).isEqualTo(2);
+    }
+
+    /** The approved sample a QC round of this order names (BR-PRD-05, SCRUM-487); null when it has none. */
+    private UUID sampleOf(UUID productionOrderId) {
+        return jdbc.queryForObject("SELECT approved_sample_id FROM production.production_order WHERE id = ?",
+                UUID.class, productionOrderId);
     }
 }

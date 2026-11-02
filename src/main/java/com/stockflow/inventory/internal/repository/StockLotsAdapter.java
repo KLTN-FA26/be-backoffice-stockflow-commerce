@@ -30,4 +30,13 @@ class StockLotsAdapter implements StockLots {
                         lot.goodsReceiptNumber(), lot.purchaseOrderId(), lot.purchaseOrderNumber(), lot.supplierId(),
                         lot.supplierName(), lot.warehouseId())).getId());
     }
+
+    @Override
+    public java.util.Optional<LotSupplier> supplierOf(UUID lotId) {
+        if (lotId == null) {
+            return java.util.Optional.empty();
+        }
+        return jpa.findById(lotId).filter(lot -> lot.getSupplierId() != null)
+                .map(lot -> new LotSupplier(lot.getSupplierId(), lot.getSupplierName()));
+    }
 }

@@ -10,6 +10,7 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.common.storage.FileUpload;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.domain.DeliveryMode;
@@ -64,6 +65,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -122,6 +124,7 @@ class PackingService implements Packing {
     private final com.stockflow.common.audit.AuditTrail audit;
     private final LoadPlanReleases loadPlans;
     private final PlanVehicles planVehicles;
+    private final PickListService pickLists;
 
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
@@ -137,7 +140,7 @@ class PackingService implements Packing {
                    com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
                    com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans,
-                   PlanVehicles planVehicles) {
+                   PlanVehicles planVehicles, PickListService pickLists) {
         this.picks = picks;
         this.pickLines = pickLines;
         this.packs = packs;
@@ -161,6 +164,7 @@ class PackingService implements Packing {
         this.audit = audit;
         this.loadPlans = loadPlans;
         this.planVehicles = planVehicles;
+        this.pickLists = pickLists;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -632,6 +636,53 @@ class PackingService implements Packing {
         log.info("Packing of cancelled order {}: open parcels voided", pick.getOrderNumber());
     }
 
+    // ------------------------------------------------------------------ damage found at packing (R8)
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The pick is locked first, and the same report sent again is answered from what it made before anything else
+     * is checked - the task is back at picking by then. Damage is a fact about goods, so it is taken whenever picked
+     * units are off the shelf: in a tote while the task is still PICKING (or picking again after an earlier report),
+     * or at the bench once it is PICKED - whatever hold the order is on, as long as it is not cancelled (a cancelled
+     * order's goods are put back, then reported on the shelf). The packing session has its say only when there is
+     * one: while it is being packed, only its packer or a manager reports; units in a parcel come out first. The pick
+     * list does the rest under the same lock.</p>
+     */
+    @Override
+    public PickLists.PickDamageView reportDamageAfterPick(UUID taskId, UUID lineId, PackDamage damage,
+                                                          List<FileUpload> photos, CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        Optional<PickLists.PickDamageView> replay = pickLists.damageAfterPickReplay(pick, lineId,
+                damage.requestId());
+        if (replay.isPresent()) {
+            return replay.get();
+        }
+        if (pick.getStatus() != PickStatus.PICKING && pick.getStatus() != PickStatus.PICKED) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, pick.getStatus() == PickStatus.CANCELLED
+                    ? "The task was cancelled with its order: put the goods back, then report them on the shelf"
+                    : "Nothing was picked yet; damage on the shelf is reported at the line's bin");
+        }
+        OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
+        PickLineJpaEntity line = pickLines.findById(lineId).filter(row -> row.getPickId().equals(taskId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                        "Task %s has no pick line %s".formatted(taskId, lineId)));
+        pickLists.requireDamageableAfterPick(pick, lineId, damage.damagedQuantity());
+        Optional<PackJpaEntity> pack = packs.findByPickId(pick.getId());
+        if (pack.isPresent()) {
+            PackingSession session = load(new Context(pick, pack.get(), order));
+            if (session.status() == PackStatus.PACKING) {
+                session.requireWorkable(actor.userId(), isManager(actor));
+            }
+            String serial = line.getReservationId() == null ? null
+                    : inventory.holds(List.of(line.getReservationId())).stream().findFirst()
+                            .map(HoldView::serialNumber).orElse(null);
+            session.requireUnpacked(line.getOrderLineId(), line.getLotNumber(), serial, damage.damagedQuantity());
+        }
+        return pickLists.damageAfterPick(pick, lineId, damage, photos, actor);
+    }
+
     // ------------------------------------------------------------------ internals
 
     private record Context(PickJpaEntity pick, PackJpaEntity pack, OrderSummary order) { }
@@ -739,12 +790,14 @@ class PackingService implements Packing {
                     }
                 }
             } else {
-                List<PickLineJpaEntity> rows = picked.getOrDefault(line.lineId(), List.of());
-                available = rows.stream().mapToInt(PickLineJpaEntity::getPickedQty).sum();
+                // What was picked, less what was found damaged here since (R8): that went back to quarantine.
+                List<PickLineJpaEntity> rows = picked.getOrDefault(line.lineId(), List.of()).stream()
+                        .filter(row -> row.getGoodQty() > 0).toList();
+                available = rows.stream().mapToInt(PickLineJpaEntity::getGoodQty).sum();
                 for (PickLineJpaEntity row : rows) {
                     HoldView hold = row.getReservationId() == null ? null : holds.get(row.getReservationId());
                     collect(lots, serials, row.getLotNumber(), hold == null ? null : hold.serialNumber(),
-                            row.getPickedQty());
+                            row.getGoodQty());
                 }
             }
             if (lots.keySet().equals(Set.of(PackingSession.NO_LOT))) {

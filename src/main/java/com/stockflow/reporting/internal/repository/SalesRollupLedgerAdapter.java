@@ -134,6 +134,65 @@ public class SalesRollupLedgerAdapter implements SalesRollupLedger {
     }
 
     @Override
+    public boolean markReturnApplied(UUID returnRequestId, String event, OrderContribution taken) {
+        return jdbc.update("INSERT INTO reporting.processed_return_events (return_request_id, event_type, order_id,"
+                        + " placed_day, currency, total, lines, processed_at)"
+                        + " VALUES (:returnId, :event, :orderId, :day, :currency, :total, CAST(:lines AS jsonb), NOW())"
+                        + " ON CONFLICT (return_request_id, event_type) DO NOTHING",
+                new MapSqlParameterSource("returnId", returnRequestId)
+                        .addValue("event", event)
+                        .addValue("orderId", taken.orderId())
+                        .addValue("day", Date.valueOf(taken.day()))
+                        .addValue("currency", taken.currency())
+                        .addValue("total", taken.total())
+                        .addValue("lines", write(taken.lines()))) == 1;
+    }
+
+    /**
+     * Plain UPDATEs, as a removal in {@link #apply}: the rows were made by the order's placement, and one missing means
+     * the ledger and the rollups disagree - raised, so the event is delivered again, never a negative row.
+     */
+    @Override
+    public void applyReturn(OrderContribution taken) {
+        if (jdbc.update("UPDATE reporting.sales_daily_summary SET revenue = revenue - :revenue,"
+                        + " version = version + 1, last_modified_at = NOW() WHERE day = :day AND currency = :currency",
+                new MapSqlParameterSource("revenue", taken.total())
+                        .addValue("day", Date.valueOf(taken.day()))
+                        .addValue("currency", taken.currency())) != 1) {
+            throw new IllegalStateException("No sales rollup for %s %s to take the return on order %s off"
+                    .formatted(taken.day(), taken.currency(), taken.orderId()));
+        }
+        SqlParameterSource[] rows = taken.lines().stream()
+                .<SqlParameterSource>map(line -> new MapSqlParameterSource("sku", line.sku())
+                        .addValue("period", BusinessDay.period(taken.day()))
+                        .addValue("quantity", line.quantity())
+                        .addValue("revenue", line.revenue()))
+                .toArray(SqlParameterSource[]::new);
+        if (rows.length == 0) {
+            return;
+        }
+        int[] updated = jdbc.batchUpdate("UPDATE reporting.product_sales_summary SET"
+                + " quantity_sold = quantity_sold - :quantity, revenue = revenue - :revenue,"
+                + " version = version + 1, last_modified_at = NOW() WHERE sku = :sku AND period = :period", rows);
+        for (int count : updated) {
+            if (count == 0) {
+                throw new IllegalStateException("No product rollup for a returned line of order %s on %s"
+                        .formatted(taken.orderId(), taken.day()));
+            }
+        }
+    }
+
+    @Override
+    public List<OrderContribution> returnsOf(LocalDate day) {
+        return jdbc.query("SELECT order_id, placed_day, currency, total, lines FROM reporting.processed_return_events"
+                        + " WHERE placed_day = :day ORDER BY processed_at, return_request_id",
+                new MapSqlParameterSource("day", Date.valueOf(day)),
+                (rs, row) -> new OrderContribution(rs.getObject("order_id", UUID.class),
+                        rs.getDate("placed_day").toLocalDate(), rs.getString("currency"), rs.getBigDecimal("total"),
+                        read(rs.getString("lines"))));
+    }
+
+    @Override
     public void clearDay(LocalDate day) {
         SqlParameterSource byDay = new MapSqlParameterSource("day", Date.valueOf(day))
                 .addValue("period", BusinessDay.period(day));

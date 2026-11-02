@@ -26,6 +26,15 @@ public interface RoleJpaRepository extends BaseJpaRepository<RoleJpaEntity> {
 
     List<RoleJpaEntity> findAllByOrderByCodeAsc();
 
+    /** The codes of the roles that grant {@code permission} ({@code resource:ACTION}). */
+    @Query(value = """
+            SELECT r.code FROM identity.app_role r
+              JOIN identity.role_permission rp ON rp.role_id = r.id
+              JOIN identity.permission p ON p.id = rp.permission_id
+             WHERE p.code = :permission
+            """, nativeQuery = true)
+    List<String> findCodesGranting(@Param("permission") String permission);
+
     /** Every role's current version, for the authorisation cache's version pointer (ADR-0008). */
     @Query("select r.code as code, r.version as version from RoleJpaEntity r")
     List<RoleVersionRow> findAllVersions();
