@@ -749,6 +749,44 @@ class QuoteIntegrationTest {
     }
 
     @Test
+    @DisplayName("A sent quote cannot be withdrawn; a revision reopened and dropped before it was sent ends the quote "
+            + "for the customer with the offer they were last sent, and a stale answer is told why")
+    void droppedRevision() throws Exception {
+        ConfirmedDesigns.Design design = design();
+        Quotes.QuoteView sent = sentQuote(design);
+        assertThatThrownBy(() -> quotes.cancel(sales, sent.id(), sent.version(), "Giá nhập nhầm"))
+                .as("a sent offer is answered, revised or expires - Sales does not withdraw it")
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+
+        // The customer sees the quote end with the offer they were last sent, not the draft's working terms.
+        Quotes.QuoteView third = sentQuote(design);
+        Quotes.QuoteView asked = quotes.requestChanges(portal, third.id(), third.version(), "giảm giá được không?");
+        Quotes.QuoteView reopened = quotes.reopen(sales, third.id(), asked.version());
+        Instant draftValidity = Instant.now().plus(Duration.ofDays(20)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Quotes.QuoteView edited = quotes.edit(sales, third.id(), reopened.version(),
+                draft(design, PaymentTerm.PREPAID, draftValidity));
+        quotes.cancel(sales, third.id(), edited.version(), "Không giảm được, khách chọn nơi khác");
+        Quotes.QuoteView customerView = quotes.get(portal, third.id());
+        assertThat(customerView.status()).isEqualTo(QuoteStatus.CANCELLED);
+        assertThat(customerView.cancellationReason()).contains("Không giảm");
+        assertThat(customerView.revision()).as("the revision they were sent").isEqualTo(third.revision());
+        assertThat(customerView.validUntil()).isEqualTo(third.validUntil());
+        assertThat(customerView.priced()).isEqualTo(third.priced());
+        assertThat(customerView.proposedTotal()).isEqualByComparingTo(third.proposedTotal());
+        assertThat(customerView.lines()).extracting(Quotes.LineView::lineNo, Quotes.LineView::quantity,
+                        Quotes.LineView::proposedUnitPrice)
+                .containsExactlyElementsOf(third.lines().stream().map(line -> org.assertj.core.groups.Tuple.tuple(
+                        line.lineNo(), line.quantity(), line.proposedUnitPrice())).toList());
+        Quotes.QuoteView staffView = quotes.get(sales, third.id());
+        assertThat(staffView.revision()).as("Sales sees its draft").isEqualTo(2);
+        assertThat(staffView.validUntil()).isEqualTo(draftValidity);
+        assertThatThrownBy(() -> quotes.accept(portal, third.id(), new Quotes.Acceptance(third.version(), Map.of())))
+                .as("the version the customer still has: told why, not that it changed")
+                .hasMessageContaining("withdrawn").hasMessageContaining("Không giảm")
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+    }
+
+    @Test
     @DisplayName("idempotent creation; only ACTIVE customers, allowed terms and the customer's own designs")
     void creationRules() throws Exception {
         ConfirmedDesigns.Design design = design();

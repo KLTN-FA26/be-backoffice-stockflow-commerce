@@ -207,7 +207,23 @@ public record OrderResponse(
             Integer deliveredQuantity,
 
             @Schema(description = "Units closed out of a partly fulfilled order: they will not be delivered")
-            Integer cancelledQuantity
+            Integer cancelledQuantity,
+
+            @Schema(description = "A print line production could not finish: what the customer agreed to go without "
+                    + "(review 2026-10-25, S6), and how much of it production closed; null when nothing was agreed")
+            ProductionShortfall productionShortfall
     ) {
+
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
+                    Integer deliveredQuantity, Integer cancelledQuantity) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, null);
+        }
+    }
+
+    @Schema(name = "OrderLineProductionShortfall")
+    public record ProductionShortfall(int agreedQuantity, String note, UUID agreedBy, java.time.Instant agreedAt,
+                                      int closedQuantity) {
     }
 }
