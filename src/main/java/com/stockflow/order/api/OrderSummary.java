@@ -78,6 +78,8 @@ public record OrderSummary(
      *                               can no longer change
      * @param goodsLeftAt            SCRUM-392: when goods of the order first left on a load plan's vehicle, before a
      *                               shipment of it is handed over - from then it is not cancelled (review of #162)
+     * @param replacesReturnRequestId SCRUM-260: the return this free order ships replacement goods for; null for an
+     *                               ordinary order. Not a sale: the goods were paid on the original order
      */
     public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
@@ -85,12 +87,29 @@ public record OrderSummary(
                             BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
                             BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount, boolean allowPartialShipment,
                             boolean printLinesReady, DeliveryMode deliveryMode, boolean deliveryModeLocked,
-                            Instant goodsLeftAt) {
+                            Instant goodsLeftAt, UUID replacesReturnRequestId) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipments = shipments == null ? List.of() : List.copyOf(shipments);
             deliveryMode = deliveryMode == null ? DeliveryMode.PARCEL : deliveryMode;
+        }
+
+        /**
+         * Without the return a free replacement order ships goods for (callers written before SCRUM-260's replacement
+         * orders): an ordinary order.
+         */
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
+                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
+                         boolean allowPartialShipment, boolean printLinesReady, DeliveryMode deliveryMode,
+                         boolean deliveryModeLocked, Instant goodsLeftAt) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
+                    deliveryMode, deliveryModeLocked, goodsLeftAt, null);
         }
 
         /** Without goodsLeftAt (callers written before SCRUM-392): no goods left on a vehicle yet. */

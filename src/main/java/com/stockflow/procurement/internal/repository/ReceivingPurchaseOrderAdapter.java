@@ -1,6 +1,9 @@
 package com.stockflow.procurement.internal.repository;
 
 import com.stockflow.procurement.internal.domain.PoLineStatus;
+import com.stockflow.procurement.internal.domain.PurchaseOrder;
+import com.stockflow.procurement.internal.domain.PurchaseOrderId;
+import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder;
 import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrders;
@@ -22,7 +25,8 @@ import java.util.UUID;
 /**
  * Receiving's view of a purchase order, read and written through the same JPA entities as the
  * {@code PurchaseOrder} aggregate ({@link PurchaseOrderRepositoryAdapter}). The view stays narrow on
- * purpose — receiving changes line and header status and adds a timeline event, nothing else — but it
+ * purpose — receiving changes line and header status and adds a timeline event, and the first receipt withdraws an
+ * amendment still waiting (through the aggregate's port, {@link #withdrawPendingAmendment}), nothing else — but it
  * no longer has SQL of its own against the order tables: the {@code @Version} column, the audit
  * columns and the entity's own guards ({@link PurchaseOrderJpaEntity#advanceByReceipt}) apply to it
  * the same way they apply to every other write.
@@ -33,15 +37,17 @@ class ReceivingPurchaseOrderAdapter implements ReceivingPurchaseOrders {
     private final PurchaseOrderJpaRepository orders;
     private final SupplierJpaRepository suppliers;
     private final PurchaseOrderEventLog events;
+    private final PurchaseOrderRepository purchaseOrders;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     ReceivingPurchaseOrderAdapter(PurchaseOrderJpaRepository orders, SupplierJpaRepository suppliers,
-                                  PurchaseOrderEventLog events) {
+                                  PurchaseOrderEventLog events, PurchaseOrderRepository purchaseOrders) {
         this.orders = orders;
         this.suppliers = suppliers;
         this.events = events;
+        this.purchaseOrders = purchaseOrders;
     }
 
     @Override
@@ -84,7 +90,36 @@ class ReceivingPurchaseOrderAdapter implements ReceivingPurchaseOrders {
             events.record(order.getId(), order.getActiveRevisionId(), newStatus.name(), actorId,
                     view.status().name(), newStatus.name(), "Goods receipt " + receiptNumber,
                     Map.of("receiptId", receiptId.toString(), "receiptNumber", receiptNumber), "goods-receipt");
+            if (view.status() == ReceivingPurchaseOrder.Status.CONFIRMED) {
+                withdrawPendingAmendment(order, newStatus.name(), actorId, receiptNumber);
+            }
         }
+    }
+
+    /**
+     * The first receipt posted withdraws the amendment still waiting on a standard order (SCRUM-117, design D5), in
+     * this transaction and under the order lock receiving already holds. Receiving is never blocked by an amendment;
+     * instead, once goods are counted against the revision in force, the amendment can no longer be approved - it
+     * would rewrite lines goods were received against - and left pending it would only wait to be refused. Withdrawn,
+     * with the person who posted the receipt as the actor, the requester sees why at once and can ask again for what
+     * is still open.
+     *
+     * <p>A SUBCONTRACT order's supplement is left alone: it is a resend after a QC shortfall, meant for an order that
+     * is being received, and approving it reopens the order for the extra units.</p>
+     */
+    private void withdrawPendingAmendment(PurchaseOrderJpaEntity order, String status, UUID actorId,
+                                          String receiptNumber) {
+        if (order.getType() != PurchaseOrder.Type.STANDARD || order.getPendingRevisionId() == null) {
+            return;
+        }
+        PurchaseOrderId id = new PurchaseOrderId(order.getId());
+        purchaseOrders.pendingAmendment(id).ifPresent(amendment -> {
+            String reason = "Goods received (receipt " + receiptNumber + ")";
+            purchaseOrders.dropAmendment(id);
+            purchaseOrders.recordApproval(amendment.revisionId(), actorId, "WITHDRAWN", reason);
+            events.record(order.getId(), amendment.revisionId(), "WITHDRAWN", actorId, status, status, reason, null,
+                    "goods-receipt");
+        });
     }
 
     @Override

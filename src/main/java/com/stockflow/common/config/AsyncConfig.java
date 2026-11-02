@@ -40,8 +40,9 @@ import java.util.Map;
  *
  * <p>An exception from a {@code void @Async} method has nowhere to go: there is no caller left to
  * receive it. Spring's default logs it at a level and with a message that is easy to miss.
- * {@link #getAsyncUncaughtExceptionHandler()} logs it at {@code ERROR} with the method and its
- * arguments, so a silently failing listener is findable.</p>
+ * {@link #getAsyncUncaughtExceptionHandler()} logs it at {@code ERROR} with the method and the types
+ * of its arguments, so a silently failing listener is findable - never the argument values, which
+ * for a listener are events carrying personal data.</p>
  */
 @Configuration(proxyBeanMethods = false)
 public class AsyncConfig implements AsyncConfigurer {
@@ -82,11 +83,18 @@ public class AsyncConfig implements AsyncConfigurer {
         };
     }
 
+    /**
+     * Names the method and the TYPES of its arguments, not their values. The arguments of an async event listener are
+     * events, and an event's {@code toString()} prints every field: the order confirmation's contact e-mail, a
+     * cancellation's free-text note, a purchase order's buyer contact - personal data that {@code verify.py} keeps out
+     * of new events and that a log line would otherwise copy to wherever logs go, once per failed attempt.
+     */
     @Override
     public AsyncUncaughtExceptionHandler getAsyncUncaughtExceptionHandler() {
         return (throwable, method, params) -> log.error(
                 "Uncaught exception in async method {}.{} with arguments {}",
                 method.getDeclaringClass().getSimpleName(), method.getName(),
-                Arrays.toString(params), throwable);
+                Arrays.stream(params).map(param -> param == null ? "null" : param.getClass().getSimpleName()).toList(),
+                throwable);
     }
 }

@@ -80,7 +80,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.mail.properties.mail.smtp.connectiontimeout=2000",
         "spring.mail.properties.mail.smtp.timeout=2000",
         // JavaMail otherwise resolves this machine's name for EHLO, which can take many seconds.
-        "spring.mail.properties.mail.smtp.localhost=localhost"})
+        "spring.mail.properties.mail.smtp.localhost=localhost",
+        // Real SMTP into the Mailpit container, not the test profile's in-memory recorder. Customer order mail is off:
+        // every message in Mailpit for an address is read as an invitation (linksSentTo).
+        "stockflow.notification.email.provider=smtp", "stockflow.notification.email.customer.enabled=false"})
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class B2bOnboardingIntegrationTest {
 
