@@ -294,35 +294,41 @@ were never SKU reservations; they keep their old lifecycle.
 
 ---
 
-## 7. Putaway task — `warehouse-service`
+## 7. Putaway task — `warehouse`, confirmed by `inventory`
 
 WBS 3.3.6 (generation), 3.5.4 (management).
 
+**Changed 2026-11-02** to KLTN-FA26/docs 05 Putaway (commit `beccca6`) and the SCRUM-92 code.
+Assignment, a reason code for leaving the suggestions, an exception state with a manager override
+and multi-leg putaway are later scope (docs open question C18): every clerk of the warehouse sees
+and puts away every task. Table `warehouse.putaway_task`, enum `PutawayStatus`.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED: receipt posted
-    CREATED --> ASSIGNED: assign to staff
-    ASSIGNED --> IN_PROGRESS: staff scans first item
-    IN_PROGRESS --> COMPLETED: destination scanned and confirmed
-    IN_PROGRESS --> EXCEPTION: suggested location unusable
-    EXCEPTION --> IN_PROGRESS: manager overrides location
-    CREATED --> CANCELLED: cancel
-    COMPLETED --> [*]
-    CANCELLED --> [*]
+    [*] --> PENDING: goods ready for putaway
+    PENDING --> IN_PROGRESS: part of a loose task put away
+    PENDING --> DONE: the carton, or all loose units, put away
+    IN_PROGRESS --> IN_PROGRESS: another part put away
+    IN_PROGRESS --> DONE: nothing left
+    DONE --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | CREATED | receipt posted | system | slotting engine returns ≥1 suggestion (BR-SLT-001) | `PutawayTaskCreated` |
-| CREATED | ASSIGNED | assign | Warehouse manager, or auto | staff assigned to that warehouse | — |
-| ASSIGNED | IN_PROGRESS | scan item | Warehouse staff | scanned SKU matches the task | — |
-| IN_PROGRESS | COMPLETED | confirm location | Warehouse staff | scanned location = suggested, or override approved (BR-SLT-002) | `PutawayCompleted` |
-| IN_PROGRESS | EXCEPTION | report blocked | Warehouse staff | reason given | — |
-| EXCEPTION | IN_PROGRESS | override | Warehouse manager | new location passes hard constraints (BR-SLT-003) | — |
+| — | PENDING | receipt line confirmed without QC, or QC accepts part of it (`ReceiptStockReadyForPutaway`) | system | one task per `IN_STOCK` carton holding INBOUND units, one for the loose remainder; a receipt line that already has a task opens nothing | — |
+| PENDING / IN_PROGRESS | IN_PROGRESS | confirm part of a loose task | Warehouse staff | 1 ≤ quantity < left (left is read from the ledger); the scanned bin passes the hard constraints (BR-SLT-001, BR-SLT-003), suggested or not (BR-SLT-002) | — |
+| PENDING / IN_PROGRESS | DONE | confirm a carton by its LPN, or the last loose units | Warehouse staff | a carton goes whole; same bin checks | `PutawayCompleted` |
 
-`PutawayCompleted` is what moves stock from the receiving area to a real bin. Until then, the
-stock exists with the location code of a `RECEIVING` area (e.g. `HCM-RCV01`) and is **not**
-pickable.
+`CANCELLED` exists in the enum and the table but nothing moves a task into it (docs 05 §5). No
+task outlives a cancelled receipt: a receipt can be cancelled only before it posts, and tasks open
+after it posts.
+
+Confirming is what moves stock from the `RECEIVING` or `QUALITY_CONTROL` area to a real bin,
+INBOUND → AVAILABLE, in the same transaction as the task (`PutawayService.confirm`). Until then
+the stock stands at the area's location code (e.g. `HCM-RCV01`) and is **not** pickable.
+`PutawayCompleted` tells procurement to close the receipt once every line is put away. Up to ten
+suggested bins, each with its reason, are computed on every read of the task and never stored
+(BR-SLT-004).
 
 ---
 

@@ -112,6 +112,24 @@ class InventoryLevelTest {
     }
 
     @Test
+    @DisplayName("allocations are shown apart from the other holds of their warehouse; ATP is unchanged")
+    void allocatedIsSplitFromReserved() {
+        when(repository.findLevelLinesBySku(SKU))
+                .thenReturn(
+                        List.of(
+                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
+                                line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 2),
+                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+        when(repository.findAllocatedBySku(SKU))
+                .thenReturn(java.util.Map.of("HN-A01-2-03", 3, "HN-A01-2-04", 2));
+
+        List<StockLevel> levels = service.levelsOf(SKU);
+
+        assertThat(levels.get(0)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HCM", 3, 3, 1, 0, 2));
+        assertThat(levels.get(1)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HN", 15, 15, 1, 5, 9));
+    }
+
+    @Test
     @DisplayName("ATP of one warehouse ignores the others; an unknown warehouse promises nothing")
     void atpPerWarehouse() {
         when(repository.findLevelLinesBySku(SKU))

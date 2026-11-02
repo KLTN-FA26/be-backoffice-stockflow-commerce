@@ -37,7 +37,6 @@ import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.StorageLocationView.Kind;
 import com.stockflow.warehouse.api.WarehouseService;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -378,16 +377,20 @@ class PutawayServiceConfirmTest {
             verify(operations).putAwayLoose(any(), any(), eq(BIN), eq(40), any(), any());
         }
 
+        /**
+         * A reason code for leaving the suggestions is later scope (kltn-docs open question C18): suggestions are
+         * advice, and the scanned bin is judged by the hard rules alone. An earlier reading of BR-07 expected a
+         * refusal here; the 05-putaway chapter of 2026-10-28 settled it the other way.
+         */
         @Test
-        @Disabled("Possible bug: a bin other than the suggested ones is accepted with no deviation reason "
-                + "(kltn-docs warehouse/05-putaway BR-07, BR-09); PutawayService.java:191 confirm() takes no reason; see PR body")
-        @DisplayName("BR-07: putting goods in a bin that was not suggested must come with a reason")
-        void deviationFromTheSuggestionNeedsAReason() {
+        @DisplayName("BR-07: a bin that was not suggested is accepted without a reason when it passes the hard rules")
+        void deviationFromTheSuggestionNeedsNoReason() {
             when(warehouses.putawayCandidates(WAREHOUSE, StorageLocationView.StorageClass.NORMAL)).thenReturn(List.of(
                     new PutawayCandidate(UUID.randomUUID(), "HCM-A09-1-A", 100, null)));
 
-            // BIN is a valid bin, but not among the suggestions; the service has no way to be told why.
-            assertThat(refusal()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            service.confirm(task.id(), BIN, null, 40, CLERK);
+
+            verify(operations).putAwayLoose(new Sku(SKU), LOT, BIN, 40, task.id(), CLERK);
         }
 
         @Test
