@@ -736,7 +736,11 @@ for v in VARIANTS:
             current_price=money(v["cost"] * 1.05 / 1000) * 1000, moq=20, pack_size=1, lead_time_days=15,
             created_at=at(date(2026, 8, 1), 11))
 
-for role, amount in (("PROCUREMENT_STAFF", 50000000), ("WAREHOUSE_MANAGER", 300000000)):
+# SYSTEM_ADMIN gets the largest whole amount NUMERIC(18,2) holds, so whatever it submits is approved on submission:
+# four eyes forbid approving one's own PENDING_APPROVAL order, and without a limit every order the admin raised would
+# wait. Not ...999.99: Money rounds VND to whole units, 10^16, which overflows limit_amount when the approval is written.
+for role, amount in (("PROCUREMENT_STAFF", 50000000), ("WAREHOUSE_MANAGER", 300000000),
+                     ("SYSTEM_ADMIN", 9999999999999999)):
     add("procurement.approval_limits", id=uid("limit:" + role), role_id=ROLE(role), currency="VND",
         max_po_amount=amount, effective_from=date(2026, 1, 1), effective_to=None, created_at=at(date(2026, 8, 1), 11))
 
