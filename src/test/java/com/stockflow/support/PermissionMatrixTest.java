@@ -202,7 +202,7 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/handover", "fulfillment-dispatch:UPDATE"),
             Map.entry("PUT /api/v1/fulfillment/shipments/{shipmentId}/carrier", "fulfillment-dispatch:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/cancellation", "fulfillment-load-cancellations:UPDATE"),
-            // SCRUM-474 UNLOAD-DESIGN (V20261029007100): the controlled cancel after loading started, and the override.
+            // SCRUM-474 UNLOAD-DESIGN (V20261102020100): the controlled cancel after loading started, and the override.
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/controlled-cancellation",
                     "fulfillment-controlled-cancellations:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/plan-removal",

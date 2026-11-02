@@ -50,7 +50,7 @@ public class LoadPlanJpaEntity extends BaseEntity {
     @Column(name = "cancelled_at") private Instant cancelledAt;
     @Column(name = "cancelled_by") private UUID cancelledBy;
     @Column(name = "cancel_reason", length = 500) private String cancelReason;
-    /** SCRUM-474 UNLOAD-DESIGN point 7: set only by a controlled cancel (V20261029007000). */
+    /** SCRUM-474 UNLOAD-DESIGN point 7: set only by a controlled cancel (V20261102020000). */
     @Enumerated(EnumType.STRING)
     @Column(name = "cancel_reason_code", length = 20) private UnloadReasonCode cancelReasonCode;
     @Column(name = "revised_at", nullable = false) private Instant revisedAt;

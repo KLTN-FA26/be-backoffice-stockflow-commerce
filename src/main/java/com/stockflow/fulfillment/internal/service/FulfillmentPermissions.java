@@ -58,7 +58,7 @@ public final class FulfillmentPermissions {
     /**
      * UPDATE: call a load plan, or one of its vehicles, off AFTER loading started - the controlled cancel, with a reason
      * code and a note - and confirm a parcel off the vehicle without a scan when its label is damaged (SCRUM-474
-     * UNLOAD-DESIGN points 5-6; V20261029007100). Warehouse manager and system admin only.
+     * UNLOAD-DESIGN points 5-6; V20261102020100). Warehouse manager and system admin only.
      */
     public static final String CONTROLLED_CANCELLATIONS = "fulfillment-controlled-cancellations";
 
