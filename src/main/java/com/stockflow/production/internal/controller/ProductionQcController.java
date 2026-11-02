@@ -53,7 +53,7 @@ class ProductionQcController {
                                                        @Valid @RequestBody QcRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(runs.recordQc(user, productionOrderId, request.passed(),
-                request.failed(), request.note(), request.packingLocation())));
+                request.failed(), request.note(), request.packingLocation(), request.approvedSampleId())));
     }
 
     @GetMapping

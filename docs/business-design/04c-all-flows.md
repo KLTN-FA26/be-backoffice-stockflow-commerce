@@ -187,34 +187,33 @@ Giữa bước này và bước trước, hàng đã tồn tại trong hệ th�
 
 ```mermaid
 flowchart LR
-    N0["inventory<br><small>sf_inventory</small>"]
-    N1["warehouse<br><small>sf_warehouse</small>"]
-    N2(["Slotting engine"])
+    N0["procurement<br><small>sf_procurement</small>"]
+    N1["inventory<br><small>sf_inventory</small>"]
+    N2["warehouse<br><small>sf_warehouse</small>"]
     N3(["NV kho"])
-    N4["inventory<br><small>sf_inventory</small>"]
-    N0 -.->|"GoodsReceived"| N1
-    N1 -->|"chấm điểm vị trí"| N2
-    N2 -->|"gợi ý xếp hạng"| N3
-    N3 -.->|"PutawayCompleted"| N4
+    N0 -.->|"ReceiptStockReadyForPutaway"| N1
+    N1 -->|"mở task"| N2
+    N1 -->|"bin gợi ý + lý do"| N3
+    N3 -->|"quét bin, xác nhận"| N1
+    N1 -.->|"PutawayCompleted"| N0
 ```
 
 | # | Service | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `warehouse` | `+ processed_event, + putaway_task` | status = CREATED |
-| 02 | `warehouse` | `+ putaway_suggestion × N` | vị trí xếp hạng + lý do từng gợi ý |
-| 03 | `warehouse` | `~ putaway_task.assigned_to` | → ASSIGNED |
-| 04 | `warehouse` | `~ putaway_task (quét item)` | → IN_PROGRESS |
-| 05 | `warehouse` | `~ putaway_task.target_location_id, + outbox_event` | → COMPLETED |
-| 06 | `inventory` | `~ stock_item.location_code, + stock_movement, + outbox_event` | StockLevelChanged |
-| 07 | `catalog` | `~ atp_cache` | hàng bắt đầu bán được |
+| 01 | `inventory` → `warehouse` | `+ putaway_task` × (mỗi thùng `IN_STOCK` một task, cộng một task cho phần lẻ) | status = PENDING; khi xác nhận dòng không cần QC, hoặc QC kết luận đạt |
+| 02 | `inventory` | — (chỉ đọc) | `GET /putaway-tasks/{id}`: tối đa 10 bin xếp hạng kèm lý do, tính lại mỗi lần xem, không lưu |
+| 03 | `inventory` | `~ stock_item` (→ bin, INBOUND → AVAILABLE), `+ stock_movement` (MOVE, hoặc STATUS_CHANGE khi hàng đã nằm sẵn ở bin) | `POST /putaway-tasks/{id}/confirmations`: thùng quét LPN, phần lẻ nhập số lượng (cất nhiều lần được) |
+| 04 | `warehouse` | `~ putaway_task.target_location_id, .status` | → IN_PROGRESS, hoặc DONE và phát `PutawayCompleted` |
+| 05 | `procurement` | `~ goods_receipt` | → CLOSED khi mọi dòng đã cất đủ |
 
-> · Vị trí vi phạm ràng buộc cứng (hazmat, nhiệt độ, single-SKU) bị LOẠI HẲN trước khi chấm điểm — BR-SLT-001.
-> · Mỗi gợi ý phải kèm LÝ DO và lý do đó được lưu cùng task — BR-SLT-004.
+> · Bin vi phạm ràng buộc cứng (không phải bin, khác kho, không cho phép cất, sai lớp lưu trữ, bin / kệ / kho không Active, vượt sức chứa hoặc tải trọng) bị LOẠI HẲN khỏi gợi ý, và bị từ chối khi quét — BR-SLT-001, BR-SLT-003. Ràng buộc single-SKU / hàng kỵ nhau thuộc SCRUM-90.
+> · Gợi ý kèm lý do (cùng lô → cùng SKU → bin trống → còn chỗ), tính lại theo tồn mỗi lần xem, không lưu — BR-SLT-004.
+> · Cất vào bin ngoài gợi ý được, không cần lý do, nếu bin qua ràng buộc cứng — BR-SLT-002.
 > · Không cập nhật `storage_location`: mức đầy suy ra từ tồn so với sức chứa, không lưu (module 06 §5).
-> ★ Chỉ sau PutawayCompleted thì location_code mới là mã một bin (`HCM-A01-2-B`) và ATP mới tính hàng này.
-> · Triển khai đợt A (SCRUM-92): xác nhận cất hàng chạy đồng bộ trong `inventory`, trong một transaction — khác sơ đồ, không chờ sự kiện rồi mới chuyển tồn; 200 nghĩa là hàng đã nằm trong bin.
+> ★ Chỉ sau khi cất thì location_code mới là mã một bin (`HCM-A01-2-B`) và ATP mới tính hàng này.
+> · Xác nhận cất hàng chạy đồng bộ trong `inventory`, trong một transaction cùng task; 200 nghĩa là hàng đã nằm trong bin.
 > · Thứ tự khoá: task → khoá bin → khoá SKU → `stock_package` → dòng tồn theo id.
-> · Đợt A chưa lưu người được giao, kho và lý do gợi ý (chờ migration của Tú).
+> · Giao việc, khoá mềm sức chứa, mã lý do khi cất khác gợi ý và cất nhiều chặng là phạm vi giai đoạn sau (docs open question C18): mọi NV kho của kho thấy và cất mọi task.
 > · Gợi ý mới lọc ở mức bin (bin dùng được, đánh dấu cất hàng); phần tầng kệ do SCRUM-91 làm.
 
 ---
