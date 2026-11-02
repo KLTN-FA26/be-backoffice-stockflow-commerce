@@ -5,6 +5,9 @@ import com.stockflow.common.security.Role;
 import com.stockflow.inventory.internal.service.CycleCountView;
 import com.stockflow.inventory.internal.service.CycleCounts;
 import com.stockflow.inventory.internal.service.CycleCounts.PlanCycleCountCommand;
+import com.stockflow.inventory.internal.service.StockOperations;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -29,6 +32,8 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -38,8 +43,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * The cycle-count endpoints through the real filter chain, permission aspect and data scope, with the seeded role
  * grants: the planner plans and counts but does not decide, so a blind count never shows them the books; the
- * warehouse manager decides and sees them; the warehouse staff (who hold only VIEW_PAGE and READ on this branch)
- * neither plan nor decide. Nothing here relies on the staff's UPDATE grant, which is Tú's migration.
+ * warehouse manager decides and sees them; the warehouse staff count what they are assigned (they hold UPDATE since
+ * {@code V20261028001000}) but neither plan nor decide. Four eyes runs through both halves: nobody replaces the
+ * assignee's figure but the assignee, and nobody approves the variance of a line they counted.
  */
 @SecuredIntegrationTest
 class CycleCountHttpSecurityIntegrationTest {
@@ -50,6 +56,7 @@ class CycleCountHttpSecurityIntegrationTest {
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
     @Autowired CycleCounts cycleCounts;
+    @Autowired StockOperations operations;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -109,6 +116,25 @@ class CycleCountHttpSecurityIntegrationTest {
     private CycleCountView planned() {
         return cycleCounts.plan(new PlanCycleCountCommand(WAREHOUSE_HCM, null, null, true, "Count the top shelf",
                 List.of(), List.of(), List.of(BIN), List.of(sku)), false).count();
+    }
+
+    /** As {@link #planned()}, handed to {@code assignee}. */
+    private CycleCountView plannedFor(UUID assignee) {
+        return cycleCounts.plan(new PlanCycleCountCommand(WAREHOUSE_HCM, null, assignee, true, "Count the top shelf",
+                List.of(), List.of(), List.of(BIN), List.of(sku)), false).count();
+    }
+
+    private String countPath(CycleCountView count) {
+        return BASE + "/" + count.id() + "/lines/" + count.lines().get(0).id() + "/count";
+    }
+
+    private static String qty(int countedQty) {
+        return "{\"countedQty\":" + countedQty + "}";
+    }
+
+    private UUID variance(CycleCountView count) {
+        return jdbc.queryForObject("select id from inventory.stock_adjustment where cycle_count_line_id = ?",
+                UUID.class, count.lines().get(0).id());
     }
 
     private String planBody() {
@@ -235,5 +261,124 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"))
                 .andExpect(jsonPath("$.data.lines[0].countedQty").value(9))
                 .andExpect(jsonPath("$.data.lines[0].expectedQty").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("the warehouse staff assignee counts and submits through HTTP, blind (was 403 before the UPDATE grant)")
+    void warehouseStaffAssigneeCountsAndSubmits() throws Exception {
+        UUID clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
+        CycleCountView count = plannedFor(clerk);
+
+        // A colleague who is not the assignee still gets the assignment refusal.
+        UUID colleague = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
+        mvc.asRole(Role.WAREHOUSE_STAFF, colleague, put(countPath(count)).contentType(MediaType.APPLICATION_JSON)
+                        .content(qty(1)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("CYCLE_COUNT_NOT_ASSIGNEE"));
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(countPath(count)).contentType(MediaType.APPLICATION_JSON)
+                        .content(qty(7)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.data.lines[0].countedQty").value(7))
+                .andExpect(jsonPath("$.data.lines[0].countedBy").value(clerk.toString()))
+                .andExpect(jsonPath("$.data.lines[0].expectedQty").doesNotExist());
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post(BASE + "/" + count.id() + "/submission"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.lines[*].adjustments[*]").isEmpty());
+        assertThat(jdbc.queryForObject("select quantity_delta from inventory.stock_adjustment"
+                + " where cycle_count_line_id = ?", Integer.class, count.lines().get(0).id())).isEqualTo(-3);
+        // Staff submit the variance; they do not decide it.
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post("/api/v1/inventory/adjustments/" + variance(count) + "/approval"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+    }
+
+    @Test
+    @DisplayName("on an assigned count a manager cannot overwrite the assignee's figure; the assignee can correct "
+            + "a manager's; an unassigned count has no owner to protect")
+    void noOverwriteOfAnotherCountersLine() throws Exception {
+        UUID clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
+        CycleCountView count = plannedFor(clerk);
+        String path = countPath(count);
+
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(path).contentType(MediaType.APPLICATION_JSON).content(qty(7)))
+                .andExpect(status().isOk());
+        mvc.asRole(Role.WAREHOUSE_MANAGER, manager, put(path).contentType(MediaType.APPLICATION_JSON).content(qty(10)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("CYCLE_COUNT_LINE_COUNTED_BY_OTHER"));
+        assertThat(jdbc.queryForObject("select counted_qty from inventory.cycle_count_line where id = ?",
+                Integer.class, count.lines().get(0).id())).as("the assignee's figure stands").isEqualTo(7);
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(path).contentType(MediaType.APPLICATION_JSON).content(qty(8)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].countedQty").value(8));
+        cycleCounts.cancel(count.id(), "next case", "test");
+
+        // Counted first by the manager (an uncounted line is theirs to count), then corrected by the assignee.
+        CycleCountView second = plannedFor(clerk);
+        mvc.asRole(Role.WAREHOUSE_MANAGER, manager, put(countPath(second)).contentType(MediaType.APPLICATION_JSON)
+                        .content(qty(9)))
+                .andExpect(status().isOk());
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(countPath(second)).contentType(MediaType.APPLICATION_JSON)
+                        .content(qty(6)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].countedBy").value(clerk.toString()));
+        cycleCounts.cancel(second.id(), "next case", "test");
+
+        CycleCountView open = planned();
+        mvc.asRole(Role.INVENTORY_PLANNER, planner, put(countPath(open)).contentType(MediaType.APPLICATION_JSON)
+                        .content(qty(5)))
+                .andExpect(status().isOk());
+        mvc.asRole(Role.WAREHOUSE_MANAGER, manager, put(countPath(open)).contentType(MediaType.APPLICATION_JSON)
+                        .content(qty(6)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].countedBy").value(manager.toString()));
+    }
+
+    @Test
+    @DisplayName("whoever counted a line cannot approve (or reject) its variance, even if someone else submitted it; "
+            + "another approver can")
+    void counterCannotDecideTheVarianceOfTheirOwnLine() throws Exception {
+        UUID clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
+        UUID otherManager = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
+        CycleCountView count = plannedFor(clerk);
+        // The manager enters the figure on the clerk's count; the clerk submits it, so the clerk is the requester.
+        cycleCounts.count(count.id(), count.lines().get(0).id(), 7, null, manager, true);
+        cycleCounts.submit(count.id(), clerk, false);
+        UUID adjustment = variance(count);
+        String approval = "/api/v1/inventory/adjustments/" + adjustment + "/approval";
+
+        mvc.asRole(Role.WAREHOUSE_MANAGER, manager, post(approval))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ADJUSTMENT_SELF_APPROVAL"));
+        mvc.asRole(Role.WAREHOUSE_MANAGER, manager, post("/api/v1/inventory/adjustments/" + adjustment + "/rejection")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"my own count\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ADJUSTMENT_SELF_APPROVAL"));
+        assertThat(jdbc.queryForObject("select status from inventory.stock_adjustment where id = ?", String.class,
+                adjustment)).isEqualTo("PENDING_APPROVAL");
+        assertThat(jdbc.queryForObject("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
+                .as("nothing posted").isEqualTo(10);
+
+        mvc.asRole(Role.WAREHOUSE_MANAGER, otherManager, post(approval))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("POSTED"));
+        assertThat(jdbc.queryForObject("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
+                .isEqualTo(7);
+    }
+
+    @Test
+    @DisplayName("the requester of a count variance still cannot decide it, whoever counted the line")
+    void requesterStillCannotDecide() {
+        UUID clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
+        CycleCountView count = plannedFor(clerk);
+        cycleCounts.count(count.id(), count.lines().get(0).id(), 7, null, manager, true);
+        cycleCounts.submit(count.id(), clerk, false);
+        UUID adjustment = variance(count);
+
+        assertThat(((BusinessException) catchThrowable(() -> operations.approve(adjustment, clerk))).errorCode())
+                .as("the submitter, who did not count the line").isEqualTo(ErrorCode.ADJUSTMENT_SELF_APPROVAL);
+        assertThat(((BusinessException) catchThrowable(() -> operations.approve(adjustment, manager))).errorCode())
+                .as("the counter, who did not submit").isEqualTo(ErrorCode.ADJUSTMENT_SELF_APPROVAL);
     }
 }

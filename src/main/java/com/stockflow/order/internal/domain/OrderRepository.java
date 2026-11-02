@@ -37,6 +37,12 @@ public interface OrderRepository {
 
     List<Order> findByCustomerId(UUID customerId);
 
+    /**
+     * The customer's orders placed at or after {@code since} that are not cancelled, newest first, with their lines:
+     * what the duplicate-order check compares a new checkout with (SCRUM-190).
+     */
+    List<Order> findLiveSince(UUID customerId, java.time.Instant since);
+
     /** The status and hold reason of each order among {@code ids} that exists, in one query, without its lines. */
     List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids);
 

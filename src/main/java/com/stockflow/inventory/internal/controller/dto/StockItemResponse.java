@@ -30,16 +30,27 @@ public record StockItemResponse(
 
         LocalDate expiryDate,
 
-        @Schema(description = "Physical units present, including reserved ones")
-        int onHand,
+        @Schema(description = "Physical units present, including reserved ones; null while hiddenDuringCount",
+                nullable = true)
+        Integer onHand,
 
-        @Schema(description = "Units promised to open orders")
-        int reserved,
+        @Schema(description = "Units promised to open orders; null while hiddenDuringCount", nullable = true)
+        Integer reserved,
 
-        @Schema(description = "Available to promise: onHand minus reserved, zero if not sellable")
-        int available,
+        @Schema(description = "Available to promise: onHand minus reserved, zero if not sellable; null while "
+                + "hiddenDuringCount", nullable = true)
+        Integer available,
 
         @Schema(example = "AVAILABLE")
-        String status
+        String status,
+
+        @Schema(description = "A cycle count holds this slot and the caller lacks inventory-cycle-counts:APPROVE: the "
+                + "quantities are withheld so the count stays blind")
+        boolean hiddenDuringCount
 ) {
+
+    /** The same row with its book quantities withheld (SCRUM-146). */
+    public StockItemResponse hidden() {
+        return new StockItemResponse(id, sku, locationCode, lotNumber, expiryDate, null, null, null, status, true);
+    }
 }

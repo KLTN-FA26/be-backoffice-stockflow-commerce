@@ -9,8 +9,20 @@ import java.util.List;
  * @param primaryImageUrl the same public URL kind the gallery returns for the image: the product's
  *                        primary published image, else its first one; null when it has none
  * @param skus            the product's ACTIVE variants, in display order (the ones the detail page sells)
+ * @param kind            STANDARD, or CUSTOMIZABLE for a product printed to the customer's design (quoted, not
+ *                        added to a basket)
  */
-public record PublishedProductCard(String primaryImageUrl, List<Sku> skus) {
+public record PublishedProductCard(String primaryImageUrl, List<Sku> skus, ProductKind kind) {
+
+    /** A standard product: what a card was before it carried its kind. */
+    public PublishedProductCard(String primaryImageUrl, List<Sku> skus) {
+        this(primaryImageUrl, skus, ProductKind.STANDARD);
+    }
+
+    public PublishedProductCard {
+        kind = kind == null ? ProductKind.STANDARD : kind;
+    }
+
 
     /** One sellable variant: its SKU code and its name (never a price or a stock figure). */
     public record Sku(String sku, String name) {}

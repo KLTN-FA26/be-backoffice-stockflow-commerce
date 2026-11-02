@@ -2,7 +2,7 @@ package com.stockflow.warehouse.internal.controller.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.stockflow.warehouse.internal.domain.LabelSelection;
-import com.stockflow.warehouse.internal.service.LabelFormat;
+import com.stockflow.common.label.LabelFormat;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Max;

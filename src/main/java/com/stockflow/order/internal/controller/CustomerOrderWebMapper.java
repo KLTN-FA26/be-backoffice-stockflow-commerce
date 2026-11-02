@@ -60,7 +60,8 @@ final class CustomerOrderWebMapper {
         return new CustomerOrderDetailResponse.Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice(),
                 line.lineTotal(), line.designSnapshotId(),
                 new CustomerOrderDetailResponse.Production(line.production().state().name(),
-                        line.production().goodQuantity()));
+                        line.production().goodQuantity()),
+                line.productSlug(), line.productTitle(), line.productImageUrl());
     }
 
     private static CustomerOrderDetailResponse.TimelineEntry toResponse(CustomerOrders.TimelineEntry entry) {

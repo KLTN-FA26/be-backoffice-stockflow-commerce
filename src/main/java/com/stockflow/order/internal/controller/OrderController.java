@@ -80,13 +80,16 @@ class OrderController {
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
     private final com.stockflow.order.internal.service.DeliveryModes deliveryModes;
+    private final com.stockflow.order.internal.service.DuplicateOrders duplicateOrders;
 
     OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
                     CustomerOrders customerOrders,
                     com.stockflow.order.internal.service.TransferInstructions transferInstructions,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
-                    com.stockflow.order.internal.service.DeliveryModes deliveryModes) {
+                    com.stockflow.order.internal.service.DeliveryModes deliveryModes,
+                    com.stockflow.order.internal.service.DuplicateOrders duplicateOrders) {
+        this.duplicateOrders = duplicateOrders;
         this.partialShipments = partialShipments;
         this.deliveryModes = deliveryModes;
         this.identities = identities;
@@ -123,6 +126,9 @@ class OrderController {
             }
         }
         var command = OrderWebMapper.toCommand(request);
+        if (!mayPlaceForAnotherCustomer && !request.duplicateConfirmed()) {
+            refuseUnconfirmedDuplicate(command);
+        }
         if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
             // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) - never the customer's own pick:
             // their configured percentage is used. How the balance is collected is different (SCRUM-193): the customer
@@ -133,6 +139,24 @@ class OrderController {
                     command.lines(), command.paymentTerm(), null, command.balancePolicy());
         }
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
+    }
+
+    /**
+     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): a customer who places what they placed a moment ago - ordering
+     * again from their history, or a second click from another device - is asked first. 409 with the earlier order
+     * in {@code details}; the portal shows it and resends with {@code confirmDuplicate: true} if the customer insists.
+     */
+    private void refuseUnconfirmedDuplicate(com.stockflow.order.api.PlaceOrderCommand command) {
+        var lines = command.lines().stream()
+                .map(line -> new com.stockflow.order.internal.service.DuplicateOrders.Line(line.sku().code(),
+                        line.quantity(), line.designSnapshotId()))
+                .toList();
+        duplicateOrders.findSuspected(command.customerId(), command.requestId(), lines).ifPresent(earlier -> {
+            throw new BusinessException(ErrorCode.DUPLICATE_ORDER_SUSPECTED,
+                    "Order " + earlier.orderNumber() + " with the same items was placed at " + earlier.placedAt(),
+                    java.util.List.of(), java.util.Map.of("orderId", earlier.orderId().toString(),
+                            "orderNumber", earlier.orderNumber(), "placedAt", earlier.placedAt().toString()));
+        });
     }
 
     /**

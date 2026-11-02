@@ -915,24 +915,29 @@ class B2bOnboardingIntegrationTest {
 
     private ResultActions activate(String token, String password) throws Exception {
         return mvc.perform(post("/api/v1/customers/portal-activation").contentType("application/json")
-                .header("X-Forwarded-For", anotherClient())
+                .with(anotherClient())
                 .content(json(Map.of("token", token, "password", password))));
     }
 
     private ResultActions login(String username, String password) throws Exception {
         return mvc.perform(post("/api/v1/identity/auth/login").contentType("application/json")
-                .header("X-Forwarded-For", anotherClient())
+                .with(anotherClient())
                 .content(json(Map.of("username", username, "password", password))));
     }
 
     /**
      * Login and activation are rate-limited per client address, and every MockMvc request comes from
-     * 127.0.0.1. Each call here is a different client behind the proxy, so the limit stays real but
-     * the tests in this class do not share one bucket.
+     * 127.0.0.1. Each call here comes from a different client, so the limit stays real but the tests in
+     * this class do not share one bucket. The address is the connection's own: a forwarded header is
+     * no longer believed by the application, only by the container from a trusted proxy (SCRUM-483).
      */
-    private static String anotherClient() {
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor anotherClient() {
         var random = java.util.concurrent.ThreadLocalRandom.current();
-        return "10." + random.nextInt(256) + "." + random.nextInt(256) + "." + random.nextInt(1, 255);
+        String address = "10." + random.nextInt(256) + "." + random.nextInt(256) + "." + random.nextInt(1, 255);
+        return request -> {
+            request.setRemoteAddr(address);
+            return request;
+        };
     }
 
     /**

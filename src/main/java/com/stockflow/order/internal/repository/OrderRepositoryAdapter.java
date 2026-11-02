@@ -116,6 +116,13 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
+    public List<Order> findLiveSince(UUID customerId, java.time.Instant since) {
+        return jpa.findLiveSinceWithLines(customerId, since).stream()
+                .map(this::toDomain)
+                .toList();
+    }
+
+    @Override
     public OrderNumber nextOrderNumber(LocalDate date) {
         return OrderNumber.of(date, sequence.nextFor(date));
     }

@@ -63,6 +63,10 @@ public class PickLineJpaEntity extends BaseEntity {
     private UUID putBackBy;
     @Column(name = "put_back_at")
     private Instant putBackAt;
+    @Column(name = "lpn", length = 30, updatable = false)
+    private String lpn;
+    @Column(name = "whole_carton", nullable = false, updatable = false)
+    private boolean wholeCarton;
 
     protected PickLineJpaEntity() {
     }
@@ -79,6 +83,15 @@ public class PickLineJpaEntity extends BaseEntity {
         this.sequenceNo = sequenceNo;
         this.allocatedQty = allocatedQty;
         this.status = PickLineStatus.OPEN;
+    }
+
+    /** A line drawn from the carton {@code lpn}; tg_pick_line_carton checks it is its hold's carton. */
+    public PickLineJpaEntity(UUID id, UUID pickId, UUID orderLineId, UUID reservationId, String sku,
+                             String locationCode, String lotNumber, int sequenceNo, int allocatedQty, String lpn,
+                             boolean wholeCarton) {
+        this(id, pickId, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty);
+        this.lpn = lpn;
+        this.wholeCarton = wholeCarton;
     }
 
     /** Copies what a line's life changes: everything but its identity and its allocation. */
@@ -113,6 +126,8 @@ public class PickLineJpaEntity extends BaseEntity {
     public int getAllocatedQty() { return allocatedQty; }
     public int getPickedQty() { return pickedQty; }
     public int getShortQty() { return shortQty; }
+    public String getLpn() { return lpn; }
+    public boolean isWholeCarton() { return wholeCarton; }
     public PickLineStatus getStatus() { return status; }
     public UUID getPickedBy() { return pickedBy; }
     public Instant getPickedAt() { return pickedAt; }

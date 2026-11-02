@@ -25,7 +25,8 @@ import java.util.function.Supplier;
  * <ul>
  *   <li>one line per live hold of the order's <b>stock</b> lines, in the task's warehouse; print lines
  *       get none — their finished goods come from production, not from a shelf (BR-06);</li>
- *   <li>a line is confirmed by scanning its location, then its SKU or barcode, then the quantity, and
+ *   <li>a line is confirmed by scanning its location, then its SKU or barcode - its carton's LPN when it is drawn
+ *       from one (SCRUM-473) - then the quantity, and
  *       only the exact allocation is accepted: more is BR-04, fewer is a short pick (SCRUM-268);</li>
  *   <li>the task completes only when every line is picked (step 9);</li>
  *   <li>goods of a cancelled task go back onto an active bin of the same warehouse, all of a line at
@@ -48,9 +49,19 @@ public final class PickList {
         }
     }
 
-    /** One hold of the order, with the warehouse its location belongs to. */
+    /**
+     * One hold of the order, with the warehouse its location belongs to, and the carton it is in (SCRUM-473): null
+     * {@code lpn} for loose stock.
+     */
     public record Hold(UUID reservationId, String sku, String locationCode, UUID warehouseId, String lotNumber,
-                       int quantity, boolean live) { }
+                       int quantity, boolean live, String lpn, boolean wholeCarton) {
+
+        /** On loose stock. */
+        public Hold(UUID reservationId, String sku, String locationCode, UUID warehouseId, String lotNumber,
+                    int quantity, boolean live) {
+            this(reservationId, sku, locationCode, warehouseId, lotNumber, quantity, live, null, false);
+        }
+    }
 
     /** Where a put-back wants to go, as the warehouse map describes it; null fields for an unknown code. */
     public record PutBackTarget(String locationCode, UUID warehouseId, boolean bin, boolean usable) { }
@@ -126,7 +137,7 @@ public final class PickList {
         for (Stop stop : stops) {
             Hold hold = stop.hold();
             added.add(PickLine.open(ids.get(), stop.orderLineId(), hold.reservationId(), hold.sku(),
-                    hold.locationCode(), hold.lotNumber(), sequence++, hold.quantity()));
+                    hold.locationCode(), hold.lotNumber(), sequence++, hold.quantity(), hold.lpn(), hold.wholeCarton()));
         }
         lines.addAll(added);
         return added;
@@ -163,7 +174,8 @@ public final class PickList {
                     "This line is picked from " + line.locationCode());
         }
         if (!itemMatches(line, scannedCode, barcode)) {
-            throw new BusinessException(ErrorCode.PICK_ITEM_MISMATCH, "This line picks " + line.sku());
+            throw new BusinessException(ErrorCode.PICK_ITEM_MISMATCH, line.lpn() != null
+                    ? "This line picks carton " + line.lpn() : "This line picks " + line.sku());
         }
         if (quantity > line.allocatedQty()) {
             throw new BusinessException(ErrorCode.PICK_QUANTITY_EXCEEDS_ALLOCATION,
@@ -254,7 +266,7 @@ public final class PickList {
         List<PickLine> added = new ArrayList<>();
         for (Hold hold : allocations) {
             added.add(PickLine.open(ids.get(), line.orderLineId(), hold.reservationId(), hold.sku(),
-                    hold.locationCode(), hold.lotNumber(), ++sequence, hold.quantity()));
+                    hold.locationCode(), hold.lotNumber(), ++sequence, hold.quantity(), hold.lpn(), hold.wholeCarton()));
         }
         lines.addAll(added);
         return added;
@@ -332,12 +344,19 @@ public final class PickList {
         return sameCode(scannedLocation, line.locationCode()) && itemMatches(line, scannedCode, barcode);
     }
 
-    /** The SKU (any case, as {@code Sku} normalises it) or the item's barcode, exactly. */
+    /**
+     * A carton's line: its LPN, in any case. Any other line: the SKU (any case, as {@code Sku} normalises it) or the
+     * item's barcode, exactly. The SKU is not enough for a carton's line - the hold is deducted from that carton, and
+     * the SKU would let the picker take any carton of it off the bin (SCRUM-473).
+     */
     private static boolean itemMatches(PickLine line, String scannedCode, String barcode) {
         if (scannedCode == null || scannedCode.isBlank()) {
             return false;
         }
         String code = scannedCode.trim();
+        if (line.lpn() != null) {
+            return sameCode(code, line.lpn());
+        }
         return sameCode(code, line.sku()) || barcode != null && code.equals(barcode.trim());
     }
 

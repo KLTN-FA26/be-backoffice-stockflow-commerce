@@ -328,6 +328,30 @@ class CustomerOrderPortalIntegrationTest {
     }
 
     @Test
+    @DisplayName("SCRUM-190: each stock line says where its SKU is on sale today (slug, title, image), or nothing when "
+            + "it is not on sale - what the portal needs to put the order back in a basket")
+    void theDetailCarriesWhereEachSkuIsOnSale() throws Exception {
+        var body = mvc.perform(get("/api/v1/orders/me/" + twoLines.orderId()).header("Authorization", customerA()))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        var lines = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body).at("/data/lines");
+        assertThat(lines.size()).isEqualTo(2);
+        for (var line : lines) {
+            String sku = line.get("sku").asText();
+            var onSale = jdbc.queryForList("""
+                    SELECT l.slug, l.published_title FROM catalog.catalog_entry e
+                    JOIN catalog.product_listing l ON l.product_id = e.product_id
+                    WHERE e.sku = ? AND e.published AND l.enabled AND l.published_title IS NOT NULL""", sku);
+            if (onSale.isEmpty()) {
+                assertThat(line.path("productSlug").isNull()).as(sku + " is not on sale").isTrue();
+                assertThat(line.path("productTitle").isNull()).isTrue();
+            } else {
+                assertThat(line.path("productSlug").asText()).as(sku).isEqualTo(onSale.get(0).get("slug"));
+                assertThat(line.path("productTitle").asText()).isEqualTo(onSale.get(0).get("published_title"));
+            }
+        }
+    }
+
+    @Test
     @DisplayName("the detail: lines, timeline oldest first, payment, delivery and production of a stock line")
     void detail() throws Exception {
         var body = mvc.perform(get("/api/v1/orders/me/" + twoLines.orderId()).header("Authorization", customerA()))

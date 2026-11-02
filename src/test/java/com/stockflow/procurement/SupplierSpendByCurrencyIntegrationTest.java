@@ -10,6 +10,7 @@ import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
+import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.ReferenceRows;
@@ -61,7 +62,7 @@ class SupplierSpendByCurrencyIntegrationTest {
     @BeforeEach
     void people() {
         submitter = tx.execute(s -> ReferenceRows.user(entityManager));
-        approver = tx.execute(s -> ReferenceRows.user(entityManager));
+        approver = tx.execute(s -> ApprovalLimitFixtures.approver(entityManager));
     }
 
     /** With an email contact: a supplier reached by email must have one. */

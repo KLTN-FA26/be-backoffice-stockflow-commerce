@@ -1,5 +1,6 @@
 package com.stockflow.notification.internal.service;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.stockflow.contracts.CustomerActedOnQuote;
 import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.common.http.RestClientFactory;
@@ -130,11 +131,14 @@ class NotificationSender {
             message.setTo(event.recipient());
             var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
             message.setSubject(
-                    messages.getString(
-                                    event.cancellation()
-                                            ? "po.mail.cancel.subject"
-                                            : "po.mail.subject")
-                            .formatted(event.poNumber()));
+                    event.amendment()
+                            ? messages.getString("po.mail.amend.subject")
+                                    .formatted(event.poNumber(), event.amendmentRevisionNo())
+                            : messages.getString(
+                                            event.cancellation()
+                                                    ? "po.mail.cancel.subject"
+                                                    : "po.mail.subject")
+                                    .formatted(event.poNumber()));
             String lines =
                     event.lines().stream()
                             .map(
@@ -163,7 +167,20 @@ class NotificationSender {
                                             buyer.receivingAddress());
             if (buyer != null) message.setReplyTo(buyer.email());
             message.setText(
-                    event.cancellation()
+                    event.amendment()
+                            ? messages.getString("po.mail.amend.body")
+                                    .formatted(
+                                            event.poNumber(),
+                                            identity,
+                                            event.amendmentRevisionNo(),
+                                            event.amendmentReason(),
+                                            changes(event, messages),
+                                            event.expectedAt(),
+                                            event.paymentTermDays(),
+                                            lines,
+                                            event.totalAmount(),
+                                            event.currency())
+                    : event.cancellation()
                             ? messages.getString("po.mail.cancel.body")
                                     .formatted(
                                             event.poNumber(), identity, event.cancellationReason())
@@ -196,10 +213,11 @@ class NotificationSender {
                                             event.paymentTermDays(),
                                             event.lines(),
                                             event.buyer(),
-                                            event.cancellation()
-                                                    ? "CANCELLATION"
-                                                    : "PURCHASE_ORDER",
-                                            event.cancellationReason()))
+                                            messageType(event),
+                                            event.cancellationReason(),
+                                            event.amendmentRevisionNo(),
+                                            event.amendmentReason(),
+                                            event.changes()))
                             .retrieve()
                             .toBodilessEntity();
             if (!response.getStatusCode().is2xxSuccessful()) {
@@ -212,6 +230,46 @@ class NotificationSender {
                         null);
             }
         } else throw new IllegalArgumentException("Unsupported supplier communication channel");
+    }
+
+    private static String messageType(PurchaseOrderSent event) {
+        if (event.amendment()) return "AMENDMENT";
+        return event.cancellation() ? "CANCELLATION" : "PURCHASE_ORDER";
+    }
+
+    /**
+     * What changed against the revision the supplier had, one line per change, in the supplier's words: a header
+     * change (no line) under its field's name, a line change with its line and SKU, a removed or added line as such.
+     * The event carries field codes, which the API channel passes on untouched; they become labels here only, and a
+     * code this deployment has no label for is written as it is.
+     */
+    private static String changes(PurchaseOrderSent event, ResourceBundle messages) {
+        return event.changes().stream()
+                .map(change -> change(change, messages))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private static String change(PurchaseOrderSent.Change change, ResourceBundle messages) {
+        String key = "po.mail.field." + change.field();
+        String label = messages.containsKey(key) ? messages.getString(key) : change.field();
+        if (change.lineNo() == null) {
+            return messages.getString("po.mail.change.header")
+                    .formatted(label, value(change.before(), messages), value(change.after(), messages));
+        }
+        return switch (change.field()) {
+            case "removed" -> messages.getString("po.mail.change.line")
+                    .formatted(change.lineNo(), change.sku(), label, value(change.before(), messages));
+            case "added" -> messages.getString("po.mail.change.line")
+                    .formatted(change.lineNo(), change.sku(), label, value(change.after(), messages));
+            default -> messages.getString("po.mail.change")
+                    .formatted(change.lineNo(), change.sku(), label, value(change.before(), messages),
+                            value(change.after(), messages));
+        };
+    }
+
+    /** A side that has no value - a note added or cleared - reads as such, not as a blank the reader may miss. */
+    private static String value(String value, ResourceBundle messages) {
+        return value == null || value.isBlank() ? messages.getString("po.mail.change.empty") : value;
     }
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);
@@ -229,7 +287,11 @@ class NotificationSender {
         mail.send(message);
     }
 
-    /** Internal recovery generations must not change the supplier's idempotent PO payload. */
+    /**
+     * Internal recovery generations must not change the supplier's idempotent PO payload. The amendment fields are
+     * omitted when empty (only those: the existing nulls stay as they were), so an order or a cancellation is posted as
+     * before SCRUM-117.
+     */
     private record SupplierPurchaseOrderMessage(
             UUID purchaseOrderId,
             String poNumber,
@@ -243,7 +305,10 @@ class NotificationSender {
             List<PurchaseOrderSent.Line> lines,
             PurchaseOrderSent.Buyer buyer,
             String type,
-            String cancellationReason) {}
+            String cancellationReason,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) Integer revisionNo,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) String amendmentReason,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) List<PurchaseOrderSent.Change> changes) {}
 
     void send(UUID recipientId, String templateCode, String subject, String body) {
         send(recipientId, null, templateCode, subject, body);

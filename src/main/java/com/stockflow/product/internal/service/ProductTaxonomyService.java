@@ -32,8 +32,9 @@ import java.util.regex.Pattern;
  * <p>Both are plain reference rows with no lifecycle beyond {@code active}, so they are kept as
  * entities without an aggregate. A code is fixed at creation and its slug derived from it; a category
  * keeps its code fixed, while a guarded move rewrites the subtree's materialised paths.
- * Deactivating is how a brand or category is retired: a product keeps pointing at it, and the
- * catalog stops offering an inactive category.</p>
+ * Deactivating is how a brand or category is retired: a product keeps pointing at it, no product
+ * newly chooses it ({@code BRAND_INACTIVE}, {@code CATEGORY_INACTIVE}, SCRUM-87), and the catalog stops
+ * offering an inactive category.</p>
  */
 @Service
 @Transactional

@@ -19,6 +19,7 @@ import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.internal.service.ProductVariantService;
+import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -74,7 +75,7 @@ class ProductEndOfLifePurchasingIntegrationTest {
     @BeforeEach
     void setUp() {
         editor = tx.execute(s -> ReferenceRows.user(entityManager));
-        approver = tx.execute(s -> ReferenceRows.user(entityManager));
+        approver = tx.execute(s -> ApprovalLimitFixtures.approver(entityManager));
         suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         tax = ProductFixtures.taxonomy(taxonomy, suffix);
         supplier = Identifiers.newId();

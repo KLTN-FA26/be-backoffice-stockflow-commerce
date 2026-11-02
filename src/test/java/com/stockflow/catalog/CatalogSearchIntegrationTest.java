@@ -179,6 +179,28 @@ class CatalogSearchIntegrationTest {
     }
 
     @Test
+    @org.junit.jupiter.api.DisplayName("SCRUM-190: the card and the product page say whether the product is printed to a "
+            + "design (CUSTOMIZABLE: quoted, not added to a basket) or standard")
+    void cardsAndDetailCarryTheProductKind() throws Exception {
+        String m = marker();
+        UUID standard = publish("Hộp tiêu chuẩn " + m, null, sku(m, 1));
+        UUID printed = publish("Hộp in logo " + m, null, sku(m, 2));
+        tx.executeWithoutResult(s -> jdbc.update("update product.products set kind='CUSTOMIZABLE' where id=?", printed));
+
+        JsonNode items = body(asCustomer(LIST, "q", m).andExpect(status().isOk())).at("/data/items");
+        assertThat(items.size()).isEqualTo(2);
+        for (JsonNode card : items) {
+            boolean isPrinted = card.get("productId").asText().equals(printed.toString());
+            assertThat(card.get("kind").asText()).isEqualTo(isPrinted ? "CUSTOMIZABLE" : "STANDARD");
+            JsonNode detail = body(asCustomer(LIST + "/" + card.get("slug").asText()).andExpect(status().isOk()))
+                    .at("/data");
+            assertThat(detail.get("productId").asText()).isEqualTo(card.get("productId").asText());
+            assertThat(detail.get("kind").asText()).isEqualTo(isPrinted ? "CUSTOMIZABLE" : "STANDARD");
+        }
+        assertThat(standard).isNotEqualTo(printed);
+    }
+
+    @Test
     void theDemoCatalogueAnswersBanGo() throws Exception {
         assertThat(titles(asCustomer(LIST, "q", "ban go"))).contains("Bàn ăn gỗ sồi");
         assertThat(titles(asCustomer(LIST, "q", "bàn gỗ"))).contains("Bàn ăn gỗ sồi");
@@ -520,7 +542,7 @@ class CatalogSearchIntegrationTest {
         asCustomer(SUGGEST, "q", m).andExpect(header().string("Cache-Control", "no-store"));
         asCustomer(LIST, "q", "!!").andExpect(header().string("Cache-Control", "no-store"));
         var card = body(asCustomer(LIST, "q", m)).at("/data/items/0");
-        assertThat(card.fieldNames()).toIterable().containsExactlyInAnyOrder("productId", "slug", "title", "seoTitle", "primaryImageUrl", "skus");
+        assertThat(card.fieldNames()).toIterable().containsExactlyInAnyOrder("productId", "slug", "title", "seoTitle", "primaryImageUrl", "skus", "kind");
         assertThat(body(asCustomer(LIST, "q", m)).toString()).doesNotContain("price", "stock", "atp", "quantity");
     }
 
@@ -595,7 +617,7 @@ class CatalogSearchIntegrationTest {
         assertThat(skus).containsExactlyInAnyOrder(sku(m, 1) + "|Search fixture", sku(m, 2) + "|Cốc lớn");
         assertThat(card.get("skus").get(0).fieldNames()).toIterable().containsExactlyInAnyOrder("sku", "name");
         assertThat(card.fieldNames()).toIterable()
-                .containsExactlyInAnyOrder("productId", "slug", "title", "seoTitle", "primaryImageUrl", "skus");
+                .containsExactlyInAnyOrder("productId", "slug", "title", "seoTitle", "primaryImageUrl", "skus", "kind");
     }
 
     @Test

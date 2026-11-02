@@ -128,10 +128,10 @@ flowchart LR
 | 04 | `procurement` | `~ purchase_order.sent_at, + outbox_event` | → SENT · PurchaseOrderSent |
 | 05 | `notification` | `+ processed_event, + notification` | gửi PO cho NCC |
 | 06 | `procurement` | `~ purchase_order.confirmed_at` | → CONFIRMED |
-| 07 | `procurement` | `+ po_revision (nếu sửa)` | PurchaseOrderAmended |
+| 07 | `procurement` | `+ po_revision (nếu sửa), ~ purchase_order.pending_revision_id` | duyệt bản sửa → revision mới có hiệu lực; PO đã gửi NCC thì gửi lại PurchaseOrderSent (amendmentRevisionNo) |
 
 > · Hạn mức người duyệt phải ≥ giá trị PO — BR-PO-002, kiểm trong aggregate chứ không ở controller.
-> ⚠ Sửa PO sau khi đã có phiếu nhập là CẤM. Phải tạo revision mới — BR-PO-004.
+> ⚠ Sửa PO chỉ khi APPROVED/CONFIRMED, chưa nhận gì, không có phiếu nhập đang đếm, NCC chưa từ chối. Bản sửa là revision mới và phải được duyệt; phiếu nhập đầu tiên, huỷ hoặc đóng PO sẽ rút bản sửa đang chờ — BR-PO-004.
 
 ---
 
@@ -159,11 +159,19 @@ flowchart LR
 |---|---|---|---|
 | 01 | `procurement` | `+ goods_receipt, + receipt_line × N` | status = DRAFT, chép qty từ PO |
 | 02 | `procurement` | `~ receipt_line.quantity_received, .lot_number, .expiry_date` | BR-RCP-003 |
+| 02b | `inventory` | `+ / ~ stock_package` (RECEIVING), `~ receipt_line.uom_conversion_id` | đếm theo thùng ngay trên phiếu DRAFT (`PUT /goods-receipts/{id}/lines`, `unitOfMeasure` + `packages`): thùng mới được cấp LPN `LPN-yyyyMMdd-nnnnnn` và in nhãn (`POST /inventory/stock-packages/labels`); gửi lại LPN = đếm lại thùng đó; thùng bỏ khỏi danh sách hoặc phiếu bị huỷ → VOID. Phần không vào thùng là hàng rời. Dòng đã từng có thùng (kể cả thùng đã VOID) giữ nguyên dòng đơn mua và số lô: không bỏ được khỏi phiếu nháp, và không đổi được đơn vị khi còn giữ thùng của đơn vị cũ (`RECEIPT_LINE_HAS_PACKAGES`); muốn sửa số lô hoặc dòng đơn mua của dòng đó thì huỷ phiếu nhận rồi đếm lại |
 | 03 | `MinIO` | `+ receipts/{id}/photo-*.jpg` | ảnh bằng chứng |
 | 04 | `procurement` | `+ qc_task` | status = PENDING, cho SKU có cờ QC |
 | 05 | `procurement` | `+ qc_result, ~ goods_receipt` | → QC_PASSED | QC_QUARANTINED | QC_REJECTED |
 | 06 | `procurement` | `~ goods_receipt, ~ purchase_order.open_qty, + outbox_event` | → POSTED · GoodsReceived |
 | 07 | `inventory` | `+ processed_event, + stock_item, + stock_movement` | condition = GOOD | QUARANTINE |
+
+> ★ Nhận theo thùng (SCRUM-473): khi xác nhận phiếu, mỗi thùng thành một dòng tồn INBOUND nằm trong thùng
+> (đúng số đã đếm), thùng → IN_STOCK, chưa mở; phần còn lại (nếu > 0) là một dòng tồn rời. Đưa sang khu QC:
+> hàng rời trước, rồi từng thùng nguyên thùng. QC cách ly / loại theo LPN — cả thùng đổi trạng thái tại chỗ,
+> giữ LPN, không mở; hàng rời vẫn quyết theo số lượng. Phiếu gia công ngoài (SUBCONTRACT) không nhận theo thùng
+> (`409 RECEIPT_PACKAGES_NOT_SUPPORTED`). Nhãn không in tên hàng và lô (tồn kho không đọc schema của
+> `product` / `procurement`).
 
 > ⚠ QC REJECTED thì đi nhánh RTV và KHÔNG dòng tồn kho nào được tạo — WBS 3.3.4.4.
 > · QC QUARANTINED thì stock_item vẫn được tạo, nhưng condition = QUARANTINE: có mặt, không bán được.
@@ -179,31 +187,34 @@ Giữa bước này và bước trước, hàng đã tồn tại trong hệ th�
 
 ```mermaid
 flowchart LR
-    N0["inventory<br><small>sf_inventory</small>"]
-    N1["warehouse<br><small>sf_warehouse</small>"]
-    N2(["Slotting engine"])
+    N0["procurement<br><small>sf_procurement</small>"]
+    N1["inventory<br><small>sf_inventory</small>"]
+    N2["warehouse<br><small>sf_warehouse</small>"]
     N3(["NV kho"])
-    N4["inventory<br><small>sf_inventory</small>"]
-    N0 -.->|"GoodsReceived"| N1
-    N1 -->|"chấm điểm vị trí"| N2
-    N2 -->|"gợi ý xếp hạng"| N3
-    N3 -.->|"PutawayCompleted"| N4
+    N0 -.->|"ReceiptStockReadyForPutaway"| N1
+    N1 -->|"mở task"| N2
+    N1 -->|"bin gợi ý + lý do"| N3
+    N3 -->|"quét bin, xác nhận"| N1
+    N1 -.->|"PutawayCompleted"| N0
 ```
 
 | # | Service | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `warehouse` | `+ processed_event, + putaway_task` | status = CREATED |
-| 02 | `warehouse` | `+ putaway_suggestion × N` | vị trí xếp hạng + lý do từng gợi ý |
-| 03 | `warehouse` | `~ putaway_task.assigned_to` | → ASSIGNED |
-| 04 | `warehouse` | `~ putaway_task (quét item)` | → IN_PROGRESS |
-| 05 | `warehouse` | `~ putaway_task.target_location_id, + outbox_event` | → COMPLETED |
-| 06 | `inventory` | `~ stock_item.location_code, + stock_movement, + outbox_event` | StockLevelChanged |
-| 07 | `catalog` | `~ atp_cache` | hàng bắt đầu bán được |
+| 01 | `inventory` → `warehouse` | `+ putaway_task` × (mỗi thùng `IN_STOCK` một task, cộng một task cho phần lẻ) | status = PENDING; khi xác nhận dòng không cần QC, hoặc QC kết luận đạt |
+| 02 | `inventory` | — (chỉ đọc) | `GET /putaway-tasks/{id}`: tối đa 10 bin xếp hạng kèm lý do, tính lại mỗi lần xem, không lưu |
+| 03 | `inventory` | `~ stock_item` (→ bin, INBOUND → AVAILABLE), `+ stock_movement` (MOVE, hoặc STATUS_CHANGE khi hàng đã nằm sẵn ở bin) | `POST /putaway-tasks/{id}/confirmations`: thùng quét LPN, phần lẻ nhập số lượng (cất nhiều lần được) |
+| 04 | `warehouse` | `~ putaway_task.target_location_id, .status` | → IN_PROGRESS, hoặc DONE và phát `PutawayCompleted` |
+| 05 | `procurement` | `~ goods_receipt` | → CLOSED khi mọi dòng đã cất đủ |
 
-> · Vị trí vi phạm ràng buộc cứng (hazmat, nhiệt độ, single-SKU) bị LOẠI HẲN trước khi chấm điểm — BR-SLT-001.
-> · Mỗi gợi ý phải kèm LÝ DO và lý do đó được lưu cùng task — BR-SLT-004.
+> · Bin vi phạm ràng buộc cứng (không phải bin, khác kho, không cho phép cất, sai lớp lưu trữ, bin / kệ / kho không Active, vượt sức chứa hoặc tải trọng) bị LOẠI HẲN khỏi gợi ý, và bị từ chối khi quét — BR-SLT-001, BR-SLT-003. Ràng buộc single-SKU / hàng kỵ nhau thuộc SCRUM-90.
+> · Gợi ý kèm lý do (cùng lô → cùng SKU → bin trống → còn chỗ), tính lại theo tồn mỗi lần xem, không lưu — BR-SLT-004.
+> · Cất vào bin ngoài gợi ý được, không cần lý do, nếu bin qua ràng buộc cứng — BR-SLT-002.
 > · Không cập nhật `storage_location`: mức đầy suy ra từ tồn so với sức chứa, không lưu (module 06 §5).
-> ★ Chỉ sau PutawayCompleted thì location_code mới là mã một bin (`HCM-A01-2-B`) và ATP mới tính hàng này.
+> ★ Chỉ sau khi cất thì location_code mới là mã một bin (`HCM-A01-2-B`) và ATP mới tính hàng này.
+> · Xác nhận cất hàng chạy đồng bộ trong `inventory`, trong một transaction cùng task; 200 nghĩa là hàng đã nằm trong bin.
+> · Thứ tự khoá: task → khoá bin → khoá SKU → `stock_package` → dòng tồn theo id.
+> · Giao việc, khoá mềm sức chứa, mã lý do khi cất khác gợi ý và cất nhiều chặng là phạm vi giai đoạn sau (docs open question C18): mọi NV kho của kho thấy và cất mọi task.
+> · Gợi ý mới lọc ở mức bin (bin dùng được, đánh dấu cất hàng); phần tầng kệ do SCRUM-91 làm.
 
 ---
 

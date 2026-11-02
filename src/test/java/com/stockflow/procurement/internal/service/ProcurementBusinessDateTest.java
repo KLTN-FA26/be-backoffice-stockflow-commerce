@@ -87,10 +87,11 @@ class ProcurementBusinessDateTest {
                 null, null)));
         return new ProcurementServiceImpl(orders, search, null, clock, suppliers, mock(ApplicationEventPublisher.class),
                 mock(NotificationService.class), mock(PoDeliveryDecisionRepository.class),
-                new PoCommunicationProfile("Buyer", "Address", "Buyer contact", "0901234567", "buyer@example.com",
-                        "Warehouse"),
+                new PoDeliveryContent(suppliers, mock(NotificationService.class),
+                        new PoCommunicationProfile("Buyer", "Address", "Buyer contact", "0901234567",
+                                "buyer@example.com", "Warehouse"), mock(ProductService.class)),
                 mock(ProductService.class), inventory, inventoryControl, warehouses, mock(CurrentUserProvider.class),
-                supplierItems);
+                supplierItems, mock(ApprovalLimits.class), org.mockito.Mockito.mock(com.stockflow.inventory.api.UomConversionService.class));
     }
 
     private PurchaseOrder saved() {
@@ -110,7 +111,7 @@ class ProcurementBusinessDateTest {
                         Money.vnd(100), null)),
                 LocalDate.parse("2026-09-20"), LocalDate.parse("2026-09-25"), null, 30, 7);
         order.submit(UUID.randomUUID(), UUID.randomUUID(), 0, beforeMidnight);
-        order.approve(UUID.randomUUID(), beforeMidnight);
+        order.approve(UUID.randomUUID(), Money.vnd(1_000_000_000L), beforeMidnight);
         when(orders.findByIdForUpdate(any())).thenReturn(Optional.of(order));
 
         service.confirm(order.id().value(), UUID.randomUUID(), new SendPurchaseOrderCommand(null, null));

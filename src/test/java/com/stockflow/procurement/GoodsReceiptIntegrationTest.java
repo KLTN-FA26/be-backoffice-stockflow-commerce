@@ -238,7 +238,7 @@ class GoodsReceiptIntegrationTest {
         List<UUID> other = lineIds(draft.id(), second);
 
         // 8 + 2 to 2 + 8 and back: whichever row is written first, the PO line passes 8 + 8 on the way. The
-        // tolerance is checked on the final totals (tg_goods_receipt_lines_tolerance, V20261020000800).
+        // tolerance is checked when the receipt is posted (tg_goods_receipts_tolerance, V20261029002000).
         receipts.replaceLines(draft.id(), List.of(tableLot(line, 2, lot, "short"), tableLot(line, 8, second, null)));
         receipts.replaceLines(draft.id(), List.of(tableLot(line, 8, lot, null), tableLot(line, 2, second, "short")));
         assertThat(lineIds(draft.id(), lot)).as("stock packages point at the line").isEqualTo(first);
@@ -291,7 +291,7 @@ class GoodsReceiptIntegrationTest {
     }
 
     @Test
-    @DisplayName("partial receipts move the PO on; the supplier's 5% tolerance caps the total (BR-02)")
+    @DisplayName("partial receipts move the PO on; a count past the supplier's 5% tolerance is flagged, not refused (BR-02)")
     void partialAndTolerance() {
         UUID po = confirmedOrder(SOFA, 10);
         UUID line = poLine(po, SOFA);
@@ -302,10 +302,12 @@ class GoodsReceiptIntegrationTest {
         assertThat(poStatus(po)).isEqualTo("PARTIALLY_RECEIVED");
 
         GoodsReceipts.ReceiptView second = receipts.create(new GoodsReceipts.Create(po, null, null), clerk);
-        // 6 + 5 = 11 > floor(10 × 1.05) = 10.
-        assertThatThrownBy(() -> receipts.replaceLines(second.id(),
-                List.of(new GoodsReceipts.NewLine(line, 5, null, null, "HCM-RCV01", null))))
-                .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
+        // 6 + 5 = 11 > floor(10 × 1.05) = 10: counted and flagged, not refused (SCRUM-477); confirming it would go to
+        // the manager (GoodsReceiptOverToleranceApprovalIntegrationTest).
+        GoodsReceipts.ReceiptView over = receipts.replaceLines(second.id(),
+                List.of(new GoodsReceipts.NewLine(line, 5, null, null, "HCM-RCV01", null)));
+        assertThat(over.lines().get(0).warnings()).containsExactly(GoodsReceipts.OVER_TOLERANCE);
+        assertThat(over.warnings()).containsExactly(GoodsReceipts.OVER_TOLERANCE);
         // Recounting a draft's line twice: the row is updated in place, never counted twice by the tolerance.
         receipts.replaceLines(second.id(), List.of(new GoodsReceipts.NewLine(line, 3, null, null, "HCM-RCV01", null)));
         receipts.replaceLines(second.id(), List.of(new GoodsReceipts.NewLine(line, 4, null, null, "HCM-RCV01", "rest")));
@@ -376,7 +378,7 @@ class GoodsReceiptIntegrationTest {
         UUID other = receipts.create(new GoodsReceipts.Create(po, null, null), clerk).id();
         assertThat(receipts.cancel(other).status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
         assertThat(poStatus(po)).isEqualTo("PARTIALLY_RECEIVED");
-        assertThat(receipts.list(List.of(GoodsReceiptStatus.CANCELLED), po, null, null, null, null, 0, 20, null)
+        assertThat(receipts.list(List.of(GoodsReceiptStatus.CANCELLED), po, null, null, null, null, null, 0, 20, null)
                 .items()).extracting(GoodsReceipts.Row::id).containsExactly(other);
     }
 
@@ -398,16 +400,14 @@ class GoodsReceiptIntegrationTest {
                 new GoodsReceipts.NewLine(UUID.randomUUID(), 1, null, null, "HCM-RCV01", null),
                 new GoodsReceipts.NewLine(sofa, 9, null, null, "HCM-A01-1-A", null))));
 
-        // Line 0 is fine on its own; with line 3 the sofa goes past floor(2 x 1.05) = 2 (BR-02).
-        assertThat(code(thrown)).isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
+        // The sofa going past floor(2 x 1.05) = 2 with line 3 is no refusal (BR-02, SCRUM-477): the manager decides.
+        assertThat(code(thrown)).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
         assertThat(fields(thrown)).containsExactly(
-                "lines[0].quantity:OVER_RECEIPT_TOLERANCE",
                 "lines[1].lotNumber:LOT_REQUIRED",
                 "lines[1].expiryDate:EXPIRY_REQUIRED",
                 "lines[2].purchaseOrderLineId:RECEIPT_LINE_NOT_ON_PO",
                 "lines[3].locationCode:LOCATION_AREA_MISMATCH",
-                "lines[3].lotNumber:DUPLICATE_RECEIPT_LINE",
-                "lines[3].quantity:OVER_RECEIPT_TOLERANCE");
+                "lines[3].lotNumber:DUPLICATE_RECEIPT_LINE");
         assertThat(receipts.get(receiptId).lines()).as("nothing was saved").isEmpty();
 
         // The first line at fault decides the top-level code.
@@ -416,6 +416,49 @@ class GoodsReceiptIntegrationTest {
                         new GoodsReceipts.NewLine(table, 1, lot, LocalDate.now().minusDays(1), "HCM-RCV01", null))));
         assertThat(code(lotOnly)).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
         assertThat(fields(lotOnly)).containsExactly("lines[1].expiryDate:EXPIRY_NOT_AFTER_RECEIPT");
+    }
+
+    private void setMaxShelfLife(Integer days) {
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.inventory_items SET max_shelf_life_days = ? WHERE sku = ?", days, TABLE));
+    }
+
+    @Test
+    @DisplayName("SCRUM-479 / BR-RCP-004: an expiry date beyond the receiving day + the item's maximum shelf life is "
+            + "refused on its line; within it, or with no maximum, it is accepted")
+    void expiryBeyondMaxShelfLifeIsRefused() {
+        UUID po = confirmedOrder(TABLE, 10);
+        UUID receiptId = receipts.create(new GoodsReceipts.Create(po, null, null), clerk).id();
+        UUID line = poLine(po, TABLE);
+        LocalDate today = LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
+        setMaxShelfLife(30);
+        try {
+            Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(() -> receipts.replaceLines(receiptId,
+                    List.of(new GoodsReceipts.NewLine(line, 1, lot + "-A", today.plusDays(30), "HCM-RCV01", null),
+                            new GoodsReceipts.NewLine(line, 1, lot + "-B", today.plusDays(31), "HCM-RCV01", null))));
+            assertThat(code(thrown)).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
+            assertThat(fields(thrown)).containsExactly("lines[1].expiryDate:EXPIRY_EXCEEDS_MAX_SHELF_LIFE");
+            assertThat(((BusinessException) thrown).fieldErrors().get(0).message())
+                    .contains(today.plusDays(30).toString());
+            assertThat(receipts.get(receiptId).lines()).as("nothing was saved").isEmpty();
+
+            assertThat(receipts.replaceLines(receiptId, List.of(
+                    new GoodsReceipts.NewLine(line, 1, lot + "-A", today.plusDays(30), "HCM-RCV01", null))).lines())
+                    .hasSize(1);
+
+            // Earlier than the receiving day: the lower bound is unchanged.
+            Throwable early = org.assertj.core.api.Assertions.catchThrowable(() -> receipts.replaceLines(receiptId,
+                    List.of(new GoodsReceipts.NewLine(line, 1, lot + "-A", today.minusDays(1), "HCM-RCV01", null))));
+            assertThat(fields(early)).containsExactly("lines[0].expiryDate:EXPIRY_NOT_AFTER_RECEIPT");
+
+            // No maximum configured: no upper bound.
+            setMaxShelfLife(null);
+            assertThat(receipts.replaceLines(receiptId, List.of(
+                    new GoodsReceipts.NewLine(line, 1, lot + "-A", today.plusYears(20), "HCM-RCV01", null))).lines())
+                    .hasSize(1);
+        } finally {
+            setMaxShelfLife(null);
+        }
     }
 
     @Test
@@ -456,7 +499,7 @@ class GoodsReceiptIntegrationTest {
                 new GoodsReceipts.Decision(2, null, new GoodsReceipts.Part(0, "NO-SUCH-AREA", null)), qc);
         assertThat(inspected.lines().get(0).inspections()).singleElement()
                 .satisfies(i -> assertThat(i.inspectedByName()).isNotBlank());
-        var row = receipts.list(null, po, null, null, null, null, 0, 20, null).items();
+        var row = receipts.list(null, po, null, null, null, null, null, 0, 20, null).items();
         assertThat(row).singleElement().satisfies(r -> {
             assertThat(r.purchaseOrderNumber()).startsWith("PO-");
             assertThat(r.supplierName()).isEqualTo(confirmed.supplierName());

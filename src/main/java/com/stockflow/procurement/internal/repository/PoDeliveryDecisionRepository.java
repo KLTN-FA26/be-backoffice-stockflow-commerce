@@ -66,6 +66,22 @@ public class PoDeliveryDecisionRepository {
                 .findFirst();
     }
 
+    /**
+     * The revision the order held when it was confirmed, which is the one its first delivery snapshot describes; empty
+     * when it was never confirmed. Read from the order's timeline, the one place that names it.
+     */
+    public Optional<UUID> confirmedRevisionId(UUID id) {
+        return jdbc
+                .query(
+                        "select po_revision_id from procurement.purchase_order_events where po_id=?"
+                            + " and action='CONFIRMED' and po_revision_id is not null"
+                            + " order by created_at desc, id desc limit 1",
+                        (row, index) -> row.getObject(1, UUID.class),
+                        id)
+                .stream()
+                .findFirst();
+    }
+
     public void record(
             UUID id,
             int generation,

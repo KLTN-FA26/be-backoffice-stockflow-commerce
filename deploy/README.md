@@ -351,6 +351,17 @@ the uploaded files matter.
   add the host a deployed frontend is served from (`https://*.<domain>` covers every subdomain) and
   run `bash scripts/deploy.sh` to apply it. A bare `*`, a missing scheme or a trailing slash stops
   the application at startup with the reason in `docker compose logs app`.
+- **Client IP and rate limits (SCRUM-483)**: the application runs with `server.forward-headers-strategy=native`.
+  Tomcat takes the client address from `X-Forwarded-For` only when the connection comes from a trusted proxy
+  (`server.tomcat.remoteip.internal-proxies`, set from `TRUSTED_PROXIES` in `.env`; default: the private ranges, i.e.
+  the compose network nginx and the application share - the application publishes no port, so only nginx can be
+  on it). nginx overwrites `X-Forwarded-For` with the real client (Cloudflare's `CF-Connecting-IP`, or the
+  back-office's address when it presents `BFF_ORIGIN_SECRET`), so the login and portal-activation limits key on that
+  address. A request that reaches the application from anywhere else keeps its own address whatever
+  `X-Forwarded-For` says, so a forged header cannot mint a new bucket. `RateLimitInterceptor` reads only
+  `getRemoteAddr()`. Check after a deploy: `docker compose logs app | grep "Rate limit hit"` shows
+  `identity=ip:<a client address>`, not an address inside the compose network. An empty `TRUSTED_PROXIES` trusts
+  nobody and puts every client in nginx's bucket; do not set it empty.
 - The application's own uploads go out to the VPS's public address and back (`S3_ENDPOINT` must
   be the public host for presigned links to work, and the presigner and client share it).
 - api, s3 and media have no DDoS protection or WAF in front of them - only nginx's per-address

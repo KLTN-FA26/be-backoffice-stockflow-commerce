@@ -41,7 +41,7 @@ public class CatalogCommerceWebMapper {
 
     public CatalogCardResponse toResponse(CatalogCommerceService.Card c) {
         return new CatalogCardResponse(c.productId(), c.slug(), c.title(), c.seoTitle(), c.primaryImageUrl(),
-                c.skus().stream().map(s -> new CatalogCardResponse.CardSku(s.sku(), s.name())).toList());
+                c.skus().stream().map(s -> new CatalogCardResponse.CardSku(s.sku(), s.name())).toList(), c.kind());
     }
 
     public SearchSuggestionResponse toResponse(CatalogSearchService.Suggestion s) {
@@ -65,7 +65,8 @@ public class CatalogCommerceWebMapper {
                                                 s.price().currency(),
                                                 s.availability()))
                         .toList(),
-                "/api/v1/catalog/products/" + v.slug() + "/gallery");
+                "/api/v1/catalog/products/" + v.slug() + "/gallery",
+                v.kind());
     }
 
     public CatalogGalleryResponse toGalleryResponse(List<PublishedProductImage> images) {

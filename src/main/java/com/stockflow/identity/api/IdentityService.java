@@ -77,6 +77,13 @@ public interface IdentityService {
      */
     void revokeRole(UUID userId, String roleCode);
 
+    /**
+     * The ids of the roles the account holds, empty for an unknown account. For a module whose own table is keyed by
+     * role (procurement's approval limits): the table is read in that module's schema and only the key crosses here,
+     * so no role name is ever compared in code.
+     */
+    List<UUID> roleIdsOf(UUID userId);
+
     /** Staff accounts (customers on request), paginated (SCRUM-454). */
     PageResponse<StaffUser> listUsers(ListUsersQuery query);
 

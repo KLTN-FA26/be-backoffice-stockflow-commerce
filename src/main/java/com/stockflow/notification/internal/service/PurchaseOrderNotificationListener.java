@@ -13,6 +13,18 @@ import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 
+/**
+ * Delivers a {@link PurchaseOrderSent}. The order itself is skipped when its delivery was suppressed (the supplier
+ * answered meanwhile) or a newer recovery generation replaced it; a cancellation and an amendment are not
+ * (SCRUM-117): each says something the supplier must still be told after answering, and each has a delivery reference
+ * of its own, so the order's "already sent" never swallows it.
+ *
+ * <p>An amendment notice is closed unsent instead - one terminal FAILED attempt, so it is not retried - once it is
+ * stale: a notice of a later revision was attempted, or the order was cancelled. Each notice carries the whole order as
+ * it stood, so an earlier one still retrying would otherwise reach the supplier after the later revision or the
+ * cancellation and undo it in their eyes. Decided under the order's delivery lock, which every notice of the order
+ * holds while it is sent: a later notice not attempted yet goes out after this one, which keeps the order right.</p>
+ */
 @Component
 class PurchaseOrderNotificationListener {
     private final NotificationSender sender;
@@ -38,6 +50,7 @@ class PurchaseOrderNotificationListener {
     public void on(PurchaseOrderSent event) {
         var control = controls.lock(event.purchaseOrderId());
         if (!event.cancellation()
+                && !event.amendment()
                 && (control.suppressed() || control.generation() != event.deliveryGeneration()))
             return;
         String reference = event.operationReference();
@@ -48,6 +61,26 @@ class PurchaseOrderNotificationListener {
         if (logs.existsByOperationReferenceAndDeliveryGenerationAndTerminalTrue(
                 reference, event.deliveryGeneration())) return;
         NotificationChannel channel = NotificationChannel.valueOf(event.channel());
+        if (event.amendment()
+                && (control.cancellationRequested()
+                        || logs.existsLaterAmendmentNotice(
+                                event.purchaseOrderId().toString(), event.amendmentRevisionNo()))) {
+            logs.saveAndFlush(
+                    DeliveryAttemptRecorder.superseded(
+                            reference,
+                            event.templateCode(),
+                            channel,
+                            event.recipient(),
+                            control.cancellationRequested()
+                                    ? NotificationServiceImpl.SUPERSEDED_BY_CANCELLATION
+                                    : NotificationServiceImpl.SUPERSEDED_BY_AMENDMENT,
+                            event.deliveryGeneration(),
+                            Math.toIntExact(
+                                    logs.countByOperationReferenceAndDeliveryGeneration(
+                                                    reference, event.deliveryGeneration())
+                                            + 1)));
+            return;
+        }
         try {
             sender.sendPurchaseOrder(event);
             var success =
@@ -80,6 +113,7 @@ class PurchaseOrderNotificationListener {
                     channel,
                     failure,
                     reference,
+                    event.templateCode(),
                     terminal,
                     event.deliveryGeneration());
             if (!terminal) throw failure;

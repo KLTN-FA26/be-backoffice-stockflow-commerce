@@ -34,10 +34,20 @@ public interface ProcurementService {
      */
     PurchaseOrderSummary reviseDraft(UUID purchaseOrderId, RevisePurchaseOrderCommand command);
 
-    /** DRAFT → PENDING_APPROVAL, freezing the order as a revision (SCRUM-114). */
+    /**
+     * DRAFT → PENDING_APPROVAL, freezing the order as a revision (SCRUM-114) - or straight to APPROVED, recorded as
+     * {@code AUTO_APPROVED} with the limit used ({@code autoApproved}; kltn-docs 02 §4 step 7, SCRUM-124), when the
+     * total after tax is within the approval limit of the submitter (for a subcontract order raised by splitting a
+     * production order, of the person who split it), the order was never rejected, and with the same holder's
+     * automatic approvals to the same supplier in the last 7 days it still is. No limit configured is no limit: the
+     * order waits for an approver.
+     */
     PurchaseOrderSummary submit(UUID purchaseOrderId, UUID submittedBy);
 
-    /** PENDING_APPROVAL → APPROVED. Four-eyes: {@code approverId} must not be who submitted it. */
+    /**
+     * PENDING_APPROVAL → APPROVED. Four-eyes: {@code approverId} must not be who submitted it
+     * (SELF_APPROVAL_NOT_ALLOWED), and the approver's own limit, when they have one, must cover the total (409 PO_APPROVAL_LIMIT_EXCEEDED).
+     */
     PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId);
 
     /** PENDING_APPROVAL → DRAFT, with a reason. */
@@ -55,7 +65,10 @@ public interface ProcurementService {
     /** → CANCELLED with a reason, while nothing has been received. A confirmed order's supplier is told. */
     PurchaseOrderSummary cancel(UUID purchaseOrderId, UUID userId, String reason);
 
-    /** PARTIALLY_RECEIVED → CLOSED (SHORT_CLOSE): the rest is written off with a reason. */
+    /**
+     * PARTIALLY_RECEIVED → CLOSED (SHORT_CLOSE): the rest is written off with a reason. CONFIRMED → CLOSED
+     * (FORCE_CLOSE) when nothing was received and will not be (kltn-docs 02 §5); the reason is mandatory.
+     */
     PurchaseOrderSummary closeShort(UUID purchaseOrderId, UUID userId, String reason);
 
     /** RECEIVED → CLOSED (NORMAL). */

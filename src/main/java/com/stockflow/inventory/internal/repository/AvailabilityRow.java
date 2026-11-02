@@ -29,7 +29,9 @@ public record AvailabilityRow(
         StockStatus status,
         int onHand,
         int reserved,
-        java.time.Instant receivedAt
+        java.time.Instant receivedAt,
+        UUID stockPackageId,
+        boolean wholeCarton
 ) {
 
     /** Domain-facing view. The subtraction is safe: the query filters {@code onHand > reserved}. */
@@ -40,6 +42,6 @@ public record AvailabilityRow(
                 lotNumber,
                 expiryDate,
                 status,
-                Quantity.of(onHand - reserved), receivedAt);
+                Quantity.of(onHand - reserved), receivedAt, stockPackageId, wholeCarton);
     }
 }

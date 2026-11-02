@@ -41,9 +41,24 @@ public interface LotTraces {
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for an unknown lot or one the caller's
      *         warehouses never held
      */
-    LotTrace trace(UUID lotId, UUID warehouse);
+    default LotTrace trace(UUID lotId, UUID warehouse) {
+        return trace(lotId, warehouse, BookVisibility.FULL);
+    }
+
+    /**
+     * As above; for a reader who may not see the books of slots under a count, the balances at the locations where
+     * one is held carry no quantity ({@link LotTrace.Balance#hiddenDuringCount()}). The lot's own totals are a lot's,
+     * not a slot's, and stay.
+     */
+    LotTrace trace(UUID lotId, UUID warehouse, BookVisibility visibility);
 
     /** The lot's ledger lines, oldest first — the order it moved in — within the warehouse and days asked for. */
+    default PageResponse<LotTrace.Movement> movements(UUID lotId, UUID warehouse, LocalDate from, LocalDate to,
+                                                      int page, int size) {
+        return movements(lotId, warehouse, from, to, page, size, BookVisibility.FULL);
+    }
+
+    /** As above, without the lines of slots under a count for a reader who may not see their books. */
     PageResponse<LotTrace.Movement> movements(UUID lotId, UUID warehouse, LocalDate from, LocalDate to, int page,
-                                              int size);
+                                              int size, BookVisibility visibility);
 }

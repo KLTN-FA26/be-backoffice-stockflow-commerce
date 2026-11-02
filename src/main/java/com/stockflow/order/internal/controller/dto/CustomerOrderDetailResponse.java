@@ -108,7 +108,9 @@ public record CustomerOrderDetailResponse(
     public record AllowedActions(
             @Schema(description = "Cancel at once (POST /orders/{id}/cancellation answers 200)") boolean cancel,
             @Schema(description = "Ask for a cancellation (the same endpoint answers 202)") boolean requestCancellation,
-            @Schema(description = "Order the same again (POST /orders/{id}/reorder)") boolean reorder) {
+            @Schema(description = "Order the same again by a new draft quote (POST /orders/{id}/reorder): true only for an "
+                    + "order that came from a quote. An order bought at the price list is false: the portal puts its "
+                    + "lines back in the basket instead") boolean reorder) {
     }
 
     @Schema(name = "CustomerOrderPayment")
@@ -131,7 +133,15 @@ public record CustomerOrderDetailResponse(
             BigDecimal lineTotal,
             @Schema(description = "Set for a line printed to the customer's design; null for stock goods")
             UUID designSnapshotId,
-            Production production) {
+            Production production,
+            @Schema(description = "Where this SKU is on sale in the storefront today (/catalog/{slug}); null when it "
+                    + "is not on sale now or the line is a design line. Today's catalogue, for putting the line back "
+                    + "in a basket (reorder)")
+            String productSlug,
+            @Schema(description = "The product's published title today; null as productSlug")
+            String productTitle,
+            @Schema(description = "The product's primary public image today; null without one or as productSlug")
+            String productImageUrl) {
     }
 
     @Schema(name = "CustomerOrderLineProduction")

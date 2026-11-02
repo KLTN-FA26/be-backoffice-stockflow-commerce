@@ -48,6 +48,12 @@ public enum ErrorCode {
     SKU_NOT_SELLABLE("The SKU is no longer active; change the line to an active SKU", 409),
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
     PRODUCT_BRAND_REQUIRED("A brand is required before submitting for approval", 409),
+    /** SCRUM-87: the request requires them, so a product reaching approval without them is a legacy row. */
+    PRODUCT_DETAILS_REQUIRED("An English name and a tax class are required before submitting for approval", 409),
+    /** SCRUM-87: a retired brand stays on the products that chose it, but no product newly chooses it. */
+    BRAND_INACTIVE("This brand is inactive and cannot be chosen for a product", 409),
+    /** SCRUM-87: a retired category stays on the products that chose it, but no product newly chooses it. */
+    CATEGORY_INACTIVE("This category is inactive and cannot be chosen for a product", 409),
     /** SCRUM-461, kltn-docs 01 BR-02: only a draft is deleted. */
     PRODUCT_NOT_DELETABLE("Only a draft product can be deleted", 409),
     /** SCRUM-461: stock, a purchase order, an order or a design already points at the product. */
@@ -160,6 +166,7 @@ public enum ErrorCode {
     PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
     /** A line entered in a packing unit is a whole number of that unit (BR-09, V20261020000400). */
     PO_LINE_UNIT_NOT_MULTIPLE("The quantity must be a whole number of the line's unit", 409),
+    PO_LINE_UNIT_INVALID("The unit is retired; order in an active unit", 409),
     PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
@@ -184,9 +191,16 @@ public enum ErrorCode {
     LOCATION_LABELS_EMPTY("No storage location matches this selection", 422),
     /** More labels than one print request renders; print by zone or shelf instead (SCRUM-97). */
     LOCATION_LABELS_TOO_MANY("Too many labels for one request", 422),
+    /** A carton label print that names neither a receipt line with live cartons nor any carton (SCRUM-473). */
+    STOCK_PACKAGE_LABELS_EMPTY("Choose a receipt line or the cartons to print", 422),
+    /** More carton labels than one print request renders (SCRUM-473). */
+    STOCK_PACKAGE_LABELS_TOO_MANY("At most 500 carton labels at a time", 422),
     /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
     MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
-    /** Four eyes: whoever asked for a stock adjustment may not decide it. */
+    /**
+     * Four eyes: whoever asked for a stock adjustment may not decide it - nor, for a {@code COUNT_VARIANCE}, whoever
+     * counted the line it came from.
+     */
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
@@ -197,7 +211,21 @@ public enum ErrorCode {
     /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
     PURCHASE_ORDER_NOT_RECEIVABLE("Goods cannot be received against this purchase order now", 409),
     INVALID_RECEIPT_TRANSITION("This goods receipt cannot move to that status right now", 409),
-    /** BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. */
+    /**
+     * SCRUM-477, four eyes (BR-RCP-001): whoever counted a receipt, or asked for its approval, may not decide it.
+     */
+    RECEIPT_SELF_APPROVAL("A goods receipt cannot be decided by the person who counted it or asked for its approval", 409),
+    /** SCRUM-478, BR-RCP-002: a receipt without a purchase order needs a reason. */
+    BLIND_RECEIPT_REASON_REQUIRED("A receipt without a purchase order needs a reason", 400),
+    /** SCRUM-478, owner decision NOPO-ATTACH: the purchase order attached to a receipt without one is the supplier's. */
+    RECEIPT_REFERENCE_SUPPLIER_MISMATCH("The purchase order is not the receipt's supplier's", 409),
+    /** SCRUM-477: approving a receipt, or rejecting its excess, needs a reason. */
+    RECEIPT_APPROVAL_REASON_REQUIRED("Deciding on a goods receipt needs a reason", 400),
+    /**
+     * BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. Since SCRUM-477 a count beyond
+     * it is no longer refused - the receipt waits for the warehouse manager - so the service does not answer with
+     * this; it stays for clients that still map it, and for the database trigger's own refusal.
+     */
     OVER_RECEIPT_TOLERANCE("The quantity exceeds what the purchase order line allows", 409),
     /** The location exists but is not the kind of area this step needs (RECEIVING, QUALITY_CONTROL,
      *  QUARANTINE), or is in another warehouse. */
@@ -212,8 +240,39 @@ public enum ErrorCode {
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
     RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
-    /** Cartons were labelled on the line (SCRUM-473): void or recount them before the line is dropped. */
+    /**
+     * SCRUM-473: a receipt line that has ever had labelled cartons - VOID ones too, which still point at it
+     * ({@code fk_stock_package_receipt_line}) - keeps its PO line and lot and cannot be removed from the draft, and
+     * its unit cannot change while it keeps cartons in the old one. A lot or PO line on such a line is corrected by
+     * cancelling the receipt and counting it again.
+     */
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
+    /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
+    RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
+    /**
+     * SCRUM-473 decision D5: a SUBCONTRACT order's goods are held for their production order one row per receipt
+     * line, so they are not received into cartons.
+     */
+    RECEIPT_PACKAGES_NOT_SUPPORTED("Cartons are not labelled on a subcontract receipt", 409),
+    /** SCRUM-92: no putaway task with this id. */
+    PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
+    /** SCRUM-92: the task has been put away completely; nothing is left to move. */
+    PUTAWAY_TASK_DONE("This putaway task is already done", 409),
+    /** SCRUM-92: more units than the task has left, a zero or negative count, or part of a carton. */
+    PUTAWAY_QUANTITY_EXCEEDED("The putaway quantity does not fit what the task has left", 422),
+    /** SCRUM-92: the scanned LPN is not the task's carton (or none was scanned for a carton task). */
+    PUTAWAY_LPN_MISMATCH("The scanned carton is not the one this putaway task is for", 409),
+    /** SCRUM-92: the chosen target is a storage area; goods are put away into bins. */
+    PUTAWAY_TARGET_NOT_BIN("Goods are put away into a bin, not a storage area", 422),
+    /** SCRUM-92: the bin's storage class is not the one the item must be kept in. */
+    LOCATION_STORAGE_CLASS_MISMATCH("The storage class of this bin does not fit the item", 409),
+    /** SCRUM-92: the putaway would take the bin past its capacity in units or its weight limit. */
+    LOCATION_CAPACITY_EXCEEDED("This bin cannot take that many units or that much weight", 409),
+    /**
+     * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
+     * and claims no packing unit it holds no carton of.
+     */
+    RECEIPT_LINE_UNIT_INVALID("A receipt line counts in its item's base unit, or in an active packing unit it has cartons of", 422),
     /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
     PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
     /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */
@@ -319,6 +378,12 @@ public enum ErrorCode {
     PAYMENT_REVERSAL_NEEDS_HOLD("Taking this money back leaves a confirmed order unpaid: confirm putting it on hold", 409),
     /** G2-3: money already refunded, or the order settled, closed or cancelled: the reversal would rewrite history. */
     PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
+    /**
+     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
+     * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and
+     * the client asks the customer, then resends with {@code confirmDuplicate: true}.
+     */
+    DUPLICATE_ORDER_SUSPECTED("An order with the same items was placed recently; confirm to place another", 409),
     /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
     BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
     /**
@@ -362,10 +427,17 @@ public enum ErrorCode {
     CYCLE_COUNT_TOO_LARGE("The count scope is too large - narrow it", 422),
     /** A counter who is not the assignee and may not decide. */
     CYCLE_COUNT_NOT_ASSIGNEE("This count is assigned to someone else", 403),
+    /**
+     * A line already counted by someone else on a count assigned to a third person: the figure is the counter's to
+     * correct. Whoever may decide could otherwise replace it and then approve the variance it raises.
+     */
+    CYCLE_COUNT_LINE_COUNTED_BY_OTHER("This line was counted by someone else; only the assignee may count it again", 403),
     /** Submitting a count that still has uncounted lines. */
     CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
     /** A slot already held by an open count. */
     CYCLE_COUNT_SLOT_BUSY("This stock slot is already on an open count", 409),
+    /** A manual move out of or into a slot a cycle count holds (SCRUM-146). */
+    STOCK_SLOT_UNDER_COUNT("This stock slot is under a cycle count; stock cannot be moved out of or into it", 409),
     /** A surplus where the slot has no layer to receive it. */
     CYCLE_COUNT_UNKNOWN_LAYER("The surplus cannot be placed on any receipt layer", 422),
     /** A shortage larger than what the slot holds now. */
@@ -533,6 +605,13 @@ public enum ErrorCode {
     PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
     VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),
     VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
+    /**
+     * kltn-docs 02 §4 step 7 (owner decision SCRUM-124): the approver's approval limit - the highest of their roles'
+     * {@code procurement.approval_limits} in the order's currency - is below the order's total after tax. A business
+     * rule on a request that is otherwise allowed, hence 409 and not 403 (403 means a missing permission): the order
+     * waits for someone whose limit covers it. Never raised for an approver with no limit configured (PO-NOLIMIT).
+     */
+    PO_APPROVAL_LIMIT_EXCEEDED("The purchase order total is above your approval limit", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
     /** kltn-docs 18 BR-01: one pending or active customer per tax code. */
@@ -553,6 +632,12 @@ public enum ErrorCode {
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
     /** Only a DRAFT standard order is edited in place; afterwards changes go through a revision (BR-02, BR-10). */
     PURCHASE_ORDER_NOT_EDITABLE("Only a draft standard purchase order can be edited", 409),
+    /** An approved or confirmed standard order is changed by an amendment, and only while nothing was received (SCRUM-117). */
+    PO_AMENDMENT_NOT_ALLOWED("This purchase order cannot be amended now", 409),
+    /** One amendment waits for a decision at a time; the next is requested after it is approved, rejected or withdrawn. */
+    PO_AMENDMENT_ALREADY_PENDING("An amendment of this purchase order already waits for a decision", 409),
+    PO_AMENDMENT_NOT_PENDING("No amendment of this purchase order waits for a decision", 409),
+    PO_AMENDMENT_NO_CHANGE("The amendment changes nothing", 400),
     /** Only a DRAFT transfer is edited; a rejected one is back in DRAFT for that (docs 10 §5). */
     TRANSFER_ORDER_NOT_EDITABLE("Only a draft transfer order can be edited", 409),
     /** The warehouse exists but is not ACTIVE: nothing new is received into or sent from it (SCRUM-390). */

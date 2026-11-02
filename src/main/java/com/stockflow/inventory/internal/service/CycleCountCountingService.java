@@ -88,6 +88,7 @@ class CycleCountCountingService {
         requireOpen(count);
         CycleCountLine line = count.lines().stream().filter(l -> l.id().equals(lineId)).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No such line on this count"));
+        count.requireMayCount(line, actor);
         policies.lock(line.slot().sku().code());
         int counted;
         if (line.slot().isCarton()) {

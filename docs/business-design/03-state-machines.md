@@ -85,7 +85,8 @@ stateDiagram-v2
 |---|---|---|---|---|---|
 | — | DRAFT | create | Procurement staff | supplier active, ≥1 line | — |
 | DRAFT | PENDING_APPROVAL | submit | Procurement staff | total ≥ 0, MOQ respected (BR-PO-001) | — |
-| PENDING_APPROVAL | APPROVED | approve | approver per threshold | approver's limit ≥ PO total (BR-PO-002) | `PurchaseOrderApproved` |
+| DRAFT | APPROVED | submit (auto-approval) | Procurement staff | PO total after tax ≤ the limit of the submitter (of whoever split the production order, for a SUBCONTRACT PO), configured and in force in the PO currency; never rejected before; with the same holder's AUTO_APPROVED POs to the same supplier in the last 7 days still ≤ the limit; recorded as `AUTO_APPROVED` with the limit used (BR-PO-002, kltn-docs 02 §4 step 7) | `AUTO_APPROVED` |
+| PENDING_APPROVAL | APPROVED | approve | approver per threshold | not the submitter; approver's limit, when configured, ≥ PO total (BR-PO-002; 409 `PO_APPROVAL_LIMIT_EXCEEDED`) | `PurchaseOrderApproved` |
 | PENDING_APPROVAL | DRAFT | reject | approver | reason given | — |
 | APPROVED | SENT | send | Procurement staff | supplier has email or API endpoint | `PurchaseOrderSent` |
 | SENT | CONFIRMED | supplier confirms | Procurement staff (records it) | — | `PurchaseOrderConfirmed` |
@@ -93,11 +94,17 @@ stateDiagram-v2
 | CONFIRMED / PARTIALLY_RECEIVED | PARTIALLY_RECEIVED | receipt posted | system | receipt total < ordered | — |
 | CONFIRMED / PARTIALLY_RECEIVED | RECEIVED | receipt posted | system | open qty = 0, within over-receipt tolerance (BR-RCP-001) | `PurchaseOrderFullyReceived` |
 | PARTIALLY_RECEIVED | CLOSED_SHORT | close short | Procurement staff | reason given; remaining qty written off | `PurchaseOrderClosedShort` |
+| CONFIRMED | CLOSED (`FORCE_CLOSE`) | force close | Procurement staff | reason given; nothing received and none expected (kltn-docs 02 §5); refused while a goods receipt is being counted | — |
 | RECEIVED | CLOSED | invoice approved | Accountant | three-way match passed or override approved (BR-INV-003) | `PurchaseOrderClosed` |
 
-**Amendment (WBS 3.2.5)** is not a state. Amending a PO in `SENT` or later creates
-**revision n+1** of the same PO number and emits `PurchaseOrderAmended`; the previous revision is
-retained for the audit trail. Amendment is forbidden once any receipt exists (BR-PO-004).
+**Amendment (WBS 3.2.5)** is not a state. A STANDARD PO in `APPROVED` or `CONFIRMED` can be amended while nothing
+has been received, no goods receipt is being counted and the supplier has not rejected it: the request records
+**revision n+1** of the same PO number as a pending revision, and approving it (automatically within the requester's
+limit, otherwise by someone else) makes it the active one; the previous revision is retained for the audit trail.
+There is no `SENT` status and no `PurchaseOrderAmended` event: when the order had already been sent, the supplier
+is told with `PurchaseOrderSent` carrying `amendmentRevisionNo`, and the supplier response returns to `PENDING`.
+A waiting amendment is withdrawn by the first posted receipt, by cancelling and by closing the order. Amendment is
+forbidden once any receipt exists (BR-PO-004).
 
 ---
 
@@ -116,6 +123,9 @@ the inventory item's **QC required** flag (snapshotted on the receipt line):
 stateDiagram-v2
     [*] --> DRAFT
     DRAFT --> CONFIRMED: confirm counts
+    DRAFT --> PENDING_APPROVAL: confirm, a PO line beyond its tolerance (BR-RCP-001)
+    PENDING_APPROVAL --> CONFIRMED: manager approves / rejects the excess
+    PENDING_APPROVAL --> CANCELLED: cancel, or nothing within the tolerance is left
     DRAFT --> CANCELLED: cancel
     CONFIRMED --> IN_QC: a QC-required line has no verdict yet
     CONFIRMED --> IN_PUTAWAY: no line needs QC
@@ -129,12 +139,26 @@ stateDiagram-v2
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
 | — | DRAFT | create from PO | Warehouse staff | PO `CONFIRMED` / `PARTIALLY_RECEIVED` (BR-RCP-001) | — |
-| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance, else manager approval | `GoodsReceived` |
+| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance | `GoodsReceived` |
+| DRAFT | PENDING_APPROVAL | confirm | Warehouse staff | a PO line goes beyond its over-receipt tolerance (BR-RCP-001, SCRUM-477); nothing is counted in, no event | — |
+| PENDING_APPROVAL | CONFIRMED | approve, or reject the excess | holder of `procurement-goods-receipts:APPROVE` (warehouse manager), not the receiver nor whoever sent it for approval | reason required; approve posts the whole count, reject-excess cuts each PO line to its remaining limit and posts (BR-RCP-001) | `GoodsReceived` |
+| PENDING_APPROVAL | CANCELLED | cancel; or reject the excess with nothing within the tolerance left; or, for a receipt without a PO, reject it | Warehouse staff / manager | never confirmed | — |
+| DRAFT | PENDING_APPROVAL | confirm a receipt **without a PO** (BR-RCP-002, SCRUM-478) | Warehouse staff | always, whatever the count; supplier and reason were required at creation; nothing is counted in | — |
+| PENDING_APPROVAL | CONFIRMED | approve a receipt without a PO | holder of `procurement-goods-receipts:APPROVE`, not the receiver nor whoever sent it | reason required; posts the count, no PO progress; the decision `APPROVED` is a database check for a posted receipt without a PO | `GoodsReceived` (no PO id) |
 | DRAFT | CANCELLED | cancel | Warehouse staff | never confirmed (`ck_goods_receipts_cancelled`) | — |
 | CONFIRMED | IN_QC | — | system | ≥1 line with `qc_required`; a **move-to-QC task** (`move_task.origin = RECEIPT_QC`) is created per such line | — |
 | CONFIRMED | IN_PUTAWAY | — | system | no line needs QC; putaway tasks from `RECEIVING` | — |
 | IN_QC | IN_PUTAWAY | last QC verdict | QC staff | QC only on goods already in the QC area (BR-08); accepted + quarantined + rejected = moved quantity | `QcCompleted` |
 | IN_PUTAWAY / IN_QC | CLOSED | — | system | every line handled | — |
+
+`PENDING_APPROVAL` is not in kltn-docs 03 §5.1, which says only that a count beyond the tolerance "needs the
+Warehouse Manager's exception approval or rejection of the excess" (§4 step 5): it is the form that wait takes (owner
+decision OVER-RCPT, 29/10). A receipt in it holds nothing: no stock, no PO progress, no event, and it does not count
+against the PO line's tolerance until posted.
+
+A receipt without a PO (blind receipt, BR-RCP-002) takes the same `PENDING_APPROVAL` wait on every confirmation, not
+only past a tolerance: it is rejected as a whole (cancelled, decision `REJECTED`) rather than cut back. The PO attached to
+it afterwards is a reference only and changes nothing in this machine or in the order's.
 
 **What confirming does to inventory.** Stock rows appear in the `RECEIVING` area in condition
 **INBOUND** (machine 5). A QC-required line then moves `RECEIVING → QUALITY_CONTROL` (still INBOUND);
@@ -263,35 +287,41 @@ were never SKU reservations; they keep their old lifecycle.
 
 ---
 
-## 7. Putaway task — `warehouse-service`
+## 7. Putaway task — `warehouse`, confirmed by `inventory`
 
 WBS 3.3.6 (generation), 3.5.4 (management).
 
+**Changed 2026-11-02** to KLTN-FA26/docs 05 Putaway (commit `beccca6`) and the SCRUM-92 code.
+Assignment, a reason code for leaving the suggestions, an exception state with a manager override
+and multi-leg putaway are later scope (docs open question C18): every clerk of the warehouse sees
+and puts away every task. Table `warehouse.putaway_task`, enum `PutawayStatus`.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED: receipt posted
-    CREATED --> ASSIGNED: assign to staff
-    ASSIGNED --> IN_PROGRESS: staff scans first item
-    IN_PROGRESS --> COMPLETED: destination scanned and confirmed
-    IN_PROGRESS --> EXCEPTION: suggested location unusable
-    EXCEPTION --> IN_PROGRESS: manager overrides location
-    CREATED --> CANCELLED: cancel
-    COMPLETED --> [*]
-    CANCELLED --> [*]
+    [*] --> PENDING: goods ready for putaway
+    PENDING --> IN_PROGRESS: part of a loose task put away
+    PENDING --> DONE: the carton, or all loose units, put away
+    IN_PROGRESS --> IN_PROGRESS: another part put away
+    IN_PROGRESS --> DONE: nothing left
+    DONE --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | CREATED | receipt posted | system | slotting engine returns ≥1 suggestion (BR-SLT-001) | `PutawayTaskCreated` |
-| CREATED | ASSIGNED | assign | Warehouse manager, or auto | staff assigned to that warehouse | — |
-| ASSIGNED | IN_PROGRESS | scan item | Warehouse staff | scanned SKU matches the task | — |
-| IN_PROGRESS | COMPLETED | confirm location | Warehouse staff | scanned location = suggested, or override approved (BR-SLT-002) | `PutawayCompleted` |
-| IN_PROGRESS | EXCEPTION | report blocked | Warehouse staff | reason given | — |
-| EXCEPTION | IN_PROGRESS | override | Warehouse manager | new location passes hard constraints (BR-SLT-003) | — |
+| — | PENDING | receipt line confirmed without QC, or QC accepts part of it (`ReceiptStockReadyForPutaway`) | system | one task per `IN_STOCK` carton holding INBOUND units, one for the loose remainder; a receipt line that already has a task opens nothing | — |
+| PENDING / IN_PROGRESS | IN_PROGRESS | confirm part of a loose task | Warehouse staff | 1 ≤ quantity < left (left is read from the ledger); the scanned bin passes the hard constraints (BR-SLT-001, BR-SLT-003), suggested or not (BR-SLT-002) | — |
+| PENDING / IN_PROGRESS | DONE | confirm a carton by its LPN, or the last loose units | Warehouse staff | a carton goes whole; same bin checks | `PutawayCompleted` |
 
-`PutawayCompleted` is what moves stock from the receiving area to a real bin. Until then, the
-stock exists with the location code of a `RECEIVING` area (e.g. `HCM-RCV01`) and is **not**
-pickable.
+`CANCELLED` exists in the enum and the table but nothing moves a task into it (docs 05 §5). No
+task outlives a cancelled receipt: a receipt can be cancelled only before it posts, and tasks open
+after it posts.
+
+Confirming is what moves stock from the `RECEIVING` or `QUALITY_CONTROL` area to a real bin,
+INBOUND → AVAILABLE, in the same transaction as the task (`PutawayService.confirm`). Until then
+the stock stands at the area's location code (e.g. `HCM-RCV01`) and is **not** pickable.
+`PutawayCompleted` tells procurement to close the receipt once every line is put away. Up to ten
+suggested bins, each with its reason, are computed on every read of the task and never stored
+(BR-SLT-004).
 
 ---
 

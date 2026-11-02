@@ -83,12 +83,17 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
      * re-check under the lock would run against pre-lock data.</p>
      *
      * <p>{@code reserved} is read from the denormalised column rather than aggregated from the
-     * child table, which keeps this a single-table scan on the partial index.</p>
+     * child table, which keeps this a single-table scan on the partial index. The carton, when there
+     * is one, is joined by its primary key only to say whether the row is that whole sealed carton
+     * (SCRUM-473); a carton holding stock is IN_STOCK, so no status filter is needed on it.</p>
      */
     @Query("""
             select new com.stockflow.inventory.internal.repository.AvailabilityRow(
-                s.id, s.locationCode, s.lotNumber, s.expiryDate, s.status, s.onHand, s.reserved, s.receivedAt)
+                s.id, s.locationCode, s.lotNumber, s.expiryDate, s.status, s.onHand, s.reserved, s.receivedAt,
+                s.stockPackageId,
+                case when p.unopened = true and s.reserved = 0 and s.onHand = p.receivedQty then true else false end)
             from StockItemJpaEntity s
+            left join StockPackageJpaEntity p on p.id = s.stockPackageId
             where s.sku = :sku
               and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
               and s.onHand > s.reserved
@@ -146,9 +151,30 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     List<StockItemJpaEntity> findLooseBySkuAndLocation(@Param("sku") String sku,
                                                        @Param("locationCode") String locationCode);
 
+    @Query("""
+            select distinct s from StockItemJpaEntity s
+            left join fetch s.reservations
+            where s.sku = :sku and s.lotId = :lotId and s.stockPackageId is null
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.INBOUND
+            order by s.id
+            """)
+    List<StockItemJpaEntity> findLooseInboundByLot(@Param("sku") String sku, @Param("lotId") UUID lotId);
+
+    @Query("""
+            select s.lotId, s.locationCode from StockItemJpaEntity s
+            where s.lotId in :lotIds and s.stockPackageId is null and s.onHand > 0
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.INBOUND
+            order by s.id
+            """)
+    List<Object[]> findLooseInboundLocations(@Param("lotIds") Collection<UUID> lotIds);
+
     /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
     @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
     List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);
+
+    /** JPQL for the same reason as {@link #findIdsInStockPackage}. */
+    @Query("select s.id from StockItemJpaEntity s where s.stockPackageId in :stockPackageIds order by s.id")
+    List<UUID> findIdsInStockPackages(@Param("stockPackageIds") java.util.Collection<UUID> stockPackageIds);
 
     @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
     long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);
@@ -189,8 +215,11 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     @Query("""
             select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
-                   r.quantity, r.status, r.expiresAt, s.expiryDate, s.serialNumber)
+                   r.quantity, r.status, r.expiresAt, s.expiryDate, s.serialNumber, p.lpn,
+                   case when p.unopened = true and r.quantity = s.onHand and s.onHand = p.receivedQty
+                        then true else false end)
             from ReservationJpaEntity r join r.stockItem s
+            left join StockPackageJpaEntity p on p.id = s.stockPackageId
             where r.id in :ids
             """)
     List<com.stockflow.inventory.internal.domain.HoldDetail> findHolds(@Param("ids") java.util.Collection<UUID> ids);

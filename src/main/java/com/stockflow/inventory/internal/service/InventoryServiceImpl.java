@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
+import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
@@ -9,13 +10,16 @@ import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.LowStockItem;
 import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.OrderHold;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
@@ -182,8 +186,29 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command) {
+        return operations.countReceivingPackages(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
+        return operations.receivingPackagesOf(receiptLineIds);
+    }
+
+    @Override
     public StockMove reclassify(ReclassifyStockCommand command) {
         return operations.reclassify(command);
+    }
+
+    @Override
+    public List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command) {
+        return operations.moveStockPackages(command);
+    }
+
+    @Override
+    public List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command) {
+        return operations.reclassifyStockPackages(command);
     }
 
     @Override
@@ -644,15 +669,19 @@ class InventoryServiceImpl implements InventoryService {
         }
     }
 
-    /** The pool after {@code taken}: what a second line of the same SKU may still draw on. */
+    /**
+     * The pool after {@code taken}: what a second line of the same SKU may still draw on. A row keeps its carton, so the
+     * next line is planned in carton order too; a carton a line has drawn on is no longer whole for the next.
+     */
     private static List<StockAllocator.Candidate> without(List<StockAllocator.Candidate> pool,
                                                           List<StockAllocator.AllocationLine> taken) {
         Map<StockItemId, Integer> used = new java.util.HashMap<>();
         taken.forEach(line -> used.merge(line.stockItemId(), line.quantity().value(), Integer::sum));
         return pool.stream().map(c -> {
-            int left = c.available().value() - used.getOrDefault(c.stockItemId(), 0);
+            int drawn = used.getOrDefault(c.stockItemId(), 0);
             return new StockAllocator.Candidate(c.stockItemId(), c.location(), c.lotNumber(), c.expiryDate(),
-                    c.status(), Quantity.of(Math.max(left, 0)), c.receivedAt());
+                    c.status(), Quantity.of(Math.max(c.available().value() - drawn, 0)), c.receivedAt(),
+                    c.stockPackageId(), c.wholeCarton() && drawn == 0);
         }).toList();
     }
 
@@ -966,7 +995,7 @@ class InventoryServiceImpl implements InventoryService {
                 .map(hold -> new com.stockflow.inventory.api.HoldView(hold.reservationId(), hold.sku(),
                         hold.locationCode(), hold.lotNumber(), hold.quantity(),
                         com.stockflow.inventory.api.HoldView.Status.valueOf(hold.status().name()), hold.expiresAt(),
-                        hold.expiryDate(), hold.serialNumber()))
+                        hold.expiryDate(), hold.serialNumber(), hold.lpn(), hold.wholeCarton()))
                 .toList());
         skuReservations.findAll(Set.copyOf(reservationIds)).forEach(r -> views.add(
                 new com.stockflow.inventory.api.HoldView(r.id().value(), r.sku().code(), null, null,

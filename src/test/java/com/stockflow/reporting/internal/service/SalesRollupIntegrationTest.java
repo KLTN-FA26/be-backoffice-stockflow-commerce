@@ -142,6 +142,16 @@ class SalesRollupIntegrationTest {
                 WHERE completion_date IS NULL AND listener_id LIKE '%SalesRollupListener%'""", Integer.class) == 0);
     }
 
+    /**
+     * Brings today's rollups to what a rebuild gives: other test classes of the same context insert orders of their
+     * own by SQL, which no listener ever counted. After this the listeners and the rebuild start from the same
+     * figures, so the comparisons below hold whatever ran before.
+     */
+    private void settleToday(LocalDate today) {
+        awaitRollupsIdle();
+        reports.rebuild(today, today);
+    }
+
     private ReportingService.SalesDay dayRow(LocalDate day) {
         return reports.salesDaily(day, day).getFirst();
     }
@@ -260,6 +270,7 @@ class SalesRollupIntegrationTest {
     @DisplayName("the rebuild gives exactly the figures the listeners produced, and again on a second run")
     void rebuildEqualsListeners() {
         LocalDate today = BusinessDay.today(clock);
+        settleToday(today);
         OrderSummary kept = place(3, 4_000_000);
         OrderSummary cancelled = place(2, 4_000_000);
         awaitPlaced(kept);
@@ -500,6 +511,7 @@ class SalesRollupIntegrationTest {
     @DisplayName("POST /rebuild recomputes the range and says what it did")
     void rebuildOverHttp() throws Exception {
         LocalDate today = BusinessDay.today(clock);
+        settleToday(today);
         OrderSummary order = place(1, 2_500_000);
         awaitPlaced(order);
         List<String> before = snapshot(today);
