@@ -109,6 +109,10 @@ wait_until_healthy() {
     esac
     sleep 5
     waited=$((waited + 5))
+    # A line every 30 s, so whoever watches (and the SSH session CI runs this in) sees progress.
+    if [ $((waited % 30)) -eq 0 ]; then
+      echo "==> Waiting for the application to become ready: ${waited}s of ${TIMEOUT_SECONDS}s (status: $status)."
+    fi
   done
   return 1
 }

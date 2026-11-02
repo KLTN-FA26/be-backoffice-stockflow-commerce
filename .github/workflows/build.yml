@@ -315,7 +315,10 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf 'Host vps\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n' \
+          # Keepalives: the runner's network drops a connection that stays silent for about four
+          # minutes, and a deploy can wait that long for the application to become ready. A dropped
+          # session kills deploy.sh half way - before it records the tag or can roll back.
+          printf 'Host vps\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n  ServerAliveInterval 30\n  ServerAliveCountMax 10\n' \
             "${SSH_TARGET#*@}" "${SSH_TARGET%@*}" "$SSH_PORT" > ~/.ssh/config
 
       # --delete removes files dropped from deploy/ in the repository; excluded paths are
