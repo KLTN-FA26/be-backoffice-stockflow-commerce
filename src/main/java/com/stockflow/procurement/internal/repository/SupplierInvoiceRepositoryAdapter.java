@@ -119,7 +119,7 @@ class SupplierInvoiceRepositoryAdapter implements SupplierInvoiceRepository, Sup
         entity.apply(invoice.purchaseOrderId(), invoice.invoiceNumber(), invoice.invoiceDate(), invoice.dueDate(),
                 invoice.note(), invoice.status(), invoice.subtotal(), invoice.taxTotal(), invoice.total());
         entity.applyMatch(invoice.matchedAt(), invoice.matchedBy(), invoice.priceTolerancePercent());
-        entity.applyVoid(invoice.voidedAt(), invoice.voidedBy(), invoice.voidReason());
+        entity.applyCancel(invoice.cancelledAt(), invoice.cancelledBy(), invoice.cancelReason());
         SupplierInvoice.Document scan = invoice.document();
         entity.applyScan(scan == null ? null : scan.key(), scan == null ? null : scan.name(),
                 scan == null ? null : scan.contentType());

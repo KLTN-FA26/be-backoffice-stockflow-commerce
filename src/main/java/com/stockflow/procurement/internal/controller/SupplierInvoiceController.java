@@ -120,12 +120,11 @@ class SupplierInvoiceController {
             description = "`version` is the one read: a change made meanwhile is refused (`OPTIMISTIC_LOCK`, 409).")
     @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.UPDATE)
     public ApiResponse<SupplierInvoiceResponses.Invoice> revise(@PathVariable UUID invoiceId,
-                                                                @Valid @RequestBody SupplierInvoiceRequests.Revise request,
-                                                                @AuthenticatedUser CurrentUser user) {
+                                                                @Valid @RequestBody SupplierInvoiceRequests.Revise request) {
         return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(invoices.revise(invoiceId, new SupplierInvoices.Revise(
                 request.purchaseOrderId(), request.invoiceNumber(), request.invoiceDate(), request.dueDate(),
                 request.note(),
-                lines(request.lines()), request.version()), user.userId())));
+                lines(request.lines()), request.version()))));
     }
 
     @PostMapping("/{invoiceId}/match")
@@ -143,13 +142,13 @@ class SupplierInvoiceController {
         return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(invoices.match(invoiceId, user.userId())));
     }
 
-    @PostMapping("/{invoiceId}/void")
-    @Operation(summary = "Void a DRAFT or EXCEPTION invoice entered by mistake or withdrawn by the supplier")
+    @PostMapping("/{invoiceId}/cancel")
+    @Operation(summary = "Cancel a DRAFT or EXCEPTION invoice entered by mistake or withdrawn by the supplier")
     @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.UPDATE)
-    public ApiResponse<SupplierInvoiceResponses.Invoice> voidInvoice(
-            @PathVariable UUID invoiceId, @Valid @RequestBody SupplierInvoiceRequests.VoidInvoice request,
+    public ApiResponse<SupplierInvoiceResponses.Invoice> cancel(
+            @PathVariable UUID invoiceId, @Valid @RequestBody SupplierInvoiceRequests.Cancel request,
             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(invoices.voidInvoice(invoiceId, request.reason(),
+        return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(invoices.cancel(invoiceId, request.reason(),
                 user.userId())));
     }
 
@@ -157,14 +156,12 @@ class SupplierInvoiceController {
     @Operation(summary = "Attach the invoice as received: PDF, JPEG or PNG, at most 15 MB; replaces an earlier scan")
     @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.UPDATE)
     public ApiResponse<SupplierInvoiceResponses.Invoice> attachScan(@PathVariable UUID invoiceId,
-                                                                    @RequestPart("file") MultipartFile file,
-                                                                    @AuthenticatedUser CurrentUser user)
+                                                                    @RequestPart("file") MultipartFile file)
             throws IOException {
         try (InputStream content = file.getInputStream()) {
             FileUpload upload = new FileUpload(file.getOriginalFilename() == null ? "invoice"
                     : file.getOriginalFilename(), file.getContentType(), file.getSize(), content);
-            return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(invoices.attachScan(invoiceId, upload,
-                    user.userId())));
+            return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(invoices.attachScan(invoiceId, upload)));
         }
     }
 

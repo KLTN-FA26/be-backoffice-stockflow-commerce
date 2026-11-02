@@ -134,7 +134,7 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "supplier-invoice", resourceId = "#invoiceId")
-    public InvoiceView revise(UUID invoiceId, Revise command, UUID by) {
+    public InvoiceView revise(UUID invoiceId, Revise command) {
         SupplierInvoice invoice = locked(invoiceId);
         if (command.version() != null && command.version() != invoice.version()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
@@ -189,9 +189,9 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "supplier-invoice", resourceId = "#invoiceId")
-    public InvoiceView voidInvoice(UUID invoiceId, String reason, UUID by) {
+    public InvoiceView cancel(UUID invoiceId, String reason, UUID by) {
         SupplierInvoice invoice = locked(invoiceId);
-        invoice.voidInvoice(reason, by, clock.instant());
+        invoice.cancel(reason, by, clock.instant());
         return view(invoices.save(invoice));
     }
 
@@ -201,7 +201,7 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
      */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "supplier-invoice", resourceId = "#invoiceId")
-    public InvoiceView attachScan(UUID invoiceId, FileUpload upload, UUID by) {
+    public InvoiceView attachScan(UUID invoiceId, FileUpload upload) {
         SupplierInvoice invoice = locked(invoiceId);
         try (BufferedUpload buffered = BufferedUpload.read(FileCategory.SUPPLIER_INVOICE, upload)) {
             try (InputStream content = buffered.open()) {
@@ -435,6 +435,6 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
                         v.kind(), v.expected(), v.invoiced(), v.amount())).toList(),
                 scan == null ? null : scan.name(), scan == null ? null : scan.contentType(), invoice.receivedAt(),
                 invoice.receivedBy(), invoice.matchedAt(), invoice.matchedBy(), invoice.priceTolerancePercent(),
-                invoice.voidedAt(), invoice.voidedBy(), invoice.voidReason(), invoice.version());
+                invoice.cancelledAt(), invoice.cancelledBy(), invoice.cancelReason(), invoice.version());
     }
 }

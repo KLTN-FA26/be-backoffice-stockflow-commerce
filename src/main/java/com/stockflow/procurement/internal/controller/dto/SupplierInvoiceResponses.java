@@ -38,7 +38,7 @@ public final class SupplierInvoiceResponses {
                           BigDecimal subtotal, BigDecimal taxTotal, BigDecimal total, List<Line> lines,
                           List<Variance> variances, boolean hasScan, String scanName, String scanContentType,
                           Instant receivedAt, UUID receivedBy, Instant matchedAt, UUID matchedBy,
-                          BigDecimal priceTolerancePercent, Instant voidedAt, UUID voidedBy, String voidReason,
+                          BigDecimal priceTolerancePercent, Instant cancelledAt, UUID cancelledBy, String cancelReason,
                           long version) {
     }
 

@@ -12,7 +12,7 @@ public enum SupplierInvoiceStatus {
     DRAFT, MATCHED, EXCEPTION, DISPUTED, APPROVED_FOR_PAYMENT, PAID, CANCELLED;
 
     /**
-     * Whether the accountant may still change, match or void the invoice: before a match, or after one that found
+     * Whether the accountant may still change, match or cancel the invoice: before a match, or after one that found
      * variances. A MATCHED invoice has consumed the receipts it billed and is the resolution story's to move on.
      */
     public boolean isOpen() {

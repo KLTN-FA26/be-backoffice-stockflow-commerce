@@ -125,7 +125,7 @@ public class SupplierInvoiceJpaEntity extends BaseEntity {
         this.priceTolerancePercent = priceTolerancePercent;
     }
 
-    public void applyVoid(Instant voidedAt, UUID voidedBy, String voidReason) {
+    public void applyCancel(Instant voidedAt, UUID voidedBy, String voidReason) {
         this.voidedAt = voidedAt;
         this.voidedBy = voidedBy;
         this.voidReason = voidReason;

@@ -99,7 +99,7 @@ class SupplierInvoiceTest {
         assertThat(clean.matchedBy()).isEqualTo(ACCOUNTANT);
         assertThat(refusal(() -> clean.revise(header("HD-002", TODAY, null), List.of(line(PO_LINE, 1, "1", "0")),
                 TODAY, UUID::randomUUID))).isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
-        assertThat(refusal(() -> clean.voidInvoice("wrong", ACCOUNTANT, NOW)))
+        assertThat(refusal(() -> clean.cancel("wrong", ACCOUNTANT, NOW)))
                 .isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
         assertThat(refusal(() -> clean.recordMatch(List.of(), BigDecimal.ONE, ACCOUNTANT, NOW)))
                 .isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
@@ -130,13 +130,13 @@ class SupplierInvoiceTest {
     }
 
     @Test
-    @DisplayName("voiding needs a reason and leaves the invoice closed; a void invoice takes no scan")
-    void voiding() {
+    @DisplayName("cancelling needs a reason and leaves the invoice closed; a cancelled invoice takes no scan")
+    void cancelling() {
         SupplierInvoice invoice = entered();
-        assertThat(refusal(() -> invoice.voidInvoice("  ", ACCOUNTANT, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        invoice.voidInvoice(" nhập nhầm ", ACCOUNTANT, NOW);
+        assertThat(refusal(() -> invoice.cancel("  ", ACCOUNTANT, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        invoice.cancel(" nhập nhầm ", ACCOUNTANT, NOW);
         assertThat(invoice.status()).isEqualTo(SupplierInvoiceStatus.CANCELLED);
-        assertThat(invoice.voidReason()).isEqualTo("nhập nhầm");
+        assertThat(invoice.cancelReason()).isEqualTo("nhập nhầm");
         assertThat(refusal(() -> invoice.attach(new SupplierInvoice.Document("k", "a.pdf", "application/pdf"))))
                 .isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
 

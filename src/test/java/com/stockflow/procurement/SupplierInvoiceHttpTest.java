@@ -75,7 +75,7 @@ class SupplierInvoiceHttpTest {
                     .andExpect(status().isForbidden());
             http.asRole(role, staff, post("/api/v1/supplier-invoices/" + UUID.randomUUID() + "/match"))
                     .andExpect(status().isForbidden());
-            http.asRole(role, staff, post("/api/v1/supplier-invoices/" + UUID.randomUUID() + "/void")
+            http.asRole(role, staff, post("/api/v1/supplier-invoices/" + UUID.randomUUID() + "/cancel")
                             .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"not mine\"}"))
                     .andExpect(status().isForbidden());
         }

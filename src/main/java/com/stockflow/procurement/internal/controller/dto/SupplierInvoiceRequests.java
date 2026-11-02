@@ -57,6 +57,6 @@ public final class SupplierInvoiceRequests {
                          Long version) {
     }
 
-    public record VoidInvoice(@NotBlank @Size(max = 500) String reason) {
+    public record Cancel(@NotBlank @Size(max = 500) String reason) {
     }
 }

@@ -19,7 +19,7 @@ final class SupplierInvoiceWebMapper {
                 v.variances().stream().map(x -> new SupplierInvoiceResponses.Variance(x.id(), x.lineId(),
                         x.purchaseOrderId(), x.kind().name(), x.expected(), x.invoiced(), x.amount())).toList(),
                 v.scanName() != null, v.scanName(), v.scanContentType(), v.receivedAt(), v.receivedBy(),
-                v.matchedAt(), v.matchedBy(), v.priceTolerancePercent(), v.voidedAt(), v.voidedBy(), v.voidReason(),
+                v.matchedAt(), v.matchedBy(), v.priceTolerancePercent(), v.cancelledAt(), v.cancelledBy(), v.cancelReason(),
                 v.version());
     }
 

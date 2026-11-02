@@ -86,7 +86,7 @@ public final class SupplierInvoice extends AggregateRoot {
 
     /**
      * What the accountant may correct on the header while the invoice is open - the order it names too: an invoice
-     * entered against the wrong order is corrected, not voided, since its number stays taken (BR-INV-001).
+     * entered against the wrong order is corrected, not cancelled, since its number stays taken (BR-INV-001).
      * {@code purchaseOrderId} null: the invoice bills lines of several of the supplier's orders.
      */
     public record Header(UUID purchaseOrderId, String invoiceNumber, LocalDate invoiceDate, LocalDate dueDate,
@@ -106,7 +106,7 @@ public final class SupplierInvoice extends AggregateRoot {
                         LocalDate invoiceDate, LocalDate dueDate, String note, SupplierInvoiceStatus status,
                         List<Line> lines, List<Variance> variances, Document document, Instant receivedAt,
                         UUID receivedBy, Instant matchedAt, UUID matchedBy, BigDecimal priceTolerancePercent,
-                        Instant voidedAt, UUID voidedBy, String voidReason, long version) {
+                        Instant cancelledAt, UUID cancelledBy, String cancelReason, long version) {
     }
 
     private final UUID id;
@@ -128,9 +128,9 @@ public final class SupplierInvoice extends AggregateRoot {
     private Instant matchedAt;
     private UUID matchedBy;
     private BigDecimal priceTolerancePercent;
-    private Instant voidedAt;
-    private UUID voidedBy;
-    private String voidReason;
+    private Instant cancelledAt;
+    private UUID cancelledBy;
+    private String cancelReason;
 
     public SupplierInvoice(State state) {
         this.id = Objects.requireNonNull(state.id(), "id");
@@ -150,9 +150,9 @@ public final class SupplierInvoice extends AggregateRoot {
         this.matchedAt = state.matchedAt();
         this.matchedBy = state.matchedBy();
         this.priceTolerancePercent = state.priceTolerancePercent();
-        this.voidedAt = state.voidedAt();
-        this.voidedBy = state.voidedBy();
-        this.voidReason = state.voidReason();
+        this.cancelledAt = state.cancelledAt();
+        this.cancelledBy = state.cancelledBy();
+        this.cancelReason = state.cancelReason();
         this.version = state.version();
     }
 
@@ -211,25 +211,25 @@ public final class SupplierInvoice extends AggregateRoot {
     }
 
     /**
-     * Voids an invoice entered by mistake or withdrawn by the supplier (kltn-docs 04 "Cancelled"). A MATCHED one is not
-     * voided here: it already counts as billed, and taking it back is the resolution story's (SCRUM-310).
+     * Cancels an invoice entered by mistake or withdrawn by the supplier (kltn-docs 04 "Cancelled"). A MATCHED one is not
+     * cancelled here: it already counts as billed, and taking it back is the resolution story's (SCRUM-310).
      *
      * @throws BusinessException {@code VALIDATION_FAILED} without a reason; {@code SUPPLIER_INVOICE_INVALID_TRANSITION}
      *         unless DRAFT or EXCEPTION
      */
-    public void voidInvoice(String reason, UUID by, Instant at) {
-        requireOpen("voided");
+    public void cancel(String reason, UUID by, Instant at) {
+        requireOpen("cancelled");
         String why = trimmed(reason);
         if (why == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say why the invoice is voided");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say why the invoice is cancelled");
         }
         if (why.length() > 500) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The reason is at most 500 characters");
         }
         this.status = SupplierInvoiceStatus.CANCELLED;
-        this.voidReason = why;
-        this.voidedBy = Objects.requireNonNull(by, "by");
-        this.voidedAt = Objects.requireNonNull(at, "at");
+        this.cancelReason = why;
+        this.cancelledBy = Objects.requireNonNull(by, "by");
+        this.cancelledAt = Objects.requireNonNull(at, "at");
     }
 
     /**
@@ -382,8 +382,8 @@ public final class SupplierInvoice extends AggregateRoot {
     public Instant matchedAt() { return matchedAt; }
     public UUID matchedBy() { return matchedBy; }
     public BigDecimal priceTolerancePercent() { return priceTolerancePercent; }
-    public Instant voidedAt() { return voidedAt; }
-    public UUID voidedBy() { return voidedBy; }
-    public String voidReason() { return voidReason; }
+    public Instant cancelledAt() { return cancelledAt; }
+    public UUID cancelledBy() { return cancelledBy; }
+    public String cancelReason() { return cancelReason; }
     public long version() { return version; }
 }

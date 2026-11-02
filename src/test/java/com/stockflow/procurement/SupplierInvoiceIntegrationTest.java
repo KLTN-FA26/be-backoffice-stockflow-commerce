@@ -108,7 +108,7 @@ class SupplierInvoiceIntegrationTest {
                             changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
                         revision, po, submitter);
             }
-            for (int i = 0; i < skuAndQty.length; i += 2) {
+            for (int i = 0; i + 1 < skuAndQty.length; i += 2) {
                 jdbc.update("""
                         INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no,
                             inventory_item_id, ordered_qty, unit_price, tax_rate, version, created_at)
@@ -177,7 +177,7 @@ class SupplierInvoiceIntegrationTest {
         assertThat(matched.variances()).isEmpty();
         assertThat(matched.priceTolerancePercent()).isEqualByComparingTo("2");
         assertThat(code(() -> invoices.revise(first.id(), new SupplierInvoices.Revise(po, number, today, null, null,
-                List.of(billed(poLine(po, SOFA), 3, "1000", "10")), null), accountant)))
+                List.of(billed(poLine(po, SOFA), 3, "1000", "10")), null))))
                 .as("a MATCHED invoice has billed its units").isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
 
         assertThat(code(() -> enter(po, number.toLowerCase(), billed(poLine(po, SOFA), 1, "1000", "10"))))
@@ -218,7 +218,7 @@ class SupplierInvoiceIntegrationTest {
         SupplierInvoices.InvoiceView corrected = invoices.revise(invoice.id(), new SupplierInvoices.Revise(po,
                 invoice.invoiceNumber(), today, null, "only the accepted units",
                 List.of(new SupplierInvoices.LineInput(poLine(po, TABLE), line, 3, new BigDecimal("1000"),
-                        BigDecimal.ZERO)), null), accountant);
+                        BigDecimal.ZERO)), null));
         assertThat(corrected.status()).isEqualTo(SupplierInvoiceStatus.DRAFT);
         assertThat(corrected.variances()).isEmpty();
         assertThat(invoices.match(invoice.id(), accountant).status()).isEqualTo(SupplierInvoiceStatus.MATCHED);
@@ -240,10 +240,10 @@ class SupplierInvoiceIntegrationTest {
                 invoice.id())).isEqualTo(2L);
 
         assertThat(code(() -> invoices.revise(invoice.id(), new SupplierInvoices.Revise(po, invoice.invoiceNumber(),
-                today, null, null, List.of(billed(poLine(po, SOFA), 2, "1020", "10")), 0L), accountant)))
+                today, null, null, List.of(billed(poLine(po, SOFA), 2, "1020", "10")), 0L))))
                 .as("a version read before the match").isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         invoices.revise(invoice.id(), new SupplierInvoices.Revise(po, invoice.invoiceNumber(), today, null, null,
-                List.of(billed(poLine(po, SOFA), 2, "1020", "10")), null), accountant);
+                List.of(billed(poLine(po, SOFA), 2, "1020", "10")), null));
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM procurement.supplier_invoice_variances WHERE invoice_id = ?""", Long.class,
                 invoice.id())).as("an edit drops what the last match found").isZero();
@@ -292,7 +292,7 @@ class SupplierInvoiceIntegrationTest {
 
         SupplierInvoices.InvoiceView corrected = invoices.revise(invoice.id(), new SupplierInvoices.Revise(right,
                 invoice.invoiceNumber(), today, null, null, List.of(billed(poLine(right, SOFA), 2, "1000", "0")),
-                null), accountant);
+                null));
         assertThat(corrected.purchaseOrderId()).isEqualTo(right);
         assertThat(corrected.lines()).extracting(SupplierInvoices.LineView::purchaseOrderId).containsExactly(right);
         assertThat(invoices.match(invoice.id(), accountant).status()).isEqualTo(SupplierInvoiceStatus.MATCHED);
@@ -316,25 +316,25 @@ class SupplierInvoiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("voided with a reason it is closed; the scan is kept and served by a link")
-    void voidAndScan() {
+    @DisplayName("cancelled with a reason it is closed; the scan is kept and served by a link")
+    void cancelAndScan() {
         UUID po = order("CONFIRMED", "0", SOFA, 1);
         SupplierInvoices.InvoiceView invoice = enter(po, number(), billed(poLine(po, SOFA), 1, "1000", "0"));
         byte[] pdf = "%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF".getBytes(StandardCharsets.US_ASCII);
         SupplierInvoices.InvoiceView scanned = invoices.attachScan(invoice.id(), new FileUpload("hd.pdf",
-                "application/pdf", pdf.length, new ByteArrayInputStream(pdf)), accountant);
+                "application/pdf", pdf.length, new ByteArrayInputStream(pdf)));
         assertThat(scanned.scanName()).isEqualTo("hd.pdf");
         assertThat(invoices.scanLink(invoice.id()).url()).isNotBlank();
 
-        assertThat(code(() -> invoices.voidInvoice(invoice.id(), " ", accountant))).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThat(invoices.voidInvoice(invoice.id(), "Nhà cung cấp thu hồi hoá đơn", accountant).status())
+        assertThat(code(() -> invoices.cancel(invoice.id(), " ", accountant))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(invoices.cancel(invoice.id(), "Nhà cung cấp thu hồi hoá đơn", accountant).status())
                 .isEqualTo(SupplierInvoiceStatus.CANCELLED);
         assertThat(code(() -> invoices.match(invoice.id(), accountant)))
                 .isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
     }
 
     @Test
-    @DisplayName("the database states it again: a MATCHED invoice has no variance, a void one says why")
+    @DisplayName("the database states it again: a MATCHED invoice has no variance, a cancelled one says why")
     void databaseRules() {
         UUID po = order("CONFIRMED", "0", SOFA, 1);
         SupplierInvoices.InvoiceView invoice = enter(po, number(), billed(poLine(po, SOFA), 2, "1000", "0"));

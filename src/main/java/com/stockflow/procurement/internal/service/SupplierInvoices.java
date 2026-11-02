@@ -15,7 +15,7 @@ import java.util.UUID;
 
 /**
  * Supplier invoices (SCRUM-308) and their three-way match against the purchase order and its receipts (SCRUM-309;
- * kltn-docs 04, docs 03 §4, BR-INV-001/002): enter, correct, match, void, attach the scan.
+ * kltn-docs 04, docs 03 §4, BR-INV-001/002): enter, correct, match, cancel, attach the scan.
  *
  * <p>Not on {@code procurement :: api}: nothing outside this module drives an invoice. Resolving variances, approving
  * payment and recording it (SCRUM-310) start from what this leaves: MATCHED, or EXCEPTION with its variances.</p>
@@ -57,7 +57,7 @@ public interface SupplierInvoices {
                        SupplierInvoiceStatus status, BigDecimal subtotal, BigDecimal taxTotal, BigDecimal total,
                        List<LineView> lines, List<VarianceView> variances, String scanName, String scanContentType,
                        Instant receivedAt, UUID receivedBy, Instant matchedAt, UUID matchedBy,
-                       BigDecimal priceTolerancePercent, Instant voidedAt, UUID voidedBy, String voidReason,
+                       BigDecimal priceTolerancePercent, Instant cancelledAt, UUID cancelledBy, String cancelReason,
                        long version) {
     }
 
@@ -84,14 +84,14 @@ public interface SupplierInvoices {
 
     InvoiceView enter(Enter command, UUID by);
 
-    InvoiceView revise(UUID invoiceId, Revise command, UUID by);
+    InvoiceView revise(UUID invoiceId, Revise command);
 
     /** Runs the three-way match: MATCHED, or EXCEPTION with what it found. Again on an EXCEPTION, after QC or a fix. */
     InvoiceView match(UUID invoiceId, UUID by);
 
-    InvoiceView voidInvoice(UUID invoiceId, String reason, UUID by);
+    InvoiceView cancel(UUID invoiceId, String reason, UUID by);
 
-    InvoiceView attachScan(UUID invoiceId, FileUpload upload, UUID by);
+    InvoiceView attachScan(UUID invoiceId, FileUpload upload);
 
     DownloadLink scanLink(UUID invoiceId);
 

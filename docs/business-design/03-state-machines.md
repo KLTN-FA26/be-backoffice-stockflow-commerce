@@ -172,7 +172,7 @@ confirmed receipt is never deleted; mistakes are reversals or adjustments with a
 
 WBS 3.4.1 (entry, SCRUM-308), 3.4.2 (three-way match, SCRUM-309), 3.4.3 (exceptions and payment, SCRUM-310).
 
-Built: entering, correcting, matching and voiding (`/api/v1/supplier-invoices`, `procurement-supplier-invoices`). The
+Built: entering, correcting, matching and cancelling (`/api/v1/supplier-invoices`, `procurement-supplier-invoices`). The
 entered, not yet matched invoice is `DRAFT`; matching is a step the accountant runs, again after
 QC concluded or goods arrived. Override, dispute, approval for payment and payment are SCRUM-310's (not built).
 
@@ -190,8 +190,8 @@ stateDiagram-v2
     MATCHED --> APPROVED_FOR_PAYMENT: approve (SCRUM-310)
     APPROVED_FOR_PAYMENT --> PAID: payment recorded (SCRUM-310)
     PAID --> [*]
-    DRAFT --> CANCELLED: void
-    EXCEPTION --> CANCELLED: void
+    DRAFT --> CANCELLED: cancel
+    EXCEPTION --> CANCELLED: cancel
     CANCELLED --> [*]
 ```
 
@@ -201,7 +201,7 @@ stateDiagram-v2
 | DRAFT, EXCEPTION | DRAFT | correct · `PUT /supplier-invoices/{id}` | `:UPDATE` | the whole header and lines again, `version` as read; an EXCEPTION's variances are dropped | — |
 | DRAFT, EXCEPTION | MATCHED | match · `POST /supplier-invoices/{id}/match` | `:UPDATE` | no variance (BR-INV-002): from then on its units count as billed | — |
 | DRAFT, EXCEPTION | EXCEPTION | match | `:UPDATE` | variances, kept per line with expected, invoiced and the amount at stake (`supplier_invoice_variances`), with the tolerance used | — |
-| DRAFT, EXCEPTION | CANCELLED | void · `POST /supplier-invoices/{id}/void` | `:UPDATE` | reason required (entered by mistake, withdrawn by the supplier) | — |
+| DRAFT, EXCEPTION | CANCELLED | cancel · `POST /supplier-invoices/{id}/cancel` | `:UPDATE` | reason required (entered by mistake, withdrawn by the supplier) | — |
 | EXCEPTION | MATCHED | override (SCRUM-310) | Accountant with approval limit | approver's limit ≥ variance (BR-INV-003) | `InvoiceOverrideApproved` |
 | EXCEPTION | DISPUTED | dispute (SCRUM-310) | Accountant | reason recorded | — |
 | DISPUTED | DRAFT | credit note posted (SCRUM-310) | Accountant | credit note linked; matched again | — |
