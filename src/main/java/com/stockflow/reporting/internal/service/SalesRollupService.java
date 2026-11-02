@@ -1,5 +1,6 @@
 package com.stockflow.reporting.internal.service;
 
+import com.stockflow.contracts.OrderRemainderClosed;
 import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.order.api.OrderService;
@@ -67,10 +68,53 @@ class SalesRollupService {
     @Transactional
     public void orderCancelled(UUID orderId) {
         lock.shared();
+        lock.forOrder(orderId);
         boolean applied = rollups.cancel(orderId,
                 () -> orders.findById(orderId).flatMap(SalesRollupService::contributionOf).orElse(null));
         if (!applied) {
             LOG.debug("Sales rollup: cancellation of order {} was applied before, or the order is not countable", orderId);
+        }
+    }
+
+    /**
+     * {@code OrderRemainderClosed} with reason {@code PRODUCTION_SHORTFALL} (S6): the units production did not make, and
+     * their value, come off the revenue of the day the order was placed. The closure carries one line, whose value is
+     * {@code closedAmount}.
+     */
+    @Transactional
+    public void productionShortfallClosed(OrderRemainderClosed event) {
+        if (event.closureId() == null || event.lines().size() != 1 || event.closedAmount() == null
+                || event.closedAmount().signum() <= 0) {
+            LOG.warn("Sales rollup: the shortfall closure {} of order {} does not say which units and what value; left out",
+                    event.closureId(), event.orderId());
+            return;
+        }
+        if (!CURRENCY.equals(event.currency())) {
+            LOG.warn("Sales rollup: order {} is in {}, not {}; its shortfall left out", event.orderId(),
+                    event.currency(), CURRENCY);
+            return;
+        }
+        lock.shared();
+        lock.forOrder(event.orderId());
+        Optional<java.time.LocalDate> day = rollups.placedDay(event.orderId());
+        if (day.isEmpty()) {
+            // Its OrderPlaced was not applied yet (the two events are handled apart): count the order now, as a
+            // cancellation does - the placement that arrives afterwards finds it recorded and does nothing.
+            Optional<OrderContribution> placed = orders.findById(event.orderId())
+                    .flatMap(SalesRollupService::contributionOf);
+            if (placed.isEmpty()) {
+                LOG.warn("Sales rollup: order {} of shortfall closure {} is not countable; closure left out",
+                        event.orderId(), event.closureId());
+                return;
+            }
+            rollups.place(placed.get());
+            day = Optional.of(placed.get().day());
+        }
+        OrderRemainderClosed.Line line = event.lines().getFirst();
+        if (!rollups.closed(event.closureId(), new OrderContribution(event.orderId(), day.get(), event.currency(),
+                event.closedAmount(),
+                List.of(new OrderContribution.Line(line.sku(), line.quantity(), event.closedAmount()))))) {
+            LOG.debug("Sales rollup: shortfall closure {} was applied before", event.closureId());
         }
     }
 

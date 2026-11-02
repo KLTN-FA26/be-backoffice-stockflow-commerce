@@ -64,6 +64,21 @@ class PlacementValidatorTest {
     }
 
     @Test
+    void overweightIsLeftOutOnlyWhenThePayloadIsIgnored() {
+        CargoPackage heavy = carton("h", 500, 500, 500, "95", true, null);
+        List<PlacementValidator.Item> load = List.of(at(heavy, 0, 0, 0), at(a, 500, 0, 0));
+        assertThat(PlacementValidator.validate(BOX, load, false))
+                .containsExactly(new PlacementViolation(null, ViolationType.OVERWEIGHT));
+        assertThat(PlacementValidator.validate(BOX, load, true)).isEmpty();
+        // The two-argument form is the real one.
+        assertThat(PlacementValidator.validate(BOX, load)).containsExactly(
+                new PlacementViolation(null, ViolationType.OVERWEIGHT));
+        // Ignoring the payload leaves every other rule: an overlap is still reported.
+        assertThat(PlacementValidator.validate(BOX, List.of(at(a, 0, 0, 0), at(b, 499, 0, 0)), true))
+                .contains(new PlacementViolation("a", ViolationType.OVERLAP));
+    }
+
+    @Test
     void rotationNotAllowed() {
         CargoPackage fixed = carton("f", 600, 400, 300, "1", false, null);
         assertThat(PlacementValidator.validate(BOX, List.of(PlacementValidator.Item.of(fixed, 0, 0, 0,

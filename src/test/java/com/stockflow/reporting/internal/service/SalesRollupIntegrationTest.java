@@ -316,6 +316,58 @@ class SalesRollupIntegrationTest {
         }
     }
 
+    @Test
+    @DisplayName("a short completion takes the closed value and units off the placed day - once, and again after a "
+            + "rebuild; a cancellation after it takes out only what is left, so the day is back where it began")
+    void shortCompletionTakesTheShortfallOff() {
+        LocalDate today = BusinessDay.today(clock);
+        settleToday(today);
+        var dayBefore = dayRow(today);
+        long unitsBefore = unitsOfSofa(today);
+        BigDecimal revenueBefore = revenueOfSofa(today);
+        OrderSummary order = place(10, 4_000_000);
+        awaitPlaced(order);
+        UUID closureId = UUID.randomUUID();
+        com.stockflow.contracts.OrderRemainderClosed shortfall = new com.stockflow.contracts.OrderRemainderClosed(
+                order.orderId(), order.orderNumber(), order.customerId(),
+                com.stockflow.contracts.OrderRemainderClosed.PRODUCTION_SHORTFALL,
+                List.of(new com.stockflow.contracts.OrderRemainderClosed.Line(order.lines().getFirst().lineId(),
+                        SOFA.code(), 3)),
+                new BigDecimal("12000000"), new BigDecimal("28000000"), BigDecimal.ZERO, BigDecimal.ZERO, "VND",
+                UUID.randomUUID(), Instant.now(), closureId, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        tx.executeWithoutResult(s -> publisher.publishEvent(shortfall));
+        Await.until("closure applied", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
+                + "reporting.processed_order_closures WHERE closure_id = ?", Integer.class, closureId) == 1);
+        awaitRollupsIdle();
+
+        assertThat(dayRow(today).ordersCount()).as("the sale happened").isEqualTo(dayBefore.ordersCount() + 1);
+        assertThat(dayRow(today).revenue())
+                .isEqualByComparingTo(dayBefore.revenue().add(new BigDecimal("28000000")));
+        assertThat(unitsOfSofa(today)).isEqualTo(unitsBefore + 7);
+        assertThat(revenueOfSofa(today)).isEqualByComparingTo(revenueBefore.add(new BigDecimal("28000000")));
+
+        tx.executeWithoutResult(s -> publisher.publishEvent(shortfall));
+        awaitRollupsIdle();
+        assertThat(dayRow(today).revenue()).as("delivered twice, taken off once")
+                .isEqualByComparingTo(dayBefore.revenue().add(new BigDecimal("28000000")));
+
+        List<String> listeners = snapshot(today);
+        reports.rebuild(today, today);
+        assertThat(snapshot(today)).as("the rebuild takes the closure off again").isEqualTo(listeners);
+
+        cancel(order);
+        awaitCancelled(order);
+        assertThat(dayRow(today).ordersCount()).isEqualTo(dayBefore.ordersCount());
+        assertThat(dayRow(today).revenue()).as("only what was left of the order came out")
+                .isEqualByComparingTo(dayBefore.revenue());
+        assertThat(unitsOfSofa(today)).isEqualTo(unitsBefore);
+        assertThat(revenueOfSofa(today)).isEqualByComparingTo(revenueBefore);
+        List<String> afterCancel = snapshot(today);
+        reports.rebuild(today, today);
+        assertThat(snapshot(today)).as("and so does a rebuild").isEqualTo(afterCancel);
+        jdbc.update("DELETE FROM reporting.processed_order_closures WHERE closure_id = ?", closureId);
+    }
+
     // ---- the rebuild -------------------------------------------------------------------------------------------
 
     @Test

@@ -170,36 +170,43 @@ confirmed receipt is never deleted; mistakes are reversals or adjustments with a
 
 ## 4. Supplier Invoice — `procurement-service`
 
-WBS 3.4.3 (three-way match), 3.4.4 (exceptions), 3.4.5.2 (Pending/Paid).
+WBS 3.4.1 (entry, SCRUM-308), 3.4.2 (three-way match, SCRUM-309), 3.4.3 (exceptions and payment, SCRUM-310).
+
+Built: entering, correcting, matching and cancelling (`/api/v1/supplier-invoices`, `procurement-supplier-invoices`). The
+entered, not yet matched invoice is `DRAFT`; matching is a step the accountant runs, again after
+QC concluded or goods arrived. Override, dispute, approval for payment and payment are SCRUM-310's (not built).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> DRAFT
-    DRAFT --> MATCHING: link PO and receipt
-    MATCHING --> MATCHED: within tolerance
-    MATCHING --> EXCEPTION: outside tolerance
-    EXCEPTION --> MATCHED: override approved
-    EXCEPTION --> DISPUTED: raise with supplier
-    DISPUTED --> MATCHING: supplier issues credit note
-    MATCHED --> APPROVED_FOR_PAYMENT: approve
-    APPROVED_FOR_PAYMENT --> PAID: payment recorded
+    [*] --> DRAFT: enter
+    DRAFT --> MATCHED: match, no variance
+    DRAFT --> EXCEPTION: match, variances
+    EXCEPTION --> MATCHED: match again, none left
+    EXCEPTION --> DRAFT: correct
+    DRAFT --> DRAFT: correct
+    EXCEPTION --> MATCHED: override approved (SCRUM-310)
+    EXCEPTION --> DISPUTED: raise with supplier (SCRUM-310)
+    DISPUTED --> DRAFT: supplier issues credit note (SCRUM-310)
+    MATCHED --> APPROVED_FOR_PAYMENT: approve (SCRUM-310)
+    APPROVED_FOR_PAYMENT --> PAID: payment recorded (SCRUM-310)
     PAID --> [*]
-    DRAFT --> VOID: void
-    EXCEPTION --> VOID: void
-    VOID --> [*]
+    DRAFT --> CANCELLED: cancel
+    EXCEPTION --> CANCELLED: cancel
+    CANCELLED --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | DRAFT | enter invoice | Accountant | supplier invoice number unique per supplier (BR-INV-001) | — |
-| DRAFT | MATCHING | link | Accountant | at least one PO and one receipt linked | — |
-| MATCHING | MATCHED | auto | system | qty and price within tolerance (BR-INV-002) | `InvoiceMatched` |
-| MATCHING | EXCEPTION | auto | system | outside tolerance | `InvoiceMatchException` |
-| EXCEPTION | MATCHED | override | Accountant with approval limit | approver's limit ≥ variance (BR-INV-003) | `InvoiceOverrideApproved` |
-| EXCEPTION | DISPUTED | dispute | Accountant | reason recorded | — |
-| DISPUTED | MATCHING | credit note posted | Accountant | credit note linked | — |
-| MATCHED | APPROVED_FOR_PAYMENT | approve | Accountant | within payment approval limit | `InvoiceApprovedForPayment` |
-| APPROVED_FOR_PAYMENT | PAID | record payment | Accountant | — | `SupplierInvoicePaid` |
+| — | DRAFT | enter · `POST /supplier-invoices` | Accountant only (`:CREATE`); procurement staff only read (decision 2026-11-02, kltn-docs 04 §2) | number unique per supplier, case aside (BR-INV-001); every line bills a PO line of the supplier (of the invoice's order when it names one; none named: lines of several of its orders), on an order past approval (not DRAFT, PENDING_APPROVAL, CANCELLED), in one currency; a named receipt line is a delivery of that PO line; dated today or earlier, due not before it; amounts worked out from the lines (net, tax per line rounded half up) | — |
+| DRAFT, EXCEPTION | DRAFT | correct · `PUT /supplier-invoices/{id}` | `:UPDATE` | the whole header and lines again, `version` as read; an EXCEPTION's variances are dropped | — |
+| DRAFT, EXCEPTION | MATCHED | match · `POST /supplier-invoices/{id}/match` | `:UPDATE` | no variance (BR-INV-002): from then on its units count as billed | — |
+| DRAFT, EXCEPTION | EXCEPTION | match | `:UPDATE` | variances, kept per line with expected, invoiced and the amount at stake (`supplier_invoice_variances`), with the tolerance used | — |
+| DRAFT, EXCEPTION | CANCELLED | cancel · `POST /supplier-invoices/{id}/cancel` | `:UPDATE` | reason required (entered by mistake, withdrawn by the supplier) | — |
+| EXCEPTION | MATCHED | override (SCRUM-310) | Accountant with approval limit | approver's limit ≥ variance (BR-INV-003) | `InvoiceOverrideApproved` |
+| EXCEPTION | DISPUTED | dispute (SCRUM-310) | Accountant | reason recorded | — |
+| DISPUTED | DRAFT | credit note posted (SCRUM-310) | Accountant | credit note linked; matched again | — |
+| MATCHED | APPROVED_FOR_PAYMENT | approve (SCRUM-310) | Accountant | within payment approval limit | `InvoiceApprovedForPayment` |
+| APPROVED_FOR_PAYMENT | PAID | record payment (SCRUM-310) | Accountant | — | `SupplierInvoicePaid` |
 
 ---
 
@@ -1001,6 +1008,8 @@ stateDiagram-v2
     PRINTING --> QC: printed + scrap recorded
     QC --> COMPLETED: good quantity reached
     QC --> READY: shortfall → reprint
+    READY --> COMPLETED: completed short, within the customer's agreement (S6)
+    MATERIAL_ISSUED --> COMPLETED: completed short, within the customer's agreement (S6)
     READY --> SUBCONTRACTED: subcontracted child sent out (PO approved)
     SUBCONTRACTED --> QC: subcontract goods receipt posted
     PENDING_PREPRESS --> ON_HOLD
@@ -1027,6 +1036,8 @@ stateDiagram-v2
 | PRINTING | QC | record output | Production staff | good + scrap = printed; scrap has a reason (BR-PRD-04) | — |
 | QC | COMPLETED | QC pass | QC staff | good quantity = required; ORDER compared with the approved sample (BR-PRD-05) | `ProductionCompleted` (ORDER) |
 | QC | READY | shortfall | QC staff | more blanks reserved; none → ON_HOLD | — |
+| READY / MATERIAL_ISSUED (or ON_HOLD from one) | COMPLETED (short) | `POST /production/orders/{id}/short-completion` | Warehouse manager (`production-orders:APPROVE`) | an order's in-house job with good units, fewer than planned, every printed unit through QC, and **Sales recorded on the order line that the customer goes without at least that many** (`POST /orders/{id}/lines/{lineId}/production-shortfall-agreement`, `sales-order-cancellations:UPDATE`: how many at most, how the customer agreed, who, when; 0 withdraws it while nothing was closed under it - `PRODUCTION_SHORTFALL_NOT_AGREED` otherwise, and nothing changes), recorded by someone else than the manager closing it (`PRODUCTION_SHORTFALL_SELF_APPROVAL`). Closing all of a line is a cancellation, refused here. In one transaction: the sales order line gives up the units not made (`OrderService.closeProductionShortfall` → `OrderRemainderClosed` reason `PRODUCTION_SHORTFALL`: the order is worth less, payment refunds what was paid above that), the goods go to packing as on any completion, unprinted blanks go back and the line's blanks never issued are let go. `short_completion_reason`, `ck_production_order_completed_quantity`, `ck_order_line_shortfall_agreement` / `_closed` (review 2026-10-25, S6) | `ProductionCompleted` with the good quantity |
+| PENDING_PREPRESS / READY / MATERIAL_ISSUED (or ON_HOLD from one), **no good unit** | CANCELLED (closed short) | the same endpoint | Warehouse manager | as above, within the agreement: nothing to deliver, so the job is cancelled and its whole plan leaves the line - a subcontract's shortfall job the blanks never came for, its siblings having made the rest. Its blanks go back free. The closure's own announcement moves the order on when what the others made now covers the line (BR-PRD-06) | `OrderRemainderClosed` |
 | PENDING_PREPRESS / READY / ON_HOLD | *(unchanged)* + child PENDING_PREPRESS or READY | split for subcontracting | Warehouse manager | ORDER only (BR-PRD-11); 0 < split < quantity not yet issued (BR-PRD-12); active subcontractor; child inherits the parent's prepress result | — |
 | READY | SUBCONTRACTED | send to subcontractor (child only) | Warehouse staff | `SUBCONTRACT` PO approved (BR-PRD-13); SUPPLIED_BLANKS: blanks scanned to the subcontractor location (BR-PRD-15) | — |
 | SUBCONTRACTED | QC | subcontract goods receipt posted | system | SUPPLIED_BLANKS: blank reconciliation done, excess loss approved (BR-PRD-16, 17) | — |
@@ -1036,6 +1047,24 @@ stateDiagram-v2
 
 Once `PRINTING` or `SUBCONTRACTED`, the design cannot change (BR-PRD-07, BR-PRD-14) and
 cancellation follows BR-PRD-10.
+
+**Short of the plan** (review 2026-10-25, S6): a stop scraps the good units because they are sold to nobody else -
+right when the customer cancels, wrong when the customer still wants what was printed. Completing short is the way
+for the second case: the 9,940 good cups of 10,000 go to the customer, the order is billed for 9,940. Lowering what
+an order is worth is a sale's decision, so it takes two people: Sales records the customer's agreement on the line
+(at most how many units, how it was given - the line keeps who and when), the warehouse manager completes the job
+within it. A cancellation of the order afterwards keeps and refunds out of the money still the order's: the refund
+the shortfall asked for is not paid out twice (`Order.cancel`, `ck_order_cancellation_fee`). Delivering part of a
+print run *before* the job completes (5,000 now for an event, the rest later) is not built: it needs the order and
+packing to take print goods in parts - a decision for the team (open question). Reporting and payment status (owner decision SHORT-LIMITS,
+2026-11-02): the closure takes its value and units off the sales rollups, on the day the order was placed, as a
+cancellation does (`reporting.processed_order_closures`, kept through a rebuild; the order count stays, a cancellation
+afterwards takes out only what is left; closing the rest of a split order is not applied to the rollups - not decided);
+"paid in full" is measured on what the order is worth now (`Order.billable` plus the fees closures agreed, the point
+where the amount due is 0), not on the original total: an order that paid that much reads PAID, whether the money came
+before the closure (re-evaluated when it lowers the worth, a closed remainder too) or after, and a reversal below it
+undoes it (`closed_amount`, `ck_order_paid_in_full`). A known limit remains: a new agreement replaces the last on the
+line, the audit trail keeps who recorded each.
 
 Decided 2026-10-13: a subcontractor's goods get **one** inspection, the production QC against the approved sample.
 The warehouse counts the receipt and reconciles the blanks; receiving runs no QC of its own on a `SUBCONTRACT` PO and
@@ -1104,5 +1133,6 @@ stateDiagram-v2
 | SENT | ACCEPTED | accept | Customer (portal) | within validity; every new design has an APPROVED sample (BR-PRD-08) | — |
 | ACCEPTED | CONVERTED | create order | Sales staff or order coordinator (`sales-quote-conversions:CREATE`; editing a quote is Sales' - `sales-quotes:UPDATE`, which the coordinator does not hold, decision 2026-10-17) | lines reserved (BR-ORD-001) | `OrderPlaced` |
 | ACCEPTED | CANCELLED | cancel | Sales staff | a SKU on the quote is INACTIVE/DISCONTINUED, so it can never be converted; reason required and kept in the history; the customer still sees it; a new quote follows if the goods are still wanted (decision 2026-10-17) | — |
+| DRAFT (revision 2 or later) | CANCELLED | drop the revision | Sales staff | reason required; the customer, who saw the earlier revision, sees the quote ended with its lines but without the dropped draft's prices - they were never offered; a customer answering the version they still hold is told it was withdrawn and why, not that it changed (review 2026-10-25) | — |
 | SENT | EXPIRED | validity ends | system | — | — |
 

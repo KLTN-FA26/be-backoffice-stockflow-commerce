@@ -20,10 +20,30 @@ import java.util.Objects;
  * @param wallLimit          the real time cap (SOLVER-CAP): when it passes, the search stops at once and returns the
  *                           best plan found so far, so a slow machine cannot hang a request. Null: {@link
  *                           #DEFAULT_WALL_LIMIT}
+ * @param ignorePayload      trial mode only (LP2-9): the payload of every vehicle is not a cap - a carton may be heavier
+ *                           than a type's payload and a vehicle may carry more than it. Everything else (size, door,
+ *                           support, counts) holds. False for every real estimate and load plan (BR-10)
  */
 public record LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
                               List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
-                              Integer targetVehicleCount, long seed, Duration budget, Duration wallLimit) {
+                              Integer targetVehicleCount, long seed, Duration budget, Duration wallLimit,
+                              boolean ignorePayload) {
+
+    /** A request that honours the payload, which is every request but a trial. */
+    public LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
+                           List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
+                           Integer targetVehicleCount, long seed, Duration budget, Duration wallLimit) {
+        this(cartons, vehicleTypes, mode, kits, distribution, equalizeFill, targetVehicleCount, seed, budget, wallLimit,
+                false);
+    }
+
+    /** A trial or real request with the default real time cap. */
+    public LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
+                           List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
+                           Integer targetVehicleCount, long seed, Duration budget, boolean ignorePayload) {
+        this(cartons, vehicleTypes, mode, kits, distribution, equalizeFill, targetVehicleCount, seed, budget, null,
+                ignorePayload);
+    }
 
     /** The default work budget; see {@code stockflow.fulfillment.load-planning.solver-budget}. */
     public static final Duration DEFAULT_BUDGET = Duration.ofSeconds(5);
@@ -35,7 +55,8 @@ public record LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehi
     public LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
                            List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
                            Integer targetVehicleCount, long seed, Duration budget) {
-        this(cartons, vehicleTypes, mode, kits, distribution, equalizeFill, targetVehicleCount, seed, budget, null);
+        this(cartons, vehicleTypes, mode, kits, distribution, equalizeFill, targetVehicleCount, seed, budget, null,
+                false);
     }
 
     public LoadPlanRequest {

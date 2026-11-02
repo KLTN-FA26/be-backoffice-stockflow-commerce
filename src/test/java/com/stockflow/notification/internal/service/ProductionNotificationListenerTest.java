@@ -61,7 +61,7 @@ class ProductionNotificationListenerTest {
 
     private static StaffUser user(String email, String status) {
         return new StaffUser(UUID.randomUUID(), email, email, "Staff", status, List.of(), List.of(), false, null, null,
-                Instant.EPOCH, "admin", 0);
+                Instant.EPOCH, "admin", null, 0);
     }
 
     private void staff(Role role, StaffUser... users) {

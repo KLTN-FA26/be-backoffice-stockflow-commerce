@@ -254,6 +254,11 @@ public final class Quote {
         return true;
     }
 
+    /**
+     * Cancelled with a reason the customer reads too: a DRAFT (the first nobody saw; for a later revision the customer
+     * sees the quote end with the offer they were last sent - the service's view) or - Sales' service decides when -
+     * an ACCEPTED one. A SENT or CHANGES_REQUESTED quote is not cancelled: it is answered, revised or expires.
+     */
     public void cancel(String reason) {
         String text = reason == null ? "" : reason.strip();
         if (text.isEmpty() || text.length() > MAX_CANCELLATION_REASON) {

@@ -147,7 +147,8 @@ class TransferOrderController {
     @PostMapping("/{transferId}/picking-cancellation")
     @Operation(summary = "Stop picking; back to APPROVED. Its packing is voided and its load plan cancelled "
             + "(SCRUM-287 PR T); 409 TRANSFER_GOODS_LEFT once goods left on a vehicle (10 BR-04), "
-            + "LOAD_PLAN_LOADING_STARTED while a vehicle of its plan is being loaded")
+            + "TRANSFER_LOADING_IN_PROGRESS while a vehicle of its plan is being loaded (run the controlled cancel of the plan "
+            + "first), PACKAGE_UNLOAD_PENDING while its parcels are still on a vehicle that was called off")
     @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.UPDATE)
     public ApiResponse<TransferOrderResponse> cancelPicking(@PathVariable UUID transferId) {
         return ApiResponse.ok(mapper.toResponse(transfers.cancelPicking(transferId)));

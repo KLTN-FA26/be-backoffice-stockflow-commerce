@@ -818,6 +818,35 @@ class LoadPlanServiceTest {
         }
 
         @Test
+        @DisplayName("UNLOAD-REOPEN: a plan with a vehicle once called off under control is neither reopened nor cancelled "
+                + "the plain way, though no vehicle is loading now: LOAD_PLAN_CONTROLLED_CANCELLED, nothing written")
+        void noReopenNorCancelAfterAControlledCancellation() {
+            confirmed();
+            DispatchLoadJpaEntity called = vehicleLoad(LoadStatus.CANCELLED);
+            when(called.getCancelReasonCode()).thenReturn(com.stockflow.fulfillment.internal.domain.UnloadReasonCode.XE_HONG);
+            DispatchLoadJpaEntity replacement = vehicleLoad(LoadStatus.PLANNED);
+            when(loads.findByLoadPlanVehicleIdIn(any())).thenReturn(List.of(called, replacement));
+
+            assertThat(refusal(() -> service.reopen(plan.id(), 0L, "x", actor)).errorCode())
+                    .isEqualTo(ErrorCode.LOAD_PLAN_CONTROLLED_CANCELLED);
+            assertThat(refusal(() -> service.cancel(plan.id(), 0L, "x", actor)).errorCode())
+                    .isEqualTo(ErrorCode.LOAD_PLAN_CONTROLLED_CANCELLED);
+            verify(loadStore, never()).save(any(), any());
+            verify(store, never()).save(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("a vehicle called off the plain way (no reason code) does not make the plan count as loading started")
+        void plainlyCancelledVehicleChangesNothing() {
+            confirmed();
+            DispatchLoadJpaEntity cancelled = vehicleLoad(LoadStatus.CANCELLED);
+            when(cancelled.getCancelReasonCode()).thenReturn(null);
+            when(loads.findByLoadPlanVehicleIdIn(any())).thenReturn(List.of(cancelled));
+
+            assertThat(service.reopen(plan.id(), 0L, "truck came smaller", actor).status()).isEqualTo("PLANNED");
+        }
+
+        @Test
         @DisplayName("a plan is cancelled with its reason and its not-yet-loading loads; cancelling again changes nothing")
         void cancels() {
             DispatchLoadJpaEntity loadHeader = vehicleLoad(LoadStatus.PLANNED);
