@@ -14,7 +14,7 @@ import java.util.UUID;
  */
 public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
                             String paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                            List<Line> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
+                            java.time.LocalDate requestedDeliveryDate, List<Line> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
                             Instant sentAt,
                             UUID sentBy,
                             Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,

@@ -121,7 +121,8 @@ final class OrderWebMapper {
                                                 // Staff's record (note, who): the customer sees the closed units.
                                                 internal && progress.containsKey(line.lineId())
                                                         ? toShortfall(progress.get(line.lineId()).productionShortfall())
-                                                        : null))
+                                                        : null,
+                                                line.requestedDeliveryDate()))
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),

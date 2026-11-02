@@ -77,6 +77,10 @@ public class QuoteJpaEntity extends BaseEntity {
     @Column(name = "converted_at")
     private Instant convertedAt;
 
+    /** V20261102040000 (SCRUM-502): the date the customer asks to receive the goods; null when none was asked. */
+    @Column(name = "requested_delivery_date")
+    private java.time.LocalDate requestedDeliveryDate;
+
     @OneToMany(mappedBy = "quote", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("lineNo")
     private List<QuoteLineJpaEntity> lines = new ArrayList<>();
@@ -94,7 +98,8 @@ public class QuoteJpaEntity extends BaseEntity {
     public void apply(QuoteStatus status, int revision, PaymentTerm paymentTerm, BigDecimal depositPercent,
                       Instant validUntil, String terms, Instant sentAt, UUID sentBy, Instant respondedAt,
                       UUID respondedBy, String customerFeedback, String cancellationReason, UUID convertedOrderId,
-                      Instant convertedAt) {
+                      Instant convertedAt, java.time.LocalDate requestedDeliveryDate) {
+        this.requestedDeliveryDate = requestedDeliveryDate;
         this.status = status;
         this.revision = revision;
         this.paymentTerm = paymentTerm;
@@ -124,6 +129,7 @@ public class QuoteJpaEntity extends BaseEntity {
     public PaymentTerm getPaymentTerm() { return paymentTerm; }
     public BigDecimal getDepositPercent() { return depositPercent; }
     public Instant getValidUntil() { return validUntil; }
+    public java.time.LocalDate getRequestedDeliveryDate() { return requestedDeliveryDate; }
     public String getTerms() { return terms; }
     public Instant getSentAt() { return sentAt; }
     public UUID getSentBy() { return sentBy; }

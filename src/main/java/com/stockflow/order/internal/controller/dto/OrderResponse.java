@@ -211,14 +211,18 @@ public record OrderResponse(
 
             @Schema(description = "A print line production could not finish: what the customer agreed to go without "
                     + "(review 2026-10-25, S6), and how much of it production closed; null when nothing was agreed")
-            ProductionShortfall productionShortfall
+            ProductionShortfall productionShortfall,
+
+            @Schema(description = "SCRUM-502: the date the customer asked to receive this print line, from its quote; "
+                    + "the production order's due date. Null when none was asked or for a stock line")
+            java.time.LocalDate requestedDeliveryDate
     ) {
 
         public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                     List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
                     Integer deliveredQuantity, Integer cancelledQuantity) {
             this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
-                    shippedQuantity, deliveredQuantity, cancelledQuantity, null);
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, null, null);
         }
     }
 

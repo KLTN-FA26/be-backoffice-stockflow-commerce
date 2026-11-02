@@ -296,6 +296,8 @@ public record OrderSummary(
     /**
      * @param reservationIds every hold inventory gave back for this line — one per lot it was drawn
      *                       from — kept so cancellation knows what to release
+     * @param requestedDeliveryDate the date the customer asked to receive a print line (SCRUM-502); null when
+     *                       none was asked
      */
     public record LineSummary(
             UUID lineId,
@@ -305,12 +307,19 @@ public record OrderSummary(
             Money lineTotal,
             List<UUID> reservationIds,
             UUID designSnapshotId,
-            String designChecksum
+            String designChecksum,
+            java.time.LocalDate requestedDeliveryDate
     ) {
 
         public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice,
                            Money lineTotal, List<UUID> reservationIds) {
-            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, null, null);
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, null, null, null);
+        }
+
+        /** Without a requested delivery date (SCRUM-502). */
+        public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice, Money lineTotal,
+                           List<UUID> reservationIds, UUID designSnapshotId, String designChecksum) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum, null);
         }
 
         public LineSummary {

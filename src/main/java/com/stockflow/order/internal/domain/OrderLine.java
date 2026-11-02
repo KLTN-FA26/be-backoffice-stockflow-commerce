@@ -4,6 +4,7 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -44,6 +45,13 @@ public final class OrderLine {
     }
 
     private final List<UUID> reservationIds;
+
+    /**
+     * SCRUM-502 (PROD-DUE): the date the customer asked to receive this print line, copied from its quote when the
+     * order is placed and fixed from then on. It becomes the production order's due date at release. Null: none
+     * was asked.
+     */
+    private LocalDate requestedDeliveryDate;
 
     /**
      * Units closed out of the line - the rest of a partly fulfilled order (17 edge "short pick"), or a production
@@ -208,6 +216,23 @@ public final class OrderLine {
 
     public int shortfallClosedQuantity() {
         return shortfallClosedQuantity;
+    }
+
+    /** Null when the customer asked for no date. */
+    public LocalDate requestedDeliveryDate() {
+        return requestedDeliveryDate;
+    }
+
+    /**
+     * Records the date the customer asked for; only a print line is produced to a date. Used when the line is
+     * built (placing the order, rehydration) - there is no way to change it on a placed order.
+     */
+    public OrderLine withRequestedDeliveryDate(LocalDate date) {
+        if (date != null && designSnapshotId == null) {
+            throw new IllegalArgumentException("Only a print line has a requested delivery date");
+        }
+        this.requestedDeliveryDate = date;
+        return this;
     }
 
     public boolean isMadeToOrder() {

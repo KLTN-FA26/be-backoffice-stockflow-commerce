@@ -34,9 +34,22 @@ public final class Quote {
     public static final int MAX_CANCELLATION_REASON = 500;
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
 
-    /** The commercial content Sales edits while the quote is a draft. */
+    /**
+     * The commercial content Sales edits while the quote is a draft.
+     *
+     * @param requestedDeliveryDate the date the customer asks to receive the goods (SCRUM-502, PROD-DUE): copied onto
+     *                              every print line of the order the quote becomes, then the production orders' due
+     *                              date. Null when the customer asked for none.
+     */
     public record Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                        List<QuoteLine> lines) {
+                        java.time.LocalDate requestedDeliveryDate, List<QuoteLine> lines) {
+
+        /** An offer without a requested delivery date. */
+        public Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
+                     List<QuoteLine> lines) {
+            this(paymentTerm, depositPercent, validUntil, terms, null, lines);
+        }
+
         public Offer {
             Objects.requireNonNull(paymentTerm, "paymentTerm");
             Objects.requireNonNull(validUntil, "validUntil");

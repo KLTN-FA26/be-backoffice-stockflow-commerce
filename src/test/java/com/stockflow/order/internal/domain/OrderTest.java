@@ -454,6 +454,39 @@ class OrderTest {
     }
 
     @Test
+    @DisplayName("SCRUM-502: the date the customer asked for travels in the release event as the line's due date")
+    void releaseCarriesTheRequestedDeliveryDate() {
+        java.time.LocalDate asked = java.time.LocalDate.of(2026, 12, 15);
+        UUID snapshot = UUID.randomUUID();
+        Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                Order.line(new Sku("CUP-12OZ-WHITE"), 500, Money.vnd(2_000), snapshot).withRequestedDeliveryDate(asked),
+                Order.line(new Sku("CUP-12OZ-BLACK"), 300, Money.vnd(2_000), UUID.randomUUID()),
+                Order.line(new Sku("LID-90MM"), 500, Money.vnd(300), null)), NOW);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        order.submit();
+        paidInFull(order);
+        order.pullDomainEvents();
+
+        order.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());
+
+        assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.LinesReleased.class,
+                e -> assertThat(e.payload().lines()).extracting(l -> l.blankSku() + " " + l.dueDate())
+                        .containsExactlyInAnyOrder("CUP-12OZ-WHITE 2026-12-15", "CUP-12OZ-BLACK null"));
+    }
+
+    @Test
+    @DisplayName("SCRUM-502: only a print line has a requested delivery date")
+    void aStockLineHasNoRequestedDeliveryDate() {
+        OrderLine stock = Order.line(new Sku("LID-90MM"), 500, Money.vnd(300), null);
+
+        assertThat(stock.requestedDeliveryDate()).isNull();
+        assertThat(stock.withRequestedDeliveryDate(null).requestedDeliveryDate()).isNull();
+        assertThatThrownBy(() -> stock.withRequestedDeliveryDate(java.time.LocalDate.of(2026, 12, 15)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(stock.requestedDeliveryDate()).isNull();
+    }
+
+    @Test
     @DisplayName("release with nothing to print: READY_TO_FULFILL and OrderReleased")
     void releaseStockOnly() {
         Order order = paidOrder(false);

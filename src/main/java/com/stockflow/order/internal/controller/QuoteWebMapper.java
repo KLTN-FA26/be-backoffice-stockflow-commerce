@@ -22,7 +22,7 @@ final class QuoteWebMapper {
 
     static QuoteResponse toResponse(Quotes.QuoteView q) {
         return new QuoteResponse(q.id(), q.quoteNumber(), q.customerId(), q.status().name(), q.revision(),
-                q.paymentTerm().name(), q.depositPercent(), q.validUntil(), q.terms(),
+                q.paymentTerm().name(), q.depositPercent(), q.validUntil(), q.terms(), q.requestedDeliveryDate(),
                 q.lines().stream().map(l -> new QuoteResponse.Line(l.id(), l.lineNo(), l.blankSku(), l.designSnapshotId(),
                         l.printSpec(), l.quantity(), l.priced(), l.moq(),
                         l.tiers().stream().map(t -> new QuoteResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),

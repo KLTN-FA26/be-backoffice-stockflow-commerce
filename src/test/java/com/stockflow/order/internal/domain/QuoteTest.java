@@ -37,6 +37,29 @@ class QuoteTest {
         return new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("30"), VALID_UNTIL, "Net of VAT", List.of(lines));
     }
 
+    @Test
+    void theRequestedDeliveryDateIsPartOfTheOfferAndOnlyADraftChangesIt() {
+        java.time.LocalDate asked = java.time.LocalDate.of(2026, 12, 15);
+        Quote quote = Quote.draft(UUID.randomUUID(), "QT-20261014-0002", UUID.randomUUID(), UUID.randomUUID(),
+                new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("30"), VALID_UNTIL, "Net of VAT", asked,
+                        List.of(line(1, 2000))));
+        assertThat(quote.offer().requestedDeliveryDate()).isEqualTo(asked);
+        // The old five-argument offer is one without a date.
+        assertThat(offer(line(1, 2000)).requestedDeliveryDate()).isNull();
+
+        quote.send(sales, NOW);
+        assertThat(quote.offer().requestedDeliveryDate()).isEqualTo(asked);
+        assertThatThrownBy(() -> quote.revise(offer(line(1, 2000)))).isInstanceOf(BusinessException.class);
+        assertThat(quote.offer().requestedDeliveryDate()).as("a sent quote keeps what was sent").isEqualTo(asked);
+
+        // Changes requested, reopened: the next revision is a draft again, Sales may move the date.
+        quote.requestChanges("Need it earlier", customerUser, NOW);
+        quote.reopen();
+        quote.revise(new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("30"), VALID_UNTIL, "Net of VAT",
+                asked.minusDays(7), List.of(line(1, 2000))));
+        assertThat(quote.offer().requestedDeliveryDate()).isEqualTo(asked.minusDays(7));
+    }
+
     private Quote draft() {
         return Quote.draft(UUID.randomUUID(), "QT-20261014-0001", UUID.randomUUID(), UUID.randomUUID(),
                 offer(line(1, 2000)));

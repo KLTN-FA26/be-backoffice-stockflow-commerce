@@ -32,8 +32,18 @@ public interface Quotes {
     record Line(String blankSku, UUID designSnapshotId, String printSpec, int quantity, List<Tier> tiers) {
     }
 
+    /**
+     * @param requestedDeliveryDate the date the customer asks to receive the goods (SCRUM-502); Sales sets it while
+     *                              the quote is a draft, it must not be in the past, and null means none was asked
+     */
     record Draft(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                 List<Line> lines) {
+                 List<Line> lines, java.time.LocalDate requestedDeliveryDate) {
+
+        /** A draft without a requested delivery date. */
+        public Draft(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
+                     List<Line> lines) {
+            this(paymentTerm, depositPercent, validUntil, terms, lines, null);
+        }
     }
 
     record Create(UUID requestId, UUID customerId, Draft draft) {
@@ -72,7 +82,7 @@ public interface Quotes {
      */
     record QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                      PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     List<LineView> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
+                     java.time.LocalDate requestedDeliveryDate, List<LineView> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
                      Instant sentAt, UUID sentBy, Instant respondedAt,
                      UUID respondedBy, String customerFeedback, String cancellationReason,
                      ConvertedOrder convertedOrder, Instant convertedAt, List<Transition> history,

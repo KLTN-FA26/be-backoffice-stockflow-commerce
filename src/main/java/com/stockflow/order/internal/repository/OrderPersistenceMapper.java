@@ -42,6 +42,7 @@ final class OrderPersistenceMapper {
                         List.copyOf(line.getReservationIds()),
                         line.getCancelledQuantity());
                     if (line.getDesignChecksum() != null) { mapped.recordDesignChecksum(line.getDesignChecksum()); }
+                    mapped.withRequestedDeliveryDate(line.getRequestedDeliveryDate());
                     if (line.getShortfallAgreedQuantity() != null || line.getShortfallClosedQuantity() > 0) {
                         mapped.withShortfall(line.getShortfallAgreedQuantity() == null ? null
                                 : new OrderLine.ShortfallAgreement(line.getShortfallAgreedQuantity(),
@@ -229,6 +230,7 @@ final class OrderPersistenceMapper {
                         line.reservationIds());
                     mapped.setDesignChecksum(line.designChecksum());
                     mapped.setCancelledQuantity(line.cancelledQuantity());
+                    mapped.setRequestedDeliveryDate(line.requestedDeliveryDate());
                     OrderLine.ShortfallAgreement agreed = line.shortfallAgreement();
                     mapped.setShortfall(agreed == null ? null : agreed.quantity(), agreed == null ? null : agreed.note(),
                             agreed == null ? null : agreed.agreedBy(), agreed == null ? null : agreed.agreedAt(),

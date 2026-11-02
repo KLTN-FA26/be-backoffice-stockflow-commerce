@@ -13,6 +13,7 @@ import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -99,6 +100,12 @@ public class OrderLineJpaEntity {
         this.shortfallAgreedAt = at;
         this.shortfallClosedQuantity = closedQuantity;
     }
+
+    /** V20261102040000 (SCRUM-502): the date the customer asked for; a print line only (ck_order_line_requested_delivery). */
+    @Column(name = "requested_delivery_date")
+    private LocalDate requestedDeliveryDate;
+    public LocalDate getRequestedDeliveryDate() { return requestedDeliveryDate; }
+    public void setRequestedDeliveryDate(LocalDate value) { requestedDeliveryDate = value; }
 
     @ElementCollection(fetch = jakarta.persistence.FetchType.EAGER)
     @CollectionTable(

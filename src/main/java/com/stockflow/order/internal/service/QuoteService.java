@@ -297,7 +297,7 @@ class QuoteService implements Quotes {
                 + "an active SKU");
         List<PlaceOrderCommand.Line> lines = quote.offer().lines().stream()
                 .map(line -> new PlaceOrderCommand.Line(line.blankSku(), line.acceptedQuantity(),
-                        line.acceptedUnitPrice(), line.designSnapshotId()))
+                        line.acceptedUnitPrice(), line.designSnapshotId(), quote.offer().requestedDeliveryDate()))
                 .toList();
         OrderSummary order = quotedOrders.placeQuotedOrder(new PlaceOrderCommand(conversionRequestId(quote.id()),
                 quote.customerId(), conversion.shippingAddressId(), conversion.billingAddressId(), true, lines,
@@ -579,8 +579,13 @@ class QuoteService implements Quotes {
             com.stockflow.customer.api.CreditTerms terms = customers.creditTerms(customerId);
             deposit = terms == null ? null : terms.depositPercent();
         }
+        if (draft.requestedDeliveryDate() != null && draft.requestedDeliveryDate().isBefore(today())) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The requested delivery date cannot be in the past");
+        }
         return new Quote.Offer(draft.paymentTerm(), deposit,
-                draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(), lines);
+                draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(),
+                draft.requestedDeliveryDate(), lines);
     }
 
     /**
@@ -648,6 +653,8 @@ class QuoteService implements Quotes {
         document.put("depositPercent", offer.depositPercent());
         document.put("validUntil", offer.validUntil().toString());
         document.put("terms", offer.terms());
+        document.put("requestedDeliveryDate",
+                offer.requestedDeliveryDate() == null ? null : offer.requestedDeliveryDate().toString());
         document.put("lines", offer.lines().stream().map(line -> {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("lineNo", line.lineNo());
@@ -722,7 +729,8 @@ class QuoteService implements Quotes {
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))
                 .orElse(null);
         return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), revision,
-                offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(), lines, priced,
+                offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(),
+                offer.requestedDeliveryDate(), lines, priced,
                 proposedTotal,
                 acceptedTotal,
                 quote.sentAt(), quote.sentBy(), quote.respondedAt(), quote.respondedBy(), quote.customerFeedback(),
@@ -751,7 +759,10 @@ class QuoteService implements Quotes {
             JsonNode deposit = sent.path("depositPercent");
             return new Quote.Offer(com.stockflow.order.api.PaymentTerm.valueOf(sent.path("paymentTerm").asText()),
                     deposit.isNumber() ? deposit.decimalValue() : null, Instant.parse(sent.path("validUntil").asText()),
-                    textOrNull(sent.path("terms")), lines);
+                    textOrNull(sent.path("terms")),
+                    sent.path("requestedDeliveryDate").isTextual()
+                            ? LocalDate.parse(sent.path("requestedDeliveryDate").asText()) : null,
+                    lines);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Unreadable offer on the history of quote " + quote.quoteNumber(), e);
         }
