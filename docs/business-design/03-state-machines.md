@@ -1056,11 +1056,15 @@ an order is worth is a sale's decision, so it takes two people: Sales records th
 within it. A cancellation of the order afterwards keeps and refunds out of the money still the order's: the refund
 the shortfall asked for is not paid out twice (`Order.cancel`, `ck_order_cancellation_fee`). Delivering part of a
 print run *before* the job completes (5,000 now for an event, the rest later) is not built: it needs the order and
-packing to take print goods in parts - a decision for the team (open question). Known limits, shared with closing a
-remainder: the sales rollups still count the order as placed (a closure does not lower them); an order paid in full
-for what it is now worth still reads PARTIALLY_PAID, as "paid in full" compares with the original total
-(`ck_order_paid_in_full`) - its amount due is 0; a new agreement replaces the last on the line, the audit trail keeps
-who recorded each.
+packing to take print goods in parts - a decision for the team (open question). Reporting and payment status (owner decision SHORT-LIMITS,
+2026-11-02): the closure takes its value and units off the sales rollups, on the day the order was placed, as a
+cancellation does (`reporting.processed_order_closures`, kept through a rebuild; the order count stays, a cancellation
+afterwards takes out only what is left; closing the rest of a split order is not applied to the rollups - not decided);
+"paid in full" is measured on what the order is worth now (`Order.billable` plus the fees closures agreed, the point
+where the amount due is 0), not on the original total: an order that paid that much reads PAID, whether the money came
+before the closure (re-evaluated when it lowers the worth, a closed remainder too) or after, and a reversal below it
+undoes it (`closed_amount`, `ck_order_paid_in_full`). A known limit remains: a new agreement replaces the last on the
+line, the audit trail keeps who recorded each.
 
 Decided 2026-10-13: a subcontractor's goods get **one** inspection, the production QC against the approved sample.
 The warehouse counts the receipt and reconciles the blanks; receiving runs no QC of its own on a `SUBCONTRACT` PO and

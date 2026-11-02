@@ -127,6 +127,7 @@ final class OrderPersistenceMapper {
         entity.applyPartialShipment(order.allowPartialShipment(), order.awaitingProduction());
         entity.applyRemainderFee(order.remainderFeeAmount(), order.remainderFeeRetainedAmount(),
                 order.remainderFeePaidAmount());
+        entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
         entity.applyDeliveryMode(order.deliveryMode(), order.packingStartedAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),

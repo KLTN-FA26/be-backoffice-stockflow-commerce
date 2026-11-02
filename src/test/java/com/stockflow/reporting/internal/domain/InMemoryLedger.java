@@ -78,4 +78,26 @@ final class InMemoryLedger implements SalesRollupLedger {
     public java.util.List<OrderContribution> returnsOf(LocalDate day) {
         return returns.values().stream().filter(c -> c.day().equals(day)).toList();
     }
+
+    final Map<UUID, OrderContribution> closures = new java.util.LinkedHashMap<>();
+
+    @Override
+    public boolean markClosureApplied(UUID closureId, OrderContribution taken) {
+        return closures.putIfAbsent(closureId, taken) == null;
+    }
+
+    @Override
+    public java.util.List<OrderContribution> closuresOfOrder(UUID orderId) {
+        return closures.values().stream().filter(c -> c.orderId().equals(orderId)).toList();
+    }
+
+    @Override
+    public java.util.List<OrderContribution> closuresOf(LocalDate day) {
+        return closures.values().stream().filter(c -> c.day().equals(day)).toList();
+    }
+
+    @Override
+    public boolean cancellationApplied(UUID orderId) {
+        return applied.containsKey(new Key(orderId, OrderEventType.CANCELLED));
+    }
 }

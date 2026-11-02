@@ -488,7 +488,7 @@ public final class Order extends AggregateRoot {
             // ck_order_cancellation_fee says. Anything above the fee is the customer's, settled as before.
             this.cancellationRetainedAmount = cancellationFeeAmount.min(moneyHeld());
         }
-        if (paidInFullAt == null && paidAmount.compareTo(total().amount()) >= 0) {
+        if (paidInFullAt == null && paidAmount.compareTo(payableInFull()) >= 0) {
             this.paidInFullAt = now;
         }
         if (paymentTerm == PaymentTerm.DEPOSIT && depositReceivedAt == null
@@ -542,7 +542,7 @@ public final class Order extends AggregateRoot {
         if (ofFeeReceivable) {
             this.remainderFeePaidAmount = remainderFeePaidAmount.subtract(back).max(BigDecimal.ZERO);
         }
-        if (paidInFullAt != null && paidAmount.compareTo(total().amount()) < 0) {
+        if (paidInFullAt != null && paidAmount.compareTo(payableInFull()) < 0) {
             this.paidInFullAt = null;
         }
         if (paymentTerm == PaymentTerm.DEPOSIT && depositReceivedAt != null
@@ -764,6 +764,35 @@ public final class Order extends AggregateRoot {
     /** kltn-docs 15 §5.2, derived from the term and the money received. */
     public PaymentStatus paymentStatus() {
         return PaymentStatus.of(paymentTerm, paidAmount, paidInFullAt);
+    }
+
+    /**
+     * What "paid in full" is measured against: what the order is worth now ({@link #billable}, its total less the units
+     * closed out of it) plus the fees closures agreed - exactly the point where {@link #amountDue} reaches 0. For an
+     * order nothing was closed out of, its total.
+     */
+    private BigDecimal payableInFull() {
+        return billable().add(remainderFeeAmount);
+    }
+
+    /**
+     * A closure lowered what the order is worth (closing the rest, a production shortfall): money that was short of the
+     * old total may now cover the new worth, and the order is paid in full from now - not left PARTIALLY_PAID with
+     * nothing due. Nothing received, nothing to say; an order already paid in full stays so.
+     */
+    private void reevaluatePaidInFull(Instant at) {
+        if (paidInFullAt == null && paidAmount.signum() > 0 && paidAmount.compareTo(payableInFull()) >= 0) {
+            this.paidInFullAt = at;
+        }
+    }
+
+    /**
+     * The value of the units closed out of the order (closed remainders, production shortfalls): its total less what it
+     * is worth now. Stored as {@code closed_amount} so that {@code ck_order_paid_in_full} can compare the money with
+     * the worth, not with the total.
+     */
+    public BigDecimal closedAmount() {
+        return total().amount().subtract(billable());
     }
 
     /**
@@ -1597,6 +1626,7 @@ public final class Order extends AggregateRoot {
             reason = reason + " (fee " + fee.stripTrailingZeros().toPlainString() + ": " + agreedFee.reason() + ")";
             reason = reason.length() > 500 ? reason.substring(0, 500) : reason;
         }
+        reevaluatePaidInFull(at);
         followShipments(ShipmentChange.CLOSED, at, by, reason);
         registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
                 orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), paidAmount,
@@ -1688,6 +1718,7 @@ public final class Order extends AggregateRoot {
                 .subtract(remainderFeeRetainedAmount).subtract(remainderFeePaidAmount);
         BigDecimal refundable = excess.max(BigDecimal.ZERO);
         this.remainderRefundAmount = remainderRefundAmount.add(refundable);
+        reevaluatePaidInFull(at);
         registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
                 orderNumber.value(), customerId, com.stockflow.contracts.OrderRemainderClosed.PRODUCTION_SHORTFALL,
                 List.of(new com.stockflow.contracts.OrderRemainderClosed.Line(line.id(), line.sku().code(), units)),
