@@ -56,10 +56,25 @@ ALTER TABLE procurement.supplier_invoices
         OR (matched_at IS NOT NULL AND matched_by IS NOT NULL AND price_tolerance_percent IS NOT NULL)),
     ADD CONSTRAINT ck_supplier_invoices_tolerance CHECK (price_tolerance_percent IS NULL
         OR price_tolerance_percent BETWEEN 0 AND 100),
-    -- A cancellation says who and why; only a CANCELLED invoice says so.
-    ADD CONSTRAINT ck_supplier_invoices_void CHECK ((status = 'CANCELLED')
-        = (voided_at IS NOT NULL AND voided_by IS NOT NULL AND void_reason IS NOT NULL)),
     ADD CONSTRAINT ck_supplier_invoices_file CHECK (file_url IS NOT NULL OR (file_name IS NULL AND file_content_type IS NULL));
+
+-- Legacy VOID invoices (carried over by V20261011000200) became CANCELLED above without saying who or why.
+-- The disabled legacy stand-in (no login) stands for whoever voided them, as for other carried-over rows.
+INSERT INTO identity.app_user (id, username, email, password_hash, status, version, created_at, created_by)
+SELECT md5('legacy:user:import')::uuid, 'system.legacy-import', 'legacy-import@system.invalid', '!no-login',
+       'DISABLED', 0, NOW(), 'legacy:import'
+ WHERE EXISTS (SELECT 1 FROM procurement.supplier_invoices WHERE status = 'CANCELLED' AND voided_at IS NULL)
+ON CONFLICT DO NOTHING;
+
+UPDATE procurement.supplier_invoices
+   SET voided_at = created_at, voided_by = md5('legacy:user:import')::uuid,
+       void_reason = 'Huỷ trước khi có module hoá đơn (dữ liệu cũ VOID)'
+ WHERE status = 'CANCELLED' AND voided_at IS NULL;
+
+-- A cancellation says who and why; only a CANCELLED invoice says so.
+ALTER TABLE procurement.supplier_invoices
+    ADD CONSTRAINT ck_supplier_invoices_void CHECK ((status = 'CANCELLED')
+        = (voided_at IS NOT NULL AND voided_by IS NOT NULL AND void_reason IS NOT NULL));
 
 CREATE INDEX ix_supplier_invoices_supplier ON procurement.supplier_invoices (supplier_id, invoice_date DESC);
 

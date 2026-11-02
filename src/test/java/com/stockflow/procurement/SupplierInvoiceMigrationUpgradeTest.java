@@ -41,10 +41,12 @@ class SupplierInvoiceMigrationUpgradeTest {
                 UUID supplier = UUID.randomUUID();
                 UUID entered = UUID.randomUUID();
                 UUID matched = UUID.randomUUID();
+                UUID voided = UUID.randomUUID();
                 RawSql.update(db, "INSERT INTO procurement.suppliers (id, code, name, status, currency, version, created_at) "
                         + "VALUES (?, 'MIG-SUP', 'Migrated supplier', 'ACTIVE', 'VND', 0, NOW())", supplier);
                 invoice(db, entered, supplier, "HD-1", "RECEIVED");
                 invoice(db, matched, supplier, "HD-2", "MATCHED");
+                invoice(db, voided, supplier, "HD-3", "VOID");
                 Map<String, Long> versionsBefore = versions(db);
                 List<String> warehouseBefore = RawSql.texts(db, "SELECT p.code FROM identity.role_permission rp "
                         + "JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id "
@@ -57,6 +59,12 @@ class SupplierInvoiceMigrationUpgradeTest {
                         .isEqualTo("DRAFT");
                 assertThat(RawSql.text(db, "SELECT status FROM procurement.supplier_invoices WHERE id = ?", matched))
                         .isEqualTo("MATCHED");
+                // A legacy VOID row becomes CANCELLED and says who (the disabled legacy stand-in) and why.
+                assertThat(RawSql.text(db, "SELECT status FROM procurement.supplier_invoices WHERE id = ?", voided))
+                        .isEqualTo("CANCELLED");
+                assertThat(RawSql.text(db, "SELECT u.username FROM procurement.supplier_invoices i "
+                        + "JOIN identity.app_user u ON u.id = i.voided_by WHERE i.id = ?", voided))
+                        .isEqualTo("system.legacy-import");
                 // A status the docs name and the old column could not hold.
                 RawSql.update(db, "UPDATE procurement.supplier_invoices SET status = 'APPROVED_FOR_PAYMENT' WHERE id = ?",
                         matched);
