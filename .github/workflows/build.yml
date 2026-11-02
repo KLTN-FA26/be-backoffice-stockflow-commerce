@@ -285,7 +285,9 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/develop'
-    timeout-minutes: 15
+    # deploy.sh may wait 300 s for readiness and another 300 s for a rollback; a job timeout
+    # inside that window would cut the SSH session in the middle of the rollback.
+    timeout-minutes: 25
     environment:
       name: vps
       url: https://api.${{ vars.DOMAIN }}
