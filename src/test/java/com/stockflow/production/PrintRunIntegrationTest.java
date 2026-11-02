@@ -567,6 +567,34 @@ class PrintRunIntegrationTest {
     }
 
     @Test
+    @DisplayName("SHORT-LIMITS (follow-up of #196): an order that paid 20 000 of 40 000 and completes short by 10 units "
+            + "is worth 20 000: it reads PAID with nothing due, and the check on the order row lets it")
+    void paidInFullOnWhatItIsNowWorth() throws Exception {
+        Line line = released(20);
+        UUID lineId = lineOf(line);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 20, List.of());
+        runs.recordQc(inspector, line.productionOrderId(), 10, 10, "10 lem mực", null, sampleOf(line.productionOrderId()));
+        com.stockflow.order.api.OrderSummary before = salesOrders.findById(line.orderId()).orElseThrow();
+        assertThat(before.payment().status()).as("20 000 of 40 000").isEqualTo(com.stockflow.order.api.PaymentStatus.PARTIALLY_PAID);
+
+        agreeShortfall(line, lineId, 10, "Khách đồng ý nhận 10 ly");
+        runs.completeShort(manager, line.productionOrderId(), "Hết phôi", null);
+
+        com.stockflow.order.api.OrderSummary after = salesOrders.findById(line.orderId()).orElseThrow();
+        assertThat(after.payment().status()).isEqualTo(com.stockflow.order.api.PaymentStatus.PAID);
+        assertThat(after.payment().paidInFullAt()).isNotNull();
+        assertThat(after.lifecycle().amountDue()).isEqualByComparingTo("0");
+        assertThat(jdbc.queryForMap("SELECT total_amount, closed_amount, paid_amount FROM ordering.customer_order "
+                + "WHERE id = ?", line.orderId())).satisfies(row -> {
+            assertThat((BigDecimal) row.get("total_amount")).isEqualByComparingTo("40000");
+            assertThat((BigDecimal) row.get("closed_amount")).isEqualByComparingTo("20000");
+            assertThat((BigDecimal) row.get("paid_amount")).isEqualByComparingTo("20000");
+        });
+    }
+
+    @Test
     @DisplayName("S6 review: cancelled after a shortfall - the agreed amount is kept and the rest refunded out of what "
             + "is left of the money; the 4 000 the shortfall asked back is not refunded a second time")
     void cancelledAfterAShortfall() throws Exception {
