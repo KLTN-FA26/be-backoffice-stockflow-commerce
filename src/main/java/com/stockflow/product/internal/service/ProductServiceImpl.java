@@ -8,7 +8,8 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
-import com.stockflow.common.security.Roles;
+import com.stockflow.common.security.Action;
+import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.CreateProductCommand;
@@ -89,14 +90,15 @@ class ProductServiceImpl implements ProductService {
     private final ProductCommerceRepository commerce;
     private final InventoryService inventory;
     private final IdentityService identity;
+    private final CurrentUserProvider users;
     private final List<SkuReferenceProbe> probes;
     private final Clock clock;
 
     ProductServiceImpl(ProductRepository products, ProductSearchRepository search, ProductVariantService variants,
                        ProductMediaService media, ProductAttributeService attributes, ProductEventPublisher events,
                        ProductChangeLogRepository history, ProductCommerceRepository commerce,
-                       InventoryService inventory, IdentityService identity, List<SkuReferenceProbe> probes,
-                       Clock clock) {
+                       InventoryService inventory, IdentityService identity, CurrentUserProvider users,
+                       List<SkuReferenceProbe> probes, Clock clock) {
         this.products = products;
         this.search = search;
         this.variants = variants;
@@ -107,6 +109,7 @@ class ProductServiceImpl implements ProductService {
         this.commerce = commerce;
         this.inventory = inventory;
         this.identity = identity;
+        this.users = users;
         this.probes = probes;
         this.clock = clock;
     }
@@ -223,8 +226,9 @@ class ProductServiceImpl implements ProductService {
     }
 
     /**
-     * Approval makes the product sellable, and its draft variants with it. Only a SYSTEM_ADMIN may approve what
-     * it submitted itself (BR-PRD-003); the role is asked of identity only when that is the case.
+     * Approval makes the product sellable, and its draft variants with it. Only an approver holding
+     * {@code product-lifecycle:APPROVE} (SYSTEM_ADMIN's) may approve what they submitted themselves (BR-PRD-003) -
+     * a permission of the caller, never a role name, and only when the caller is the approver named.
      */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "product", resourceId = "#productId")
@@ -232,7 +236,8 @@ class ProductServiceImpl implements ProductService {
         Product product = requireProduct(productId);
         ProductStatus from = product.status();
         boolean mayApproveOwn = approverId != null && approverId.equals(product.submittedBy())
-                && identity.isActiveUserWithAnyRole(approverId, Roles.SYSTEM_ADMIN);
+                && users.current().filter(actor -> approverId.equals(actor.userId()))
+                        .map(actor -> actor.can(ProductPermissions.LIFECYCLE, Action.APPROVE)).orElse(false);
         product.approve(approverId, mayApproveOwn, clock.instant());
         variants.activateDrafts(productId);
         ProductSummary saved = saveAndPublish(product);

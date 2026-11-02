@@ -96,7 +96,7 @@ flowchart LR
 | 06 | `catalog` | `+ processed_event, + catalog_product, + catalog_price` | bản sao đọc |
 | 07 | `catalog` | `→ Elasticsearch index` | tài liệu tìm kiếm |
 
-> · DRAFT → PENDING_APPROVAL → APPROVED → PUBLISHED. Người duyệt phải khác người gửi, trừ SYSTEM_ADMIN được tự duyệt sản phẩm mình gửi — BR-PRD-003.
+> · DRAFT → PENDING_APPROVAL → APPROVED → PUBLISHED. Người duyệt phải khác người gửi, trừ người có quyền `product-lifecycle:APPROVE` (SYSTEM_ADMIN) được tự duyệt sản phẩm mình gửi — BR-PRD-003.
 > · catalog-service giữ BẢN SAO chỉ gồm sản phẩm đã publish, không phải toàn bộ product master.
 > · Bước 01–02 (`POST /products`): không gửi `axes` thì sản phẩm có đúng một variant mặc định, SKU = mã sản phẩm. Gửi `axes` thì tạo luôn trục, option và mọi tổ hợp của các option còn hoạt động; SKU theo quy tắc `MÃ-GIÁ_TRỊ-GIÁ_TRỊ`, tổ hợp đầu tiên là variant mặc định, không có SKU tạm. Một SKU bị trùng hay ma trận quá 100 tổ hợp thì cả sản phẩm không được tạo.
 

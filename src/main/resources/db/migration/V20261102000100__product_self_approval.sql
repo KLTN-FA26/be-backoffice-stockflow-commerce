@@ -5,7 +5,8 @@
 --
 -- self_approved is what it stands aside for: the flag can be TRUE only when approver and submitter are the same
 -- person, so a self-approval is visible on the row instead of being indistinguishable from a broken constraint.
--- Whether the approver held SYSTEM_ADMIN is decided by Product.approve at the time; roles change, the row does not.
+-- Who may do it is the permission product-lifecycle:APPROVE (SYSTEM_ADMIN's, V20261019000700), checked by the
+-- service at the time; grants change, the row does not.
 
 ALTER TABLE product.products
     ADD COLUMN self_approved BOOLEAN NOT NULL DEFAULT FALSE;
@@ -22,4 +23,4 @@ ALTER TABLE product.products
         CHECK (NOT self_approved OR (approved_by IS NOT NULL AND approved_by = submitted_by));
 
 COMMENT ON COLUMN product.products.self_approved IS
-    'Approved by the person who submitted it, which only a SYSTEM_ADMIN may do (BR-PRD-003); approved_by = submitted_by.';
+    'Approved by the person who submitted it, which only a holder of product-lifecycle:APPROVE may do (BR-PRD-003); approved_by = submitted_by.';

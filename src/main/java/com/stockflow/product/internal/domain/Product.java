@@ -213,8 +213,9 @@ public final class Product extends AggregateRoot {
 
     /**
      * BR-PRD-003: the approver must not be the person who submitted it, unless {@code mayApproveOwn} - the
-     * approver holds SYSTEM_ADMIN (owner decision of 02/11). Such an approval is flagged {@link #selfApproved()},
-     * which is what lets {@code ck_products_approver_not_submitter} stand aside for exactly that case.
+     * approver holds {@code product-lifecycle:APPROVE}, SYSTEM_ADMIN's (owner decision of 02/11). Such an approval
+     * is flagged {@link #selfApproved()}, which is what lets {@code ck_products_approver_not_submitter} stand aside
+     * for exactly that case.
      *
      * <p>The English name and the tax class are checked again (SCRUM-87): a row that was already waiting
      * for approval before {@link #submit} required them would otherwise be approved without them, until

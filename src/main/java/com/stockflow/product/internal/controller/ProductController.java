@@ -176,7 +176,7 @@ class ProductController {
 
     @PostMapping("/{productId}/approval")
     @Operation(summary = "Approve a product pending approval; the approver must not be who submitted it, "
-            + "unless they hold SYSTEM_ADMIN")
+            + "unless they hold product-lifecycle:APPROVE")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
     public ApiResponse<ProductResponse> approve(@PathVariable UUID productId,
                                                 @AuthenticatedUser CurrentUser user) {
