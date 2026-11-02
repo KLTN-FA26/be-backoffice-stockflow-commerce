@@ -1,5 +1,7 @@
 package com.stockflow.fulfillment.internal.domain.loadplanning;
 
+import java.util.function.LongSupplier;
+
 /**
  * The clock the search reads instead of the wall clock.
  *
@@ -19,9 +21,10 @@ package com.stockflow.fulfillment.internal.domain.loadplanning;
  *       still deterministic. The planner uses it.</li>
  * </ul>
  *
- * <p>The caller's real time budget is a hard cap: the fillers check {@link #expired()} on every step, every loop that
- * waits on the clock stops, and the planner returns the best plan it has. Only a run that hits the cap can differ from
- * another run of the same input.</p>
+ * <p>The real time limit (owner decision SOLVER-CAP, 02/11: about 12 s, apart from the caller's budget, which is
+ * counted in work) is a hard cap: the fillers check {@link #expired()} on every step, every loop that waits on the
+ * clock stops, and the planner returns the best plan it has. Only a run that hits the cap can differ from another run
+ * of the same input. The time source is injectable so the cap can be tested without sleeping.</p>
  */
 final class WorkClock {
 
@@ -30,19 +33,26 @@ final class WorkClock {
     private final Unit unit;
     private final double ticksPerSecond;
     private final long wallDeadlineNanos;
+    private final LongSupplier nanoTime;
     private long ticks;
     private boolean expired;
     private long lastImprovementNanos;
 
     WorkClock(Unit unit, double ticksPerSecond, long wallDeadlineNanos) {
+        this(unit, ticksPerSecond, wallDeadlineNanos, System::nanoTime);
+    }
+
+    /** A clock that reads {@code nanoTime} for the real time limit (the tests', to move time by hand). */
+    WorkClock(Unit unit, double ticksPerSecond, long wallDeadlineNanos, LongSupplier nanoTime) {
         this.unit = unit;
         this.ticksPerSecond = ticksPerSecond;
         this.wallDeadlineNanos = wallDeadlineNanos;
+        this.nanoTime = nanoTime;
     }
 
-    /** A clock whose real budget starts now. */
-    static WorkClock starting(Unit unit, double ticksPerSecond, long wallBudgetNanos) {
-        return new WorkClock(unit, ticksPerSecond, System.nanoTime() + wallBudgetNanos);
+    /** A clock whose real time limit starts now. */
+    static WorkClock starting(Unit unit, double ticksPerSecond, long wallLimitNanos) {
+        return new WorkClock(unit, ticksPerSecond, System.nanoTime() + wallLimitNanos);
     }
 
     /**
@@ -62,7 +72,7 @@ final class WorkClock {
 
     /** The search found a better plan: remembered so the caller can report the time to the best result. */
     void improved() {
-        lastImprovementNanos = System.nanoTime();
+        lastImprovementNanos = nanoTime.getAsLong();
     }
 
     /** Carry over the time another clock's search found the plan that is kept. */
@@ -80,7 +90,7 @@ final class WorkClock {
     }
 
     boolean expired() {
-        if (!expired && System.nanoTime() - wallDeadlineNanos >= 0) {
+        if (!expired && nanoTime.getAsLong() - wallDeadlineNanos >= 0) {
             expired = true;
         }
         return expired;

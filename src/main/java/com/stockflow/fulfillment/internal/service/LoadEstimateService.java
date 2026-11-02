@@ -100,6 +100,7 @@ class LoadEstimateService implements LoadEstimates {
     private final TransactionTemplate reads;
     private final TransactionTemplate writes;
     private final Duration budget;
+    private final Duration wallLimit;
     private final LoadPlanner planner = new LoadPlanner();
     private final com.stockflow.inventory.api.TransferFulfillment transfers;
     /** SCRUM-287 PR T: a transfer is estimated until it is dispatched. */
@@ -109,6 +110,7 @@ class LoadEstimateService implements LoadEstimates {
                         OrderService orders, WarehouseService warehouses, PackagingSpecResolver packaging,
                         ObjectMapper json, PlatformTransactionManager transactionManager,
                         @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
+                        @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit,
                         com.stockflow.inventory.api.TransferFulfillment transfers) {
         this.transfers = transfers;
         this.estimates = estimates;
@@ -123,7 +125,12 @@ class LoadEstimateService implements LoadEstimates {
         if (budget == null || budget.isNegative() || budget.isZero()) {
             throw new IllegalArgumentException("stockflow.fulfillment.load-planning.solver-budget must be positive");
         }
+        if (wallLimit == null || wallLimit.isNegative() || wallLimit.isZero()) {
+            throw new IllegalArgumentException(
+                    "stockflow.fulfillment.load-planning.solver-wall-limit must be positive");
+        }
         this.budget = budget;
+        this.wallLimit = wallLimit;
     }
 
     /** What the read step hands the planner, and what the store step needs from it. */
@@ -271,7 +278,7 @@ class LoadEstimateService implements LoadEstimates {
         }
         EstimateCartons.Built built = EstimateCartons.build(orderId.toString(), resolved);
         LoadPlanRequest request = new LoadPlanRequest(built.cartons(), types, mode, built.kits(),
-                KitDistribution.AUTO, false, null, SEED, budget);
+                KitDistribution.AUTO, false, null, SEED, budget, wallLimit);
         return new Prepared(warehouseId, remaining, types.stream().map(VehicleSpec::typeId).toList(), mode, request,
                 built, estimateLines, List.copyOf(missing), warnings);
     }
@@ -324,7 +331,7 @@ class LoadEstimateService implements LoadEstimates {
         }
         EstimateCartons.Built built = EstimateCartons.build(transferId.toString(), resolved);
         LoadPlanRequest request = new LoadPlanRequest(built.cartons(), types, mode, built.kits(),
-                KitDistribution.AUTO, false, null, SEED, budget);
+                KitDistribution.AUTO, false, null, SEED, budget, wallLimit);
         return new Prepared(transfer.fromWarehouseId(), remaining, types.stream().map(VehicleSpec::typeId).toList(),
                 mode, request, built, estimateLines, List.copyOf(missing), warnings);
     }

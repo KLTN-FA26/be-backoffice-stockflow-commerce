@@ -88,9 +88,11 @@ import java.util.stream.Collectors;
  * (id order). The order-cancellation path ({@link #releaseShipment}) takes the plan's row before it touches a load or a
  * shipment, so it never crosses a confirmation or a reopening.
  *
- * <p>The planner runs synchronously inside the request, capped by
- * {@code stockflow.fulfillment.load-planning.solver-budget} (decision LP2-10): it returns the best plan found when the
- * budget runs out, and reports it ({@code solverMeta.budgetExhausted}, unplaced reason {@code SEARCH_CUT_OFF}).</p>
+ * <p>The planner runs synchronously inside the request. Its search is sized by
+ * {@code stockflow.fulfillment.load-planning.solver-budget} (decision LP2-10, counted in work, so the same on any
+ * machine) and capped in real time by {@code stockflow.fulfillment.load-planning.solver-wall-limit} (SOLVER-CAP,
+ * 02/11): when the cap passes it returns the best plan found, and reports it ({@code solverMeta.budgetExhausted},
+ * unplaced reason {@code SEARCH_CUT_OFF}).</p>
  */
 @Service
 @Transactional
@@ -121,6 +123,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     private final com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers;
     private final Clock clock;
     private final Duration budget;
+    private final Duration wallLimit;
     private final com.stockflow.inventory.api.TransferFulfillment transfers;
     private final com.stockflow.fulfillment.internal.repository.PackJpaRepository packs;
 
@@ -138,6 +141,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
                     Clock clock,
                     @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
+                    @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit,
                     com.stockflow.inventory.api.TransferFulfillment transfers,
                     com.stockflow.fulfillment.internal.repository.PackJpaRepository packs) {
         this.transfers = transfers;
@@ -162,6 +166,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         this.loadMembers = loadMembers;
         this.clock = clock;
         this.budget = budget;
+        this.wallLimit = wallLimit == null ? LoadPlanRequest.DEFAULT_WALL_LIMIT : wallLimit;
     }
 
     // ------------------------------------------------------------------ candidates (09 §4.2 step 1, LP-5, LP2-1)
@@ -558,7 +563,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         }
         Map<UUID, CargoPackage> cartons = cartons(held);
         LoadPlanResult result = new LoadPlanner().plan(new LoadPlanRequest(List.copyOf(cartons.values()),
-                List.copyOf(specs.values()), plan.mode(), List.of(), KitDistribution.AUTO, false, null, 0L, budget));
+                List.copyOf(specs.values()), plan.mode(), List.of(), KitDistribution.AUTO, false, null, 0L, budget, wallLimit));
         Instant now = clock.instant();
         plan.applyCalculation(result, specs, Identifiers::newId, actor.userId(), now, cartons);
         header.setSolverMeta(meta(result.meta()));
@@ -611,7 +616,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         Map<UUID, CargoPackage> cartons = cartons(all);
         List<CargoPackage> offered = given.stream().map(cartons::get).toList();
         LoadPlanResult result = new LoadPlanner().plan(new LoadPlanRequest(offered, List.of(vehicle.spec()),
-                SelectionMode.SINGLE_TYPE, List.of(), KitDistribution.AUTO, false, null, 0L, budget));
+                SelectionMode.SINGLE_TYPE, List.of(), KitDistribution.AUTO, false, null, 0L, budget, wallLimit));
         Instant now = clock.instant();
         plan.applyVehicleRecalculation(seq, result, cartons, now);
         log.info("Load plan {} vehicle {} recalculated: {} placed, {} unplaced", plan.code(), seq,

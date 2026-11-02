@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 
 /**
  * The 3D load planner (kltn-docs 09 §4.2, SCRUM-391): turns cartons and vehicle types into vehicles with every carton's
@@ -39,6 +40,9 @@ public final class LoadPlanner {
      * SCRUM-496 has the table), for a plan that takes about 4-10 s instead of 1-3 s. The real budget is still the hard
      * cap: a search that needs longer is cut off and returns the best plan found so far ({@code budgetExhausted}), so
      * the configured budget must leave it the time.</p>
+     *
+     * <p>Since SOLVER-CAP (02/11) the budget no longer is the real time cap: it is counted in work, and the real time
+     * cap is {@link LoadPlanRequest#wallLimit()} (12 s).</p>
      */
     static final double TICKS_PER_SECOND = 20_000_000.0;
 
@@ -53,8 +57,10 @@ public final class LoadPlanner {
 
     private final double ticksPerSecond;
     private final SpaceChoice spaceChoice;
-    /** The real time cap, when not the request's budget: the benchmark's, to measure a search to its end. */
+    /** The real time cap, when not the request's wall limit: the benchmark's, to measure a search to its end. */
     private final Duration wallCap;
+    /** The source of real time: {@link System#nanoTime}, or the tests' own. */
+    private final LongSupplier nanoTime;
 
     public LoadPlanner() {
         this(TICKS_PER_SECOND);
@@ -67,12 +73,18 @@ public final class LoadPlanner {
 
     /**
      * For the benchmark: another work rate, the original's space choice to compare with, and a real time cap other
-     * than the request's budget (null: the budget), so a search can run to its end on a busy machine.
+     * than the request's (null: the request's), so a search can run to its end on a busy machine.
      */
     LoadPlanner(double ticksPerSecond, SpaceChoice spaceChoice, Duration wallCap) {
+        this(ticksPerSecond, spaceChoice, wallCap, System::nanoTime);
+    }
+
+    /** For the tests: also the source of real time, so the real time cap can be passed without waiting. */
+    LoadPlanner(double ticksPerSecond, SpaceChoice spaceChoice, Duration wallCap, LongSupplier nanoTime) {
         this.ticksPerSecond = ticksPerSecond;
         this.spaceChoice = spaceChoice;
         this.wallCap = wallCap;
+        this.nanoTime = nanoTime;
     }
 
     /** What a carton type is keyed by: cartons equal on all of these pack alike (see {@link #plan}). */
@@ -90,10 +102,10 @@ public final class LoadPlanner {
     private record Solved(KitSolver.Outcome outcome, List<Bin> scope) { }
 
     public LoadPlanResult plan(LoadPlanRequest request) {
-        long startNanos = System.nanoTime();
+        long startNanos = nanoTime.getAsLong();
         List<CargoPackage> cartons = request.cartons();
         checkUnique(cartons, request.vehicleTypes());
-        long deadline = startNanos + (wallCap != null ? wallCap : request.budget()).toNanos();
+        long deadline = startNanos + (wallCap != null ? wallCap : request.wallLimit()).toNanos();
         double budget = request.budget().toNanos() / 1e9;
 
         List<Bin> usable = new ArrayList<>();
@@ -155,9 +167,9 @@ public final class LoadPlanner {
         // Anytime: a quick pass (one construction wherever the original would restart) gives a complete plan
         // whatever the load; the full search then has what is left of the budget to beat it. A full search that
         // finishes inside the budget is what gets returned, and is reproducible.
-        WorkClock quickClock = new WorkClock(WorkClock.Unit.EVALUATION, QUICK_TICKS_PER_SECOND, deadline);
+        WorkClock quickClock = new WorkClock(WorkClock.Unit.EVALUATION, QUICK_TICKS_PER_SECOND, deadline, nanoTime);
         Solved quick = solve(request, usable, main, fill, kits, budget, quickClock);
-        WorkClock clock = new WorkClock(WorkClock.Unit.EVALUATION, ticksPerSecond, deadline);
+        WorkClock clock = new WorkClock(WorkClock.Unit.EVALUATION, ticksPerSecond, deadline, nanoTime);
         Solved chosen = quick;
         if (!clock.expired()) {
             Solved full = solve(request, usable, main, fill, kits, budget, clock);
@@ -222,7 +234,7 @@ public final class LoadPlanner {
             }
         }
 
-        LoadPlanResult result = new LoadPlanResult(vehicles, left, meta(outcome, clock, startNanos, warnings, cutOff));
+        LoadPlanResult result = new LoadPlanResult(vehicles, left, meta(outcome, clock, startNanos, nanoTime.getAsLong(), warnings, cutOff));
         checkPieces(cartons, result);
         return result;
     }
@@ -716,9 +728,9 @@ public final class LoadPlanner {
     }
 
     private static LoadPlanMeta meta(KitSolver.Outcome o, WorkClock clock, long startNanos,
-                                     List<KitWarning> plannerWarnings, boolean cutOff) {
+                                     long endNanos, List<KitWarning> plannerWarnings, boolean cutOff) {
         KitSolver.Meta m = o.meta();
-        long elapsed = (System.nanoTime() - startNanos) / 1_000_000;
+        long elapsed = (endNanos - startNanos) / 1_000_000;
         long best = clock.lastImprovementNanos() == 0 ? elapsed
                 : (clock.lastImprovementNanos() - startNanos) / 1_000_000;
         return new LoadPlanMeta(m.algorithm(), m.setsTotal(), m.minVehicles(), m.targetVehicles(),

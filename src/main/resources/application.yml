@@ -467,12 +467,17 @@ stockflow:
 
   fulfillment:
     load-planning:
-      # Real time cap of one load-plan calculation, run synchronously (decision LP2-10); the planner returns the best
-      # plan found so far when it runs out (LoadPlanRequest.budget). On the benchmark (100, 300 and 500 cartons with
+      # How much search one load-plan calculation gets (decision LP2-10), counted in work, not wall time, so the plan is
+      # the same on a slow or a fast machine; the planner returns the best plan found so far when it runs out
+      # (LoadPlanRequest.budget). On the benchmark (100, 300 and 500 cartons with
       # sets, LoadPlannerBenchmarkTest) 3 s already matched the 30 s reference on a laptop; 5 s keeps a margin for a
       # smaller server, where the same search runs slower. Read by the load-estimate service (PR EST) and the
       # load-plan service (SCRUM-287 PR D).
       solver-budget: PT5S
+      # Real time cap of one calculation, apart from the budget (owner decision SOLVER-CAP, 02/11): a slow or busy
+      # machine cannot hang a request; when it passes, the planner returns the best plan found so far, flagged
+      # budgetExhausted (LoadPlanRequest.wallLimit).
+      solver-wall-limit: PT12S
 
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
