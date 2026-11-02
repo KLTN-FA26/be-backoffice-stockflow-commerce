@@ -906,11 +906,11 @@ MOVES = []
 # The schema allows a richer ledger than the application reads: StockMovement.MovementType and
 # ReferenceType hold only what the code writes, and a row outside them fails every ledger query with
 # "No enum constant". So rows are written the way the application writes them: a putaway is a MOVE,
-# receiving a transfer or a return is a RECEIPT, a count correction or a scrap is an ADJUSTMENT, and a
-# confirmed pick line writes one PICK row naming the line (reference PICK_LINE, SCRUM-267), as the
-# application does since V20261014001000. The ledger reconciles to stock on hand.
-APP_KIND = {"PUTAWAY": "MOVE", "COUNT_CORRECTION": "ADJUSTMENT", "SCRAP": "ADJUSTMENT", "TRANSFER_IN": "RECEIPT",
-            "RETURN_IN": "RECEIPT"}
+# receiving a transfer is a RECEIPT, a count correction or a scrap is an ADJUSTMENT, a returned parcel is
+# RETURN_IN naming its return line (SCRUM-243), and a confirmed pick line writes one PICK row naming the line
+# (reference PICK_LINE, SCRUM-267), as the application does since V20261014001000. The ledger reconciles to
+# stock on hand.
+APP_KIND = {"PUTAWAY": "MOVE", "COUNT_CORRECTION": "ADJUSTMENT", "SCRAP": "ADJUSTMENT", "TRANSFER_IN": "RECEIPT"}
 
 
 def move(kind, sku, qty, ref_type, ref_id, when, actor, frm=None, to=None, lot=None, fs=None, ts_=None, reason=None):
@@ -1553,6 +1553,19 @@ def print_shop(prod, rid, s, qn, done):
     return finished
 
 
+# Order statuses a delivered order passes through because of a return: still shipped and delivered.
+RETURN_STATUSES = ("RETURN_REQUESTED", "RETURNED", "REFUNDED", "PARTIALLY_REFUNDED")
+
+
+def return_times(delivered):
+    """When each step of a return happens: claimed the day of delivery, decided the same day (before the order would
+    complete), and for the one that is resolved, the parcel, QC, Sales' proposal and the accountant's approval."""
+    requested = delivered + timedelta(hours=6)
+    return dict(requested=requested, decided=requested + timedelta(hours=5), received=requested + timedelta(days=2),
+                inspected=requested + timedelta(days=3), proposed=requested + timedelta(days=3, hours=2),
+                settled=requested + timedelta(days=4))
+
+
 def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=None, hold=None, cancel=None,
                 prod_status=None, pick_partial=False, return_spec=None, cancel_request=None, sub=False):
     c = CUST[cust_code]
@@ -1602,13 +1615,25 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         path.insert(path.index("PICKING") + 1, "PACKED")
         when["PACKED"] = when["PICKING"] + timedelta(hours=4)
         times = [when[s] for s in path]
+    # A return (SCRUM-243) moves the order as ReturnRequestService does: opening it puts a DELIVERED order into
+    # RETURN_REQUESTED, which keeps it from completing (BR-ORD-005); a refusal puts it back to DELIVERED (and it
+    # completes later), money given back takes it through RETURNED to PARTIALLY_REFUNDED. The path's own steps and their
+    # random draws are kept, so the rest of the data set does not move; a resolved return only drops the COMPLETED step.
+    rt = return_times(when["DELIVERED"]) if return_spec else None
+    ret_steps = {"REQUESTED": [("RETURN_REQUESTED", "requested")],
+                 "AWAITING_RETURN": [("RETURN_REQUESTED", "requested")],
+                 "REJECTED": [("RETURN_REQUESTED", "requested"), ("DELIVERED", "decided")],
+                 "RESOLVED": [("RETURN_REQUESTED", "requested"), ("RETURNED", "settled"),
+                              ("PARTIALLY_REFUNDED", "settled")]}.get(return_spec, [])
     cur = path[-1]
     if hold:
         cur = "ON_HOLD"
     if cancel:
         cur = "CANCELLED"
-    if final == "RETURNED":
-        cur = "RETURNED"
+    if return_spec == "RESOLVED":
+        cur = "PARTIALLY_REFUNDED"
+    elif return_spec in ("REQUESTED", "AWAITING_RETURN"):
+        cur = "RETURN_REQUESTED"
     released = "READY_TO_FULFILL" in path or "IN_PRODUCTION" in path
     rel_at = when.get("IN_PRODUCTION", when.get("READY_TO_FULFILL"))
     deposit = money(total * (terms[1] if terms and terms[0] == "DEPOSIT" else 30) / 100 / 1000) * 1000 \
@@ -1638,9 +1663,11 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     row.update(hold_reason=hold[1] if hold else None,
                status_before_hold=(None if hold[1] == "CREDIT" else hold[0]) if hold else None,
                hold_note=hold[2] if hold else None,
-               shipped_at=when.get("SHIPPED") if cur in ("SHIPPED", "DELIVERED", "COMPLETED", "RETURNED") else None,
-               delivered_at=when.get("DELIVERED") if cur in ("DELIVERED", "COMPLETED", "RETURNED") else None,
+               shipped_at=when.get("SHIPPED") if cur in ("SHIPPED", "DELIVERED", "COMPLETED") + RETURN_STATUSES
+               else None,
+               delivered_at=when.get("DELIVERED") if cur in ("DELIVERED", "COMPLETED") + RETURN_STATUSES else None,
                completed_at=when.get("COMPLETED") if cur == "COMPLETED" else None,
+               refunded_at=rt["settled"] if cur == "PARTIALLY_REFUNDED" else None,
                packed_at=when.get("PACKED"), billed_amount=0, receivable_paid_amount=0,
                # Review of #150 (V20261022000400): when its fulfillment task was opened - set below with the pick,
                # as the migration backfills it from fulfillment.pick (the create-task list leaves the order out).
@@ -1658,19 +1685,26 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     if cancel:
         hist.append("CANCELLED")
         when["CANCELLED"] = times[-1] + timedelta(hours=random.randint(4, 30))
-    if final == "RETURNED":
-        hist.append("RETURNED")
-        when["RETURNED"] = when["DELIVERED"] + timedelta(days=4)
     actors = {"PENDING_PAYMENT": c["user"], "DRAFT": c["user"], "CONFIRMED": None, "IN_PRODUCTION": U["dieuphoi"],
               "READY_TO_FULFILL": U["dieuphoi"], "PICKING": U[staff_of(p)[0]], "PACKED": U[staff_of(p)[0]],
               "SHIPPED": U[staff_of(p)[0]],
-              "DELIVERED": None, "COMPLETED": None, "ON_HOLD": U["dieuphoi"], "CANCELLED": U["dieuphoi"],
-              "RETURNED": U[staff_of(p)[2]]}
-    for k, s in enumerate(hist):
+              "DELIVERED": None, "COMPLETED": None, "ON_HOLD": U["dieuphoi"], "CANCELLED": U["dieuphoi"]}
+    entries = [(s, when[s], actors.get(s), {"ON_HOLD": hold[2] if hold else None,
+                                            "CANCELLED": cancel[2] if cancel else None}.get(s)) for s in hist]
+    rma = None
+    if ret_steps:
+        # The reasons ReturnRequestService writes ("RETURN_REQUESTED RMA-..."), by whoever moved the return.
+        rma = next_no("RMA", rt["requested"].date())
+        cut = hist.index("DELIVERED") + 1
+        by = {"RETURN_REQUESTED": c["user"] or U["sales1"], "DELIVERED": U["dieuphoi"], "RETURNED": U["ketoan"],
+              "PARTIALLY_REFUNDED": U["ketoan"]}
+        why = {"RETURN_REQUESTED": "RETURN_REQUESTED", "DELIVERED": "RETURN_REJECTED", "RETURNED": "RETURN_RESOLVED"}
+        steps = [(s, rt[t], by[s], f"{why[s]} {rma}" if s in why else None) for s, t in ret_steps]
+        rest = [] if return_spec == "RESOLVED" else entries[cut:]
+        entries = entries[:cut] + steps + rest
+    for k, (s, t, actor, reason) in enumerate(entries):
         add("ordering.order_status_history", id=uid(f"order:{key}:h:{k}"), order_id=oid, from_status=prev, to_status=s,
-            reason={"ON_HOLD": hold[2] if hold else None, "CANCELLED": cancel[2] if cancel else None,
-                    "RETURNED": "Khách trả hàng lỗi"}.get(s), actor_id=actors.get(s), occurred_at=when[s],
-            created_at=when[s])
+            reason=reason, actor_id=actor, occurred_at=t, created_at=t)
         prev = s
     o = dict(id=oid, key=key, cust=cust_code, p=p, lines=lines, total=total, row=row, when=when, status=cur,
              term=term, number=number, custom=custom, deposit=deposit)
@@ -1951,34 +1985,76 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                     refunded_at=when["CANCELLED"] + timedelta(days=1), order_id=oid, source="ORDER_CANCELLED",
                     created_at=when["CANCELLED"])
     if return_spec:
+        # A return request (SCRUM-243, V20261101020000) at one of the points the flow stops, from the customer's
+        # portal (or opened by Sales for a customer with no portal account): REQUESTED → AWAITING_RETURN (approved, goods to come back) → RECEIVED (counted into quarantine) →
+        # INSPECTED → SETTLEMENT_PENDING (Sales proposes) → RESOLVED (the accountant approves: four eyes), or
+        # REQUESTED → REJECTED. The resolved one is refunded in cash for the accepted units; QC sends them to scrap,
+        # an adjustment still waiting for its second person, so the units stay in quarantine meanwhile.
         rstatus = return_spec
         rr = uid(f"rma:{key}")
-        rq = when["DELIVERED"] + timedelta(days=2)
-        decided = rstatus not in ("REQUESTED", "CANCELLED")
-        received = rstatus in ("RECEIVED", "REFUNDED")
-        ref = None
         ln = lines[0]
         rqty = max(1, ln["qty"] // 5)
-        if rstatus == "REFUNDED":
-            ref = uid(f"refund:rma:{key}")
-            add("payment.refund", id=ref, **{pays[0][0]: pays[0][1]}, amount=rqty * ln["price"], currency="VND",
-                reason="Hoàn tiền hàng trả lại lỗi", status="COMPLETED", refunded_at=rq + timedelta(days=3),
-                order_id=oid, source="RETURN", created_at=rq + timedelta(days=2))
-        add("ordering.return_request", id=rr, rma_number=next_no("RMA", rq.date()), order_id=oid, customer_id=c["id"],
-            status=rstatus, reason_code="DEFECTIVE" if rstatus != "REJECTED" else "CHANGED_MIND",
-            note="Một số thùng bị móp, ly bên trong biến dạng" if rstatus != "REJECTED" else "Khách muốn đổi size",
-            requested_at=rq, decided_by=U["dieuphoi"] if decided else None, decided_at=rq + timedelta(hours=5)
-            if decided else None, rejection_reason="Hàng in logo theo yêu cầu không áp dụng đổi trả do đổi ý"
-            if rstatus == "REJECTED" else None, received_at=rq + timedelta(days=2) if received else None,
-            refund_id=ref, created_at=rq)
+        rejected = rstatus == "REJECTED"
+        approved = rstatus in ("AWAITING_RETURN", "RESOLVED")
+        resolved = rstatus == "RESOLVED"
+        qrt, receiver, inspector = f"{p}-QRT01", staff_of(p)[0], staff_of(p)[3]
+        credit = rqty * ln["price"] if resolved else 0
+        requester = c["user"] or U["sales1"]
+        add("ordering.return_request", id=rr, rma_number=rma, order_id=oid, customer_id=c["id"], order_number=number,
+            request_id=uid(f"rma:req:{key}"), channel="PORTAL" if c["user"] else "BACK_OFFICE", requested_by=requester,
+            requested_resolution={"REQUESTED": "REPLACEMENT", "AWAITING_RETURN": "CREDIT_NOTE"}.get(rstatus, "REFUND"),
+            status=rstatus, reason_code="CHANGED_MIND" if rejected else "DAMAGED_IN_TRANSIT",
+            note="Khách muốn đổi size" if rejected else "Một số thùng bị móp, ly bên trong biến dạng",
+            requested_at=rt["requested"], decided_by=U["dieuphoi"] if rstatus != "REQUESTED" else None,
+            decided_at=rt["decided"] if rstatus != "REQUESTED" else None,
+            decision_note="Ảnh khách gửi cho thấy thùng móp khi giao" if approved else None,
+            return_required=True if approved else None,
+            return_deadline=rt["decided"] + timedelta(days=14) if approved else None,
+            rejection_reason="Đổi trả chỉ áp dụng cho hàng lỗi (BR-RMA-002)" if rejected else None,
+            received_at=rt["received"] if resolved else None, received_by=U[receiver] if resolved else None,
+            receiving_location_code=qrt if resolved else None, parcel_count=1 if resolved else 0,
+            inspected_by=U[inspector] if resolved else None, inspected_at=rt["inspected"] if resolved else None,
+            inspection_note="Móp miệng ly, không bán lại được" if resolved else None,
+            money_mode="REFUND" if resolved else None, settlement_amount=credit,
+            proposed_by=U["sales1"] if resolved else None, proposed_at=rt["proposed"] if resolved else None,
+            resolution_note="Hoàn tiền phần hàng lỗi" if resolved else None,
+            settled_by=U["ketoan"] if resolved else None, settled_at=rt["settled"] if resolved else None,
+            refunded_amount=credit, vat_adjustment_required=resolved,
+            closed_at=rt["settled"] if resolved else (rt["decided"] if rejected else None), created_at=rt["requested"])
         rl = uid(f"rmal:{key}")
+        scrap = None
+        if resolved:
+            Stock(ln["sku"], qrt, rqty, rt["received"], "QUARANTINE", key=f"return:{key}")
+            move("RETURN_IN", ln["sku"], rqty, "RETURN_REQUEST_LINE", rl, rt["received"], receiver, to=qrt,
+                 ts_="QUARANTINE", reason=f"Hàng khách trả {rma}")
+            scrap = uid(f"adj:rma:{key}")
+            add("inventory.stock_adjustment", id=scrap, adjustment_number=next_no("ADJ", rt["inspected"].date()),
+                location_code=qrt, sku=ln["sku"], lot_number=None, quantity_delta=-rqty, reason_code="SCRAP",
+                note=f"{rma}: hàng trả lại hỏng, hủy", status="PENDING_APPROVAL", cycle_count_line_id=None,
+                requested_by=U[inspector], decided_by=None, decided_at=None, rejection_reason=None, posted_at=None,
+                withdrawn_at=None, created_at=rt["inspected"])
+            add("payment.refund", id=uid(f"refund:rma:{key}"), **{pays[0][0]: pays[0][1]}, amount=credit,
+                currency="VND", reason=f"Hoàn tiền hàng trả lại {rma}", status="COMPLETED",
+                refunded_at=rt["settled"] + timedelta(days=1), order_id=oid, source="RETURN", return_request_id=rr,
+                created_at=rt["settled"])
         add("ordering.return_request_line", id=rl, return_request_id=rr, order_line_id=ln["id"], quantity=rqty,
-            item_condition="DAMAGED" if received else None, disposition="QUARANTINE" if received else None,
-            created_at=rq)
-        if received:
-            Stock(ln["sku"], f"{p}-QRT01", rqty, rq + timedelta(days=2), "DAMAGED", key=f"return:{key}")
-            move("RETURN_IN", ln["sku"], rqty, "ORDER", oid, rq + timedelta(days=2), staff_of(p)[0],
-                 to=f"{p}-QRT01", ts_="DAMAGED", reason="Hàng khách trả - móp")
+            sku=ln["sku"], custom_printed=ln["design"] is not None, unit_price=ln["price"],
+            approved_quantity=rqty if approved else None, received_quantity=rqty if resolved else None,
+            accepted_quantity=rqty if resolved else None, rejected_quantity=0 if resolved else None,
+            item_condition="DEFECTIVE" if resolved else None, scrap_quantity=rqty if resolved else 0,
+            scrap_adjustment_id=scrap, credit_quantity=rqty if resolved else 0, credit_amount=credit,
+            created_at=rt["requested"])
+        flow = {"REQUESTED": [], "REJECTED": [("REJECTED", "decided", "dieuphoi")],
+                "AWAITING_RETURN": [("AWAITING_RETURN", "decided", "dieuphoi")],
+                "RESOLVED": [("AWAITING_RETURN", "decided", "dieuphoi"), ("RECEIVED", "received", receiver),
+                             ("INSPECTED", "inspected", inspector), ("SETTLEMENT_PENDING", "proposed", "sales1"),
+                             ("RESOLVED", "settled", "ketoan")]}[rstatus]
+        prev_rs = None
+        for k, (s, t, actor) in enumerate([("REQUESTED", "requested", None)] + flow):
+            add("ordering.return_request_status_history", id=uid(f"rma:{key}:h:{k}"), return_request_id=rr,
+                from_status=prev_rs, to_status=s, reason=None, actor_id=U[actor] if actor else requester,
+                occurred_at=rt[t], created_at=rt[t])
+            prev_rs = s
     add("notification.delivery_log", id=uid(f"mail:placed:{key}"), template_code="order.placed", channel="EMAIL",
         recipient=c["email"], status="SENT" if len(ORDERS) % 9 else "FAILED",
         error=None if len(ORDERS) % 9 else "550 5.1.1 Mailbox unavailable",
@@ -2040,10 +2116,11 @@ plan.append(dict(cust=PREPAID[4], d=day(30), final="CONFIRMED", cancel_request=1
                  cancel=("CONFIRMED", "CUSTOMER_REQUEST", "Khách yêu cầu hủy - lùi ngày khai trương")))
 plan.append(dict(cust=DEPOSIT[0], d=day(34), final="PENDING_PAYMENT",
                  cancel=("PENDING_PAYMENT", "DUPLICATE_ORDER", "Khách đặt trùng đơn")))
-plan.append(dict(cust=PREPAID[0], d=day(14), final="RETURNED", return_spec="REFUNDED"))
+# Returns (SCRUM-243): the resolved one's order never completes (its COMPLETED step is dropped), the refused one's does.
+plan.append(dict(cust=PREPAID[0], d=day(14), final="COMPLETED", return_spec="RESOLVED"))
 plan.append(dict(cust=PREPAID[5 % len(PREPAID)], d=day(38), final="COMPLETED", return_spec="REJECTED"))
 plan.append(dict(cust=DEPOSIT[1], d=day(41), final="DELIVERED", return_spec="REQUESTED"))
-plan.append(dict(cust=PREPAID[6 % len(PREPAID)], d=day(42), final="DELIVERED", return_spec="APPROVED"))
+plan.append(dict(cust=PREPAID[6 % len(PREPAID)], d=day(42), final="DELIVERED", return_spec="AWAITING_RETURN"))
 
 plan.sort(key=lambda x: x["d"])
 for i, spec in enumerate(plan):
@@ -2610,13 +2687,14 @@ notification.po_delivery_control procurement.goods_receipts procurement.goods_re
 procurement.qc_inspections procurement.supplier_invoices procurement.supplier_invoice_lines
 inventory.stock_item inventory.stock_reservation ordering.order_line_reservation ordering.order_line_production
 payment.payment ordering.order_payment payment.receivable payment.customer_transfer
-payment.transfer_allocation payment.refund
+payment.transfer_allocation
 fulfillment.wave fulfillment.pick fulfillment.pick_line fulfillment.pack fulfillment.design_verification
 fulfillment.shipment fulfillment.shipment_event fulfillment.package fulfillment.package_line fulfillment.package_scan
 fulfillment.dispatch_load fulfillment.dispatch_load_shipment fulfillment.dispatch_load_package
 payment.cod_remittance payment.cod_remittance_line
-ordering.return_request ordering.return_request_line
-inventory.cycle_count inventory.cycle_count_line inventory.stock_adjustment production.production_scrap
+inventory.cycle_count inventory.cycle_count_line inventory.stock_adjustment
+ordering.return_request ordering.return_request_line ordering.return_request_status_history payment.refund
+production.production_scrap
 inventory.transfer_order inventory.transfer_order_line
 warehouse.move_task warehouse.putaway_task inventory.stock_movement production.production_material_issue
 production.production_print_run
@@ -2731,25 +2809,10 @@ UPDATE catalog.catalog_entry e
                         WHERE s.sku = e.sku AND s.status = 'AVAILABLE' AND l.is_pickable), 0)
  WHERE e.created_by = 'seed';
 
--- Report read models, from the orders that were sold (not draft, not cancelled).
-INSERT INTO reporting.sales_daily_summary (id, day, orders_count, revenue, currency, created_at, created_by)
-SELECT md5('seed:report:day:' || d)::uuid, d, COUNT(*), SUM(o.total_amount), 'VND', now(), 'seed'
-  FROM (SELECT (o.placed_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS d, o.total_amount
-          FROM ordering.customer_order o
-         WHERE o.created_by = 'seed' AND o.status NOT IN ('DRAFT', 'CANCELLED')) o
- GROUP BY d
-ON CONFLICT (day) DO UPDATE SET orders_count = reporting.sales_daily_summary.orders_count + EXCLUDED.orders_count,
-                                revenue = reporting.sales_daily_summary.revenue + EXCLUDED.revenue;
-
-INSERT INTO reporting.product_sales_summary (id, sku, period, quantity_sold, revenue, created_at, created_by)
-SELECT md5('seed:report:sku:' || l.sku || ':' || p)::uuid, l.sku, p, SUM(l.quantity), SUM(l.quantity * l.unit_price),
-       now(), 'seed'
-  FROM (SELECT ol.*, to_char(o.placed_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM') AS p
-          FROM ordering.order_line ol JOIN ordering.customer_order o ON o.id = ol.order_id
-         WHERE o.created_by = 'seed' AND o.status NOT IN ('DRAFT', 'CANCELLED')) l
- GROUP BY l.sku, p
-ON CONFLICT (sku, period) DO UPDATE SET quantity_sold = reporting.product_sales_summary.quantity_sold + EXCLUDED.quantity_sold,
-                                        revenue = reporting.product_sales_summary.revenue + EXCLUDED.revenue;
+-- No report rows: since SCRUM-344 the application owns reporting.* (per-day rollups plus the processed_order_events
+-- ledger that makes them idempotent). Rows written here without the ledger would be counted twice by the first event
+-- of their day. On its next start the application rolls up every seeded order (SalesRollupBackfill: orders older than
+-- anything the ledger knows); POST /api/v1/reports/rebuild does the same by hand.
 
 -- Number sequences: the application's next number on a seeded day must not collide with a seeded one.
 INSERT INTO procurement.po_number_sequence (sequence_date, last_value)
@@ -2761,6 +2824,11 @@ INSERT INTO ordering.order_number_sequence (sequence_date, last_value)
 SELECT to_date(split_part(order_number, '-', 2), 'YYYYMMDD'), MAX(split_part(order_number, '-', 3)::bigint)
   FROM ordering.customer_order WHERE created_by = 'seed' GROUP BY 1
 ON CONFLICT (sequence_date) DO UPDATE SET last_value = GREATEST(ordering.order_number_sequence.last_value, EXCLUDED.last_value);
+
+INSERT INTO ordering.return_number_sequence (sequence_date, last_value)
+SELECT to_date(split_part(rma_number, '-', 2), 'YYYYMMDD'), MAX(split_part(rma_number, '-', 3)::bigint)
+  FROM ordering.return_request WHERE created_by = 'seed' GROUP BY 1
+ON CONFLICT (sequence_date) DO UPDATE SET last_value = GREATEST(ordering.return_number_sequence.last_value, EXCLUDED.last_value);
 
 INSERT INTO platform.document_sequence (document_type, sequence_date, last_value)
 SELECT split_part(n, '-', 1), to_date(split_part(n, '-', 2), 'YYYYMMDD'), MAX(split_part(n, '-', 3)::bigint)
