@@ -159,6 +159,12 @@ public interface IdentityService {
      */
     java.util.List<StaffContact> notificationRecipients(java.util.Set<String> roleCodes, UUID warehouseId);
 
+    /**
+     * {@link #notificationRecipients} for the people who may act on it: holders of a role that grants {@code permission}
+     * ({@code resource:ACTION}), so who is told follows the role matrix as it is edited, not a role name in code.
+     */
+    java.util.List<StaffContact> notificationRecipientsHolding(String permission, UUID warehouseId);
+
     /** Used by task assignment to reject inactive users and users outside an operational role. */
     boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes);
 

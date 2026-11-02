@@ -26,12 +26,32 @@ public final class SalesRollups {
         this.ledger = ledger;
     }
 
+    /** The day the order was placed on, as its placement was recorded; empty when it was not (yet). */
+    public java.util.Optional<java.time.LocalDate> placedDay(UUID orderId) {
+        return ledger.placedContribution(orderId).map(OrderContribution::day);
+    }
+
     /** @return false if this order's placement was already applied */
     public boolean place(OrderContribution order) {
         if (!ledger.markApplied(order.orderId(), OrderEventType.PLACED, order)) {
             return false;
         }
         ledger.apply(order, 1);
+        return true;
+    }
+
+    /**
+     * A return gave money back for goods of an order (SCRUM-260): its credited value and units come off the revenue of
+     * the day that order was placed, as a cancellation's do - so a day's revenue is what was sold that day, less what was
+     * cancelled or credited back for it. Free replacement goods take nothing off: the goods were sold once.
+     *
+     * @return false if this return's {@code event} was applied before, or it credited nothing
+     */
+    public boolean returned(UUID returnRequestId, String event, OrderContribution taken) {
+        if (taken.total().signum() <= 0 || !ledger.markReturnApplied(returnRequestId, event, taken)) {
+            return false;
+        }
+        ledger.applyReturn(taken);
         return true;
     }
 

@@ -216,7 +216,9 @@ public enum OrderStatus {
             // delivered order (lead's decision 2026-10-21; 17 §5 wrote COMPLETED, which would skip both checks).
             case RETURN_REQUESTED -> target == RETURNED || target == DELIVERED;
             case RETURNED -> target == REFUNDED || target == PARTIALLY_REFUNDED;
-            case REFUNDED, PARTIALLY_REFUNDED, COMPLETED -> target == CLOSED;
+            // RETURN_REQUESTED: a further claim after a return gave money back (Sales open it, 03 §12), or a late claim
+            // Sales accepted after the order completed - until the order closes for good (BR-05), it hears its returns.
+            case REFUNDED, PARTIALLY_REFUNDED, COMPLETED -> target == CLOSED || target == RETURN_REQUESTED;
             case CANCELLED, CLOSED -> false;
         };
     }

@@ -23,7 +23,7 @@ class NotificationSenderTest {
     }
     @Test void emailIncludesActualOrderLinesAndCommercialTerms() {
         var mail = mock(JavaMailSender.class);
-        var sender = new NotificationSender(mail, mock(RestClientFactory.class), "buyer@example.com", "");
+        var sender = new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "buyer@example.com", "");
         sender.sendPurchaseOrder(event("EMAIL", "supplier@example.com"));
         var message = ArgumentCaptor.forClass(SimpleMailMessage.class);
         verify(mail).send(message.capture());
@@ -35,7 +35,7 @@ class NotificationSenderTest {
 
     @Test void cancellationEmailIsExplicitAndWorksForLegacyOrdersWithoutLines() {
         var mail = mock(JavaMailSender.class);
-        var sender = new NotificationSender(mail, mock(RestClientFactory.class), "buyer@example.com", "");
+        var sender = new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "buyer@example.com", "");
         var original = event("EMAIL", "supplier@example.com");
         sender.sendPurchaseOrder(new PurchaseOrderSent(original.purchaseOrderId(), original.poNumber(), original.supplierId(),
                 original.channel(), original.recipient(), original.totalAmount(), original.currency(), original.expectedAt(),
@@ -47,7 +47,7 @@ class NotificationSenderTest {
     }
     @Test void unapprovedHostCannotReceiveOrderData() {
         var clients = mock(RestClientFactory.class);
-        var sender = new NotificationSender(mock(JavaMailSender.class), clients, "buyer@example.com", "supplier.example.com");
+        var sender = new NotificationSender(new SmtpEmailTransport(mock(JavaMailSender.class)), clients, "buyer@example.com", "supplier.example.com");
         for (String url : List.of("https://127.0.0.1/", "https://supplier.example.com.evil.test/", "https://user@supplier.example.com/",
                 "https://supplier.example.com/?token=secret", "http://supplier.example.com/")) {
             assertThatThrownBy(() -> sender.sendPurchaseOrder(event("API", url))).isInstanceOf(IllegalArgumentException.class);
@@ -60,7 +60,7 @@ class NotificationSenderTest {
         var builder = org.springframework.web.client.RestClient.builder().baseUrl("https://supplier.example.com/po");
         var server = org.springframework.test.web.client.MockRestServiceServer.bindTo(builder).build();
         when(factory.forService("supplier-po-api", "https://supplier.example.com/po")).thenReturn(builder);
-        var sender = new NotificationSender(mock(JavaMailSender.class), factory, "buyer@example.com", "supplier.example.com");
+        var sender = new NotificationSender(new SmtpEmailTransport(mock(JavaMailSender.class)), factory, "buyer@example.com", "supplier.example.com");
         var event = event("API", "https://supplier.example.com/po");
         server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo("https://supplier.example.com/po"))
                 .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.header("Idempotency-Key", "purchase-order:" + event.purchaseOrderId()))

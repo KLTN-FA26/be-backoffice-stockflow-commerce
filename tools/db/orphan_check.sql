@@ -13,7 +13,7 @@
 WITH checks(step, reference, orphans) AS (
     VALUES
     ('live', 'inventory.stock_reservation.order_id -> ordering.customer_order',
-        (SELECT count(*) FROM inventory.stock_reservation c WHERE NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
+        (SELECT count(*) FROM inventory.stock_reservation c WHERE c.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
     ('live', 'ordering.order_line_reservation.reservation_id -> inventory.stock_reservation',
         (SELECT count(*) FROM ordering.order_line_reservation c WHERE NOT EXISTS (SELECT 1 FROM inventory.stock_reservation p WHERE p.id = c.reservation_id))),
     ('live', 'ordering.customer_order.customer_id -> customer.customer',

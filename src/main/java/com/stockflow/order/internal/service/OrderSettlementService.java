@@ -19,7 +19,10 @@ import java.util.UUID;
  * Completes and closes orders as time passes (G3-2; kltn-docs 17 §4.3 step 10, BR-05; BR-ORD-005):
  * <ul>
  *   <li>DELIVERED → COMPLETED once the return window ({@code stockflow.order.return-window-days}, default 7) has passed,
- *       nothing is owed any more and no return request is open. A credit order not yet paid stays DELIVERED (17 edge).</li>
+ *       nothing is owed any more and no return request is open. A credit order not yet paid stays DELIVERED (17 edge).
+ *       An order with an open return is RETURN_REQUESTED and so not a candidate at all; the check here stays as the
+ *       guard against a return opened between the candidate query and the row lock (SCRUM-243: the return service
+ *       takes the same lock, so one of the two sees the other).</li>
  *   <li>COMPLETED / REFUNDED / PARTIALLY_REFUNDED → CLOSED after {@code stockflow.order.close-after-days} (default 30,
  *       decision G3-Q1).</li>
  * </ul>
@@ -72,11 +75,14 @@ public class OrderSettlementService {
         return true;
     }
 
-    /** @return whether the order was closed */
+    /**
+     * @return whether the order was closed; never while a return of it is open (SCRUM-243): CLOSED is final (BR-05), and
+     *         the return would have nowhere to put its outcome
+     */
     @Transactional
     public boolean close(UUID orderId) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId)).orElse(null);
-        if (order == null || !order.close(clock.instant(), closeAfter)) {
+        if (order == null || candidates.hasOpenReturn(orderId) || !order.close(clock.instant(), closeAfter)) {
             return false;
         }
         repository.save(order);

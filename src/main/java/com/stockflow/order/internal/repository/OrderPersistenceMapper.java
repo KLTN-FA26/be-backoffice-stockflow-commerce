@@ -42,6 +42,12 @@ final class OrderPersistenceMapper {
                         List.copyOf(line.getReservationIds()),
                         line.getCancelledQuantity());
                     if (line.getDesignChecksum() != null) { mapped.recordDesignChecksum(line.getDesignChecksum()); }
+                    if (line.getShortfallAgreedQuantity() != null || line.getShortfallClosedQuantity() > 0) {
+                        mapped.withShortfall(line.getShortfallAgreedQuantity() == null ? null
+                                : new OrderLine.ShortfallAgreement(line.getShortfallAgreedQuantity(),
+                                        line.getShortfallAgreedNote(), line.getShortfallAgreedBy(),
+                                        line.getShortfallAgreedAt()), line.getShortfallClosedQuantity());
+                    }
                     return mapped;
                 })
                 .toList();
@@ -68,6 +74,7 @@ final class OrderPersistenceMapper {
                 entity.getCancellationFeeDetail());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         order.restoreGoodsLeft(entity.getGoodsLeftAt());
+        order.restoreReplacement(entity.getReplacesReturnRequestId());
         order.restoreBalance(entity.getBalancePolicy(), entity.getCodAmount());
         order.restorePartialShipment(entity.isAllowPartialShipment(), entity.isAwaitingProduction());
         order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
@@ -103,6 +110,7 @@ final class OrderPersistenceMapper {
                 toEntity(order.billingAddress()));
         entity.replaceLines(toLineEntities(order));
         applyTermsAndRelease(order, entity);
+        entity.applyReplacement(order.replacesReturnRequestId());
         return entity;
     }
 
@@ -221,6 +229,10 @@ final class OrderPersistenceMapper {
                         line.reservationIds());
                     mapped.setDesignChecksum(line.designChecksum());
                     mapped.setCancelledQuantity(line.cancelledQuantity());
+                    OrderLine.ShortfallAgreement agreed = line.shortfallAgreement();
+                    mapped.setShortfall(agreed == null ? null : agreed.quantity(), agreed == null ? null : agreed.note(),
+                            agreed == null ? null : agreed.agreedBy(), agreed == null ? null : agreed.agreedAt(),
+                            line.shortfallClosedQuantity());
                     return mapped;
                 })
                 .toList();

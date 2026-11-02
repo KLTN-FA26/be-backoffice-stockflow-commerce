@@ -74,4 +74,12 @@ class StaffDirectory {
     List<StaffContact> activeStaff(Role role, UUID warehouseId) {
         return identity.notificationRecipients(Set.of(role.name()), warehouseId);
     }
+
+    /**
+     * The same rule, for the ACTIVE staff who may act on it: holders of a role granting {@code permission}
+     * ({@code resource:ACTION}). Who is told then follows the role matrix as it is edited.
+     */
+    List<StaffContact> activeHolders(String permission, UUID warehouseId) {
+        return identity.notificationRecipientsHolding(permission, warehouseId);
+    }
 }

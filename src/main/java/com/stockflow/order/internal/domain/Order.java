@@ -166,6 +166,11 @@ public final class Order extends AggregateRoot {
      * ({@link #recordPackingStarted}). From then on the delivery mode is what packing copies onto the shipments.
      */
     private Instant packingStartedAt;
+    /**
+     * SCRUM-260: the return request whose accepted units this order replaces with new goods, free of charge; null for
+     * an ordinary order.
+     */
+    private UUID replacesReturnRequestId;
     private final List<OrderShipment> shipments = new ArrayList<>();
     /** Status changes not saved yet, with who and why; drained by the repository. */
     private final List<OrderTransition> transitions = new ArrayList<>();
@@ -479,9 +484,9 @@ public final class Order extends AggregateRoot {
         }
         if (status == OrderStatus.CANCELLED && cancellationFeeAmount != null) {
             // Q6a: money arriving after a cancellation with an agreed fee pays that fee first - the receivable its
-            // shortfall became, or a late transfer - so what is kept stays LEAST(fee, paid), as
+            // shortfall became, or a late transfer - so what is kept stays LEAST(fee, money held), as
             // ck_order_cancellation_fee says. Anything above the fee is the customer's, settled as before.
-            this.cancellationRetainedAmount = cancellationFeeAmount.min(paidAmount);
+            this.cancellationRetainedAmount = cancellationFeeAmount.min(moneyHeld());
         }
         if (paidInFullAt == null && paidAmount.compareTo(total().amount()) >= 0) {
             this.paidInFullAt = now;
@@ -548,11 +553,11 @@ public final class Order extends AggregateRoot {
         // heard of it): what was kept, and what was asked back, never exceed what is left of the money (BR-05,
         // ck_order_cancellation_retained, ck_order_billing). The rest is the accountant's to settle by hand; the
         // event is consumed, not retried forever.
-        if (cancellationRetainedAmount != null && cancellationRetainedAmount.compareTo(paidAmount) > 0) {
-            this.cancellationRetainedAmount = paidAmount;
-        }
         if (remainderRefundAmount.compareTo(paidAmount) > 0) {
             this.remainderRefundAmount = paidAmount;
+        }
+        if (cancellationRetainedAmount != null && cancellationRetainedAmount.compareTo(moneyHeld()) > 0) {
+            this.cancellationRetainedAmount = moneyHeld();
         }
         if (termsMet() || !status.mayBePutOnHold()) {
             return false;
@@ -860,7 +865,8 @@ public final class Order extends AggregateRoot {
         if (status != OrderStatus.IN_PRODUCTION && !heldInProduction && !awaitingProduction) {
             return false;
         }
-        // Units closed out of a line are not printed for (closeRemainder after an early shipment).
+        // Units closed out of a line are not printed for (closeRemainder after an early shipment, or a production
+        // shortfall the customer agreed to).
         boolean allDone = printLines().stream()
                 .allMatch(line -> producedByLine.getOrDefault(line.id(), 0) >= line.quantity() - line.cancelledQuantity());
         if (!allDone) {
@@ -1168,8 +1174,9 @@ public final class Order extends AggregateRoot {
      * process is a return — {@code ORDER_NOT_CANCELLABLE}, naming the current status so the caller
      * can tell the user why.</p>
      *
-     * <p>{@code retainedPercent} is the share of the money received kept for work already done — a
-     * print run under way (17 §4.4, 15 §4.4); the rest is refundable. 0 or null keeps nothing.</p>
+     * <p>{@code retainedPercent} is the share of the money held for the order (received, less what closures asked
+     * back) kept for work already done — a print run under way (17 §4.4, 15 §4.4); the rest is refundable. 0 or null
+     * keeps nothing.</p>
      *
      * @param by who cancelled; null when the system did (payment failed, hold expired)
      */
@@ -1179,9 +1186,10 @@ public final class Order extends AggregateRoot {
 
     /**
      * The same, keeping either a percentage or an amount agreed with the customer (decision Q2: Sales enters it,
-     * nothing computes it), whole units of the currency, more than zero, with its reason and detail. The money
-     * received pays it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the
-     * cancellation announces it and payment records a receivable (Q6a). Nothing is collected or marked paid.
+     * nothing computes it), whole units of the currency, more than zero, at most what the order is now worth, with its
+     * reason and detail. The money held for the order (received, less what closures asked back - review of S6) pays
+     * it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the cancellation announces
+     * it and payment records a receivable (Q6a). Nothing is collected or marked paid.
      */
     public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
                        com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant now) {
@@ -1196,6 +1204,17 @@ public final class Order extends AggregateRoot {
         }
         if (retainedPercent != null && (retainedPercent.signum() < 0 || retainedPercent.compareTo(HUNDRED) > 0)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The retained share is between 0 and 100 percent");
+        }
+        // SCRUM-260: a replacement ships goods a resolved return promised. Cancelled any other way, the return would
+        // stay "replaced" while the customer got neither the goods nor the money - so only its withdrawal through the
+        // return cancels it, and that credits the units in the same transaction (ck_order_replacement_cancellation).
+        if ((replacesReturnRequestId != null) != (code == CancellationReasonCode.REPLACEMENT_WITHDRAWN)) {
+            throw replacesReturnRequestId != null
+                    ? new BusinessException(ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED,
+                            ("Order %s ships replacements for a return: withdraw it through the return, which credits "
+                                    + "the units instead").formatted(orderNumber))
+                    : new BusinessException(ErrorCode.VALIDATION_FAILED,
+                            "Only a replacement order is withdrawn through its return");
         }
         if (!status.canTransitionTo(OrderStatus.CANCELLED)) {
             throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
@@ -1218,10 +1237,13 @@ public final class Order extends AggregateRoot {
         OrderStatus previous = status;
         int scale = total().currency().getDefaultFractionDigits();
         BigDecimal agreed = agreedFee == null ? null : agreedFee.amount().setScale(scale);
-        // Q6a/Q6b: what was received pays the agreed amount first; the rest is refunded, a shortfall is owed.
-        BigDecimal retained = agreed != null ? agreed.min(paidAmount)
+        // Q6a/Q6b: what was received pays the agreed amount first; the rest is refunded, a shortfall is owed. Only the
+        // money still the order's (review 2026-10-25 of S6): a refund a production shortfall already asked for is not
+        // refunded a second time, nor kept.
+        BigDecimal held = moneyHeld();
+        BigDecimal retained = agreed != null ? agreed.min(held)
                 : retainedPercent == null ? BigDecimal.ZERO
-                : paidAmount.multiply(retainedPercent).divide(HUNDRED, scale, RoundingMode.HALF_UP);
+                : held.multiply(retainedPercent).divide(HUNDRED, scale, RoundingMode.HALF_UP);
         this.cancellationFeeAmount = agreed;
         this.cancellationFeeReason = agreedFee == null ? null : agreedFee.reason();
         this.cancellationFeeDetail = agreedFee == null ? null : agreedFee.detail();
@@ -1233,7 +1255,7 @@ public final class Order extends AggregateRoot {
         this.cancellationReason = reasonText;
         this.cancellationRetainedAmount = retained;
         registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
-                previous.name(), code.name(), trimmed, paidAmount, paidAmount.subtract(retained),
+                previous.name(), code.name(), trimmed, paidAmount, held.subtract(retained),
                 total().currency().getCurrencyCode(), by, now,
                 agreed == null ? BigDecimal.ZERO : agreed.subtract(retained))));
     }
@@ -1247,10 +1269,12 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is more than zero, in whole %s"
                     .formatted(digits == 0 ? total().currency().getCurrencyCode() : "units of " + total().currency()));
         }
-        // Decision 2026-10-17: above what was paid the rest is owed, but never above what the order is worth.
-        if (fee.amount().compareTo(total().amount()) > 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is at most the order total, %s %s"
-                    .formatted(total().amount().stripTrailingZeros().toPlainString(), total().currency().getCurrencyCode()));
+        // Decision 2026-10-17: above what was paid the rest is owed, but never above what the order is worth - less
+        // the units a production shortfall closed (review 2026-10-25 of S6).
+        if (fee.amount().compareTo(billable()) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is at most what the order is "
+                    + "worth, %s %s".formatted(billable().stripTrailingZeros().toPlainString(),
+                    total().currency().getCurrencyCode()));
         }
         if (fee.reason() == null || fee.reason().isEmpty() || fee.reason().length() > 500
                 || fee.detail() == null || fee.detail().isEmpty() || fee.detail().length() > 2000) {
@@ -1525,6 +1549,15 @@ public final class Order extends AggregateRoot {
                     status == OrderStatus.ON_HOLD ? "resolve the hold before closing the rest"
                             : "only a partly fulfilled order has a rest to close");
         }
+        // A free replacement's rest is closed only by withdrawing it through its return, which credits the units the
+        // customer will not get (review 2026-10-25); closed any other way, they would be lost to the customer.
+        if ((replacesReturnRequestId != null) != (code == CancellationReasonCode.REPLACEMENT_WITHDRAWN)) {
+            throw new BusinessException(replacesReturnRequestId != null ? ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED
+                    : ErrorCode.VALIDATION_FAILED, replacesReturnRequestId != null
+                    ? ("Order %s replaces goods of a return: withdraw the rest of it through that return, which credits "
+                            + "the units").formatted(orderNumber)
+                    : "Only a replacement order is closed as withdrawn");
+        }
         // Validated before anything changes: a refused fee leaves the order as it was.
         Money closedPrints = Money.zero(total().currency());
         for (OrderLine line : lines) {
@@ -1569,6 +1602,126 @@ public final class Order extends AggregateRoot {
                 orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), paidAmount,
                 refundable, total().currency().getCurrencyCode(), by, at, UUID.randomUUID(), fee, retained, owed)));
         return closed.amount();
+    }
+
+    /**
+     * Sales records what the customer agreed to go without on a print line production cannot finish (review 2026-10-25
+     * of S6): at most {@code units} of it, with the note of the agreement - the call, the message. Lowering what an order
+     * is worth is a sale's decision, so production completes a job short only within it ({@link
+     * #closeProductionShortfall}); the order line keeps who agreed what, and when. A new agreement replaces the last
+     * one, never below what production already closed under it; 0 units withdraws it - recorded on the wrong line, or
+     * the customer changed their mind - while nothing was closed under it. Only while the order is printed for, as the
+     * closure.
+     *
+     * @throws BusinessException {@code NOT_FOUND} for a line not on the order; {@code VALIDATION_FAILED} for a stock
+     *         line, no note, or a quantity not leaving the customer at least one unit; {@code ORDER_INVALID_TRANSITION}
+     *         once the order is not printed for any more
+     */
+    public void agreeProductionShortfall(UUID lineId, int units, String note, UUID by, Instant at) {
+        java.util.Objects.requireNonNull(by, "by");
+        OrderLine line = printedLine(lineId);
+        String text = trimmed(note);
+        if (text == null || text.length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The customer's agreement says how it was given, in at most 500 characters");
+        }
+        if (units == 0 && line.shortfallClosedQuantity() == 0) {
+            line.withdrawShortfall();
+            return;
+        }
+        // At least one unit stays the customer's: a line given up whole is a cancellation, decided as one.
+        if (units < Math.max(1, line.shortfallClosedQuantity()) || units >= line.quantity()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Line %s of order %s has %d unit(s), %d already "
+                    + "closed short: the customer goes without at least that many and keeps at least one; %d asked")
+                    .formatted(lineId, orderNumber, line.quantity(), line.shortfallClosedQuantity(), units));
+        }
+        line.agreeShortfall(new OrderLine.ShortfallAgreement(units, text, by, at));
+    }
+
+    /**
+     * Production completed a print line's job short (review 2026-10-25, S6): {@code units} of the line will not be made,
+     * so they leave the order as a closed remainder does ({@link #closeRemainder}) - the order is worth less, the money
+     * received above that is asked back ({@code OrderRemainderClosed}, reason {@code PRODUCTION_SHORTFALL}, no fee), and
+     * the production delivered now covers the line (BR-PRD-06). Only within what the customer agreed with Sales
+     * ({@link #agreeProductionShortfall}) - and by someone else than who recorded it: lowering what an order is worth
+     * takes two people - and only while the order is still printed for: IN_PRODUCTION, held from there, or waiting
+     * for its prints after its stock shipped early. The status does not move here: the completion announcement moves
+     * it, or - a job closed with nothing made - the closure's own announcement.
+     *
+     * @return the value of the units closed
+     * @throws BusinessException {@code NOT_FOUND} for a line not on the order; {@code VALIDATION_FAILED} for a stock
+     *         line, more units than the line has left, or all of them (a cancellation); {@code
+     *         PRODUCTION_SHORTFALL_NOT_AGREED} beyond the customer's agreement; {@code
+     *         PRODUCTION_SHORTFALL_SELF_APPROVAL} by who recorded it; {@code ORDER_INVALID_TRANSITION} once the order
+     *         is not printed for any more
+     */
+    public BigDecimal closeProductionShortfall(UUID lineId, int units, UUID by, Instant at) {
+        java.util.Objects.requireNonNull(by, "by");
+        OrderLine line = printedLine(lineId);
+        int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
+        if (units < 1 || units > left) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Line %s of order %s has %d unit(s) left; %d asked".formatted(lineId, orderNumber, left, units));
+        }
+        if (line.cancelledQuantity() + units >= line.quantity()) {
+            // Nothing of the line would reach the customer: not a shortfall, a cancellation of what they ordered.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Closing %d unit(s) of line %s of order %s "
+                    + "leaves the customer nothing of it: cancel the order, or have Sales agree on another way")
+                    .formatted(units, lineId, orderNumber));
+        }
+        OrderLine.ShortfallAgreement agreement = line.shortfallAgreement();
+        if (agreement == null || line.shortfallClosedQuantity() + units > agreement.quantity()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_SHORTFALL_NOT_AGREED, agreement == null
+                    ? "Sales has not recorded that the customer of order %s goes without units of line %s"
+                            .formatted(orderNumber, lineId)
+                    : "The customer of order %s agreed to go without %d unit(s) of line %s, %d already closed; %d asked"
+                            .formatted(orderNumber, agreement.quantity(), lineId, line.shortfallClosedQuantity(), units));
+        }
+        if (agreement.agreedBy().equals(by)) {
+            throw new BusinessException(ErrorCode.PRODUCTION_SHORTFALL_SELF_APPROVAL,
+                    "The customer's agreement on order %s was recorded by the user now closing it; someone else closes"
+                            .formatted(orderNumber));
+        }
+        line.closeShortfall(units);
+        Money closed = line.unitPrice().times(units);
+        BigDecimal excess = paidAmount.subtract(billable()).subtract(remainderRefundAmount)
+                .subtract(remainderFeeRetainedAmount).subtract(remainderFeePaidAmount);
+        BigDecimal refundable = excess.max(BigDecimal.ZERO);
+        this.remainderRefundAmount = remainderRefundAmount.add(refundable);
+        registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
+                orderNumber.value(), customerId, com.stockflow.contracts.OrderRemainderClosed.PRODUCTION_SHORTFALL,
+                List.of(new com.stockflow.contracts.OrderRemainderClosed.Line(line.id(), line.sku().code(), units)),
+                closed.amount(), billable(), paidAmount, refundable, total().currency().getCurrencyCode(), by, at,
+                UUID.randomUUID(), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO)));
+        return closed.amount();
+    }
+
+    /** A print line of an order still printed for: the agreement and the closure of a production shortfall. */
+    private OrderLine printedLine(UUID lineId) {
+        OrderLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                        "Line %s does not belong to order %s".formatted(lineId, orderNumber)));
+        boolean printing = status == OrderStatus.IN_PRODUCTION
+                || status == OrderStatus.ON_HOLD && statusBeforeHold == OrderStatus.IN_PRODUCTION || awaitingProduction;
+        if (!printing) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "the order is not waiting for its prints any more");
+        }
+        if (!line.isMadeToOrder()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Line %s of order %s is a stock line: nothing is printed for it".formatted(lineId, orderNumber));
+        }
+        return line;
+    }
+
+    /**
+     * The money received that is still the order's (review 2026-10-25 of S6): what was paid, less the refunds closures
+     * asked for and the closures' fees it paid. A cancellation keeps and refunds out of this, so a refund a closure
+     * already asked for is paid out once; ck_order_cancellation_fee says it again.
+     */
+    private BigDecimal moneyHeld() {
+        return paidAmount.subtract(remainderRefundAmount).subtract(remainderFeeRetainedAmount)
+                .subtract(remainderFeePaidAmount).max(BigDecimal.ZERO);
     }
 
     private void followShipments(ShipmentChange change, Instant at, UUID by) {
@@ -1644,6 +1797,13 @@ public final class Order extends AggregateRoot {
     }
 
     /** Units of a line in shipments, counting the ones that came back or not. */
+    /** Units of the line neither shipped nor closed: what is still to come of it. */
+    public int unshippedUnits(UUID lineId) {
+        OrderLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("No line " + lineId + " on " + orderNumber));
+        return line.quantity() - line.cancelledQuantity() - shippedUnits(lineId, false);
+    }
+
     private int shippedUnits(UUID lineId, boolean includingReturned) {
         return shipments.stream().filter(s -> includingReturned || !s.isReturned())
                 .mapToInt(s -> s.quantityOf(lineId)).sum();
@@ -1869,13 +2029,15 @@ public final class Order extends AggregateRoot {
 
     /**
      * Delivered, settled and past the return window (kltn-docs 17 §4.3 step 10; BR-ORD-005): DELIVERED → COMPLETED.
-     * A credit order still owing stays DELIVERED (17 edge), so does one with a return request open.
+     * A credit order still owing stays DELIVERED (17 edge), so does one with a return request open. The window is
+     * counted in calendar days of Asia/Ho_Chi_Minh, exactly as a return is ({@link ReturnPolicy#endOfDays}): the order
+     * never completes while its customer may still claim.
      *
      * @return whether this changed the order
      */
     public boolean complete(Instant now, java.time.Duration returnWindow, boolean hasOpenReturn) {
         if (status != OrderStatus.DELIVERED || deliveredAt == null || hasOpenReturn
-                || deliveredAt.plus(returnWindow).isAfter(now) || amountDue().signum() > 0) {
+                || ReturnPolicy.endOfDays(deliveredAt, returnWindow).isAfter(now) || amountDue().signum() > 0) {
             return false;
         }
         transitionTo(OrderStatus.COMPLETED, null, "RETURN_WINDOW_CLOSED", now);
@@ -1885,7 +2047,9 @@ public final class Order extends AggregateRoot {
 
     /**
      * Closed for good a while after it was completed or refunded (G3-Q1, default 30 days): BR-05, nothing changes it
-     * any more.
+     * any more. Never while the customer still owes on it: a credit order a return credited only in part still has its
+     * receivable open, and closing it would put the debt out of the order's sight for good - COMPLETED already waits
+     * for the money ({@link #complete}), so REFUNDED and PARTIALLY_REFUNDED wait too.
      *
      * @return whether this changed the order
      */
@@ -1895,7 +2059,7 @@ public final class Order extends AggregateRoot {
             case REFUNDED, PARTIALLY_REFUNDED -> refundedAt;
             default -> null;
         };
-        if (since == null || since.plus(after).isAfter(now)) {
+        if (since == null || since.plus(after).isAfter(now) || amountDue().signum() > 0) {
             return false;
         }
         transitionTo(OrderStatus.CLOSED, null, "CLOSED_AFTER_SETTLEMENT", now);
@@ -1905,7 +2069,57 @@ public final class Order extends AggregateRoot {
 
     /** The customer asked to return delivered goods (RMA, SCRUM-243): DELIVERED → RETURN_REQUESTED. */
     public void requestReturn(UUID by, Instant at) {
-        transitionTo(OrderStatus.RETURN_REQUESTED, by, null, at);
+        requestReturn(by, at, null);
+    }
+
+    /**
+     * A return request of the order was opened (SCRUM-243): DELIVERED → RETURN_REQUESTED, which keeps it from
+     * completing while the claim is decided (BR-ORD-005). Also from COMPLETED (a late claim Sales accepted) and from
+     * REFUNDED / PARTIALLY_REFUNDED (a further claim after a return gave money back), so the order shows the open claim
+     * and is settled again by it. An order already RETURN_REQUESTED - another of its returns is open - stays as it is,
+     * and so does a CLOSED one: BR-05, nothing changes it; the return goes on without moving it.
+     *
+     * @return whether this changed the order
+     */
+    public boolean requestReturn(UUID by, Instant at, String reason) {
+        if (status == OrderStatus.RETURN_REQUESTED || !status.canTransitionTo(OrderStatus.RETURN_REQUESTED)) {
+            return false;
+        }
+        transitionTo(OrderStatus.RETURN_REQUESTED, by, reason, at);
+        return true;
+    }
+
+    /**
+     * Every return of the order ended without money back - refused, withdrawn, expired, or made good with new goods
+     * only (lead's decision 2026-10-21 for a refusal; the same for the others, since the customer keeps what was
+     * delivered and owes what they owed): RETURN_REQUESTED → DELIVERED, back to waiting for its return window and its
+     * money before it completes. The delivery date is unchanged, so the window is not reopened.
+     *
+     * @return whether this changed the order
+     */
+    public boolean withdrawReturn(UUID by, Instant at, String reason) {
+        if (status != OrderStatus.RETURN_REQUESTED) {
+            return false;
+        }
+        transitionTo(OrderStatus.DELIVERED, by, reason, at);
+        return true;
+    }
+
+    /**
+     * Every return of the order ended and at least one gave money back (SCRUM-260; 15 §4.4: refunded, or the
+     * receivable reduced): RETURN_REQUESTED → RETURNED → REFUNDED when what was given back covers what the order is
+     * worth, PARTIALLY_REFUNDED otherwise. Both steps are kept in the history; from here the order closes after
+     * {@code close-after-days}.
+     *
+     * @return whether this changed the order
+     */
+    public boolean settleReturn(boolean full, UUID by, Instant at, String reason) {
+        if (status != OrderStatus.RETURN_REQUESTED) {
+            return false;
+        }
+        transitionTo(OrderStatus.RETURNED, by, reason, at);
+        markRefunded(!full, by, at);
+        return true;
     }
 
     /** The returned goods arrived (RMA received, 17 §4.6 step 19): RETURN_REQUESTED → RETURNED. */
@@ -1921,6 +2135,50 @@ public final class Order extends AggregateRoot {
         transitionTo(partial ? OrderStatus.PARTIALLY_REFUNDED : OrderStatus.REFUNDED, by, null, at);
         this.refundedAt = at;
     }
+
+    // ---- a replacement for returned goods ------------------------------------------------------------------------------
+
+    /**
+     * SCRUM-260: this order ships new goods for units a return accepted, at no charge. Set on the draft, before it is
+     * submitted; {@code ck_order_replacement_free} says again that such an order costs nothing.
+     */
+    public void replacesReturn(UUID returnRequestId) {
+        if (status != OrderStatus.DRAFT) {
+            throw new IllegalStateException("Only a draft becomes a replacement order");
+        }
+        if (total().amount().signum() != 0) {
+            throw new IllegalStateException("A replacement order of %s costs nothing, not %s".formatted(orderNumber,
+                    total()));
+        }
+        this.replacesReturnRequestId = java.util.Objects.requireNonNull(returnRequestId, "returnRequestId");
+    }
+
+    /**
+     * A replacement order is placed (SCRUM-260): every line holds its stock, there is nothing to pay - so it is paid in
+     * full at once and CONFIRMED, ready for the coordinator to release it to a warehouse and to production, as any
+     * order. Announced as {@code OrderPlaced}. The confirmation names {@code by}, who settled the return: nobody
+     * checked out this order, so the history says who caused it.
+     */
+    public void submitReplacement(UUID by, Instant now) {
+        if (replacesReturnRequestId == null) {
+            throw new IllegalStateException("Order %s replaces no return".formatted(orderNumber));
+        }
+        requireEveryLineReserved();
+        if (paymentTerm != PaymentTerm.PREPAID) {
+            throw new IllegalStateException("A replacement order is prepaid: there is nothing to pay");
+        }
+        this.paidInFullAt = now;
+        transitionTo(OrderStatus.CONFIRMED, by, "REPLACEMENT_FOR_RETURN", now);
+        registerPlaced();
+    }
+
+    /** Rehydration of the return a replacement order makes good. */
+    public void restoreReplacement(UUID returnRequestId) {
+        this.replacesReturnRequestId = returnRequestId;
+    }
+
+    /** The return this order ships replacements for; null for an ordinary order. */
+    public UUID replacesReturnRequestId() { return replacesReturnRequestId; }
 
     private void requireNotCancelled(String what) {
         if (status == OrderStatus.CANCELLED) {

@@ -77,7 +77,10 @@ import static org.mockito.Mockito.verify;
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
-@TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
+// The Sales notices are checked on the mocked JavaMailSender: SMTP, not the test profile's in-memory recorder. Customer
+// order mail (HTML, a MimeMessage the mock cannot make) is not what this test is about.
+@TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false", "stockflow.notification.email.provider=smtp",
+        "stockflow.notification.email.customer.enabled=false"})
 class QuoteIntegrationTest {
 
     private static final String BLANK = ConfirmedDesigns.BLANK;
@@ -743,6 +746,44 @@ class QuoteIntegrationTest {
                 SELECT offer -> 'lines' -> 0 -> 'tiers' -> 0 ->> 'unitPrice' FROM ordering.quote_status_history
                  WHERE quote_id = ? AND to_status = 'SENT' ORDER BY revision""", String.class, sent.id()))
                 .containsExactly("3000", "2400");
+    }
+
+    @Test
+    @DisplayName("A sent quote cannot be withdrawn; a revision reopened and dropped before it was sent ends the quote "
+            + "for the customer with the offer they were last sent, and a stale answer is told why")
+    void droppedRevision() throws Exception {
+        ConfirmedDesigns.Design design = design();
+        Quotes.QuoteView sent = sentQuote(design);
+        assertThatThrownBy(() -> quotes.cancel(sales, sent.id(), sent.version(), "Giá nhập nhầm"))
+                .as("a sent offer is answered, revised or expires - Sales does not withdraw it")
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+
+        // The customer sees the quote end with the offer they were last sent, not the draft's working terms.
+        Quotes.QuoteView third = sentQuote(design);
+        Quotes.QuoteView asked = quotes.requestChanges(portal, third.id(), third.version(), "giảm giá được không?");
+        Quotes.QuoteView reopened = quotes.reopen(sales, third.id(), asked.version());
+        Instant draftValidity = Instant.now().plus(Duration.ofDays(20)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Quotes.QuoteView edited = quotes.edit(sales, third.id(), reopened.version(),
+                draft(design, PaymentTerm.PREPAID, draftValidity));
+        quotes.cancel(sales, third.id(), edited.version(), "Không giảm được, khách chọn nơi khác");
+        Quotes.QuoteView customerView = quotes.get(portal, third.id());
+        assertThat(customerView.status()).isEqualTo(QuoteStatus.CANCELLED);
+        assertThat(customerView.cancellationReason()).contains("Không giảm");
+        assertThat(customerView.revision()).as("the revision they were sent").isEqualTo(third.revision());
+        assertThat(customerView.validUntil()).isEqualTo(third.validUntil());
+        assertThat(customerView.priced()).isEqualTo(third.priced());
+        assertThat(customerView.proposedTotal()).isEqualByComparingTo(third.proposedTotal());
+        assertThat(customerView.lines()).extracting(Quotes.LineView::lineNo, Quotes.LineView::quantity,
+                        Quotes.LineView::proposedUnitPrice)
+                .containsExactlyElementsOf(third.lines().stream().map(line -> org.assertj.core.groups.Tuple.tuple(
+                        line.lineNo(), line.quantity(), line.proposedUnitPrice())).toList());
+        Quotes.QuoteView staffView = quotes.get(sales, third.id());
+        assertThat(staffView.revision()).as("Sales sees its draft").isEqualTo(2);
+        assertThat(staffView.validUntil()).isEqualTo(draftValidity);
+        assertThatThrownBy(() -> quotes.accept(portal, third.id(), new Quotes.Acceptance(third.version(), Map.of())))
+                .as("the version the customer still has: told why, not that it changed")
+                .hasMessageContaining("withdrawn").hasMessageContaining("Không giảm")
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
     }
 
     @Test

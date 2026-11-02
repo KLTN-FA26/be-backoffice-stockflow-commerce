@@ -144,7 +144,8 @@ class QuoteController {
     }
 
     @PostMapping("/{quoteId}/cancellation")
-    @Operation(summary = "Cancel a DRAFT quote, with a reason")
+    @Operation(summary = "Cancel a DRAFT quote, or an ACCEPTED one only when a SKU on it stopped, with a reason the "
+            + "customer reads")
     @RequiresPermission(resource = OrderResources.QUOTES, action = Action.UPDATE)
     public ApiResponse<QuoteResponse> cancel(@PathVariable UUID quoteId,
                                              @Valid @RequestBody QuoteRequests.Cancellation request,
