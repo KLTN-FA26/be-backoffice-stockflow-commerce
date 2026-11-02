@@ -6,8 +6,8 @@ import com.stockflow.common.error.ErrorCode;
 import java.util.UUID;
 
 /**
- * BR-PRD-003: "The approver of a product must not be the person who submitted it." Thrown by
- * {@link Product#approve}.
+ * BR-PRD-003: "The approver of a product must not be the person who submitted it", unless that person
+ * holds SYSTEM_ADMIN. Thrown by {@link Product#approve}.
  */
 public class SelfApprovalNotAllowedException extends BusinessException {
 

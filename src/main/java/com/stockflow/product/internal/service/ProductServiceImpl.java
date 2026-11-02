@@ -8,6 +8,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.common.security.Roles;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.CreateProductCommand;
@@ -221,13 +222,18 @@ class ProductServiceImpl implements ProductService {
         return saved;
     }
 
-    /** Approval makes the product sellable, and its draft variants with it. */
+    /**
+     * Approval makes the product sellable, and its draft variants with it. Only a SYSTEM_ADMIN may approve what
+     * it submitted itself (BR-PRD-003); the role is asked of identity only when that is the case.
+     */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "product", resourceId = "#productId")
     public ProductSummary approve(UUID productId, UUID approverId) {
         Product product = requireProduct(productId);
         ProductStatus from = product.status();
-        product.approve(approverId, clock.instant());
+        boolean mayApproveOwn = approverId != null && approverId.equals(product.submittedBy())
+                && identity.isActiveUserWithAnyRole(approverId, Roles.SYSTEM_ADMIN);
+        product.approve(approverId, mayApproveOwn, clock.instant());
         variants.activateDrafts(productId);
         ProductSummary saved = saveAndPublish(product);
         history.record(productId, ProductChangeType.APPROVED, null, from.name(), saved.status().name(), null, List.of());

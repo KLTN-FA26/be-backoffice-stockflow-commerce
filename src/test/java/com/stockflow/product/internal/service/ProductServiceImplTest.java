@@ -3,6 +3,7 @@ package com.stockflow.product.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.Roles;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.CreateProductCommand;
@@ -97,7 +98,7 @@ class ProductServiceImplTest {
         return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", "Paper cup", BRAND, CATEGORY, null, null, null,
                 TaxClass.STANDARD, ProductKind.STANDARD, status, version,
                 status == ProductStatus.DRAFT ? null : PEOPLE, status == ProductStatus.DRAFT ? null : NOW,
-                approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, null,
+                approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, false, null,
                 status == ProductStatus.DISCONTINUED ? NOW : null, status == ProductStatus.DISCONTINUED ? "old" : null,
                 status == ProductStatus.INACTIVE ? NOW : null, status == ProductStatus.INACTIVE ? "recall" : null);
     }
@@ -509,6 +510,22 @@ class ProductServiceImplTest {
         service.reject(other.id().value(), UUID.randomUUID(), "Missing dimensions");
         verify(history).record(other.id().value(), ProductChangeType.REJECTED, null, "PENDING_APPROVAL", "DRAFT",
                 "Missing dimensions", List.of());
+    }
+
+    @Test
+    @DisplayName("BR-PRD-003: a SYSTEM_ADMIN approves what it submitted; anyone else who tries is refused")
+    void onlySystemAdminApprovesItsOwnSubmission() {
+        Product mine = locked(ProductStatus.PENDING_APPROVAL, 1, ProductStatus.APPROVED);
+        when(identity.isActiveUserWithAnyRole(PEOPLE, Roles.SYSTEM_ADMIN)).thenReturn(true);
+        service.approve(mine.id().value(), PEOPLE);
+        assertThat(mine.selfApproved()).isTrue();
+
+        Product theirs = locked(ProductStatus.PENDING_APPROVAL, 1, ProductStatus.APPROVED);
+        when(identity.isActiveUserWithAnyRole(PEOPLE, Roles.SYSTEM_ADMIN)).thenReturn(false);
+        Throwable refused = catchThrowable(() -> service.approve(theirs.id().value(), PEOPLE));
+        assertThat(refused).isInstanceOfSatisfying(BusinessException.class,
+                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED));
+        assertThat(theirs.status()).isEqualTo(ProductStatus.PENDING_APPROVAL);
     }
 
     // ------------------------------------------------------------------ purchasability and history

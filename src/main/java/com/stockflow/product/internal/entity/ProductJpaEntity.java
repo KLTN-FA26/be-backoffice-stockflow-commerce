@@ -95,6 +95,9 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "approved_at")
     private Instant approvedAt;
 
+    @Column(name = "self_approved", nullable = false)
+    private boolean selfApproved;
+
     @Column(name = "published_at", insertable = false, updatable = false)
     private Instant publishedAt;
 
@@ -132,13 +135,14 @@ public class ProductJpaEntity extends BaseEntity {
     }
 
     public void setWorkflow(ProductStatus status, UUID submittedBy, Instant submittedAt, UUID approvedBy,
-                            Instant approvedAt, String rejectionReason, Instant discontinuedAt,
+                            Instant approvedAt, boolean selfApproved, String rejectionReason, Instant discontinuedAt,
                             String discontinueReason, Instant suspendedAt, String suspendReason) {
         this.status = status;
         this.submittedBy = submittedBy;
         this.submittedAt = submittedAt;
         this.approvedBy = approvedBy;
         this.approvedAt = approvedAt;
+        this.selfApproved = selfApproved;
         this.rejectionReason = rejectionReason;
         this.discontinuedAt = discontinuedAt;
         this.discontinueReason = discontinueReason;
@@ -164,6 +168,7 @@ public class ProductJpaEntity extends BaseEntity {
     public Instant getSubmittedAt() { return submittedAt; }
     public UUID getApprovedBy() { return approvedBy; }
     public Instant getApprovedAt() { return approvedAt; }
+    public boolean isSelfApproved() { return selfApproved; }
     public Instant getPublishedAt() { return publishedAt; }
     public Instant getDiscontinuedAt() { return discontinuedAt; }
     public String getDiscontinueReason() { return discontinueReason; }
