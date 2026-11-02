@@ -49,7 +49,7 @@ class QuoteNotificationListenerTest {
     private List<UUID> activeSales(String... emails) {
         var users = java.util.Arrays.stream(emails).map(email -> new com.stockflow.identity.api.StaffUser(UUID.randomUUID(),
                 email, email, "Sales", "ACTIVE", java.util.List.of("SALES_STAFF"), java.util.List.of(), false, null, null,
-                Instant.EPOCH, "admin", 0)).toList();
+                Instant.EPOCH, "admin", null, 0)).toList();
         when(identity.listUsers(org.mockito.ArgumentMatchers.argThat(
                 (com.stockflow.identity.api.ListUsersQuery q) -> q != null && "SALES_STAFF".equals(q.roleCode())
                         && "ACTIVE".equals(q.status()) && q.page() == 0)))
@@ -73,7 +73,7 @@ class QuoteNotificationListenerTest {
                     com.stockflow.common.error.ErrorCode.NOT_FOUND));
         } else {
             when(identity.user(sales)).thenReturn(new com.stockflow.identity.api.StaffUser(sales, "sales", salesEmail,
-                    "Sales", status, List.of("SALES_STAFF"), List.of(), false, null, null, Instant.EPOCH, "admin", 0));
+                    "Sales", status, List.of("SALES_STAFF"), List.of(), false, null, null, Instant.EPOCH, "admin", null, 0));
         }
         return new CustomerActedOnQuote(UUID.randomUUID(), "QT-20261012-0007", UUID.randomUUID(), action,
                 sourceOrderNumber, sales, AT);

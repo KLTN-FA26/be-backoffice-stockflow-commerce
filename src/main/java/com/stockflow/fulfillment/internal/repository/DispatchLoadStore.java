@@ -49,8 +49,9 @@ public class DispatchLoadStore {
                         r.getLoadedBy(), r.isActive(), r.getRemovedAt(), r.getRemovedBy()))
                 .toList();
         List<DispatchLoad.Unload> toUnload = unloads.findByLoadIdOrderByRequestedAtAscIdAsc(header.getId()).stream()
-                .map(r -> new DispatchLoad.Unload(r.getPackageId(), r.getShipmentId(), r.getReason(),
-                        r.getRequestedAt(), r.getUnloadedAt(), r.getUnloadedBy()))
+                .map(r -> new DispatchLoad.Unload(r.getPackageId(), r.getKey(), r.getReason(), r.getRequestedAt(),
+                        r.getUnloadedAt(), r.getUnloadedBy(), r.getReasonCode(), r.isOverridden(),
+                        r.getOverrideNote()))
                 .toList();
         return DispatchLoad.restore(new DispatchLoad.Snapshot(header.getId(), header.getCode(), header.getRequestId(),
                 header.getWarehouseId(), header.getMode(), header.getCarrierId(), header.getLoadPlanVehicleId(),
@@ -60,7 +61,7 @@ public class DispatchLoadStore {
                 header.getHandoverNote(), header.getCodTotal(), header.getCancelledAt(), header.getCancelledBy(),
                 header.getCancelReason(), header.getVersion(), onManifest, onVehicle, header.getBookedAt(),
                 header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelledBy(),
-                header.getBookingCancelReason(), toUnload));
+                header.getBookingCancelReason(), toUnload, header.getCancelReasonCode()));
     }
 
     /** Inserts a new load (header first: the manifest rows reference it). */
@@ -128,11 +129,11 @@ public class DispatchLoadStore {
         members.saveAllAndFlush(shipmentsOff);
         members.saveAllAndFlush(shipmentsOn);
         parcels.saveAllAndFlush(parcelsOn);
-        writeUnloads(s);
+        writeUnloads(s, transfer);
     }
 
     /** SCRUM-392: parcels to unload, before the header (tg_dispatch_load_unload_pending reads them). */
-    private void writeUnloads(DispatchLoad.Snapshot s) {
+    private void writeUnloads(DispatchLoad.Snapshot s, boolean transfer) {
         if (s.unloads() == null || s.unloads().isEmpty()) {
             return;
         }
@@ -143,13 +144,31 @@ public class DispatchLoadStore {
             DispatchLoadUnloadJpaEntity row = known.get(u.packageId());
             if (row == null) {
                 row = new DispatchLoadUnloadJpaEntity(Identifiers.newId(), s.id(), u.packageId(), u.shipmentId(),
-                        u.reason(), u.requestedAt());
+                        transfer, u.reason(), u.reasonCode(), u.requestedAt());
             } else if (java.util.Objects.equals(row.getUnloadedAt(), u.unloadedAt())) {
                 continue;
             }
-            row.apply(u.unloadedAt(), u.unloadedBy());
+            row.apply(u.unloadedAt(), u.unloadedBy(), u.overridden(), u.overrideNote());
             changed.add(row);
         }
         unloads.saveAllAndFlush(changed);
+    }
+
+    /**
+     * UNLOAD-DESIGN point 4: of these parcels, the ones still to be scanned off a vehicle, with the load each is on (a
+     * parcel is locked while it appears here).
+     */
+    public Map<UUID, UUID> pendingUnloadLoads(java.util.Collection<UUID> packageIds) {
+        if (packageIds == null || packageIds.isEmpty()) {
+            return Map.of();
+        }
+        return unloads.findByPackageIdInAndUnloadedAtIsNull(packageIds).stream().collect(Collectors.toMap(
+                DispatchLoadUnloadJpaEntity::getPackageId, DispatchLoadUnloadJpaEntity::getLoadId, (a, b) -> a));
+    }
+
+    /** The unloads still pending on these loads (SCRUM-474: the screen of what is left to scan off). */
+    public List<DispatchLoadUnloadJpaEntity> pendingUnloads(java.util.Collection<UUID> loadIds) {
+        return loadIds == null || loadIds.isEmpty() ? List.of()
+                : unloads.findByLoadIdInAndUnloadedAtIsNull(loadIds);
     }
 }

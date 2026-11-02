@@ -37,6 +37,14 @@ public final class PlacementValidator {
 
     /** Every rule each carton breaks, at most once per carton and rule, in the order of the items. */
     public static List<PlacementViolation> validate(VehicleSpec vehicle, List<Item> items) {
+        return validate(vehicle, items, false);
+    }
+
+    /**
+     * As {@link #validate(VehicleSpec, List)}; {@code ignorePayload} leaves out {@link ViolationType#OVERWEIGHT} and
+     * is for the trial estimate only (LP2-9), whose cartons carry a placeholder weight.
+     */
+    public static List<PlacementViolation> validate(VehicleSpec vehicle, List<Item> items, boolean ignorePayload) {
         Set<PlacementViolation> out = new LinkedHashSet<>();
         long w = vehicle.innerWidthMm();
         long h = vehicle.innerHeightMm();
@@ -74,7 +82,7 @@ public final class PlacementValidator {
                 out.add(new PlacementViolation(ref, ViolationType.UNSUPPORTED));
             }
         }
-        if (load.compareTo(vehicle.maxPayloadKg()) > 0) {
+        if (!ignorePayload && load.compareTo(vehicle.maxPayloadKg()) > 0) {
             out.add(new PlacementViolation(null, ViolationType.OVERWEIGHT));
         }
         return new ArrayList<>(out);

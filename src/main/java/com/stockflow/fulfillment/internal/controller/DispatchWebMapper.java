@@ -1,6 +1,7 @@
 package com.stockflow.fulfillment.internal.controller;
 
 import com.stockflow.fulfillment.internal.controller.dto.CarrierResponse;
+import com.stockflow.fulfillment.internal.controller.dto.ControlledCancelResponse;
 import com.stockflow.fulfillment.internal.controller.dto.LoadResponse;
 import com.stockflow.fulfillment.internal.controller.dto.LoadRowResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ManifestResponse;
@@ -41,8 +42,14 @@ class DispatchWebMapper {
                 d.vehicleTypeCode(),
                 d.bookedAt(), d.bookedBy(), d.bookingCancelledAt(), d.bookingCancelReason(),
                 d.pendingUnloads().stream().map(u -> new LoadResponse.PendingUnload(u.packageId(), u.labelCode(),
-                        u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt())).toList(),
-                d.carrierBookingToCancel());
+                        u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt(), u.reasonCode(),
+                        u.transferOrderId())).toList(),
+                d.carrierBookingToCancel(), d.cancelReasonCode(), d.replacementLoadId(), d.replacementLoadCode());
+    }
+
+    ControlledCancelResponse toResponse(Dispatching.ControlledCancelResult r) {
+        return new ControlledCancelResponse(toResponse(r.cancelled()),
+                r.replacement() == null ? null : toResponse(r.replacement()));
     }
 
     ManifestResponse toResponse(Dispatching.Manifest m) {

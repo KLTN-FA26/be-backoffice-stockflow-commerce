@@ -110,6 +110,40 @@ public interface LoadEstimates {
      */
     LoadEstimateView create(CreateEstimate command);
 
+    /**
+     * One carton line of a trial estimate (LP2-9): what an EasyCargo sheet row says. The sizes are as measured; the
+     * length runs along the vehicle, as the sheet's Length does.
+     *
+     * @param name      what the box is (the sheet's Description): the viewer's legend and colour key; null or blank:
+     *                  the group, else {@code Line <n>}
+     * @param group     the sheet's Group, a label only; null or blank: none
+     * @param quantity  how many identical boxes
+     * @param rotatable false keeps the box as measured (the sheet's Rotable)
+     */
+    record TrialLine(String name, String group, int lengthMm, int widthMm, int heightMm, int quantity,
+                     boolean rotatable) { }
+
+    /** @param vehicleTypeIds the vehicle types the plan may use; empty: every active type */
+    record TrialEstimate(List<TrialLine> lines, List<UUID> vehicleTypeIds, SelectionMode selectionMode) { }
+
+    /**
+     * A trial's answer: the viewer's contract of an estimate, without the identity and packaging of a stored one
+     * ({@code vehicles}, {@code unplaced}, {@code meta}). Weights in it are the placeholder, not data.
+     */
+    record TrialView(SelectionMode selectionMode, List<UUID> vehicleTypeIds, List<Layout> vehicles,
+                     List<Layout.UnplacedLine> unplaced, EstimateMeta meta) { }
+
+    /**
+     * The trial estimate (LP2-9; owner decision TRIAL-FLOW 29/10): how a pasted box list loads, with no source and no
+     * packaging. The planner runs as for an estimate (same seed, budget and box cap) but the payload is ignored - the
+     * list has no weights, as the original tool's - and <b>nothing is persisted</b>: no estimate row, no event.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} (no line, a size or quantity
+     *         that is not positive), {@code VEHICLE_TYPE_NOT_FOUND}, {@code VEHICLE_TYPE_INACTIVE},
+     *         {@code LOAD_ESTIMATE_TOO_MANY_CARTONS}
+     */
+    TrialView trial(TrialEstimate command);
+
     /** @throws com.stockflow.common.error.BusinessException {@code LOAD_ESTIMATE_NOT_FOUND}, {@code OUT_OF_DATA_SCOPE} */
     LoadEstimateView get(UUID id);
 

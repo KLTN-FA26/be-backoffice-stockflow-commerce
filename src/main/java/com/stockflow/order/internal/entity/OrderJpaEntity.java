@@ -160,6 +160,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "remainder_fee_paid_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal remainderFeePaidAmount = java.math.BigDecimal.ZERO;
 
+    /** V20261102030100: the value of the units closed out of the order; what "paid in full" is measured against. */
+    @Column(name = "closed_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal closedAmount = java.math.BigDecimal.ZERO;
+
     @Column(name = "awaiting_production", nullable = false)
     private boolean awaitingProduction;
 
@@ -357,6 +361,11 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.remainderFeePaidAmount = paid == null ? java.math.BigDecimal.ZERO : paid;
     }
 
+    public void applyClosedAmount(java.math.BigDecimal closed) {
+        this.closedAmount = closed == null ? java.math.BigDecimal.ZERO : closed;
+    }
+
+    public java.math.BigDecimal getClosedAmount() { return closedAmount; }
     public java.math.BigDecimal getRemainderFeeAmount() { return remainderFeeAmount; }
     public java.math.BigDecimal getRemainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
     public java.math.BigDecimal getRemainderFeePaidAmount() { return remainderFeePaidAmount; }

@@ -193,6 +193,46 @@ public class SalesRollupLedgerAdapter implements SalesRollupLedger {
     }
 
     @Override
+    public boolean markClosureApplied(UUID closureId, OrderContribution taken) {
+        return jdbc.update("INSERT INTO reporting.processed_order_closures (closure_id, order_id, placed_day, currency,"
+                        + " total, lines, processed_at)"
+                        + " VALUES (:closureId, :orderId, :day, :currency, :total, CAST(:lines AS jsonb), NOW())"
+                        + " ON CONFLICT (closure_id) DO NOTHING",
+                new MapSqlParameterSource("closureId", closureId)
+                        .addValue("orderId", taken.orderId())
+                        .addValue("day", Date.valueOf(taken.day()))
+                        .addValue("currency", taken.currency())
+                        .addValue("total", taken.total())
+                        .addValue("lines", write(taken.lines()))) == 1;
+    }
+
+    @Override
+    public List<OrderContribution> closuresOfOrder(UUID orderId) {
+        return jdbc.query("SELECT order_id, placed_day, currency, total, lines FROM reporting.processed_order_closures"
+                        + " WHERE order_id = :orderId ORDER BY processed_at, closure_id",
+                new MapSqlParameterSource("orderId", orderId), this::closure);
+    }
+
+    @Override
+    public List<OrderContribution> closuresOf(LocalDate day) {
+        return jdbc.query("SELECT order_id, placed_day, currency, total, lines FROM reporting.processed_order_closures"
+                        + " WHERE placed_day = :day ORDER BY processed_at, closure_id",
+                new MapSqlParameterSource("day", Date.valueOf(day)), this::closure);
+    }
+
+    private OrderContribution closure(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
+        return new OrderContribution(rs.getObject("order_id", UUID.class), rs.getDate("placed_day").toLocalDate(),
+                rs.getString("currency"), rs.getBigDecimal("total"), read(rs.getString("lines")));
+    }
+
+    @Override
+    public boolean cancellationApplied(UUID orderId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM reporting.processed_order_events"
+                        + " WHERE order_id = :orderId AND event_type = 'CANCELLED')",
+                new MapSqlParameterSource("orderId", orderId), Boolean.class));
+    }
+
+    @Override
     public void clearDay(LocalDate day) {
         SqlParameterSource byDay = new MapSqlParameterSource("day", Date.valueOf(day))
                 .addValue("period", BusinessDay.period(day));

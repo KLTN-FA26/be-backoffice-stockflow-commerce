@@ -173,6 +173,51 @@ class PlanVehicles {
     }
 
     /**
+     * SCRUM-474 UNLOAD-DROP: a vehicle is dropped from its confirmed plan only when the plan's other vehicles (those with
+     * a live load) all left, and at least one did - nothing else waits for it.
+     *
+     * @throws BusinessException {@code LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT}
+     */
+    void requireOtherVehiclesLeft(PlanOfLoad ctx) {
+        LoadPlan plan = ctx.plan();
+        Map<UUID, DispatchLoadJpaEntity> live = liveLoads(plan);
+        boolean anyLeft = false;
+        for (LoadPlan.Vehicle other : plan.activeVehicles()) {
+            DispatchLoadJpaEntity load = live.get(other.id());
+            if (other.id().equals(ctx.vehicle().id()) || load == null) {
+                continue;
+            }
+            if (load.getStatus() != LoadStatus.DISPATCHED) {
+                throw new BusinessException(ErrorCode.LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT, ("Vehicle %d of load plan %s "
+                        + "has not left yet (%s): a vehicle is dropped only once every other vehicle left")
+                        .formatted(other.seq(), plan.code(), load.getStatus()));
+            }
+            anyLeft = true;
+        }
+        if (!anyLeft) {
+            throw new BusinessException(ErrorCode.LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT, ("No other vehicle of load plan %s "
+                    + "has left: a vehicle is dropped only once the plan's other vehicles left (otherwise cancel the "
+                    + "plan under control)").formatted(plan.code()));
+        }
+    }
+
+    /**
+     * SCRUM-474 UNLOAD-DROP: the vehicle of {@code ctx} is retired from its plan, the parcels placed on it released
+     * ({@code VEHICLE_DROPPED}: they wait for a new plan) and, as it counts for nothing any more (BR-15), the plan is
+     * DISPATCHED. The plan's row is locked by the caller, which cancels the vehicle's load.
+     *
+     * @return whether the plan turned DISPATCHED
+     */
+    boolean drop(PlanOfLoad ctx, Instant at) {
+        LoadPlan plan = ctx.plan();
+        Set<UUID> released = plan.dropVehicle(ctx.vehicle().seq(), at);
+        planStore.save(plan, ctx.header(), at);
+        log.info("Vehicle {} of load plan {} dropped from the plan: {} parcel(s) wait for a new plan",
+                ctx.vehicle().seq(), plan.code(), released.size());
+        return completeIfDispatched(ctx.header(), plan, at);
+    }
+
+    /**
      * Whether a parcel of the shipment already left on a signed vehicle (a full truckload spanning vehicles, LP-3):
      * its order's cancellation can no longer void it.
      */
