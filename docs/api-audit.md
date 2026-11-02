@@ -77,7 +77,7 @@ Every REST endpoint the 25 business flows need, by module. Derived from
 | ⬜ | GET | `/api/v1/products` · `/{id}` | List / detail of product master | F-PRD | READ · EXPORT |
 | ⬜ | PUT | `/api/v1/products/{id}` | Edit while DRAFT | F-PRD | UPDATE |
 | ⬜ | POST | `/api/v1/products/{id}/submission` | Submit for approval → PENDING_APPROVAL | F-PRD | UPDATE |
-| ⬜ | POST | `/api/v1/products/{id}/approval` | Approve (different user, BR-PRD-003) | F-PRD | APPROVE |
+| ⬜ | POST | `/api/v1/products/{id}/approval` | Approve (different user unless product-lifecycle:APPROVE, BR-PRD-003) | F-PRD | APPROVE |
 | ⬜ | POST | `/api/v1/products/{id}/publication` | Publish → PUBLISHED (emits ProductPublished) | F-PRD | UPDATE |
 
 ## catalog  (F-CAT · storefront)  — read model, fed by events

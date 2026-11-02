@@ -3,6 +3,11 @@ package com.stockflow.product.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.Action;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.PermissionCode;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.CreateProductCommand;
@@ -40,6 +45,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -79,6 +85,7 @@ class ProductServiceImplTest {
     private final ProductCommerceRepository commerce = mock(ProductCommerceRepository.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final IdentityService identity = mock(IdentityService.class);
+    private final CurrentUserProvider users = mock(CurrentUserProvider.class);
     private final SkuReferenceProbe purchasing = mock(SkuReferenceProbe.class);
     private final SkuReferenceProbe selling = mock(SkuReferenceProbe.class);
     private ProductServiceImpl service;
@@ -89,7 +96,7 @@ class ProductServiceImplTest {
         when(purchasing.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         when(selling.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         service = new ProductServiceImpl(products, search, variants, media, attributes, events, history, commerce,
-                inventory, identity, List.of(purchasing, selling), Clock.fixed(NOW, ZoneOffset.UTC));
+                inventory, identity, users, List.of(purchasing, selling), Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private static Product productIn(ProductStatus status, long version) {
@@ -97,7 +104,7 @@ class ProductServiceImplTest {
         return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", "Paper cup", BRAND, CATEGORY, null, null, null,
                 TaxClass.STANDARD, ProductKind.STANDARD, status, version,
                 status == ProductStatus.DRAFT ? null : PEOPLE, status == ProductStatus.DRAFT ? null : NOW,
-                approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, null,
+                approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, false, null,
                 status == ProductStatus.DISCONTINUED ? NOW : null, status == ProductStatus.DISCONTINUED ? "old" : null,
                 status == ProductStatus.INACTIVE ? NOW : null, status == ProductStatus.INACTIVE ? "recall" : null);
     }
@@ -509,6 +516,37 @@ class ProductServiceImplTest {
         service.reject(other.id().value(), UUID.randomUUID(), "Missing dimensions");
         verify(history).record(other.id().value(), ProductChangeType.REJECTED, null, "PENDING_APPROVAL", "DRAFT",
                 "Missing dimensions", List.of());
+    }
+
+    @Test
+    @DisplayName("BR-PRD-003: a caller holding product-lifecycle:APPROVE approves what it submitted; without it, refused")
+    void onlyALifecycleApproverApprovesItsOwnSubmission() {
+        Product mine = locked(ProductStatus.PENDING_APPROVAL, 1, ProductStatus.APPROVED);
+        when(users.current()).thenReturn(Optional.of(caller(PEOPLE, true)));
+        service.approve(mine.id().value(), PEOPLE);
+        assertThat(mine.selfApproved()).isTrue();
+
+        Product theirs = locked(ProductStatus.PENDING_APPROVAL, 1, ProductStatus.APPROVED);
+        when(users.current()).thenReturn(Optional.of(caller(PEOPLE, false)));
+        assertSelfApprovalRefused(theirs);
+
+        // The permission counts only for the caller themselves, never for an approver id passed on someone's behalf.
+        Product onBehalf = locked(ProductStatus.PENDING_APPROVAL, 1, ProductStatus.APPROVED);
+        when(users.current()).thenReturn(Optional.of(caller(UUID.randomUUID(), true)));
+        assertSelfApprovalRefused(onBehalf);
+    }
+
+    private static CurrentUser caller(UUID id, boolean holdsLifecycleApprove) {
+        Set<PermissionCode> permissions = holdsLifecycleApprove
+                ? Set.of(PermissionCode.of(ProductPermissions.LIFECYCLE, Action.APPROVE)) : Set.of();
+        return new CurrentUser(id, "caller", Set.of(), permissions, DataScope.ALL, Set.of());
+    }
+
+    private void assertSelfApprovalRefused(Product product) {
+        Throwable refused = catchThrowable(() -> service.approve(product.id().value(), PEOPLE));
+        assertThat(refused).isInstanceOfSatisfying(BusinessException.class,
+                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED));
+        assertThat(product.status()).isEqualTo(ProductStatus.PENDING_APPROVAL);
     }
 
     // ------------------------------------------------------------------ purchasability and history

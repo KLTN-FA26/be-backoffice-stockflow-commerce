@@ -47,7 +47,10 @@ public interface ProductService {
      */
     ProductSummary submit(UUID productId, UUID submittedBy);
 
-    /** PENDING_APPROVAL → APPROVED. BR-PRD-003: {@code approverId} must not be who submitted it. */
+    /**
+     * PENDING_APPROVAL → APPROVED. BR-PRD-003: {@code approverId} must not be who submitted it, unless they hold
+     * {@code product-lifecycle:APPROVE}, SYSTEM_ADMIN's ({@code SELF_APPROVAL_NOT_ALLOWED} otherwise).
+     */
     ProductSummary approve(UUID productId, UUID approverId);
 
     /** PENDING_APPROVAL → DRAFT. */

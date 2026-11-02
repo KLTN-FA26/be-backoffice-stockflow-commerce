@@ -71,6 +71,7 @@ public final class Product extends AggregateRoot {
     private Instant submittedAt;
     private UUID approvedBy;
     private Instant approvedAt;
+    private boolean selfApproved;
     private String rejectionReason;
     private Instant discontinuedAt;
     private String discontinueReason;
@@ -81,7 +82,7 @@ public final class Product extends AggregateRoot {
                    String shortDescription, String description, String descriptionEn, TaxClass taxClass,
                    ProductKind kind, ProductStatus status, long version,
                    UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
-                   String rejectionReason, Instant discontinuedAt, String discontinueReason,
+                   boolean selfApproved, String rejectionReason, Instant discontinuedAt, String discontinueReason,
                    Instant suspendedAt, String suspendReason) {
         this.id = Objects.requireNonNull(id, "id");
         this.code = requireCode(code);
@@ -100,6 +101,7 @@ public final class Product extends AggregateRoot {
         this.submittedAt = submittedAt;
         this.approvedBy = approvedBy;
         this.approvedAt = approvedAt;
+        this.selfApproved = selfApproved;
         this.rejectionReason = rejectionReason;
         this.discontinuedAt = discontinuedAt;
         this.discontinueReason = discontinueReason;
@@ -117,7 +119,7 @@ public final class Product extends AggregateRoot {
                                 TaxClass taxClass, ProductKind kind) {
         return new Product(ProductId.newId(), code, name, requireNonBlank(nameEn, "nameEn"), brandId, categoryId,
                 shortDescription, description, descriptionEn, requireTaxClass(taxClass), kind, ProductStatus.DRAFT,
-                0L, null, null, null, null, null, null, null, null, null);
+                0L, null, null, null, null, false, null, null, null, null, null);
     }
 
     /**
@@ -210,22 +212,27 @@ public final class Product extends AggregateRoot {
     }
 
     /**
-     * BR-PRD-003: the approver must not be the person who submitted it.
+     * BR-PRD-003: the approver must not be the person who submitted it, unless {@code mayApproveOwn} - the
+     * approver holds {@code product-lifecycle:APPROVE}, SYSTEM_ADMIN's (owner decision of 02/11). Such an approval
+     * is flagged {@link #selfApproved()}, which is what lets {@code ck_products_approver_not_submitter} stand aside
+     * for exactly that case.
      *
      * <p>The English name and the tax class are checked again (SCRUM-87): a row that was already waiting
      * for approval before {@link #submit} required them would otherwise be approved without them, until
      * {@code ck_products_details_on_submit} is in the database. The approver rejects it back to DRAFT.</p>
      */
-    public void approve(UUID approverId, Instant now) {
+    public void approve(UUID approverId, boolean mayApproveOwn, Instant now) {
         requireCanTransitionTo(ProductStatus.APPROVED);
         Objects.requireNonNull(approverId, "approverId");
-        if (submittedBy != null && submittedBy.equals(approverId)) {
+        boolean own = approverId.equals(submittedBy);
+        if (own && !mayApproveOwn) {
             throw new SelfApprovalNotAllowedException(id, approverId);
         }
         requireDetails();
         this.status = ProductStatus.APPROVED;
         this.approvedBy = approverId;
         this.approvedAt = Objects.requireNonNull(now, "now");
+        this.selfApproved = own;
         registerEvent(new ProductEvent.Approved(new ProductApproved(id.value(), approverId, submittedBy)));
     }
 
@@ -379,6 +386,7 @@ public final class Product extends AggregateRoot {
     public Instant submittedAt() { return submittedAt; }
     public UUID approvedBy() { return approvedBy; }
     public Instant approvedAt() { return approvedAt; }
+    public boolean selfApproved() { return selfApproved; }
     public String rejectionReason() { return rejectionReason; }
     public Instant discontinuedAt() { return discontinuedAt; }
     public String discontinueReason() { return discontinueReason; }

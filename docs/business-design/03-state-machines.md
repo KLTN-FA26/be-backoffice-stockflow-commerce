@@ -38,7 +38,7 @@ stateDiagram-v2
 |---|---|---|---|---|---|
 | — | DRAFT | create | E-commerce admin | SKU unique (BR-PRD-002) | — |
 | DRAFT | PENDING_APPROVAL | submit | E-commerce admin | all mandatory fields present, brand included (BR-PRD-001) | — |
-| PENDING_APPROVAL | APPROVED | approve | E-commerce admin (approver) | approver ≠ submitter (BR-PRD-003) | `ProductApproved` |
+| PENDING_APPROVAL | APPROVED | approve | E-commerce admin (approver) | approver ≠ submitter, unless the approver holds `product-lifecycle:APPROVE`, SYSTEM_ADMIN's (BR-PRD-003; flagged `self_approved`) | `ProductApproved` |
 | PENDING_APPROVAL | DRAFT | reject | E-commerce admin (approver) | rejection reason given | — |
 | APPROVED | PUBLISHED | publish | E-commerce admin | has price, image, category (BR-PRD-004) | `ProductPublished` |
 | PUBLISHED | APPROVED | unpublish | E-commerce admin | — | `ProductUnpublished` |

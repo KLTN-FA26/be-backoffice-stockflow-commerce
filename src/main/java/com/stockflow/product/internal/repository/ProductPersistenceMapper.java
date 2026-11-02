@@ -19,7 +19,7 @@ final class ProductPersistenceMapper {
         return new Product(new ProductId(e.getId()), e.getCode(), e.getName(), e.getNameEn(), e.getBrandId(),
                 e.getCategoryId(), e.getShortDescription(), e.getDescription(), e.getDescriptionEn(),
                 e.getTaxClass(), e.getKind(), e.getStatus(), e.getVersion(), e.getSubmittedBy(),
-                e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.getRejectionReason(),
+                e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.isSelfApproved(), e.getRejectionReason(),
                 e.getDiscontinuedAt(), e.getDiscontinueReason(), e.getSuspendedAt(), e.getSuspendReason());
     }
 
@@ -28,7 +28,7 @@ final class ProductPersistenceMapper {
     static void applyToEntity(Product p, ProductJpaEntity e) {
         e.setDetails(p.name(), p.nameEn(), p.brandId(), p.shortDescription(), p.description(), p.descriptionEn(),
                 p.taxClass(), p.kind());
-        e.setWorkflow(p.status(), p.submittedBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
+        e.setWorkflow(p.status(), p.submittedBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(), p.selfApproved(),
                 p.rejectionReason(), p.discontinuedAt(), p.discontinueReason(), p.suspendedAt(), p.suspendReason());
     }
 

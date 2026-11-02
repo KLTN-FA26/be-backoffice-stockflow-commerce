@@ -51,7 +51,7 @@ class ProductTest {
     private static Product approved() {
         Product product = draftWithCategory();
         product.submit(SUBMITTER, NOW);
-        product.approve(APPROVER, NOW);
+        product.approve(APPROVER, false, NOW);
         product.pullDomainEvents();
         return product;
     }
@@ -62,7 +62,7 @@ class ProductTest {
         return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy 12oz", null, BRAND, CATEGORY, null, null, null,
                 TaxClass.STANDARD, ProductKind.STANDARD, status, 7L,
                 status == ProductStatus.DRAFT ? null : SUBMITTER, status == ProductStatus.DRAFT ? null : NOW,
-                approvedOnce ? APPROVER : null, approvedOnce ? NOW : null, null,
+                approvedOnce ? APPROVER : null, approvedOnce ? NOW : null, false, null,
                 status == ProductStatus.DISCONTINUED ? NOW : null,
                 status == ProductStatus.DISCONTINUED ? "end of line" : null,
                 status == ProductStatus.INACTIVE ? NOW : null, status == ProductStatus.INACTIVE ? "recall" : null);
@@ -72,7 +72,7 @@ class ProductTest {
     private static Product legacyDraft(String nameEn, TaxClass taxClass) {
         return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy 12oz", nameEn, BRAND, CATEGORY, null, null, null,
                 taxClass, ProductKind.STANDARD, ProductStatus.DRAFT, 0L,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, false, null, null, null, null, null);
     }
 
     private static void assertRefused(Runnable action, ErrorCode code) {
@@ -178,10 +178,10 @@ class ProductTest {
         @DisplayName("the category and brand refusals still come before the details")
         void categoryAndBrandStillComeFirst() {
             Product noCategory = new Product(ProductId.newId(), "CUP-12OZ", "Ly", null, BRAND, null, null, null, null,
-                    null, ProductKind.STANDARD, ProductStatus.DRAFT, 0L, null, null, null, null, null, null, null, null,
+                    null, ProductKind.STANDARD, ProductStatus.DRAFT, 0L, null, null, null, null, false, null, null, null, null,
                     null);
             Product noBrand = new Product(ProductId.newId(), "CUP-12OZ", "Ly", null, null, CATEGORY, null, null, null,
-                    null, ProductKind.STANDARD, ProductStatus.DRAFT, 0L, null, null, null, null, null, null, null, null,
+                    null, ProductKind.STANDARD, ProductStatus.DRAFT, 0L, null, null, null, null, false, null, null, null, null,
                     null);
 
             assertRefused(() -> noCategory.submit(SUBMITTER, NOW), ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
@@ -199,7 +199,7 @@ class ProductTest {
             Product product = draftWithCategory();
             product.submit(SUBMITTER, NOW);
 
-            product.approve(APPROVER, NOW);
+            product.approve(APPROVER, false, NOW);
 
             assertThat(product.status()).isEqualTo(ProductStatus.APPROVED);
             assertThat(product.approvedBy()).isEqualTo(APPROVER);
@@ -212,7 +212,7 @@ class ProductTest {
             Product product = draftWithCategory();
             product.submit(SUBMITTER, NOW);
 
-            product.approve(APPROVER, NOW);
+            product.approve(APPROVER, false, NOW);
 
             List<?> events = product.pullDomainEvents();
             assertThat(events).hasSize(1);
@@ -229,9 +229,33 @@ class ProductTest {
             Product product = draftWithCategory();
             product.submit(SUBMITTER, NOW);
 
-            assertThatThrownBy(() -> product.approve(SUBMITTER, NOW))
+            assertThatThrownBy(() -> product.approve(SUBMITTER, false, NOW))
                     .isInstanceOf(SelfApprovalNotAllowedException.class);
             assertThat(product.status()).isEqualTo(ProductStatus.PENDING_APPROVAL);
+        }
+
+        @Test
+        @DisplayName("BR-PRD-003: a submitter who may approve its own (SYSTEM_ADMIN) does, flagged self-approved")
+        void ownApprovalWhenAllowedIsFlagged() {
+            Product product = draftWithCategory();
+            product.submit(SUBMITTER, NOW);
+
+            product.approve(SUBMITTER, true, NOW);
+
+            assertThat(product.status()).isEqualTo(ProductStatus.APPROVED);
+            assertThat(product.approvedBy()).isEqualTo(SUBMITTER);
+            assertThat(product.selfApproved()).isTrue();
+        }
+
+        @Test
+        @DisplayName("an approval by someone else is never flagged self-approved, whoever they are")
+        void otherApproverIsNotSelfApproved() {
+            Product product = draftWithCategory();
+            product.submit(SUBMITTER, NOW);
+
+            product.approve(APPROVER, true, NOW);
+
+            assertThat(product.selfApproved()).isFalse();
         }
 
         @Test
@@ -239,7 +263,7 @@ class ProductTest {
         void approveFromDraftRejected() {
             Product product = draftWithCategory();
 
-            assertThatThrownBy(() -> product.approve(APPROVER, NOW))
+            assertThatThrownBy(() -> product.approve(APPROVER, false, NOW))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
         }
 
@@ -248,9 +272,9 @@ class ProductTest {
         void legacyPendingRowWithoutDetailsIsNotApproved() {
             Product product = new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy 12oz", null, BRAND, CATEGORY, null,
                     null, null, null, ProductKind.STANDARD, ProductStatus.PENDING_APPROVAL, 3L, SUBMITTER, NOW,
-                    null, null, null, null, null, null, null);
+                    null, null, false, null, null, null, null, null);
 
-            assertThatThrownBy(() -> product.approve(APPROVER, NOW)).isInstanceOfSatisfying(BusinessException.class,
+            assertThatThrownBy(() -> product.approve(APPROVER, false, NOW)).isInstanceOfSatisfying(BusinessException.class,
                     e -> {
                         assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_DETAILS_REQUIRED);
                         assertThat(e.fieldErrors()).extracting(f -> f.field()).containsExactly("nameEn", "taxClass");
@@ -348,7 +372,7 @@ class ProductTest {
         void updateWhileApprovedRejected() {
             Product product = draftWithCategory();
             product.submit(SUBMITTER, NOW);
-            product.approve(APPROVER, NOW);
+            product.approve(APPROVER, false, NOW);
 
             assertThatThrownBy(() -> product.updateDetails("x", "x", null, CATEGORY, null, null, null,
                     TaxClass.STANDARD, ProductKind.STANDARD))
@@ -497,7 +521,7 @@ class ProductTest {
         @DisplayName("a legacy approved row without an English name or tax class still suspends and resumes (SCRUM-87)")
         void legacyRowWithoutDetailsStillMoves() {
             Product product = new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy 12oz", null, BRAND, CATEGORY, null,
-                    null, null, null, ProductKind.STANDARD, ProductStatus.APPROVED, 3L, SUBMITTER, NOW, APPROVER, NOW,
+                    null, null, null, ProductKind.STANDARD, ProductStatus.APPROVED, 3L, SUBMITTER, NOW, APPROVER, NOW, false,
                     null, null, null, null, null);
 
             product.suspend("recall", NOW);
