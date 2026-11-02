@@ -7,6 +7,8 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.fulfillment.internal.controller.dto.LoadEstimateRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadEstimateResponse;
+import com.stockflow.fulfillment.internal.controller.dto.TrialLoadEstimateRequest;
+import com.stockflow.fulfillment.internal.controller.dto.TrialLoadEstimateResponse;
 import com.stockflow.fulfillment.internal.service.LoadEstimates;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -27,7 +29,8 @@ import java.util.UUID;
  * The advisory load estimate of full-truckload load planning (SCRUM-287 PR EST; design v2 §5, LP2-1): how an order's
  * remaining units would load before anything is packed - from confirmation (the release dialog) until it shipped. It never confirms a plan or books a vehicle. {@code
  * fulfillment-load-estimates:CREATE} to estimate, {@code :READ} to read one; every call is limited to the caller's
- * warehouses.
+ * warehouses. {@code POST /trial} (LP2-9) loads a pasted box list the same way and stores nothing; it has no source, so no
+ * warehouse to limit it by, and {@code :CREATE} alone allows it.
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/load-estimates")
@@ -54,6 +57,18 @@ class LoadEstimateController {
     @Auditable(action = AuditAction.CREATE, resourceType = "load_estimate", resourceId = "#result?.data()?.id()")
     public ApiResponse<LoadEstimateResponse> create(@Valid @RequestBody LoadEstimateRequest request) {
         return ApiResponse.ok(mapper.toResponse(estimates.create(mapper.toCommand(request))));
+    }
+
+    @PostMapping("/trial")
+    @Operation(summary = "Trial estimate from a box list (EasyCargo sheet, SCRUM-474 TRIAL-FLOW, LP2-9): loads the "
+            + "boxes on the chosen vehicle types and answers the viewer's layout with trial=true. NOTHING is stored - "
+            + "no estimate row, no audit entry, no event - and the answer cannot be fetched again. Boxes carry a "
+            + "placeholder weight and the payload is not checked (the sheet has no weights); no kits. Same box cap "
+            + "as an estimate. 200; 400 VALIDATION_FAILED, 404 VEHICLE_TYPE_NOT_FOUND, 409 VEHICLE_TYPE_INACTIVE, 422 "
+            + "LOAD_ESTIMATE_TOO_MANY_CARTONS")
+    @RequiresPermission(resource = FulfillmentResources.LOAD_ESTIMATES, action = Action.CREATE)
+    public ApiResponse<TrialLoadEstimateResponse> trial(@Valid @RequestBody TrialLoadEstimateRequest request) {
+        return ApiResponse.ok(mapper.toResponse(estimates.trial(mapper.toCommand(request))));
     }
 
     @GetMapping("/{estimateId}")

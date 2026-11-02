@@ -538,4 +538,126 @@ class LoadEstimateServiceTest {
             assertThat(service.current(LoadEstimates.SourceType.ORDER, orderId).id()).isEqualTo(row.getId());
         }
     }
+
+    @Nested
+    @DisplayName("the trial estimate (LP2-9): nothing is stored")
+    class Trial {
+
+        private LoadEstimates.TrialLine line(int l, int w, int h, int quantity) {
+            return new LoadEstimates.TrialLine("Box", "G1", l, w, h, quantity, true);
+        }
+
+        private LoadEstimates.TrialEstimate trial(LoadEstimates.TrialLine... lines) {
+            return new LoadEstimates.TrialEstimate(List.of(lines), List.of(truckId), null);
+        }
+
+        @Test
+        @DisplayName("loads the boxes on the chosen type and persists nothing: no estimate row, no order read")
+        void plansAndStoresNothing() {
+            var view = service.trial(trial(line(600, 400, 300, 12), line(500, 500, 500, 4)));
+
+            assertThat(view.vehicles()).hasSize(1);
+            assertThat(view.vehicles().get(0).boxes()).hasSize(16);
+            assertThat(view.unplaced()).isEmpty();
+            assertThat(view.vehicleTypeIds()).containsExactly(truckId);
+            assertThat(view.selectionMode()).isEqualTo(SelectionMode.SINGLE_TYPE);
+            assertThat(view.meta().placedBoxes()).isEqualTo(16);
+            verify(estimates, never()).save(any());
+            verify(estimates, never()).saveAndFlush(any());
+            verify(estimates, never()).saveAllAndFlush(any());
+            verify(estimates, never()).lockSource(any());
+            org.mockito.Mockito.verifyNoInteractions(orders, packaging, transfers, warehouses);
+        }
+
+        @Test
+        @DisplayName("the placeholder weight is tiny and the payload is not checked: boxes the real planner would refuse load")
+        void payloadIsNotChecked() {
+            // A 1 kg payload truck: a real estimate of 20 boxes weighing 0.001 kg each would not need it, so use a
+            // payload below the total of the placeholders.
+            truck.apply("Truck tiny", "TRUCK", 6000, 2400, 2400, 0, null, null, new BigDecimal("0.005"), 1, null,
+                    "ACTIVE");
+
+            var view = service.trial(trial(line(600, 400, 300, 20)));
+
+            assertThat(view.unplaced()).isEmpty();
+            assertThat(view.vehicles()).singleElement().satisfies(v -> {
+                assertThat(v.boxes()).hasSize(20);
+                assertThat(v.boxes()).allSatisfy(b -> assertThat(b.weightKg())
+                        .isEqualByComparingTo(LoadEstimateService.TRIAL_WEIGHT_KG));
+                assertThat(v.usedWeightKg()).isGreaterThan(v.maxPayloadKg());
+            });
+        }
+
+        @Test
+        @DisplayName("the same carton cap as an estimate: more than 3 000 boxes is 422 LOAD_ESTIMATE_TOO_MANY_CARTONS")
+        void cartonCap() {
+            assertThat(EstimateCartons.MAX_BOXES).isEqualTo(3_000);
+
+            var thrown = refusal(() -> service.trial(trial(line(100, 100, 100, 2_000), line(100, 100, 100, 1_001))));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.LOAD_ESTIMATE_TOO_MANY_CARTONS);
+            verify(estimates, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("a huge quantity does not overflow the cap")
+        void quantityDoesNotOverflow() {
+            var thrown = refusal(() -> service.trial(trial(line(100, 100, 100, Integer.MAX_VALUE),
+                    line(100, 100, 100, Integer.MAX_VALUE))));
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.LOAD_ESTIMATE_TOO_MANY_CARTONS);
+        }
+
+        @Test
+        @DisplayName("no line, or a size or quantity that is not positive, is VALIDATION_FAILED")
+        void validation() {
+            assertThat(refusal(() -> service.trial(new LoadEstimates.TrialEstimate(List.of(), List.of(), null)))
+                    .errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            for (var bad : List.of(line(0, 400, 300, 1), line(600, 0, 300, 1), line(600, 400, 0, 1),
+                    line(600, 400, 300, 0))) {
+                var thrown = refusal(() -> service.trial(trial(bad)));
+                assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("lines[0]");
+            }
+        }
+
+        @Test
+        @DisplayName("an inactive or unknown vehicle type is refused as for an estimate")
+        void vehicleTypes() {
+            truck.apply("Truck 5t", "TRUCK", 6000, 2400, 2400, 0, null, null, new BigDecimal("5000"), 3, null,
+                    "INACTIVE");
+            assertThat(refusal(() -> service.trial(trial(line(600, 400, 300, 1)))).errorCode())
+                    .isEqualTo(ErrorCode.VEHICLE_TYPE_INACTIVE);
+            var unknown = new LoadEstimates.TrialEstimate(List.of(line(600, 400, 300, 1)),
+                    List.of(UUID.randomUUID()), null);
+            assertThat(refusal(() -> service.trial(unknown)).errorCode()).isEqualTo(ErrorCode.VEHICLE_TYPE_NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("a box too large for the vehicle is reported unplaced, not an error")
+        void tooLarge() {
+            var view = service.trial(trial(line(9000, 400, 300, 2)));
+
+            assertThat(view.vehicles()).isEmpty();
+            assertThat(view.unplaced()).singleElement().satisfies(u -> {
+                assertThat(u.quantity()).isEqualTo(2);
+                assertThat(u.reason().name()).isEqualTo("TOO_LARGE");
+                assertThat(u.partName()).isEqualTo("Box");
+            });
+        }
+
+        @Test
+        @DisplayName("the name falls back to the group, then to the line number; a fixed box keeps its orientation")
+        void namesAndRotation() {
+            var view = service.trial(trial(
+                    new LoadEstimates.TrialLine(null, " G9 ", 600, 400, 300, 1, false),
+                    new LoadEstimates.TrialLine(" ", null, 500, 500, 500, 1, true)));
+
+            var boxes = view.vehicles().get(0).boxes();
+            assertThat(boxes).extracting(b -> b.partName()).containsExactlyInAnyOrder("G9", "Line 2");
+            assertThat(boxes).filteredOn(b -> b.partName().equals("G9")).singleElement().satisfies(b -> {
+                assertThat(b.rotatable()).isFalse();
+                assertThat(b.orientation()).isEqualTo("LWH");
+            });
+        }
+    }
 }
