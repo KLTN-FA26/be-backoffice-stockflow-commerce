@@ -251,7 +251,8 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                                 e.getSubcontractorId(), e.getSubcontractUnitPrice(), e.getSubcontractCurrency(),
                                 e.getPurchaseOrderId()))
                 .withProgress(e.getIssuedQuantity(), e.getPrintedQuantity(), e.getGoodQuantity(), e.getScrapQuantity(),
-                        passedOf(e.getId()), e.getCompletedAt(), e.getCancelledAt(), e.getCancellationReason());
+                        passedOf(e.getId()), e.getCompletedAt(), e.getCancelledAt(), e.getCancellationReason())
+                .withShortCompletion(e.getShortCompletionReason());
     }
 
     /** Good units through QC so far: the sum of the QC rounds, which are the record of it. */

@@ -189,6 +189,28 @@ public interface OrderService {
     OrderSummary resolveHold(UUID orderId, String note, UUID by);
 
     /**
+     * Sales records that the customer agreed to go without at most {@code units} of a print line production cannot
+     * finish, and how the agreement was given (review 2026-10-25 of S6). Production completes the line's job short only
+     * within it; a new agreement replaces the last.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}, {@code VALIDATION_FAILED},
+     *         {@code ORDER_INVALID_TRANSITION} once the order is not printed for any more
+     */
+    OrderSummary agreeProductionShortfall(UUID orderId, UUID orderLineId, int units, String note, UUID by);
+
+    /**
+     * Production completed a print line's job short within the customer's agreement (review 2026-10-25, S6):
+     * {@code units} of the line leave the order - it is worth less, the money received above that is asked back
+     * ({@code OrderRemainderClosed}, reason {@code PRODUCTION_SHORTFALL}) - and the goods made cover the line. Joins the
+     * caller's transaction, under the order's lock; the line's holds are production's to settle.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}, {@code VALIDATION_FAILED},
+     *         {@code PRODUCTION_SHORTFALL_NOT_AGREED} beyond the agreement, {@code ORDER_INVALID_TRANSITION} once the
+     *         order is not printed for any more
+     */
+    OrderSummary closeProductionShortfall(UUID orderId, UUID orderLineId, int units, UUID by);
+
+    /**
      * Close what is left of a partly fulfilled order (17 edge "short pick"): its units not shipped will not be
      * delivered; their stock holds are released, payment refunds money received above what the order is now worth
      * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED.

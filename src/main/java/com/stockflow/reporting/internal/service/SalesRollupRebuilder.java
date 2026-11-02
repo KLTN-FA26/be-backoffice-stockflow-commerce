@@ -103,6 +103,8 @@ class SalesRollupRebuilder {
         for (OrderContribution taken : ledger.returnsOf(day)) {
             ledger.applyReturn(taken);
         }
+        // The units production closed short on them (S6): kept through the clear as well, taken off again.
+        rollups.reapplyClosures(day);
         return new long[] {seen, counted};
     }
 }

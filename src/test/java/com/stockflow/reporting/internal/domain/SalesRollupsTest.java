@@ -174,6 +174,96 @@ class SalesRollupsTest {
     }
 
     @Test
+    @DisplayName("a short completion takes the closed value and units off the placed day; the order count stays; "
+            + "the same closure twice changes nothing")
+    void closureTakesTheShortfallOff() {
+        UUID id = UUID.randomUUID();
+        UUID closure = UUID.randomUUID();
+        rollups.place(order(id, D24, 100_000, line("CUP", 100, 100_000)));
+
+        assertThat(rollups.closed(closure, order(id, D24, 40_000, line("CUP", 40, 40_000)))).isTrue();
+        assertThat(rollups.closed(closure, order(id, D24, 40_000, line("CUP", 40, 40_000)))).as("delivered again")
+                .isFalse();
+
+        assertThat(day(D24)).isEqualTo(new InMemoryLedger.Day(1, BigDecimal.valueOf(60_000)));
+        assertThat(ledger.products.get("CUP@" + D24)).isEqualTo(new InMemoryLedger.Product(60, BigDecimal.valueOf(60_000)));
+        assertThat(ledger.closuresOf(D24)).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("two closures of one order add up")
+    void twoClosuresAddUp() {
+        UUID id = UUID.randomUUID();
+        rollups.place(order(id, D24, 100_000, line("CUP", 100, 100_000)));
+
+        rollups.closed(UUID.randomUUID(), order(id, D24, 10_000, line("CUP", 10, 10_000)));
+        rollups.closed(UUID.randomUUID(), order(id, D24, 5_000, line("CUP", 5, 5_000)));
+
+        assertThat(day(D24).revenue()).isEqualByComparingTo("85000");
+        assertThat(ledger.products.get("CUP@" + D24).quantity()).isEqualTo(85);
+    }
+
+    @Test
+    @DisplayName("a cancellation after a closure takes out only what is left, so the day ends at zero")
+    void cancelAfterAClosureTakesOutTheRest() {
+        UUID id = UUID.randomUUID();
+        rollups.place(order(id, D24, 100_000, line("CUP", 100, 100_000)));
+        rollups.closed(UUID.randomUUID(), order(id, D24, 40_000, line("CUP", 40, 40_000)));
+
+        assertThat(rollups.cancel(id, () -> null)).isTrue();
+
+        assertThat(day(D24)).isEqualTo(new InMemoryLedger.Day(0, BigDecimal.ZERO));
+        assertThat(ledger.products.get("CUP@" + D24)).isEqualTo(new InMemoryLedger.Product(0, BigDecimal.ZERO));
+    }
+
+    @Test
+    @DisplayName("a closure that arrives after the cancellation is recorded and takes nothing more off")
+    void closureAfterTheCancellationTakesNothing() {
+        UUID id = UUID.randomUUID();
+        rollups.place(order(id, D24, 100_000, line("CUP", 100, 100_000)));
+        rollups.cancel(id, () -> null);
+
+        assertThat(rollups.closed(UUID.randomUUID(), order(id, D24, 40_000, line("CUP", 40, 40_000)))).isTrue();
+
+        assertThat(day(D24)).isEqualTo(new InMemoryLedger.Day(0, BigDecimal.ZERO));
+        assertThat(ledger.products.get("CUP@" + D24)).isEqualTo(new InMemoryLedger.Product(0, BigDecimal.ZERO));
+        assertThat(ledger.closuresOfOrder(id)).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("replaying a day after clearing it gives the same figures with closures: kept, cancelled or both")
+    void rebuildKeepsTheClosures() {
+        UUID kept = UUID.randomUUID();
+        UUID closedThenCancelled = UUID.randomUUID();
+        UUID cancelledThenClosed = UUID.randomUUID();
+        OrderContribution keptOrder = order(kept, D24, 100_000, line("CUP", 100, 100_000));
+        OrderContribution a = order(closedThenCancelled, D24, 50_000, line("CUP", 50, 50_000));
+        OrderContribution b = order(cancelledThenClosed, D24, 30_000, line("CUP", 30, 30_000));
+        rollups.place(keptOrder);
+        rollups.place(a);
+        rollups.place(b);
+        rollups.closed(UUID.randomUUID(), order(kept, D24, 40_000, line("CUP", 40, 40_000)));
+        rollups.closed(UUID.randomUUID(), order(closedThenCancelled, D24, 10_000, line("CUP", 10, 10_000)));
+        rollups.cancel(closedThenCancelled, () -> null);
+        rollups.cancel(cancelledThenClosed, () -> null);
+        rollups.closed(UUID.randomUUID(), order(cancelledThenClosed, D24, 5_000, line("CUP", 5, 5_000)));
+        var before = day(D24);
+        var beforeProduct = ledger.products.get("CUP@" + D24);
+        assertThat(before).isEqualTo(new InMemoryLedger.Day(1, BigDecimal.valueOf(60_000)));
+
+        ledger.clearDay(D24);
+        rollups.place(keptOrder);
+        rollups.place(a);
+        rollups.place(b);
+        rollups.cancel(closedThenCancelled, () -> a);
+        rollups.cancel(cancelledThenClosed, () -> b);
+        rollups.reapplyClosures(D24);
+
+        assertThat(day(D24)).isEqualTo(before);
+        assertThat(ledger.products.get("CUP@" + D24)).isEqualTo(beforeProduct);
+    }
+
+    @Test
     @DisplayName("the day is the Asia/Ho_Chi_Minh day: 23:59:59 is still the day, 00:00:00 is the next one, whatever UTC says")
     void businessDayBoundary() {
         // 2026-10-24T16:59:59Z = 23:59:59 in Ho Chi Minh (UTC+7); one second later it is the 25th there.

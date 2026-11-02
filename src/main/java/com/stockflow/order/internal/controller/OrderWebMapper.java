@@ -117,7 +117,11 @@ final class OrderWebMapper {
                                                 progress.containsKey(line.lineId())
                                                         ? progress.get(line.lineId()).deliveredQuantity() : null,
                                                 progress.containsKey(line.lineId())
-                                                        ? progress.get(line.lineId()).cancelledQuantity() : null))
+                                                        ? progress.get(line.lineId()).cancelledQuantity() : null,
+                                                // Staff's record (note, who): the customer sees the closed units.
+                                                internal && progress.containsKey(line.lineId())
+                                                        ? toShortfall(progress.get(line.lineId()).productionShortfall())
+                                                        : null))
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
@@ -186,6 +190,11 @@ final class OrderWebMapper {
                 address.provinceName(),
                 address.countryCode(),
                 address.postalCode());
+    }
+
+    private static OrderResponse.ProductionShortfall toShortfall(OrderSummary.ProductionShortfall shortfall) {
+        return shortfall == null ? null : new OrderResponse.ProductionShortfall(shortfall.agreedQuantity(),
+                shortfall.note(), shortfall.agreedBy(), shortfall.agreedAt(), shortfall.closedQuantity());
     }
 
     private static OrderResponse.Address toResponse(OrderSummary.AddressSummary address) {

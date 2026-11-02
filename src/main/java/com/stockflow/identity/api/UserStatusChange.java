@@ -1,6 +1,6 @@
 package com.stockflow.identity.api;
 
-/** What an administrator can do to an account's status (SCRUM-454). */
+/** What an administrator can do to an account's status (SCRUM-454); each needs a reason (SCRUM-474). */
 public enum UserStatusChange {
     /** ACTIVE → LOCKED: signs the user out and keeps them out until unlocked. */
     LOCK,

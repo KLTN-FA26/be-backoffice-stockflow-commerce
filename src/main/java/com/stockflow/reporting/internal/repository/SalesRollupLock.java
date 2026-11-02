@@ -31,4 +31,13 @@ public class SalesRollupLock {
     public void exclusive() {
         jdbc.queryForObject("SELECT pg_advisory_xact_lock(?)", Object.class, KEY);
     }
+
+    /**
+     * Held by a listener that reads what was applied to one order before it applies its own event: a cancellation and a
+     * closure of the same order, handled in two transactions at once, would each miss the other. Call after
+     * {@link #shared()}, inside the transaction that writes.
+     */
+    public void forOrder(java.util.UUID orderId) {
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", Object.class, orderId.toString());
+    }
 }

@@ -100,6 +100,7 @@ class TransferLoadPlanningIntegrationTest {
     private UUID dispatcher;
     private UUID staffElsewhere;
     private UUID coordinator;
+    private UUID manager;
     private UUID approver;
     private UUID destination;
     private UUID truck1t25;
@@ -112,6 +113,7 @@ class TransferLoadPlanningIntegrationTest {
         packer = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
         coordinator = staff("ORDER_COORDINATOR");
+        manager = staff("WAREHOUSE_MANAGER", HCM);
         approver = tx.execute(s -> ReferenceRows.user(entityManager));
         destination = tx.execute(s -> warehouse("Destination"));
         UUID elsewhere = tx.execute(s -> warehouse("Elsewhere"));
@@ -518,7 +520,7 @@ class TransferLoadPlanningIntegrationTest {
 
     @Test
     @DisplayName("10 §5 Picking -> Approved before anything left: refused while a vehicle loads "
-            + "(LOAD_PLAN_LOADING_STARTED, 09 BR-14); before loading, the plan and its booked vehicles are cancelled, "
+            + "(TRANSFER_LOADING_IN_PROGRESS, 09 BR-14, UNLOAD-DESIGN point 10); before loading, the plan and its booked vehicles are cancelled, "
             + "the parcels voided, the carton free again and the transfer APPROVED, unpacked")
     void pickingCancelled() throws Exception {
         String lpnA = stock();
@@ -528,7 +530,7 @@ class TransferLoadPlanningIntegrationTest {
         assertThat(holds(loading, "HELD")).isEqualTo(11);
         bookAndLoad(loadOf(planA, 1), "51C-333.33");
         dispatch(post(TRANSFERS + "/" + loading + "/picking-cancellation")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_LOADING_STARTED"));
+                .andExpect(jsonPath("$.errorCode").value("TRANSFER_LOADING_IN_PROGRESS"));
         assertThat(transferStatus(loading)).isEqualTo("PICKING");
 
         String lpnB = stock();
@@ -562,6 +564,131 @@ class TransferLoadPlanningIntegrationTest {
         // Packed again from scratch: the carton ships as it is again.
         JsonNode again = packed(booked, lpnB);
         assertThat(again.path("packStatus").asText()).isEqualTo("PACKED");
+    }
+
+    @Test
+    @DisplayName("UNLOAD-DESIGN point 10: a transfer's picking cancel while its vehicle loads is refused with the hint "
+            + "to run the controlled cancel first (TRANSFER_LOADING_IN_PROGRESS); the manager's controlled cancel "
+            + "locks the transfer's parcels (the plan lists them with the transfer's number); the picking cancel is "
+            + "then refused until every parcel is scanned off (PACKAGE_UNLOAD_PENDING) - one by scan, one by the "
+            + "manager's override; then it goes through: plan CANCELLED, parcels voided, transfer APPROVED")
+    void controlledCancelThenPickingCancel() throws Exception {
+        String lpn = stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        packed(transfer, lpn);
+        JsonNode plan = confirmed(transfer);
+        String planId = plan.path("loadPlanId").asText();
+        String loadId = loadOf(plan, 1);
+        bookAndLoad(loadId, "51C-444.44");
+        scanAll(loadId);
+        List<String> labels = new ArrayList<>();
+        load(loadId).path("shipments").forEach(l -> l.path("packages").forEach(p -> labels.add(
+                p.path("labelCode").asText())));
+        assertThat(labels).hasSizeGreaterThanOrEqualTo(2);
+
+        JsonNode hint = json.readTree(dispatch(post(TRANSFERS + "/" + transfer + "/picking-cancellation"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode")
+                        .value("TRANSFER_LOADING_IN_PROGRESS")).andReturn().getResponse().getContentAsString());
+        assertThat(hint.path("message").asText()).contains("controlled cancel");
+        assertThat(transferStatus(transfer)).isEqualTo("PICKING");
+
+        // The dispatcher may not; the manager may.
+        dispatch(body(post(PLANS + "/" + planId + "/controlled-cancellation"), "{\"expectedVersion\":"
+                + load(loadId).path("version").asLong() + ",\"reasonCode\":\"XE_HONG\",\"note\":\"x\"}"))
+                .andExpect(status().isForbidden());
+        JsonNode now = data(dispatch(get(PLANS + "/" + planId)).andExpect(status().isOk()));
+        JsonNode cancelled = data(as(manager, "WAREHOUSE_MANAGER", body(post(PLANS + "/" + planId
+                + "/controlled-cancellation"), "{\"expectedVersion\":" + now.path("version").asLong()
+                + ",\"reasonCode\":\"XE_HONG\",\"note\":\"the truck broke down\"}")).andExpect(status().isOk()));
+        assertThat(cancelled.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(cancelled.path("pendingUnloads")).hasSize(labels.size());
+        cancelled.path("pendingUnloads").forEach(u -> {
+            assertThat(u.path("transferOrderId").asText()).isEqualTo(transfer.toString());
+            assertThat(u.path("reasonCode").asText()).isEqualTo("XE_HONG");
+            assertThat(u.path("loadId").asText()).isEqualTo(loadId);
+        });
+        assertThat(load(loadId).path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(load(loadId).path("pendingUnloads")).hasSize(labels.size());
+
+        // Still on the truck: the picking is not cancelled yet.
+        dispatch(post(TRANSFERS + "/" + transfer + "/picking-cancellation")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PACKAGE_UNLOAD_PENDING"));
+        assertThat(transferStatus(transfer)).isEqualTo("PICKING");
+        for (int i = 0; i < labels.size() - 1; i++) {
+            dispatch(body(post(LOADS + "/" + loadId + "/unloads"), "{\"packageCode\":\"" + labels.get(i) + "\"}"))
+                    .andExpect(status().isOk());
+        }
+        String last = jdbc.queryForObject("SELECT id FROM fulfillment.package WHERE label_code = ?", String.class,
+                labels.getLast());
+        as(manager, "WAREHOUSE_MANAGER", body(post(LOADS + "/" + loadId + "/unload-overrides"),
+                "{\"packageId\":\"" + last + "\",\"note\":\"label unreadable\"}")).andExpect(status().isOk());
+        assertThat(load(loadId).path("pendingUnloads")).isEmpty();
+
+        JsonNode approved = data(dispatch(post(TRANSFERS + "/" + transfer + "/picking-cancellation"))
+                .andExpect(status().isOk()));
+        assertThat(approved.path("status").asText()).isEqualTo("APPROVED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package WHERE transfer_order_id = ? AND "
+                + "status <> 'VOIDED'", Integer.class, transfer)).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.load_plan WHERE id = ?::uuid", String.class,
+                planId)).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    @DisplayName("UNLOAD-DESIGN point 2 on a transfer plan: the loading vehicle is called off alone - its load CANCELLED with "
+            + "the transfer's parcels locked (pending unloads carry the transfer), a PLANNED load with the same plan vehicle "
+            + "and the same transfer takes its place; the locked parcels are not scanned onto it (PACKAGE_UNLOAD_PENDING) "
+            + "until scanned off or confirmed off, then they are")
+    void perVehicleControlledCancelOnATransferPlan() throws Exception {
+        String lpn = stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        packed(transfer, lpn);
+        JsonNode plan = confirmed(transfer);
+        String loadId = loadOf(plan, 1);
+        bookAndLoad(loadId, "51C-555.55");
+        scanAll(loadId);
+        List<String> labels = new ArrayList<>();
+        load(loadId).path("shipments").forEach(l -> l.path("packages").forEach(p -> labels.add(
+                p.path("labelCode").asText())));
+        assertThat(labels).hasSizeGreaterThanOrEqualTo(2);
+
+        dispatch(body(post(LOADS + "/" + loadId + "/controlled-cancellation"),
+                "{\"reasonCode\":\"SAI_XE\",\"note\":\"wrong truck\"}")).andExpect(status().isForbidden());
+        JsonNode result = data(as(manager, "WAREHOUSE_MANAGER", body(post(LOADS + "/" + loadId
+                + "/controlled-cancellation"), "{\"reasonCode\":\"SAI_XE\",\"note\":\"wrong truck\"}"))
+                .andExpect(status().isOk()));
+        JsonNode cancelled = result.path("cancelled");
+        JsonNode replacement = result.path("replacement");
+        assertThat(cancelled.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(cancelled.path("cancelReasonCode").asText()).isEqualTo("SAI_XE");
+        assertThat(cancelled.path("pendingUnloads")).hasSize(labels.size());
+        cancelled.path("pendingUnloads").forEach(u -> {
+            assertThat(u.path("transferOrderId").asText()).isEqualTo(transfer.toString());
+            assertThat(u.path("reasonCode").asText()).isEqualTo("SAI_XE");
+        });
+        assertThat(replacement.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(replacement.path("loadPlanId").asText()).isEqualTo(plan.path("loadPlanId").asText());
+        assertThat(replacement.path("vehicleSeq").asInt()).isEqualTo(1);
+        assertThat(replacement.path("shipments")).singleElement().satisfies(l -> assertThat(l.path("transferOrderId")
+                .asText()).isEqualTo(transfer.toString()));
+        assertThat(replacement.path("expectedPackageCount").asInt()).isEqualTo(labels.size());
+        assertThat(transferStatus(transfer)).isEqualTo("PICKING");
+
+        String vehicle = replacement.path("loadId").asText();
+        bookAndLoad(vehicle, "51C-666.66");
+        dispatch(body(post(LOADS + "/" + vehicle + "/scans"), "{\"scanId\":\"" + UUID.randomUUID()
+                + "\",\"packageCode\":\"" + labels.getFirst() + "\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PACKAGE_UNLOAD_PENDING"));
+        for (int i = 0; i < labels.size() - 1; i++) {
+            dispatch(body(post(LOADS + "/" + loadId + "/unloads"), "{\"packageCode\":\"" + labels.get(i) + "\"}"))
+                    .andExpect(status().isOk());
+        }
+        String last = jdbc.queryForObject("SELECT id FROM fulfillment.package WHERE label_code = ?", String.class,
+                labels.getLast());
+        as(manager, "WAREHOUSE_MANAGER", body(post(LOADS + "/" + loadId + "/unload-overrides"),
+                "{\"packageId\":\"" + last + "\"}")).andExpect(status().isOk());
+        assertThat(load(loadId).path("pendingUnloads")).isEmpty();
+        scanAll(vehicle);
+        assertThat(load(vehicle).path("loadedPackageCount").asInt()).isEqualTo(labels.size());
     }
 
     // ---- the estimate ---------------------------------------------------------------------------
