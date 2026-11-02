@@ -17,7 +17,11 @@ import com.stockflow.fulfillment.internal.controller.dto.AssigneeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ConfirmPickRequest;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentArtifactAccessResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
+import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.StorageException;
 import com.stockflow.fulfillment.internal.controller.dto.PackingCompletionRequest;
+import com.stockflow.fulfillment.internal.controller.dto.PickDamageRequest;
+import com.stockflow.fulfillment.internal.controller.dto.PickDamageResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PickLineResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PutBackRequest;
 import com.stockflow.fulfillment.internal.controller.dto.PutBackRowResponse;
@@ -26,6 +30,9 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.CacheControl;
@@ -38,8 +45,10 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 /** Task-scoped warehouse flow with a non-bypassable design-integrity gate. */
 @RestController
@@ -198,6 +207,48 @@ class FulfillmentController {
             @Valid @RequestBody ShortPickRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(pickLists.reportShort(taskId, lineId, request.locationCode(),
                 request.foundQuantity(), actor)));
+    }
+
+    /**
+     * SCRUM-277: the assignee is at the line's bin and finds some of the allocated units damaged - a picking step, so
+     * the picking permission. {@code multipart/form-data}: a JSON part {@code report} and one to five image parts
+     * {@code photos} (BR-STK-003). The damaged units go to quarantine as DAMAGED; the line gives way to a line for the
+     * good units at the same bin and, for the damaged ones, to new lines where other stock replaced them - or a SHORT
+     * line, the order ON_HOLD ({@code INVENTORY}) for the coordinator, when none could. The same report again answers
+     * 200 with what it made. Retries carry the same {@code requestId}: uploads are not buffered by the idempotency
+     * filter.
+     */
+    @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage",
+            consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<PickDamageResponse> reportDamage(@PathVariable UUID taskId, @PathVariable UUID lineId,
+            @Valid @RequestPart("report") PickDamageRequest report,
+            @RequestPart(name = "photos", required = false) List<MultipartFile> photos,
+            @AuthenticatedUser CurrentUser actor) {
+        List<InputStream> opened = new ArrayList<>();
+        try {
+            List<FileUpload> uploads = new ArrayList<>();
+            for (MultipartFile photo : photos == null ? List.<MultipartFile>of() : photos) {
+                InputStream content = photo.getInputStream();
+                opened.add(content);
+                uploads.add(new FileUpload(photo.getOriginalFilename(), photo.getContentType(), photo.getSize(),
+                        content));
+            }
+            return ApiResponse.ok(mapper.toResponse(pickLists.reportDamage(taskId, lineId, new PickLists.PickDamage(
+                    report.requestId(), report.locationCode(), report.damagedQuantity(), report.reason(),
+                    report.note(), report.damageLocationCode()), uploads, actor)));
+        } catch (IOException failure) {
+            throw new StorageException("Could not read the multipart upload", failure);
+        } finally {
+            for (InputStream stream : opened) {
+                try {
+                    stream.close();
+                } catch (IOException ignored) {
+                    // A temporary upload that does not close cleanly changes nothing about the report.
+                }
+            }
+        }
     }
 
     /**

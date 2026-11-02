@@ -26,6 +26,26 @@ public interface SalesRollupLedger {
      */
     void apply(OrderContribution contribution, int sign);
 
-    /** Forgets everything rolled up for the orders placed on {@code day}: both summaries and the ledger rows. */
+    /**
+     * Forgets everything rolled up for the orders placed on {@code day}: both summaries and the order ledger rows. The
+     * return adjustments of that day are kept: they are the record a rebuild applies again ({@link #returnsOf}).
+     */
     void clearDay(LocalDate day);
+
+    /**
+     * Records that a return's money (the resolution, or the withdrawal of its replacement - {@code event}) was taken off
+     * the rollups, keeping what it took: the paying order's placed day, the credited value and units.
+     *
+     * @return true if this call recorded it, false if it was recorded before (and nothing was changed)
+     */
+    boolean markReturnApplied(UUID returnRequestId, String event, OrderContribution taken);
+
+    /**
+     * Takes a return's credited value off its day's revenue, and each line's units and revenue off its SKU's row: the
+     * order count stays, the sale happened. The rows exist already, made by the order's placement.
+     */
+    void applyReturn(OrderContribution taken);
+
+    /** The return adjustments recorded on the orders placed on {@code day}, for a rebuild to apply again. */
+    java.util.List<OrderContribution> returnsOf(LocalDate day);
 }

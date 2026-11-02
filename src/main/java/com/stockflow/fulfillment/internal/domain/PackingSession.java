@@ -732,6 +732,36 @@ public final class PackingSession {
         return parcels.stream().filter(Parcel::live).mapToInt(p -> p.quantityOf(orderLineId)).sum();
     }
 
+    /**
+     * Before units of a line that reached packing are reported damaged there (R8): {@code quantity} of them - of that
+     * lot, and that serial number - are out of every parcel. Units in a parcel are taken out first, so no parcel ever
+     * holds what went back to quarantine.
+     *
+     * @throws BusinessException {@code NOT_FOUND} for a line not in the order; {@code PACK_DAMAGED_UNITS_PACKED}
+     */
+    public void requireUnpacked(UUID orderLineId, String lotNumber, String serialNumber, int quantity) {
+        Line line = lines.get(orderLineId);
+        if (line == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "The order has no line " + orderLineId);
+        }
+        String lot = blank(lotNumber) ? null : lotNumber.trim();
+        List<Map.Entry<ContentKey, Integer>> packed = parcels.stream().filter(Parcel::live)
+                .flatMap(p -> p.contents.entrySet().stream())
+                .filter(e -> e.getKey().orderLineId().equals(orderLineId)).toList();
+        int packedOfLot = packed.stream().filter(e -> Objects.equals(lot, e.getKey().lotNumber()))
+                .mapToInt(Map.Entry::getValue).sum();
+        int reachedOfLot = line.lots().isEmpty() ? line.available()
+                : line.lots().getOrDefault(lot == null ? NO_LOT : lot, 0);
+        boolean serialPacked = !blank(serialNumber) && packed.stream()
+                .anyMatch(e -> serialNumber.trim().equals(e.getKey().serialNumber()));
+        if (line.available() - packedOf(orderLineId) < quantity || reachedOfLot - packedOfLot < quantity
+                || serialPacked) {
+            throw new BusinessException(ErrorCode.PACK_DAMAGED_UNITS_PACKED, ("%d of %s%s reached packing and %d are "
+                    + "in a parcel; take the damaged units out of their parcel before reporting them")
+                    .formatted(reachedOfLot, line.sku(), lot == null ? "" : " lot " + lot, packedOfLot));
+        }
+    }
+
     /** Units of the line in parcels already in a shipment. */
     public int shippedOf(UUID orderLineId) {
         return parcels.stream().filter(p -> p.live() && p.shipped()).mapToInt(p -> p.quantityOf(orderLineId)).sum();

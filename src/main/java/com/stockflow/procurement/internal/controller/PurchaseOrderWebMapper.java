@@ -11,6 +11,7 @@ import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.procurement.internal.controller.dto.CreatePOLineRequest;
 import com.stockflow.procurement.internal.controller.dto.CreatePurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.POLineResponse;
+import com.stockflow.procurement.internal.controller.dto.PendingAmendmentResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderStatusCountResponse;
 import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
@@ -39,11 +40,14 @@ interface PurchaseOrderWebMapper {
     RevisePOLineCommand toCommand(UpdatePOLineRequest request);
 
 
+    @Mapping(target = "revisionNo", source = "summary.revisionNo")
     @Mapping(target = "deliveryStatus", source = "deliveryStatus")
     PurchaseOrderResponse toResponse(
             PurchaseOrderSummary summary,
             String deliveryStatus,
             String cancellationDeliveryStatus,
+            String amendmentDeliveryStatus,
+            PendingAmendmentResponse pendingAmendment,
             List<String> warnings);
 
     @Mapping(target = "openQuantity", expression = "java(summary.openQuantity())")
