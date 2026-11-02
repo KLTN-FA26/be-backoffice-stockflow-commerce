@@ -128,6 +128,12 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "cancellation_reason", insertable = false)
     private String cancellationReason;
 
+    /** S6: why it completed with fewer good units than planned. */
+
+    @Column(name = "short_completion_reason", length = 500)
+
+    private String shortCompletionReason;
+
     /** Written once by the hand-over to packing ({@link #handOverTo}), never by {@link #applyWorkflow}. */
     @Column(name = "packing_location_code", insertable = false)
     private String packingLocationCode;
@@ -186,6 +192,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.completedAt = order.completedAt();
         this.cancelledAt = order.cancelledAt();
         this.cancellationReason = order.cancellationReason();
+        this.shortCompletionReason = order.shortCompletionReason();
     }
 
     /** Where the completed order's goods went: recorded by the automatic hand-over (SCRUM-400), not the aggregate. */
@@ -231,4 +238,5 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public Instant getCompletedAt() { return completedAt; }
     public Instant getCancelledAt() { return cancelledAt; }
     public String getCancellationReason() { return cancellationReason; }
+    public String getShortCompletionReason() { return shortCompletionReason; }
 }

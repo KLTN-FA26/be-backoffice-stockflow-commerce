@@ -3,6 +3,7 @@ package com.stockflow.order.internal.domain;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -44,8 +45,24 @@ public final class OrderLine {
 
     private final List<UUID> reservationIds;
 
-    /** Units staff closed out of a partly fulfilled order (17 edge "short pick"): they will not be delivered. */
+    /**
+     * Units closed out of the line - the rest of a partly fulfilled order (17 edge "short pick"), or a production
+     * shortfall the customer agreed to: they will not be delivered.
+     */
     private int cancelledQuantity;
+
+    /**
+     * Review 2026-10-25 of S6: what the customer agreed with Sales to go without on a print line production cannot
+     * finish - at most {@code quantity} units, why (the call, the message), who recorded it and when. Production
+     * completing a job short closes at most that many ({@link #shortfallClosedQuantity}): the warehouse manager does not
+     * lower what an order is worth on their own.
+     */
+    public record ShortfallAgreement(int quantity, String note, UUID agreedBy, Instant agreedAt) {
+    }
+
+    private ShortfallAgreement shortfallAgreement;
+    /** Of {@link #cancelledQuantity}, the units closed because production completed the line short. */
+    private int shortfallClosedQuantity;
 
     public OrderLine(UUID id, Sku sku, int quantity, Money unitPrice,
                      UUID designSnapshotId, List<UUID> reservationIds, int cancelledQuantity) {
@@ -140,7 +157,7 @@ public final class OrderLine {
         return java.util.Collections.unmodifiableList(reservationIds);
     }
 
-    /** Package-private: only {@link Order#closeRemainder} closes units. */
+    /** Package-private: only {@link Order#closeRemainder} and {@link #closeShortfall} close units. */
     void closeUnits(int units) {
         if (units <= 0 || cancelledQuantity + units > quantity) {
             throw new IllegalArgumentException("Cannot close %d more of line %s".formatted(units, id));
@@ -148,8 +165,49 @@ public final class OrderLine {
         cancelledQuantity += units;
     }
 
+    /** Package-private: {@link Order#closeProductionShortfall}, within the agreement. */
+    void closeShortfall(int units) {
+        if (shortfallAgreement == null || shortfallClosedQuantity + units > shortfallAgreement.quantity()) {
+            throw new IllegalStateException("Line %s has no agreement for %d more unit(s)".formatted(id, units));
+        }
+        closeUnits(units);
+        shortfallClosedQuantity += units;
+    }
+
+    /** Package-private: {@link Order#agreeProductionShortfall}, which checks it first. */
+    void agreeShortfall(ShortfallAgreement agreement) {
+        this.shortfallAgreement = java.util.Objects.requireNonNull(agreement, "agreement");
+    }
+
+    /** Package-private: {@link Order#agreeProductionShortfall} with 0 units, nothing closed under it. */
+    void withdrawShortfall() {
+        if (shortfallClosedQuantity > 0) {
+            throw new IllegalStateException("Line %s has units closed under its agreement".formatted(id));
+        }
+        this.shortfallAgreement = null;
+    }
+
+    /** Rehydration of the agreement and what production closed under it. */
+    public OrderLine withShortfall(ShortfallAgreement agreement, int closed) {
+        if (closed < 0 || closed > cancelledQuantity || closed > (agreement == null ? 0 : agreement.quantity())) {
+            throw new IllegalArgumentException("Units closed for a shortfall are within the agreement and the closed units");
+        }
+        this.shortfallAgreement = agreement;
+        this.shortfallClosedQuantity = closed;
+        return this;
+    }
+
     public int cancelledQuantity() {
         return cancelledQuantity;
+    }
+
+    /** Null until Sales records the customer's agreement. */
+    public ShortfallAgreement shortfallAgreement() {
+        return shortfallAgreement;
+    }
+
+    public int shortfallClosedQuantity() {
+        return shortfallClosedQuantity;
     }
 
     public boolean isMadeToOrder() {

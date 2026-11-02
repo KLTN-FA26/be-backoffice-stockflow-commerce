@@ -88,4 +88,8 @@ public interface UserJpaRepository extends BaseJpaRepository<UserJpaEntity> {
             """)
     List<UserJpaEntity> findStaffWithRolesFor(@Param("roleCodes") Collection<String> roleCodes,
                                               @Param("warehouseId") UUID warehouseId);
+
+    /** The "must change password" flag alone, for the per-request gate: no entity, no joins. Empty for an unknown id. */
+    @Query("select u.mustChangePassword from UserJpaEntity u where u.id = :id")
+    java.util.Optional<Boolean> findMustChangePassword(@Param("id") UUID id);
 }
