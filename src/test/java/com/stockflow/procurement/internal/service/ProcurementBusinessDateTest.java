@@ -87,8 +87,9 @@ class ProcurementBusinessDateTest {
                 null, null)));
         return new ProcurementServiceImpl(orders, search, null, clock, suppliers, mock(ApplicationEventPublisher.class),
                 mock(NotificationService.class), mock(PoDeliveryDecisionRepository.class),
-                new PoCommunicationProfile("Buyer", "Address", "Buyer contact", "0901234567", "buyer@example.com",
-                        "Warehouse"),
+                new PoDeliveryContent(suppliers, mock(NotificationService.class),
+                        new PoCommunicationProfile("Buyer", "Address", "Buyer contact", "0901234567",
+                                "buyer@example.com", "Warehouse"), mock(ProductService.class)),
                 mock(ProductService.class), inventory, inventoryControl, warehouses, mock(CurrentUserProvider.class),
                 supplierItems, mock(ApprovalLimits.class), org.mockito.Mockito.mock(com.stockflow.inventory.api.UomConversionService.class));
     }

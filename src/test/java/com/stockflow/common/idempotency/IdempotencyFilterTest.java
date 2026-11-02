@@ -19,6 +19,25 @@ import java.time.Instant;
 import java.util.Optional;
 
 class IdempotencyFilterTest {
+    /**
+     * Review of #195 (N3): a provider webhook carries its own idempotency and caps its body as it reads it, so this
+     * filter neither buffers nor stores it - even with an Idempotency-Key - and the handler reads the stream itself.
+     */
+    @Test
+    void aWebhookIsPassedThroughUnbufferedAndUnstored() throws Exception {
+        var store = mock(IdempotencyStore.class);
+        var users = mock(CurrentUserProvider.class);
+        var request = new MockHttpServletRequest("POST", "/api/v1/notifications/webhooks/resend");
+        request.addHeader("Idempotency-Key", "a-client-header-on-a-webhook");
+        request.setContentType("application/json");
+        request.setContent("{}".getBytes(StandardCharsets.UTF_8));
+        var handled = new java.util.concurrent.atomic.AtomicReference<jakarta.servlet.ServletRequest>();
+        new IdempotencyFilter(store, users, new ObjectMapper(), Clock.systemUTC())
+                .doFilter(request, new MockHttpServletResponse(), (req, res) -> handled.set(req));
+        assertThat(handled.get()).as("the request as it came, not a buffered copy").isSameAs(request);
+        org.mockito.Mockito.verifyNoInteractions(store);
+    }
+
     @Test
     void replayPreservesVietnameseJsonBytesAndDoesNotInvokeTheHandler() throws Exception {
         var store = mock(IdempotencyStore.class);

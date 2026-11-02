@@ -8,7 +8,15 @@ import java.util.UUID;
 /** Caller transaction holds the row lock until transport finishes or the PO transition commits. */
 @Repository
 public class PoDeliveryControlRepository {
-    public record Control(int generation, boolean suppressed) {}
+    /**
+     * {@code cancellationRequested}: the order was cancelled after it was sent and its supplier is told so, which
+     * makes any amendment notice of it that has not reached them yet moot (SCRUM-117).
+     */
+    public record Control(int generation, boolean suppressed, boolean cancellationRequested) {
+        public Control(int generation, boolean suppressed) {
+            this(generation, suppressed, false);
+        }
+    }
 
     private final JdbcTemplate jdbc;
 
@@ -22,9 +30,9 @@ public class PoDeliveryControlRepository {
                     + " conflict do nothing",
                 id);
         return jdbc.queryForObject(
-                "select generation,suppressed from notification.po_delivery_control where"
-                    + " purchase_order_id=? for update",
-                (row, index) -> new Control(row.getInt(1), row.getBoolean(2)),
+                "select generation,suppressed,cancellation_requested from notification.po_delivery_control"
+                    + " where purchase_order_id=? for update",
+                (row, index) -> new Control(row.getInt(1), row.getBoolean(2), row.getBoolean(3)),
                 id);
     }
 

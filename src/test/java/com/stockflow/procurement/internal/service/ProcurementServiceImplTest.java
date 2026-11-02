@@ -105,7 +105,8 @@ class ProcurementServiceImplTest {
     private final ApprovalLimits limits = spy(new ApprovalLimits(identity, limitRows, orders));
     private final ProcurementServiceImpl service = new ProcurementServiceImpl(orders, search, reports,
             Clock.fixed(NOW, ZoneOffset.UTC), suppliers, events, notifications, deliveryDecisions,
-            new PoCommunicationProfile("Buyer", "Address", "Contact", "0901234567", "buyer@example.com", "Warehouse"),
+            new PoDeliveryContent(suppliers, notifications, new PoCommunicationProfile("Buyer", "Address", "Contact",
+                    "0901234567", "buyer@example.com", "Warehouse"), products),
             products, inventory, inventoryControl, warehouses, mock(CurrentUserProvider.class), supplierItems, limits, org.mockito.Mockito.mock(com.stockflow.inventory.api.UomConversionService.class));
 
     private final UUID supplierId = UUID.randomUUID();

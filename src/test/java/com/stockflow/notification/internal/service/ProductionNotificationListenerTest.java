@@ -46,7 +46,7 @@ class ProductionNotificationListenerTest {
     private final IdentityService identity = mock(IdentityService.class);
     private final Inbox inbox = mock(Inbox.class);
     private final ProductionNotificationListener listener = new ProductionNotificationListener(
-            new NotificationSender(mail, mock(RestClientFactory.class), "noreply@stockflow.local", ""),
+            new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "noreply@stockflow.local", ""),
             new StaffDirectory(identity), new StaffNotices(inbox));
 
     @BeforeEach

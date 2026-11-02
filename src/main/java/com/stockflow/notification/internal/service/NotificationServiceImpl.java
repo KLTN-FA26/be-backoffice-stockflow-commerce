@@ -4,9 +4,11 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.notification.api.AmendmentDeliveryStatus;
 import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.PortalInvitationMail;
+import com.stockflow.notification.internal.domain.NotificationChannel;
 import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
 import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
 import com.stockflow.notification.internal.repository.PoDeliveryControlRepository;
@@ -27,6 +29,12 @@ import java.util.UUID;
 @Service
 @Transactional
 class NotificationServiceImpl implements NotificationService {
+
+    /** The failure code of the attempt that closes an own delivery an amendment notice superseded. */
+    static final String SUPERSEDED_BY_AMENDMENT = "SUPERSEDED_BY_AMENDMENT";
+
+    /** The failure code of an amendment notice closed unsent because the order was cancelled meanwhile. */
+    static final String SUPERSEDED_BY_CANCELLATION = "SUPERSEDED_BY_CANCELLATION";
 
     private final DeliveryLogJpaRepository logs;
     private final SupplierEndpointPolicy policy;
@@ -87,6 +95,27 @@ class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
+    public void supersedeSupplierDelivery(UUID id, String channel, String recipient) {
+        var control = controls.lock(id);
+        String reference = "purchase-order:" + id;
+        if (control.suppressed()
+                || logs.existsByExternalReference(reference)
+                || logs.existsByOperationReferenceAndDeliveryGenerationAndTerminalTrue(
+                        reference, control.generation())) return;
+        int generation = Math.addExact(control.generation(), 1);
+        controls.advance(id, generation);
+        logs.saveAndFlush(
+                DeliveryAttemptRecorder.superseded(
+                        reference,
+                        "purchase-order.sent",
+                        NotificationChannel.valueOf(channel),
+                        recipient,
+                        SUPERSEDED_BY_AMENDMENT,
+                        generation,
+                        1));
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Map<UUID, String> purchaseOrderDeliveryStatuses(Collection<UUID> ids) {
         if (ids.isEmpty()) return Map.of();
@@ -127,6 +156,24 @@ class NotificationServiceImpl implements NotificationService {
                             : "QUEUED".equals(row.getStatus())
                                     ? "QUEUED"
                                     : row.getTerminal() ? "FAILED" : "RETRYING");
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, AmendmentDeliveryStatus> purchaseOrderAmendmentStatuses(Collection<UUID> ids) {
+        if (ids.isEmpty()) return Map.of();
+        var result = new HashMap<UUID, AmendmentDeliveryStatus>();
+        for (var row : logs.amendmentStatuses(ids.stream().map(UUID::toString).toList())) {
+            result.put(
+                    UUID.fromString(row.getReference()),
+                    new AmendmentDeliveryStatus(
+                            row.getRevision(),
+                            switch (row.getStatus()) {
+                                case "SENT" -> "DELIVERED";
+                                default -> row.getTerminal() ? "FAILED" : "RETRYING";
+                            }));
         }
         return result;
     }

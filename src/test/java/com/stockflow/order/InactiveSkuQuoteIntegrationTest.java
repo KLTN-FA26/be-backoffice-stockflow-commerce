@@ -62,7 +62,9 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
-@TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
+// Mail goes to the mocked JavaMailSender (SMTP), as before the transport existed; customer order mail is off.
+@TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false", "stockflow.notification.email.provider=smtp",
+        "stockflow.notification.email.customer.enabled=false"})
 class InactiveSkuQuoteIntegrationTest {
 
     private static final Duration ASYNC = Duration.ofSeconds(15);
