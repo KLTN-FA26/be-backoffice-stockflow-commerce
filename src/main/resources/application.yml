@@ -361,6 +361,11 @@ stockflow:
       phone: ${PO_BUYER_PHONE:}
       email: ${PO_BUYER_EMAIL:}
       receiving-address: ${PO_RECEIVING_ADDRESS:}
+    # Three-way match of supplier invoices (SCRUM-309, BR-INV-002): an invoice's unit price may stray this far, in
+    # percent either way, from the purchase order's net price before the match calls it a variance. Quantities have no
+    # tolerance: an invoice bills no more than was received and passed QC (kltn-docs 04 BR-02).
+    invoice-match:
+      price-tolerance-percent: ${INVOICE_PRICE_TOLERANCE_PERCENT:2}
 
   notification:
     # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
