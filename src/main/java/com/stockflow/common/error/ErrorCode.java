@@ -789,6 +789,8 @@ public enum ErrorCode {
     /** CUSTOMER belongs to customer accounts only, and staff roles to staff accounts only. */
     ROLE_NOT_ASSIGNABLE("This role cannot be assigned to this account", 409),
     INVALID_USER_STATUS_TRANSITION("This account cannot move to that status", 409),
+    /** The administrator asked for a status the account already has (lock a locked account, enable an active one). */
+    USER_STATUS_UNCHANGED("The account is already in this status", 409),
     INVALID_ALERT_TRANSITION("This alert cannot be acknowledged in its current state", 409),
     /** User management acts on staff accounts; customer accounts belong to the customer screens. */
     STAFF_ACCOUNT_REQUIRED("Customer accounts are managed from the customer screens", 409),
