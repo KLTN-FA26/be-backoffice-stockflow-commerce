@@ -39,6 +39,20 @@ class AuditAspectResultTest {
         public Created update(UUID id) {
             return new Created(id);
         }
+
+        @Auditable(action = AuditAction.TRANSITION, resourceType = "thing", resourceId = "#id",
+                details = "{change: #change, reason: #reason, count: #count}")
+        public Created transition(UUID id, String change, String reason, int count) {
+            if (count < 0) {
+                throw new IllegalStateException("refused");
+            }
+            return new Created(id);
+        }
+
+        @Auditable(action = AuditAction.UPDATE, resourceType = "thing", details = "#nope.broken()")
+        public Created brokenDetails() {
+            return new Created(NEW_ID);
+        }
     }
 
     private final List<AuditEntry> entries = new ArrayList<>();
@@ -80,5 +94,43 @@ class AuditAspectResultTest {
 
         assertThat(entries).singleElement()
                 .satisfies(entry -> assertThat(entry.resourceId()).isEqualTo(id.toString()));
+    }
+
+    @Test
+    void detailsAreTheEvaluatedMapAsOneJsonObjectWithValuesEscaped() {
+        UUID id = UUID.fromString("01a10000-0000-7000-8000-0000000000cc");
+
+        proxied().transition(id, "LOCK", "he said \"stop\"\nnow", 3);
+
+        assertThat(entries).singleElement().satisfies(entry -> {
+            assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS);
+            assertThat(entry.details())
+                    .isEqualTo("{\"change\":\"LOCK\",\"reason\":\"he said \\\"stop\\\"\\nnow\",\"count\":3}");
+        });
+    }
+
+    @Test
+    void afterAFailureTheDetailsSitNextToTheErrorUnderContext() {
+        UUID id = UUID.fromString("01a10000-0000-7000-8000-0000000000dd");
+
+        assertThatThrownBy(() -> proxied().transition(id, "DISABLE", "because", -1))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(entries).singleElement().satisfies(entry -> {
+            assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.FAILURE);
+            assertThat(entry.details()).startsWith("{\"error\":\"IllegalStateException\"")
+                    .contains("\"context\":{\"change\":\"DISABLE\",\"reason\":\"because\",\"count\":-1}");
+        });
+    }
+
+    @Test
+    void anEntryWithoutDetailsKeepsNullAndABadExpressionNeverFailsTheOperation() {
+        proxied().update(UUID.randomUUID());
+        proxied().brokenDetails();
+
+        assertThat(entries).hasSize(2).allSatisfy(entry -> {
+            assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS);
+            assertThat(entry.details()).isNull();
+        });
     }
 }

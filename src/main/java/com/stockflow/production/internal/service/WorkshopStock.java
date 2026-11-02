@@ -377,6 +377,26 @@ class WorkshopStock {
         return true;
     }
 
+    /**
+     * A root order's job completed short (S6): the blanks its sales order line held at checkout and the print shop
+     * never issued will not be printed - let go, free, as a split lets go of the share it moves (G3). A job that met
+     * its plan issued them all; a child or a sample holds none on the line. {@code lineHolds}: the line's holds as the
+     * sales order lists them.
+     */
+    void letGoUnissuedLineHolds(ProductionOrder order, List<UUID> lineHolds) {
+        if (order.type() != ProductionOrder.Type.ORDER || order.parentId() != null) {
+            return;
+        }
+        java.util.Set<UUID> issued = records.issuesOf(order.id()).stream()
+                .map(ProductionRecords.MaterialIssue::reservationId).collect(Collectors.toSet());
+        List<UUID> unissued = lineHolds.stream().filter(id -> !issued.contains(id)).toList();
+        for (StockReservation hold : inventory.liveHolds(unissued)) {
+            // Released as not needed by production any more - not reduceHold, which books a share given to a
+            // subcontractor.
+            inventory.release(hold.reservationId(), "PRODUCTION_CANCELLED");
+        }
+    }
+
     /** Holds of the production order still in storage, released (cancelled before they were issued). */
     void releaseUnissued(ProductionOrder order) {
         inventory.releaseProductionHolds(order.id());

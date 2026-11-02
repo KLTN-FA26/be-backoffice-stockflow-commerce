@@ -105,6 +105,7 @@ public enum ErrorCode {
     PACKAGE_NOT_FOUND("Package not found", 404),
     SHIPMENT_NOT_FOUND("Shipment not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
+    SUPPLIER_INVOICE_NOT_FOUND("Supplier invoice not found", 404),
     /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
     NOTIFICATION_NOT_FOUND("Notification not found", 404),
     /** An alert of a warehouse outside the caller's scope is {@code OUT_OF_DATA_SCOPE}, not this. */
@@ -144,6 +145,12 @@ public enum ErrorCode {
     /** Too many wrong passwords in a row; the lock ends on its own (SCRUM-456). Only revealed to a
      *  caller who then gave the right password, so it cannot be used to probe for accounts. */
     ACCOUNT_TEMPORARILY_LOCKED("Too many failed sign-in attempts; try again later", 403),
+    /** The administrator-set temporary password is older than 72 hours; only a reset by an administrator
+     *  helps (SCRUM-474 FIRST-LOGIN). Like ACCOUNT_NOT_ACTIVE it is only revealed after the right password. */
+    TEMPORARY_PASSWORD_EXPIRED("The temporary password has expired; ask an administrator to reset it", 403),
+    /** The account still has an administrator-set password: every call except changing it (and reading who
+     *  you are, and signing out) is refused until it is changed (SCRUM-474 FIRST-LOGIN). */
+    PASSWORD_CHANGE_REQUIRED("You must change your temporary password before using the system", 403),
     /** You can only hand out what you hold: a role or permission the caller lacks, or managing an
      *  account that holds more than the caller (SCRUM-456). */
     PRIVILEGE_ESCALATION("You cannot grant or manage permissions you do not hold yourself", 403),
@@ -231,6 +238,19 @@ public enum ErrorCode {
     RECEIPT_REFERENCE_SUPPLIER_MISMATCH("The purchase order is not the receipt's supplier's", 409),
     /** SCRUM-477: approving a receipt, or rejecting its excess, needs a reason. */
     RECEIPT_APPROVAL_REASON_REQUIRED("Deciding on a goods receipt needs a reason", 400),
+    /** SCRUM-308, BR-INV-001: the supplier already has an invoice with this number (case aside): paying it twice. */
+    SUPPLIER_INVOICE_NUMBER_TAKEN("The supplier already has an invoice with this number", 409),
+    /** SCRUM-308/309: changed, matched or voided in a status that does not allow it. */
+    SUPPLIER_INVOICE_INVALID_TRANSITION("This supplier invoice cannot do that in its current status", 409),
+    /**
+     * SCRUM-308: a line bills a PO line that does not exist or is not the supplier's (or not the invoice's order), or
+     * names a receipt line of another PO line.
+     */
+    SUPPLIER_INVOICE_LINE_INVALID("An invoice line does not bill a purchase order line of this supplier", 422),
+    /** SCRUM-308: the invoice is not in the currency of the orders it bills. */
+    SUPPLIER_INVOICE_CURRENCY_MISMATCH("The invoice is not in the currency of the purchase orders it bills", 422),
+    /** SCRUM-308: the order was never approved, or was cancelled - there is nothing to bill on it. */
+    PURCHASE_ORDER_NOT_INVOICEABLE("This purchase order cannot be invoiced in its current status", 409),
     /**
      * BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. Since SCRUM-477 a count beyond
      * it is no longer refused - the receipt waits for the warehouse manager - so the service does not answer with
@@ -355,6 +375,15 @@ public enum ErrorCode {
     CANCELLATION_FEE_BEFORE_PRINTING("Printing has not started: the order is refunded in full, no fee is kept", 409),
     /** Work for an order that has been cancelled (printing started, a package completed) is refused. */
     ORDER_CANCELLED("This order is cancelled", 409),
+    /**
+     * Review 2026-10-25 of S6: production completes a print line short only within what the customer agreed with Sales,
+     * recorded on the order line.
+     */
+    PRODUCTION_SHORTFALL_NOT_AGREED("The customer has not agreed to go without these units: Sales records it on the "
+            + "order first", 409),
+    /** The same review: who recorded the customer's agreement does not also close the shortfall (four eyes). */
+    PRODUCTION_SHORTFALL_SELF_APPROVAL("The customer's agreement was recorded by you: someone else completes the job "
+            + "short", 409),
     /** Decision 2026-10-17: once printing started, only staff cancel an order (fee, blanks, printed goods). */
     CANCELLATION_NEEDS_STAFF("Printing has started: staff decide this order's cancellation", 409),
     ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),
@@ -790,6 +819,8 @@ public enum ErrorCode {
     /** CUSTOMER belongs to customer accounts only, and staff roles to staff accounts only. */
     ROLE_NOT_ASSIGNABLE("This role cannot be assigned to this account", 409),
     INVALID_USER_STATUS_TRANSITION("This account cannot move to that status", 409),
+    /** The administrator asked for a status the account already has (lock a locked account, enable an active one). */
+    USER_STATUS_UNCHANGED("The account is already in this status", 409),
     INVALID_ALERT_TRANSITION("This alert cannot be acknowledged in its current state", 409),
     /** User management acts on staff accounts; customer accounts belong to the customer screens. */
     STAFF_ACCOUNT_REQUIRED("Customer accounts are managed from the customer screens", 409),

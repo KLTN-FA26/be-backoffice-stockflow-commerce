@@ -36,7 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     # Integration tests start Postgres through Testcontainers, which needs a Docker socket. The
     # ubuntu runner has one; a container-based runner would not.
-    timeout-minutes: 20
+    # The suite alone takes about 17 minutes (5,175 tests on 02/11); 20 cut green runs short.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -285,7 +286,9 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/develop'
-    timeout-minutes: 15
+    # deploy.sh may wait 300 s for readiness and another 300 s for a rollback; a job timeout
+    # inside that window would cut the SSH session in the middle of the rollback.
+    timeout-minutes: 25
     environment:
       name: vps
       url: https://api.${{ vars.DOMAIN }}
@@ -315,7 +318,10 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf 'Host vps\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n' \
+          # Keepalives: the runner's network drops a connection that stays silent for about four
+          # minutes, and a deploy can wait that long for the application to become ready. A dropped
+          # session kills deploy.sh half way - before it records the tag or can roll back.
+          printf 'Host vps\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n  ServerAliveInterval 30\n  ServerAliveCountMax 10\n' \
             "${SSH_TARGET#*@}" "${SSH_TARGET%@*}" "$SSH_PORT" > ~/.ssh/config
 
       # --delete removes files dropped from deploy/ in the repository; excluded paths are
