@@ -5,24 +5,17 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.ToolResult;
 import com.stockflow.assistant.internal.domain.ToolSpec;
 import com.stockflow.assistant.internal.domain.Turn;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.springframework.http.MediaType;
-import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -52,14 +45,11 @@ import java.util.regex.Pattern;
  * types and no {@code additionalProperties}. There is no strict mode, so arguments may not match the schema;
  * {@link ToolArguments} validates every one in Java either way.</p>
  *
- * <p><b>A failure says what to do next.</b> A 429 of the free tier's per-minute quota, a 5xx, or a timeout is tried
- * again {@value AssistantProperties#MAX_RETRIES} times, waiting what the API's {@code RetryInfo} asks, at most
- * {@value #MAX_BACKOFF_SECONDS} seconds, and then fails as {@code ASSISTANT_UNAVAILABLE}, which a user may retry. A
- * spent quota fails at once as {@code ASSISTANT_QUOTA_EXHAUSTED}: its {@code QuotaFailure} names a per-day quota, or
- * its {@code RetryInfo} asks for more than a minute. 400, 401, 403 and 404 are the key, the model name or our own
- * request; they fail at once as {@code ASSISTANT_MISCONFIGURED}, logged as an error, because no retry changes them and
- * "try again in a few minutes" would send every user back for nothing. The waits are not part of
- * {@code AssistantProperties#longestModelCall}; at two of a minute each they still fit the default lease.</p>
+ * <p><b>A failure says what to do next</b>, as {@link GeminiCall} decides for every Gemini call: a per-minute 429, a
+ * 5xx or a timeout is tried again, waiting what {@code RetryInfo} asks, at most {@value #MAX_BACKOFF_SECONDS} seconds;
+ * a spent quota ({@link #quotaSpent}) fails at once; the key, the model name or our own request fail at once as
+ * {@code ASSISTANT_MISCONFIGURED}. The waits are not part of {@code AssistantProperties#longestModelCall}; at two of a
+ * minute each they still fit the default lease.</p>
  *
  * <p><b>An answer has text.</b> {@code END_TURN} is a {@code STOP} that wrote something. A candidate with neither text
  * nor a function call did not answer, whatever its finish reason says — {@code MALFORMED_FUNCTION_CALL} (the model
@@ -80,12 +70,6 @@ class GeminiLanguageModel implements LanguageModel {
 
     private static final Duration MAX_BACKOFF = Duration.ofSeconds(MAX_BACKOFF_SECONDS);
 
-    /**
-     * The key, the model name or our request: Google answers 400 for a key that is not valid, 403 for a suspended
-     * key or an API that is not enabled, 404 for a model it does not serve.
-     */
-    private static final Set<Integer> MISCONFIGURATION = Set.of(400, 401, 403, 404);
-
     /** The error detail that names the quota a 429 is about ({@code quotaId}, "...PerDay..." or "...PerMinute..."). */
     private static final String QUOTA_FAILURE = "google.rpc.QuotaFailure";
 
@@ -97,10 +81,9 @@ class GeminiLanguageModel implements LanguageModel {
     private static final Set<String> SCHEMA_KEYS = Set.of("type", "description", "enum", "items", "properties",
             "required");
 
-    private final RestClient http;
+    private final GeminiCall call;
     private final AssistantProperties properties;
     private final ObjectMapper json = new ObjectMapper();
-    private final Sleeper sleeper;
 
     /** @param http based at the API's root ({@link #DEFAULT_BASE_URL} or {@code stockflow.assistant.base-url}) */
     GeminiLanguageModel(RestClient http, AssistantProperties properties) {
@@ -108,18 +91,8 @@ class GeminiLanguageModel implements LanguageModel {
     }
 
     GeminiLanguageModel(RestClient http, AssistantProperties properties, Sleeper sleeper) {
-        this.http = http;
+        this.call = new GeminiCall(http, properties.apiKey(), sleeper, "", "model provider");
         this.properties = properties;
-        this.sleeper = sleeper;
-    }
-
-    private record Raw(int status, String body) {
-    }
-
-    /** Waits between attempts; replaced in tests. */
-    @FunctionalInterface
-    interface Sleeper {
-        void sleep(long millis) throws InterruptedException;
     }
 
     @Override
@@ -127,57 +100,12 @@ class GeminiLanguageModel implements LanguageModel {
         return true;
     }
 
+    /** One {@code generateContent} call; how a failure is told and retried is {@link GeminiCall}'s. */
     @Override
     public Reply next(Request request) {
-        String body = write(body(request));
-        for (int attempt = 0; ; attempt++) {
-            Raw response;
-            try {
-                response = http.post()
-                        .uri("/v1beta/models/{model}:generateContent", properties.model())
-                        .header("x-goog-api-key", properties.apiKey())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body(body)
-                        .exchange((sent, received) -> new Raw(received.getStatusCode().value(),
-                                new String(received.getBody().readAllBytes(), StandardCharsets.UTF_8)));
-            } catch (ResourceAccessException unreachable) {
-                if (attempt < AssistantProperties.MAX_RETRIES) {
-                    log.warn("Gemini could not be reached (attempt {}): {}", attempt + 1, unreachable.getMessage());
-                    pause(Duration.ofSeconds(2L * (attempt + 1)));
-                    continue;
-                }
-                throw new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "The model provider could not be reached",
-                        unreachable);
-            }
-            int status = response.status();
-            if (status == 200) {
-                return reply(read(response.body()), properties.model());
-            }
-            JsonNode error = error(response.body());
-            String reason = errorSummary(error);
-            if (status == 429 && quotaSpent(error)) {
-                log.warn("Gemini's quota for {} is used up: {}", properties.model(), reason);
-                throw new BusinessException(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED,
-                        "The model provider's quota is used up; the assistant answers again once it is renewed");
-            }
-            if (MISCONFIGURATION.contains(status)) {
-                log.error("Gemini refused the key, the model or the request with {}: {}", status, reason);
-                throw new BusinessException(ErrorCode.ASSISTANT_MISCONFIGURED, "The model provider answered " + status);
-            }
-            boolean retryable = status == 429 || status >= 500;
-            Optional<Duration> wait = retryable ? retryDelay(error, status, attempt) : Optional.empty();
-            if (wait.isPresent() && attempt < AssistantProperties.MAX_RETRIES) {
-                log.warn("Gemini answered {} (attempt {}): {}", status, attempt + 1, reason);
-                pause(wait.get());
-                continue;
-            }
-            if (retryable) {
-                log.warn("Gemini answered {}: {}", status, reason);
-            } else {
-                log.error("Gemini rejected the request with {}: {}", status, reason);
-            }
-            throw new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "The model provider answered " + status);
-        }
+        JsonNode response = call.post("/v1beta/models/{model}:generateContent", properties.model(),
+                write(body(request)), true);
+        return reply(response, properties.model());
     }
 
     /** A model turn holding only {@code text}, in Gemini's format, so it replays like any other. */
@@ -356,15 +284,6 @@ class GeminiLanguageModel implements LanguageModel {
         return new Usage(Math.max(0, prompt - cached), output, cached, 0);
     }
 
-    /** The {@code error} object of a refused call's body; a missing node when the body is not the API's JSON. */
-    JsonNode error(String body) {
-        try {
-            return json.readTree(body).path("error");
-        } catch (IOException notJson) {
-            return MissingNode.getInstance();
-        }
-    }
-
     /**
      * Whether a 429 is a quota that will not come back within this answer. Two signs, either enough: the
      * {@code QuotaFailure} detail names a per-day quota ({@code GenerateRequestsPerDayPerProjectPerModel-FreeTier}), or
@@ -430,15 +349,6 @@ class GeminiLanguageModel implements LanguageModel {
         }
         String message = KEY.matcher(error.path("message").asText("")).replaceAll("[key]");
         return error.path("status").asText("") + " " + (message.length() > 300 ? message.substring(0, 300) : message);
-    }
-
-    private void pause(Duration delay) {
-        try {
-            sleeper.sleep(delay.toMillis());
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "Interrupted waiting to retry", interrupted);
-        }
     }
 
     private String write(JsonNode node) {

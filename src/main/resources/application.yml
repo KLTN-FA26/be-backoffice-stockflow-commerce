@@ -448,22 +448,38 @@ stockflow:
   # and answers 503 ASSISTANT_DISABLED. The key comes from the environment only, never from this file.
   assistant:
     enabled: ${ASSISTANT_ENABLED:false}
-    # anthropic (ADR-0010) or gemini; the key is the chosen provider's.
+    # anthropic (ADR-0010), gemini, or openai: any server speaking OpenAI's chat-completions API, such as Ollama on
+    # this machine (openai-compatible below). The key is the chosen provider's.
     provider: ${ASSISTANT_PROVIDER:anthropic}
-    # ASSISTANT_API_KEY, or else the chosen provider's own variable below - never the other vendor's: one vendor's key
-    # sent to the other is a credential disclosed to a third party. A key shaped like the other vendor's is not used.
+    # ASSISTANT_API_KEY, or else the chosen provider's own variable below - never another vendor's: one vendor's key
+    # sent to another is a credential disclosed to a third party. A key shaped like another vendor's is not used.
     api-key: ${ASSISTANT_API_KEY:}
     anthropic-api-key: ${ANTHROPIC_API_KEY:}
     gemini-api-key: ${GEMINI_API_KEY:}
+    # The openai provider's server and its optional key. Ollama: http://localhost:11434/v1, no key; give it a context of
+    # 16k or more (OLLAMA_CONTEXT_LENGTH), since the instructions and tool definitions alone are several thousand tokens.
+    openai-compatible:
+      base-url: ${OPENAI_COMPATIBLE_BASE_URL:http://localhost:11434/v1}
+      api-key: ${OPENAI_COMPATIBLE_API_KEY:}
+      # The most an answer may take there (max_tokens is the smaller of this and max-output-tokens): a local model's
+      # context holds the prompt and the answer together.
+      max-output-tokens: ${OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS:4096}
+    # CLOUD_ALLOWED, or LOCAL_ONLY: no model, embedding or document reader outside the company's network is ever built
+    # (loopback, private addresses, single-label and .local/.internal names). The technical half of AQ-01.
+    data-policy: ${ASSISTANT_DATA_POLICY:CLOUD_ALLOWED}
     model: ${ASSISTANT_MODEL:claude-opus-5-5}
     daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
     # Model routing (docs/assistant-design.md §11). Unset, `model` alone answers, as before. Otherwise a question
-    # starts on the first of `models` (cheapest first, same provider and key) whose quota is not spent. A first call
-    # refused for a spent quota or an unreachable provider goes to the next model; once a model has replied, the
-    # question stays on it. A question a model could not answer is asked once more on the next model
-    # (escalate-on-failure). Moving on needs answer-lease to still hold two of the longest calls. A spent model is
-    # skipped for quota-cooldown, an ISO-8601 duration; blank: until the provider's quota day ends (midnight Pacific
-    # time for Gemini, UTC for Anthropic).
+    # starts on the first of `models` (cheapest first) whose quota is not spent. A model may name its vendor,
+    # provider/model (openai/qwen3:8b, gemini/gemini-3.5-flash); a bare name is the assistant's own provider's, and so
+    # is a name equal to `model`. A gateway's id that starts with a vendor (anthropic/claude-sonnet on OpenRouter) is
+    # written openai/anthropic/claude-sonnet: alone it names Anthropic itself. Each
+    # vendor's model gets that vendor's own key variable only, never ASSISTANT_API_KEY, and a model without one is left
+    # out with a warning. A first call refused for a spent quota or an unreachable provider goes to the next model; once
+    # a model has replied, the question stays on it. A question a model could not answer is asked once more on the next
+    # model (escalate-on-failure). Moving on needs answer-lease to still hold two of the longest calls. A spent model is
+    # skipped for quota-cooldown, an ISO-8601 duration; blank: until its vendor's quota day ends (midnight Pacific time
+    # for Gemini, UTC otherwise).
     routing:
       models: ${ASSISTANT_MODELS:}
       escalate-on-failure: ${ASSISTANT_ESCALATE_ON_FAILURE:true}
@@ -482,10 +498,13 @@ stockflow:
     # Idle conversations older than retention-days are deleted daily (business time).
     retention-cron: "0 30 3 * * *"
     # Searching the rules by meaning beside their words (design §6.4): the rules are in English, the questions in
-    # Vietnamese. Gemini only - Anthropic has no embedding API - so with provider anthropic, or without a key, the
-    # search stays keyword-only. The key is api-key below, or else the Gemini assistant's own; never an Anthropic key.
+    # Vietnamese. provider gemini serves a Gemini assistant only (the key is api-key below, or else the assistant's
+    # own; never an Anthropic key). provider openai is the openai-compatible server above, such as Ollama with bge-m3
+    # (model bge-m3, dimensions 1024): inside the company's network it serves any assistant, Claude included.
+    # Otherwise the search stays keyword-only.
     embeddings:
       enabled: ${ASSISTANT_EMBEDDINGS_ENABLED:true}
+      provider: ${ASSISTANT_EMBEDDINGS_PROVIDER:gemini}
       api-key: ${ASSISTANT_EMBEDDINGS_API_KEY:}
       model: ${ASSISTANT_EMBEDDINGS_MODEL:gemini-embedding-001}
       # 128-3072. A new model or length re-embeds every passage on the next start, in the background.
@@ -498,6 +517,9 @@ stockflow:
     # provider, supplier prices and signatures included. Off unless asked for (AQ-01); the local profile turns it on.
     receipt-drafts:
       enabled: ${ASSISTANT_RECEIPT_DRAFTS_ENABLED:false}
+      # Blank: the chat's model. Otherwise a model named as in routing.models, e.g. openai/qwen2.5vl:3b for a vision
+      # model on the local server: a text model cannot see. Its vendor's own key only; the data policy applies.
+      model: ${ASSISTANT_RECEIPT_DRAFTS_MODEL:}
 
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and

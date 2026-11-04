@@ -72,4 +72,29 @@ class AssistantModelConfigTest {
         assertThat(model).isInstanceOf(GeminiLanguageModel.class);
         assertThat(model.available()).isTrue();
     }
+
+
+    @Test
+    @DisplayName("LOCAL_ONLY never builds a cloud model, whatever key is set: unavailable, and no client at all")
+    void localOnlyBuildsNoCloudModel() {
+        AssistantProperties gemini = new AssistantProperties(true, GOOGLE_KEY, "gemini-3.5-flash", "low", 6, 16000,
+                50, 90, Duration.ofSeconds(90), Duration.ofMinutes(15), true, "", "gemini", "", "", null,
+                DataPolicy.LOCAL_ONLY);
+
+        assertThat(new AssistantModelConfig().languageModel(gemini, http).available()).isFalse();
+        verifyNoInteractions(http);
+    }
+
+    @Test
+    @DisplayName("an openai assistant on a local server needs no key and gets the OpenAI-compatible adapter")
+    void localServer() {
+        when(http.forService("openai-compatible", AssistantProperties.OpenAiCompatible.OLLAMA))
+                .thenReturn(RestClient.builder());
+        AssistantProperties local = new AssistantProperties(true, "", "qwen3:8b", "low", 6, 16000, 50, 90,
+                Duration.ofSeconds(90), Duration.ofMinutes(15), true, "", "openai", ANTHROPIC_KEY, GOOGLE_KEY, null,
+                DataPolicy.LOCAL_ONLY);
+
+        assertThat(new AssistantModelConfig().languageModel(local, http))
+                .isInstanceOf(OpenAiCompatibleLanguageModel.class);
+    }
 }

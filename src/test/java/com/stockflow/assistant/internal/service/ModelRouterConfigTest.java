@@ -149,6 +149,55 @@ class ModelRouterConfigTest {
     }
 
     @Test
+    @DisplayName("a route may mix vendors: a local model first, the Gemini assistant's own model after it, each on its "
+            + "own vendor's quota day; a vendor without its own key is left out, never sent the assistant's")
+    void mixedVendors() {
+        List<String> openaiPaths = new ArrayList<>();
+        List<String> authorizations = new ArrayList<>();
+        RestClient.Builder ollama = RestClient.builder().baseUrl("http://localhost:11434/v1")
+                .requestInterceptor((sent, body, execution) -> {
+                    openaiPaths.add(sent.getURI().getPath());
+                    authorizations.add(sent.getHeaders().getFirst("Authorization"));
+                    MockClientHttpResponse response = new MockClientHttpResponse("""
+                            {"model":"qwen3:8b","choices":[{"finish_reason":"stop",
+                              "message":{"role":"assistant","content":"Còn 40 cái."}}]}"""
+                            .getBytes(StandardCharsets.UTF_8), HttpStatus.OK);
+                    response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+                    return response;
+                });
+        when(http.forService("openai-compatible", "http://localhost:11434/v1")).thenReturn(ollama);
+        AssistantProperties properties = properties(true, "gemini", GOOGLE_KEY, "gemini-3.5-flash");
+        LanguageModel bean = mock(LanguageModel.class);
+
+        ModelRouter router = config.modelRouter(bean, properties,
+                routing("openai/qwen3:8b", "anthropic/claude-haiku-5-5", "gemini-3.5-flash"), http, clock);
+
+        assertThat(router.names()).as("Claude has no ANTHROPIC_API_KEY here: left out")
+                .containsExactly("openai/qwen3:8b", "gemini-3.5-flash");
+        ModelRouter.Route route = router.route();
+        assertThat(route.model().next(request).turn().text()).isEqualTo("Còn 40 cái.");
+        assertThat(openaiPaths).containsExactly("/v1/chat/completions");
+        assertThat(authorizations).as("the Gemini key never reaches the local server").containsOnlyNulls();
+        assertThat(router.renewal(clock.instant())).as("the router's own day is the assistant's provider's")
+                .isEqualTo(Instant.parse("2026-10-25T07:00:00Z"));
+    }
+
+    @Test
+    @DisplayName("under LOCAL_ONLY a cloud model of the list is left out of a local assistant's route")
+    void localOnlyRoute() {
+        AssistantProperties local = new AssistantProperties(true, "", "qwen3:8b", "low", 6, 16000, 50, 90,
+                Duration.ofSeconds(90), Duration.ofMinutes(15), true, "", "openai", "", GOOGLE_KEY, null,
+                DataPolicy.LOCAL_ONLY);
+        LanguageModel bean = mock(LanguageModel.class);
+
+        ModelRouter router = config.modelRouter(bean, local, routing("qwen3:8b", "gemini/gemini-3.5-flash"), http,
+                clock);
+
+        assertThat(router.names()).containsExactly("qwen3:8b");
+        verifyNoInteractions(http);
+    }
+
+    @Test
     @DisplayName("Claude models of the list get an adapter each, the configured one being the bean; the ones built "
             + "for the route are closed with it")
     void claudeModels() throws Exception {

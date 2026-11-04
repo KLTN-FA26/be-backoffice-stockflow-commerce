@@ -97,8 +97,20 @@ class GeminiLanguageModelTest {
         return model(RestClient.create("http://gemini.test"));
     }
 
+    @Test
+    @DisplayName("a 200 that is not JSON is the provider failing: unavailable, which a user may retry")
+    void aBodyThatIsNotJson() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("http://gemini.test");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo(PATH)).andRespond(withSuccess("<html>proxy</html>", MediaType.TEXT_HTML));
+
+        assertThatThrownBy(() -> model(builder.build()).next(new LanguageModel.Request("p", List.of(),
+                List.of(new Turn.Question("q", "ctx"))))).isInstanceOfSatisfying(BusinessException.class,
+                failure -> assertThat(failure.errorCode()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE));
+    }
+
     private JsonNode error(String body) {
-        return offline().error(body);
+        return GeminiCall.error(body);
     }
 
     @Test

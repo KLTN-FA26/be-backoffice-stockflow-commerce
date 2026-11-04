@@ -116,6 +116,76 @@ class EmbeddingModelConfigTest {
         verifyNoInteractions(http);
     }
 
+    private static AssistantProperties assistant(String provider, String apiKey, String serverUrl,
+                                                 DataPolicy policy) {
+        return new AssistantProperties(true, apiKey, "some-model", "low", 6, 16000, 50, 90, Duration.ofSeconds(90),
+                Duration.ofMinutes(15), true, "", provider, "", "",
+                new AssistantProperties.OpenAiCompatible(serverUrl, ""), policy);
+    }
+
+    private static EmbeddingProperties local() {
+        return new EmbeddingProperties(true, "openai", "", "bge-m3", 1024);
+    }
+
+    @Test
+    @DisplayName("a local embedding server serves any assistant, Claude included, which has no embedding API")
+    void aLocalServerServesAnyAssistant() {
+        when(http.forService("openai-compatible-embeddings", "http://localhost:11434/v1"))
+                .thenReturn(RestClient.builder());
+
+        EmbeddingModel model = model(local(), assistant("anthropic", ANTHROPIC_KEY, "http://localhost:11434/v1",
+                DataPolicy.CLOUD_ALLOWED));
+
+        assertThat(model).isInstanceOf(OpenAiCompatibleEmbeddingModel.class);
+        assertThat(model.name()).isEqualTo("bge-m3");
+        assertThat(model.dimensions()).isEqualTo(1024);
+    }
+
+    @Test
+    @DisplayName("an embedding server on a public host is a second vendor for a Claude or Gemini assistant: keywords "
+            + "only; for an openai assistant it is the same vendor")
+    void aPublicServerIsASecondVendor() {
+        EmbeddingModel claude = model(local(), assistant("anthropic", ANTHROPIC_KEY, "https://models.example.com/v1",
+                DataPolicy.CLOUD_ALLOWED));
+        assertThat(claude.available()).isFalse();
+        verifyNoInteractions(http);
+
+        when(http.forService("openai-compatible-embeddings", "https://models.example.com/v1"))
+                .thenReturn(RestClient.builder());
+        assertThat(model(local(), assistant("openai", "", "https://models.example.com/v1",
+                DataPolicy.CLOUD_ALLOWED))).isInstanceOf(OpenAiCompatibleEmbeddingModel.class);
+    }
+
+    @Test
+    @DisplayName("LOCAL_ONLY never builds Gemini embeddings, nor a public embedding server")
+    void localOnly() {
+        // A local assistant with Gemini embeddings asked for: the assistant is not Gemini, so keywords only.
+        assertThat(model(embeddings(true, EMBEDDING_KEY), assistant("openai", "", "http://localhost:11434/v1",
+                DataPolicy.LOCAL_ONLY)).available()).isFalse();
+        assertThat(model(local(), assistant("openai", "", "https://models.example.com/v1", DataPolicy.LOCAL_ONLY))
+                .available()).isFalse();
+        verifyNoInteractions(http);
+    }
+
+    @Test
+    @DisplayName("a Google or Anthropic key set as the embedding server's key is never sent to it")
+    void aCloudKeyNeverGoesToTheEmbeddingServer() {
+        AssistantProperties claude = new AssistantProperties(true, ANTHROPIC_KEY, "some-model", "low", 6, 16000, 50,
+                90, Duration.ofSeconds(90), Duration.ofMinutes(15), true, "", "anthropic", "", "",
+                new AssistantProperties.OpenAiCompatible("http://localhost:11434/v1", GOOGLE_KEY),
+                DataPolicy.CLOUD_ALLOWED);
+
+        assertThat(model(local(), claude).available()).isFalse();
+        verifyNoInteractions(http);
+    }
+
+    @Test
+    @DisplayName("an unknown embedding provider fails the start")
+    void unknownProvider() {
+        assertThatThrownBy(() -> new EmbeddingProperties(true, "anthropic", "", "m", 768))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     @DisplayName("the keyword-only model refuses to embed")
     void unavailableRefuses() {

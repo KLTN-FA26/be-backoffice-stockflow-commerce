@@ -223,6 +223,19 @@ tool đó, và system prompt vẫn kết bằng danh sách quyền của mọi t
   endpoint mặc định tắt (`ASSISTANT_MCP_ENABLED`) và việc bật nó ở môi trường thật là quyết định của doanh nghiệp (tài
   liệu thiết kế §7, AQ-17).
 
+## Sửa đổi ngày 04/11/2026: model trong mạng công ty, danh sách trộn nhà cung cấp, chính sách dữ liệu
+
+- **Adapter thứ ba sau cùng port:** `provider=openai`, bất kỳ máy chủ nào nói API chat-completions của OpenAI (Ollama,
+  vLLM, LM Studio), thường chạy trên máy của doanh nghiệp. Embedding và đọc ảnh có adapter cùng loại, nên tìm theo nghĩa
+  không còn phụ thuộc vào nhà cung cấp của khung chat: một trợ lý Claude dùng được `bge-m3` chạy nội bộ.
+- **Danh sách định tuyến được trộn nhà cung cấp** (`provider/model`). Bất biến cũ được giữ, nay ở một chỗ
+  (`ModelCatalog`): `ASSISTANT_API_KEY` chỉ thuộc nhà cung cấp của trợ lý, model của nhà cung cấp khác chỉ nhận biến
+  key riêng của nhà cung cấp đó hoặc không gì cả, và `base-url` chỉ áp cho nhà cung cấp của trợ lý. Thay cho câu "danh
+  sách không trộn hai nhà cung cấp" của sửa đổi 29/10.
+- **`stockflow.assistant.data-policy=LOCAL_ONLY`:** không adapter nào được dựng cho endpoint ngoài mạng công ty. Đây là
+  cách thi hành câu trả lời của AQ-01 nếu doanh nghiệp không cho dữ liệu rời hệ thống; nó không thay cho câu trả lời đó.
+- Vòng gọi HTTP của Gemini (trước đó chép ở ba adapter) gom về `GeminiCall`, hành vi giữ nguyên.
+
 ## Hệ quả
 
 - Không module nào khác phải đổi. Ngoại lệ là các method `api` được thêm khi một use case cần dữ liệu

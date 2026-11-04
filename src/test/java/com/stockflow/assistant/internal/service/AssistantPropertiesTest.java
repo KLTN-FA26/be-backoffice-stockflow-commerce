@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Which key the assistant ends up with: {@code ASSISTANT_API_KEY}, else the chosen provider's own variable, and never
@@ -71,6 +72,50 @@ class AssistantPropertiesTest {
         assertThat(direct.anthropicApiKey()).isEmpty();
         assertThat(direct.geminiApiKey()).isEmpty();
         assertThat(direct.usable()).isFalse();
+    }
+
+    private static AssistantProperties openai(String apiKey, String baseUrl, String serverKey, DataPolicy policy) {
+        return new AssistantProperties(true, apiKey, "qwen3:8b", "low", 6, 16000, 50, 90, Duration.ofSeconds(90),
+                Duration.ofMinutes(15), true, "", "openai", ANTHROPIC_KEY, GOOGLE_KEY,
+                new AssistantProperties.OpenAiCompatible(baseUrl, serverKey), policy);
+    }
+
+    @Test
+    @DisplayName("an OpenAI-compatible server needs no key, takes only its own, and never a cloud vendor's")
+    void openaiCompatible() {
+        AssistantProperties local = openai("", null, "", DataPolicy.CLOUD_ALLOWED);
+        assertThat(local.usable()).isTrue();
+        assertThat(local.apiKey()).as("neither cloud vendor's key").isEmpty();
+        assertThat(local.endpoint()).isEqualTo(AssistantProperties.OpenAiCompatible.OLLAMA);
+        assertThat(local.keyVariable()).isEqualTo("OPENAI_COMPATIBLE_API_KEY");
+
+        assertThat(openai("", "http://vllm:8000/v1/", "vllm-token", DataPolicy.CLOUD_ALLOWED).apiKey())
+                .isEqualTo("vllm-token");
+        assertThat(openai("", "http://vllm:8000/v1/", "", DataPolicy.CLOUD_ALLOWED).endpoint())
+                .as("trailing slash dropped").isEqualTo("http://vllm:8000/v1");
+        assertThat(openai(GOOGLE_KEY, null, "", DataPolicy.CLOUD_ALLOWED).usable()).isFalse();
+        assertThat(openai("", null, ANTHROPIC_KEY, DataPolicy.CLOUD_ALLOWED).usable()).isFalse();
+    }
+
+    @Test
+    @DisplayName("LOCAL_ONLY leaves a cloud provider unusable, and a model server on a public host too")
+    void localOnly() {
+        AssistantProperties gemini = new AssistantProperties(true, GOOGLE_KEY, "gemini-3.5-flash", "low", 6, 16000,
+                50, 90, Duration.ofSeconds(90), Duration.ofMinutes(15), true, "", "gemini", "", "", null,
+                DataPolicy.LOCAL_ONLY);
+        assertThat(gemini.usable()).isFalse();
+        assertThat(gemini.allowedByPolicy()).isFalse();
+
+        assertThat(openai("", "http://localhost:11434/v1", "", DataPolicy.LOCAL_ONLY).usable()).isTrue();
+        assertThat(openai("", "https://models.example.com/v1", "", DataPolicy.LOCAL_ONLY).usable()).isFalse();
+        assertThat(openai("", "https://models.example.com/v1", "", DataPolicy.CLOUD_ALLOWED).usable()).isTrue();
+    }
+
+    @Test
+    @DisplayName("an unknown provider fails the start")
+    void unknownProvider() {
+        assertThatThrownBy(() -> properties("mistral", "key", "", ""))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("openai");
     }
 
     @Test

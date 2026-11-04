@@ -46,19 +46,25 @@ class ModelRouter implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(ModelRouter.class);
 
     /** Where Gemini's daily quotas restart: midnight Pacific time (Google's rate-limit documentation, October 2026). */
-    static final ZoneId GEMINI_QUOTA_DAY = ZoneId.of("America/Los_Angeles");
+    static final ZoneId GEMINI_QUOTA_DAY = ModelProvider.GEMINI_QUOTA_DAY;
 
     /**
      * One model of the list.
      *
-     * @param name  the model id as configured, which the provider is called with
-     * @param model its adapter
+     * @param name     the model as configured ({@link ModelCatalog}), the key of its quota bookkeeping
+     * @param model    its adapter
+     * @param quotaDay where its vendor's quota day ends at midnight; null for the router's own
      */
-    record Candidate(String name, LanguageModel model) {
+    record Candidate(String name, LanguageModel model, ZoneId quotaDay) {
 
         Candidate {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(model, "model");
+        }
+
+        /** A model on the router's own quota day, as every model was when a route had one vendor. */
+        Candidate(String name, LanguageModel model) {
+            this(name, model, null);
         }
     }
 
@@ -70,8 +76,9 @@ class ModelRouter implements AutoCloseable {
     private final Map<String, Instant> spentUntil = new ConcurrentHashMap<>();
 
     /**
-     * @param candidates cheapest first
-     * @param quotaDay   where the provider's quota day ends at midnight ({@link #quotaDay(String)})
+     * @param candidates cheapest first; a route may mix vendors, each candidate with its own quota day
+     * @param quotaDay   where the quota day ends at midnight for a candidate that names none
+     *                   ({@link #quotaDay(String)})
      * @param owned      adapters built for the route alone, closed with it; never the {@code LanguageModel} bean,
      *                   which the application context closes itself
      */
@@ -81,7 +88,8 @@ class ModelRouter implements AutoCloseable {
             throw new IllegalArgumentException("a route holds at least one model");
         }
         this.candidates = candidates.stream()
-                .map(candidate -> new Candidate(candidate.name(), new Logged(candidate.name(), candidate.model())))
+                .map(candidate -> new Candidate(candidate.name(), new Logged(candidate.name(), candidate.model()),
+                        candidate.quotaDay() == null ? quotaDay : candidate.quotaDay()))
                 .toList();
         this.routing = routing;
         this.quotaDay = quotaDay;
@@ -93,12 +101,16 @@ class ModelRouter implements AutoCloseable {
         this(candidates, routing, quotaDay, clock, List.of());
     }
 
-    /** Where a provider's quota day ends at midnight: Pacific time for Gemini, UTC for Anthropic (class javadoc). */
+    /** Where a provider's quota day ends at midnight ({@link ModelProvider#quotaDay()}); UTC for an unknown name. */
     static ZoneId quotaDay(String provider) {
-        return "gemini".equals(provider) ? GEMINI_QUOTA_DAY : ZoneOffset.UTC;
+        ModelProvider known = ModelProvider.named(provider);
+        return known == null ? ZoneOffset.UTC : known.quotaDay();
     }
 
-    /** Whether the assistant can answer at all: every model shares one provider and one key, so the first one says. */
+    /**
+     * Whether the assistant can answer at all. The route holds real adapters only when the assistant's own settings
+     * let it answer (AssistantModelConfig), and its own model alone otherwise, so the first model says for all.
+     */
     boolean available() {
         return candidates.getFirst().model().available();
     }
@@ -124,10 +136,10 @@ class ModelRouter implements AutoCloseable {
     }
 
     /** Sets a model whose quota is spent aside, for every question, until the quota is expected back. */
-    private void quotaSpent(String name) {
-        Instant until = renewal(clock.instant());
-        spentUntil.merge(name, until, (known, found) -> known.isAfter(found) ? known : found);
-        log.warn("The quota of model {} is used up: questions skip it until {}", name, until);
+    private void quotaSpent(Candidate candidate) {
+        Instant until = renewal(clock.instant(), candidate.quotaDay());
+        spentUntil.merge(candidate.name(), until, (known, found) -> known.isAfter(found) ? known : found);
+        log.warn("The quota of model {} is used up: questions skip it until {}", candidate.name(), until);
     }
 
     /**
@@ -145,13 +157,20 @@ class ModelRouter implements AutoCloseable {
         return failure;
     }
 
-    /** When a quota found spent at {@code now} is expected back: after the cooldown, or when the quota day ends. */
+    /**
+     * When a quota found spent at {@code now} is expected back, on the router's own quota day: after the cooldown, or
+     * when the quota day ends.
+     */
     Instant renewal(Instant now) {
+        return renewal(now, quotaDay);
+    }
+
+    private Instant renewal(Instant now, ZoneId day) {
         Duration cooldown = routing.quotaCooldown();
         if (cooldown != null) {
             return now.plus(cooldown);
         }
-        return now.atZone(quotaDay).toLocalDate().plusDays(1).atStartOfDay(quotaDay).toInstant();
+        return now.atZone(day).toLocalDate().plusDays(1).atStartOfDay(day).toInstant();
     }
 
     /** Closes the adapters built for the route; the first failure is thrown, with any later one suppressed in it. */
@@ -208,7 +227,7 @@ class ModelRouter implements AutoCloseable {
         void failedBeforeReplying(BusinessException failure) {
             failures.add(failure);
             if (failure.errorCode() == ErrorCode.ASSISTANT_QUOTA_EXHAUSTED) {
-                quotaSpent(name());
+                quotaSpent(models.get(at));
             }
         }
 
@@ -220,7 +239,7 @@ class ModelRouter implements AutoCloseable {
          */
         BusinessException failedAfterReplying(BusinessException failure) {
             if (failure.errorCode() == ErrorCode.ASSISTANT_QUOTA_EXHAUSTED) {
-                quotaSpent(name());
+                quotaSpent(models.get(at));
             }
             return told(failure);
         }

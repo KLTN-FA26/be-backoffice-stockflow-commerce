@@ -745,6 +745,9 @@ quyết định của AQ-01.
 
 Key của nhà cung cấp này không bao giờ được gửi tới nhà cung cấp kia (§11).
 
+**`LOCAL_ONLY`** (4/11, §11): không gì ở trên rời mạng công ty. Khung chat, embedding và đọc ảnh chỉ chạy trên một máy
+chủ chuẩn OpenAI ở địa chỉ nội bộ, ví dụ Ollama trên máy của doanh nghiệp; cấu hình nào khác thì trợ lý không bật.
+
 Những gì thêm ngày 29/10:
 
 - **Đánh giá của người dùng** (§7) nằm trong schema `assistant`, không gửi tới nhà cung cấp model, và bị xóa cùng hội
@@ -918,10 +921,14 @@ Làm ngày 29/10, không đợi số đo recall với model thật như kế ho�
 lời nó. "hang in theo yeu cau co duoc tra lai khong" (U6-03, model nhỏ không dịch) tìm theo từ khóa chỉ ra "In
 transit" (trùng chữ "in") và vài đoạn máy trạng thái, không có BR-RMA-002 trong 12 kết quả đầu.
 
-- **Khi nào bật.** Chỉ khi `provider=gemini` và trợ lý dùng được. Với `provider=anthropic` (Anthropic không có API
-  embedding), khi không có key, hoặc `ASSISTANT_EMBEDDINGS_ENABLED=false`, tìm kiếm chỉ theo từ khóa, đúng như trước.
-  Trợ lý chạy Claude không dùng embedding của Google kể cả khi có key embedding riêng: từ khóa tìm kiếm sẽ sang nhà
-  cung cấp thứ hai, luồng dữ liệu AQ-01 chưa đồng ý. Profile `test` tắt embedding; `AssistantGoldenSetEval` bật lại.
+- **Khi nào bật.** Khi trợ lý dùng được và nhà cung cấp embedding không phải một bên thứ ba mới:
+  - `embeddings.provider=gemini` chỉ cho trợ lý `provider=gemini`. Trợ lý chạy Claude không dùng embedding của Google
+    kể cả khi có key embedding riêng: từ khóa tìm kiếm sẽ sang nhà cung cấp thứ hai, luồng dữ liệu AQ-01 chưa đồng ý.
+  - `embeddings.provider=openai` (4/11) là máy chủ `openai-compatible`, ví dụ Ollama với `bge-m3` (1024 chiều, đa ngôn
+    ngữ). Trong mạng công ty nó phục vụ mọi trợ lý, kể cả Claude, vốn không có API embedding; trên một host công cộng
+    thì chỉ trợ lý `provider=openai` được dùng. `LOCAL_ONLY` không bao giờ dựng embedding ngoài mạng.
+  - Khi không có key, `ASSISTANT_EMBEDDINGS_ENABLED=false`, hoặc không thỏa các điều trên, tìm kiếm chỉ theo từ khóa,
+    đúng như trước. Profile `test` tắt embedding; `AssistantGoldenSetEval` bật lại.
 - **Model.** `gemini-embedding-001`, 768 chiều, REST `embedContent` cho câu hỏi (`RETRIEVAL_QUERY`) và
   `batchEmbedContents` cho đoạn văn (`RETRIEVAL_DOCUMENT`, tối đa 100 đoạn một lần gọi); key ở header
   `x-goog-api-key`. Port `EmbeddingModel`, adapter `GeminiEmbeddingModel`. Lỗi ra đúng các mã của khung chat: hết hạn
@@ -1751,10 +1758,15 @@ Cách dùng bảng:
 stockflow:
   assistant:
     enabled: ${ASSISTANT_ENABLED:false}
-    provider: ${ASSISTANT_PROVIDER:anthropic}        # hoặc gemini (§3.4)
+    provider: ${ASSISTANT_PROVIDER:anthropic}        # hoặc gemini, hoặc openai: máy chủ chuẩn OpenAI như Ollama (4/11)
     api-key: ${ASSISTANT_API_KEY:}
-    anthropic-api-key: ${ANTHROPIC_API_KEY:}         # chỉ dùng khi provider=anthropic và không có ASSISTANT_API_KEY
-    gemini-api-key: ${GEMINI_API_KEY:}               # chỉ dùng khi provider=gemini và không có ASSISTANT_API_KEY
+    anthropic-api-key: ${ANTHROPIC_API_KEY:}         # key của Anthropic khi không có ASSISTANT_API_KEY, và của model Claude trong routing
+    gemini-api-key: ${GEMINI_API_KEY:}               # tương tự cho Gemini
+    openai-compatible:                               # 4/11; máy chủ của provider openai
+      base-url: ${OPENAI_COMPATIBLE_BASE_URL:http://localhost:11434/v1}   # Ollama trên máy này
+      api-key: ${OPENAI_COMPATIBLE_API_KEY:}         # thường trống với máy chủ nội bộ
+      max-output-tokens: ${OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS:4096}   # max_tokens = min(cái này, max-output-tokens)
+    data-policy: ${ASSISTANT_DATA_POLICY:CLOUD_ALLOWED}   # hoặc LOCAL_ONLY (4/11, §5.5)
     model: ${ASSISTANT_MODEL:claude-opus-5-5}
     daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
     routing:                                         # 29/10; xem "Định tuyến model" dưới đây
@@ -1769,24 +1781,56 @@ stockflow:
     answer-lease: PT15M          # >= request-timeout x 6 (3 lần thử x 2 lần gọi), kiểm lúc khởi động
     refusal-fallback: true
     retention-cron: "0 30 3 * * *"
-    embeddings:                                      # 29/10, §6.4; chỉ Gemini
+    embeddings:                                      # 29/10, §6.4
       enabled: ${ASSISTANT_EMBEDDINGS_ENABLED:true}  # profile test đặt false
-      api-key: ${ASSISTANT_EMBEDDINGS_API_KEY:}      # trống: key của trợ lý Gemini; không bao giờ key Anthropic
+      provider: ${ASSISTANT_EMBEDDINGS_PROVIDER:gemini}   # hoặc openai: máy chủ openai-compatible ở trên (4/11)
+      api-key: ${ASSISTANT_EMBEDDINGS_API_KEY:}      # cho gemini; trống: key của trợ lý Gemini; không bao giờ key Anthropic
       model: ${ASSISTANT_EMBEDDINGS_MODEL:gemini-embedding-001}
       dimensions: ${ASSISTANT_EMBEDDINGS_DIMENSIONS:768}   # 128–3072; đổi model hay số chiều thì embed lại cả kho
     mcp:                                             # 29/10, §7
       enabled: ${ASSISTANT_MCP_ENABLED:false}        # profile local và test bật
     receipt-drafts:                                  # 29/10, §8.1
       enabled: ${ASSISTANT_RECEIPT_DRAFTS_ENABLED:false}   # profile local và test bật
+      model: ${ASSISTANT_RECEIPT_DRAFTS_MODEL:}      # 4/11; trống: model của khung chat. Với openai: một model đọc được ảnh
 ```
 
 Ứng dụng **khởi động được khi không có key**: thiếu key thì log WARN nêu đúng biến cần đặt, và endpoint trả 503
 `ASSISTANT_DISABLED`. `AssistantProperties.toString()` không in key.
 
-**Định tuyến model** (29/10, `ModelRoutingProperties`, `ModelRouter`). Để trống `models` thì không gì thay đổi. Khi có
-danh sách, mọi model dùng chung provider, key và các thiết lập khác (effort, timeout, số token ra); danh sách không
-trộn hai nhà cung cấp, vì chọn key theo từng model chính là chỗ key của bên này bị gửi sang bên kia. `model` không có
-trong danh sách thì khởi động log WARN và câu hỏi bắt đầu ở model đầu của danh sách.
+**Định tuyến model** (29/10, `ModelRoutingProperties`, `ModelRouter`; trộn nhà cung cấp từ 4/11, `ModelCatalog`). Để
+trống `models` thì không gì thay đổi. Khi có danh sách, các model dùng chung các thiết lập khác (effort, timeout, số
+token ra). Một tên có thể nêu nhà cung cấp, `provider/model` (`openai/qwen3:8b`, `gemini/gemini-3.5-flash`); tên không
+có tiền tố là model của `provider`, và tên trùng đúng `model` luôn là model của trợ lý. Tên của một gateway bắt đầu
+bằng tên nhà cung cấp (`anthropic/claude-sonnet` trên OpenRouter) phải viết `openai/anthropic/claude-sonnet`, vì đứng
+một mình nó chỉ thẳng Anthropic. `model` không có trong danh sách thì khởi động log WARN và câu hỏi bắt đầu ở model đầu
+của danh sách.
+
+- **Key chỉ đi tới đúng nhà cung cấp của nó.** `ASSISTANT_API_KEY` thuộc về `provider` của trợ lý và chỉ gửi cho các
+  model của nhà cung cấp đó. Model của nhà cung cấp khác chỉ nhận biến riêng của nhà cung cấp đó (`GEMINI_API_KEY`,
+  `ANTHROPIC_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`), không bao giờ nhận `ASSISTANT_API_KEY`. Trước 4/11 danh sách
+  không được trộn nhà cung cấp chính vì chỗ chọn key theo từng model này; nay nó nằm ở một chỗ (`ModelCatalog`) và có
+  test (`ModelCatalogTest`). `base-url` (proxy) cũng chỉ áp cho `provider` của trợ lý.
+- Model không dùng được (thiếu key riêng, key có dạng của nhà cung cấp khác, endpoint bị chính sách dữ liệu cấm) bị bỏ
+  khỏi danh sách với một WARN lúc khởi động, không làm ứng dụng dừng.
+- Mỗi model có ngày hạn mức của nhà cung cấp của nó: một danh sách `openai/…` rồi `gemini-…` để model Gemini sang một
+  bên tới nửa đêm giờ Thái Bình Dương, model local tới nửa đêm UTC (máy chủ nội bộ không có hạn mức ngày).
+
+**Model chạy trong mạng công ty** (4/11, `provider=openai`). Bất kỳ máy chủ nào nói API chat-completions của OpenAI:
+Ollama, vLLM, LM Studio. Adapter `OpenAiCompatibleLanguageModel` đi qua cùng vòng lặp, cùng tool, cùng lịch sử đã lưu.
+Máy của chủ repo (RTX 4050 6 GB, 23 GB RAM) chạy được model cỡ 4–8B có tool calling cùng `bge-m3`; VPS deploy (2 vCPU,
+4 GB, không GPU) thì không, nên ở đó trợ lý vẫn gọi model cloud. Chọn model local bằng cách chạy bộ câu hỏi chuẩn trên
+nó (không tốn hạn mức). Ollama cần context từ 16k trở lên (`OLLAMA_CONTEXT_LENGTH`), vì riêng system prompt và định
+nghĩa tool đã vài nghìn token. Máy chủ không hiểu `tool_choice: none` có thể vẫn xin tool ở lần gọi cuối; vòng lặp
+đóng câu trả lời như với mọi model làm vậy.
+
+**Chính sách dữ liệu** (4/11, `DataPolicy`). `LOCAL_ONLY` là một bảo đảm: không adapter nào được dựng cho endpoint ngoài
+mạng công ty, cho khung chat, embedding, đọc ảnh và model trong danh sách định tuyến. "Trong mạng" nghĩa là mọi địa chỉ endpoint tới
+được đều private: địa chỉ viết bằng bốn số thập phân (hoặc IPv6) là loopback, private hay link-local; mọi dạng số khác
+(`134744072` chính là 8.8.8.8, `0x08080808`, `010.0.0.1`) bị từ chối. Một tên trông như nội bộ (`localhost`, kết thúc
+`.localhost`, `.internal`, `.local`, hoặc không có dấu chấm như service của Docker Compose) phải phân giải, lúc khởi
+động, ra toàn địa chỉ private; tên không phân giải được thì bị từ chối. Quyết định được chốt một lần cho mỗi URL. Cấu hình vi phạm không làm ứng dụng dừng: trợ lý log WARN và trả 503
+`ASSISTANT_DISABLED`, như khi thiếu key. Đây là nửa kỹ thuật của AQ-01; có được gửi dữ liệu ra ngoài hay không vẫn là
+quyết định của chủ doanh nghiệp.
 
 - Câu hỏi bắt đầu ở model rẻ nhất chưa hết hạn mức. Lần gọi đầu lỗi hết hạn mức, `ASSISTANT_UNAVAILABLE` sau các lần
   thử lại của adapter, hoặc `ASSISTANT_MISCONFIGURED`, thì sang model kế tiếp: một tên model gõ sai trong danh sách chỉ
