@@ -36,7 +36,7 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM eclipse-temurin:21-jre-alpine AS runtime
+FROM eclipse-temurin:25-jre-alpine AS runtime
 
 # SCRUM-495: pull the Alpine security fixes published since the base image was built (Trivy flagged
 # brotli-libs 1.2.0-r1, CVE-2026-111497, fixed in 1.2.1-r0). Re-run on every image build, so the
