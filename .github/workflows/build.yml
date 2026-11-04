@@ -123,7 +123,7 @@ jobs:
         run: python3 tools/ci/coverage_summary.py >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish test report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         # Uploaded even on failure - a red build is when the report is actually wanted.
         if: always()
         with:
@@ -136,7 +136,7 @@ jobs:
       # The generated C4 diagrams and module canvases. Written by ModularityTest, so they always
       # match the code that produced them - which is what makes them worth putting in the report.
       - name: Publish generated architecture docs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: architecture-docs
