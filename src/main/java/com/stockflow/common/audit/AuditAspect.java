@@ -201,7 +201,7 @@ public class AuditAspect {
             Optional<CurrentUser> user = currentUserProvider.current();
             return new AuditEntry(
                     user.map(CurrentUser::userId).orElse(null),
-                    user.map(CurrentUser::username).orElse("system"),
+                    user.map(CurrentUserProvider::auditName).orElse("system"),
                     auditable.action(),
                     auditable.resourceType(),
                     resolveResourceId(auditable, joinPoint, method, result),

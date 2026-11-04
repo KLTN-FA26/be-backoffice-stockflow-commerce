@@ -24,7 +24,7 @@ public class JpaAuditingConfig {
     @Bean
     public AuditorAware<String> auditorAware(CurrentUserProvider currentUserProvider) {
         return () -> Optional.of(currentUserProvider.current()
-                .map(user -> user.username() != null ? user.username() : user.userId().toString())
+                .map(CurrentUserProvider::auditName)
                 .orElse(SYSTEM_AUDITOR));
     }
 }
