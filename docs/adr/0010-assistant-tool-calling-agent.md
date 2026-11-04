@@ -251,6 +251,18 @@ tool đó, và system prompt vẫn kết bằng danh sách quyền của mọi t
 - Chữ số nằm trong một mã của nguồn chỉ làm căn cứ cho số cũng nằm trong mã; số dính chữ (`12oz`) hay nằm giữa gạch
   nối được đọc là một phần của mã.
 
+## Sửa đổi thứ ba ngày 04/11/2026: luồng nghiệp vụ, đánh dấu cách tìm thấy, reranker
+
+- **Luồng nghiệp vụ (`04c-all-flows.md`) có bộ cắt, chỉ mục và kind `FLOW`, nhưng mặc định tắt**
+  (`stockflow.assistant.knowledge.flows`). Tài liệu còn nêu những trạng thái hệ thống không có (phiếu nhập QC_PASSED,
+  POSTED; PO SENT), mà trợ lý được dặn trả lời quy trình chỉ từ đoạn tìm được: bật lúc này là cho nó nói sai như sự thật.
+  Bật khi tài liệu đã khớp máy trạng thái và đo với embedding cho thấy quy định không bị đẩy ra. `04-data-flows.md` (thiết
+  kế phân tán cũ) không vào kho.
+- **Mỗi đoạn kèm `foundBy`** (named, both, words, meaning), và mô tả tool nói nghĩa của nó.
+- **Câu hỏi gốc cạnh từ khóa (multi-query) và reranker (port `Reranker`, adapter text-embeddings-inference) có sẵn, mặc
+  định tắt**; reranker chỉ trong mạng công ty. Mọi tham số xếp hạng chỉnh được và chỉ đổi theo `RetrievalEval`, phép đo
+  phần tìm không tốn token chat.
+
 ## Hệ quả
 
 - Không module nào khác phải đổi. Ngoại lệ là các method `api` được thêm khi một use case cần dữ liệu

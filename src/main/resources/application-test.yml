@@ -66,6 +66,10 @@ stockflow:
       # Gemini key would otherwise send the corpus to Google from every test context. KnowledgeEmbeddingIntegrationTest
       # uses a fake model; AssistantGoldenSetEval switches embeddings back on.
       enabled: false
+    # The flows are indexed in tests, off in production until their document is corrected (design §6.1): the parser,
+    # the index and the golden set's flow cases stay tested. RetrievalEval switches them off to compare.
+    knowledge:
+      flows: ${ASSISTANT_KNOWLEDGE_FLOWS:true}
     mcp:
       # The MCP endpoint's tests need it; it is off by default only for the deployments (application.yml, AQ-17).
       enabled: true

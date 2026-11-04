@@ -736,7 +736,7 @@ thấy mọi thứ, như các màn hình. Vì vậy test phân quyền và bộ 
 | `AssistantControllerTest`, `IdempotencyFilterStreamTest` | hai endpoint hỏi dùng chung một bucket rate limit; endpoint đánh giá (29/10) mang guard CREATE scope OWN như endpoint hỏi, và khách hàng bị từ chối trước khi đọc hay ghi gì; filter để nguyên request luồng (đường dẫn `/stream`, hoặc `Accept` chỉ có `text/event-stream`); request JSON vẫn được bảo vệ kể cả khi `Accept` có thêm `text/event-stream`; handler chạy bất đồng bộ không bị lưu và key được nhả |
 | `AssistantPropertiesTest`, `AssistantModelConfigTest` | mỗi provider chỉ lấy biến key của chính nó; key có dạng của nhà cung cấp kia không bao giờ được gửi đi |
 | `DeployConfigurationTest.theProxyDoesNotCutAnAnswer` | nginx: `location /api/v1/assistant/` có `proxy_read_timeout 900s`, `proxy_buffering off`, `proxy_cache off`, và 900 giây bằng `answer-lease`; mọi location khác vẫn có timeout của mình |
-| `AssistantGoldenSetHarnessTest` | cả 78 ca của bộ câu hỏi chuẩn với oracle, kể cả ba ca gọi nhiều tool trong một bước (PAR-*), đi qua guard thật trên thread con; số request model đếm được ở mỗi ca bằng số bước của oracle cộng một câu trả lời mỗi câu hỏi (§10) |
+| `AssistantGoldenSetHarnessTest` | cả 92 ca của bộ câu hỏi chuẩn với oracle, kể cả ba ca gọi nhiều tool trong một bước (PAR-*), đi qua guard thật trên thread con, và 14 ca tìm luồng hay câu không quy định nào trả lời (U6-09…23; luồng bật trong profile test); số request model đếm được ở mỗi ca bằng số bước của oracle cộng một câu trả lời mỗi câu hỏi (§10) |
 | `GoldenSetTest`, `GoldenSelectionTest`, `GoldenResultsTest`, `GoldenReportTest`, `OracleModelTest`, `PlaygroundSeedDatabaseTest` | luật của bộ câu hỏi (ca từ chối không đòi tool nào, 8–12 ca smoke); chọn ca và lỗi khi gõ nhầm; chạy tiếp từ file kết quả; ca NOT_RUN không vào chỉ số nào; oracle theo chuỗi và câu hỏi trước; seed playground chỉ ghi vào `stockflow_ai` |
 | `NoRoleNameAccessTest` | không chỗ nào dùng tên role để quyết định quyền; các dòng của trợ lý được cho phép kèm lý do: vai trò tin nhắn của SDK, role đưa vào ngữ cảnh, và từ 29/10 nguồn giá CUSTOMER trong mô tả `getCustomerPrice` (không phải một role) |
 
@@ -780,7 +780,8 @@ Những gì thêm ngày 29/10:
   thoại qua cascade của `message`. Việc kiểm số, bảng và câu hỏi gợi ý chạy trong ứng dụng, không gửi gì đi.
 - **Tìm theo nghĩa** (§6.4): khi `provider=gemini` và embedding bật, Google nhận thêm toàn bộ đoạn văn của kho tri
   thức (tài liệu nghiệp vụ, không có dữ liệu cá nhân) khi khởi động lần đầu hoặc khi tài liệu đổi, và từ khóa tìm
-  kiếm model viết cho `searchKnowledge` ở mỗi lần tìm. Đó là cùng nhà cung cấp đã nhận cả hội thoại, không có bên thứ
+  kiếm model viết cho `searchKnowledge` ở mỗi lần tìm; với `knowledge.multi-query` bật (4/11, mặc định tắt), cả câu hỏi
+  nguyên văn của người dùng. Reranker (mặc định tắt) chỉ được dùng khi chạy trong mạng công ty. Đó là cùng nhà cung cấp đã nhận cả hội thoại, không có bên thứ
   ba mới; với gói miễn phí, tài liệu nghiệp vụ thật cũng có thể bị dùng để cải thiện sản phẩm (AQ-01). Với
   `provider=anthropic` không có gì gửi sang Google.
 - **Ảnh phiếu giao hàng** (§8.1) cũng rời hệ thống, khi endpoint được bật (mặc định tắt). Nhà cung cấp model nhận ảnh
@@ -905,6 +906,41 @@ hình nào của họ cho thấy trạng thái một đơn hay cho biết số �
 | `business-design/05-business-rules.md` | một dòng quy định (bỏ cột "Enforced in" và WBS) | `BR-RMA-002` |
 | `business-design/01-ubiquitous-language.md` | một dòng có thuật ngữ in đậm | thuật ngữ |
 | `business-design/03-state-machines.md` | mục cấp 2, cắt tiếp theo mục cấp 3, rồi thành đoạn tối đa 1.400 ký tự ở ranh giới đoạn văn / dòng bảng / dòng (bảng bị cắt thì lặp lại dòng tiêu đề) | `9. Order — order-service`, `9. Order — order-service (2)`, `9. Order — order-service › Who may cancel, and until when` |
+| `business-design/04c-all-flows.md` (tiếng Việt, 4/11; **chỉ khi `knowledge.flows` bật, mặc định tắt**) | mục cấp 2 có mã luồng, cắt như máy trạng thái; bỏ sơ đồ Mermaid, dòng WBS, cột "Ghi vào" (tên bảng, event), ghi chú "Đã cài" và việc ghi sổ của hệ thống (`outbox_event`, `processed_event`) | `F-PO`, `F-CNT (2)`, `F-PROD › Nhánh gia công ngoài …`; tiêu đề `F-PO — Đơn mua hàng gửi nhà cung cấp (Nhập hàng)` |
+
+**Luồng nghiệp vụ (FEAT-9, 4/11): làm xong, mặc định tắt.** `stockflow.assistant.knowledge.flows`
+(`ASSISTANT_KNOWLEDGE_FLOWS`) bật thì 04c được đánh chỉ mục: 20 luồng `F-*`, 3 luồng ngoại lệ `X-*` và hai luồng nền
+tảng nhân viên dùng (`P-CHAT` đặt hàng hộ từ chat, `P-NOTI` gửi lại thông báo), kind `FLOW` (`V20261104000200` mở rộng
+`ck_knowledge_chunk_kind`); 197 đoạn cả kho (166 khi tắt). Bỏ `P-PERM` và `P-RPT`: chúng tả cách các service của thiết
+kế phân tán cũ đăng ký quyền và dựng read model (ADR-0005). Tắt thì đoạn luồng đã có bị xóa ở lần khởi động sau, và mô
+tả tool không nhắc tới luồng. Profile `test` bật, để bộ cắt, chỉ mục và các ca luồng của bộ câu hỏi chuẩn luôn được
+kiểm.
+
+Vì sao tắt, theo rà soát 4/11:
+
+- **Tài liệu luồng nêu những gì hệ thống không có.** Phiếu nhập COUNTING, COUNTED, QC_PASSED, QC_QUARANTINED, POSTED (F-RCP;
+  `GoodsReceiptStatus` và 03 có DRAFT, CONFIRMED, IN_QC, IN_PUTAWAY, CLOSED, CANCELLED); PO "APPROVED → SENT" (F-PO, không
+  có SENT); đơn "→ RTO" (F-RTO); F-RMA có nhãn chiều về; F-CAT còn catalog-service và Elasticsearch; X-SHORT (1/2) cho
+  tách đơn, huỷ dòng mà (2/2) nói chưa làm. Câu "phiếu nhập có những trạng thái nào" bằng tiếng Việt tìm theo từ khóa ra
+  F-RCP trước máy trạng thái tiếng Anh, và trợ lý sẽ kể QC_PASSED, POSTED. Mô tả tool (khi bật) dặn: luồng tả các bước
+  theo thiết kế, trạng thái nào tồn tại là việc của máy trạng thái; nhưng lời dặn không thay được một tài liệu đúng.
+- **Từ tiếng Việt kéo luồng vào mọi câu hỏi tiếng Việt.** Tìm theo từ khóa là OR trên từng âm tiết, bỏ dấu: "nhân" khớp
+  "nhận", "năm" khớp "nằm", "phép" khớp "cho phép". `RetrievalEval` chỉ từ khóa (22 ca, 44 lần tìm): bật luồng thì 3 câu
+  không quy định nào trả lời, hỏi nguyên văn, đều nhận 5 đoạn luồng (nhiễu 0,50 so với 0,17 khi tắt); recall của các quy
+  định không đổi (10/18 cả hai cách: từ khóa tiếng Anh vẫn tìm ra quy định, câu hỏi tiếng Việt thì không, có hay không có
+  luồng). Khi có embedding, một luồng khớp cả chữ lẫn nghĩa được 2/61 điểm gộp, hơn một quy định tiếng Anh chỉ khớp nghĩa
+  (1/61), nên có thể đẩy quy định ra khỏi top 5: chưa đo.
+- `04-data-flows.md` bị bỏ hẳn khỏi kho: nó tả thiết kế phân tán (hai saga, giỏ hàng bán lẻ, PAYMENT_FAILED, ISSUED,
+  DISCREPANCY), không còn đúng phần nào đáng tìm.
+
+Bật khi: (1) chủ tài liệu sửa 04c cho khớp `03-state-machines.md` (danh sách trên là điểm bắt đầu); (2) `RetrievalEval`
+có embedding, chạy với `ASSISTANT_KNOWLEDGE_FLOWS=true` và `false`, cho thấy recall của quy định không giảm; (3) nên có
+thêm tìm theo cụm âm tiết liền nhau (`nhân <-> viên`) để câu hỏi tiếng Việt không khớp lẻ từng âm tiết. Khi đại trùng tu
+bỏ module sản xuất, F-SAMPLE và F-PROD theo tài liệu: tài liệu đổi thì chỉ mục đổi theo, không cần sửa code.
+
+**Quay về bản build cũ sau khi đã bật luồng.** Bản trước P4 đọc mọi dòng `knowledge_chunk` và không biết kind `FLOW`:
+mọi lần tìm khớp một luồng sẽ lỗi. Trước khi quay về, chạy `DELETE FROM assistant.knowledge_chunk WHERE kind = 'FLOW'`.
+Từ P4, mỗi bản chỉ đọc các kind nó biết (`KnowledgeRepositoryAdapter`), nên các bản sau không gặp lại chuyện này.
 
 `KnowledgeParser` cắt theo cấu trúc của chính tài liệu, nên một chunk luôn là một quy định trọn vẹn. Trước khi
 rà soát, máy trạng thái được giữ cả mục và cắt ở 1.500 ký tự đầu: mục "9. Order" dài 17.600 ký tự, bảng "ai
@@ -912,14 +948,14 @@ rà soát, máy trạng thái được giữ cả mục và cắt ở 1.500 ký 
 
 ### 6.2 Đánh chỉ mục
 
-Maven chép ba file vào `classpath:knowledge/` khi build (`pom.xml`, phần `<resources>`). `KnowledgeService`
+Maven chép bốn file vào `classpath:knowledge/` khi build (`pom.xml`, phần `<resources>`). `KnowledgeService`
 đánh chỉ mục khi có `ApplicationReadyEvent`: chèn anchor mới, ghi lại chunk có `content_hash` đổi, xóa anchor
 không còn; khởi động bình thường không ghi gì. Hai instance khởi động cùng lúc được tuần tự hóa bằng
 `pg_advisory_xact_lock` (không dùng Redis, nên vẫn chạy khi Redis lỗi).
 
 - **Tài liệu thiếu trong bản build** (đổi tên, include của `pom.xml` không còn khớp): chunk của nó bị xóa và
   log ERROR, thay vì để quy định cũ bị trích mãi.
-- **Mỗi tài liệu một transaction, lỗi riêng từng tài liệu**: một tài liệu lỗi không chặn hai tài liệu kia.
+- **Mỗi tài liệu một transaction, lỗi riêng từng tài liệu**: một tài liệu lỗi không chặn các tài liệu khác.
 - **Bản build cũ không ghi đè bản mới**: `assistant.knowledge_source` lưu thời điểm build (từ
   `build-info.properties`) đã đánh chỉ mục mỗi tài liệu; một instance cũ khởi động lại sau khi bản mới đã
   chạy (triển khai lần lượt, khởi động lại sau sự cố) để nguyên tài liệu đó.
@@ -931,11 +967,21 @@ Sau chỉ mục từ khóa, các đoạn được embed ở nền (§6.4).
 
 `KnowledgeRepositoryAdapter.search`: câu truy vấn được cắt thành từ (`KnowledgeSearch.words`: chỉ chữ và số, tối đa
 16 từ) rồi nối bằng **OR** cho `to_tsquery('simple', …)`, vì câu hỏi thường có những từ mà quy định không dùng. Điểm =
-`ts_rank_cd` + 0,5 × độ tương đồng trigram của tiêu đề + 10 nếu câu hỏi nêu đúng anchor. Lấy 5 kết quả.
+`ts_rank_cd` + 0,5 × độ tương đồng trigram của tiêu đề + 10 nếu câu hỏi nêu đúng anchor (mã quy định `BR-*` hay, từ
+4/11, mã luồng `F-*`/`X-*`). Lấy 5 kết quả.
+
+**Hư từ tiếng Việt bị bỏ (4/11).** Cấu hình `simple` không có danh sách từ dừng, và tìm là OR, nên "có", "được",
+"không" trong câu hỏi khớp gần như mọi đoạn tiếng Việt. `KnowledgeSearch` bỏ hư từ **theo đúng chữ người gõ**: có dấu thì
+bỏ đúng những từ có dấu ("có" đi, "cỡ" và "cờ" ở lại); không dấu thì chỉ bỏ những từ mà không cách đọc nào khác là từ kho
+dùng: giữ `co` (cỡ, cờ QC), `cua` (cửa), `roi` (hàng rời), `toi`, `da` (tối đa, tới), `lai` (lãi), `di` (di chuyển), `ra`
+(rà soát), `nhe` (hàng nhẹ), `cho` (chờ duyệt), `bao` (báo giá), `cung` (nhà cung cấp), `ban` (bán), `trong` (vị trí trống),
+`thoi` (thời gian), `tu` (từ chối), `de` (đề xuất), `ma` (mã).
 Đoạn đã tối đa 1.400 ký tự; tool chỉ cắt khi vượt 1.500 và khi đó đánh dấu `cut: true`.
 
-Quy định viết bằng tiếng Anh, câu hỏi bằng tiếng Việt: mô tả tool yêu cầu model tìm bằng từ khóa tiếng Anh. Khi có
-embedding, xếp hạng này được gộp với xếp hạng theo nghĩa (§6.4).
+Quy định, thuật ngữ và máy trạng thái viết bằng tiếng Anh, luồng bằng tiếng Việt: mô tả tool bảo model tìm bằng từ
+khóa tiếng Anh và thêm từ tiếng Việt khi hỏi một quy trình đi thế nào. Khi có embedding, xếp hạng này được gộp với xếp
+hạng theo nghĩa (§6.4). Mỗi đoạn trả về có `foundBy`: `named` (câu hỏi nêu mã), `both`, `words` hay `meaning`; đoạn
+chỉ nghĩa tìm thấy không chung chữ nào với lần tìm, là đoạn cần đọc kỹ nhất trước khi dựa vào.
 
 **Trích dẫn được kiểm, không tin suông.** `AnswerSources.citations` chỉ báo một anchor khi câu trả lời
 nêu nó **và** lần tìm của chính câu trả lời đó đã trả về nó.
@@ -978,13 +1024,35 @@ transit" (trùng chữ "in") và vài đoạn máy trạng thái, không có BR-
   thấy quy định và kiểm trích dẫn không bị qua mặt. Hệ số 3 là giá trị đầu, chỉnh theo recall@5.
 - **Lỗi.** Mọi lỗi khi embed câu hỏi → lần đó tìm theo từ khóa, rồi tạm ngưng embed câu hỏi 2 phút (lỗi tạm thời)
   hoặc 1 giờ (hết hạn mức ngày, bị từ chối key/model): một lần chờ và một dòng log, không phải mỗi lần tìm.
-- **Vì sao chưa dùng pgvector.** Khoảng 170 đoạn: mỗi lần tìm đọc mọi vector (vài ms) và so trong Java (dưới 1 ms);
+- **Thêm câu hỏi gốc (multi-query, 4/11, mặc định tắt).** `stockflow.assistant.knowledge.multi-query=true`: tool hỏi
+  model thêm tham số `question` (câu người dùng gõ, nguyên văn; dài hơn 1.000 ký tự thì chỉ lấy phần đầu, không từ chối),
+  lần tìm embed cả nó cạnh từ khóa và gộp ba xếp hạng; vị trí theo nghĩa của một đoạn là vị trí tốt nhất của nó. Tắt thì
+  tool không hỏi tham số đó: model không phải chép câu hỏi cho không. Bật thì nhà cung cấp embedding nhận thêm câu hỏi
+  nguyên văn ở mỗi lần tìm (§5.5): cùng nhà cung cấp, không có bên thứ ba mới. Chỉ bật khi `RetrievalEval` cho thấy recall
+  tăng mà nhiễu không tăng.
+- **Reranker (4/11, mặc định tắt).** Port `Reranker`, adapter `TeiReranker` gọi text-embeddings-inference
+  (`POST /rerank`, model `bge-reranker-v2-m3`, chạy CPU trong Docker). Đọc từng đoạn cùng câu hỏi (cross-encoder), xếp
+  lại tối đa 20 đoạn sau khi gộp (tối đa 32, lô mặc định của TEI; mỗi xếp hạng cũng lấy sâu bằng chừng ấy), quy định
+  được nêu tên vẫn đứng đầu, lấy 5; câu hỏi nêu đủ 5 mã thì không hỏi reranker. Hỏi bằng câu hỏi gốc nếu có, không thì từ
+  khóa. Chỉ dùng reranker trong mạng công ty: ngoài mạng là một bên thứ ba mới. Lỗi hay quá `timeout` (5 giây) thì giữ
+  thứ tự đã gộp và không hỏi lại trong 2 phút. Không bỏ đoạn nào: ngưỡng "nổi bật" vẫn quyết đoạn nào được tính.
+- **Cấu hình được, để đo.** `standout` (3,0), `fusion-depth` (10), `multi-query`, `reranker.{base-url,timeout,depth}`
+  trong `stockflow.assistant.knowledge`; mặc định đúng như trước khi chỉnh được. Đổi giá trị chỉ theo số đo của
+  `RetrievalEval` (§10.2).
+- **Vì sao chưa dùng pgvector.** Khoảng 200 đoạn: mỗi lần tìm đọc mọi vector (vài ms) và so trong Java (dưới 1 ms);
   lời gọi embed câu hỏi còn tốn hơn. pgvector buộc đổi image `postgres:16-alpine` ở `docker-compose.yml`,
   `deploy/docker-compose.yml`, `support/SharedPostgres` và các test nâng cấp migration. Nên chuyển khi kho vượt vài
   nghìn đoạn (khoảng 15 MB vector mỗi lần tìm ở 5.000 đoạn) hoặc phần đọc vector chiếm vài chục ms một lần tìm; khi đó
   đổi cột tại chỗ (`ALTER ... TYPE vector(768) USING embedding::vector(768)`) và thêm index HNSW.
-- **Đo.** Chạy bộ câu hỏi chuẩn hai lần, một lần có embedding và một lần với `ASSISTANT_EMBEDDINGS_ENABLED=false`, để so
-  recall@5. Chưa chạy.
+- **Đo.** `RetrievalEval` (§10.2) đo riêng phần tìm, không gọi model chat: mỗi ca có `expectRetrieved` hoặc
+  `expectNoPassage`, tìm hai lần (câu hỏi gốc làm truy vấn; từ khóa của oracle, kèm câu hỏi cho multi-query), trên lưới
+  cấu hình: chỉ từ khóa; theo nghĩa với `standout` ∈ {2; 2,5; 3; 3,5} × `fusion-depth` ∈ {10; 20}, có và không có câu
+  hỏi gốc; reranker khi có. Báo recall@5, MRR, trên các câu không quy định nào trả lời tỉ lệ lần tìm có đoạn theo nghĩa
+  và tỉ lệ có bất kỳ đoạn nào, và số lần tìm bị giảm cấp (nhà cung cấp lỗi, đang tạm ngưng): một dòng có lần tìm giảm cấp
+  không phải số đo của cấu hình đó. Số đo chỉ từ khóa (4/11, 22 ca, 44 lần tìm), luồng bật: recall@5 0,803, MRR 0,683;
+  luồng tắt: 0,224 và 0,160 (các ca luồng không còn gì để tìm). Câu hỏi tiếng Việt về quy định tiếng Anh không tìm ra quy
+  định bằng từ khóa, có hay không có luồng: đúng chỗ tìm theo nghĩa và reranker phải lấp. Lần đo có embedding chờ Ollama
+  với `bge-m3` (miễn phí) hoặc một lần dùng hạn mức embedding của Gemini.
 
 ---
 
@@ -1542,9 +1610,11 @@ thấy phần nào là quyết định của doanh nghiệp (§13 AQ-15); mặc 
 
 ### 10.1 Bộ câu hỏi chuẩn
 
-`src/test/resources/assistant/golden-set.json`, **78 ca** (41 ca ngày 25/10, thêm 22 ca ngày 28/10, 11 ca ngày
-29/10 và 4 ca ngày 4/11): U1 (4), tồn kho S (9), U3 đơn hàng (14), PO P (7), doanh số R (6), U4 (4), U5 (4), U6 quy định
-(8), U7 catalog (3), U2 đề xuất (4), không được làm M (4), U14 giá theo khách (2), U15 công nợ (2), U16 hàng đợi của kho
+`src/test/resources/assistant/golden-set.json`, **92 ca** (41 ca ngày 25/10, thêm 22 ca ngày 28/10, 11 ca ngày
+29/10 và 18 ca ngày 4/11): U1 (4), tồn kho S (9), U3 đơn hàng (14), PO P (7), doanh số R (6), U4 (4), U5 (4), U6 quy định
+và luồng (22: 11 ca luồng tiếng Việt có dấu, không dấu và nêu mã, chỉ chạy được khi luồng bật; 3 ca không quy định nào
+trả lời), U7 catalog
+(3), U2 đề xuất (4), không được làm M (4), U14 giá theo khách (2), U15 công nợ (2), U16 hàng đợi của kho
 (4), PAR nhiều tool trong một bước (3). Có 17 ca từ chối và 10 ca smoke.
 
 Mỗi ca có:
@@ -1554,7 +1624,11 @@ Mỗi ca có:
 - dữ kiện: giá trị, hoặc câu SQL chạy ngay trước khi hỏi;
 - giá trị bị cấm: dữ liệu persona không được thấy;
 - câu SQL bất biến: dữ liệu không được đổi;
-- anchor phải được truy xuất;
+- anchor phải được truy xuất (đúng anchor đó);
+- `expectNoPassage` (4/11): không quy định hay luồng nào trả lời câu hỏi; câu trả lời không được nêu mã nào
+  (`GoldenScorer.namedRules`, gồm cả mã luồng) và không nêu đoạn nào đã được tìm thấy (một mục máy trạng thái, một thuật
+  ngữ); `RetrievalEval` đo xem phần tìm theo nghĩa có trả về gì không. Oracle của 3 ca này tìm bằng từ khóa tiếng Anh
+  không có trong kho; cùng câu hỏi tìm nguyên văn thì từ khóa tiếng Việt ra nhiễu (§6.1), việc của `RetrievalEval`;
 - `oracle` cho harness.
 
 Ba trường thêm ngày 28/10 (định dạng ghi ở javadoc của `GoldenCase`):
@@ -1634,8 +1708,15 @@ SO-20991231-900001 ở HCM trong `GoldenFixtures`.
 | Không có con số không căn cứ | mọi số ≥ 10 trong chữ của câu trả lời (trừ năm và số thứ tự danh sách) có trong kết quả tool, câu hỏi hoặc ngữ cảnh, đọc như người Việt viết ("35 triệu", số làm tròn theo độ chính xác đã viết), hoặc là phép tính mà prompt cho phép trong cùng một record của kết quả tool (số dòng, tổng hay hiệu hai số, đặt trừ đã giao trừ đã đóng); từ 29/10 là `AnswerNumbers`, cùng phép kiểm chạy trên mọi câu trả lời (§7) | ≥ 98% câu trả lời |
 | Chọn tool | tool kỳ vọng ⊆ tool đã gọi; không gọi tool bị cấm | ≥ 90% |
 | Từ chối đúng | ca từ chối có câu trả lời và không lộ dữ liệu | ≥ 95% |
-| Độ chính xác trích dẫn | mọi mã `BR-…` câu trả lời nêu đều có trong kết quả tìm kiếm của nó | ≥ 95% |
+| Độ chính xác trích dẫn | mọi mã `BR-…`, `F-…`, `X-…` câu trả lời nêu đều có trong kết quả tìm kiếm của nó | ≥ 95% |
 | Recall@5 | anchor kỳ vọng nằm trong 5 kết quả tìm kiếm | ≥ 85%; tìm theo nghĩa (§6.4) đã làm từ 29/10 mà không đợi số đo này, và số đo này dùng để chỉnh nó |
+| Không bịa quy định | ca `expectNoPassage`: câu trả lời không nêu mã nào | trong "mọi kiểm tra của ca" |
+
+**Đo riêng phần tìm (`RetrievalEval`, 4/11).** Không gọi model chat, nên chỉ tốn embedding (bằng 0 khi embedding chạy
+bằng Ollama). Chạy trên Testcontainers với `-Dtest=RetrievalEval -Dassistant.eval=true`; javadoc của lớp có lệnh cho
+Gemini và cho Ollama cùng reranker. Báo cáo ở `target/assistant-eval/retrieval/`: mọi cấu hình xếp theo recall@5 rồi
+MRR, mọi lần tìm của cấu hình tốt nhất, và `results.csv`. Đây là phép đo, không phải cổng: không có ngưỡng nào làm lần
+chạy hỏng. Giá trị mặc định của `stockflow.assistant.knowledge` chỉ đổi theo báo cáo này (§6.4).
 | Độ trễ p50/p95, token | đo và báo cáo | không đặt ngưỡng |
 | Số request model | lượt ASSISTANT của ca, trừ lượt đóng do ứng dụng tự viết | đo và báo cáo, không đặt ngưỡng |
 
@@ -1656,7 +1737,7 @@ Ba điểm cần biết khi đọc báo cáo đầu tiên với model thật:
 
 ### 10.3 Cách chạy
 
-**Harness, trong mọi `mvn test`:** `AssistantGoldenSetHarnessTest` chạy cả 78 ca với `OracleModel`. Oracle
+**Harness, trong mọi `mvn test`:** `AssistantGoldenSetHarnessTest` chạy cả 93 ca với `OracleModel`. Oracle
 gọi đúng tool (hoặc chuỗi tool) mà ca chỉ định, câu hỏi trước rồi tới câu hỏi của ca, rồi trả lời bằng chính kết
 quả tool. Nhờ vậy bộ câu hỏi kiểm các lớp bên dưới model: fixture tồn tại, câu SQL dữ kiện khớp với tool, và kết
 quả tool của một persona không bao giờ chứa thứ màn hình giấu họ. Harness cũng kiểm số request model của mỗi ca
@@ -1820,6 +1901,15 @@ stockflow:
       api-key: ${ASSISTANT_EMBEDDINGS_API_KEY:}      # cho gemini; trống: key của trợ lý Gemini; không bao giờ key Anthropic
       model: ${ASSISTANT_EMBEDDINGS_MODEL:gemini-embedding-001}
       dimensions: ${ASSISTANT_EMBEDDINGS_DIMENSIONS:768}   # 128–3072; đổi model hay số chiều thì embed lại cả kho
+    knowledge:                                       # 4/11, §6.4; đổi chỉ theo RetrievalEval (§10.2)
+      standout: ${ASSISTANT_KNOWLEDGE_STANDOUT:3.0}  # 0,5–10
+      fusion-depth: ${ASSISTANT_KNOWLEDGE_FUSION_DEPTH:10}   # 5–50
+      multi-query: ${ASSISTANT_KNOWLEDGE_MULTI_QUERY:false}  # bật thì tool hỏi thêm câu hỏi gốc
+      reranker:
+        base-url: ${ASSISTANT_RERANKER_BASE_URL:}    # TEI trong mạng công ty; trống: không rerank
+        timeout: ${ASSISTANT_RERANKER_TIMEOUT:PT5S}
+        depth: ${ASSISTANT_RERANKER_DEPTH:20}        # 5–32
+      flows: ${ASSISTANT_KNOWLEDGE_FLOWS:false}      # 04c-all-flows.md; profile test bật (§6.1)
     mcp:                                             # 29/10, §7
       enabled: ${ASSISTANT_MCP_ENABLED:false}        # profile local và test bật
     receipt-drafts:                                  # 29/10, §8.1
@@ -1915,8 +2005,9 @@ Playground (`scripts\env.ps1`) đặt `ASSISTANT_MODELS` = `ASSISTANT_MODEL`, r�
 các câu sau sang model kế tiếp, không còn ngày chết; câu nào model đầu không trả lời được thì model sau trả lời lại.
 Bộ câu hỏi chuẩn vẫn đo một model (`ASSISTANT_MODEL`, §10.3).
 
-**Tìm theo nghĩa** (§6.4): lần khởi động đầu gửi khoảng 170 đoạn (4 request); các lần sau không gửi gì nếu tài liệu
-không đổi; mỗi lần tìm quy định 1 request, trong hạn mức riêng của model embedding.
+**Tìm theo nghĩa** (§6.4): lần khởi động đầu gửi khoảng 170 đoạn (4 request; khoảng 200 đoạn, 4 request, khi bật
+luồng); các lần sau không gửi gì nếu tài liệu không đổi; mỗi lần tìm quy định 1 request (2 với multi-query), trong hạn
+mức riêng của model embedding.
 
 **MCP** (`stockflow.assistant.mcp.enabled`, biến môi trường `ASSISTANT_MCP_ENABLED`): mặc định tắt, và khi tắt thì
 endpoint MCP (§7) không có, trả 404. Profile `local` (máy dev, playground) và `test` bật. Endpoint không gọi model nên
@@ -2378,11 +2469,12 @@ Còn mở:
   mức còn lại và danh sách khách nợ quá hạn chưa có (cần method mới trong `order :: api` và `payment :: api`); giá không
   có ngày hiệu lực (schema không có); hai tool hàng đợi chưa lọc theo mã kho (`warehouse :: api` chưa tra kho theo mã);
   khối `picking` chỉ có dòng thiếu, không có số đã nhặt hay đã trả lại (`getOrderPicking` vẫn có).
-- **Tìm theo nghĩa:** hệ số 3 của ngưỡng "nổi bật" và độ sâu gộp 10 chưa đo, eval nên chỉnh; đoạn chỉ tìm thấy theo
-  nghĩa chưa được đánh dấu trong kết quả tool; báo cáo eval chưa ghi lần tìm nào có xếp hạng theo nghĩa tham gia; một
-  ca "không quy định nào trả lời" cần một trường mới của scorer; lần embed câu hỏi vẫn dùng read timeout 10 giây mặc
-  định (lần tạm ngưng giới hạn việc treo ở một lần chờ); pgvector khi kho vượt vài nghìn đoạn; FEAT-9 (luồng 04c) chưa
-  làm.
+- **Luồng nghiệp vụ** (§6.1): mặc định tắt cho tới khi 04c được sửa khớp máy trạng thái và đo với embedding; tìm theo
+  cụm âm tiết tiếng Việt chưa làm.
+- **Tìm theo nghĩa:** hệ số 3 của ngưỡng "nổi bật" và độ sâu gộp 10 chưa đo với embedding (`RetrievalEval` đã có từ
+  4/11, mới chạy chỉ từ khóa); lần embed câu hỏi vẫn dùng read timeout 10 giây mặc định của Gemini (lần tạm ngưng giới
+  hạn việc treo ở một lần chờ); pgvector khi kho vượt vài nghìn đoạn. Đã làm 4/11: đánh dấu `foundBy`, trường
+  `expectNoPassage`, FEAT-9 (luồng 04c và 04), reranker và multi-query (mặc định tắt, chờ số đo).
 - **MCP:** không SSE, resources hay prompts; không OAuth cho client (token hết hạn phải dán lại); chưa nói phiên bản
   `2025-11-25` (client hỏi bản đó nhận `2025-06-18`); không `structuredContent`, `outputSchema`; chưa có quyền riêng
   `assistant-mcp` (AQ-17); CORS dùng

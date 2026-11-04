@@ -5,6 +5,7 @@ import com.stockflow.assistant.internal.domain.KnowledgeChunk;
 import com.stockflow.assistant.internal.domain.KnowledgeParser;
 import com.stockflow.assistant.internal.domain.KnowledgeRepository;
 import com.stockflow.assistant.internal.domain.KnowledgeSearch;
+import com.stockflow.assistant.internal.domain.Reranker;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import jakarta.annotation.PreDestroy;
@@ -26,6 +27,7 @@ import java.text.Normalizer;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -50,15 +52,22 @@ import java.util.function.BiFunction;
  * has its chunks deleted rather than left to be cited forever. A document a newer build indexed last is left alone:
  * an older instance starting after it must not put the older rules back ({@code assistant.knowledge_source}).</p>
  *
- * <p><b>Searched by words and by meaning</b> (design §6.4). The rules and the glossary are in English and the staff
- * ask in Vietnamese: "hang in theo yeu cau co duoc tra lai khong" shares no word with BR-RMA-002, and by keyword finds
- * "In transit" on the word "in". With an {@link EmbeddingModel} available, a search ranks the passages by keyword as
- * before and by meaning — the passages that stand out in cosine similarity to the question's vector
+ * <p><b>Searched by words and by meaning</b> (design §6.4). The rules and the glossary are in English, the flows in
+ * Vietnamese, and the staff ask in Vietnamese: "hang in theo yeu cau co duoc tra lai khong" shares no word with
+ * BR-RMA-002, and by keyword finds "In transit" on the word "in". With an {@link EmbeddingModel} available, a search
+ * ranks the passages by keyword as before and by meaning — the passages that stand out in cosine similarity to the
+ * question's vector
  * ({@link KnowledgeSearch#nearest}) — the best {@value #FUSION_DEPTH} of each, and fuses the two rankings
- * ({@link KnowledgeSearch#fuse}). Ten, not fifty: over about 170 passages the fifty nearest are a third of the corpus,
- * and a keyword hit on a common word would often collect a second share from them and push the passage that means the
+ * ({@link KnowledgeSearch#fuse}). Ten, not fifty: over about 200 passages the fifty nearest are a quarter of the
+ * corpus, and a keyword hit on a common word would often collect a second share from them and push the passage that means the
  * question out of the five shown. The question is embedded outside any transaction, so no database connection waits on
  * the provider, and once: the last {@value #REMEMBERED_QUESTIONS} vectors are kept.</p>
+ *
+ * <p><b>What the search may add, each off until the retrieval eval shows it helps</b> ({@link KnowledgeProperties},
+ * design §10.2): the user's question embedded beside the search terms, a third ranking in the fusion; and a reranker
+ * reading the fused passages with the question ({@link Reranker}), the named rules kept first. A reranker that fails or
+ * is slow leaves the fused order, and is not asked again for {@link #PAUSE_AFTER_FAILURE}. Each passage says how it was
+ * found ({@link KnowledgeSearch.FoundBy}).</p>
  *
  * <p><b>Any failure to embed the question searches by keyword alone</b>, exactly as without embeddings, and pauses
  * embedding questions — {@link #PAUSE_AFTER_FAILURE} after a failure that may pass (a 5xx, a timeout, the per-minute
@@ -66,7 +75,7 @@ import java.util.function.BiFunction;
  * provider that hangs or refuses costs one wait and one log line, not one per search.</p>
  *
  * <p><b>Vectors in a plain {@code real[]}, compared here, not in pgvector.</b> A search reads every current vector,
- * about 170 × 768 numbers, in a few milliseconds, and compares them in under one; the question's own embedding call
+ * about 200 × 768 numbers, in a few milliseconds, and compares them in under one; the question's own embedding call
  * costs more than both. pgvector (an HNSW index, the database returning only the nearest passages) is worth its price —
  * another postgres image in both compose files, the Testcontainers support and the migration-upgrade tests — once the
  * corpus passes a few thousand passages (the read grows with it: some 15 MB a search at 5,000), or reading the vectors
@@ -91,10 +100,17 @@ public class KnowledgeService {
     static final List<Source> SOURCES = List.of(
             new Source("05-business-rules", KnowledgeParser::rules),
             new Source("01-ubiquitous-language", KnowledgeParser::terms),
-            new Source("03-state-machines", KnowledgeParser::sections));
+            new Source("03-state-machines", KnowledgeParser::sections),
+            new Source("04c-all-flows", KnowledgeParser::flows));
 
-    /** How many of each ranking take part in the fusion. */
+    /** The process flows: indexed only with {@link KnowledgeProperties#flows}, otherwise synced empty. */
+    static final String FLOWS = "04c-all-flows";
+
+    /** How many of each ranking take part in the fusion, unless {@link KnowledgeProperties#fusionDepth} says. */
     static final int FUSION_DEPTH = 10;
+
+    /** The longest text of a passage the reranker reads, title first: a few hundred tokens, as it was trained on. */
+    static final int RERANKED_TEXT = 2_000;
 
     /** Passages per embedding call: a few thousand tokens, well inside the free tier's per-minute token quota. */
     static final int EMBEDDING_BATCH = 50;
@@ -121,7 +137,7 @@ public class KnowledgeService {
      */
     static final int MAX_EMBEDDED_TEXT = 6_000;
 
-    /** The rules first, which answers cite; then the glossary; the state machines last. */
+    /** The rules first, which answers cite; then the glossary, the state machines, and the flows last. */
     private static final Comparator<KnowledgeChunk> EMBEDDING_ORDER = Comparator.comparing(KnowledgeChunk::kind)
             .thenComparing(KnowledgeChunk::source)
             .thenComparing(KnowledgeChunk::anchor);
@@ -144,7 +160,18 @@ public class KnowledgeService {
     record Pass(int stored, int left, boolean again) {
     }
 
+    /**
+     * How one search ranks: {@link KnowledgeProperties} for the assistant, a grid of them for the retrieval eval.
+     *
+     * @param meaning search by meaning too, when the texts can be embedded; false for words alone
+     * @param rerank  ask the reranker, when there is one
+     */
+    public record Settings(boolean meaning, double standout, int fusionDepth, boolean multiQuery, boolean rerank) {
+    }
+
     private final AssistantTelemetry telemetry;
+    private final KnowledgeProperties properties;
+    private final Reranker reranker;
     private final KnowledgeRepository knowledge;
     private final EmbeddingModel embeddings;
     private final TransactionTemplate tx;
@@ -162,17 +189,27 @@ public class KnowledgeService {
             });
     /** Questions are searched by keyword alone until then, after the provider failed. */
     private volatile Instant questionsPausedUntil = Instant.MIN;
+    /** The fused order stands until then, after the reranker failed. */
+    private volatile Instant rerankPausedUntil = Instant.MIN;
 
     KnowledgeService(KnowledgeRepository knowledge, EmbeddingModel embeddings, TransactionTemplate tx,
                      ObjectProvider<BuildProperties> build, Clock clock) {
-        this(knowledge, embeddings, tx, build, clock, AssistantTelemetry.NONE);
+        this(knowledge, embeddings, tx, build, clock, AssistantTelemetry.NONE, KnowledgeProperties.DEFAULTS,
+                Reranker.NONE);
     }
 
-    /** @param telemetry where each search's span, with what each ranking found, is recorded */
+    /**
+     * @param telemetry  where each search's span, with what each ranking found, is recorded
+     * @param properties how the search ranks
+     * @param reranker   reads the fused passages with the question; {@link Reranker#NONE} for none
+     */
     @Autowired
     KnowledgeService(KnowledgeRepository knowledge, EmbeddingModel embeddings, TransactionTemplate tx,
-                     ObjectProvider<BuildProperties> build, Clock clock, AssistantTelemetry telemetry) {
+                     ObjectProvider<BuildProperties> build, Clock clock, AssistantTelemetry telemetry,
+                     KnowledgeProperties properties, Reranker reranker) {
         this.telemetry = telemetry;
+        this.properties = properties;
+        this.reranker = reranker;
         this.knowledge = knowledge;
         this.embeddings = embeddings;
         this.tx = tx;
@@ -208,7 +245,9 @@ public class KnowledgeService {
         int changes = 0;
         for (Source source : SOURCES) {
             try {
-                changes += index(source, builtAt);
+                // Switched off, the flows are synced as a document with nothing in it: their passages are deleted.
+                changes += index(source.name().equals(FLOWS) && !properties.flows()
+                        ? new Source(FLOWS, (name, markdown) -> List.of()) : source, builtAt);
             } catch (RuntimeException failed) {
                 log.error("The assistant could not index {}; it answers from that document's previous index",
                         source.name(), failed);
@@ -335,31 +374,109 @@ public class KnowledgeService {
         return saved;
     }
 
-    /**
-     * The passages for {@code query}, best first, at most {@code limit}: by keyword, fused with the passages that stand
-     * out in meaning when the question can be embedded. Not one transaction: the question is embedded first, without a
-     * database connection held for the provider's answer.
-     */
+    /** {@link #find} without the user's question, for the passages alone. */
     public List<KnowledgeChunk> search(String query, int limit) {
+        return find(query, null, limit).stream().map(KnowledgeSearch.Hit::chunk).toList();
+    }
+
+    /** {@link #find(String, String, int, Settings)} as the assistant is configured. */
+    public List<KnowledgeSearch.Hit> find(String query, String question, int limit) {
+        return find(query, question, limit, new Settings(true, properties.standout(), properties.fusionDepth(),
+                properties.multiQuery(), reranker.available()));
+    }
+
+    /**
+     * The passages for {@code query}, best first, at most {@code limit}, each with how it was found: by keyword, fused
+     * with the passages that stand out in meaning when the text can be embedded — the search terms, and with
+     * {@link Settings#multiQuery} the user's {@code question} too — then, with {@link Settings#rerank}, reordered by
+     * the reranker. Not one transaction: every text is embedded first and the reranker asked after, without a
+     * database connection held for a provider's answer.
+     *
+     * @param question the user's question as they wrote it; null or blank for none
+     */
+    public List<KnowledgeSearch.Hit> find(String query, String question, int limit, Settings settings) {
         return telemetry.retrieval(() -> {
-            float[] question = questionVector(query);
-            List<KnowledgeChunk> found = readOnly.execute(status -> question == null
-                    ? knowledge.search(query, limit)
-                    : hybrid(query, question, limit));
-            List<KnowledgeChunk> passages = found == null ? List.of() : found;
+            float[] byTerms = settings.meaning() ? questionVector(query) : null;
+            float[] byQuestion = settings.meaning() && settings.multiQuery() && question != null && !question.isBlank()
+                    && !plain(question).equalsIgnoreCase(plain(query)) ? questionVector(question) : null;
+            boolean rerank = settings.rerank() && reranker.available()
+                    && !clock.instant().isBefore(rerankPausedUntil);
+            int kept = rerank ? Math.max(limit, properties.reranker().depth()) : limit;
+            List<KnowledgeSearch.Hit> fused = readOnly.execute(status ->
+                    fused(query, byTerms, byQuestion, kept, settings));
+            List<KnowledgeSearch.Hit> passages = fused == null ? List.of()
+                    : rerank ? reranked(question == null || question.isBlank() ? query : question, fused, limit)
+                    : fused;
             telemetry.retrievalFound("returned", passages.size());
             return passages;
         });
     }
 
-    private List<KnowledgeChunk> hybrid(String query, float[] question, int limit) {
-        int depth = Math.max(limit, FUSION_DEPTH);
+    private List<KnowledgeSearch.Hit> fused(String query, float[] byTerms, float[] byQuestion, int kept,
+                                            Settings settings) {
+        // By keyword alone, the search of old with its own limit: there is nothing to fuse it with.
+        boolean meaning = byTerms != null || byQuestion != null;
+        // Each ranking as deep as the passages kept: a reranker choosing among twenty gets twenty of each.
+        int depth = meaning ? Math.max(kept, settings.fusionDepth()) : kept;
         List<KnowledgeChunk> byWords = knowledge.search(query, depth);
-        List<KnowledgeChunk> byMeaning = KnowledgeSearch.nearest(question,
-                knowledge.embedded(embeddings.name(), embeddings.dimensions()), depth);
         telemetry.retrievalFound("words", byWords.size());
-        telemetry.retrievalFound("meaning", byMeaning.size());
-        return KnowledgeSearch.fuse(byWords, byMeaning, KnowledgeSearch.namedRules(query), limit);
+        List<List<KnowledgeChunk>> byMeaning = new ArrayList<>();
+        if (meaning) {
+            List<KnowledgeRepository.EmbeddedChunk> corpus = knowledge.embedded(embeddings.name(),
+                    embeddings.dimensions());
+            for (float[] vector : new float[][] {byTerms, byQuestion}) {
+                if (vector != null) {
+                    byMeaning.add(KnowledgeSearch.nearest(vector, corpus, depth, settings.standout()));
+                }
+            }
+            telemetry.retrievalFound("meaning", byMeaning.stream().mapToInt(List::size).sum());
+        }
+        return KnowledgeSearch.fuseAll(byWords, byMeaning, KnowledgeSearch.namedRules(query), kept);
+    }
+
+    /**
+     * The fused passages reordered by the reranker, the ones the query names kept first, cut to {@code limit}. A
+     * reranker that fails or is slow leaves the fused order, and is left alone for {@link #PAUSE_AFTER_FAILURE}.
+     */
+    private List<KnowledgeSearch.Hit> reranked(String text, List<KnowledgeSearch.Hit> fused, int limit) {
+        List<KnowledgeSearch.Hit> named = fused.stream()
+                .filter(hit -> hit.foundBy() == KnowledgeSearch.FoundBy.NAMED).toList();
+        List<KnowledgeSearch.Hit> rest = fused.stream()
+                .filter(hit -> hit.foundBy() != KnowledgeSearch.FoundBy.NAMED).toList();
+        if (rest.size() < 2 || named.size() >= limit) {
+            return fused.stream().limit(limit).toList();
+        }
+        try {
+            List<Integer> order = reranker.rank(text, rest.stream().map(hit -> rerankedText(hit.chunk())).toList());
+            List<KnowledgeSearch.Hit> result = new ArrayList<>(named);
+            order.forEach(index -> result.add(rest.get(index)));
+            telemetry.retrievalFound("reranked", rest.size());
+            return result.stream().limit(limit).toList();
+        } catch (RuntimeException failed) {
+            rerankPausedUntil = clock.instant().plus(PAUSE_AFTER_FAILURE);
+            log.warn("The knowledge search keeps its fused order for {}: the reranker failed ({})",
+                    PAUSE_AFTER_FAILURE, reason(failed));
+            return fused.stream().limit(limit).toList();
+        }
+    }
+
+    /**
+     * Until when a search runs below its settings: the question not embedded after the provider failed, or the
+     * reranker not asked after it failed. The retrieval eval reports the searches it measured so.
+     */
+    public Instant degradedUntil() {
+        Instant questionsPaused = questionsPausedUntil;
+        Instant rerankPaused = rerankPausedUntil;
+        return questionsPaused.isAfter(rerankPaused) ? questionsPaused : rerankPaused;
+    }
+
+    private static String rerankedText(KnowledgeChunk chunk) {
+        String text = chunk.title() + "\n" + chunk.body();
+        return text.length() > RERANKED_TEXT ? text.substring(0, RERANKED_TEXT) : text;
+    }
+
+    private static String plain(String text) {
+        return Normalizer.normalize(text, Normalizer.Form.NFC).strip().replaceAll("\\s+", " ");
     }
 
     /**

@@ -516,6 +516,21 @@ stockflow:
       model: ${ASSISTANT_EMBEDDINGS_MODEL:gemini-embedding-001}
       # 128-3072. A new model or length re-embeds every passage on the next start, in the background.
       dimensions: ${ASSISTANT_EMBEDDINGS_DIMENSIONS:768}
+    # How the knowledge search ranks (design §6.4). Each value changes only on what RetrievalEval measures (§10.2).
+    knowledge:
+      # Robust deviations above the corpus's median similarity a passage must stand to count as near a question.
+      standout: ${ASSISTANT_KNOWLEDGE_STANDOUT:3.0}
+      fusion-depth: ${ASSISTANT_KNOWLEDGE_FUSION_DEPTH:10}
+      # Embed the user's question too, beside the model's search terms; the tool then asks the model for it.
+      multi-query: ${ASSISTANT_KNOWLEDGE_MULTI_QUERY:false}
+      # text-embeddings-inference serving bge-reranker-v2-m3, inside the company's network only; blank for none.
+      reranker:
+        base-url: ${ASSISTANT_RERANKER_BASE_URL:}
+        timeout: ${ASSISTANT_RERANKER_TIMEOUT:PT5S}
+        depth: ${ASSISTANT_RERANKER_DEPTH:20}
+      # The process flows (04c-all-flows.md). Off: the document names statuses the system does not have, and its
+      # Vietnamese words crowd the English rules out of a keyword search (design §6.1). Off, their passages are removed.
+      flows: ${ASSISTANT_KNOWLEDGE_FLOWS:false}
     # POST /api/v1/assistant/mcp (design §7): the tools for another AI client, whose answers go to whichever model
     # provider that client uses. Off unless asked for until the business decides AQ-17; the local profile turns it on.
     mcp:

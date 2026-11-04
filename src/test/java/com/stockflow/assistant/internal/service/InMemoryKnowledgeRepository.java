@@ -34,6 +34,11 @@ final class InMemoryKnowledgeRepository implements KnowledgeRepository {
     /** The {@code limit} of every keyword search, in order. */
     final List<Integer> searchLimits = new ArrayList<>();
 
+    /** The passages stored for {@code source}, in the order they were first stored. */
+    List<KnowledgeChunk> chunks(String source) {
+        return chunks.values().stream().filter(chunk -> chunk.source().equals(source)).toList();
+    }
+
     /** What the keyword search returns for {@code query}, best first; nothing for a query not given. */
     void ranks(String query, KnowledgeChunk... ranking) {
         rankings.put(query, List.of(ranking));

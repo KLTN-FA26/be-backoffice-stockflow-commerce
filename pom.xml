@@ -398,9 +398,10 @@
         </excludes>
       </resource>
       <!--
-        The assistant's retrieval corpus (ADR-0010, design §6.2): the business rules, the glossary and the state
-        machines, copied from docs/ so the index follows the documents on every build. Only these three: the
-        Vietnamese flow documents are left out until the golden set shows they are needed.
+        The assistant's retrieval corpus (ADR-0010, design §6.2): the business rules, the glossary, the state
+        machines and the Vietnamese process flows (indexed only with stockflow.assistant.knowledge.flows on), copied
+        from docs/ so the index follows the documents on every build. 04-data-flows.md is left out: it describes the
+        distributed design ADR-0005 replaced (sagas, a consumer cart, statuses the system does not have).
       -->
       <resource>
         <directory>docs/business-design</directory>
@@ -408,6 +409,7 @@
         <includes>
           <include>01-ubiquitous-language.md</include>
           <include>03-state-machines.md</include>
+          <include>04c-all-flows.md</include>
           <include>05-business-rules.md</include>
         </includes>
       </resource>

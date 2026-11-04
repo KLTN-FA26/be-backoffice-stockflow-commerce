@@ -7,17 +7,22 @@ import java.util.HexFormat;
 import java.util.Objects;
 
 /**
- * One passage the assistant can retrieve and cite: a business rule, a glossary term or a state machine.
+ * One passage the assistant can retrieve and cite: a business rule, a glossary term, a state machine or a process
+ * flow.
  *
  * @param source the document, by file name without extension ({@code 05-business-rules})
- * @param anchor what an answer cites ({@code BR-RMA-002}); unique within its source
+ * @param anchor what an answer cites ({@code BR-RMA-002}, {@code F-PO}); unique within its source
  */
 public record KnowledgeChunk(String source, String anchor, Kind kind, String title, String body) {
 
     /** The longest body stored; also {@code ck_knowledge_chunk_text}. */
     public static final int MAX_BODY = 20_000;
 
-    public enum Kind { RULE, TERM, STATE_MACHINE }
+    /** The longest title stored, the column's: a long heading is cut rather than failing its document's sync. */
+    public static final int MAX_TITLE = 300;
+
+    /** Also {@code ck_knowledge_chunk_kind}. The order is the embedding order: what answers cite most comes first. */
+    public enum Kind { RULE, TERM, STATE_MACHINE, FLOW }
 
     public KnowledgeChunk {
         Objects.requireNonNull(source, "source");
@@ -29,6 +34,7 @@ public record KnowledgeChunk(String source, String anchor, Kind kind, String tit
             throw new IllegalArgumentException("a chunk has an anchor, a title and a body");
         }
         body = body.length() > MAX_BODY ? body.substring(0, MAX_BODY) : body;
+        title = title.length() > MAX_TITLE ? title.substring(0, MAX_TITLE - 1).strip() + "…" : title;
     }
 
     /** SHA-256 of title and body, hex: the indexer rewrites a chunk only when this changes. */

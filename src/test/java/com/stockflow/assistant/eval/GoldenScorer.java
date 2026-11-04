@@ -65,9 +65,10 @@ public final class GoldenScorer {
         return AnswerNumbers.unverified(answer, sources);
     }
 
-    private static final Pattern RULE = Pattern.compile("BR-[A-Z]+-\\d+[a-z]?", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RULE = Pattern.compile("BR-[A-Z]+-\\d+[a-z]?|(?<![\\p{L}\\p{N}-])[FX]-[A-Z]{2,8}"
+            + "(?![\\p{L}\\p{N}-])", Pattern.CASE_INSENSITIVE);
 
-    /** The business-rule ids an answer names ({@code BR-RMA-002}), each once, upper case. */
+    /** The business-rule ids and flow codes an answer names ({@code BR-RMA-002}, {@code F-PO}), each once, upper case. */
     public static List<String> namedRules(String answer) {
         Set<String> named = new java.util.LinkedHashSet<>();
         Matcher matcher = RULE.matcher(normalise(answer));

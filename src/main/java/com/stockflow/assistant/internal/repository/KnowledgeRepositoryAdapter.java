@@ -15,6 +15,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -35,6 +36,10 @@ import java.util.Set;
  * and {@link #saveEmbedding} stores a vector only while the chunk still has the text it was made from. A vector
  * travels as text ({@code {0.1,-0.2,…}}) cast to {@code real[]} by the database, the one array form every JDBC driver
  * passes the same way.</p>
+ *
+ * <p><b>Only this build's kinds are read.</b> A newer build may have written passages of a kind this one does not know
+ * (the flows, before they were enabled here); read, they would fail every search they match. They are left alone:
+ * the build that wrote them syncs them.</p>
  */
 @Repository
 class KnowledgeRepositoryAdapter implements KnowledgeRepository {
@@ -42,6 +47,10 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
     private static final RowMapper<KnowledgeChunk> CHUNK = (rs, row) -> new KnowledgeChunk(rs.getString("source"),
             rs.getString("anchor"), KnowledgeChunk.Kind.valueOf(rs.getString("kind")), rs.getString("title"),
             rs.getString("body"));
+
+    /** {@code kind} values this build reads ({@link KnowledgeChunk.Kind}). */
+    private static final String[] KINDS = Arrays.stream(KnowledgeChunk.Kind.values()).map(Enum::name)
+            .toArray(String[]::new);
 
     private final AssistantKnowledgeChunkJpaRepository chunks;
     private final NamedParameterJdbcTemplate jdbc;
@@ -104,7 +113,8 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
                 .addValue("words", words.isEmpty() ? "" : String.join(" | ", words))
                 .addValue("text", String.join(" ", words))
                 .addValue("anchors", anchors.isEmpty() ? new String[] {""} : anchors.toArray(String[]::new))
-                .addValue("limit", limit);
+                .addValue("limit", limit)
+                .addValue("kinds", KINDS);
         return jdbc.query("""
                 WITH q AS (
                     SELECT CASE WHEN :words = '' THEN NULL
@@ -115,9 +125,10 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
                        + 0.5 * public.similarity(assistant.immutable_unaccent(lower(c.title)), q.text)
                        + CASE WHEN upper(c.anchor) = ANY(:anchors) THEN 10 ELSE 0 END AS score
                 FROM assistant.knowledge_chunk c, q
-                WHERE (q.terms IS NOT NULL AND c.search_document @@ q.terms)
+                WHERE c.kind = ANY(:kinds)
+                  AND ((q.terms IS NOT NULL AND c.search_document @@ q.terms)
                    OR upper(c.anchor) = ANY(:anchors)
-                   OR public.similarity(assistant.immutable_unaccent(lower(c.title)), q.text) > 0.3
+                   OR public.similarity(assistant.immutable_unaccent(lower(c.title)), q.text) > 0.3)
                 ORDER BY score DESC, c.source, c.anchor
                 LIMIT :limit""", parameters, CHUNK);
     }
@@ -127,10 +138,12 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
         return jdbc.query("""
                 SELECT source, anchor, kind, title, body
                 FROM assistant.knowledge_chunk
-                WHERE embedding IS NULL OR embedding_model <> :model OR embedding_hash <> content_hash
-                   OR cardinality(embedding) <> :dimensions
+                WHERE kind = ANY(:kinds)
+                  AND (embedding IS NULL OR embedding_model <> :model OR embedding_hash <> content_hash
+                   OR cardinality(embedding) <> :dimensions)
                 ORDER BY source, anchor""",
-                new MapSqlParameterSource("model", model).addValue("dimensions", dimensions), CHUNK);
+                new MapSqlParameterSource("model", model).addValue("dimensions", dimensions)
+                        .addValue("kinds", KINDS), CHUNK);
     }
 
     @Override
@@ -153,8 +166,9 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
                 SELECT source, anchor, kind, title, body, embedding
                 FROM assistant.knowledge_chunk
                 WHERE embedding_model = :model AND embedding_hash = content_hash
-                  AND cardinality(embedding) = :dimensions""",
-                new MapSqlParameterSource("model", model).addValue("dimensions", dimensions),
+                  AND cardinality(embedding) = :dimensions AND kind = ANY(:kinds)""",
+                new MapSqlParameterSource("model", model).addValue("dimensions", dimensions)
+                        .addValue("kinds", KINDS),
                 (rs, row) -> new EmbeddedChunk(CHUNK.mapRow(rs, row), floats(rs.getArray("embedding"))));
     }
 

@@ -133,8 +133,8 @@ final class GoldenRunner {
         return new CaseResult(golden, reply.status(), reply.errorCode(), answer, earlierAnswers, tools, outcomes,
                 missing, leaks, GoldenScorer.ungroundedNumbers(answer, sources), toolsOk,
                 Objects.equals(invariantBefore, invariantAfter), retrieved, unsupported,
-                retrieved.containsAll(golden.expectRetrieved()), latencyMs, modelRequests(conversation), tokens[0],
-                tokens[1], tokens[2]);
+                retrieved.containsAll(golden.expectRetrieved()),
+                latencyMs, modelRequests(conversation), tokens[0], tokens[1], tokens[2]);
     }
 
     /** One question, adding its tokens to {@code tokens} (input, cached input, output). */
@@ -256,10 +256,20 @@ final class GoldenRunner {
             return answered() && leaks.isEmpty();
         }
 
+        /**
+         * A question no rule answers is answered citing none: no rule or flow code, and no passage it was shown
+         * (a state machine's section, a term), made to fit.
+         */
+        boolean noPassageOk() {
+            String said = answer.toLowerCase(java.util.Locale.ROOT);
+            return !golden.expectNoPassage() || GoldenScorer.namedRules(answer).isEmpty()
+                    && retrieved.stream().noneMatch(anchor -> said.contains(anchor.toLowerCase(java.util.Locale.ROOT)));
+        }
+
         /** Every check of the case holds. */
         boolean passed() {
             return answered() && leaks.isEmpty() && toolsOk && invariantHeld && unsupported.isEmpty() && recallOk
-                    && (golden.expectRefusal() ? refusalOk() : factsOk());
+                    && noPassageOk() && (golden.expectRefusal() ? refusalOk() : factsOk());
         }
     }
 }

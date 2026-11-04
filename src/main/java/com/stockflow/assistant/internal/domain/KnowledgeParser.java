@@ -12,7 +12,8 @@ import java.util.regex.Pattern;
 /**
  * Cuts the business-design documents into chunks (design §6.1). One parser per document shape, because each
  * document's natural unit is different: a rule is a table row, a term is a table row with a bold first cell, a state
- * machine is a second-level section, cut further at its third-level headings and to a passage's size.
+ * machine is a second-level section, cut further at its third-level headings and to a passage's size, and a process
+ * flow is a second-level section named by its code, cut the same way.
  *
  * <p>The cuts follow the documents' own structure rather than a fixed window of characters, so a chunk is always a
  * whole rule and its anchor is the id people already use.</p>
@@ -29,6 +30,38 @@ public final class KnowledgeParser {
     private static final Pattern TERM_ROW = Pattern.compile("^\\|\\s*\\*\\*(.+?)\\*\\*\\s*\\|(.*)$");
     private static final Pattern SECTION = Pattern.compile("^##\\s+(?!#)(.+)$");
     private static final Pattern SUBSECTION = Pattern.compile("^###\\s+(.+)$");
+    private static final Pattern TOP = Pattern.compile("^#\\s+(?!#)(.+)$");
+
+    /** A flow's heading: its code in backticks, then its name ({@code `F-PO` Đơn mua hàng gửi nhà cung cấp}). */
+    private static final Pattern FLOW_CODE = Pattern.compile("^`([A-Z]+-[A-Z]+)`\\s+(.+)$");
+
+    /**
+     * The platform flows that describe how the services of the distributed design ADR-0005 replaced registered their
+     * permissions and fed their read models: nothing the staff do. The two others, an order placed for a customer
+     * from a chat and a notification sent again by hand, are staff work and stay.
+     */
+    private static final Set<String> SYSTEM_FLOWS = Set.of("P-PERM", "P-RPT");
+
+    /**
+     * A note on what was built ({@code > · Đã cài (SCRUM-146): …}): API paths, error codes, and the limits of the
+     * build — one of them how a blind counter could still read the book quantity elsewhere. For the people building
+     * it, not for every user of the assistant.
+     */
+    private static final Pattern BUILD_NOTE = Pattern.compile("^>\\s*·\\s*Đã cài\\b.*");
+
+    /** A note's first line: the next note after a build note ends it. */
+    private static final Pattern NOTE_START = Pattern.compile("^>\\s*[·⚠★]");
+
+    /** What a step writes for the system's own bookkeeping, never what happens: dropped from a kept cell. */
+    private static final Pattern SYSTEM_WRITES = Pattern.compile("\\s*[+~−-]\\s*(?:outbox_event|processed_event)\\s*,"
+            + "|,?\\s*[+~−-]\\s*(?:outbox_event|processed_event)");
+
+    /**
+     * Columns of a flow's tables that name what the system writes rather than what happens: the tables and rows a
+     * step writes, the events it sends, the work-breakdown reference. Noise to the staff who ask, as a rule's
+     * enforcement point is; and table names are the schema's, not the business's.
+     */
+    private static final Set<String> SYSTEM_COLUMNS = Set.of("ghi vào", "data written", "event out", "wbs");
     private static final int MAX_ANCHOR = 160;
 
     private KnowledgeParser() {
@@ -127,14 +160,165 @@ public final class KnowledgeParser {
         if (heading == null) {
             return;
         }
-        List<String> passages = passages(lines);
         String base = subheading == null ? heading : heading + " › " + subheading;
+        addPassages(chunks, anchors, source, KnowledgeChunk.Kind.STATE_MACHINE, base, base, lines);
+    }
+
+    /** {@code lines} as passages of {@code kind}: {@code anchor}, {@code anchor (2)}, ..., titled {@code title (i/n)}. */
+    private static void addPassages(List<KnowledgeChunk> chunks, Set<String> anchors, String source,
+                                    KnowledgeChunk.Kind kind, String anchorBase, String titleBase, List<String> lines) {
+        List<String> passages = passages(lines);
         for (int i = 0; i < passages.size(); i++) {
             String suffix = i == 0 ? "" : " (" + (i + 1) + ")";
-            String anchor = unique(anchors, base, suffix);
-            String title = passages.size() == 1 ? base : base + " (" + (i + 1) + "/" + passages.size() + ")";
-            chunks.add(new KnowledgeChunk(source, anchor, KnowledgeChunk.Kind.STATE_MACHINE, title, passages.get(i)));
+            String anchor = unique(anchors, anchorBase, suffix);
+            String title = passages.size() == 1 ? titleBase
+                    : titleBase + " (" + (i + 1) + "/" + passages.size() + ")";
+            chunks.add(new KnowledgeChunk(source, anchor, kind, title, passages.get(i)));
         }
+    }
+
+    /**
+     * {@code 04c-all-flows.md}: every second-level section named by a flow's code, cut at its third-level headings and
+     * into passages as a state machine is. The anchor is the code ({@code F-PO}, {@code X-SHORT}), the title the code,
+     * the name and the group above it ({@code F-PO — Đơn mua hàng gửi nhà cung cấp (Nhập hàng)}).
+     *
+     * <p>Left out: the diagrams (Mermaid source, unreadable as text), the work-breakdown lines, the columns that name
+     * tables and events ({@link #SYSTEM_COLUMNS}), the notes on what was built ({@link #BUILD_NOTE}), sections with no
+     * flow code (the table of contents, the storage conventions), and {@link #SYSTEM_FLOWS}.</p>
+     */
+    public static List<KnowledgeChunk> flows(String source, String markdown) {
+        List<KnowledgeChunk> chunks = new ArrayList<>();
+        Set<String> anchors = new HashSet<>();
+        String group = null;
+        boolean titled = false;
+        String code = null;
+        String title = null;
+        String subheading = null;
+        List<String> body = new ArrayList<>();
+        boolean diagram = false;
+        boolean buildNote = false;
+        for (String line : markdown.split("\\R")) {
+            String stripped = line.strip();
+            if (diagram) {
+                diagram = !stripped.startsWith("```");
+                continue;
+            }
+            if (buildNote && stripped.startsWith(">") && !NOTE_START.matcher(stripped).find()) {
+                continue;
+            }
+            buildNote = BUILD_NOTE.matcher(stripped).matches();
+            if (buildNote) {
+                continue;
+            }
+            if (stripped.startsWith("```mermaid")) {
+                diagram = true;
+                continue;
+            }
+            Matcher top = TOP.matcher(line);
+            Matcher section = SECTION.matcher(line);
+            Matcher subsection = SUBSECTION.matcher(line);
+            if (top.matches()) {
+                addFlow(chunks, anchors, source, code, title, subheading, body);
+                code = null;
+                // The first top-level heading is the document's title; the later ones group its flows.
+                group = titled ? top.group(1).strip() : null;
+                titled = true;
+            } else if (section.matches()) {
+                addFlow(chunks, anchors, source, code, title, subheading, body);
+                String heading = section.group(1).strip();
+                Matcher coded = FLOW_CODE.matcher(heading);
+                code = coded.matches() && !SYSTEM_FLOWS.contains(coded.group(1)) ? coded.group(1) : null;
+                String name = code == null ? null : coded.group(2);
+                title = code == null ? null
+                        : code + " — " + name.replace("`", "").strip() + (group == null ? "" : " (" + group + ")");
+                subheading = null;
+            } else if (code != null && subsection.matches()) {
+                addFlow(chunks, anchors, source, code, title, subheading, body);
+                subheading = subsection.group(1).replace("`", "").strip();
+            } else if (code != null && !stripped.equals("---") && !stripped.matches("\\*WBS[^*]*\\*")) {
+                body.add(line);
+            }
+        }
+        addFlow(chunks, anchors, source, code, title, subheading, body);
+        return List.copyOf(chunks);
+    }
+
+    private static void addFlow(List<KnowledgeChunk> chunks, Set<String> anchors, String source, String code,
+                                String title, String subheading, List<String> body) {
+        if (code != null && !String.join("", body).isBlank()) {
+            String anchor = subheading == null ? code : code + " › " + subheading;
+            String titled = subheading == null ? title : title + " › " + subheading;
+            addPassages(chunks, anchors, source, KnowledgeChunk.Kind.FLOW, anchor, titled, withoutSystemColumns(body));
+        }
+        body.clear();
+    }
+
+    /**
+     * The lines with every table's {@link #SYSTEM_COLUMNS} removed, and the system's own bookkeeping
+     * ({@link #SYSTEM_WRITES}) out of the cells kept. A row with more cells than its header — a result written
+     * {@code QC_PASSED | QC_REJECTED} inside a cell — has the extra ones joined back into its last cell. A step whose
+     * kept cells then say nothing beyond its number and module keeps what it writes, cleaned the same way: the step is
+     * that write.
+     */
+    static List<String> withoutSystemColumns(List<String> lines) {
+        List<String> kept = new ArrayList<>(lines.size());
+        List<Boolean> keep = null;
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            boolean row = line.strip().startsWith("|");
+            if (!row) {
+                keep = null;
+                kept.add(line);
+                continue;
+            }
+            List<String> cells = rowCells(line);
+            if (keep == null) {
+                boolean header = i + 1 < lines.size() && lines.get(i + 1).strip().matches("\\|[\\s:|-]+\\|?");
+                if (!header) {
+                    kept.add(line);
+                    continue;
+                }
+                keep = new ArrayList<>();
+                for (String cell : cells) {
+                    keep.add(!SYSTEM_COLUMNS.contains(cell.replace("*", "").replace("`", "").strip()
+                            .toLowerCase(java.util.Locale.ROOT)));
+                }
+            }
+            if (keep.size() < cells.size() && !keep.isEmpty()) {
+                List<String> joined = new ArrayList<>(cells.subList(0, keep.size() - 1));
+                joined.add(String.join(" | ", cells.subList(keep.size() - 1, cells.size())));
+                cells = joined;
+            }
+            List<String> out = new ArrayList<>();
+            List<String> dropped = new ArrayList<>();
+            for (int c = 0; c < cells.size(); c++) {
+                String cell = SYSTEM_WRITES.matcher(cells.get(c)).replaceAll("").strip();
+                if (c >= keep.size() || keep.get(c)) {
+                    out.add(cell);
+                } else {
+                    dropped.add(cell);
+                }
+            }
+            // Only a step table (number, module, result) can have a step that says nothing once cleaned.
+            boolean said = out.size() <= 2 || out.subList(2, out.size()).stream().anyMatch(cell -> !cell.isBlank()
+                    && !cell.matches("[`~+−-]*"));
+            if (!said && !out.isEmpty() && dropped.stream().anyMatch(cell -> !cell.isBlank())) {
+                out.set(out.size() - 1, String.join(" ", dropped).strip());
+            }
+            kept.add("| " + String.join(" | ", out) + " |");
+        }
+        return kept;
+    }
+
+    /** Every cell of a table row, trimmed: the text between its first and last pipe, split at the others. */
+    private static List<String> rowCells(String line) {
+        String inner = line.strip();
+        inner = inner.substring(1, inner.endsWith("|") && inner.length() > 1 ? inner.length() - 1 : inner.length());
+        List<String> cells = new ArrayList<>();
+        for (String cell : inner.split("\\|", -1)) {
+            cells.add(cell.strip());
+        }
+        return cells;
     }
 
     private static String unique(Set<String> anchors, String base, String suffix) {

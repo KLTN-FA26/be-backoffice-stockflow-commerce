@@ -29,6 +29,8 @@ import java.util.Map;
  *                       what that tool would have shown)
  * @param invariantQuery SQL returning one value that must be the same before and after: the assistant changed nothing
  * @param expectRetrieved anchors the rule search must return among its five results: recall@5 (design §10.2)
+ * @param expectNoPassage no rule or flow answers the question: the answer must cite none, and the search should find
+ *                       nothing by meaning ({@code RetrievalEval})
  * @param earlier        questions asked before this one in the same conversation, oldest first
  * @param oracle         what the scripted oracle model calls in the harness for the last question, one step each:
  *                       an object for one step, an array for a chain; empty when it calls nothing. A step's
@@ -39,7 +41,7 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
                          List<String> expectTools, List<String> forbiddenTools, boolean expectNoTools,
                          List<String> facts, String factsQuery, List<String> forbidden, String forbiddenQuery,
                          boolean expectRefusal, String invariantQuery, List<String> expectRetrieved,
-                         List<Earlier> earlier, List<Oracle> oracle, boolean smoke) {
+                         boolean expectNoPassage, List<Earlier> earlier, List<Oracle> oracle, boolean smoke) {
 
     public GoldenCase {
         expectTools = expectTools == null ? List.of() : List.copyOf(expectTools);
@@ -49,6 +51,17 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
         expectRetrieved = expectRetrieved == null ? List.of() : List.copyOf(expectRetrieved);
         earlier = earlier == null ? List.of() : List.copyOf(earlier);
         oracle = oracle == null ? List.of() : List.copyOf(oracle);
+    }
+
+    /** A case no rule or flow answers is the rare one; every case written before the field was not. */
+    public GoldenCase(String id, String useCase, String variant, Persona persona, String question,
+                      List<String> expectTools, List<String> forbiddenTools, boolean expectNoTools,
+                      List<String> facts, String factsQuery, List<String> forbidden, String forbiddenQuery,
+                      boolean expectRefusal, String invariantQuery, List<String> expectRetrieved,
+                      List<Earlier> earlier, List<Oracle> oracle, boolean smoke) {
+        this(id, useCase, variant, persona, question, expectTools, forbiddenTools, expectNoTools, facts, factsQuery,
+                forbidden, forbiddenQuery, expectRefusal, invariantQuery, expectRetrieved, false, earlier, oracle,
+                smoke);
     }
 
     /** Who asks: a role, and the warehouses they are assigned to (none: not limited by warehouse). */
@@ -89,7 +102,7 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
                 fill(question, values), expectTools, forbiddenTools, expectNoTools,
                 facts.stream().map(f -> fill(f, values)).toList(), fill(factsQuery, values),
                 forbidden.stream().map(f -> fill(f, values)).toList(), fill(forbiddenQuery, values),
-                expectRefusal, fill(invariantQuery, values), expectRetrieved,
+                expectRefusal, fill(invariantQuery, values), expectRetrieved, expectNoPassage,
                 earlier.stream().map(turn -> new Earlier(fill(turn.question(), values), fill(turn.oracle(), values)))
                         .toList(),
                 fill(oracle, values), smoke);

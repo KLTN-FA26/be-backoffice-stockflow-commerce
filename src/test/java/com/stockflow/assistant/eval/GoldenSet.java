@@ -35,6 +35,10 @@ public final class GoldenSet {
                 if (!ids.add(each.id())) {
                     throw new IllegalStateException("two golden cases are " + each.id());
                 }
+                if (each.expectNoPassage() && (!each.expectRetrieved().isEmpty() || !each.facts().isEmpty())) {
+                    throw new IllegalStateException(each.id() + " expects no passage, so it names none to retrieve "
+                            + "or state");
+                }
                 if (each.persona() == null || each.question() == null || each.question().isBlank()) {
                     throw new IllegalStateException(each.id() + " needs a persona and a question");
                 }

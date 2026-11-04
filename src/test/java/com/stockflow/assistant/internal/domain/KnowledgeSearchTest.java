@@ -51,6 +51,59 @@ class KnowledgeSearchTest {
     }
 
     @Test
+    @DisplayName("Vietnamese words that name nothing are left out as written: with marks, exactly those; without, "
+            + "only those no other reading makes into a word a warehouse uses")
+    void emptyVietnameseWords() {
+        assertThat(KnowledgeSearch.words("Hàng in theo yêu cầu có được trả lại không")).containsExactly("hàng", "in",
+                "theo", "yêu", "cầu", "trả");
+        assertThat(KnowledgeSearch.words("hang in theo yeu cau co duoc tra lai khong")).containsExactly("hang", "in",
+                "theo", "yeu", "cau", "co", "tra", "lai");
+        assertThat(KnowledgeSearch.words("cỡ ly, cờ QC, hàng rời, tối đa, di chuyển, rà soát, hàng nhẹ"))
+                .contains("cỡ", "cờ", "rời", "tối", "đa", "di", "rà", "nhẹ");
+        assertThat(KnowledgeSearch.words("có không, được chứ?")).containsExactly("chứ");
+        assertThat(KnowledgeSearch.words("chờ duyệt, báo giá, nhà cung cấp, bán, vị trí trống, từ chối, đề xuất, mã"))
+                .contains("chờ", "báo", "cung", "bán", "trống", "từ", "đề", "mã");
+    }
+
+    @Test
+    @DisplayName("each fused passage says how it was found; with two meaning rankings, its best place counts")
+    void foundBy() {
+        KnowledgeChunk named = rule("BR-STK-006", "FEFO.");
+        KnowledgeChunk both = rule("BR-RMA-001", "Window.");
+        KnowledgeChunk words = rule("BR-RMA-003", "Words.");
+        KnowledgeChunk meaning = rule("BR-RMA-002", "Custom printed.");
+
+        List<KnowledgeSearch.Hit> hits = KnowledgeSearch.fuseAll(List.of(both, words, named),
+                List.of(List.of(both), List.of(meaning, both)), List.of("BR-STK-006"), 10);
+
+        assertThat(hits).extracting(hit -> hit.chunk().anchor() + " " + hit.foundBy().label())
+                .containsExactly("BR-STK-006 named", "BR-RMA-001 both", "BR-RMA-002 meaning", "BR-RMA-003 words");
+    }
+
+    @Test
+    @DisplayName("a lower standout lets more passages count as near")
+    void standout() {
+        List<KnowledgeRepository.EmbeddedChunk> corpus = IntStream.range(0, 40).mapToObj(i -> new KnowledgeRepository
+                .EmbeddedChunk(new KnowledgeChunk("01-ubiquitous-language", "Term " + i, KnowledgeChunk.Kind.TERM,
+                "Term " + i, "Passage " + i + "."), unit(0.40 + 0.01 * i))).toList();
+
+        assertThat(KnowledgeSearch.nearest(new float[] {1, 0}, corpus, 50, 0.5).size())
+                .isGreaterThan(KnowledgeSearch.nearest(new float[] {1, 0}, corpus, 50, 3.0).size());
+    }
+
+    private static float[] unit(double cosine) {
+        return new float[] {(float) cosine, (float) Math.sqrt(1 - cosine * cosine)};
+    }
+
+    @Test
+    @DisplayName("a flow code a query names comes first like a rule id; a code inside another word does not count")
+    void namedFlows() {
+        assertThat(KnowledgeSearch.namedRules("luồng f-po khác gì X-SHORT, theo BR-PO-002")).containsExactly(
+                "F-PO", "X-SHORT", "BR-PO-002");
+        assertThat(KnowledgeSearch.namedRules("mã EVAL-F-PO và AF-PO")).isEmpty();
+    }
+
+    @Test
     @DisplayName("cosine: 1 for one direction whatever the length, 0 for unrelated or a zero vector, -1 for opposite")
     void cosine() {
         assertThat(KnowledgeSearch.cosine(new float[] {1, 2, 3}, new float[] {2, 4, 6})).isCloseTo(1, within(1e-9));

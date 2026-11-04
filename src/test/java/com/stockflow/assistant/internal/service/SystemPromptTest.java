@@ -85,10 +85,20 @@ class SystemPromptTest {
         return tools;
     }
 
-    /** {@code spec()} returns a constant, so the tool's dependencies are never touched and may be null. */
+    /**
+     * A tool's spec depends on its configuration at most ({@code searchKnowledge} asks for the question only with
+     * multi-query on), so the configuration gets its defaults; the other dependencies are never touched and may be
+     * null.
+     */
     private static AssistantTool instantiate(Class<?> type) throws ReflectiveOperationException {
         Constructor<?> constructor = type.getDeclaredConstructors()[0];
         constructor.setAccessible(true);
-        return (AssistantTool) constructor.newInstance(new Object[constructor.getParameterCount()]);
+        Object[] arguments = new Object[constructor.getParameterCount()];
+        for (int i = 0; i < arguments.length; i++) {
+            if (constructor.getParameterTypes()[i] == KnowledgeProperties.class) {
+                arguments[i] = KnowledgeProperties.DEFAULTS;
+            }
+        }
+        return (AssistantTool) constructor.newInstance(arguments);
     }
 }

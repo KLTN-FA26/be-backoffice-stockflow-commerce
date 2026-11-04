@@ -2,6 +2,7 @@ package com.stockflow.assistant.internal.service;
 
 import com.stockflow.assistant.internal.domain.EmbeddingModel.Purpose;
 import com.stockflow.assistant.internal.domain.KnowledgeChunk;
+import com.stockflow.assistant.internal.domain.KnowledgeSearch;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.DisplayName;
@@ -159,6 +160,122 @@ class KnowledgeServiceTest {
         assertThat(found).containsExactly(IN_TRANSIT, RETURNS, FEFO, WINDOW);
         assertThat(repository.searchLimits).containsExactly(KnowledgeService.FUSION_DEPTH);
         assertThat(embeddings.texts(Purpose.QUERY)).containsExactly(QUESTION);
+    }
+
+    @Test
+    @DisplayName("with the question searched too, a rule the question means and the terms do not is found by meaning; "
+            + "each passage says how it was found")
+    void theQuestionIsSearchedToo() {
+        embeddedCorpus();
+        String terms = "return policy";
+        repository.ranks(terms, FEFO);
+        KnowledgeService.Settings both = new KnowledgeService.Settings(true, KnowledgeSearch.STANDOUT, 10, true,
+                false);
+        KnowledgeService.Settings termsOnly = new KnowledgeService.Settings(true, KnowledgeSearch.STANDOUT, 10, false,
+                false);
+
+        List<KnowledgeSearch.Hit> found = knowledge.find(terms, QUESTION, 5, both);
+
+        assertThat(found).extracting(KnowledgeSearch.Hit::chunk).containsExactly(FEFO, RETURNS, WINDOW);
+        assertThat(found).extracting(KnowledgeSearch.Hit::foundBy).containsExactly(KnowledgeSearch.FoundBy.WORDS,
+                KnowledgeSearch.FoundBy.MEANING, KnowledgeSearch.FoundBy.MEANING);
+        assertThat(embeddings.texts(Purpose.QUERY)).containsExactly(terms, QUESTION);
+        assertThat(knowledge.find(terms, QUESTION, 5, termsOnly)).extracting(KnowledgeSearch.Hit::chunk)
+                .containsExactly(FEFO);
+        assertThat(knowledge.find(QUESTION, " " + QUESTION, 5, both)).as("the same text is embedded once")
+                .isNotEmpty();
+        assertThat(embeddings.texts(Purpose.QUERY)).containsExactly(terms, QUESTION);
+    }
+
+    @Test
+    @DisplayName("the reranker reorders the fused passages, the named rule kept first; asked with the question when "
+            + "there is one")
+    void theRerankerReorders() {
+        embeddedCorpus();
+        String named = "what does BR-STK-006 say";
+        embeddings.vector(named, 1, 0, 0);
+        repository.ranks(named, WINDOW, FEFO);
+        FakeReranker reranker = new FakeReranker();
+        KnowledgeService reranking = new KnowledgeService(repository, embeddings,
+                new TransactionTemplate(mock(PlatformTransactionManager.class)), build, clock, AssistantTelemetry.NONE,
+                KnowledgeProperties.DEFAULTS, reranker);
+
+        // Fused: BR-STK-006 (named), BR-RMA-001 (both), BR-RMA-002 (meaning); the fake reverses all but the named.
+        assertThat(reranking.find(named, null, 5)).extracting(KnowledgeSearch.Hit::chunk)
+                .containsExactly(FEFO, RETURNS, WINDOW);
+        assertThat(reranker.queries).containsExactly(named);
+        assertThat(reranker.texts.getFirst()).hasSize(2).first().asString().startsWith(WINDOW.title() + "\n");
+        assertThat(repository.searchLimits.getLast()).as("enough fused passages for the reranker to choose from")
+                .isEqualTo(KnowledgeProperties.DEFAULTS.reranker().depth());
+
+        reranking.find(named, "Quy định BR-STK-006 nói gì?", 5);
+        assertThat(reranker.queries.getLast()).isEqualTo("Quy định BR-STK-006 nói gì?");
+    }
+
+    @Test
+    @DisplayName("a reranker that fails leaves the fused order, and is not asked again for a while")
+    void aFailingRerankerLeavesTheFusedOrder() {
+        embeddedCorpus();
+        String named = "what does BR-STK-006 say";
+        embeddings.vector(named, 1, 0, 0);
+        repository.ranks(named, WINDOW, FEFO);
+        FakeReranker reranker = new FakeReranker();
+        reranker.failure = new IllegalStateException("connection refused");
+        KnowledgeService reranking = new KnowledgeService(repository, embeddings,
+                new TransactionTemplate(mock(PlatformTransactionManager.class)), build, clock, AssistantTelemetry.NONE,
+                KnowledgeProperties.DEFAULTS, reranker);
+
+        assertThat(reranking.find(named, null, 5)).extracting(KnowledgeSearch.Hit::chunk)
+                .containsExactly(FEFO, WINDOW, RETURNS);
+        reranking.find(named, null, 5);
+        assertThat(reranker.queries).as("paused after the failure").hasSize(1);
+
+        clock.advance(KnowledgeService.PAUSE_AFTER_FAILURE.plusSeconds(1));
+        reranker.failure = null;
+        assertThat(reranking.find(named, null, 5)).extracting(KnowledgeSearch.Hit::chunk)
+                .containsExactly(FEFO, RETURNS, WINDOW);
+    }
+
+    @Test
+    @DisplayName("with the flows switched off, their document is synced empty: indexed before, their passages go")
+    void flowsOff() {
+        KnowledgeChunk flow = new KnowledgeChunk(KnowledgeService.FLOWS, "F-PO", KnowledgeChunk.Kind.FLOW,
+                "F-PO — Đơn mua hàng", "Từ nháp tới lúc nhà cung cấp xác nhận.");
+        repository.sync(KnowledgeService.FLOWS, List.of(flow), null);
+
+        knowledge.index();
+
+        assertThat(repository.chunks(KnowledgeService.FLOWS)).as("off by default").isEmpty();
+        KnowledgeService flowsOn = new KnowledgeService(repository, embeddings,
+                new TransactionTemplate(mock(PlatformTransactionManager.class)), build, clock, AssistantTelemetry.NONE,
+                new KnowledgeProperties(3.0, 10, false, KnowledgeProperties.DEFAULTS.reranker(), true),
+                com.stockflow.assistant.internal.domain.Reranker.NONE);
+        flowsOn.index();
+        assertThat(repository.chunks(KnowledgeService.FLOWS)).extracting(KnowledgeChunk::anchor).contains("F-PO",
+                "X-SHORT");
+    }
+
+    /** Reverses what it is given, or fails. */
+    private static final class FakeReranker implements com.stockflow.assistant.internal.domain.Reranker {
+
+        final List<String> queries = new java.util.ArrayList<>();
+        final List<List<String>> texts = new java.util.ArrayList<>();
+        RuntimeException failure;
+
+        @Override
+        public boolean available() {
+            return true;
+        }
+
+        @Override
+        public List<Integer> rank(String query, List<String> passages) {
+            queries.add(query);
+            texts.add(passages);
+            if (failure != null) {
+                throw failure;
+            }
+            return IntStream.range(0, passages.size()).map(i -> passages.size() - 1 - i).boxed().toList();
+        }
     }
 
     @Test

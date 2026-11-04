@@ -71,6 +71,19 @@ class AssistantKnowledgeIntegrationTest {
     }
 
     @Test
+    @DisplayName("the process flows are indexed and found by Vietnamese words, with or without marks, and by their code")
+    void flowsAreFound() {
+        assertThat(jdbc.queryForObject("select count(distinct anchor) from assistant.knowledge_chunk where kind = "
+                + "'FLOW' and source = '04c-all-flows' and anchor not like '%(%' and anchor not like '%›%'", Long.class))
+                .isEqualTo(25);
+        assertThat(knowledge.search("quy trình đơn mua hàng gửi nhà cung cấp duyệt", 5))
+                .extracting(KnowledgeChunk::anchor).contains("F-PO");
+        assertThat(knowledge.search("nhat thieu hang don dung lai", 5)).extracting(KnowledgeChunk::anchor)
+                .contains("X-SHORT");
+        assertThat(knowledge.search("X-RESV", 5)).first().extracting(KnowledgeChunk::anchor).isEqualTo("X-RESV");
+    }
+
+    @Test
     @DisplayName("an older build does not put its rules back over a newer build's index")
     void olderBuildLeavesNewerIndexAlone() {
         Instant newer = Instant.parse("2099-01-01T00:00:00Z");
