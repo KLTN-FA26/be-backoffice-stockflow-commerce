@@ -16,6 +16,7 @@ import org.springframework.web.client.RestClient;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -85,12 +86,14 @@ class AssistantModelConfig {
      */
     @Bean
     ModelRouter modelRouter(LanguageModel languageModel, AssistantProperties properties,
-                            ModelRoutingProperties routing, RestClientFactory http, Clock clock) {
+                            ModelRoutingProperties routing, RestClientFactory http, Clock clock,
+                            AssistantTelemetry telemetry) {
         List<ModelCatalog.ModelSpec> specs = ModelCatalog.route(properties, routing);
-        ModelRouter.Candidate own = new ModelRouter.Candidate(properties.model(), languageModel,
-                properties.providerKind().quotaDay());
+        ModelRouter.Candidate own = new ModelRouter.Candidate(ModelCatalog.spec(properties, properties.model()),
+                languageModel);
+        ZoneId quotaDay = properties.providerKind().quotaDay();
         if (!properties.usable() || (specs.size() == 1 && specs.getFirst().isOwnModel(properties))) {
-            return new ModelRouter(List.of(own), routing, properties.providerKind().quotaDay(), clock);
+            return new ModelRouter(List.of(own), routing, quotaDay, clock, List.of(), telemetry);
         }
         if (specs.stream().noneMatch(spec -> spec.isOwnModel(properties))) {
             log.warn("stockflow.assistant.model {} is not one of stockflow.assistant.routing.models, so no question "
@@ -100,7 +103,7 @@ class AssistantModelConfig {
         List<AutoCloseable> owned = new ArrayList<>();
         for (ModelCatalog.ModelSpec spec : specs) {
             if (spec.isOwnModel(properties)) {
-                candidates.add(new ModelRouter.Candidate(spec.name(), languageModel, spec.provider().quotaDay()));
+                candidates.add(new ModelRouter.Candidate(spec, languageModel));
                 continue;
             }
             Optional<String> refusal = ModelCatalog.refusal(properties, spec);
@@ -112,17 +115,24 @@ class AssistantModelConfig {
             if (model instanceof AutoCloseable closeable) {
                 owned.add(closeable);
             }
-            candidates.add(new ModelRouter.Candidate(spec.name(), model, spec.provider().quotaDay()));
+            candidates.add(new ModelRouter.Candidate(spec, model));
         }
         if (candidates.isEmpty()) {
             log.warn("No model of stockflow.assistant.routing.models can be used: questions go to {} alone",
                     properties.model());
-            return new ModelRouter(List.of(own), routing, properties.providerKind().quotaDay(), clock);
+            return new ModelRouter(List.of(own), routing, quotaDay, clock, List.of(), telemetry);
         }
         log.info("The assistant routes questions over {}, cheapest first: a spent quota moves them on to the next "
                 + "model{}", candidates.stream().map(ModelRouter.Candidate::name).toList(), routing.escalateOnFailure()
                 ? ", and so does, once, a question a model could not answer" : "");
-        return new ModelRouter(candidates, routing, properties.providerKind().quotaDay(), clock, owned);
+        return new ModelRouter(candidates, routing, quotaDay, clock, owned, telemetry);
+    }
+
+    /** {@link #modelRouter(LanguageModel, AssistantProperties, ModelRoutingProperties, RestClientFactory, Clock,
+     * AssistantTelemetry)} without traces, as tests build it. */
+    ModelRouter modelRouter(LanguageModel languageModel, AssistantProperties properties,
+                            ModelRoutingProperties routing, RestClientFactory http, Clock clock) {
+        return modelRouter(languageModel, properties, routing, http, clock, AssistantTelemetry.NONE);
     }
 
     /** The provider's adapter for {@code properties.model()}, once the checks of {@link #languageModel} passed. */

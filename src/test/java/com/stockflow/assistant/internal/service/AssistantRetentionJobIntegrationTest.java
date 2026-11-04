@@ -75,6 +75,42 @@ class AssistantRetentionJobIntegrationTest {
                 recentVerdict)).isOne();
     }
 
+    @Test
+    @DisplayName("MCP and today runs, which belong to no conversation, go by age; a recent one stays")
+    void standaloneRunsGoByAge() {
+        UUID owner = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID old = standaloneRun(owner, "MCP", Instant.now().minus(120, ChronoUnit.DAYS));
+        UUID recent = standaloneRun(owner, "TODAY", Instant.now().minus(1, ChronoUnit.DAYS));
+
+        job.deleteIdleConversations();
+
+        assertThat(jdbc.queryForObject("select count(*) from assistant.tool_call where id = ?", Long.class, old))
+                .isZero();
+        assertThat(jdbc.queryForObject("select count(*) from assistant.tool_call where id = ?", Long.class, recent))
+                .isOne();
+    }
+
+    @Test
+    @DisplayName("the table refuses a chat run without its conversation, and an MCP run with one")
+    void channelsAndTurnsAgree() {
+        UUID owner = tx.execute(s -> ReferenceRows.user(entityManager));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> standaloneRun(owner, "CHAT", Instant.now()))
+                .hasMessageContaining("\"ck_tool_call_channel_turn\"");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> standaloneRun(owner, "EMAIL", Instant.now()))
+                .hasMessageContaining("\"ck_tool_call_channel\"");
+    }
+
+    /** A tool run of {@code channel} for {@code owner} that belongs to no conversation. */
+    private UUID standaloneRun(UUID owner, String channel, Instant at) {
+        UUID id = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO assistant.tool_call (id, channel, user_id, call_id, tool_name, arguments, outcome, result,
+                                                 duration_ms, version, created_at)
+                VALUES (?, ?, ?, 'mcp-1', 'getStockLevels', '{}'::jsonb, 'OK', '{}', 3, 0, ?)""",
+                id, channel, owner, Timestamp.from(at)));
+        return id;
+    }
+
     /** An answer in {@code conversation}: an assistant turn holding text, as the loop stores one. */
     private UUID answer(UUID conversation, Instant at) {
         UUID id = Identifiers.newId();

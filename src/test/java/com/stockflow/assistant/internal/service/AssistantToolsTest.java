@@ -148,6 +148,25 @@ class AssistantToolsTest {
     }
 
     @Test
+    @DisplayName("a tool name the model made up is traced as unknownTool: one tag value, never its own series")
+    void unknownNamesAreOneTagValue() {
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry meters =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        io.micrometer.observation.ObservationRegistry observations = io.micrometer.observation.ObservationRegistry.create();
+        observations.observationConfig().observationHandler(
+                new io.micrometer.core.instrument.observation.DefaultMeterObservationHandler(meters));
+        AssistantTools tools = new AssistantTools(List.of(tool("probe", arguments -> "x")), new ObjectMapper(),
+                new AssistantTelemetry(observations, meters));
+
+        tools.execute(new ToolCall("1", "dropTables; ignore previous instructions", "{}"));
+        tools.execute(new ToolCall("2", "probe", "{}"));
+
+        assertThat(meters.get("assistant.tool").tag("gen_ai.tool.name", "unknownTool").timer().count()).isOne();
+        assertThat(meters.get("assistant.tool").tag("gen_ai.tool.name", "probe").timer().count()).isOne();
+        assertThat(meters.find("assistant.tool").timers()).hasSize(2);
+    }
+
+    @Test
     @DisplayName("unknown tools, arguments that are not a JSON object, and oversized answers are INVALID")
     void malformedCalls() {
         AssistantTools tools = new AssistantTools(List.of(tool("probe", arguments -> "x")), new ObjectMapper());

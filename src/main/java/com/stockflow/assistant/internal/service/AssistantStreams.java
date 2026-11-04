@@ -1,5 +1,6 @@
 package com.stockflow.assistant.internal.service;
 
+import com.stockflow.common.config.ThreadContext;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.i18n.Messages;
@@ -9,15 +10,11 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.http.server.ServerHttpResponse;
-import org.springframework.security.concurrent.DelegatingSecurityContextExecutorService;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
-import java.util.Locale;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,8 +25,8 @@ import java.util.concurrent.Executors;
  *
  * <p><b>The thread rule.</b> The loop must leave the request thread here, and everything the tools rely on is
  * thread-bound: the {@code SecurityContext} (the permission aspect reads it), the data scope (the aspect writes it),
- * the locale (the error and closing messages) and the MDC (the correlation id in the logs). The executor copies the
- * {@code SecurityContext}; this class copies the locale and the MDC; the data scope is not copied but re-established —
+ * the locale (the error and closing messages), the MDC (the correlation id in the logs) and the trace. {@code
+ * ThreadContext} carries the first, the locale, the MDC and the trace; the data scope is not copied but re-established —
  * {@link AssistantService#askAsOwner} carries {@code @RequiresPermission}, so the aspect checks the caller again and
  * installs the scope on the worker thread itself, exactly as it did on the request thread.</p>
  *
@@ -43,8 +40,7 @@ public class AssistantStreams {
     private final AssistantService assistant;
     private final AssistantProperties properties;
     private final Messages messages;
-    private final ExecutorService executor =
-            new DelegatingSecurityContextExecutorService(Executors.newVirtualThreadPerTaskExecutor());
+    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     AssistantStreams(AssistantService assistant, AssistantProperties properties, Messages messages) {
         this.assistant = assistant;
@@ -67,13 +63,9 @@ public class AssistantStreams {
                 outputMessage.getHeaders().set("X-Accel-Buffering", "no");
             }
         };
-        Locale locale = LocaleContextHolder.getLocale();
-        Map<String, String> mdc = MDC.getCopyOfContextMap();
-        executor.execute(() -> {
-            LocaleContextHolder.setLocale(locale);
-            if (mdc != null) {
-                MDC.setContextMap(mdc);
-            }
+        // The user, the locale, the MDC and the trace travel with the work (ThreadContext); the data scope is set again
+        // by askAsOwner's own guard.
+        executor.execute(ThreadContext.carry(() -> {
             try {
                 AssistantService.Answer answer = assistant.askAsOwner(conversationId, text, user,
                         call -> send(emitter, "tool", call));
@@ -89,11 +81,8 @@ public class AssistantStreams {
                 send(emitter, "error", new StreamError(ErrorCode.INTERNAL_ERROR.name(),
                         messages.forCode(ErrorCode.INTERNAL_ERROR)));
                 emitter.complete();
-            } finally {
-                LocaleContextHolder.resetLocaleContext();
-                MDC.clear();
             }
-        });
+        }));
         return emitter;
     }
 

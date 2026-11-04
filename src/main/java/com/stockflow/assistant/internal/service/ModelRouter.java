@@ -55,11 +55,23 @@ class ModelRouter implements AutoCloseable {
      * @param model    its adapter
      * @param quotaDay where its vendor's quota day ends at midnight; null for the router's own
      */
-    record Candidate(String name, LanguageModel model, ZoneId quotaDay) {
+    record Candidate(String name, LanguageModel model, ZoneId quotaDay, String provider, String modelId) {
 
         Candidate {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(model, "model");
+            provider = provider == null ? "unknown" : provider;
+            modelId = modelId == null ? name : modelId;
+        }
+
+        /** A model of {@code spec}'s vendor, on that vendor's quota day. */
+        Candidate(ModelCatalog.ModelSpec spec, LanguageModel model) {
+            this(spec.name(), model, spec.provider().quotaDay(), spec.provider().id(), spec.model());
+        }
+
+        /** A model on {@code quotaDay}, its vendor unnamed in the traces. */
+        Candidate(String name, LanguageModel model, ZoneId quotaDay) {
+            this(name, model, quotaDay, null, null);
         }
 
         /** A model on the router's own quota day, as every model was when a route had one vendor. */
@@ -73,6 +85,7 @@ class ModelRouter implements AutoCloseable {
     private final ZoneId quotaDay;
     private final Clock clock;
     private final List<AutoCloseable> owned;
+    private final AssistantTelemetry telemetry;
     private final Map<String, Instant> spentUntil = new ConcurrentHashMap<>();
 
     /**
@@ -84,12 +97,20 @@ class ModelRouter implements AutoCloseable {
      */
     ModelRouter(List<Candidate> candidates, ModelRoutingProperties routing, ZoneId quotaDay, Clock clock,
                 List<AutoCloseable> owned) {
+        this(candidates, routing, quotaDay, clock, owned, AssistantTelemetry.NONE);
+    }
+
+    /** @param telemetry where each model call's span and each move of the route are recorded */
+    ModelRouter(List<Candidate> candidates, ModelRoutingProperties routing, ZoneId quotaDay, Clock clock,
+                List<AutoCloseable> owned, AssistantTelemetry telemetry) {
         if (candidates.isEmpty()) {
             throw new IllegalArgumentException("a route holds at least one model");
         }
+        this.telemetry = telemetry;
         this.candidates = candidates.stream()
-                .map(candidate -> new Candidate(candidate.name(), new Logged(candidate.name(), candidate.model()),
-                        candidate.quotaDay() == null ? quotaDay : candidate.quotaDay()))
+                .map(candidate -> new Candidate(candidate.name(), new Logged(candidate, telemetry),
+                        candidate.quotaDay() == null ? quotaDay : candidate.quotaDay(), candidate.provider(),
+                        candidate.modelId()))
                 .toList();
         this.routing = routing;
         this.quotaDay = quotaDay;
@@ -264,6 +285,7 @@ class ModelRouter implements AutoCloseable {
             at++;
             log.warn("Model {} failed before replying ({}): the question goes to {}", from, failure.errorCode(),
                     name());
+            telemetry.routeEvent("fallback", from);
             return true;
         }
 
@@ -281,6 +303,7 @@ class ModelRouter implements AutoCloseable {
             escalated = true;
             at++;
             log.info("Model {} gave no usable answer: the question is answered again on {}", from, name());
+            telemetry.routeEvent("escalation", from);
             return true;
         }
 
@@ -312,10 +335,16 @@ class ModelRouter implements AutoCloseable {
     }
 
     /**
-     * A model whose every call is logged with the model it went to (class javadoc). A failed call is logged too: the
-     * adapter's own log line has the provider's words, but not always the model.
+     * A model whose every call is logged with the model it went to (class javadoc), and traced as a {@code chat} span
+     * ({@link AssistantTelemetry#chat}). A failed call is logged too: the adapter's own log line has the provider's
+     * words, but not always the model.
      */
-    private record Logged(String name, LanguageModel model) implements LanguageModel {
+    private record Logged(String name, LanguageModel model, String provider, String modelId,
+                          AssistantTelemetry telemetry) implements LanguageModel {
+
+        Logged(Candidate candidate, AssistantTelemetry telemetry) {
+            this(candidate.name(), candidate.model(), candidate.provider(), candidate.modelId(), telemetry);
+        }
 
         @Override
         public boolean available() {
@@ -326,7 +355,7 @@ class ModelRouter implements AutoCloseable {
         public Reply next(Request request) {
             Reply reply;
             try {
-                reply = model.next(request);
+                reply = telemetry.chat(name, provider, modelId, () -> model.next(request));
             } catch (BusinessException failed) {
                 log.info("Assistant model call to {} failed: {}", name, failed.errorCode());
                 throw failed;

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.stockflow.assistant.internal.domain.ToolCall;
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.domain.ToolSpec;
 import com.stockflow.common.i18n.Messages;
@@ -39,6 +40,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -114,7 +116,7 @@ class TodayCardTest {
 
         assertThat(card.sections()).isEmpty();
         assertThat(card.generatedAt()).isEqualTo(NOW);
-        verify(tools, never()).execute(any());
+        verify(tools, never()).execute(any(), any());
     }
 
     @Test
@@ -124,7 +126,7 @@ class TodayCardTest {
         card(TOOLS.toArray(String[]::new));
 
         ArgumentCaptor<ToolCall> calls = ArgumentCaptor.forClass(ToolCall.class);
-        verify(tools, times(7)).execute(calls.capture());
+        verify(tools, times(7)).execute(calls.capture(), eq(ToolChannel.TODAY));
         Map<String, ToolSpec> specs = new HashMap<>();
         Stream.of(new FindLowStockTool(null, null), new FindExpiringLotsTool(null, null),
                         new FindOrdersTool(null, null), new FindPurchaseOrdersTool(null, null, null),
@@ -271,7 +273,7 @@ class TodayCardTest {
         assertThat(table.total()).isEqualTo(3);
         assertThat(table.truncated()).isFalse();
         assertThat(table.columns()).doesNotContain("overdue", "lines", "rejectionReason");
-        verify(tools, times(2)).execute(any());
+        verify(tools, times(2)).execute(any(), eq(ToolChannel.TODAY));
     }
 
     @Test
@@ -340,7 +342,7 @@ class TodayCardTest {
     private TodayCard.Card card(String... granted) {
         when(availability.grantedTo(USER)).thenReturn(List.of(granted));
         return new TodayCard(tools, availability, applicationMapper(), new Messages(new StaticMessageSource()),
-                Clock.fixed(NOW, ZoneOffset.UTC)).of(USER);
+                Clock.fixed(NOW, ZoneOffset.UTC), org.mockito.Mockito.mock(ToolRunRecorder.class)).of(USER);
     }
 
     private AssistantTool tool(String name) {

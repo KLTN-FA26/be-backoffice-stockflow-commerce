@@ -21,6 +21,10 @@ management:
   endpoint:
     health:
       show-details: always
+  # Every trace on a developer's machine: one question's spans are the point of looking (design §11).
+  tracing:
+    sampling:
+      probability: ${TRACE_SAMPLING:1.0}
 
 logging:
   level:
@@ -55,6 +59,8 @@ stockflow:
   inventory:
     reservation-sweep-interval: PT15S   # faster than production, so expiry is testable by hand
   assistant:
+    # The answer carries its trace id, so the playground links each answer to its trace in Jaeger (design §11).
+    expose-trace-id: ${ASSISTANT_EXPOSE_TRACE_ID:true}
     mcp:
       # On a laptop and in the assistant playground; off by default elsewhere (application.yml, AQ-17).
       enabled: ${ASSISTANT_MCP_ENABLED:true}

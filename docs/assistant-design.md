@@ -170,7 +170,7 @@ một reader giả.
 |---|---|---|
 | `conversation` | một cuộc chat | `owner_user_id` là FK tới `identity.app_user`; `ScopedEntity`, đọc với scope OWN; `title` rỗng tới câu hỏi đầu; `answering_since` là lease khóa câu hỏi đang trả lời |
 | `message` | một lượt | **chỉ ghi thêm**; `content` là `jsonb` chứa lượt đó, trong đó nội dung của nhà cung cấp được giữ dưới dạng **chuỗi** để `jsonb` không sắp xếp lại byte (§3.4); lượt đóng do ứng dụng viết có `model` = `stockflow` (§3.1) |
-| `tool_call` | một lần gọi tool | **chỉ ghi thêm**; tên tool (tool không tồn tại ghi là `unknownTool`, §3.1), tham số, kết quả `OK`/`DENIED`/`NOT_FOUND`/`INVALID`/`FAILED`, thời gian chạy, kết quả đúng như model nhận (tối đa 20.000 ký tự) |
+| `tool_call` | một lần gọi tool | **chỉ ghi thêm**; kênh (`CHAT`, `MCP`, `TODAY`, `PROACTIVE`) và người được chạy cho, từ 4/11; tên tool (tool không tồn tại ghi là `unknownTool`, §3.1), tham số (tham số không phải JSON được lưu thành một chuỗi JSON), kết quả `OK`/`DENIED`/`NOT_FOUND`/`INVALID`/`FAILED`, thời gian chạy, kết quả đúng như model nhận (tối đa 20.000 ký tự). Hội thoại và lượt model chỉ bắt buộc với `CHAT` |
 | `knowledge_chunk` | kho văn bản để truy xuất (§6) | `(source, anchor)` là duy nhất; `search_document` là `tsvector` sinh tự động; `content_hash`; từ 29/10 `embedding` (`real[]`), `embedding_model`, `embedding_hash`: cả ba hoặc không cái nào (`ck_knowledge_chunk_embedding`); JPA không map ba cột này, adapter ghi bằng SQL (§6.4) |
 | `knowledge_source` | bản build nào đánh chỉ mục mỗi tài liệu lần cuối | để một bản build cũ khởi động sau không ghi đè quy định mới hơn (§6.2) |
 | `answer_feedback` | đánh giá của người dùng cho một câu trả lời (§7), thêm 29/10 | một dòng cho mỗi câu trả lời (`uk_answer_feedback_message`); `verdict` UP/DOWN, `reason` tối đa 500 ký tự; FK tới `message` ON DELETE CASCADE nên bị xóa cùng hội thoại; `ScopedEntity`, đọc với scope OWN; `message` vẫn chỉ ghi thêm |
@@ -1213,12 +1213,11 @@ bị từ chối ghi ở mức WARN, để một loạt lần dò quyền hiện
 
 - Không ghi tham số và kết quả: chúng có thể chứa chữ người gõ (tên nhà cung cấp, ghi chú đơn), và log đi xa hơn,
   giữ lâu hơn bản ghi của khung chat.
-- Lần gọi qua MCP không vào `assistant.tool_call`, vì nó không thuộc hội thoại nào (bảng đó cần `conversation_id` và
-  `message_id`).
+- Từ 4/11 (`V20261104000100`), mỗi lần gọi qua MCP là một dòng `assistant.tool_call` với `channel = MCP`, `user_id`
+  của người gọi, tham số và kết quả, không có hội thoại; nó đi cùng job retention như hội thoại.
 
 **Chưa làm:** SSE và message server tự gửi; resources, prompts; OAuth cho client MCP (client dùng token đăng nhập và
-phải lấy lại khi hết hạn); `structuredContent` và `outputSchema` của `2025-06-18`; bảng kiểm toán riêng cho lần gọi qua
-MCP (cần migration).
+phải lấy lại khi hết hạn); `structuredContent` và `outputSchema` của `2025-06-18`.
 
 #### Kết nối Claude Desktop (hoặc một MCP client khác) với backend playground
 
@@ -1498,9 +1497,9 @@ quả của `findExpiringLots` thành hai phần và phần PO trễ ghép hai l
 bucket theo sức chứa của từng lần gọi, nên hai giới hạn trên một bucket sẽ cắt 10 câu hỏi một phút xuống còn một. Giao
 diện giữ thẻ cuối cùng cùng `generatedAt`; mở lại trong vòng một phút nhận 429 `RATE_LIMITED`.
 
-**Không có dòng trong `assistant.tool_call`.** Bảng đó gắn với một hội thoại và một lượt model; mỗi thẻ được ghi log
-với id người dùng, tên tool, kết quả và thời gian chạy, không có dữ liệu. Muốn có trong audit thì cần một migration
-(một bảng riêng, hoặc cho `tool_call` một nguồn khác ngoài hội thoại).
+**Mỗi lần đọc là một dòng `assistant.tool_call`** (từ 4/11, `V20261104000100`): `channel = TODAY`, `user_id` của người
+mở thẻ, tham số và kết quả, không có hội thoại. Việc ghi chạy trong transaction riêng (`ToolRunRecorder`); ghi lỗi thì
+log ERROR và thẻ vẫn trả về, vì tool đã chạy xong. Log vẫn có một dòng cho mỗi thẻ, không có dữ liệu.
 
 Chưa làm: "ghim" một câu trả lời thành phép kiểm tra chạy lại (cần bảng mới); ba câu tóm tắt bằng model (tốn một
 request, tính vào trần); phần PO chờ duyệt cho người duyệt, PO bị nhà cung cấp từ chối, đơn giao thất bại. Mỗi vai trò
@@ -1822,6 +1821,23 @@ Máy của chủ repo (RTX 4050 6 GB, 23 GB RAM) chạy được model cỡ 4–
 nó (không tốn hạn mức). Ollama cần context từ 16k trở lên (`OLLAMA_CONTEXT_LENGTH`), vì riêng system prompt và định
 nghĩa tool đã vài nghìn token. Máy chủ không hiểu `tool_choice: none` có thể vẫn xin tool ở lần gọi cuối; vòng lặp
 đóng câu trả lời như với mọi model làm vậy.
+
+**Quan sát được** (4/11, `AssistantTelemetry`). Mỗi câu trả lời là một cây span theo quy ước OpenTelemetry cho AI tạo
+sinh, xuất qua OTLP sang Jaeger như mọi span khác của ứng dụng:
+
+- `assistant answer`: cả câu trả lời, với kênh;
+- `chat <model>`: mỗi lần gọi model, với `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, số
+  token vào và ra, lý do dừng; lỗi thì gắn mã lỗi;
+- `execute_tool <tool>`: mỗi lần chạy tool, ở mọi kênh, với kết quả và độ dài kết quả;
+- `assistant retrieval`: mỗi lần tìm quy định, với số đoạn tìm theo từ khóa, theo nghĩa và số đoạn trả về.
+
+Span **không** chứa câu hỏi, prompt, tham số hay kết quả tool: chúng có chữ người gõ, và kho trace được nhiều người đọc
+và giữ lâu hơn bản ghi của trợ lý. Cùng các observation sinh metric: `assistant.answer`, `gen_ai.client.operation`,
+`assistant.tool` (có histogram, nên p50/p95 lấy từ Prometheus cho báo cáo §10), `gen_ai.client.token.usage` theo model
+và loại token, `assistant.route.events` cho mỗi lần chuyển model hay leo thang. Profile local lấy mẫu mọi trace và trả
+`traceId` kèm câu trả lời (`expose-trace-id`), để playground mở thẳng trace. Câu trả lời dạng luồng chạy trên một
+virtual thread, nhận người dùng, locale, MDC và trace qua `ThreadContext`, nên span của nó vẫn là con của request.
+Muốn dùng Langfuse thay Jaeger chỉ cần đổi `OTLP_TRACING_ENDPOINT`, vì tên span và thuộc tính đã theo quy ước chung.
 
 **Chính sách dữ liệu** (4/11, `DataPolicy`). `LOCAL_ONLY` là một bảo đảm: không adapter nào được dựng cho endpoint ngoài
 mạng công ty, cho khung chat, embedding, đọc ảnh và model trong danh sách định tuyến. "Trong mạng" nghĩa là mọi địa chỉ endpoint tới
@@ -2331,10 +2347,10 @@ Còn mở:
   định (lần tạm ngưng giới hạn việc treo ở một lần chờ); pgvector khi kho vượt vài nghìn đoạn; FEAT-9 (luồng 04c) chưa
   làm.
 - **MCP:** không SSE, resources hay prompts; không OAuth cho client (token hết hạn phải dán lại); chưa nói phiên bản
-  `2025-11-25` (client hỏi bản đó nhận `2025-06-18`); không `structuredContent`, `outputSchema`; lần gọi qua MCP chỉ có
-  trong log, không vào `assistant.tool_call` (cần migration); chưa có quyền riêng `assistant-mcp` (AQ-17); CORS dùng
+  `2025-11-25` (client hỏi bản đó nhận `2025-06-18`); không `structuredContent`, `outputSchema`; chưa có quyền riêng
+  `assistant-mcp` (AQ-17); CORS dùng
   chung chưa cho header `MCP-Protocol-Version`, nên client MCP chạy trong trình duyệt bị chặn ở preflight.
-- **Thẻ "hôm nay":** lần chạy tool chưa có dòng trong `assistant.tool_call` (cần migration), chỉ có log; phần PO trễ
+- **Thẻ "hôm nay":** phần PO trễ
   chỉ xét 20 PO có ngày dự kiến sớm nhất ở mỗi trạng thái, nên sót khi hơn 20 PO của một trạng thái đang trễ (ghi chú
   nói khi có thể sót), vì `findPurchaseOrders` chưa có bộ lọc PO trễ; đơn bị giữ và chờ thanh toán là 10 đơn mới nhất,
   chưa sắp theo thời gian chờ; không cache, nên mỗi lần mở thẻ, phần hàng thiếu đọc mọi SKU có ngưỡng; chưa có "ghim"

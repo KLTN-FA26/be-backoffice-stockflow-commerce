@@ -8,6 +8,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.assistant.internal.domain.ToolCall;
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.domain.ToolSpec;
@@ -45,6 +46,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -72,7 +74,8 @@ class McpServerTest {
     void setUp() {
         when(tools.specs()).thenReturn(List.of(spec("findOrder"), spec("getStockLevels"), spec("searchKnowledge")));
         when(availability.specsFor(SALES)).thenReturn(List.of(spec("findOrder"), spec("searchKnowledge")));
-        server = new McpServer(tools, availability, json, build("1.2.3"));
+        server = new McpServer(tools, availability, json, build("1.2.3"),
+                org.mockito.Mockito.mock(com.stockflow.assistant.internal.service.ToolRunRecorder.class));
     }
 
     @ParameterizedTest(name = "asked {0}, answered {1}")
@@ -140,7 +143,7 @@ class McpServerTest {
 
         assertThat(reply.status()).isEqualTo(HttpStatus.ACCEPTED);
         assertThat(reply.body()).isNull();
-        verify(tools, never()).execute(any());
+        verify(tools, never()).execute(any(), any());
     }
 
     @Test
@@ -191,7 +194,7 @@ class McpServerTest {
         assertThat(response.has("id")).as("the id member is written even when null").isTrue();
         assertThat(response.path("id").isNull()).isTrue();
         assertThat(response.has("result")).isFalse();
-        verify(tools, never()).execute(any());
+        verify(tools, never()).execute(any(), any());
     }
 
     @Test
@@ -277,13 +280,13 @@ class McpServerTest {
     @DisplayName("tools/call runs the tool through AssistantTools and answers its result as one text block")
     void callsATool() throws Exception {
         String result = "{\"orderNumber\":\"SO-1\",\"status\":\"CONFIRMED\"}";
-        when(tools.execute(any())).thenReturn(execution("findOrder", ToolOutcome.OK, result));
+        when(tools.execute(any(), eq(ToolChannel.MCP))).thenReturn(execution("findOrder", ToolOutcome.OK, result));
 
         JsonNode response = written(post(request(9, "tools/call",
                 "{\"name\":\"findOrder\",\"arguments\":{\"orderNumber\":\"SO-1\"}}")));
 
         ArgumentCaptor<ToolCall> call = ArgumentCaptor.forClass(ToolCall.class);
-        verify(tools).execute(call.capture());
+        verify(tools).execute(call.capture(), eq(ToolChannel.MCP));
         assertThat(call.getValue().name()).isEqualTo("findOrder");
         assertThat(json.readTree(call.getValue().arguments())).isEqualTo(json.readTree("{\"orderNumber\":\"SO-1\"}"));
         assertThat(response.path("id").asInt()).isEqualTo(9);
@@ -300,13 +303,13 @@ class McpServerTest {
             + "and the chat's NOT_PERMITTED text, not a protocol error")
     void aRefusalIsAResult() throws Exception {
         String refusal = "NOT_PERMITTED: Missing permission: inventory-stock-items:READ";
-        when(tools.execute(any())).thenReturn(execution("getStockLevels", ToolOutcome.DENIED, refusal));
+        when(tools.execute(any(), eq(ToolChannel.MCP))).thenReturn(execution("getStockLevels", ToolOutcome.DENIED, refusal));
 
         JsonNode response = written(post(request(10, "tools/call",
                 "{\"name\":\"getStockLevels\",\"arguments\":{\"sku\":\"EVAL-LID-90\"}}")));
 
         ArgumentCaptor<ToolCall> call = ArgumentCaptor.forClass(ToolCall.class);
-        verify(tools).execute(call.capture());
+        verify(tools).execute(call.capture(), eq(ToolChannel.MCP));
         assertThat(call.getValue().name()).isEqualTo("getStockLevels");
         assertThat(response.has("error")).isFalse();
         assertThat(response.path("result").path("isError").booleanValue()).isTrue();
@@ -316,13 +319,13 @@ class McpServerTest {
     @Test
     @DisplayName("tools/call without arguments gives the tool an empty object, which it validates itself")
     void noArguments() {
-        when(tools.execute(any())).thenReturn(execution("searchKnowledge", ToolOutcome.INVALID,
+        when(tools.execute(any(), eq(ToolChannel.MCP))).thenReturn(execution("searchKnowledge", ToolOutcome.INVALID,
                 "VALIDATION_FAILED: query is required"));
 
         post(request(8, "tools/call", "{\"name\":\"searchKnowledge\"}"));
 
         ArgumentCaptor<ToolCall> call = ArgumentCaptor.forClass(ToolCall.class);
-        verify(tools).execute(call.capture());
+        verify(tools).execute(call.capture(), eq(ToolChannel.MCP));
         assertThat(call.getValue().arguments()).isEqualTo("{}");
     }
 
@@ -342,7 +345,7 @@ class McpServerTest {
 
         assertThat(reply.status()).isEqualTo(HttpStatus.OK);
         assertThat(written(reply).path("error").path("code").asInt()).isEqualTo(McpServer.INVALID_PARAMS);
-        verify(tools, never()).execute(any());
+        verify(tools, never()).execute(any(), any());
     }
 
     @Test
@@ -357,7 +360,7 @@ class McpServerTest {
         logger.setLevel(Level.INFO);
         MDC.put(CorrelationIdFilter.MDC_KEY, "corr-mcp-1");
         try {
-            when(tools.execute(any())).thenReturn(
+            when(tools.execute(any(), eq(ToolChannel.MCP))).thenReturn(
                     execution("findOrder", ToolOutcome.OK, "{\"note\":\"gọi Nguyễn Văn A\"}"),
                     execution("getStockLevels", ToolOutcome.DENIED,
                             "NOT_PERMITTED: Missing permission: inventory-stock-items:READ"));

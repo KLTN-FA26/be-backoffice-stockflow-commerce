@@ -9,6 +9,7 @@ import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.Message;
 import com.stockflow.assistant.internal.domain.PendingMessage;
 import com.stockflow.assistant.internal.domain.ToolCall;
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolResult;
 import com.stockflow.assistant.internal.domain.ToolSpec;
@@ -20,6 +21,7 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.RequiresPermission;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -112,10 +114,20 @@ public class AssistantService {
     private final Clock clock;
     private final ObjectMapper json;
     private final ToolAvailability availability;
+    private final AssistantTelemetry telemetry;
 
     AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
                      SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
                      ObjectMapper json, ToolAvailability availability) {
+        this(conversations, models, tools, prompt, properties, messages, clock, json, availability,
+                AssistantTelemetry.NONE);
+    }
+
+    /** @param telemetry where each answer's span, the parent of its model calls and tools, is recorded */
+    @Autowired
+    AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
+                     SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
+                     ObjectMapper json, ToolAvailability availability, AssistantTelemetry telemetry) {
         this.conversations = conversations;
         this.models = models;
         this.tools = tools;
@@ -125,6 +137,7 @@ public class AssistantService {
         this.clock = clock;
         this.json = json;
         this.availability = availability;
+        this.telemetry = telemetry;
     }
 
     /** Told each time a tool finishes, for a streamed answer; on the thread that runs the loop. */
@@ -189,6 +202,10 @@ public class AssistantService {
     }
 
     private Answer ask(UUID conversationId, String text, CurrentUser user, Progress progress) {
+        return telemetry.answer(ToolChannel.CHAT, () -> answering(conversationId, text, user, progress));
+    }
+
+    private Answer answering(UUID conversationId, String text, CurrentUser user, Progress progress) {
         Instant now = clock.instant();
         String question = refuseUpFront(text, user, now);
         Turn.Question turn = new Turn.Question(question, context(user, now));

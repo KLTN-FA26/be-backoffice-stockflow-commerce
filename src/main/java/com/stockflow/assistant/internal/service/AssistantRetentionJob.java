@@ -14,6 +14,7 @@ import java.time.Instant;
  * Deletes conversations idle for longer than {@code stockflow.assistant.retention-days} (design §5.5): what was asked,
  * what the tools returned and the verdicts people gave the answers do not stay forever. The verdicts need no delete of
  * their own: each cascades from the message it rates, which cascades from its conversation, so none outlives it.
+ * Tool runs that belong to no conversation — an MCP client's, the "today" card's — go by age, after the same period.
  *
  * <p>Runs as the system, so it uses the store's unscoped delete, in batches with one transaction each, and never
  * touches a conversation being answered right now.</p>
@@ -25,11 +26,14 @@ class AssistantRetentionJob {
     static final int BATCH = 500;
 
     private final ConversationService conversations;
+    private final ToolRunRecorder runs;
     private final AssistantProperties properties;
     private final Clock clock;
 
-    AssistantRetentionJob(ConversationService conversations, AssistantProperties properties, Clock clock) {
+    AssistantRetentionJob(ConversationService conversations, ToolRunRecorder runs, AssistantProperties properties,
+                          Clock clock) {
         this.conversations = conversations;
+        this.runs = runs;
         this.properties = properties;
         this.clock = clock;
     }
@@ -46,6 +50,15 @@ class AssistantRetentionJob {
         } while (batch == BATCH);
         if (deleted > 0) {
             log.info("Assistant retention: deleted {} conversation(s) idle since before {}", deleted, cutoff);
+        }
+        int standalone = 0;
+        do {
+            batch = runs.deleteBefore(cutoff, BATCH);
+            standalone += batch;
+        } while (batch == BATCH);
+        if (standalone > 0) {
+            log.info("Assistant retention: deleted {} MCP, today and background tool run(s) from before {}",
+                    standalone, cutoff);
         }
     }
 }

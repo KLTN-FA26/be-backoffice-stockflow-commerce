@@ -156,6 +156,40 @@ class AssistantMcpIntegrationTest {
     }
 
     @Test
+    @DisplayName("every MCP call is recorded as an MCP run of its user, with no conversation; a refused one too")
+    void callsAreRecorded() throws Exception {
+        UUID planner = staff("INVENTORY_PLANNER");
+        UUID sales = staff("SALES_STAFF");
+
+        call(Role.INVENTORY_PLANNER, planner, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
+        call(Role.SALES_STAFF, sales, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
+
+        assertThat(jdbc.queryForList("""
+                SELECT outcome FROM assistant.tool_call
+                WHERE channel = 'MCP' AND user_id = ? AND conversation_id IS NULL AND tool_name = 'getStockLevels'""",
+                String.class, planner)).containsExactly("OK");
+        assertThat(jdbc.queryForList("SELECT outcome FROM assistant.tool_call WHERE channel = 'MCP' AND user_id = ?",
+                String.class, sales)).containsExactly("DENIED");
+    }
+
+    @Test
+    @DisplayName("a JSON-RPC id of any length is answered and recorded: the record's call id is the server's own")
+    void aLongRequestIdIsRecorded() throws Exception {
+        UUID planner = staff("INVENTORY_PLANNER");
+        String id = "\"" + "x".repeat(300) + "\"";
+
+        String body = http.asRole(Role.INVENTORY_PLANNER, planner, mcp("{\"jsonrpc\":\"2.0\",\"id\":" + id
+                        + ",\"method\":\"tools/call\",\"params\":{\"name\":\"getStockLevels\",\"arguments\":{\"sku\":\""
+                        + sku + "\"}}}").header("MCP-Protocol-Version", VERSION))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(json.readTree(body).path("result").path("isError").booleanValue()).isFalse();
+        assertThat(jdbc.queryForObject("""
+                SELECT call_id FROM assistant.tool_call WHERE channel = 'MCP' AND user_id = ?""", String.class,
+                planner)).startsWith("mcp-").hasSizeLessThan(100);
+    }
+
+    @Test
     @DisplayName("a tool the caller may not use, called anyway, is refused by its own guard: isError, NOT_PERMITTED "
             + "naming the permission, and none of the data")
     void aToolNotGrantedIsRefused() throws Exception {

@@ -12,10 +12,13 @@ import com.stockflow.assistant.internal.controller.dto.McpListToolsResult;
 import com.stockflow.assistant.internal.controller.dto.McpRequest;
 import com.stockflow.assistant.internal.controller.dto.McpResponse;
 import com.stockflow.assistant.internal.domain.ToolCall;
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.service.AssistantTools;
 import com.stockflow.assistant.internal.service.ToolAvailability;
+import com.stockflow.assistant.internal.service.ToolRunRecorder;
+import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.web.CorrelationIdFilter;
@@ -64,10 +67,11 @@ import java.util.Map;
  * except for batches, which it allowed and 2025-06-18 removed: no mainstream client sends one, and a batch would be
  * many tool calls for one request, so for one token of the rate limit.</p>
  *
- * <p><b>Each tool call is logged</b>, one line: the tool, its outcome, its duration, the user's id and the correlation
- * id; a denied one at WARN, where a run of them shows probing. Never the arguments or the result: they can hold what
- * people typed (a supplier's name, an order note), and an application log travels further and lives longer than the
- * chat's own records, which this endpoint does not write, an MCP call belonging to no conversation.</p>
+ * <p><b>Each tool call is recorded</b> in {@code assistant.tool_call} as an {@code MCP} run of its user, with its
+ * arguments and result, as a chat run is (since {@code V20261104000100}; it leaves with the retention job). The log
+ * line has the tool, its outcome, its duration, the user's id and the correlation id; a denied one at WARN, where a run
+ * of them shows probing. Never the arguments or the result there: they can hold what people typed (a supplier's name,
+ * an order note), and an application log travels further and lives longer than the assistant's own records.</p>
  */
 @Component
 @ConditionalOnProperty(name = AssistantMcpController.ENABLED, havingValue = "true")
@@ -134,10 +138,12 @@ class McpServer {
     private final ObjectMapper json;
     private final ObjectReader reader;
     private final String version;
+    private final ToolRunRecorder recorder;
 
     McpServer(AssistantTools tools, ToolAvailability availability, ObjectMapper json,
-              ObjectProvider<BuildProperties> build) {
+              ObjectProvider<BuildProperties> build, ToolRunRecorder recorder) {
         this.tools = tools;
+        this.recorder = recorder;
         this.availability = availability;
         this.json = json;
         // One request is one message, read one way: "{...}{...}" is refused rather than read as its first value, and a
@@ -295,8 +301,10 @@ class McpServer {
                     + "; tools/list names the tools this user may call"));
         }
         // A tool not granted to the caller runs too: its own guard refuses it, exactly as in the chat.
-        ToolExecution execution = tools.execute(new ToolCall("mcp-" + request.id().asText(), tool,
-                arguments == null || arguments.isNull() ? "{}" : write(arguments)));
+        // The client's JSON-RPC id is not the call's id: it may be any length, and the record must not depend on it.
+        ToolExecution execution = tools.execute(new ToolCall("mcp-" + Identifiers.newId(), tool,
+                arguments == null || arguments.isNull() ? "{}" : write(arguments)), ToolChannel.MCP);
+        recorder.record(ToolChannel.MCP, user.userId(), List.of(execution));
         log.atLevel(execution.outcome() == ToolOutcome.DENIED ? Level.WARN : Level.INFO)
                 .log("MCP tool call {} -> {} in {} ms for user {} (correlation id {})", tool, execution.outcome(),
                         execution.durationMs(), user.userId(), correlationId());

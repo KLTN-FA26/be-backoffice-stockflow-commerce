@@ -15,6 +15,8 @@ import com.stockflow.assistant.internal.service.ConversationService;
 import com.stockflow.assistant.internal.service.FollowUps;
 import com.stockflow.assistant.internal.service.ResultTable;
 import com.stockflow.common.security.CurrentUser;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -27,10 +29,16 @@ import java.util.Set;
 @Component
 class AssistantWebMapper {
 
-    private final FollowUps followUps;
+    /** The MDC key Micrometer Tracing puts the current trace id under (logback-spring.xml prints it). */
+    static final String TRACE_ID = "traceId";
 
-    AssistantWebMapper(FollowUps followUps) {
+    private final FollowUps followUps;
+    private final boolean exposeTraceId;
+
+    AssistantWebMapper(FollowUps followUps,
+                       @Value("${stockflow.assistant.expose-trace-id:false}") boolean exposeTraceId) {
         this.followUps = followUps;
+        this.exposeTraceId = exposeTraceId;
     }
 
     ConversationResponse toResponse(ConversationService.ConversationView conversation) {
@@ -57,7 +65,8 @@ class AssistantWebMapper {
                 new AnswerResponse.Usage(answer.usage().inputTokens(), answer.usage().cacheReadTokens(),
                         answer.usage().outputTokens()),
                 answer.citations(), proposals(answer.proposals()), tables(answer.tables()),
-                followUps.suggestionsFor(answer.followUps(), reader), answer.unverifiedNumbers());
+                followUps.suggestionsFor(answer.followUps(), reader), answer.unverifiedNumbers(),
+                exposeTraceId ? MDC.get(TRACE_ID) : null);
     }
 
     ToolCallResponse toResponse(ConversationService.ToolCallView call) {

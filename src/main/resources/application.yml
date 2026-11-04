@@ -267,6 +267,13 @@ management:
   metrics:
     tags:
       application: stockflow-monolith
+    # The assistant's answer, model-call and tool timers publish histogram buckets, so p50 and p95 come out of Prometheus
+    # for the evaluation report (docs/assistant-design.md §10.2, §11), not out of a guess.
+    distribution:
+      percentiles-histogram:
+        "[assistant.answer]": true
+        "[gen_ai.client.operation]": true
+        "[assistant.tool]": true
   otlp:
     tracing:
       # Boot's OTLP exporter reads THIS property. It does not honour OTEL_EXPORTER_OTLP_ENDPOINT -

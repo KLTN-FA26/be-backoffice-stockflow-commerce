@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 import com.stockflow.assistant.internal.domain.BusinessDate;
 import com.stockflow.assistant.internal.domain.ToolCall;
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.domain.ToolSpec;
@@ -17,6 +18,7 @@ import com.stockflow.common.web.CorrelationIdFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -46,18 +48,30 @@ import java.util.stream.Collectors;
  * the business runs on Vietnam time and reads a UTC time as local: seven hours early, and an order the 00:30
  * settlement completed shown as completed the day before. Converting here, once for every tool, means no tool
  * converts on its own and a new one cannot forget to.</p>
+ *
+ * <p><b>Each run is a span</b> ({@link AssistantTelemetry#tool}): the tool, the channel it came through, its outcome
+ * and its duration, never its arguments or result.</p>
  */
 @Component
 public class AssistantTools {
 
     private static final Logger log = LoggerFactory.getLogger(AssistantTools.class);
 
+    /** What the traces and the record call a tool that does not exist (AssistantService stores it so too). */
+    static final String UNKNOWN_TOOL = "unknownTool";
+
     private final Map<String, AssistantTool> byName;
     private final List<ToolSpec> specs;
     private final ObjectMapper json;
     private final ObjectMapper results;
+    private final AssistantTelemetry telemetry;
 
     AssistantTools(List<AssistantTool> tools, ObjectMapper json) {
+        this(tools, json, AssistantTelemetry.NONE);
+    }
+
+    @Autowired
+    AssistantTools(List<AssistantTool> tools, ObjectMapper json, AssistantTelemetry telemetry) {
         this.byName = tools.stream().collect(Collectors.toMap(tool -> tool.spec().name(), Function.identity(),
                 (first, second) -> {
                     throw new IllegalStateException("two tools are named " + first.spec().name());
@@ -67,6 +81,7 @@ public class AssistantTools {
         this.specs = tools.stream().map(AssistantTool::spec).sorted(Comparator.comparing(ToolSpec::name)).toList();
         this.json = json;
         this.results = resultMapper(json);
+        this.telemetry = telemetry;
     }
 
     /**
@@ -87,7 +102,19 @@ public class AssistantTools {
         return List.copyOf(byName.values());
     }
 
+    /** Runs a tool a question in a conversation asked for. */
     public ToolExecution execute(ToolCall call) {
+        return execute(call, ToolChannel.CHAT);
+    }
+
+    /** Runs a tool for {@code channel}: the same tool, guard and result whichever channel asks. */
+    public ToolExecution execute(ToolCall call, ToolChannel channel) {
+        // A name the model made up is one tag value, never its own series, and its text stays out of the span name.
+        String traced = byName.containsKey(call.name()) ? call.name() : UNKNOWN_TOOL;
+        return telemetry.tool(channel, traced, () -> run(call));
+    }
+
+    private ToolExecution run(ToolCall call) {
         long started = System.nanoTime();
         AssistantTool tool = byName.get(call.name());
         if (tool == null) {

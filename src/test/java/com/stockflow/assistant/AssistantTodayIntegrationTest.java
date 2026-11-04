@@ -119,7 +119,12 @@ class AssistantTodayIntegrationTest {
 
         verify(model, never()).next(any());
         assertThat(jdbc.queryForObject("select count(*) from assistant.conversation where owner_user_id = ?",
-                Long.class, planner)).as("nothing stored").isZero();
+                Long.class, planner)).as("no conversation").isZero();
+        assertThat(jdbc.queryForList("""
+                SELECT tool_name FROM assistant.tool_call
+                WHERE channel = 'TODAY' AND user_id = ? AND conversation_id IS NULL ORDER BY id""", String.class,
+                planner)).as("every read recorded, as the planner's").containsExactly("findLowStock",
+                "findExpiringLots");
         http.asRole(Role.INVENTORY_PLANNER, planner, get("/api/v1/assistant/capabilities"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.askedToday").value(0));

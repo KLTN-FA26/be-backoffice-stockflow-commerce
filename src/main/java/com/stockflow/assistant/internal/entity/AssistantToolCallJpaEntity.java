@@ -1,5 +1,6 @@
 package com.stockflow.assistant.internal.entity;
 
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.common.persistence.BaseEntity;
 import jakarta.persistence.Column;
@@ -12,16 +13,26 @@ import org.hibernate.type.SqlTypes;
 
 import java.util.UUID;
 
-/** {@code assistant.tool_call}. Append-only, like the messages it belongs to. */
+/**
+ * {@code assistant.tool_call}. Append-only. A chat run belongs to its conversation and turn; an MCP or "today" run
+ * belongs to none ({@code V20261104000100}).
+ */
 @Entity
 @Table(name = "tool_call", schema = "assistant")
 public class AssistantToolCallJpaEntity extends BaseEntity {
 
-    @Column(name = "conversation_id", nullable = false, updatable = false)
+    @Column(name = "conversation_id", updatable = false)
     private UUID conversationId;
 
-    @Column(name = "message_id", nullable = false, updatable = false)
+    @Column(name = "message_id", updatable = false)
     private UUID messageId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "channel", nullable = false, length = 16, updatable = false)
+    private ToolChannel channel;
+
+    @Column(name = "user_id", nullable = false, updatable = false)
+    private UUID userId;
 
     @Column(name = "call_id", nullable = false, length = 100, updatable = false)
     private String callId;
@@ -46,9 +57,12 @@ public class AssistantToolCallJpaEntity extends BaseEntity {
     protected AssistantToolCallJpaEntity() {
     }
 
-    public AssistantToolCallJpaEntity(UUID id, UUID conversationId, UUID messageId, String callId, String toolName,
-                             String arguments, ToolOutcome outcome, String result, int durationMs) {
+    public AssistantToolCallJpaEntity(UUID id, ToolChannel channel, UUID userId, UUID conversationId, UUID messageId,
+                                      String callId, String toolName, String arguments, ToolOutcome outcome,
+                                      String result, int durationMs) {
         super(id);
+        this.channel = channel;
+        this.userId = userId;
         this.conversationId = conversationId;
         this.messageId = messageId;
         this.callId = callId;
@@ -61,6 +75,10 @@ public class AssistantToolCallJpaEntity extends BaseEntity {
 
     public UUID getConversationId() { return conversationId; }
     public UUID getMessageId() { return messageId; }
+
+    public ToolChannel getChannel() { return channel; }
+
+    public UUID getUserId() { return userId; }
     public String getCallId() { return callId; }
     public String getToolName() { return toolName; }
     public String getArguments() { return arguments; }

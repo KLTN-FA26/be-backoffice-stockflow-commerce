@@ -29,7 +29,11 @@ public record AnswerResponse(
         @Schema(description = "Numbers the answer states, as written, that no lookup, question or context of the "
                 + "conversation holds: show them as not found in the looked-up data. Advisory; the answer is "
                 + "unchanged", example = "[\"128,4 triệu\"]")
-        List<String> unverifiedNumbers) {
+        List<String> unverifiedNumbers,
+        @Schema(description = "The trace of this answer, for opening it in Jaeger; only where "
+                + "stockflow.assistant.expose-trace-id is on (a developer's machine), null elsewhere",
+                example = "4bf92f3577b34da6a3ce929d0e0e4736")
+        String traceId) {
 
     /** Tokens across every model call the answer took. */
     public record Usage(long inputTokens, long cachedInputTokens, long outputTokens) {

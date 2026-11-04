@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.cfg.JsonNodeFeature;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.stockflow.assistant.internal.domain.ToolCall;
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.common.i18n.Messages;
@@ -135,12 +136,15 @@ public class TodayCard {
     private final ToolAvailability availability;
     private final Messages messages;
     private final Clock clock;
+    private final ToolRunRecorder recorder;
 
     /** Numbers as the tool wrote them: read as doubles, an amount of 12960000.00 would be written back as 1.296E7. */
     private final ObjectReader reader;
 
-    TodayCard(AssistantTools tools, ToolAvailability availability, ObjectMapper json, Messages messages, Clock clock) {
+    TodayCard(AssistantTools tools, ToolAvailability availability, ObjectMapper json, Messages messages, Clock clock,
+              ToolRunRecorder recorder) {
         this.tools = tools;
+        this.recorder = recorder;
         this.availability = availability;
         this.messages = messages;
         this.clock = clock;
@@ -169,39 +173,47 @@ public class TodayCard {
         Instant generatedAt = clock.instant();
         Set<String> granted = Set.copyOf(availability.grantedTo(user));
         List<ToolExecution> ran = new ArrayList<>();
-        List<Section> sections = new ArrayList<>();
-        if (granted.contains(FIND_LOW_STOCK)) {
-            sections.add(section(LOW_STOCK, run(FIND_LOW_STOCK, LOW_STOCK_ARGUMENTS, ran), LOW_STOCK_ROWS,
-                    answer -> null));
+        // Recorded whatever happens after the tools ran: the reads happened, so the trail has them.
+        try {
+            List<Section> sections = new ArrayList<>();
+            if (granted.contains(FIND_LOW_STOCK)) {
+                sections.add(section(LOW_STOCK, run(FIND_LOW_STOCK, LOW_STOCK_ARGUMENTS, ran), LOW_STOCK_ROWS,
+                        answer -> null));
+            }
+            if (granted.contains(FIND_EXPIRING_LOTS)) {
+                // One call answers both lists, each with its own total: the expired ones are the more urgent.
+                ToolExecution lots = run(FIND_EXPIRING_LOTS, EXPIRING_LOTS_ARGUMENTS, ran);
+                sections.add(section(EXPIRED_LOTS, lots, EXPIRED_ROWS, answer -> nightlyCheck()));
+                sections.add(section(EXPIRING_LOTS, lots, EXPIRING_ROWS, this::expiringNote));
+            }
+            if (granted.contains(FIND_ORDERS)) {
+                sections.add(section(HELD_ORDERS, run(FIND_ORDERS, ordersIn("ON_HOLD"), ran), HELD_ROWS,
+                        answer -> null));
+                sections.add(section(AWAITING_PAYMENT, run(FIND_ORDERS, ordersIn("PENDING_PAYMENT"), ran),
+                        AWAITING_PAYMENT_ROWS, answer -> awaitingPayment()));
+            }
+            if (granted.contains(FIND_PURCHASE_ORDERS)) {
+                sections.add(overduePurchaseOrders(ran));
+            }
+            if (granted.contains(FIND_PRODUCTION_ORDERS)) {
+                sections.add(section(OVERDUE_PRODUCTION,
+                        run(FIND_PRODUCTION_ORDERS, OVERDUE_PRODUCTION_ARGUMENTS, ran), OVERDUE_PRODUCTION_ROWS,
+                        answer -> null));
+            }
+            log.info("Assistant today card for user {}: {}", user.userId(),
+                    ran.isEmpty() ? "none of its tools is granted" : ran.stream()
+                            .map(run -> run.call().name() + " " + run.outcome() + " " + run.durationMs() + " ms")
+                            .collect(Collectors.joining(", ")));
+            return new Card(generatedAt, List.copyOf(sections));
+        } finally {
+            recorder.record(ToolChannel.TODAY, user.userId(), ran);
         }
-        if (granted.contains(FIND_EXPIRING_LOTS)) {
-            // One call answers both lists, each with its own total: the expired ones are the more urgent.
-            ToolExecution lots = run(FIND_EXPIRING_LOTS, EXPIRING_LOTS_ARGUMENTS, ran);
-            sections.add(section(EXPIRED_LOTS, lots, EXPIRED_ROWS, answer -> nightlyCheck()));
-            sections.add(section(EXPIRING_LOTS, lots, EXPIRING_ROWS, this::expiringNote));
-        }
-        if (granted.contains(FIND_ORDERS)) {
-            sections.add(section(HELD_ORDERS, run(FIND_ORDERS, ordersIn("ON_HOLD"), ran), HELD_ROWS,
-                    answer -> null));
-            sections.add(section(AWAITING_PAYMENT, run(FIND_ORDERS, ordersIn("PENDING_PAYMENT"), ran),
-                    AWAITING_PAYMENT_ROWS, answer -> awaitingPayment()));
-        }
-        if (granted.contains(FIND_PURCHASE_ORDERS)) {
-            sections.add(overduePurchaseOrders(ran));
-        }
-        if (granted.contains(FIND_PRODUCTION_ORDERS)) {
-            sections.add(section(OVERDUE_PRODUCTION, run(FIND_PRODUCTION_ORDERS, OVERDUE_PRODUCTION_ARGUMENTS, ran),
-                    OVERDUE_PRODUCTION_ROWS, answer -> null));
-        }
-        log.info("Assistant today card for user {}: {}", user.userId(), ran.isEmpty() ? "none of its tools is granted"
-                : ran.stream().map(run -> run.call().name() + " " + run.outcome() + " " + run.durationMs() + " ms")
-                        .collect(Collectors.joining(", ")));
-        return new Card(generatedAt, List.copyOf(sections));
     }
 
     /** One fixed call, through the tool's proxy as a question's call goes; the id only pairs it with its result. */
     private ToolExecution run(String tool, String arguments, List<ToolExecution> ran) {
-        ToolExecution execution = tools.execute(new ToolCall("today-" + (ran.size() + 1), tool, arguments));
+        ToolExecution execution = tools.execute(new ToolCall("today-" + (ran.size() + 1), tool, arguments),
+                ToolChannel.TODAY);
         ran.add(execution);
         return execution;
     }

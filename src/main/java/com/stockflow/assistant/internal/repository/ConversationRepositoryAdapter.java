@@ -10,6 +10,7 @@ import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.assistant.internal.entity.AssistantConversationJpaEntity;
 import com.stockflow.assistant.internal.entity.AssistantMessageJpaEntity;
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.entity.AssistantToolCallJpaEntity;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -156,8 +157,9 @@ class ConversationRepositoryAdapter implements ConversationRepository {
                 modelTurn ? Math.toIntExact(usage.cacheReadTokens()) : null,
                 modelTurn ? Math.toIntExact(usage.cacheWriteTokens()) : null));
         for (ToolExecution execution : pending.executions()) {
-            toolCalls.save(new AssistantToolCallJpaEntity(Identifiers.newId(), conversation.getId(), row.getId(),
-                    execution.call().id(), execution.call().name(), execution.call().arguments(),
+            toolCalls.save(new AssistantToolCallJpaEntity(Identifiers.newId(), ToolChannel.CHAT,
+                    conversation.getOwnerUserId(), conversation.getId(), row.getId(), execution.call().id(),
+                    execution.call().name(), ToolRunRepositoryAdapter.storable(execution.call().arguments()),
                     execution.outcome(), execution.result(), (int) Math.min(Integer.MAX_VALUE, execution.durationMs())));
         }
         return toDomain(row, pending.executions());

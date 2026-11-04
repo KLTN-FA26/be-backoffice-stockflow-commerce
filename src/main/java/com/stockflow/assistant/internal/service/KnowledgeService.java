@@ -11,6 +11,7 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.context.event.EventListener;
@@ -143,6 +144,7 @@ public class KnowledgeService {
     record Pass(int stored, int left, boolean again) {
     }
 
+    private final AssistantTelemetry telemetry;
     private final KnowledgeRepository knowledge;
     private final EmbeddingModel embeddings;
     private final TransactionTemplate tx;
@@ -163,6 +165,14 @@ public class KnowledgeService {
 
     KnowledgeService(KnowledgeRepository knowledge, EmbeddingModel embeddings, TransactionTemplate tx,
                      ObjectProvider<BuildProperties> build, Clock clock) {
+        this(knowledge, embeddings, tx, build, clock, AssistantTelemetry.NONE);
+    }
+
+    /** @param telemetry where each search's span, with what each ranking found, is recorded */
+    @Autowired
+    KnowledgeService(KnowledgeRepository knowledge, EmbeddingModel embeddings, TransactionTemplate tx,
+                     ObjectProvider<BuildProperties> build, Clock clock, AssistantTelemetry telemetry) {
+        this.telemetry = telemetry;
         this.knowledge = knowledge;
         this.embeddings = embeddings;
         this.tx = tx;
@@ -331,11 +341,15 @@ public class KnowledgeService {
      * database connection held for the provider's answer.
      */
     public List<KnowledgeChunk> search(String query, int limit) {
-        float[] question = questionVector(query);
-        List<KnowledgeChunk> found = readOnly.execute(status -> question == null
-                ? knowledge.search(query, limit)
-                : hybrid(query, question, limit));
-        return found == null ? List.of() : found;
+        return telemetry.retrieval(() -> {
+            float[] question = questionVector(query);
+            List<KnowledgeChunk> found = readOnly.execute(status -> question == null
+                    ? knowledge.search(query, limit)
+                    : hybrid(query, question, limit));
+            List<KnowledgeChunk> passages = found == null ? List.of() : found;
+            telemetry.retrievalFound("returned", passages.size());
+            return passages;
+        });
     }
 
     private List<KnowledgeChunk> hybrid(String query, float[] question, int limit) {
@@ -343,6 +357,8 @@ public class KnowledgeService {
         List<KnowledgeChunk> byWords = knowledge.search(query, depth);
         List<KnowledgeChunk> byMeaning = KnowledgeSearch.nearest(question,
                 knowledge.embedded(embeddings.name(), embeddings.dimensions()), depth);
+        telemetry.retrievalFound("words", byWords.size());
+        telemetry.retrievalFound("meaning", byMeaning.size());
         return KnowledgeSearch.fuse(byWords, byMeaning, KnowledgeSearch.namedRules(query), limit);
     }
 
