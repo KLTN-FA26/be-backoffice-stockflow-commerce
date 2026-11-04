@@ -45,9 +45,10 @@ import java.util.stream.Collectors;
 /**
  * U2: how much to reorder of some SKUs, as proposals a person turns into purchase orders (design §8).
  *
- * <p><b>Never a write.</b> The answer carries proposals the frontend pre-fills into the existing create-PO form; the
- * user edits one and submits it through that form's endpoint, under its own permission, audit and idempotency. The
- * quantity is {@link ReorderPolicy}'s arithmetic, not the model's.</p>
+ * <p><b>Never a write.</b> The answer carries proposals; storing it keeps each as a suggestion of the asker's
+ * ({@link AssistantActions}, ADR-0011), which they edit and confirm into a DRAFT purchase order under the
+ * purchase-order screen's own permission, or open in the create-PO form. The quantity is {@link ReorderPolicy}'s
+ * arithmetic, not the model's.</p>
  *
  * <p><b>One proposal per supplier.</b> A purchase order has one supplier, and the form refuses a SKU the supplier
  * does not list and a quantity that is not a multiple of <i>its</i> pack; the rounding here was done for that

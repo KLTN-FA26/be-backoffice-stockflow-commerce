@@ -514,6 +514,10 @@ public enum ErrorCode {
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** ADR-0010: a question in this conversation is still being answered; its turns must not interleave. */
     ASSISTANT_BUSY("The assistant is still answering in this conversation", 409),
+    /** ADR-0011: a suggestion of the assistant is open for a day; an older one is asked for again, not confirmed. */
+    ASSISTANT_ACTION_EXPIRED("This suggestion has expired; ask the assistant again", 409),
+    /** ADR-0011: a suggestion already dismissed, or one already confirmed that a dismissal would not undo. */
+    ASSISTANT_ACTION_CLOSED("This suggestion has already been decided", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
     SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
     SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),

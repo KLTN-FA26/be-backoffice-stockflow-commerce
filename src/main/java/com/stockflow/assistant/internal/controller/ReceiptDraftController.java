@@ -2,6 +2,7 @@ package com.stockflow.assistant.internal.controller;
 
 import com.stockflow.assistant.internal.controller.dto.ReceiptDraftResponse;
 import com.stockflow.assistant.internal.domain.ReceiptDraft;
+import com.stockflow.assistant.internal.service.AssistantActions;
 import com.stockflow.assistant.internal.service.ReceiptDraftService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.ratelimit.RateLimit;
@@ -28,7 +29,9 @@ import java.io.InputStream;
 
 /**
  * A draft goods receipt read from a photographed delivery note (design §8.1): the goods-receipt screen sends the photo
- * and the purchase order's number, and prefills the receipt it then creates with what comes back.
+ * and the purchase order's number, and prefills the receipt it then creates with what comes back. What was read is
+ * kept as a suggestion of the reader's ({@code actionId}, ADR-0011), which they may confirm into a DRAFT receipt
+ * through {@code POST /api/v1/assistant/actions/{id}/goods-receipt}; the photo is not kept.
  *
  * <p><b>The receipt screen's guard, exactly.</b> {@code procurement-goods-receipts:CREATE}, the permission of
  * {@code POST /api/v1/goods-receipts}, which creates the receipt this drafts (resource copied by value, as in
@@ -42,7 +45,8 @@ import java.io.InputStream;
  * daily cap.</p>
  *
  * <p>Multipart requests bypass the idempotency filter, as every upload does; a repeated request reads the photo
- * again, and writes nothing either time.</p>
+ * again and keeps a second suggestion. Neither replaces the other (a second reading of one order may be a second
+ * truck); confirming the second reports {@code possibleDuplicate} when the first was confirmed that day.</p>
  *
  * <p><b>Off unless asked for.</b> The endpoint exists only with {@value #ENABLED} true (environment variable
  * {@code ASSISTANT_RECEIPT_DRAFTS_ENABLED}; the local profile sets it). The whole photo goes to the model provider,
@@ -64,17 +68,21 @@ class ReceiptDraftController {
 
     private final ReceiptDraftService drafts;
 
-    ReceiptDraftController(ReceiptDraftService drafts) {
+    private final AssistantActions actions;
+
+    ReceiptDraftController(ReceiptDraftService drafts, AssistantActions actions) {
         this.drafts = drafts;
+        this.actions = actions;
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Read a delivery-note photo into a draft goods receipt for a purchase order",
             description = "Needs procurement-goods-receipts:CREATE, as creating the receipt does; a warehouse-limited "
                     + "user only for orders of their warehouses. Multipart: file (JPEG, PNG or WEBP, judged by its "
-                    + "bytes, at most 5 MB) and poNumber. Nothing is stored or written: the photo goes to the "
-                    + "assistant's model provider, and the answer is a proposal to check and enter on the "
-                    + "goods-receipt screen. Shares the assistant's rate limit of 10 a minute; does not count against "
+                    + "bytes, at most 5 MB) and poNumber. The photo goes to the assistant's model provider and is not "
+                    + "kept; what was read is kept as a suggestion (actionId) to check, then confirm into a DRAFT "
+                    + "receipt or enter on the goods-receipt screen; no actionId when no line of the order was read. "
+                    + "Shares the assistant's rate limit of 10 a minute; does not count against "
                     + "the daily question cap. 404 PURCHASE_ORDER_NOT_FOUND, 409 PURCHASE_ORDER_NOT_RECEIVABLE, 413, "
                     + "415; 429 ASSISTANT_QUOTA_EXHAUSTED; 503 ASSISTANT_UNAVAILABLE (retry), ASSISTANT_MISCONFIGURED "
                     + "or ASSISTANT_DISABLED (do not).")
@@ -88,19 +96,23 @@ class ReceiptDraftController {
         try (InputStream content = file.getInputStream()) {
             FileUpload upload = new FileUpload(file.getOriginalFilename(), file.getContentType(), file.getSize(),
                     content);
-            return ApiResponse.ok(toResponse(drafts.draft(poNumber, upload)));
+            ReceiptDraft draft = drafts.draft(poNumber, upload);
+            // Kept as a suggestion of the reader's, to confirm into a DRAFT receipt (ADR-0011); the photo is not. A
+            // reading of no line of the order has nothing to confirm, and no actionId.
+            return ApiResponse.ok(toResponse(draft, actions.suggestGoodsReceipt(user, draft)
+                    .map(AssistantActions.ActionView::id).orElse(null)));
         } catch (IOException unreadable) {
             throw new StorageException("Could not read the multipart upload", unreadable);
         }
     }
 
-    static ReceiptDraftResponse toResponse(ReceiptDraft draft) {
+    static ReceiptDraftResponse toResponse(ReceiptDraft draft, java.util.UUID actionId) {
         return new ReceiptDraftResponse(draft.poNumber(), draft.supplierName(),
                 draft.lines().stream().map(line -> new ReceiptDraftResponse.Line(line.poLineNo(), line.sku(),
                         line.ordered(), line.outstanding(), line.proposedQuantity(), line.lotNumber(),
                         line.expiryDate(), line.readText(), line.warnings())).toList(),
                 draft.unmatched().stream().map(unmatched -> new ReceiptDraftResponse.Unmatched(unmatched.readText(),
                         unmatched.quantity())).toList(),
-                draft.warnings());
+                draft.warnings(), actionId);
     }
 }

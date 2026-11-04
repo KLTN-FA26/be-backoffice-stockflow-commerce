@@ -39,7 +39,9 @@ import java.util.UUID;
 /**
  * Reads a photographed delivery note into a draft goods receipt (design §8.1, FEAT-10,
  * {@code POST /api/v1/assistant/receipt-drafts}): the person counting the delivery checks it and enters it on the
- * goods-receipt screen. ADR-0010's rule holds: a proposal, never a write. Nothing is stored, the photo included.
+ * goods-receipt screen. ADR-0010's rule holds: a proposal, never a write. This service stores nothing, the photo
+ * included; the controller keeps the draft it returns as a suggestion of the reader's (ADR-0011), and with it what was
+ * read off the paper (each line's text, the supplier's name) until the suggestion is deleted (design §8.2).
  *
  * <p><b>Refused before anything leaves.</b> The order is read through {@code procurement :: api} under the caller's
  * own data scope, which already keeps a warehouse-limited user to the orders of their warehouses, and the receipt's
@@ -139,6 +141,18 @@ public class ReceiptDraftService {
                 draft.lines().size(), draft.unmatched().size(), reading.usage().inputTokens(),
                 reading.usage().outputTokens(), (System.nanoTime() - started) / 1_000_000);
         return draft;
+    }
+
+    /**
+     * The order {@code poNumber} names, with its lines, as the draft read it: the caller's own list, warehouse limit
+     * applied. For confirming a draft against the same order it was read for.
+     *
+     * @throws BusinessException PURCHASE_ORDER_NOT_FOUND, VALIDATION_FAILED
+     */
+    PurchaseOrderSummary receivable(String poNumber) {
+        PurchaseOrderSummary order = order(number(poNumber));
+        WarehouseScope.requireWarehouse(order.warehouseId());
+        return order;
     }
 
     private static String number(String poNumber) {

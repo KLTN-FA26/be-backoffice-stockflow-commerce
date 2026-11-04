@@ -101,6 +101,63 @@ class ConversationServiceTest {
     }
 
     @Test
+    @DisplayName("storing an answer suggests its proposals on its last text, in the same call; the transcript shows "
+            + "each proposal with its suggestion")
+    void answersSuggestTheirProposals() {
+        AssistantActions actions = org.mockito.Mockito.mock(AssistantActions.class);
+        ConversationService suggesting = new ConversationService(store, verdicts, Clock.fixed(NOW, ZoneOffset.UTC),
+                json, actions);
+        ToolExecution reorder = new ToolExecution(new ToolCall("toolu_2", "proposeReorder", "{}"), ToolOutcome.OK,
+                "{\"lines\":[],\"proposals\":[{\"type\":\"PURCHASE_ORDER_DRAFT\",\"supplierCode\":\"SUP-A\","
+                        + "\"supplierName\":\"A\",\"generatedAt\":\"2026-10-25T03:00:00Z\","
+                        + "\"lines\":[{\"sku\":\"CUP-12OZ\",\"quantity\":1276}]}]}", 5);
+        List<Message> produced = List.of(
+                model(1, null, LanguageModel.StopReason.TOOL_USE, reorder),
+                results(2, "toolu_2"),
+                model(3, "Nên nhập thêm CUP-12OZ.", LanguageModel.StopReason.END_TURN));
+        UUID owner = UUID.randomUUID();
+        when(store.appendAndRelease(org.mockito.ArgumentMatchers.eq(CONVERSATION), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any())).thenReturn(produced);
+
+        suggesting.appendAndRelease(CONVERSATION, owner, NOW, List.of());
+
+        org.mockito.ArgumentCaptor<List<AnswerSources.Proposal>> proposals = org.mockito.ArgumentCaptor.forClass(List.class);
+        org.mockito.Mockito.verify(actions).suggestPurchaseOrders(org.mockito.ArgumentMatchers.eq(owner),
+                org.mockito.ArgumentMatchers.eq(CONVERSATION), org.mockito.ArgumentMatchers.eq(produced.get(2).id()),
+                proposals.capture());
+        assertThat(proposals.getValue()).singleElement()
+                .satisfies(proposal -> assertThat(proposal.key()).isEqualTo("PURCHASE_ORDER_DRAFT:SUP-A"));
+
+        UUID suggestion = UUID.randomUUID();
+        when(store.messagesInScope(CONVERSATION)).thenReturn(java.util.stream.Stream.concat(
+                java.util.stream.Stream.of(question(0, "Có nên nhập thêm CUP-12OZ không?")), produced.stream()).toList());
+        when(actions.ofAnswers(org.mockito.ArgumentMatchers.anyCollection(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.util.Map.of(produced.get(2).id(), java.util.Map.of("PURCHASE_ORDER_DRAFT:SUP-A",
+                        new AssistantActions.ActionView(suggestion,
+                                com.stockflow.assistant.internal.domain.AssistantAction.Kind.PURCHASE_ORDER_DRAFT,
+                                com.stockflow.assistant.internal.domain.AssistantAction.Status.SUGGESTED, NOW, NOW,
+                                null, null, null, null, null, null))));
+        assertThat(suggesting.transcript(CONVERSATION).get(1).actions())
+                .containsOnlyKeys("PURCHASE_ORDER_DRAFT:SUP-A")
+                .satisfies(made -> assertThat(made.get("PURCHASE_ORDER_DRAFT:SUP-A").id()).isEqualTo(suggestion));
+    }
+
+    @Test
+    @DisplayName("an answer that proposes nothing suggests nothing")
+    void noProposalNoSuggestion() {
+        AssistantActions actions = org.mockito.Mockito.mock(AssistantActions.class);
+        ConversationService suggesting = new ConversationService(store, verdicts, Clock.fixed(NOW, ZoneOffset.UTC),
+                json, actions);
+        when(store.appendAndRelease(org.mockito.ArgumentMatchers.eq(CONVERSATION), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(model(1, "Xin chào.", LanguageModel.StopReason.END_TURN)));
+
+        suggesting.appendAndRelease(CONVERSATION, UUID.randomUUID(), NOW, List.of());
+
+        org.mockito.Mockito.verifyNoInteractions(actions);
+    }
+
+    @Test
     @DisplayName("the live answer and the reopened transcript read an exchange the same way: tools, citations, "
             + "tables, unverified numbers and follow-ups alike, the earlier exchanges included")
     void liveAndReopenedAgree() {

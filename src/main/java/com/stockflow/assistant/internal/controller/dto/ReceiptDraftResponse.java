@@ -26,7 +26,9 @@ public record ReceiptDraftResponse(
         String supplierName,
         List<Line> lines,
         List<Unmatched> unmatched,
-        List<String> warnings) {
+        List<String> warnings,
+        @Schema(description = "The suggestion to confirm, edited, with POST /api/v1/assistant/actions/{actionId}/"
+                + "goods-receipt, or to dismiss") java.util.UUID actionId) {
 
     /**
      * @param poLineNo         the line of the purchase order it is

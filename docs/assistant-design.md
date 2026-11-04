@@ -787,13 +787,16 @@ Những gì thêm ngày 29/10:
 - **Ảnh phiếu giao hàng** (§8.1) cũng rời hệ thống, khi endpoint được bật (mặc định tắt). Nhà cung cấp model nhận ảnh
   đã được làm lại thành JPEG không còn metadata (không GPS, không loại máy, không giờ chụp), kèm số PO, tên nhà cung
   cấp và các dòng còn mở của PO (số dòng, SKU, tên hàng đã che qua `TypedText`, đơn vị). Ảnh có mọi thứ tờ giấy có:
-  giá, mã số thuế, địa chỉ nhà cung cấp, tên và chữ ký người giao. Ảnh không được lưu ở đâu. Việc gửi ảnh là một phần
-  của AQ-01 và cần chủ doanh nghiệp đồng ý riêng.
+  giá, mã số thuế, địa chỉ nhà cung cấp, tên và chữ ký người giao. Ảnh không được lưu ở đâu. Những gì đọc được từ
+  giấy (chữ của từng dòng, tên nhà cung cấp, số lượng, lô, hạn dùng) được lưu cùng đề xuất phiếu nhập trong
+  `assistant.action` (từ 04/11, §8.2) tới khi retention xóa nó. Việc gửi ảnh là một phần của AQ-01 và cần chủ doanh
+  nghiệp đồng ý riêng.
 - **Qua MCP** (§7), kết quả tool đi tới nhà cung cấp model của client mà người dùng tự chọn (Claude Desktop với tài
   khoản cá nhân, một agent trong IDE), không phải nhà cung cấp ứng dụng đã chọn (AQ-17).
 
 Hội thoại được `AssistantRetentionJob` xóa sau `retention-days` ngày không hoạt động (mặc định 90, chạy 03:30 giờ Việt
-Nam, có `@SchedulerLock`); đánh giá của các câu trả lời đi cùng. Claim bị bỏ lại (JVM bị kill giữa câu trả lời) không
+Nam, có `@SchedulerLock`); đánh giá và đề xuất (§8.2) của các câu trả lời đi cùng, và đề xuất phiếu nhập không gắn
+hội thoại bị xóa sau cùng số ngày tính từ lúc tạo. Claim bị bỏ lại (JVM bị kill giữa câu trả lời) không
 giữ hội thoại quá hạn; dòng đang bị khóa thì bỏ qua (`FOR UPDATE SKIP LOCKED`) để lần sau xóa. Chủ doanh nghiệp phải
 chấp nhận việc gửi dữ liệu trước khi bật ngoài môi trường phát triển (§13 AQ-01).
 
@@ -1405,7 +1408,8 @@ claude mcp add --transport http stockflow http://localhost:8090/api/v1/assistant
 chỉ có một nhà cung cấp, và form từ chối SKU nhà cung cấp không bán hoặc số lượng không chia hết pack của
 chính nhà cung cấp đó. Frontend mở form tạo PO có sẵn, đã điền sẵn một đề xuất; người dùng sửa và gửi qua
 endpoint của procurement. `generatedAt` để giao diện đánh dấu đề xuất cũ khi mở lại hội thoại, không đưa số cũ
-ra như số hiện tại. Trợ lý không gọi method ghi nào. Khi `proposeReorder` chạy nhiều lần cho một câu hỏi (model gọi
+ra như số hiện tại. Trợ lý không gọi method ghi nào; từ 04/11 mỗi đề xuất được lưu, và người hỏi xác nhận nó thành
+PO DRAFT ngay trong khung chat (§8.2). Khi `proposeReorder` chạy nhiều lần cho một câu hỏi (model gọi
 hai lần, hay câu hỏi được trả lời lại trên model mạnh hơn, §11), `AnswerSources.proposals` chỉ giữ đề xuất cuối cho
 mỗi (loại, nhà cung cấp): hai form cho một nhà cung cấp dễ thành hai PO.
 
@@ -1460,8 +1464,9 @@ của doanh nghiệp (§13 AQ-08), không phải lỗi của trợ lý.
 Người nhận hàng chụp phiếu giao hàng của nhà cung cấp và chọn PO, rồi nhận lại một phiếu nhập nháp để đối chiếu với
 giấy và nhập trên màn phiếu nhập có sẵn: `POST /api/v1/assistant/receipt-drafts` (multipart `file` + `poNumber`) trả
 `ReceiptDraftResponse {poNumber, supplierName, lines: [{poLineNo, sku, ordered, outstanding, proposedQuantity,
-lotNumber, expiryDate, readText, warnings}], unmatched: [{readText, quantity}], warnings}`. Trợ lý không tạo phiếu,
-không ghi gì, không lưu ảnh (ADR-0010).
+lotNumber, expiryDate, readText, warnings}], unmatched: [{readText, quantity}], warnings, actionId}`. Đọc ảnh không
+tạo phiếu và không lưu ảnh (ADR-0010); phiếu nháp được lưu thành một đề xuất, và chỉ thành phiếu nhập DRAFT khi người
+đọc xác nhận nó (§8.2, ADR-0011).
 
 **Tắt trừ khi bật.** Endpoint chỉ có khi `stockflow.assistant.receipt-drafts.enabled` là true (biến môi trường
 `ASSISTANT_RECEIPT_DRAFTS_ENABLED`, mặc định false; profile `local` và `test` bật); khi tắt, đường dẫn trả 404. Cả tấm
@@ -1544,6 +1549,102 @@ vẫn do form hỏi. Frontend chưa làm.
   chi phí;
 - cần bộ khoảng 20 ảnh phiếu giao hàng thật, có giá trị đúng cho từng trường (dòng PO, số lượng, lô, hạn dùng; nhất là
   việc đảo ngày và tháng), để đo độ chính xác trước khi bật với dữ liệu thật. Bộ câu hỏi chuẩn không đo được việc này.
+
+### 8.2 Xác nhận đề xuất (P5, 04/11, ADR-0011)
+
+Từ 04/11 mỗi đề xuất là một dòng `assistant.action` của người đã hỏi, và người đó xác nhận nó thành chứng từ nháp
+ngay trong khung chat. Model vẫn không có tool ghi nào.
+
+**Hai loại đề xuất.**
+
+- `PURCHASE_ORDER_DRAFT`: mỗi đề xuất của `proposeReorder` (mỗi nhà cung cấp một), ghi trong cùng transaction lưu câu
+  trả lời. `proposal_key` là `type:supplierCode`. `ProposalResponse` có thêm `actionId`, `actionStatus` và
+  `resultNumber`, cả trong câu trả lời lẫn khi đọc lại hội thoại.
+- `GOODS_RECEIPT_DRAFT`: mỗi lần đọc ảnh phiếu giao hàng (§8.1); `ReceiptDraftResponse` có thêm `actionId`. Đề xuất này
+  không gắn với hội thoại nào; `proposal_key` là `GOODS_RECEIPT_DRAFT:<số PO>`.
+
+Đề xuất được ghi sau khi câu trả lời đã được flush xuống database, vì nó trỏ tới tin nhắn của câu trả lời bằng khóa
+ngoại không deferrable (`AssistantActionRepositoryAdapter`).
+
+**Mỗi nhu cầu một đề xuất mở.** Đề xuất PO mới chuyển đề xuất PO còn mở của cùng người, cùng nhà cung cấp sang
+`SUPERSEDED` khi nó đặt đủ mọi SKU của đề xuất cũ (so SKU viết hoa, trong một câu UPDATE): hỏi lại câu đề xuất nhập
+chỉ để lại một bản nháp chờ xác nhận. Đề xuất cũ có SKU mà đề xuất mới không có là một nhu cầu khác và vẫn mở. Đã xác
+nhận, đã bỏ hay đã hết hạn thì không bị đổi; một lần xác nhận đang giữ khóa dòng được chờ, và trạng thái CONFIRMED của
+nó được đọc lại trước khi đổi. Hai đề xuất tạo cùng lúc ở hai hội thoại vẫn có thể cùng mở; khi đó phản hồi của lần
+xác nhận PO có `possibleDuplicate`, đúng cảnh báo của màn PO.
+
+Phiếu nhập không thay nhau: đọc lại phiếu giao của cùng PO có thể là chuyến xe thứ hai, và số phiếu giao chưa được
+đọc để phân biệt. Xác nhận phiếu nhập trả `possibleDuplicate` khi chính người đó đã xác nhận một phiếu khác cho cùng
+PO trong 24 giờ. Bản đọc không khớp dòng nào của PO (`NOTHING_READ`) không có `actionId`.
+
+**Trạng thái.** `SUGGESTED` → `CONFIRMED` (kèm id và số chứng từ), `DISMISSED` hoặc `SUPERSEDED`. `EXPIRED` không được
+ghi: một đề xuất `SUGGESTED` quá 24 giờ được đọc là `EXPIRED`, vì số trong nó là số của lúc hỏi. Bỏ được một đề xuất
+đã hết hạn; đã xác nhận thì không bỏ được (409 `ASSISTANT_ACTION_CLOSED`); xác nhận một đề xuất đã bỏ hay đã bị thay
+cũng là 409 `ASSISTANT_ACTION_CLOSED`. Không có trạng thái thất bại: một lần xác nhận bị từ chối cuộn lại toàn bộ và
+để đề xuất mở.
+
+**Endpoint** (`/api/v1/assistant/actions`):
+
+| | Guard | |
+|---|---|---|
+| `GET ?open=` | `assistant-conversations` READ OWN | đề xuất của tôi, mới nhất trước; `open=true` chỉ những cái còn chờ |
+| `GET /{id}` | như trên | một đề xuất của tôi |
+| `POST /{id}/purchase-order` | `procurement-purchase-orders` CREATE | tạo PO DRAFT |
+| `POST /{id}/goods-receipt` | `procurement-goods-receipts` CREATE, và UPDATE kiểm trong service | tạo phiếu nhập DRAFT đã đếm |
+| `POST /{id}/dismissal` | `assistant-conversations` CREATE OWN | bỏ đề xuất |
+
+Guard của hai endpoint xác nhận là guard của `POST /api/v1/purchase-orders` và của màn phiếu nhập (tạo rồi đếm), và
+`AssistantActionIntegrationTest` so chúng với annotation của màn hình. Mọi truy vấn lọc theo `owner_user_id` tường
+minh, không theo data scope: đề xuất của người khác là 404, kể cả với scope ALL. Tài khoản khách hàng bị từ chối như
+mọi endpoint của trợ lý.
+
+**Xác nhận PO.** Body: `{warehouseId, expectedAt, note, lines: [{sku, quantity}]}`, cùng giới hạn với form tạo PO
+(số lượng tối đa 1.000.000, mẫu SKU, ghi chú 2.000 ký tự). `expectedAt` để trống thì là hôm nay cộng lead time dài
+nhất của các dòng, như form tạo PO. Dòng phải là SKU đã đề xuất, mỗi SKU một lần, số lượng dương; bỏ dòng hay đổi số
+được, thêm SKU thì làm trên màn PO. Nhà cung cấp là nhà cung cấp của
+đề xuất, tra lại theo SKU lúc xác nhận để lấy id và tiền tệ; không còn bán SKU đó thì `SUPPLIER_NOT_FOUND`. Đơn giá để
+trống, nên procurement lấy giá hiện hành trong điều khoản nhà cung cấp; MOQ, quy cách, kho trong scope và nhà cung cấp
+còn hoạt động đều do `createPurchaseOrder` kiểm như với màn hình. Trợ lý không làm tròn lại số người dùng đã bấm. PO
+tạo ra là DRAFT; gửi duyệt, duyệt (bốn mắt, BR-PO-002) và gửi nhà cung cấp vẫn ở màn PO.
+
+**Xác nhận phiếu nhập.** Body: `{deliveryNote, note, locationCode, lines: [{poLineNo, quantity, lotNumber,
+expiryDate, locationCode, note}]}`, cùng giới hạn với màn phiếu nhập (ghi chú dòng 255 ký tự). Khu nhận hàng của dòng
+để trống thì lấy `locationCode` chung; không có cả hai là `VALIDATION_FAILED` nêu đúng dòng. PO là PO mà ảnh đã được đọc cho, đọc lại dưới scope của người xác nhận (PO của kho
+khác: `PURCHASE_ORDER_NOT_FOUND`). `poLineNo` được đổi sang id dòng; dòng không có trên PO là `VALIDATION_FAILED`.
+`GoodsReceiptDrafting.draft` (mới trong `procurement :: api`) tạo phiếu và ghi các dòng trong một transaction, qua đúng
+hai bước của màn phiếu nhập, nên lô, hạn dùng, dung sai và khu nhận hàng được kiểm như ở đó. Phiếu là DRAFT; xác nhận
+nhập kho vẫn ở màn phiếu nhập.
+
+**Đúng một lần.** Dòng action bị khóa `FOR UPDATE` trước khi đọc trạng thái của nó; chứng từ và `CONFIRMED` cùng một transaction.
+Xác nhận lần hai, kể cả với body khác, trả đúng chứng từ lần đầu. `Idempotency-Key` của filter có sẵn vẫn dùng được
+như với mọi POST.
+
+**Đo.** Counter `assistant.actions{kind, outcome, edited}` với outcome `suggested`, `confirmed`, `refused`,
+`dismissed`, `superseded`; `edited` cho biết người dùng có sửa số hay bỏ dòng trước khi xác nhận. Tỉ lệ chấp nhận là confirmed /
+suggested; tỉ lệ sửa là confirmed có `edited=true` / confirmed.
+
+**Audit.** Tạo PO và tạo phiếu nhập là các method có `@Auditable` của procurement, ở đây chạy trong transaction của
+lần xác nhận. Từ 04/11 `AuditAspect` (lớp nền) ghi entry SUCCESS của một method tham gia transaction của nơi gọi chỉ
+khi transaction đó commit; rollback thì ghi FAILURE "rolled back". Method tự khai báo `REQUIRES_NEW`, `NOT_SUPPORTED`
+hay `NEVER` vẫn được ghi ngay. Một lần xác nhận phiếu nhập bị từ chối ở bước ghi dòng không còn để lại "goods-receipt
+CREATE SUCCESS" cho một phiếu không tồn tại.
+
+**Retention.** Đề xuất trong hội thoại bị xóa cùng hội thoại (FK cascade). Đề xuất phiếu nhập không có hội thoại nên
+`AssistantRetentionJob` xóa nó theo cùng thời hạn, tính từ lúc tạo. Đề xuất phiếu nhập giữ những gì đọc được từ giấy
+(chữ của từng dòng, tên nhà cung cấp, lô, hạn dùng) tới lúc đó (§5.5).
+
+**Chưa làm:**
+
+- PO không ghi nguồn gốc. Chứng từ được tham chiếu bằng khóa ngoại thật (`purchase_order_id`, `goods_receipt_id`),
+  nhưng chỉ còn khi hội thoại còn; muốn màn PO hiện "tạo từ trợ lý" lâu dài thì cần một cột trong `procurement`.
+- Danh sách, xem và bỏ đề xuất cần `assistant-conversations`, còn đọc ảnh chỉ cần `procurement-goods-receipts:CREATE`.
+  Một vai trò chỉ có quyền nhận hàng sẽ tạo và xác nhận được đề xuất phiếu nhập nhưng không liệt kê hay bỏ được nó;
+  đề xuất đó vẫn hết hạn sau 24 giờ. Với quyền seed hiện tại mọi vai trò có quyền nhận hàng đều có quyền khung chat,
+  nên điều này chưa xảy ra.
+- Chưa đọc số phiếu giao trên giấy (§8.1), nên chưa phân biệt được chụp lại với chuyến xe thứ hai; khi đọc được, một
+  bản đọc cùng số phiếu giao có thể thay bản cũ.
+- Đề xuất PO chưa tách theo kho nhận (AQ-10): người dùng chọn một kho cho cả đề xuất.
+- Frontend thật chưa có thẻ xác nhận; playground có.
 
 ---
 

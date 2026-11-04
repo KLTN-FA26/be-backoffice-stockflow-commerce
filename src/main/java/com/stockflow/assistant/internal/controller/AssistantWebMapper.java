@@ -10,6 +10,7 @@ import com.stockflow.assistant.internal.controller.dto.TranscriptEntryResponse;
 import com.stockflow.assistant.internal.domain.AnswerFeedback;
 import com.stockflow.assistant.internal.domain.FeedbackVerdict;
 import com.stockflow.assistant.internal.service.AnswerSources;
+import com.stockflow.assistant.internal.service.AssistantActions;
 import com.stockflow.assistant.internal.service.AssistantService;
 import com.stockflow.assistant.internal.service.ConversationService;
 import com.stockflow.assistant.internal.service.FollowUps;
@@ -56,7 +57,8 @@ class AssistantWebMapper {
     TranscriptEntryResponse toResponse(ConversationService.TranscriptEntry entry, Set<String> granted) {
         return new TranscriptEntryResponse(entry.messageId(), entry.sequence(), entry.role().name(), entry.text(),
                 entry.at(), calls(entry.toolCalls()), entry.cutShort(), entry.citations(),
-                proposals(entry.proposals()), tables(entry.tables()), followUps.suggestions(entry.followUps(), granted),
+                proposals(entry.proposals(), entry.actions()), tables(entry.tables()),
+                followUps.suggestions(entry.followUps(), granted),
                 entry.unverifiedNumbers(), entry.feedback() == null ? null : entry.feedback().name());
     }
 
@@ -64,7 +66,7 @@ class AssistantWebMapper {
         return new AnswerResponse(answer.messageId(), answer.text(), calls(answer.toolCalls()), answer.cutShort(),
                 new AnswerResponse.Usage(answer.usage().inputTokens(), answer.usage().cacheReadTokens(),
                         answer.usage().outputTokens()),
-                answer.citations(), proposals(answer.proposals()), tables(answer.tables()),
+                answer.citations(), proposals(answer.proposals(), answer.actions()), tables(answer.tables()),
                 followUps.suggestionsFor(answer.followUps(), reader), answer.unverifiedNumbers(),
                 exposeTraceId ? MDC.get(TRACE_ID) : null);
     }
@@ -82,11 +84,17 @@ class AssistantWebMapper {
         return calls.stream().map(this::toResponse).toList();
     }
 
-    private static List<ProposalResponse> proposals(List<AnswerSources.Proposal> proposals) {
-        return proposals.stream().map(proposal -> new ProposalResponse(proposal.type(), proposal.supplierCode(),
-                proposal.supplierName(), proposal.generatedAt(), proposal.lines().stream()
-                .map(line -> new ProposalResponse.Line(line.sku(), line.quantity()))
-                .toList())).toList();
+    /** Each proposal with the suggestion it became (ADR-0011), when there is one. */
+    private static List<ProposalResponse> proposals(List<AnswerSources.Proposal> proposals,
+                                                    java.util.Map<String, AssistantActions.ActionView> actions) {
+        return proposals.stream().map(proposal -> {
+            AssistantActions.ActionView action = actions.get(proposal.key());
+            return new ProposalResponse(proposal.type(), proposal.supplierCode(), proposal.supplierName(),
+                    proposal.generatedAt(), proposal.lines().stream()
+                    .map(line -> new ProposalResponse.Line(line.sku(), line.quantity())).toList(),
+                    action == null ? null : action.id(), action == null ? null : action.status().name(),
+                    action == null ? null : action.resultNumber());
+        }).toList();
     }
 
     private static List<TableResponse> tables(List<ResultTable.Table> tables) {

@@ -180,6 +180,11 @@ public final class AnswerSources {
      */
     public record Proposal(String type, String supplierCode, String supplierName, Instant generatedAt,
                            List<ProposalLine> lines) {
+
+        /** Which proposal of an answer this is: one per type and supplier, as {@link #proposals} keeps them. */
+        public String key() {
+            return type + ":" + supplierCode;
+        }
     }
 
     public record ProposalLine(String sku, long quantity) {

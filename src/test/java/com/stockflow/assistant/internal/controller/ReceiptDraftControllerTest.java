@@ -1,7 +1,9 @@
 package com.stockflow.assistant.internal.controller;
 
 import com.stockflow.assistant.internal.controller.dto.ReceiptDraftResponse;
+import com.stockflow.assistant.internal.domain.AssistantAction;
 import com.stockflow.assistant.internal.domain.ReceiptDraft;
+import com.stockflow.assistant.internal.service.AssistantActions;
 import com.stockflow.assistant.internal.service.ReceiptDraftService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.BusinessException;
@@ -73,7 +75,8 @@ class ReceiptDraftControllerTest {
         CurrentUser customer = new CurrentUser(UUID.randomUUID(), "khach", Set.of(Role.CUSTOMER), Set.of(),
                 DataScope.ALL, Set.of());
 
-        assertThatThrownBy(() -> new ReceiptDraftController(drafts).draft(customer, photo(), "PO-1"))
+        assertThatThrownBy(() -> new ReceiptDraftController(drafts, mock(AssistantActions.class))
+                .draft(customer, photo(), "PO-1"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
         verifyNoInteractions(drafts);
@@ -88,8 +91,14 @@ class ReceiptDraftControllerTest {
                         "Mực in xanh 400", List.of(ReceiptDraft.OVER_DELIVERY))),
                 List.of(new ReceiptDraft.Unmatched("Pallet", 2)), List.of());
         when(drafts.draft(eq("PO-1"), any())).thenReturn(draft);
+        AssistantActions actions = mock(AssistantActions.class);
+        UUID suggestion = UUID.randomUUID();
+        when(actions.suggestGoodsReceipt(CLERK, draft)).thenReturn(java.util.Optional.of(
+                new AssistantActions.ActionView(suggestion, AssistantAction.Kind.GOODS_RECEIPT_DRAFT,
+                        AssistantAction.Status.SUGGESTED, null, null, null, null, null, null, null, null)));
 
-        ApiResponse<ReceiptDraftResponse> response = new ReceiptDraftController(drafts).draft(CLERK, photo(), "PO-1");
+        ApiResponse<ReceiptDraftResponse> response = new ReceiptDraftController(drafts, actions)
+                .draft(CLERK, photo(), "PO-1");
 
         ArgumentCaptor<FileUpload> upload = ArgumentCaptor.forClass(FileUpload.class);
         verify(drafts).draft(eq("PO-1"), upload.capture());
@@ -98,7 +107,7 @@ class ReceiptDraftControllerTest {
         assertThat(response.data()).isEqualTo(new ReceiptDraftResponse("PO-1", "Giấy Việt",
                 List.of(new ReceiptDraftResponse.Line(2, "INK-FOOD-BLUE", 500, 300, 400, "L1",
                         LocalDate.of(2027, 11, 7), "Mực in xanh 400", List.of("OVER_DELIVERY"))),
-                List.of(new ReceiptDraftResponse.Unmatched("Pallet", 2)), List.of()));
+                List.of(new ReceiptDraftResponse.Unmatched("Pallet", 2)), List.of(), suggestion));
     }
 
     private static Method handler() {

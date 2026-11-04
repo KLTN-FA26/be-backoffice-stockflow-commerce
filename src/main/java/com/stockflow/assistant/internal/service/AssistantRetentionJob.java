@@ -29,9 +29,11 @@ class AssistantRetentionJob {
     private final ToolRunRecorder runs;
     private final AssistantProperties properties;
     private final Clock clock;
+    private final AssistantActions actions;
 
     AssistantRetentionJob(ConversationService conversations, ToolRunRecorder runs, AssistantProperties properties,
-                          Clock clock) {
+                          Clock clock, AssistantActions actions) {
+        this.actions = actions;
         this.conversations = conversations;
         this.runs = runs;
         this.properties = properties;
@@ -59,6 +61,16 @@ class AssistantRetentionJob {
         if (standalone > 0) {
             log.info("Assistant retention: deleted {} MCP, today and background tool run(s) from before {}",
                     standalone, cutoff);
+        }
+        // A delivery note's suggestion belongs to no conversation; an answer's goes with its conversation.
+        int drafts = 0;
+        do {
+            batch = actions.deleteStandaloneBefore(cutoff, BATCH);
+            drafts += batch;
+        } while (batch == BATCH);
+        if (drafts > 0) {
+            log.info("Assistant retention: deleted {} suggestion(s) read from delivery notes before {}", drafts,
+                    cutoff);
         }
     }
 }

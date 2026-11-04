@@ -241,10 +241,12 @@ public class AssistantService {
             // The transcript says what became of the question: the turns so far, tools that ran included, then the
             // error's message. Right after the question, that closing turn also keeps it out of the daily cap.
             whileFailing(failure, () -> produced.add(closing(route.model(), failureText(failure))));
-            whileFailing(failure, () -> store(conversationId, claimedAt, produced));
+            whileFailing(failure, () -> store(conversationId, user.userId(), claimedAt, produced));
             throw failure;
         }
-        return Answer.of(stored, store(conversationId, claimedAt, produced), json);
+        Answer answer = Answer.of(stored, store(conversationId, user.userId(), claimedAt, produced), json);
+        return answer.proposals().isEmpty() ? answer
+                : answer.withActions(conversations.actionsOf(answer.messageId(), user.userId()));
     }
 
     /**
@@ -314,9 +316,9 @@ public class AssistantService {
      * the rest of the lease with nothing answering. What it held is lost; storing it again without its tool calls
      * would drop exactly the audit rows this class promises to keep.
      */
-    private List<Message> store(UUID conversationId, Instant claimedAt, List<PendingMessage> produced) {
+    private List<Message> store(UUID conversationId, UUID owner, Instant claimedAt, List<PendingMessage> produced) {
         try {
-            return conversations.appendAndRelease(conversationId, claimedAt, produced);
+            return conversations.appendAndRelease(conversationId, owner, claimedAt, produced);
         } catch (RuntimeException failed) {
             whileFailing(failed, () -> conversations.release(conversationId, claimedAt));
             throw failed;
@@ -769,7 +771,18 @@ public class AssistantService {
     public record Answer(UUID messageId, String text, List<ConversationService.ToolCallView> toolCalls,
                          boolean cutShort, LanguageModel.Usage usage, List<String> citations,
                          List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
-                         List<String> unverifiedNumbers, List<FollowUps.FollowUp> followUps) {
+                         List<String> unverifiedNumbers, List<FollowUps.FollowUp> followUps,
+                         java.util.Map<String, AssistantActions.ActionView> actions) {
+
+        public Answer {
+            actions = actions == null ? java.util.Map.of() : java.util.Map.copyOf(actions);
+        }
+
+        /** With the suggestions its proposals became (ADR-0011), by proposal key. */
+        Answer withActions(java.util.Map<String, AssistantActions.ActionView> made) {
+            return new Answer(messageId, text, toolCalls, cutShort, usage, citations, proposals, tables,
+                    unverifiedNumbers, followUps, made);
+        }
 
         /**
          * Read as the transcript reads it ({@link ConversationService.TranscriptEntry#answer}), plus what it cost.
@@ -795,7 +808,8 @@ public class AssistantService {
             }
             return new Answer(answer.messageId(), answer.text(), answer.toolCalls(), answer.cutShort(),
                     new LanguageModel.Usage(input, output, cacheRead, cacheWrite), answer.citations(),
-                    answer.proposals(), answer.tables(), answer.unverifiedNumbers(), answer.followUps());
+                    answer.proposals(), answer.tables(), answer.unverifiedNumbers(), answer.followUps(),
+                    java.util.Map.of());
         }
     }
 }

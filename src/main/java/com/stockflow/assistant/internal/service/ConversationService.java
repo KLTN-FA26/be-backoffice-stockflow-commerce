@@ -46,12 +46,21 @@ import java.util.UUID;
 public class ConversationService {
 
     private final ConversationRepository conversations;
+    private final AssistantActions actions;
     private final AnswerFeedbackRepository verdicts;
     private final Clock clock;
     private final ObjectMapper json;
 
     ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
                         ObjectMapper json) {
+        this(conversations, verdicts, clock, json, null);
+    }
+
+    /** @param actions the suggestions answers make (ADR-0011); null in tests of the transcript alone */
+    @org.springframework.beans.factory.annotation.Autowired
+    ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
+                        ObjectMapper json, AssistantActions actions) {
+        this.actions = actions;
         this.conversations = conversations;
         this.verdicts = verdicts;
         this.clock = clock;
@@ -99,7 +108,19 @@ public class ConversationService {
             entries.add(TranscriptEntry.question(message));
         }
         answer(asked, exchange, earlier, entries);
-        return withVerdicts(entries);
+        return withActions(withVerdicts(entries), conversationId);
+    }
+
+    /** Each answer with the suggestions its proposals became, and what their owner decided. */
+    private List<TranscriptEntry> withActions(List<TranscriptEntry> entries, UUID conversationId) {
+        if (actions == null || entries.stream().allMatch(entry -> entry.proposals().isEmpty())) {
+            return entries;
+        }
+        UUID owner = conversations.findInScope(conversationId).map(Conversation::ownerUserId).orElseThrow();
+        Map<UUID, Map<String, AssistantActions.ActionView>> made = actions.ofAnswers(entries.stream()
+                .filter(entry -> !entry.proposals().isEmpty()).map(TranscriptEntry::messageId).toList(), owner);
+        return entries.stream().map(entry -> made.containsKey(entry.messageId())
+                ? entry.withActions(made.get(entry.messageId())) : entry).toList();
     }
 
     /**
@@ -167,9 +188,45 @@ public class ConversationService {
         }
     }
 
-    /** @see ConversationRepository#appendAndRelease */
-    public List<Message> appendAndRelease(UUID conversationId, Instant claimedAt, List<PendingMessage> produced) {
-        return conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt);
+    /**
+     * Stores what the loop produced and releases the claim ({@link ConversationRepository#appendAndRelease}), and in
+     * the same transaction the purchase orders the answer proposes as suggestions of its owner (ADR-0011): a proposal
+     * shown with an answer always has its suggestion to confirm.
+     */
+    public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
+                                          List<PendingMessage> produced) {
+        List<Message> stored = conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt);
+        if (actions != null) {
+            suggest(conversationId, ownerUserId, stored);
+        }
+        return stored;
+    }
+
+    /** The answer's proposals, read as the transcript reads them: from every tool of the question, on its last text. */
+    private void suggest(UUID conversationId, UUID ownerUserId, List<Message> stored) {
+        Message answer = null;
+        List<ToolExecution> executions = new ArrayList<>();
+        for (Message message : stored) {
+            if (message.role() == MessageRole.ASSISTANT) {
+                executions.addAll(message.executions());
+                if (message.text() != null && !message.text().isBlank()) {
+                    answer = message;
+                }
+            }
+        }
+        List<AnswerSources.Proposal> proposals = AnswerSources.proposals(executions, json);
+        if (answer != null && !proposals.isEmpty()) {
+            actions.suggestPurchaseOrders(ownerUserId, conversationId, answer.id(), proposals);
+        }
+    }
+
+    /** The suggestions {@code messageId}'s answer made, by proposal; empty when it made none. */
+    @Transactional(readOnly = true)
+    public Map<String, AssistantActions.ActionView> actionsOf(UUID messageId, UUID ownerUserId) {
+        if (actions == null) {
+            return Map.of();
+        }
+        return actions.ofAnswers(List.of(messageId), ownerUserId).getOrDefault(messageId, Map.of());
     }
 
     /**
@@ -220,11 +277,16 @@ public class ConversationService {
                                   List<ToolCallView> toolCalls, boolean cutShort, List<String> citations,
                                   List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
                                   List<String> unverifiedNumbers, List<FollowUps.FollowUp> followUps,
-                                  FeedbackVerdict feedback) {
+                                  FeedbackVerdict feedback, Map<String, AssistantActions.ActionView> actions) {
+
+        public TranscriptEntry {
+            actions = actions == null ? Map.of() : Map.copyOf(actions);
+        }
 
         static TranscriptEntry question(Message message) {
             return new TranscriptEntry(message.id(), message.sequence(), MessageRole.USER, message.text(),
-                    message.createdAt(), List.of(), false, List.of(), List.of(), List.of(), List.of(), List.of(), null);
+                    message.createdAt(), List.of(), false, List.of(), List.of(), List.of(), List.of(), List.of(), null,
+                    Map.of());
         }
 
         /**
@@ -278,7 +340,7 @@ public class ConversationService {
                     last.createdAt(), executions.stream().map(ToolCallView::of).toList(), cutShort,
                     AnswerSources.citations(last.text(), executions, json),
                     AnswerSources.proposals(executions, json), ResultTable.of(executions, json),
-                    AnswerNumbers.unverified(last.text(), grounds), FollowUps.leads(executions, json), null));
+                    AnswerNumbers.unverified(last.text(), grounds), FollowUps.leads(executions, json), null, Map.of()));
         }
 
         /** The question, if any, then the turns of the messages produced for it. */
@@ -293,7 +355,13 @@ public class ConversationService {
 
         TranscriptEntry withFeedback(FeedbackVerdict verdict) {
             return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations, proposals,
-                    tables, unverifiedNumbers, followUps, verdict);
+                    tables, unverifiedNumbers, followUps, verdict, actions);
+        }
+
+        /** With the suggestions of its proposals, by proposal key ({@link AnswerSources.Proposal#key}). */
+        TranscriptEntry withActions(Map<String, AssistantActions.ActionView> made) {
+            return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations, proposals,
+                    tables, unverifiedNumbers, followUps, feedback, made);
         }
     }
 

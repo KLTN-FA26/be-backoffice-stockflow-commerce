@@ -121,6 +121,16 @@ public class AssistantTelemetry {
         meters.counter("assistant.answer.repairs", "outcome", outcome).increment();
     }
 
+    /**
+     * What became of a suggestion (ADR-0011): {@code suggested}, {@code confirmed} (with {@code edited}: whether its
+     * owner changed it first), {@code refused} (the document's module refused it; it stays open), {@code dismissed}.
+     * The acceptance rate is confirmed over suggested.
+     */
+    void action(String kind, String outcome, boolean edited) {
+        meters.counter("assistant.actions", "kind", kind, "outcome", outcome, "edited", Boolean.toString(edited))
+                .increment();
+    }
+
     /** The router moved a question: {@code fallback} before any reply, {@code escalation} after a useless one. */
     void routeEvent(String event, String from) {
         meters.counter("assistant.route.events", "event", event, "from", from).increment();
