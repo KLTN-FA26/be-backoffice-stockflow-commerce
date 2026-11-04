@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history. The migration check below needs a real merge base, and a depth-1 clone
           # has none - the diff then fails, and with the failure swallowed the check reported
@@ -204,7 +204,7 @@ jobs:
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # GHCR rejects upper-case repository names, and the organisation is KLTN-FA26. A tag may not
       # contain '/', so a branch name's slashes become dashes.
@@ -302,7 +302,7 @@ jobs:
       DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/opt/stockflow' }}
       SSH_TARGET: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Secrets reach the shell through env, never by ${{ }} inside `run:` - interpolated text
       # becomes part of the script, and a value containing a quote would break or inject into it.
