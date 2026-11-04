@@ -63,10 +63,13 @@ class AuditWriter {
      * <h2>What is given up, and why it costs nothing here</h2>
      *
      * <p>An independent write means an operation that rolls back <i>after</i> the entry is written
-     * could leave an entry describing something that did not happen. In this codebase it cannot:
-     * {@code AuditAspect} is the only caller, it sits outside the transaction advisor, and it
-     * records only once {@code proceed()} has returned — by which point the audited method's
-     * transaction has already committed. The entry describes a change that is durable.</p>
+     * could leave an entry describing something that did not happen. {@code AuditAspect}, the only
+     * caller, prevents it: it sits outside the transaction advisor, so an audited method that begins
+     * its own transaction has committed by the time it is recorded; and one that joined its caller's
+     * transaction is recorded once that transaction completes — SUCCESS if it committed, FAILURE if it
+     * rolled back. The entry describes a change that is durable. This write therefore also runs from a
+     * transaction's after-completion callback, which is one more reason it must be a transaction of
+     * its own.</p>
      *
      * <p>Failure entries need the same independence for the opposite reason: the refused approvals
      * and rejected permission changes are exactly what an investigator comes looking for, and

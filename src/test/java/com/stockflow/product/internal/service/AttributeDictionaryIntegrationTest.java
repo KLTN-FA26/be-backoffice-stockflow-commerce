@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -158,11 +159,6 @@ class AttributeDictionaryIntegrationTest {
         }
     }
 
-    /**
-     * The audit writer commits on its own, so its rows are visible from this test's transaction.
-     * A value is audited as what it is - a child row - so the trail can tell deleting a value from
-     * deleting the attribute.
-     */
     @Test
     void aStaleVersionIsReportedBeforeAnyOtherReasonToRefuseADelete() {
         var attribute = service.create("STALE", SELECT, details());
@@ -171,22 +167,34 @@ class AttributeDictionaryIntegrationTest {
                 .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
     }
 
+    /**
+     * A value is audited as what it is - a child row - so the trail can tell deleting a value from
+     * deleting the attribute. Outside this class's rolled-back transaction: an audited method that
+     * joins a transaction is recorded by its outcome (AuditAspect), so the operations commit one by
+     * one here, as they do behind the screen, and the attribute is removed afterwards.
+     */
     @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void valueOperationsAreAuditedAsAttributeUpdatesAndValueRows() {
         var attribute = service.create("AUDITED", SELECT, details());
-        var withValue = service.addValue(attribute.id(), "V1", label("One"));
-        var value = withValue.values().get(0);
-        service.updateValue(attribute.id(), value.id(), value.version(), label("Uno"), true);
-        service.deleteValue(attribute.id(), value.id(), service.get(attribute.id()).values().get(0).version());
+        try {
+            var withValue = service.addValue(attribute.id(), "V1", label("One"));
+            var value = withValue.values().get(0);
+            service.updateValue(attribute.id(), value.id(), value.version(), label("Uno"), true);
+            service.deleteValue(attribute.id(), value.id(),
+                    service.get(attribute.id()).values().get(0).version());
 
-        assertThat(auditOf(attribute.id().toString())).containsExactly(
-                "CREATE product-attribute", "UPDATE product-attribute");
-        assertThat(auditOf(value.id().toString())).containsExactly(
-                "UPDATE product-attribute-value", "DELETE product-attribute-value");
+            assertThat(auditOf(attribute.id().toString())).containsExactly(
+                    "CREATE product-attribute", "UPDATE product-attribute");
+            assertThat(auditOf(value.id().toString())).containsExactly(
+                    "UPDATE product-attribute-value", "DELETE product-attribute-value");
+        } finally {
+            service.delete(attribute.id(), service.get(attribute.id()).version());
+        }
     }
 
     private java.util.List<String> auditOf(String resourceId) {
         return jdbc.queryForList("select action || ' ' || resource_type from platform.audit_log "
-                + "where resource_id = ? order by occurred_at", String.class, resourceId);
+                + "where resource_id = ? and outcome = 'SUCCESS' order by occurred_at", String.class, resourceId);
     }
 }

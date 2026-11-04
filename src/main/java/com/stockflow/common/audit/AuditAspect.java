@@ -18,7 +18,13 @@ import org.springframework.core.annotation.Order;
 import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
+import org.springframework.transaction.interceptor.TransactionAttribute;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -46,12 +52,33 @@ import java.util.concurrent.ConcurrentMap;
  * "the audit entry commits in the same transaction as the change" would therefore be false, whether
  * the annotation sits on a controller or on a service.</p>
  *
- * <p>What actually happens is better than the alternative reading suggests: {@code proceed()}
- * returns only after the audited method's transaction has committed, so a SUCCESS entry always
- * describes a change that is already durable. The remaining gap is the reverse one — a change that
- * commits and an audit write that then fails leaves no entry. {@code AuditTrail}'s contract accepts
- * that trade knowingly: a missing audit row is recoverable from the log, and the entry is written
- * there in full; a lost business transaction is not.</p>
+ * <p>What actually happens is better than the alternative reading suggests: when the audited method
+ * begins its own transaction, {@code proceed()} returns only after it has committed, so the SUCCESS
+ * entry describes a change that is already durable. The remaining gap is the reverse one — a change
+ * that commits and an audit write that then fails leaves no entry. {@code AuditTrail}'s contract
+ * accepts that trade knowingly: a missing audit row is recoverable from the log, and the entry is
+ * written there in full; a lost business transaction is not.</p>
+ *
+ * <h2>An audited method inside someone else's transaction</h2>
+ *
+ * <p>A method can also join a transaction its caller began: one module's {@code api} called from
+ * another module's {@code @Transactional} method, or the assistant creating a draft purchase order
+ * in the transaction that marks the suggestion confirmed (ADR-0011). Its change then commits with
+ * the caller's, later, or not at all. Writing SUCCESS when {@code proceed()} returns would record a
+ * creation that a rollback afterwards undid — a goods receipt whose lines the receipt screen refused
+ * would stay in the trail as created. So when the method joined a transaction still active as it
+ * returns, the entry is built then (who, when, which record) and written once that transaction
+ * completes: as SUCCESS if it committed; if it did not, as a FAILURE saying it was rolled back,
+ * because the attempt is still something an investigator looks for. A failure is written at once,
+ * as before.</p>
+ *
+ * <p>"Joined" is read from the method's own {@code @Transactional}: one declared
+ * {@code REQUIRES_NEW} committed its own work, and one declared {@code NOT_SUPPORTED} or
+ * {@code NEVER} ran outside any, so both are recorded at once whatever their caller does next; so is
+ * a call made while synchronization is active with no actual transaction. One limit remains: a
+ * method that commits through a {@code TransactionTemplate} of its own, with no such declaration,
+ * is recorded by its caller's outcome when it has a transactional caller. No audited method does
+ * that from inside a transaction today.</p>
  *
  * <h2>Where to put {@code @Auditable}</h2>
  *
@@ -75,6 +102,10 @@ public class AuditAspect {
     /** Parsing SpEL is not free and the expressions are fixed at compile time. */
     private static final ConcurrentMap<String, Expression> EXPRESSIONS = new ConcurrentHashMap<>();
 
+    /** Reads a method's own {@code @Transactional}, as the transaction advisor does; it caches per method. */
+    private static final AnnotationTransactionAttributeSource TRANSACTIONS =
+            new AnnotationTransactionAttributeSource(false);
+
     private final AuditTrail auditTrail;
     private final CurrentUserProvider currentUserProvider;
     private final Clock clock;
@@ -93,23 +124,82 @@ public class AuditAspect {
             return joinPoint.proceed();
         }
 
+        Object result;
         try {
-            Object result = joinPoint.proceed();
-            record(auditable, joinPoint, method, AuditEntry.Outcome.SUCCESS, null, result);
-            return result;
+            result = joinPoint.proceed();
         } catch (Throwable failure) {
             if (auditable.includeFailures()) {
-                record(auditable, joinPoint, method, AuditEntry.Outcome.FAILURE, failure, null);
+                write(entry(auditable, joinPoint, method, AuditEntry.Outcome.FAILURE, failure, null), method);
             }
             throw failure;
         }
+        AuditEntry success = entry(auditable, joinPoint, method, AuditEntry.Outcome.SUCCESS, null, result);
+        if (!joinedEnclosingTransaction(joinPoint, method) || !deferred(auditable, success, method)) {
+            write(success, method);
+        }
+        return result;
     }
 
-    private void record(Auditable auditable, ProceedingJoinPoint joinPoint, Method method,
-                        AuditEntry.Outcome outcome, Throwable failure, Object result) {
+    /**
+     * Whether the method's change commits with a transaction that is still active as it returns: one is (with
+     * synchronization), and the method did not declare a transaction of its own or none at all.
+     */
+    private static boolean joinedEnclosingTransaction(ProceedingJoinPoint joinPoint, Method method) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return false;
+        }
+        TransactionAttribute own = TRANSACTIONS.getTransactionAttribute(method,
+                AopUtils.getTargetClass(joinPoint.getTarget()));
+        if (own == null) {
+            return true;
+        }
+        int propagation = own.getPropagationBehavior();
+        return propagation != TransactionDefinition.PROPAGATION_REQUIRES_NEW
+                && propagation != TransactionDefinition.PROPAGATION_NOT_SUPPORTED
+                && propagation != TransactionDefinition.PROPAGATION_NEVER;
+    }
+
+    /**
+     * Writes {@code success} once the transaction the audited method joined completes; false when no synchronization
+     * could be registered, and the entry is written now instead.
+     */
+    private boolean deferred(Auditable auditable, AuditEntry success, Method method) {
+        if (success == null) {
+            return true;
+        }
+        try {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    if (status == STATUS_COMMITTED) {
+                        write(success, method);
+                    } else if (auditable.includeFailures()) {
+                        write(rolledBack(success, status), method);
+                    }
+                }
+            });
+            return true;
+        } catch (IllegalStateException notActive) {
+            return false;
+        }
+    }
+
+    /** The entry of an operation that returned, in a transaction that then did not commit. */
+    private static AuditEntry rolledBack(AuditEntry success, int status) {
+        String why = status == TransactionSynchronization.STATUS_ROLLED_BACK
+                ? "the enclosing transaction rolled back" : "the enclosing transaction's outcome is unknown";
+        return new AuditEntry(success.actorId(), success.actorName(), success.action(), success.resourceType(),
+                success.resourceId(), AuditEntry.Outcome.FAILURE, success.correlationId(), success.clientAddress(),
+                "{\"error\":\"RolledBack\",\"message\":%s}".formatted(quote(why)), success.occurredAt());
+    }
+
+    /** The entry, as of now; null when it could not be built, which is logged and never fails the operation. */
+    private AuditEntry entry(Auditable auditable, ProceedingJoinPoint joinPoint, Method method,
+                             AuditEntry.Outcome outcome, Throwable failure, Object result) {
         try {
             Optional<CurrentUser> user = currentUserProvider.current();
-            auditTrail.record(new AuditEntry(
+            return new AuditEntry(
                     user.map(CurrentUser::userId).orElse(null),
                     user.map(CurrentUser::username).orElse("system"),
                     auditable.action(),
@@ -119,7 +209,20 @@ public class AuditAspect {
                     MDC.get(CorrelationIdFilter.MDC_KEY),
                     clientAddress(),
                     describe(failure),
-                    clock.instant()));
+                    clock.instant());
+        } catch (RuntimeException ex) {
+            log.error("Failed to build audit entry for {}.{}",
+                    method.getDeclaringClass().getSimpleName(), method.getName(), ex);
+            return null;
+        }
+    }
+
+    private void write(AuditEntry entry, Method method) {
+        if (entry == null) {
+            return;
+        }
+        try {
+            auditTrail.record(entry);
         } catch (RuntimeException ex) {
             // Belt and braces. AuditTrail.record is contractually not allowed to throw, but this
             // aspect wraps business operations and must not be the thing that fails one.

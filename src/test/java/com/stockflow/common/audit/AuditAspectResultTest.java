@@ -3,6 +3,10 @@ package com.stockflow.common.audit;
 import com.stockflow.common.security.CurrentUserProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -37,6 +41,13 @@ class AuditAspectResultTest {
 
         @Auditable(action = AuditAction.UPDATE, resourceType = "thing", resourceId = "#id")
         public Created update(UUID id) {
+            return new Created(id);
+        }
+
+        /** Commits its own transaction: what its caller does next cannot undo it. */
+        @Auditable(action = AuditAction.UPDATE, resourceType = "thing", resourceId = "#id")
+        @Transactional(propagation = Propagation.REQUIRES_NEW)
+        public Created updateOnItsOwn(UUID id) {
             return new Created(id);
         }
     }
@@ -80,5 +91,98 @@ class AuditAspectResultTest {
 
         assertThat(entries).singleElement()
                 .satisfies(entry -> assertThat(entry.resourceId()).isEqualTo(id.toString()));
+    }
+
+    /**
+     * Joined to a transaction its caller began, the method's change commits with the caller's: the SUCCESS entry waits
+     * for that commit, and a rollback records the attempt as a FAILURE instead (ADR-0011: a goods receipt whose lines
+     * were refused must not stay in the trail as created).
+     */
+    @Test
+    void insideAnEnclosingTransactionTheEntryWaitsForItsOutcome() {
+        enclosingTransaction();
+        try {
+            proxied().create("sofa");
+            assertThat(entries).as("nothing is durable yet").isEmpty();
+            complete(TransactionSynchronization.STATUS_COMMITTED);
+        } finally {
+            endTransaction();
+        }
+        assertThat(entries).singleElement().satisfies(entry -> {
+            assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS);
+            assertThat(entry.resourceId()).isEqualTo(Catalogue.NEW_ID.toString());
+            assertThat(entry.occurredAt()).as("when it returned").isEqualTo(Instant.parse("2026-10-04T10:00:00Z"));
+        });
+    }
+
+    @Test
+    void anEnclosingRollbackRecordsTheAttemptAsAFailure() {
+        enclosingTransaction();
+        try {
+            proxied().create("sofa");
+            complete(TransactionSynchronization.STATUS_ROLLED_BACK);
+        } finally {
+            endTransaction();
+        }
+        assertThat(entries).singleElement().satisfies(entry -> {
+            assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.FAILURE);
+            assertThat(entry.resourceId()).isEqualTo(Catalogue.NEW_ID.toString());
+            assertThat(entry.details()).contains("RolledBack").contains("rolled back");
+        });
+    }
+
+    @Test
+    void aFailureInsideAnEnclosingTransactionIsRecordedAtOnce() {
+        enclosingTransaction();
+        try {
+            assertThatThrownBy(() -> proxied().create(" ")).isInstanceOf(IllegalArgumentException.class);
+            assertThat(entries).singleElement()
+                    .satisfies(entry -> assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.FAILURE));
+            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+        } finally {
+            endTransaction();
+        }
+    }
+
+    /** REQUIRES_NEW committed its own work by the time it returned: a rollback of its caller does not undo it. */
+    @Test
+    void aMethodWithATransactionOfItsOwnIsRecordedAtOnce() {
+        UUID id = UUID.fromString("01a10000-0000-7000-8000-0000000000cc");
+        enclosingTransaction();
+        try {
+            proxied().updateOnItsOwn(id);
+            assertThat(entries).singleElement()
+                    .satisfies(entry -> assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS));
+            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+        } finally {
+            endTransaction();
+        }
+    }
+
+    /** Synchronization with no transaction (a SUPPORTS scope): nothing can roll the change back, so it is written. */
+    @Test
+    void synchronizationWithoutATransactionDefersNothing() {
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            proxied().create("sofa");
+            assertThat(entries).singleElement()
+                    .satisfies(entry -> assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    private static void enclosingTransaction() {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+    }
+
+    private static void endTransaction() {
+        TransactionSynchronizationManager.setActualTransactionActive(false);
+        TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    private static void complete(int status) {
+        TransactionSynchronizationManager.getSynchronizations().forEach(sync -> sync.afterCompletion(status));
     }
 }
