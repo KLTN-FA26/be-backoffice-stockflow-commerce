@@ -1,9 +1,15 @@
 package com.stockflow.assistant.internal.controller;
 
-/** The permission resource of the assistant's endpoints, seeded by V20261026000200, and their shared rate limit. */
+/**
+ * The permission resources of the assistant's endpoints, seeded by V20261026000200 and V20261104000500, and their
+ * shared rate limit.
+ */
 final class AssistantResources {
 
     static final String CONVERSATIONS = "assistant-conversations";
+
+    /** The MCP endpoint and its personal tokens (ADR-0013), granted per role apart from the chat (AQ-17). */
+    static final String MCP = "assistant-mcp";
 
     /**
      * The rate-limit bucket of every way of spending the assistant's model calls or tools: the plain and the streamed

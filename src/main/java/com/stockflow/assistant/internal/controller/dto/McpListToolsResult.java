@@ -13,13 +13,16 @@ public record McpListToolsResult(List<Tool> tools) {
     /**
      * One tool as the chat's model is told about it.
      *
-     * @param inputSchema the JSON Schema the tool declares, exactly as the Claude adapter sends it: an object whose
-     *                    every property is required and that allows no other
+     * @param inputSchema  the JSON Schema the tool declares, exactly as the Claude adapter sends it: an object whose
+     *                     every property is required and that allows no other
+     * @param outputSchema the JSON Schema of the tool's {@code structuredContent}, generated from the record it answers
+     *                     with; absent for a client of 2025-03-26, which knows neither, and for a tool with no schema
      */
     public record Tool(
             @Schema(example = "findOrder") String name,
             String description,
             Map<String, Object> inputSchema,
+            Map<String, Object> outputSchema,
             Annotations annotations) {
     }
 

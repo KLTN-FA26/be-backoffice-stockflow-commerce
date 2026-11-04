@@ -79,8 +79,8 @@ class McpServerTest {
     }
 
     @ParameterizedTest(name = "asked {0}, answered {1}")
-    @CsvSource({"2025-06-18, 2025-06-18", "2025-03-26, 2025-03-26", "2024-11-05, 2025-06-18",
-            "2099-01-01, 2025-06-18"})
+    @CsvSource({"2025-11-25, 2025-11-25", "2025-06-18, 2025-06-18", "2025-03-26, 2025-03-26",
+            "2024-11-05, 2025-11-25", "2099-01-01, 2025-11-25"})
     @DisplayName("initialize answers the version asked for when the server speaks it, otherwise the newest it does")
     void negotiatesTheProtocolVersion(String asked, String answered) throws Exception {
         McpServer.Reply reply = post(request(1, "initialize", "{\"protocolVersion\":\"" + asked + "\","
@@ -242,7 +242,7 @@ class McpServerTest {
         JsonNode response = written(refused);
         assertThat(response.path("id").asInt()).isEqualTo(4);
         assertThat(response.path("error").path("code").asInt()).isEqualTo(McpServer.INVALID_REQUEST);
-        assertThat(response.path("error").path("message").asText()).contains("2025-06-18");
+        assertThat(response.path("error").path("message").asText()).contains("2025-11-25", "2025-06-18");
 
         assertThat(post("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", "1999-01-01").status())
                 .as("a notification is a request of the transport too").isEqualTo(HttpStatus.BAD_REQUEST);
@@ -250,6 +250,73 @@ class McpServerTest {
                 .isEqualTo(HttpStatus.OK);
         assertThat(post(request(6, "tools/list", "{}"), "2025-03-26").status()).isEqualTo(HttpStatus.OK);
         assertThat(post(request(7, "tools/list", "{}"), null).status()).isEqualTo(HttpStatus.OK);
+        assertThat(post(request(8, "tools/list", "{}"), "2025-11-25").status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @ParameterizedTest(name = "version header {0}")
+    @ValueSource(strings = {"2025-11-25", "2025-06-18"})
+    @DisplayName("from 2025-06-18, tools/list gives each tool its output schema and a call with data gives it as "
+            + "structuredContent too, the same JSON as the text")
+    void structuredResults(String version) throws Exception {
+        Map<String, Object> schema = Map.of("type", "object", "properties", Map.of("status", Map.of("type", "string")));
+        when(tools.outputSchema("findOrder")).thenReturn(java.util.Optional.of(schema));
+        String result = "{\"orderNumber\":\"SO-1\",\"status\":\"CONFIRMED\"}";
+        when(tools.execute(any(), eq(ToolChannel.MCP))).thenReturn(execution("findOrder", ToolOutcome.OK, result));
+
+        JsonNode listed = written(post(request(2, "tools/list", "{}"), version)).path("result").path("tools");
+        JsonNode answer = written(post(request(9, "tools/call",
+                "{\"name\":\"findOrder\",\"arguments\":{\"orderNumber\":\"SO-1\"}}"), version)).path("result");
+
+        assertThat(listed.get(0).path("outputSchema")).isEqualTo(json.valueToTree(schema));
+        assertThat(listed.get(1).has("outputSchema")).as("searchKnowledge has none here").isFalse();
+        assertThat(answer.path("structuredContent")).isEqualTo(json.readTree(result));
+        assertThat(answer.path("content").get(0).path("text").asText()).isEqualTo(result);
+        assertThat(answer.path("isError").booleanValue()).isFalse();
+    }
+
+    @ParameterizedTest(name = "version header {0}")
+    @org.junit.jupiter.params.provider.NullSource
+    @ValueSource(strings = "2025-03-26")
+    @DisplayName("a client of 2025-03-26, or one sending no version header, gets neither: it knows neither")
+    void noStructuredResultsBefore20250618(String version) throws Exception {
+        when(tools.outputSchema("findOrder")).thenReturn(java.util.Optional.of(Map.of("type", "object")));
+        when(tools.execute(any(), eq(ToolChannel.MCP)))
+                .thenReturn(execution("findOrder", ToolOutcome.OK, "{\"orderNumber\":\"SO-1\"}"));
+
+        JsonNode listed = written(post(request(2, "tools/list", "{}"), version)).path("result").path("tools");
+        JsonNode answer = written(post(request(9, "tools/call",
+                "{\"name\":\"findOrder\",\"arguments\":{\"orderNumber\":\"SO-1\"}}"), version)).path("result");
+
+        assertThat(listed.get(0).has("outputSchema")).isFalse();
+        assertThat(answer.has("structuredContent")).isFalse();
+        assertThat(answer.path("content").get(0).path("text").asText()).isEqualTo("{\"orderNumber\":\"SO-1\"}");
+    }
+
+    @Test
+    @DisplayName("a result that is not data carries no structuredContent, which a client would hold to the schema")
+    void anErrorHasNoStructuredContent() throws Exception {
+        when(tools.outputSchema("getStockLevels")).thenReturn(java.util.Optional.of(Map.of("type", "object")));
+        when(tools.execute(any(), eq(ToolChannel.MCP))).thenReturn(execution("getStockLevels", ToolOutcome.DENIED,
+                "NOT_PERMITTED: Missing permission: inventory-stock-items:READ"));
+
+        JsonNode answer = written(post(request(10, "tools/call",
+                "{\"name\":\"getStockLevels\",\"arguments\":{\"sku\":\"EVAL-LID-90\"}}"), "2025-11-25"))
+                .path("result");
+
+        assertThat(answer.path("isError").booleanValue()).isTrue();
+        assertThat(answer.has("structuredContent")).isFalse();
+    }
+
+    @Test
+    @DisplayName("an Origin refused is 403 with a JSON-RPC error and no id")
+    void originRefused() throws Exception {
+        McpServer.Reply refused = McpServer.originRefused();
+
+        assertThat(refused.status()).isEqualTo(HttpStatus.FORBIDDEN);
+        JsonNode response = written(refused);
+        assertThat(response.path("error").path("code").asInt()).isEqualTo(McpServer.INVALID_REQUEST);
+        assertThat(response.has("id")).isTrue();
+        assertThat(response.path("id").isNull()).isTrue();
     }
 
     @Test

@@ -518,6 +518,10 @@ public enum ErrorCode {
     ASSISTANT_ACTION_EXPIRED("This suggestion has expired; ask the assistant again", 409),
     /** ADR-0011: a suggestion already dismissed, or one already confirmed that a dismissal would not undo. */
     ASSISTANT_ACTION_CLOSED("This suggestion has already been decided", 409),
+    /** ADR-0013: a credential that outlives the session (an MCP token) is made only just after signing in. */
+    RECENT_SIGN_IN_REQUIRED("Sign in again to do this", 403),
+    /** ADR-0013: a user holds at most ten live MCP tokens; one they no longer use is revoked first. */
+    ASSISTANT_MCP_TOKEN_LIMIT("You already have as many MCP tokens as allowed; revoke one first", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
     SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
     SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),

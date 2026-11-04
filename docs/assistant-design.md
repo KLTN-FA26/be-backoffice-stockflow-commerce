@@ -1231,8 +1231,11 @@ nhập, như trong khung chat. Endpoint chỉ có khi `stockflow.assistant.mcp.e
   `notifications/cancelled`): trả 202 không body. Response của client cũng trả 202, vì server không bao giờ gửi
   request nào.
 - Các method: `initialize`, `ping`, `tools/list`, `tools/call`. Method khác là lỗi `-32601`.
-- `initialize` trả đúng phiên bản client hỏi nếu server nói được (`2025-06-18`, `2025-03-26`), không thì trả bản mới
-  nhất (`2025-06-18`), đúng như vòng đời MCP quy định.
+- `initialize` trả đúng phiên bản client hỏi nếu server nói được (`2025-11-25`, `2025-06-18`, `2025-03-26`), không thì
+  trả bản mới nhất (`2025-11-25`), đúng như vòng đời MCP quy định. Bản `2025-11-25` (P7, 05/11) không đổi gì server
+  này làm khác `2025-06-18`: các tính năng mới (tasks, icons, sampling có tool, elicitation qua URL) đều tùy chọn và
+  không được cung cấp; các quy tắc mới cho một server như thế này (lỗi tham số là kết quả của tool, 403 cho `Origin`
+  sai, JSON Schema 2020-12 là mặc định) đã đúng từ trước.
   - `capabilities` chỉ có `tools`, với `listChanged: false`.
   - `serverInfo` là `stockflow-assistant` kèm phiên bản build.
   - `instructions` tóm tắt các quy tắc của system prompt mà model của client cần: giờ Việt Nam; số đếm lấy từ
@@ -1256,7 +1259,24 @@ tool có:
 - `name` và `description` của `ToolSpec`;
 - `inputSchema`: chính JSON Schema mà `ToolSpec` mang, đúng dạng adapter Claude gửi (mọi thuộc tính bắt buộc,
   `additionalProperties: false`);
+- `outputSchema` (từ `2025-06-18`): JSON Schema của kết quả, sinh từ record mà `run()` của tool trả về
+  (`ToolOutputSchema`), xem dưới;
 - `annotations` `readOnlyHint: true`, `openWorldHint: false`.
+
+**`outputSchema` được sinh, không viết tay.** Client nhận `outputSchema` sẽ kiểm `structuredContent` theo nó, và
+đánh lỗi lần gọi khi hai thứ không khớp. Schema sai làm hỏng một tool đang chạy đúng, tệ hơn là không có schema.
+Schema viết tay cho từng tool sẽ lệch khỏi record ngay lần đầu có người thêm một trường.
+
+- `ToolOutputSchema` đọc record qua đúng phần introspection của Jackson mà mapper kết quả dùng để ghi JSON. Với kiểu
+  JDK (Instant, LocalDate, Duration…), nó hỏi chính mapper xem ghi ra dạng gì. Một trường có trong schema đúng khi nó
+  có trong JSON, đúng tên và đúng dạng.
+- Chỉ các trường kiểu nguyên thủy là `required`, vì mapper bỏ giá trị null (`non_null`). Object để mở (không có
+  `additionalProperties: false`), nên client giữ schema cũ vẫn nhận kết quả có thêm trường.
+- Không có `$ref`: record không đệ quy, schema viết thẳng vào nhau. Không có `format`: một validator không biết format
+  sẽ từ chối cả schema (Ajv khi thiếu plugin formats), nên ngày giờ được nói bằng `description`.
+- `ToolOutputSchemaTest` kiểm cả 19 tool: dựng một kết quả đủ mọi trường và một kết quả bỏ hết trường được phép null,
+  ghi bằng mapper thật, rồi kiểm theo schema. Test cũng đòi schema có tên mọi trường được ghi, và không có giá trị nào
+  là `{}` (nhận mọi thứ).
 
 Danh sách chỉ có một trang, không có `cursor`.
 
@@ -1268,6 +1288,10 @@ Danh sách chỉ có một trang, không có `cursor`.
   quyết định client được thấy gì, tool mới quyết định chạy.
 - Kết quả là `content: [{type: "text", text}]`. `text` đúng là chuỗi model của khung chat nhận: JSON của tool (giờ Việt
   Nam kèm `+07:00`), hoặc dòng lỗi như `NOT_PERMITTED: Missing permission: inventory-stock-items:READ`.
+- Từ `2025-06-18`, kết quả `OK` có thêm `structuredContent`: chính JSON đó dưới dạng object, khớp `outputSchema`.
+  `text` vẫn giữ nguyên, như giao thức khuyên, cho client chỉ đọc chữ. Kết quả lỗi không có `structuredContent`.
+  Client `2025-03-26` không biết cả hai thứ này nên không nhận; client đó không gửi header phiên bản, và giao thức quy
+  định khi đó coi là `2025-03-26`.
 - `isError: true` với mọi kết quả trừ `OK`.
 
 Hai loại lỗi được giữ riêng, như giao thức quy định:
@@ -1287,17 +1311,28 @@ câu trả lời HTTP có trước khi endpoint chạy.
 
 **Bảo mật.**
 
-- Không có đường đăng nhập mới. Client gửi chính token JWT mà `POST /api/v1/identity/auth/login` cấp, trong header
-  `Authorization: Bearer …`. Không có token là 401 ngay ở filter chain. Khi tắt bảo mật để làm việc cục bộ,
-  `@AuthenticatedUser` vẫn từ chối request không có người dùng (401), nên không profile nào để tool trả lời một client
-  ẩn danh.
-- Guard giống endpoint hỏi của khung chat: `@RequiresPermission(assistant-conversations, CREATE, OWN)` rồi
-  `ScopeGuards.requireBackOffice`. Quyền này chỉ mở endpoint, không cấp dữ liệu nào (§2, Phân quyền).
-- Trang web của một site khác không điều khiển được endpoint. CORS dùng chung từ chối `Origin` ngoài danh sách bằng
-  403, trước cả bước xác thực: đó là biện pháp chống DNS rebinding mà transport của MCP yêu cầu. Trang đó cũng không
-  có token để gửi, vì token không bao giờ là cookie. CORS dùng chung chưa cho header `MCP-Protocol-Version`, nên một
-  client MCP chạy trong trình duyệt (như Inspector khi kết nối trực tiếp) bị chặn ở bước preflight; client desktop
-  không làm CORS.
+- Hai loại credential, cùng một người dùng (ADR-0013):
+  - token JWT mà `POST /api/v1/identity/auth/login` cấp;
+  - token cá nhân cho MCP (`sfmcp_…`, P7), người dùng tự tạo cho một client, xem dưới.
+
+  Cả hai gửi trong header `Authorization: Bearer …`. Không có token là 401 ngay ở filter chain. Khi tắt bảo mật để làm
+  việc cục bộ, `@AuthenticatedUser` vẫn từ chối request không có người dùng (401), nên không profile nào để tool trả
+  lời một client ẩn danh.
+- Guard: `@RequiresPermission(assistant-mcp, CREATE, OWN)` rồi `ScopeGuards.requireBackOffice`. Đây là quyền riêng của
+  MCP (P7, `V20261104000500`), **opt-in**: migration chỉ cấp cho SYSTEM_ADMIN. Doanh nghiệp chọn vai trò nào được dùng
+  MCP trong ma trận quyền (AQ-17), vì một token sống tới 90 ngày và gửi những gì tool đọc tới nhà cung cấp model mà
+  client của người dùng chọn. Quyền này chỉ mở endpoint, không cấp dữ liệu nào (§2, Phân quyền). Trước P7, mọi vai
+  trò hỏi được khung chat đều dùng được MCP khi nó bật; nay phải cấp thêm.
+- Trang web không điều khiển được endpoint. Request có `Origin` mà CORS dùng chung không cho phép bị trả 403 kèm lỗi
+  JSON-RPC không có id, đúng như transport của MCP yêu cầu để chống DNS rebinding.
+  - `McpOriginFilter` kiểm việc này trước cả Spring Security, nên một trang không có token cũng nhận 403 (không phải
+    401), và request bị từ chối không tốn lượt rate limit.
+  - Nó bắt cả trường hợp filter CORS không thấy: một trang có tên miền bị trỏ về server này, khi đó `Origin` trùng với
+    `Host` nên với CORS đó không phải request khác origin.
+  - Client không chạy trong trình duyệt (Claude Code, Claude Desktop qua `mcp-remote`, proxy của MCP Inspector) không
+    gửi `Origin`. Trang web cũng không có token để gửi, vì không credential nào là cookie.
+  - CORS dùng chung cho header `MCP-Protocol-Version` (P7), nên một client MCP chạy trong trang của origin được phép
+    qua được bước preflight.
 - Rate limit chung với khung chat. Mọi request MCP lấy từ bucket `assistant-questions` (10 lượt một phút mỗi người,
   §3.1), nên đổi client không có thêm hạn mức. Bắt tay của một client (`initialize`, `notifications/initialized`,
   `tools/list`) tốn ba lượt. Trần câu hỏi mỗi ngày không áp dụng: trần đó giới hạn chi phí model của ứng dụng, mà
@@ -1317,8 +1352,55 @@ bị từ chối ghi ở mức WARN, để một loạt lần dò quyền hiện
 - Từ 4/11 (`V20261104000100`), mỗi lần gọi qua MCP là một dòng `assistant.tool_call` với `channel = MCP`, `user_id`
   của người gọi, tham số và kết quả, không có hội thoại; nó đi cùng job retention như hội thoại.
 
-**Chưa làm:** SSE và message server tự gửi; resources, prompts; OAuth cho client MCP (client dùng token đăng nhập và
-phải lấy lại khi hết hạn); `structuredContent` và `outputSchema` của `2025-06-18`.
+**Token cá nhân cho MCP (P7, 05/11, ADR-0013).** Client AI được cài một lần và chạy nhiều tuần, còn token đăng nhập chỉ
+sống 8 giờ và là cả phiên làm việc của người dùng. Token cá nhân được làm cho một client.
+
+- Endpoint, chỉ nhận token đăng nhập, guard `assistant-mcp:CREATE` OWN:
+  - `POST /api/v1/assistant/mcp-tokens` với `{name, expiresInDays}` (1 đến 90 ngày, mặc định 30) trả 201 kèm token,
+    chỉ một lần này. Chỉ tạo được trong 15 phút sau khi đăng nhập (`iat` của token đăng nhập, vốn là lúc đăng nhập và
+    không bao giờ được làm mới); quá thì 403 `RECENT_SIGN_IN_REQUIRED` và trang yêu cầu đăng nhập lại. Một script chạy
+    trong trang back office (XSS, thư viện độc) gọi được API bằng phiên của người dùng, nhưng không biến phiên đó thành
+    một credential sống lâu hơn nó nếu người dùng không đăng nhập lại;
+  - `GET /api/v1/assistant/mcp-tokens`: token của tôi, token còn hiệu lực trước rồi mới nhất trước, có `hint` (4 ký tự
+    cuối) và `status` (LIVE, REVOKED, EXPIRED), không bao giờ có token;
+  - `POST /api/v1/assistant/mcp-tokens/{id}/revocation`: thu hồi; thu hồi lần nữa không đổi gì; token của người khác
+    là 404.
+- Endpoint cho quản trị viên, guard của màn hình người dùng (`identity-users` READ và UPDATE):
+  `GET /api/v1/assistant/mcp-tokens/users/{userId}` và `POST .../users/{userId}/revocation` (thu hồi mọi token còn
+  hiệu lực của người đó, tài khoản và phiên đăng nhập vẫn giữ), cho laptop bị mất hay người nghỉ việc.
+- Tạo và thu hồi token là bản ghi GRANT và REVOKE trong nhật ký audit, loại được giữ quá thời hạn thường vì liên quan
+  bảo mật: sau khi dòng token bị xóa vẫn chứng minh được token đã từng có. Nhật ký ghi id của token, không bao giờ ghi
+  token.
+- Thứ làm token dừng: chủ nó thu hồi, hết hạn, quản trị viên thu hồi hết token của người đó, khóa hay vô hiệu tài
+  khoản, rút `assistant-mcp:CREATE` khỏi vai trò; tất cả có hiệu lực từ lần gọi sau. **Đổi mật khẩu và "đăng xuất các
+  thiết bị khác" không làm token dừng**, giống personal access token của GitHub hay GitLab: người dùng tự thu hồi token
+  không còn tin. Khóa tài khoản vì đăng nhập sai nhiều lần cũng chặn luôn client MCP của người đó cho tới khi hết khóa.
+- Token là `sfmcp_` cộng 32 byte ngẫu nhiên dạng Base64 URL-safe (256 bit). Bảng `assistant.mcp_token` chỉ giữ SHA-256
+  của nó, nên bản sao của bảng không mở được gì. Hash nhanh là đúng ở đây (khác mật khẩu): độ ngẫu nhiên của token đã
+  làm việc mà hash chậm bù cho mật khẩu yếu.
+- Chỉ dùng được ở `POST /api/v1/assistant/mcp`. Filter chain chọn cách xác thực theo request
+  (`ResourceServerSecurityConfig.authenticationManagers`): đúng đường dẫn đó và token có tiền tố `sfmcp_` thì kiểm
+  token cá nhân, còn lại thì kiểm JWT. Ở mọi đường dẫn khác, kể cả các endpoint token, token cá nhân rơi vào bộ giải
+  mã JWT và bị 401. Vì vậy client làm lộ token không tự tạo được token mới để sống quá hạn hay quá lần thu hồi.
+- Token chỉ nói đó là ai. Quyền là quyền hiện tại của người dùng ở từng lần gọi, dựng bằng
+  `RunAs.authenticationFor`: cùng cách với lớp theo dõi (ADR-0012) và với request bằng JWT. Đổi vai trò thì lần gọi
+  sau đã khác; khóa tài khoản thì lần gọi sau bị 401, không ai phải thu hồi token. Dòng ghi trong lúc gọi mang tên
+  "`username via assistant-mcp`".
+- Token chết (không có, đã thu hồi, hết hạn) và tài khoản không còn đăng nhập được đều trả 401 với cùng một câu, nên
+  người gọi không biết được token nào có thật. Không kiểm được (database hay Redis không trả lời) thì là 503.
+- Giới hạn: tối đa 10 token còn hiệu lực mỗi người (409 `ASSISTANT_MCP_TOKEN_LIMIT`, đếm dưới advisory lock của người
+  đó), tối đa 90 ngày mỗi token (`ck_mcp_token_lifetime` nhắc lại, tính bằng giờ), 5 lần tạo một phút. `last_used_at`
+  chỉ ghi khi token đã xác thực xong, tối đa một lần một phút.
+- Rủi ro còn lại: một chuỗi đúng dạng `sfmcp_…` gửi ẩn danh tốn một lần đọc database theo hash (có index unique) trước
+  khi bị 401, như một lần gọi endpoint đăng nhập. Chỉ có khi MCP bật. Nếu cần, thêm checksum hay HMAC vào token để chuỗi
+  ngẫu nhiên bị loại mà không chạm database.
+- `Idempotency-Key` bị từ chối (400) ở endpoint tạo: câu trả lời chứa token, và filter idempotency sẽ giữ câu trả lời
+  đó để phát lại trong một ngày. Gửi lại request thì có token thứ hai, người dùng thấy trong danh sách và thu hồi.
+- Job retention xóa token hết hạn hay bị thu hồi quá `retention-days`.
+
+**Chưa làm:** SSE và message server tự gửi; resources, prompts; OAuth 2.1 cho client MCP (token cá nhân thay cho nó
+trong đồ án); trang quản lý token trên frontend (API đã có); `title` và `icons` của tool; id của token trên dòng
+`tool_call` của lần gọi MCP (dòng đó có người dùng và kênh; token nào đã gọi thì xem `last_used_at`).
 
 #### Kết nối Claude Desktop (hoặc một MCP client khác) với backend playground
 
@@ -1326,17 +1408,33 @@ Cần có: playground đang chạy (`docker compose up -d`, `scripts\seed.ps1`, 
 `http://localhost:8090`) với backend đã có thay đổi này, và Node.js (để chạy `npx`). Playground chạy backend với
 profile `local`, nên MCP đã bật.
 
-1. Lấy token của một tài khoản `play.*`. Mật khẩu đọc từ `.env`, không in ra:
+1. Cấp `assistant-mcp:CREATE` cho vai trò của tài khoản thử (opt-in, chỉ một lần cho mỗi database), trong ma trận quyền
+   hoặc bằng SQL trên database của playground. Ví dụ cho SALES_STAFF:
+
+```sql
+INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
+SELECT gen_random_uuid(), r.id, p.id, 0, NOW(), 'playground'
+FROM identity.app_role r, identity.permission p
+WHERE r.code = 'SALES_STAFF' AND p.code = 'assistant-mcp:CREATE'
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+UPDATE identity.app_role SET version = version + 1 WHERE code = 'SALES_STAFF';
+```
+
+   Rồi đăng nhập bằng một tài khoản `play.*` và tạo token cá nhân cho client ngay sau đó (trong 15 phút). Mật khẩu
+   đọc từ `.env`, không in ra:
 
 ```powershell
 $Playground = 'D:\01_Study\FPT\KLTN\stockflow-ai-playground'
 $Password = ((Get-Content "$Playground\.env" | Select-String '^PLAYGROUND_PASSWORD=').Line -split '=', 2)[1].Trim()
 $Login = @{ username = 'play.sales'; password = $Password } | ConvertTo-Json
-$Token = (Invoke-RestMethod -Method Post -Uri 'http://localhost:8090/api/v1/identity/auth/login' `
+$Jwt = (Invoke-RestMethod -Method Post -Uri 'http://localhost:8090/api/v1/identity/auth/login' `
     -ContentType 'application/json' -Body $Login).data.accessToken
+$Made = @{ name = 'Claude Desktop'; expiresInDays = 30 } | ConvertTo-Json
+$Token = (Invoke-RestMethod -Method Post -Uri 'http://localhost:8090/api/v1/assistant/mcp-tokens' `
+    -ContentType 'application/json' -Headers @{ Authorization = "Bearer $Jwt" } -Body $Made).data.token
 ```
 
-   Cách khác: `python tools\session.py play.sales` trong thư mục playground, rồi lấy trường `token`.
+   Token chỉ hiện một lần này. Token đăng nhập (`$Jwt`) vẫn dùng được cho MCP như trước, nhưng hết hạn sau 8 giờ.
 
 2. Kiểm tra trước khi cấu hình client, bằng danh sách tool của tài khoản đó:
 
@@ -1385,15 +1483,14 @@ claude mcp add --transport http stockflow http://localhost:8090/api/v1/assistant
 
 **Lưu ý:**
 
-- **Token hết hạn:**
-  - sau 8 giờ (`stockflow.security.token-ttl`);
-  - ngay khi backend playground khởi động lại, vì khóa ký token được sinh lại mỗi lần chạy;
-  - khi phiên bị đóng: đăng xuất, đổi mật khẩu, đổi vai trò.
+- **Token cá nhân hết hiệu lực** khi hết hạn (tối đa 90 ngày), khi bị thu hồi, hoặc khi tài khoản bị khóa. Nó không
+  phụ thuộc khóa ký JWT, nên vẫn dùng được sau khi backend playground khởi động lại. Token đăng nhập thì hết hạn sau 8
+  giờ, khi backend khởi động lại (khóa ký được sinh lại), và khi phiên bị đóng.
 
   Khi đó client báo lỗi 401. `mcp-remote` có thể thử mở trang đăng nhập OAuth rồi thất bại, vì backend không có OAuth
-  cho MCP. Cách xử lý: lấy token mới, sửa `STOCKFLOW_AUTH` (hoặc chạy lại `claude mcp add`), rồi khởi động lại client.
-- Token là mật khẩu tạm và nằm dạng chữ trong file cấu hình. Chỉ dùng tài khoản `play.*`, không bao giờ dùng token của
-  tài khoản thật.
+  cho MCP. Cách xử lý: tạo token mới, sửa `STOCKFLOW_AUTH` (hoặc chạy lại `claude mcp add`), rồi khởi động lại client.
+- Token là mật khẩu riêng của client và nằm dạng chữ trong file cấu hình. Thu hồi ngay token bị lộ. Chỉ dùng tài
+  khoản `play.*`, không bao giờ dùng token của tài khoản thật.
 - Kết quả tool đi tới nhà cung cấp model của client (Claude Desktop gửi tới Anthropic, dưới tài khoản của người thử),
   không phải nhà cung cấp mà ứng dụng chọn. Chỉ dùng với dữ liệu seed giả (§13 AQ-01, AQ-17).
 - Mỗi request MCP tính vào cùng 10 lượt một phút với khung chat. Client gọi tool dồn dập sẽ nhận 429 và phải chờ.
@@ -2321,7 +2418,7 @@ có quyền; báo cáo đánh giá.
 | **AQ-14** | Kế hoạch viên có được thấy hàng đã đặt mua trong câu trả lời "mã nào dưới điểm đặt hàng" không (BIZ-9)? INVENTORY_PLANNER không có quyền PO, nên dễ nhờ mua hàng đặt trùng. | Nếu được: thêm `onOrder`, `awaitingApproval`, `nextExpectedDate` vào từng dòng của `findLowStock` (một lần gọi `OnOrderQueries` mỗi trang). Nếu không: mô tả tool cấm nói "cần đặt thêm", chỉ nói mã đã ở dưới điểm đặt và mua hàng nên xem PO đang mở. |
 | **AQ-15** | Thẻ "hôm nay" (§9, FEAT-7): mỗi vai trò thấy phần nào? Quản lý kho có bao giờ được thấy hàng thiếu toàn công ty hay đơn bị giữ không? Có thêm phần PO chờ duyệt cho người duyệt, PO bị nhà cung cấp từ chối, đơn giao thất bại, và ba câu tóm tắt bằng model (một request, tính vào trần) không? | Đã làm theo mặc định ngày 29/10: mỗi vai trò chỉ thấy phần mà tool của họ trả lời được, nên quản lý kho không thấy hai thứ kia, đúng như màn hình của họ. Các phần thêm chờ doanh nghiệp chọn. |
 | **AQ-16** | Có lưu đánh giá đúng/sai của người dùng cho từng câu trả lời không (FEAT-8)? Quản trị viên có được đọc câu hỏi của người khác (câu hỏi có thể nêu tên khách) không, và đánh giá có được giữ lâu hơn 90 ngày của hội thoại không? | Phần lưu đã làm ngày 29/10 (`answer_feedback`, xóa cùng hội thoại; chưa ai khác đọc được). Vẫn chờ doanh nghiệp quyết: resource riêng (`assistant-feedback`, chỉ cấp cho SYSTEM_ADMIN, có tăng `app_role.version`), bàn điều khiển, việc đọc câu hỏi của người khác, giữ đánh giá lâu hơn hội thoại, và việc biến một đánh giá thành bản nháp ca mới cho bộ câu hỏi chuẩn. |
-| **AQ-17** | Có bật MCP (§7) ở môi trường thật không? Qua MCP, kết quả tool đi tới nhà cung cấp model mà người dùng tự chọn trong client của họ (Claude Desktop với tài khoản cá nhân, một agent trong IDE), không phải nhà cung cấp doanh nghiệp đã chấp nhận ở AQ-01. Về quyền thì MCP không mở thêm gì: cùng token đó đã đọc được các API tương ứng. | Code đã làm theo đề xuất: mặc định tắt (`ASSISTANT_MCP_ENABLED=false`), chỉ profile `local` và `test` bật. Giữ tắt ở production cho tới khi AQ-01 được trả lời và doanh nghiệp chọn client và tài khoản được phép. Nếu bật, cân nhắc một quyền riêng (`assistant-mcp`) thay vì dùng chung `assistant-conversations:CREATE`, để cấp MCP theo từng vai trò (migration có tăng `app_role.version`). |
+| **AQ-17** | Có bật MCP (§7) ở môi trường thật không? Qua MCP, kết quả tool đi tới nhà cung cấp model mà người dùng tự chọn trong client của họ (Claude Desktop với tài khoản cá nhân, một agent trong IDE), không phải nhà cung cấp doanh nghiệp đã chấp nhận ở AQ-01. Về quyền thì MCP không mở thêm gì: cùng token đó đã đọc được các API tương ứng. | Code đã làm theo đề xuất: mặc định tắt (`ASSISTANT_MCP_ENABLED=false`), chỉ profile `local` và `test` bật. Giữ tắt ở production cho tới khi AQ-01 được trả lời và doanh nghiệp chọn client và tài khoản được phép. Từ P7 (05/11) MCP có quyền riêng `assistant-mcp:CREATE`, opt-in: migration chỉ cấp cho SYSTEM_ADMIN (`V20261104000500`), doanh nghiệp chọn vai trò nào giữ nó. Client dùng token cá nhân chỉ mở endpoint MCP, thu hồi được từng cái (ADR-0013). |
 | **AQ-18** | Đọc ảnh phiếu giao hàng (§8.1) có cần trần riêng mỗi ngày không? Khi bật, nó chỉ bị giới hạn bởi rate limit 10 lượt một phút. | Công tắc riêng tách khỏi khung chat đã có (`ASSISTANT_RECEIPT_DRAFTS_ENABLED`, mặc định tắt), nên ảnh có thể bị từ chối dù AQ-01 chấp nhận kết quả tool. Về trần: đo token trong log hai tuần sau khi bật rồi mới đặt. |
 
 ---
@@ -2347,7 +2444,7 @@ có quyền; báo cáo đánh giá.
 | Prompt injection | tool chỉ đọc, đề xuất và phiếu nhập nháp cần người duyệt, model chỉ thấy tool của người hỏi, không có tool gọi ra ngoài, server bỏ link/ảnh/URL khỏi câu trả lời bằng escape có cấu trúc, `History` gửi lại chữ đã lọc, hiển thị đã escape, ca R-02, M-03 và M-04 |
 | Một thay đổi ở `api` làm hỏng một tool | tool biên dịch dựa trên `api`; harness bộ câu hỏi chuẩn chạy trong mọi `mvn test` |
 | Seed playground ghi tài khoản SYSTEM_ADMIN dùng chung mật khẩu vào database của nhánh khác | URL mặc định là database playground; từ chối trước khi Spring khởi động nếu `DB_NAME` khác `stockflow_ai`; kiểm `current_database()` trước khi ghi |
-| Dữ liệu rời hệ thống qua một AI client ngoài (MCP) | cùng quyền và guard như khung chat; chỉ liệt kê tool người dùng được dùng; token đăng nhập, không có đường xác thực mới; CORS chặn trang của site khác; rate limit chung; mặc định tắt, bật hay tắt không cần phát hành lại; AQ-17 |
+| Dữ liệu rời hệ thống qua một AI client ngoài (MCP) | cùng quyền với khung chat, guard là quyền riêng `assistant-mcp`; chỉ liệt kê tool người dùng được dùng; token đăng nhập hoặc token cá nhân chỉ mở endpoint MCP, hết hạn tối đa 90 ngày, thu hồi được (ADR-0013); `Origin` không được phép bị 403, kể cả khi trùng `Host`; rate limit chung; mặc định tắt, bật hay tắt không cần phát hành lại; AQ-17 |
 | Đọc sai số lượng, lô hoặc hạn dùng từ ảnh | không bao giờ ghi; model không được cho biết số đặt hay số còn phải nhận, nên không chép số được chờ thay cho số trên giấy; nhiều lô chung một số lượng thì không tự chia; ô lô chỉ có dấu là thiếu lô; Java kiểm từng giá trị với mã của màn phiếu nhập; `readText` hiện cạnh mỗi dòng; mặc định tắt; cần bộ ảnh chuẩn trước khi bật (§8.1) |
 | Một ảnh tải lên làm sập ứng dụng | ảnh bị kiểm loại theo byte, tối đa 5 MB và 50 MP, giải mã có giới hạn; hướng EXIF chỉ đọc từ đoạn EXIF của JPEG, không bao giờ đọc metadata của PNG hay WEBP, vì khối chữ nén của PNG có thể nở ra hàng trăm MB (§8.1) |
 

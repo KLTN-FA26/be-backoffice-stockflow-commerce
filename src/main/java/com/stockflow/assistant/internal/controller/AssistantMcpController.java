@@ -2,6 +2,7 @@ package com.stockflow.assistant.internal.controller;
 
 import com.stockflow.assistant.internal.controller.dto.McpRequest;
 import com.stockflow.assistant.internal.controller.dto.McpResponse;
+import com.stockflow.assistant.internal.service.McpTokens;
 import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
@@ -28,15 +29,17 @@ import java.io.IOException;
  * agent, uses the assistant's read tools under the signed-in user's own permissions, without this application's agent
  * loop. {@link McpServer} speaks the protocol; this class is the HTTP side of its Streamable HTTP transport.
  *
- * <p><b>No new way in.</b> The JWT bearer every endpoint takes, issued by the login endpoint and checked by the filter
- * chain: without one the answer is 401 before anything here runs, and with security switched off for local work
- * {@code @AuthenticatedUser} still refuses a request with no user, so in no profile do the tools answer an anonymous
- * client. The guard is the chat's, {@code assistant-conversations:CREATE} with scope OWN and the back office first,
- * and like the chat's it opens the endpoint and grants no data: every tool still checks the caller (design §5).</p>
+ * <p><b>Two credentials, one user.</b> The sign-in JWT every endpoint takes, or a personal token made for this client
+ * ({@code sfmcp_...}, ADR-0013), which the API chain accepts on this path only. Either way the request carries the
+ * user's grants as they stand now. Without one the answer is 401 before anything here runs, and with security switched
+ * off for local work {@code @AuthenticatedUser} still refuses a request with no user, so in no profile do the tools
+ * answer an anonymous client. The guard is {@code assistant-mcp:CREATE} with scope OWN and the back office first:
+ * held by SYSTEM_ADMIN only until the business grants it to a role (V20261104000500, AQ-17). Like the chat's it opens
+ * the endpoint and grants no data: every tool still checks the caller (design §5).</p>
  *
- * <p><b>Not from a browser page.</b> The shared CORS policy refuses an Origin outside its allowed list with 403 before
- * authentication, which is the defence against DNS rebinding the transport asks of a server; and a page has no token
- * to send anyway, since the token is never a cookie.</p>
+ * <p><b>Not from a browser page.</b> A request with an {@code Origin} the shared CORS policy does not allow is 403
+ * with a JSON-RPC error before authentication ({@link McpOriginFilter}), as the transport requires of a server against
+ * DNS rebinding. A page has no token to send anyway: neither credential is a cookie.</p>
  *
  * <p><b>One budget with the chat.</b> Every request draws on the rate-limit bucket of the two ways of asking
  * ({@link AssistantResources#QUESTIONS_BUCKET}), so a user gains no second allowance by switching clients; a client's handshake
@@ -58,8 +61,8 @@ import java.io.IOException;
 @ConditionalOnProperty(name = AssistantMcpController.ENABLED, havingValue = "true")
 class AssistantMcpController {
 
-    /** The property that opens the endpoint when true. */
-    static final String ENABLED = "stockflow.assistant.mcp.enabled";
+    /** The property that opens the endpoint when true, its personal tokens with it. */
+    static final String ENABLED = McpTokens.ENABLED;
 
     private final McpServer server;
 
@@ -71,19 +74,21 @@ class AssistantMcpController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "The assistant's read tools for another AI client, over the Model Context Protocol",
             description = "MCP Streamable HTTP with JSON responses: one JSON-RPC 2.0 message per POST (initialize, "
-                    + "ping, tools/list, tools/call; a notification is answered 202 with no body). Needs "
-                    + "assistant-conversations:CREATE and a back-office account, signed in with the bearer token of "
-                    + "POST /api/v1/identity/auth/login. tools/list holds the tools the caller may use; tools/call "
-                    + "runs one under the caller's own permissions and warehouses, as the assistant's chat does, and "
-                    + "answers its result as text, isError true for any outcome but data (NOT_PERMITTED, NOT_FOUND, "
-                    + "VALIDATION_FAILED, ...). Shares the rate limit of the questions to the assistant: 10 requests "
-                    + "a minute per user. Stateless: no Mcp-Session-Id. GET is 405: the server sends nothing on its "
-                    + "own. 400 or 413 with a JSON-RPC error for a body that is not one JSON-RPC message of at most "
-                    + "64 KiB.",
+                    + "ping, tools/list, tools/call; a notification is answered 202 with no body). Protocol "
+                    + "2025-11-25, 2025-06-18 or 2025-03-26. Needs assistant-mcp:CREATE and a back-office account, "
+                    + "with the bearer token of POST /api/v1/identity/auth/login or a personal token of POST "
+                    + "/api/v1/assistant/mcp-tokens. tools/list holds the tools the caller may use, each with its "
+                    + "outputSchema from 2025-06-18; tools/call runs one under the caller's own permissions and "
+                    + "warehouses, as the assistant's chat does, and answers its result as text, and as "
+                    + "structuredContent from 2025-06-18; isError true for any outcome but data (NOT_PERMITTED, "
+                    + "NOT_FOUND, VALIDATION_FAILED, ...). Shares the rate limit of the questions to the assistant: 10 "
+                    + "requests a minute per user. Stateless: no Mcp-Session-Id. GET is 405: the server sends nothing "
+                    + "on its own. 400 or 413 with a JSON-RPC error for a body that is not one JSON-RPC message of at "
+                    + "most 64 KiB; 403 for an Origin the CORS policy does not allow.",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(required = true,
                     content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
                             schema = @Schema(implementation = McpRequest.class))))
-    @RequiresPermission(resource = AssistantResources.CONVERSATIONS, action = Action.CREATE, scope = DataScope.OWN)
+    @RequiresPermission(resource = AssistantResources.MCP, action = Action.CREATE, scope = DataScope.OWN)
     @RateLimit(limit = AssistantResources.QUESTIONS_PER_MINUTE, perSeconds = 60, key = RateLimit.Key.USER,
             bucket = AssistantResources.QUESTIONS_BUCKET)
     public ResponseEntity<McpResponse> message(@AuthenticatedUser CurrentUser user, HttpServletRequest request)

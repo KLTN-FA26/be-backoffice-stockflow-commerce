@@ -24,6 +24,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
@@ -49,9 +51,10 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * The HTTP side of the MCP endpoint: the chat's guard and rate-limit bucket, the back office first, the request handed
- * to {@link McpServer} as it came, and no {@code Idempotency-Key} needed. The full stack is in
- * {@code AssistantMcpIntegrationTest}, where the idempotency filter is off as in every test context.
+ * The HTTP side of the MCP endpoint: its own guard with the chat's scope, the chat's rate-limit bucket, the back office
+ * first, an Origin the CORS policy does not allow refused, the request handed to {@link McpServer} as it came, and no
+ * {@code Idempotency-Key} needed. The full stack is in {@code AssistantMcpIntegrationTest}, where the idempotency
+ * filter is off as in every test context.
  */
 class AssistantMcpControllerTest {
 
@@ -59,6 +62,18 @@ class AssistantMcpControllerTest {
             Set.of(Role.INVENTORY_PLANNER), Set.of(), DataScope.ALL, Set.of());
     private static final CurrentUser CUSTOMER = new CurrentUser(UUID.randomUUID(), "customer", Set.of(Role.CUSTOMER),
             Set.of(), DataScope.ALL, Set.of());
+
+    private static AssistantMcpController controller(McpServer server) {
+        return new AssistantMcpController(server);
+    }
+
+    private static McpOriginFilter originFilter() {
+        CorsConfiguration policy = new CorsConfiguration();
+        policy.setAllowedOriginPatterns(List.of("http://localhost:*", "https://*.stockflow.vn"));
+        UrlBasedCorsConfigurationSource cors = new UrlBasedCorsConfigurationSource();
+        cors.registerCorsConfiguration("/**", policy);
+        return new McpOriginFilter(cors, new ObjectMapper());
+    }
 
     @Test
     @DisplayName("an MCP client draws on the chat's rate-limit bucket with the chat's capacity: switching clients buys "
@@ -74,22 +89,72 @@ class AssistantMcpControllerTest {
     }
 
     @Test
-    @DisplayName("the endpoint carries the chat's guard on a public method, so the proxy applies it")
-    void guardedAsTheChat() {
+    @DisplayName("the endpoint carries its own permission, with the chat's action and scope, on a public method, so "
+            + "the proxy applies it; the token endpoints carry the same")
+    void guardedApartFromTheChat() {
         RequiresPermission chat = annotation(AssistantController.class, "ask", RequiresPermission.class);
         RequiresPermission mcp = annotation(AssistantMcpController.class, "message", RequiresPermission.class);
 
         assertThat(List.of(mcp.resource(), mcp.action(), mcp.scope()))
-                .isEqualTo(List.of(chat.resource(), chat.action(), chat.scope()))
-                .isEqualTo(List.of(AssistantResources.CONVERSATIONS, Action.CREATE, DataScope.OWN));
+                .isEqualTo(List.of(AssistantResources.MCP, chat.action(), chat.scope()))
+                .isEqualTo(List.of("assistant-mcp", Action.CREATE, DataScope.OWN));
         assertThat(Modifier.isPublic(method(AssistantMcpController.class, "message").getModifiers())).isTrue();
+        for (String handler : List.of("create", "mine", "revoke")) {
+            RequiresPermission token = annotation(AssistantMcpTokenController.class, handler, RequiresPermission.class);
+            assertThat(List.of(token.resource(), token.action(), token.scope()))
+                    .isEqualTo(List.of(AssistantResources.MCP, Action.CREATE, DataScope.OWN));
+            assertThat(Modifier.isPublic(method(AssistantMcpTokenController.class, handler).getModifiers())).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("an Origin the CORS policy does not allow is 403 with a JSON-RPC error without an id, and the request "
+            + "goes no further, even when it is the request's own host (DNS rebinding) or 'null'")
+    void aForeignOriginIsRefused() throws Exception {
+        McpOriginFilter filter = originFilter();
+        for (String origin : List.of("http://attacker.example", "null")) {
+            MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/assistant/mcp");
+            request.setServerName("attacker.example");
+            request.addHeader(HttpHeaders.ORIGIN, origin);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            AtomicReference<ServletRequest> passed = new AtomicReference<>();
+
+            filter.doFilter(request, response, (req, res) -> passed.set(req));
+
+            assertThat(passed.get()).as(origin).isNull();
+            assertThat(response.getStatus()).isEqualTo(403);
+            assertThat(response.getContentType()).startsWith(MediaType.APPLICATION_JSON_VALUE);
+            var body = new ObjectMapper().readTree(response.getContentAsString(StandardCharsets.UTF_8));
+            assertThat(body.path("error").path("code").asInt()).isEqualTo(McpServer.INVALID_REQUEST);
+            assertThat(body.has("id")).isTrue();
+            assertThat(body.path("id").isNull()).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("an allowed Origin, no Origin at all, a preflight and any other path pass the Origin filter")
+    void otherRequestsPass() throws Exception {
+        McpOriginFilter filter = originFilter();
+        MockHttpServletRequest panel = new MockHttpServletRequest("POST", "/api/v1/assistant/mcp");
+        panel.addHeader(HttpHeaders.ORIGIN, "http://localhost:3100");
+        MockHttpServletRequest cli = new MockHttpServletRequest("POST", "/api/v1/assistant/mcp");
+        MockHttpServletRequest preflight = new MockHttpServletRequest("OPTIONS", "/api/v1/assistant/mcp");
+        preflight.addHeader(HttpHeaders.ORIGIN, "http://attacker.example");
+        MockHttpServletRequest elsewhere = new MockHttpServletRequest("POST", "/api/v1/assistant/conversations");
+        elsewhere.addHeader(HttpHeaders.ORIGIN, "http://attacker.example");
+
+        for (MockHttpServletRequest request : List.of(panel, cli, preflight, elsewhere)) {
+            AtomicReference<ServletRequest> passed = new AtomicReference<>();
+            filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> passed.set(req));
+            assertThat(passed.get()).as("%s %s", request.getMethod(), request.getRequestURI()).isSameAs(request);
+        }
     }
 
     @Test
     @DisplayName("a portal customer is refused before the body is read")
     void customersAreRefusedFirst() {
         McpServer server = mock(McpServer.class);
-        AssistantMcpController controller = new AssistantMcpController(server);
+        AssistantMcpController controller = controller(server);
 
         assertThatThrownBy(() -> controller.message(CUSTOMER, new MockHttpServletRequest("POST", "/api/v1/assistant/mcp")))
                 .isInstanceOfSatisfying(BusinessException.class,
@@ -108,7 +173,7 @@ class AssistantMcpControllerTest {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/assistant/mcp");
         request.setContent("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}".getBytes(StandardCharsets.UTF_8));
         request.addHeader("mcp-protocol-version", "2025-06-18");
-        AssistantMcpController controller = new AssistantMcpController(server);
+        AssistantMcpController controller = controller(server);
 
         ResponseEntity<McpResponse> answered = controller.message(PLANNER, request);
         ResponseEntity<McpResponse> accepted = controller.message(PLANNER, request);

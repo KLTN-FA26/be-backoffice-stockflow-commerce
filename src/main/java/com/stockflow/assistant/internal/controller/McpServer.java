@@ -3,6 +3,7 @@ package com.stockflow.assistant.internal.controller;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.cfg.JsonNodeFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
@@ -36,6 +37,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The assistant's read tools as a Model Context Protocol server (contract C8, design §7): what another AI client, such
@@ -65,7 +67,16 @@ import java.util.Map;
  * <p><b>Protocol versions.</b> A client is answered the version it asks for when this server speaks it, otherwise
  * the newest one it does ({@link #PROTOCOL_VERSIONS}), as the protocol's lifecycle prescribes. 2025-03-26 is spoken
  * except for batches, which it allowed and 2025-06-18 removed: no mainstream client sends one, and a batch would be
- * many tool calls for one request, so for one token of the rate limit.</p>
+ * many tool calls for one request, so for one token of the rate limit. 2025-11-25's new features (tasks, icons,
+ * sampling with tools, URL elicitation) are optional and not offered. Of its rules for a server like this one, input
+ * errors as tool results and JSON Schema 2020-12 by default already held; 403 for a bad Origin is
+ * {@link McpOriginFilter}'s, which also covers a page whose host name was made to resolve to this server.</p>
+ *
+ * <p><b>Structured results</b>, for 2025-06-18 and later ({@link #STRUCTURED}): {@code tools/list} gives each tool
+ * its {@code outputSchema}, generated from the record it answers with ({@link AssistantTools#outputSchema}), and a
+ * call that returns data gives it as {@code structuredContent} as well as text, so a client reads fields instead of
+ * parsing them out. A client of 2025-03-26, which knows neither, gets the text alone: it sends no version header, and
+ * the protocol says to assume 2025-03-26 then.</p>
  *
  * <p><b>Each tool call is recorded</b> in {@code assistant.tool_call} as an {@code MCP} run of its user, with its
  * arguments and result, as a chat run is (since {@code V20261104000100}; it leaves with the retention job). The log
@@ -80,7 +91,10 @@ class McpServer {
     private static final Logger log = LoggerFactory.getLogger(McpServer.class);
 
     /** The protocol versions this server speaks, newest first: the first is the answer to a version it does not. */
-    static final List<String> PROTOCOL_VERSIONS = List.of("2025-06-18", "2025-03-26");
+    static final List<String> PROTOCOL_VERSIONS = List.of("2025-11-25", "2025-06-18", "2025-03-26");
+
+    /** The versions that know {@code outputSchema} and {@code structuredContent}: 2025-06-18 introduced both. */
+    static final Set<String> STRUCTURED = Set.of("2025-11-25", "2025-06-18");
 
     /** The header a client sends on every request after {@code initialize}, naming the negotiated version. */
     static final String PROTOCOL_VERSION_HEADER = "MCP-Protocol-Version";
@@ -137,6 +151,7 @@ class McpServer {
     private final ToolAvailability availability;
     private final ObjectMapper json;
     private final ObjectReader reader;
+    private final ObjectReader results;
     private final String version;
     private final ToolRunRecorder recorder;
 
@@ -150,6 +165,10 @@ class McpServer {
         // member given twice ("method" or "name") is refused rather than read as whichever came last.
         this.reader = json.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                 .with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
+        // A tool's result as it wrote it: 12000000.00 read as a double, or with its trailing zeros stripped as tree
+        // nodes are by default, would reach the client as 1.2E+7 (ResultTable reads it the same way).
+        this.results = json.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .without(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES);
         BuildProperties info = build.getIfAvailable();
         this.version = info == null || info.getVersion() == null ? "unknown" : info.getVersion();
     }
@@ -237,16 +256,23 @@ class McpServer {
         if (params != null && !params.isNull() && !params.isObject()) {
             return answered(error(id, INVALID_PARAMS, "params must be an object"));
         }
+        boolean structured = protocolVersion != null && STRUCTURED.contains(protocolVersion.strip());
         return dispatch(new McpRequest(JSONRPC, id, method.textValue(),
-                params == null || params.isNull() ? json.createObjectNode() : params), user);
+                params == null || params.isNull() ? json.createObjectNode() : params), user, structured);
     }
 
-    private Reply dispatch(McpRequest request, CurrentUser user) {
+    /** What a request whose Origin is not allowed is answered: 403, a JSON-RPC error with no id (the transport's). */
+    static Reply originRefused() {
+        return refused(HttpStatus.FORBIDDEN, null, INVALID_REQUEST,
+                "Forbidden: this Origin may not call the server; a client outside a browser sends none");
+    }
+
+    private Reply dispatch(McpRequest request, CurrentUser user, boolean structured) {
         return switch (request.method()) {
             case INITIALIZE -> initialize(request, user);
             case PING -> answered(result(request.id(), Map.of()));
-            case LIST_TOOLS -> listTools(request, user);
-            case CALL_TOOL -> callTool(request, user);
+            case LIST_TOOLS -> listTools(request, user, structured);
+            case CALL_TOOL -> callTool(request, user, structured);
             default -> answered(error(request.id(), METHOD_NOT_FOUND, "Method not found: "
                     + shortened(request.method()) + "; this server answers initialize, ping, tools/list and "
                     + "tools/call"));
@@ -270,7 +296,7 @@ class McpServer {
                 new McpInitializeResult.Implementation(NAME, TITLE, version), INSTRUCTIONS)));
     }
 
-    private Reply listTools(McpRequest request, CurrentUser user) {
+    private Reply listTools(McpRequest request, CurrentUser user, boolean structured) {
         JsonNode cursor = request.params().get("cursor");
         if (cursor != null && !cursor.isNull()) {
             // Every tool comes in the first page, so no client was ever given a cursor to send back.
@@ -278,12 +304,12 @@ class McpServer {
         }
         List<McpListToolsResult.Tool> listed = availability.specsFor(user).stream()
                 .map(spec -> new McpListToolsResult.Tool(spec.name(), spec.description(), spec.inputSchema(),
-                        READ_ONLY))
+                        structured ? tools.outputSchema(spec.name()).orElse(null) : null, READ_ONLY))
                 .toList();
         return answered(result(request.id(), new McpListToolsResult(listed)));
     }
 
-    private Reply callTool(McpRequest request, CurrentUser user) {
+    private Reply callTool(McpRequest request, CurrentUser user, boolean structured) {
         JsonNode name = request.params().get("name");
         if (name == null || !name.isTextual()) {
             return answered(error(request.id(), INVALID_PARAMS,
@@ -309,7 +335,25 @@ class McpServer {
                 .log("MCP tool call {} -> {} in {} ms for user {} (correlation id {})", tool, execution.outcome(),
                         execution.durationMs(), user.userId(), correlationId());
         return answered(result(request.id(), new McpCallToolResult(
-                List.of(new McpCallToolResult.Content("text", execution.result())), execution.outcome().isError())));
+                List.of(new McpCallToolResult.Content("text", execution.result())),
+                structured ? structuredContent(execution) : null, execution.outcome().isError())));
+    }
+
+    /**
+     * The result as the JSON object its {@code outputSchema} describes; null for an error, which has no schema, and
+     * for a tool without one. The text is the tool's own JSON, so it always reads back.
+     */
+    private JsonNode structuredContent(ToolExecution execution) {
+        if (execution.outcome() != ToolOutcome.OK || tools.outputSchema(execution.call().name()).isEmpty()) {
+            return null;
+        }
+        try {
+            JsonNode content = results.readTree(execution.result());
+            return content != null && content.isObject() ? content : null;
+        } catch (JsonProcessingException unreadable) {
+            log.warn("MCP tool {} answered text that is not JSON; sending it as text only", execution.call().name());
+            return null;
+        }
     }
 
     private String write(JsonNode arguments) {

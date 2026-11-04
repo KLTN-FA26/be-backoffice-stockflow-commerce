@@ -10,7 +10,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
  */
 public record McpInitializeResult(
         @Schema(description = "The version asked for when this server speaks it, otherwise the newest it does",
-                example = "2025-06-18")
+                example = "2025-11-25")
         String protocolVersion,
         Capabilities capabilities,
         Implementation serverInfo,

@@ -26,8 +26,10 @@ import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -51,6 +53,10 @@ import java.util.stream.Collectors;
  *
  * <p><b>Each run is a span</b> ({@link AssistantTelemetry#tool}): the tool, the channel it came through, its outcome
  * and its duration, never its arguments or result.</p>
+ *
+ * <p><b>Each tool's answer has a schema</b> ({@link #outputSchema}), generated once here from the record its
+ * {@code run} returns and the mapper that writes it ({@link ToolOutputSchema}), for an MCP client to validate
+ * {@code structuredContent} against. A tool whose schema cannot be generated is still a tool, listed without one.</p>
  */
 @Component
 public class AssistantTools {
@@ -65,6 +71,7 @@ public class AssistantTools {
     private final ObjectMapper json;
     private final ObjectMapper results;
     private final AssistantTelemetry telemetry;
+    private final Map<String, Map<String, Object>> outputSchemas;
 
     AssistantTools(List<AssistantTool> tools, ObjectMapper json) {
         this(tools, json, AssistantTelemetry.NONE);
@@ -82,6 +89,20 @@ public class AssistantTools {
         this.json = json;
         this.results = resultMapper(json);
         this.telemetry = telemetry;
+        this.outputSchemas = outputSchemas(tools, results);
+    }
+
+    private static Map<String, Map<String, Object>> outputSchemas(List<AssistantTool> tools, ObjectMapper results) {
+        Map<String, Map<String, Object>> schemas = new LinkedHashMap<>();
+        for (AssistantTool tool : tools) {
+            try {
+                ToolOutputSchema.of(results, tool).ifPresent(schema -> schemas.put(tool.spec().name(), schema));
+            } catch (RuntimeException unreadable) {
+                // A schema is an extra for MCP clients: its absence costs them validation, never the tool.
+                log.warn("No output schema for assistant tool {}: {}", tool.spec().name(), unreadable.toString());
+            }
+        }
+        return Map.copyOf(schemas);
     }
 
     /**
@@ -89,7 +110,7 @@ public class AssistantTools {
      * nulls) and the mapper every endpoint uses is left as it is, plus {@link VietnamTimeSerializer} for every
      * {@code Instant}.
      */
-    private static ObjectMapper resultMapper(ObjectMapper json) {
+    static ObjectMapper resultMapper(ObjectMapper json) {
         return json.copy().registerModule(new SimpleModule("assistant-tool-results")
                 .addSerializer(Instant.class, new VietnamTimeSerializer()));
     }
@@ -100,6 +121,14 @@ public class AssistantTools {
 
     public List<AssistantTool> all() {
         return List.copyOf(byName.values());
+    }
+
+    /**
+     * The JSON Schema of what {@code tool} answers when it answers with data (outcome OK), as nested maps; empty for a
+     * tool that does not exist or whose answer has no schema.
+     */
+    public Optional<Map<String, Object>> outputSchema(String tool) {
+        return Optional.ofNullable(outputSchemas.get(tool));
     }
 
     /** Runs a tool a question in a conversation asked for. */
