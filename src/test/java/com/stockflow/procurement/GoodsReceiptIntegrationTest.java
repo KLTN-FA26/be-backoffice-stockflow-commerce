@@ -65,6 +65,10 @@ class GoodsReceiptIntegrationTest {
 
     /** A CONFIRMED order on the new tables; returns its id. Lines: (sku, ordered). */
     private UUID confirmedOrder(Object... skuAndQty) {
+        // An odd count is a typo in the test, not a shorter order: fail on it instead of dropping the last sku.
+        if (skuAndQty.length % 2 != 0) {
+            throw new IllegalArgumentException("expected (sku, ordered) pairs, got " + skuAndQty.length + " values");
+        }
         UUID po = Identifiers.newId();
         UUID revision = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -81,7 +85,7 @@ class GoodsReceiptIntegrationTest {
                     INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
                         changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
                     revision, po, submitter);
-            for (int i = 0; i < skuAndQty.length; i += 2) {
+            for (int i = 0; i + 1 < skuAndQty.length; i += 2) {
                 jdbc.update("""
                         INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
                             ordered_qty, unit_price, version, created_at)
