@@ -628,5 +628,41 @@
     "forbiddenQuery": "select receipt_number from procurement.goods_receipts",
     "expectRefusal": true,
     "oracle": {"tool": "findGoodsReceipts", "arguments": {"status": "IN_PUTAWAY", "receiptNumber": "", "limit": 50}}
+  },
+  {
+    "id": "U15-02", "useCase": "U15", "variant": "name-cased-and-spaced",
+    "persona": {"role": "ACCOUNTANT", "warehouses": []},
+    "question": "khách hàng  DEMO còn nợ mình bao nhiêu, có khoản nào quá hạn ko",
+    "expectTools": ["getCustomerCredit"],
+    "factsQuery": "select coalesce(sum(amount - paid_amount), 0)::bigint::text from payment.receivable where customer_id = 'c0000000-0000-4000-8000-000000000001' and collector = 'CUSTOMER' and status <> 'PAID'",
+    "oracle": {"tool": "getCustomerCredit", "arguments": {"customer": "khách hàng  DEMO"}}
+  },
+  {
+    "id": "PAR-01", "useCase": "PAR", "variant": "same-tool-together",
+    "persona": {"role": "INVENTORY_PLANNER", "warehouses": []},
+    "question": "So sánh giúp mình tồn kho EVAL-BOX-A4 với EVAL-CUP-16OZ ở từng kho.",
+    "expectTools": ["getStockLevels"],
+    "facts": ["EVAL-BOX-A4", "75", "EVAL-CUP-16OZ"],
+    "oracle": {"tool": "getStockLevels", "arguments": {"sku": "EVAL-BOX-A4"},
+               "together": [{"tool": "getStockLevels", "arguments": {"sku": "EVAL-CUP-16OZ"}}]}
+  },
+  {
+    "id": "PAR-02", "useCase": "PAR", "variant": "two-tools-together",
+    "persona": {"role": "INVENTORY_PLANNER", "warehouses": []},
+    "question": "Sáng nay cần để ý gì: mã nào dưới điểm đặt hàng, lô nào hết hạn trong 2 tuần tới?",
+    "expectTools": ["findLowStock", "findExpiringLots"],
+    "facts": ["EVAL-CUP-12OZ", "EVAL-LID-90", "EVAL-LID-A", "EVAL-EVN-LOT"],
+    "oracle": {"tool": "findLowStock", "arguments": {"limit": 50},
+               "together": [{"tool": "findExpiringLots", "arguments": {"withinDays": 14, "limit": 50}}]}
+  },
+  {
+    "id": "PAR-03", "useCase": "PAR", "variant": "together-one-refused",
+    "persona": {"role": "WAREHOUSE_MANAGER", "warehouses": ["HCM"]},
+    "question": "Kho mình có lô nào hết hạn trong 30 ngày tới, và mã nào dưới điểm đặt hàng?",
+    "expectTools": ["findExpiringLots"],
+    "facts": ["EVAL-LID-A", "{expiryLidA}"],
+    "forbidden": ["EVAL-EVN-LOT"],
+    "oracle": {"tool": "findExpiringLots", "arguments": {"withinDays": 30, "limit": 50},
+               "together": [{"tool": "findLowStock", "arguments": {"limit": 50}}]}
   }
 ]

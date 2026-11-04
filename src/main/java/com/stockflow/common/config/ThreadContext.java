@@ -4,6 +4,7 @@ import io.micrometer.context.ContextSnapshot;
 import io.micrometer.context.ContextSnapshotFactory;
 import io.micrometer.observation.contextpropagation.ObservationThreadLocalAccessor;
 import org.slf4j.MDC;
+import com.stockflow.common.security.DataScopeContext;
 import org.springframework.context.i18n.LocaleContext;
 import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.context.i18n.SimpleLocaleContext;
@@ -18,10 +19,11 @@ import java.util.concurrent.Callable;
  * log's MDC (correlation id, trace id) and the current trace, so a span the worker opens is a child of the request's.
  * Each is a thread-local, and a virtual thread starts with none of them.
  *
- * <p><b>The data scope is not carried.</b> {@code DataScopeContext} is installed by the permission aspect around each
- * guarded call, from the user in the security context, and restored after it; a worker gets it the same way, by
- * calling through a guarded proxy. Carrying it would hand a worker the scope of whatever call happened to be running
- * when the work was handed over.</p>
+ * <p><b>{@link #carry} does not carry the data scope.</b> {@code DataScopeContext} is installed by the permission
+ * aspect around each guarded call, from the user in the security context, and restored after it; a worker gets it the
+ * same way, by calling through a guarded proxy. Carrying it by default would hand any worker the scope of whatever
+ * call happened to be running when the work was handed over. {@link #carryWithScope} does carry it, for a worker that
+ * does what this thread would otherwise have done itself, in its place.</p>
  *
  * <p>What the worker had before is put back when the task ends, so a pooled thread never keeps one task's user for
  * the next.</p>
@@ -78,6 +80,45 @@ public final class ThreadContext {
                 SecurityContextHolder.setContext(previousSecurity);
                 LocaleContextHolder.setLocaleContext(previousLocale);
                 setMdc(previousMdc);
+            }
+        };
+    }
+
+    /**
+     * {@code task}, to run on another thread exactly as it would run here, the data scope in force included: for a
+     * worker that takes over a piece of this thread's own work — one tool call of a step that runs beside the others,
+     * a whole answer streamed while the request thread returns. A guarded call on the worker sets its own scope and
+     * puts this one back, as it would here. Where nothing sets one — the security aspect switched off, in local
+     * development and tests — it is the system scope the request filter installed, without which every scoped read
+     * on the worker would refuse ({@code UnsecuredDataScopeFilter}).
+     */
+    public static <T> Callable<T> carryWithScope(Callable<T> task) {
+        DataScopeContext.Scope scope = DataScopeContext.current().orElse(null);
+        Callable<T> carried = carry(task);
+        return () -> {
+            DataScopeContext.Scope previous = DataScopeContext.current().orElse(null);
+            DataScopeContext.restore(scope);
+            try {
+                return carried.call();
+            } finally {
+                DataScopeContext.restore(previous);
+            }
+        };
+    }
+
+    /** {@code task}, to run on another thread exactly as it would run here: {@link #carryWithScope(Callable)}. */
+    public static Runnable carryWithScope(Runnable task) {
+        Callable<Void> callable = carryWithScope(() -> {
+            task.run();
+            return null;
+        });
+        return () -> {
+            try {
+                callable.call();
+            } catch (RuntimeException | Error failed) {
+                throw failed;
+            } catch (Exception impossible) {
+                throw new IllegalStateException(impossible);
             }
         };
     }

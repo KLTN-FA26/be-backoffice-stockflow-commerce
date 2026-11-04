@@ -135,7 +135,10 @@ class GeminiLanguageModel implements LanguageModel {
         return contents(history, null);
     }
 
-    /** @param note a line from the application, sent as the last part of the last user content; null for none */
+    /**
+     * @param note a line from the application, sent as the last part of the last user content, or as a user content of
+     *             its own after a model turn; null for none
+     */
     ArrayNode contents(List<Turn> history, String note) {
         ArrayNode contents = JsonNodeFactory.instance.arrayNode();
         Map<String, String> callNames = new HashMap<>();

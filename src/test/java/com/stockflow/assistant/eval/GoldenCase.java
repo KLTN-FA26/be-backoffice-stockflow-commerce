@@ -30,8 +30,9 @@ import java.util.Map;
  * @param invariantQuery SQL returning one value that must be the same before and after: the assistant changed nothing
  * @param expectRetrieved anchors the rule search must return among its five results: recall@5 (design §10.2)
  * @param earlier        questions asked before this one in the same conversation, oldest first
- * @param oracle         what the scripted oracle model calls in the harness for the last question, one call per step:
- *                       an object for one call, an array for a chain; empty when it calls nothing
+ * @param oracle         what the scripted oracle model calls in the harness for the last question, one step each:
+ *                       an object for one step, an array for a chain; empty when it calls nothing. A step's
+ *                       {@code together} are calls made in the same step, which the loop runs at once
  * @param smoke          one of the few cases a run on a free model quota starts with (design §10.3)
  */
 public record GoldenCase(String id, String useCase, String variant, Persona persona, String question,
@@ -66,8 +67,19 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
         }
     }
 
-    /** One tool call the harness's scripted model makes. */
-    public record Oracle(String tool, Map<String, Object> arguments) {
+    /**
+     * One step of the harness's scripted model: a tool call, and the calls it makes {@code together} with it in the
+     * same reply.
+     */
+    public record Oracle(String tool, Map<String, Object> arguments, List<Oracle> together) {
+
+        public Oracle {
+            together = together == null ? List.of() : List.copyOf(together);
+        }
+
+        public Oracle(String tool, Map<String, Object> arguments) {
+            this(tool, arguments, List.of());
+        }
     }
 
     /** This case with every placeholder replaced. */
@@ -86,7 +98,8 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
     private static List<Oracle> fill(List<Oracle> steps, Map<String, String> values) {
         return steps.stream().map(step -> new Oracle(step.tool(), step.arguments() == null ? Map.of()
                 : step.arguments().entrySet().stream().collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
-                        e -> e.getValue() instanceof String s ? fill(s, values) : e.getValue())))).toList();
+                        e -> e.getValue() instanceof String s ? fill(s, values) : e.getValue())),
+                fill(step.together(), values))).toList();
     }
 
     private static String fill(String text, Map<String, String> values) {

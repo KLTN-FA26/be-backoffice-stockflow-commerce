@@ -6,6 +6,7 @@ import com.stockflow.assistant.internal.domain.Message;
 import com.stockflow.assistant.internal.domain.MessageRole;
 import com.stockflow.assistant.internal.domain.PendingMessage;
 import com.stockflow.assistant.internal.domain.ToolCall;
+import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.domain.ToolResult;
 import com.stockflow.assistant.internal.domain.ToolSpec;
@@ -35,7 +36,11 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -71,6 +76,8 @@ class AssistantServiceTest {
     private boolean escalate = true;
     private final List<PendingMessage> stored = new ArrayList<>();
     private final AtomicInteger toolRuns = new AtomicInteger();
+    /** What {@code getStockLevels} answers for a SKU. */
+    private Function<String, Object> stockAnswer = sku -> new Stock(sku, 40);
     private int maxToolRounds = 6;
     private Duration lease = Duration.ofMinutes(30);
     private final List<Turn> earlier = new ArrayList<>();
@@ -113,7 +120,7 @@ class AssistantServiceTest {
             @RequiresPermission(resource = ToolPermissions.INVENTORY_STOCK_ITEMS, action = Action.READ)
             public Object run(ToolArguments arguments) {
                 toolRuns.incrementAndGet();
-                return new Stock(arguments.text("sku", 64), 40);
+                return stockAnswer.apply(arguments.text("sku", 64));
             }
         };
         AssistantProperties properties = new AssistantProperties(true, "key", "claude-opus-5-5", "low",
@@ -165,6 +172,250 @@ class AssistantServiceTest {
         assertThat(last).isInstanceOf(Turn.ToolResults.class);
         assertThat(((Turn.ToolResults) last).results().getFirst().callId()).isEqualTo("toolu_1");
         assertThat(answer.usage().inputTokens()).isEqualTo(200);
+        assertThat(model.requests).as("every number is a result's: nothing to correct").hasSize(2);
+    }
+
+    @Test
+    @DisplayName("an answer stating a number no result holds is written again once, without tools: the rewrite is "
+            + "the answer, the first stays on record")
+    void unverifiedNumbersAreCorrected() {
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái, đủ cho 125 đơn.");
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái; số đơn đủ giao tôi chưa tra được.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Còn 40 cái; số đơn đủ giao tôi chưa tra được.");
+        assertThat(answer.unverifiedNumbers()).isEmpty();
+        assertThat(model.requests).hasSize(3);
+        LanguageModel.Request repair = model.requests.get(2);
+        assertThat(repair.toolsAllowed()).isFalse();
+        assertThat(repair.note()).startsWith("Note from the system").contains(": 125.").doesNotContain("40");
+        assertThat(repair.history().getLast()).as("the answer being corrected, then the note")
+                .isInstanceOfSatisfying(Turn.ModelTurn.class,
+                        turn -> assertThat(turn.text()).isEqualTo("Còn 40 cái, đủ cho 125 đơn."));
+        assertThat(stored).extracting(PendingMessage::text).containsExactly(null, null,
+                "Còn 40 cái, đủ cho 125 đơn.", "Còn 40 cái; số đơn đủ giao tôi chưa tra được.");
+        assertThat(answer.usage().inputTokens()).as("both calls are paid for").isEqualTo(300);
+    }
+
+    @Test
+    @DisplayName("a rewrite that states as many unheld numbers, asks for a tool or says nothing leaves the answer as it "
+            + "was, flagged; the rewrite is kept for its tokens and never shown")
+    void unusableCorrectionsAreSetAside() {
+        model.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua là 12.500.000 ₫.");
+        model.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua khoảng 12,5 triệu ₫.");
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_9", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        model.then(LanguageModel.StopReason.MAX_TOKENS, "Còn");
+        AssistantService service = service();
+
+        AssistantService.Answer same = service.ask(CONVERSATION, "Doanh thu hôm qua?", MANAGER);
+        AssistantService.Answer tool = service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER);
+        AssistantService.Answer cut = service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER);
+
+        assertThat(same.text()).isEqualTo("Doanh thu hôm qua là 12.500.000 ₫.");
+        assertThat(same.unverifiedNumbers()).containsExactly("12.500.000");
+        assertThat(tool.text()).isEqualTo("Còn 40 cái.");
+        assertThat(toolRuns).as("no lookup runs while an answer is corrected").hasValue(0);
+        assertThat(cut.text()).isEqualTo("Còn 40 cái.");
+        assertThat(cut.cutShort()).as("the answer shown was complete; the rewrite set aside was cut").isFalse();
+        assertThat(stored).extracting(PendingMessage::text).containsExactly("Doanh thu hôm qua là 12.500.000 ₫.", null,
+                "Còn 40 cái.", null, "Còn 40 cái.", null);
+        assertThat(List.of(stored.get(1), stored.get(3), stored.get(5))).as("set aside: no text, no tool call")
+                .allSatisfy(audit -> assertThat((Turn.ModelTurn) audit.turn()).satisfies(turn -> {
+                    assertThat(turn.text()).isNull();
+                    assertThat(turn.toolCalls()).isEmpty();
+                    assertThat(turn.providerContent()).as("kept for the audit").contains("\"reply\"");
+                }));
+        assertThat(stored).extracting(PendingMessage::usage).allSatisfy(usage ->
+                assertThat(usage.inputTokens()).isEqualTo(100));
+    }
+
+    @Test
+    @DisplayName("a rewrite set aside is never sent back: the next question is sent the answer the user saw")
+    void aRewriteSetAsideIsNotSentBack() {
+        model.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua là 12.500.000 ₫.");
+        model.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua là 99.999.999 ₫, gồm đơn SO-1-777.");
+        model.then(LanguageModel.StopReason.END_TURN, "Xin chào.");
+        AssistantService service = service();
+
+        service.ask(CONVERSATION, "Doanh thu hôm qua?", MANAGER);
+        earlier.add(new Turn.Question("Doanh thu hôm qua?", "ctx"));
+        stored.forEach(message -> earlier.add(message.turn()));
+        service.ask(CONVERSATION, "Chào", MANAGER);
+
+        List<Turn> sent = model.requests.getLast().history();
+        assertThat(sent).hasSize(3);
+        assertThat(sent.get(1)).isInstanceOfSatisfying(Turn.ModelTurn.class,
+                turn -> assertThat(turn.text()).isEqualTo("Doanh thu hôm qua là 12.500.000 ₫."));
+    }
+
+    @Test
+    @DisplayName("a rewrite is the answer only if it loses nothing: one adding an unheld number, or dropping a grounded "
+            + "one, leaves the answer as it was")
+    void aRewriteMustLoseNothing() {
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái, đủ 125 đơn, giao 300 cái.");
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái, đủ 125 đơn, giao 250 cái.");
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_2", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái, đủ 125 đơn.");
+        model.then(LanguageModel.StopReason.END_TURN, "Tôi chưa tra được số đơn.");
+        AssistantService service = service();
+
+        AssistantService.Answer added = service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER);
+        AssistantService.Answer dropped = service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER);
+
+        assertThat(added.text()).as("250 is a new unheld number").isEqualTo("Còn 40 cái, đủ 125 đơn, giao 300 cái.");
+        assertThat(dropped.text()).as("the 40 that was looked up is gone").isEqualTo("Còn 40 cái, đủ 125 đơn.");
+        assertThat(dropped.unverifiedNumbers()).containsExactly("125");
+    }
+
+    @Test
+    @DisplayName("a number only a code holds is named as such, and a rewrite that writes the code whole is the answer")
+    void aNumberInsideACodeIsWrittenWhole() {
+        stockAnswer = sku -> java.util.Map.of("sku", sku, "lot", "EVAL-LOT-2401", "onHand", 40);
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "Lô 2401 còn 40 cái.");
+        model.then(LanguageModel.StopReason.END_TURN, "Lô EVAL-LOT-2401 còn 40 cái.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Lô nào của CUP-12OZ?", MANAGER);
+
+        assertThat(model.requests.get(2).note()).contains("only inside a code", ": 2401.")
+                .doesNotContain("appear in no tool result");
+        assertThat(answer.text()).isEqualTo("Lô EVAL-LOT-2401 còn 40 cái.");
+        assertThat(answer.unverifiedNumbers()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a rewrite call failing with anything, not only a provider error, leaves the answer as it was")
+    void anyFailureOfTheRewriteKeepsTheAnswer() {
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        model.fail(new IllegalStateException("malformed reply"));
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Còn 40 cái.");
+        assertThat(stored).extracting(PendingMessage::text).containsExactly("Còn 40 cái.");
+    }
+
+    @Test
+    @DisplayName("a quota spent on the rewrite sets the model aside even on a route of models all set aside: the next "
+            + "question can still move on")
+    void aQuotaSpentOnTheRewriteIsRemembered() {
+        route = List.of(lite, flash);
+        lite.fail(quota());
+        flash.fail(quota());
+        AssistantService service = service();
+        assertThatThrownBy(() -> service.ask(CONVERSATION, "Chào", MANAGER)).isInstanceOf(BusinessException.class);
+
+        lite.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lite.fail(quota());
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+
+        lite.fail(quota());
+        flash.then(LanguageModel.StopReason.END_TURN, "Xin chào.");
+        assertThat(service.ask(CONVERSATION, "Chào", MANAGER).text()).isEqualTo("Xin chào.");
+    }
+
+    @Test
+    @DisplayName("a correction the provider fails leaves the answer as it was, and a spent quota still sets the model "
+            + "aside for the next question")
+    void failedCorrectionKeepsTheAnswer() {
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lite.fail(quota());
+        flash.then(LanguageModel.StopReason.END_TURN, "Xin chào.");
+        AssistantService service = service();
+
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(stored).extracting(PendingMessage::text).containsExactly("Còn 40 cái.");
+        assertThat(service.ask(CONVERSATION, "Chào", MANAGER).text()).isEqualTo("Xin chào.");
+        assertThat(lite.requests).as("set aside after the failed correction").hasSize(2);
+    }
+
+    @Test
+    @DisplayName("no correction is asked for when the lease has no room left for the call")
+    void noCorrectionWithoutTime() {
+        lease = Duration.ofMinutes(12);
+        model.onCall = () -> clock.advance(Duration.ofMinutes(8));
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+
+        assertThat(service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(model.requests).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("a step's tools run at once; their results go back in the order the model asked for them, and each is "
+            + "reported as it finishes, on the thread that runs the loop")
+    void stepToolsRunTogether() {
+        CountDownLatch secondDone = new CountDownLatch(1);
+        stockAnswer = sku -> {
+            if (sku.equals("CUP-12OZ")) {
+                try {
+                    // Run one after the other, this would wait for a call that has not started.
+                    if (!secondDone.await(10, TimeUnit.SECONDS)) {
+                        return new Stock("TIMED-OUT", 0);
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return new Stock(sku, 40);
+            }
+            secondDone.countDown();
+            return new Stock(sku, 12);
+        };
+        model.then(LanguageModel.StopReason.TOOL_USE, null,
+                new ToolCall("toolu_1", "getStockLevels", "{\"sku\":\"CUP-12OZ\"}"),
+                new ToolCall("toolu_2", "getStockLevels", "{\"sku\":\"LID-90\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "CUP-12OZ còn 40 cái, LID-90 còn 12 cái.");
+        List<String> reported = new CopyOnWriteArrayList<>();
+        Thread loop = Thread.currentThread();
+
+        AssistantService.Answer answer = service().askAsOwner(CONVERSATION, "So sánh CUP-12OZ với LID-90", MANAGER,
+                call -> reported.add(call.tool() + (Thread.currentThread() == loop ? "@loop" : "@worker")));
+
+        assertThat(((Turn.ToolResults) model.requests.get(1).history().getLast()).results())
+                .extracting(ToolResult::callId).containsExactly("toolu_1", "toolu_2");
+        assertThat(stored.getFirst().executions()).extracting(ToolExecution::result).containsExactly(
+                "{\"sku\":\"CUP-12OZ\",\"onHand\":40}", "{\"sku\":\"LID-90\",\"onHand\":12}");
+        assertThat(reported).containsExactly("getStockLevels@loop", "getStockLevels@loop");
+        assertThat(answer.unverifiedNumbers()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a step runs only as many tools at once as the room left for results can hold at their longest: what "
+            + "ran was sent, what was not sent did not run")
+    void theBudgetBoundsEachWave() {
+        String pad = "x".repeat(19_950);
+        stockAnswer = sku -> java.util.Map.of("sku", sku, "pad", pad);
+        ToolCall[] calls = new ToolCall[9];
+        for (int i = 0; i < calls.length; i++) {
+            calls[i] = new ToolCall("toolu_" + (i + 1), "getStockLevels", "{\"sku\":\"S-" + (i + 1) + "\"}");
+        }
+        model.then(LanguageModel.StopReason.TOOL_USE, null, calls);
+        model.then(LanguageModel.StopReason.END_TURN, "Tôi đã tra được một phần.");
+
+        service().ask(CONVERSATION, "Tra hết", MANAGER);
+
+        // 100 000 characters hold five results of up to 20 000; one more runs when a little room is left, as before.
+        assertThat(toolRuns).hasValue(6);
+        List<ToolResult> results = ((Turn.ToolResults) model.requests.get(1).history().getLast()).results();
+        assertThat(results).extracting(ToolResult::callId).containsExactly("toolu_1", "toolu_2", "toolu_3",
+                "toolu_4", "toolu_5", "toolu_6", "toolu_7", "toolu_8", "toolu_9");
+        assertThat(results.subList(0, 6)).allSatisfy(result -> assertThat(result.error()).isFalse());
+        assertThat(results.subList(6, 8)).allSatisfy(result ->
+                assertThat(result.content()).startsWith("NOT_RUN: this question has used up its room"));
+        assertThat(results.get(8).content()).startsWith("NOT_RUN: at most 8 tools");
+        assertThat(stored.getFirst().executions()).as("the record holds what ran, as it was sent").hasSize(6)
+                .extracting(execution -> execution.call().id()).containsExactly("toolu_1", "toolu_2", "toolu_3",
+                        "toolu_4", "toolu_5", "toolu_6");
     }
 
     @Test
@@ -176,7 +427,7 @@ class AssistantServiceTest {
                 "{\"sku\":\"CUP-12OZ\"}"));
         model.then(LanguageModel.StopReason.END_TURN, "CUP-12OZ còn 40 cái; LID-90 tôi chưa kiểm tra được.");
 
-        AssistantService.Answer answer = service().ask(CONVERSATION, "So sánh hai mã", MANAGER);
+        AssistantService.Answer answer = service().ask(CONVERSATION, "So sánh CUP-12OZ với LID-90", MANAGER);
 
         assertThat(answer.text()).isEqualTo("CUP-12OZ còn 40 cái; LID-90 tôi chưa kiểm tra được.");
         assertThat(answer.toolCalls()).extracting(ConversationService.ToolCallView::tool).containsExactly(
@@ -275,7 +526,7 @@ class AssistantServiceTest {
     void unknownToolName() {
         model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("call_1", "default_api.getStockLevels",
                 "{\"sku\":\"CUP-12OZ\"}"));
-        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        model.then(LanguageModel.StopReason.END_TURN, "Còn hàng.");
 
         AssistantService.Answer answer = service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER);
 
@@ -575,14 +826,14 @@ class AssistantServiceTest {
     void spentQuotaMovesOn() {
         route = List.of(lite, flash);
         lite.fail(quota());
-        flash.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
-        flash.then(LanguageModel.StopReason.END_TURN, "Còn 12 cái.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn hàng.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Hết hàng.");
         AssistantService service = service();
 
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn hàng.");
         // 06:59 UTC is 23:59 on 24/10 in Los Angeles: the free tier's day has not ended yet.
         clock.advance(Duration.ofHours(4).plusMinutes(59));
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Còn 12 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Hết hàng.");
 
         assertThat(lite.requests).as("set aside after one refused call").hasSize(1);
         assertThat(stored).as("the refused call left nothing behind; each answer names the model that wrote it")
@@ -600,12 +851,12 @@ class AssistantServiceTest {
     void unreachableMovesOn() {
         route = List.of(lite, flash);
         lite.fail(unavailable());
-        flash.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
-        lite.then(LanguageModel.StopReason.END_TURN, "Còn 12 cái.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn hàng.");
+        lite.then(LanguageModel.StopReason.END_TURN, "Hết hàng.");
         AssistantService service = service();
 
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn 40 cái.");
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Còn 12 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn hàng.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Hết hàng.");
         assertThat(flash.requests).hasSize(1);
     }
 
@@ -636,7 +887,7 @@ class AssistantServiceTest {
         lite.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("call_1", "getStockLevels",
                 "{\"sku\":\"CUP-12OZ\"}"));
         lite.fail(quota());
-        flash.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn hàng.");
         AssistantService service = service();
 
         assertThatThrownBy(() -> service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER))
@@ -646,7 +897,7 @@ class AssistantServiceTest {
         assertThat(stored.getFirst().executions()).as("the lookup that ran is on record").hasSize(1);
         assertThat(stored.getLast().text()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE.defaultMessage());
 
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn hàng.");
         assertThat(lite.requests).hasSize(2);
     }
 
@@ -683,10 +934,10 @@ class AssistantServiceTest {
 
         // Both set aside until midnight Pacific; an operator raised the second one's quota meanwhile.
         lite.fail(quota());
-        flash.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
-        flash.then(LanguageModel.StopReason.END_TURN, "Còn 12 cái.");
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Còn 12 cái.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn hàng.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn hàng.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Hết hàng.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Hết hàng.");
         assertThat(lite.requests).as("not asked again once another model answered").hasSize(2);
     }
 
@@ -714,11 +965,11 @@ class AssistantServiceTest {
                 "Còn 40 cái.", List.of()));
         lite.then(LanguageModel.StopReason.OTHER, null);
         lite.then(LanguageModel.StopReason.END_TURN, " ");
-        flash.then(LanguageModel.StopReason.END_TURN, "Lô L-07 hết hạn ngày 02/11.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Lô L-07 sắp hết hạn.");
 
         AssistantService.Answer answer = service().ask(CONVERSATION, "Lô nào sắp hết hạn?", MANAGER);
 
-        assertThat(answer.text()).isEqualTo("Lô L-07 hết hạn ngày 02/11.");
+        assertThat(answer.text()).isEqualTo("Lô L-07 sắp hết hạn.");
         assertThat(lite.requests).hasSize(2);
         assertThat(lite.requests.getFirst().history().get(1)).isInstanceOfSatisfying(Turn.ModelTurn.class,
                 turn -> assertThat(turn.providerContent()).isEqualTo(lite.closing.providerContent()));
@@ -770,11 +1021,11 @@ class AssistantServiceTest {
     void markupOnlyIsEscalated() {
         route = List.of(lite, flash);
         lite.then(LanguageModel.StopReason.END_TURN, "![](https://evil.example/p.png?d=12500000)");
-        flash.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua là 12.500.000 ₫.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Hôm qua chưa có doanh thu.");
 
         AssistantService.Answer answer = service().ask(CONVERSATION, "Doanh thu hôm qua?", MANAGER);
 
-        assertThat(answer.text()).isEqualTo("Doanh thu hôm qua là 12.500.000 ₫.");
+        assertThat(answer.text()).isEqualTo("Hôm qua chưa có doanh thu.");
         assertThat(lite.requests).hasSize(1);
     }
 
@@ -784,12 +1035,12 @@ class AssistantServiceTest {
         route = List.of(lite, flash);
         lite.then(LanguageModel.StopReason.REFUSAL, null);
         lite.then(LanguageModel.StopReason.MAX_TOKENS, null);
-        lite.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lite.then(LanguageModel.StopReason.END_TURN, "Còn hàng.");
         AssistantService service = service();
 
         assertThat(service.ask(CONVERSATION, "…", MANAGER).text()).isEqualTo("I cannot help with that request.");
         assertThat(service.ask(CONVERSATION, "Liệt kê tất cả", MANAGER).cutShort()).isTrue();
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn hàng.");
         assertThat(flash.requests).isEmpty();
     }
 

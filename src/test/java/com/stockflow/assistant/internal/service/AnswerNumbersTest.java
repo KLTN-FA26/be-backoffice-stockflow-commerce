@@ -112,6 +112,36 @@ class AnswerNumbersTest {
     }
 
     @Test
+    @DisplayName("digits inside a code ground codes only: an order number does not make a quantity, a date still does")
+    void codeDigitsGroundCodesOnly() {
+        List<String> sources = List.of("{\"orderNumber\":\"SO-20991231-900101\",\"bin\":\"HCM-A01-1-B\","
+                + "\"placedAt\":\"2026-10-28T23:59:12+07:00\",\"lines\":[{\"sku\":\"EVAL-CUP-12OZ\",\"quantity\":480}]}");
+
+        assertThat(AnswerNumbers.unverified("Đơn SO-20991231-900101, vị trí HCM-A01-1-B.", sources)).isEmpty();
+        assertThat(AnswerNumbers.unverified("Còn 900101 cái.", sources)).as("an order number is no quantity")
+                .containsExactly("900101");
+        assertThat(AnswerNumbers.unverified("Đặt lúc 23:59 ngày 28/10, 480 cái.", sources))
+                .as("an ISO time's parts stand alone").isEmpty();
+        assertThat(AnswerNumbers.unverified("Đơn SO-20991231-900077.", sources)).containsExactly("900077");
+    }
+
+    @Test
+    @DisplayName("a number written against letters or inside dashes is read as part of a code: a size read off a SKU "
+            + "stands; a lone number only a code holds is flagged, and the check says a code holds it")
+    void codeLikeNumbersInTheAnswer() {
+        List<String> sources = List.of("{\"sku\":\"CUP-12OZ-WHT\",\"onHand\":480,\"lot\":\"EVAL-LOT-2401\","
+                + "\"orderNumber\":\"SO-20991231-900101\"}");
+
+        assertThat(AnswerNumbers.unverified("Cốc 12oz (CUP-12OZ-WHT) còn 480 cái.", sources)).isEmpty();
+        assertThat(AnswerNumbers.unverified("Đơn 20991231-900101 đã giao.", sources)).isEmpty();
+        assertThat(AnswerNumbers.unverified("Còn 125k và 35tr.", List.of("125000 và 35000000"))).isEmpty();
+        AnswerNumbers.Grounds grounds = AnswerNumbers.Grounds.of(sources);
+        assertThat(AnswerNumbers.check("Lô 2401 còn 480 cái, đủ 125 đơn.", grounds))
+                .containsExactly(new AnswerNumbers.Checked("2401", false, true),
+                        new AnswerNumbers.Checked("480", true, false), new AnswerNumbers.Checked("125", false, false));
+    }
+
+    @Test
     @DisplayName("the question, its context and a failed call's line are sources too")
     void questionContextAndErrors() {
         List<String> sources = List.of("Lô nào hết hạn trong 45 ngày tới?",

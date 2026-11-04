@@ -27,6 +27,7 @@ class ThreadContextTest {
 
     @AfterEach
     void clear() {
+        com.stockflow.common.security.DataScopeContext.clear();
         SecurityContextHolder.clearContext();
         LocaleContextHolder.resetLocaleContext();
         MDC.clear();
@@ -73,6 +74,26 @@ class ThreadContextTest {
             assertThat(worker.submit(task).get()).isEqualTo(Locale.forLanguageTag("vi"));
         }
         assertThat(reads.get()).as("the worker read the copy, not the request").isEqualTo(readsWhenHandedOver);
+    }
+
+    @Test
+    @DisplayName("carry leaves the data scope behind; carryWithScope takes it along, and the worker keeps none of it")
+    void dataScope() throws Exception {
+        com.stockflow.common.security.CurrentUser system = new com.stockflow.common.security.CurrentUser(
+                java.util.UUID.randomUUID(), "local-dev", java.util.Set.of(), java.util.Set.of(),
+                com.stockflow.common.security.DataScope.ALL, java.util.Set.of());
+        com.stockflow.common.security.DataScopeContext.setSystemScope(system);
+        Callable<Boolean> without = ThreadContext.carry(
+                () -> com.stockflow.common.security.DataScopeContext.current().isPresent());
+        Callable<String> with = ThreadContext.carryWithScope(
+                () -> com.stockflow.common.security.DataScopeContext.current().orElseThrow().user().username());
+
+        try (ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            assertThat(worker.submit(without).get()).isFalse();
+            assertThat(worker.submit(with).get()).isEqualTo("local-dev");
+            assertThat(worker.submit(() -> com.stockflow.common.security.DataScopeContext.current().isPresent())
+                    .get()).as("put back after the task, on a pooled thread").isFalse();
+        }
     }
 
     @Test

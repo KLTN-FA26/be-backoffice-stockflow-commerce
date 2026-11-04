@@ -26,9 +26,11 @@ import java.util.concurrent.Executors;
  * <p><b>The thread rule.</b> The loop must leave the request thread here, and everything the tools rely on is
  * thread-bound: the {@code SecurityContext} (the permission aspect reads it), the data scope (the aspect writes it),
  * the locale (the error and closing messages), the MDC (the correlation id in the logs) and the trace. {@code
- * ThreadContext} carries the first, the locale, the MDC and the trace; the data scope is not copied but re-established —
+ * ThreadContext.carryWithScope} carries them all, the data scope included, and the scope is then re-established —
  * {@link AssistantService#askAsOwner} carries {@code @RequiresPermission}, so the aspect checks the caller again and
- * installs the scope on the worker thread itself, exactly as it did on the request thread.</p>
+ * installs the scope on the worker thread itself, exactly as it did on the request thread. The carried scope matters
+ * only where no aspect runs: with security switched off, it is the system scope the request filter installed, which
+ * the worker would otherwise lack, every tool refused.</p>
  *
  * <p>Virtual threads: an answer spends seconds waiting on the provider, and a virtual thread costs nothing to block.</p>
  */
@@ -63,9 +65,9 @@ public class AssistantStreams {
                 outputMessage.getHeaders().set("X-Accel-Buffering", "no");
             }
         };
-        // The user, the locale, the MDC and the trace travel with the work (ThreadContext); the data scope is set again
-        // by askAsOwner's own guard.
-        executor.execute(ThreadContext.carry(() -> {
+        // The user, the locale, the MDC, the trace and the scope travel with the work (ThreadContext); the scope is
+        // set again by askAsOwner's own guard where security is on.
+        executor.execute(ThreadContext.carryWithScope(() -> {
             try {
                 AssistantService.Answer answer = assistant.askAsOwner(conversationId, text, user,
                         call -> send(emitter, "tool", call));

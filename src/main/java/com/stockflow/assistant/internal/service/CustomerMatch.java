@@ -51,14 +51,22 @@ record CustomerMatch(UUID customerId, String name, String status, List<Candidate
      *                which customers partly match
      */
     static CustomerMatch find(CustomerService customers, String typed, boolean mayList) {
-        String text = Normalizer.normalize(typed.strip(), Normalizer.Form.NFC);
-        PageResponse<CustomerSummary> found = customers.list(new ListCustomersQuery(0, SEARCHED, text, null,
-                BY_NAME));
+        // Searched as it is compared: "Công ty  ABC", typed with two blanks or a pasted no-break space, is the
+        // customer "Công ty ABC".
+        String text = plain(typed);
         String taxCode = taxCodeOf(text);
-        List<CustomerSummary> exact = found.items().stream()
-                .filter(customer -> sameName(customer.fullName(), text)
-                        || taxCode != null && taxCode.equals(customer.taxCode()))
-                .toList();
+        PageResponse<CustomerSummary> found = search(customers, text);
+        List<CustomerSummary> exact = exact(found, text, taxCode);
+        String asTyped = Normalizer.normalize(typed.strip(), Normalizer.Form.NFC);
+        if (exact.isEmpty() && !asTyped.equals(text)) {
+            // Names are stored as entered: one registered with the same odd blanks is found only as typed.
+            PageResponse<CustomerSummary> typedFound = search(customers, asTyped);
+            List<CustomerSummary> typedExact = exact(typedFound, text, taxCode);
+            if (!typedExact.isEmpty()) {
+                found = typedFound;
+                exact = typedExact;
+            }
+        }
         if (exact.size() == 1) {
             return chosen(exact.getFirst());
         }
@@ -94,6 +102,18 @@ record CustomerMatch(UUID customerId, String name, String status, List<Candidate
         return customerId != null;
     }
 
+    private static PageResponse<CustomerSummary> search(CustomerService customers, String text) {
+        return customers.list(new ListCustomersQuery(0, SEARCHED, text, null, BY_NAME));
+    }
+
+    /** The customers called exactly {@code text}, or holding {@code taxCode}. */
+    private static List<CustomerSummary> exact(PageResponse<CustomerSummary> found, String text, String taxCode) {
+        return found.items().stream()
+                .filter(customer -> sameName(customer.fullName(), text)
+                        || taxCode != null && taxCode.equals(customer.taxCode()))
+                .toList();
+    }
+
     private static CustomerMatch chosen(CustomerSummary customer) {
         return new CustomerMatch(customer.customerId(), customer.fullName(), customer.status(), List.of(), null);
     }
@@ -113,8 +133,9 @@ record CustomerMatch(UUID customerId, String name, String status, List<Candidate
         return registered != null && plain(registered).equalsIgnoreCase(plain(text));
     }
 
+    /** Every Unicode blank, the no-break space of a name pasted from a spreadsheet or a chat included, made one. */
     private static String plain(String name) {
-        return Normalizer.normalize(name, Normalizer.Form.NFC).strip().replaceAll("\\s+", " ");
+        return Normalizer.normalize(name, Normalizer.Form.NFC).replaceAll("(?U)\\s+", " ").strip();
     }
 
     /**

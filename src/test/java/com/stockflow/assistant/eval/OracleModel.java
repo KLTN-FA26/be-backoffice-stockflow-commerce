@@ -13,7 +13,8 @@ import java.util.stream.Collectors;
 
 /**
  * A scripted stand-in for the model, for the harness: for each question of a case it makes exactly the calls the case
- * names, one per step, then answers with every tool result of that question verbatim.
+ * names, step by step — a step's {@code together} calls in the same reply — then answers with every tool result of
+ * that question verbatim.
  *
  * <p>An answer that is nothing but the tool output makes the golden set test the layers under the model: if a fact is
  * missing, the fixture, the fact query or the tool is wrong; if a forbidden value appears, the tool showed a persona
@@ -50,9 +51,13 @@ final class OracleModel {
                 ? current.earlier().get(questions - 1).oracle() : current.oracle();
         if (results.size() < steps.size()) {
             GoldenCase.Oracle step = steps.get(results.size());
-            return new LanguageModel.Reply(new Turn.ModelTurn("{\"oracle\":\"tool_use\"}", null,
-                    List.of(new ToolCall("toolu_" + UUID.randomUUID(), step.tool(),
-                            json.writeValueAsString(step.arguments())))),
+            List<ToolCall> calls = new java.util.ArrayList<>();
+            for (GoldenCase.Oracle call : java.util.stream.Stream.concat(java.util.stream.Stream.of(step),
+                    step.together().stream()).toList()) {
+                calls.add(new ToolCall("toolu_" + UUID.randomUUID(), call.tool(),
+                        json.writeValueAsString(call.arguments())));
+            }
+            return new LanguageModel.Reply(new Turn.ModelTurn("{\"oracle\":\"tool_use\"}", null, calls),
                     LanguageModel.StopReason.TOOL_USE, new LanguageModel.Usage(1, 1, 0, 0), "oracle");
         }
         if (results.isEmpty()) {

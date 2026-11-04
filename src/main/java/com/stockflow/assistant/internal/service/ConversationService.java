@@ -243,7 +243,8 @@ public class ConversationService {
         /**
          * The answer read from the messages stored for one question: its last text, every tool call made for it, the
          * rules that text cites, the proposals and tables those calls returned, the numbers it states that nothing
-         * holds and the questions it leads to; cut short if any of its replies was. The live answer
+         * holds and the questions it leads to; cut short if any of its replies up to that text was — a rewrite set
+         * aside after it, stored with no text, says nothing about the answer shown. The live answer
          * ({@code AssistantService.Answer}) and the reopened transcript are both read here, so nothing shown under an
          * answer can move to another line, or differ, when the conversation is reopened.
          *
@@ -256,15 +257,17 @@ public class ConversationService {
                                                 List<Message> exchange, ObjectMapper json) {
             Message last = null;
             List<ToolExecution> executions = new ArrayList<>();
+            boolean cutSoFar = false;
             boolean cutShort = false;
             for (Message message : exchange) {
                 if (message.role() != MessageRole.ASSISTANT) {
                     continue;
                 }
                 executions.addAll(message.executions());
-                cutShort |= message.stopReason() == LanguageModel.StopReason.MAX_TOKENS;
+                cutSoFar |= message.stopReason() == LanguageModel.StopReason.MAX_TOKENS;
                 if (message.text() != null && !message.text().isBlank()) {
                     last = message;
+                    cutShort = cutSoFar;
                 }
             }
             if (last == null) {

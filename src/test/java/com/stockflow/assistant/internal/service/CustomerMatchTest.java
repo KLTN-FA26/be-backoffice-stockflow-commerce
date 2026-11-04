@@ -44,18 +44,50 @@ class CustomerMatchTest {
     }
 
     @Test
-    @DisplayName("the customer called exactly that wins over the others the text is part of, case and blanks aside")
+    @DisplayName("the customer called exactly that wins over the others the text is part of, case and blanks aside; "
+            + "the search is sent the name with its blanks made single, as it is compared")
     void exactNameWins() {
         CustomerSummary abc = customer("Công ty ABC", null);
         found(customer("Công ty ABC Hà Nội", null), abc, customer("ABC Bao Bì", null));
 
         CustomerMatch match = CustomerMatch.find(customers, "  công ty  abc ", true);
 
+        ArgumentCaptor<ListCustomersQuery> searched = ArgumentCaptor.forClass(ListCustomersQuery.class);
+        verify(customers).list(searched.capture());
+        assertThat(searched.getValue().search()).isEqualTo("công ty abc");
+
         assertThat(match.found()).isTrue();
         assertThat(match.customerId()).isEqualTo(abc.customerId());
         assertThat(match.name()).isEqualTo("Công ty ABC");
         assertThat(match.status()).isEqualTo("ACTIVE");
         assertThat(match.note()).isNull();
+    }
+
+    @Test
+    @DisplayName("a no-break space pasted into a name is a blank like any other")
+    void noBreakSpace() {
+        CustomerSummary abc = customer("Công ty ABC", null);
+        found(abc);
+
+        CustomerMatch match = CustomerMatch.find(customers, "công ty\u00A0abc", false);
+
+        assertThat(match.customerId()).isEqualTo(abc.customerId());
+    }
+
+    @Test
+    @DisplayName("a name registered with two blanks is found when typed as registered: names are stored as entered")
+    void oddBlanksAsRegistered() {
+        CustomerSummary abc = customer("Công ty  ABC", null);
+        when(customers.list(org.mockito.ArgumentMatchers.argThat(query -> query != null
+                && "Công ty ABC".equals(query.search())))).thenReturn(PageResponse.of(List.of(), 0,
+                CustomerMatch.SEARCHED, 0));
+        when(customers.list(org.mockito.ArgumentMatchers.argThat(query -> query != null
+                && "Công ty  ABC".equals(query.search())))).thenReturn(PageResponse.of(List.of(abc), 0,
+                CustomerMatch.SEARCHED, 1));
+
+        CustomerMatch match = CustomerMatch.find(customers, "Công ty  ABC", false);
+
+        assertThat(match.customerId()).isEqualTo(abc.customerId());
     }
 
     @Test

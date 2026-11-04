@@ -341,7 +341,7 @@ class TodayCardTest {
 
     private TodayCard.Card card(String... granted) {
         when(availability.grantedTo(USER)).thenReturn(List.of(granted));
-        return new TodayCard(tools, availability, applicationMapper(), new Messages(new StaticMessageSource()),
+        return new TodayCard(new ParallelTools(tools), availability, applicationMapper(), new Messages(new StaticMessageSource()),
                 Clock.fixed(NOW, ZoneOffset.UTC), org.mockito.Mockito.mock(ToolRunRecorder.class)).of(USER);
     }
 

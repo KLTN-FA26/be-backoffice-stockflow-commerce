@@ -236,8 +236,16 @@ AssistantService.ask(conversationId, text, user)
        request  = các tool người dùng được dùng (ToolAvailability.specsFor, sắp theo tên, tính một lần cho câu hỏi)
                   + system prompt + lịch sử (+ ghi chú)
        response = languageModel.next(request)
-       TOOL_USE và chưa phải lần gọi cuối → chạy tối đa 8 tool trên CHÍNH thread này, mỗi câu hỏi tối đa
-         100.000 ký tự kết quả tool; call vượt mức nhận NOT_RUN; mọi call đều có kết quả, trong MỘT tin nhắn.
+       TOOL_USE và chưa phải lần gọi cuối → chạy tối đa 8 tool, CÙNG LÚC (ParallelTools, từ 04/11): một call thì
+         chạy trên chính thread này; nhiều call thì chạy trên virtual thread, tối đa 4 call của một bước và 8 call
+         của cả instance cùng lúc, mỗi worker mang theo người dùng, locale, MDC, trace và data scope (§5.2). Mỗi câu
+         hỏi tối đa 100.000 ký tự kết quả tool. Một đợt chỉ chạy số call mà phần còn lại chứa được nếu mỗi kết quả
+         dài tối đa (20.000 ký tự), ít nhất một call; hết chỗ thì các call còn lại nhận NOT_RUN và KHÔNG chạy. Kết
+         quả xếp theo thứ tự model gọi, không theo thứ tự xong, nên model nhận gì không phụ thuộc tool nào xong
+         trước; sự kiện tiến độ của bản streaming phát theo thứ tự xong, luôn từ thread của vòng lặp. Mọi call đều
+         có kết quả, trong MỘT tin nhắn, và dòng kiểm toán là đúng cái model nhận. ParallelTools không ném lỗi:
+         lỗi bất ngờ của một call là FAILED của call đó; bị ngắt khi đang chờ thì các call chưa xong nhận FAILED
+         "đã dừng"; executor đang tắt từ chối thì call chạy trên thread của vòng lặp.
          Lời gọi tới tool không tồn tại được lưu với tên unknownTool, kết quả vẫn nêu tên model đã dùng:
          ck_tool_call_name không nhận dấu chấm, gạch ngang hay dấu hai chấm, mà Gemini không có strict mode
        trả lời rỗng (không chữ, không tool call, không bị cắt hay từ chối: function call mà Gemini không đọc được,
@@ -247,6 +255,18 @@ AssistantService.ask(conversationId, text, user)
          một câu nghe như "không tìm thấy"
        không có tool call → xong; chữ hiển thị đã qua AnswerText.plain (§5.6); MAX_TOKENS không có chữ → câu
          "quá dài" (assistant.cutShort)
+       câu trả lời xong (END_TURN) mà còn số không căn cứ (AnswerNumbers, §7) và lease còn đủ một lần gọi → TỰ
+         SỬA, đúng một lần (từ 04/11): gọi lại model đó, cấm tool, kèm ghi chú liệt kê các số ấy, bảo viết lại chỉ
+         với số chỉ ra được ở trên, chỗ nào chưa tra thì nói chưa tra. Căn cứ là những gì model đã thấy: câu hỏi,
+         ngữ cảnh, kết quả tool của lần thử này, cộng câu hỏi và kết quả tool của các câu trước. Số chỉ có trong
+         một mã ("lô 2401" cho EVAL-LOT-2401) được nêu riêng: viết cả mã, hoặc bỏ số đó. Bản viết lại chỉ thay câu
+         đầu khi tốt hơn mà không mất gì: hoàn chỉnh (END_TURN, có chữ, không xin tool), số không căn cứ của nó là
+         tập con thật sự của câu đầu (bớt số, không thêm số mới), còn đủ mọi số có căn cứ và mọi quy định câu đầu
+         đã trích. Nếu không thì giữ câu đầu, vẫn gắn cờ như trước. Cả hai lượt đều được lưu và tính token; bản bị
+         bỏ được lưu không chữ, không tool call (chỉ giữ nội dung của nhà cung cấp cho kiểm toán), nên transcript,
+         lịch sử gửi cho câu sau và cờ "bị cắt" đều đọc câu người dùng đã thấy. Lời gọi sửa mà lỗi, bất kể lỗi gì,
+         thì câu đầu vẫn đứng, không báo lỗi; hạn mức hết vẫn khiến model bị để sang một bên cho câu sau. Đếm bằng
+         metric assistant.answer.repairs (§11)
        có tool call nhưng không được chạy (MAX_TOKENS, REFUSAL, lần gọi cuối vẫn xin tool) → mỗi call nhận
          NOT_RUN, rồi một lượt đóng: phần chữ model đã viết trước đó (trừ khi bị từ chối), rồi câu thông báo i18n
   4b. chuyển model (§11): lần gọi ĐẦU TIÊN lỗi ASSISTANT_QUOTA_EXHAUSTED, ASSISTANT_UNAVAILABLE sau các lần thử lại
@@ -659,12 +679,18 @@ giá trị. `AssistantCapabilitiesIntegrationTest.declaredRequirementsExist` ki�
 Aspect đọc `SecurityContext` và ghi `DataScopeContext`, cả hai gắn với thread; `AsyncConfig` chỉ truyền MDC.
 Endpoint đồng bộ chạy cả vòng lặp trên thread của request. Endpoint streaming (`AssistantStreams`):
 
-- chạy vòng lặp trên virtual thread qua `DelegatingSecurityContextExecutorService`, nên `SecurityContext`
-  được chép sang;
-- chép locale và MDC bằng tay;
-- **không chép data scope mà dựng lại:** worker gọi `AssistantService.askAsOwner`, method này mang
+- chạy vòng lặp trên virtual thread, qua `ThreadContext.carryWithScope`: người dùng (`SecurityContext`), locale
+  (đọc ngay lúc giao việc), MDC, trace và data scope đang có đều được chép sang;
+- **scope được dựng lại:** worker gọi `AssistantService.askAsOwner`, method này mang
   `@RequiresPermission(assistant-conversations, CREATE, OWN)`, nên aspect kiểm lại người gọi và đặt scope
-  trên chính thread đó.
+  trên chính thread đó. Scope chép sang chỉ có tác dụng khi không có aspect nào chạy: tắt bảo mật (§5.3), đó là
+  scope hệ thống mà filter đặt cho request. Trước 04/11 nó không được chép, nên ở profile `local` mọi tool của bản
+  streaming bị từ chối.
+
+Các tool của một bước (từ 04/11, `ParallelTools`) cũng chạy trên virtual thread với `carryWithScope`. Worker làm
+đúng việc thread của vòng lặp sẽ làm nếu chạy tuần tự: guard của tool kiểm người dùng, đặt scope của nó, rồi trả lại
+scope được giao. `ThreadContext.carry` (không kèm scope) vẫn là mặc định cho mọi worker khác: một worker không làm
+thay việc của thread giao việc thì không được mang scope của lời gọi đang chạy lúc giao.
 
 ### 5.3 Khi tắt bảo mật
 
@@ -710,7 +736,7 @@ thấy mọi thứ, như các màn hình. Vì vậy test phân quyền và bộ 
 | `AssistantControllerTest`, `IdempotencyFilterStreamTest` | hai endpoint hỏi dùng chung một bucket rate limit; endpoint đánh giá (29/10) mang guard CREATE scope OWN như endpoint hỏi, và khách hàng bị từ chối trước khi đọc hay ghi gì; filter để nguyên request luồng (đường dẫn `/stream`, hoặc `Accept` chỉ có `text/event-stream`); request JSON vẫn được bảo vệ kể cả khi `Accept` có thêm `text/event-stream`; handler chạy bất đồng bộ không bị lưu và key được nhả |
 | `AssistantPropertiesTest`, `AssistantModelConfigTest` | mỗi provider chỉ lấy biến key của chính nó; key có dạng của nhà cung cấp kia không bao giờ được gửi đi |
 | `DeployConfigurationTest.theProxyDoesNotCutAnAnswer` | nginx: `location /api/v1/assistant/` có `proxy_read_timeout 900s`, `proxy_buffering off`, `proxy_cache off`, và 900 giây bằng `answer-lease`; mọi location khác vẫn có timeout của mình |
-| `AssistantGoldenSetHarnessTest` | cả 74 ca của bộ câu hỏi chuẩn với oracle; số request model đếm được ở mỗi ca bằng số bước của oracle cộng một câu trả lời mỗi câu hỏi (§10) |
+| `AssistantGoldenSetHarnessTest` | cả 78 ca của bộ câu hỏi chuẩn với oracle, kể cả ba ca gọi nhiều tool trong một bước (PAR-*), đi qua guard thật trên thread con; số request model đếm được ở mỗi ca bằng số bước của oracle cộng một câu trả lời mỗi câu hỏi (§10) |
 | `GoldenSetTest`, `GoldenSelectionTest`, `GoldenResultsTest`, `GoldenReportTest`, `OracleModelTest`, `PlaygroundSeedDatabaseTest` | luật của bộ câu hỏi (ca từ chối không đòi tool nào, 8–12 ca smoke); chọn ca và lỗi khi gõ nhầm; chạy tiếp từ file kết quả; ca NOT_RUN không vào chỉ số nào; oracle theo chuỗi và câu hỏi trước; seed playground chỉ ghi vào `stockflow_ai` |
 | `NoRoleNameAccessTest` | không chỗ nào dùng tên role để quyết định quyền; các dòng của trợ lý được cho phép kèm lý do: vai trò tin nhắn của SDK, role đưa vào ngữ cảnh, và từ 29/10 nguồn giá CUSTOMER trong mô tả `getCustomerPrice` (không phải một role) |
 
@@ -1032,11 +1058,15 @@ Bấm vào vẫn là một câu hỏi mới: tiết kiệm công gõ, không ti�
 **Số chưa kiểm được (`unverifiedNumbers`).** Đây là phép kiểm "số không căn cứ" của §10.2 (`AnswerNumbers`), chạy trên
 mọi câu trả lời. Nguồn là kết quả tool, câu hỏi và ngữ cảnh của lượt này và của 10 lượt trước mà `History` gửi lại;
 không bao giờ là chữ của câu trả lời cũ. Số được đọc như người Việt viết: "35 triệu", số làm tròn theo độ chính xác đã
-viết, dấu âm viết bằng chữ. Chỉ báo, không sửa hay chặn câu trả lời; giao diện nên ghi "không tìm thấy trong dữ liệu
-tra cứu". Server log WARN kèm id tin nhắn, số lượng và correlation id, không log con số. Giới hạn: không bắt một số
-đúng gắn nhầm SKU (bảng lo phần đó); giới hạn ghi trong mô tả tool không phải nguồn; các chữ số nằm trong mã của
-nguồn (`SO-20991231-900001`) cũng được tính là nguồn, nên một số bịa trùng với chúng không bị báo; sau một lần leo
-thang, kết quả tool của lần thử đầu, mà model thứ hai không thấy, vẫn là nguồn (§16).
+viết, dấu âm viết bằng chữ. Từ 4/11 vòng lặp cho model **tự sửa một lần** (§3.1): câu trả lời còn số không căn cứ
+được gửi lại cho chính model đó, không cho gọi tool, kèm danh sách các số ấy; bản viết lại chỉ thay câu đầu khi nó hoàn
+chỉnh và bớt được số không căn cứ. Số còn lại sau đó vẫn chỉ được báo, không chặn; giao diện nên ghi "không tìm thấy
+trong dữ liệu tra cứu". Server log WARN kèm id tin nhắn, số lượng và correlation id, không log con số. Chữ số nằm trong
+một mã của nguồn (`SO-20991231-900101`, `HCM-A01-1-B`) chỉ làm căn cứ cho một số cũng nằm trong mã: chép lại hay chép
+sai mã đơn vẫn được kiểm, còn "900101 cái" thì không được mã đó làm căn cứ (4/11). Giới hạn: không bắt một số đúng gắn
+nhầm SKU (bảng lo phần đó); giới hạn ghi trong mô tả tool không phải nguồn; sau một lần leo thang, kết quả tool của lần
+thử đầu, mà model thứ hai không thấy, vẫn là nguồn của phép kiểm này (§16). Vòng tự sửa thì chỉ xét những gì model
+đang trả lời đã thấy.
 
 **Đánh giá (`feedback`).** Mỗi câu trả lời một dòng `answer_feedback`; đánh giá lại thì ghi đè (dòng message bị khóa
 trước, nên hai lần bấm cùng lúc không tạo hai dòng). Chưa ai khác đọc được đánh giá: bàn điều khiển và việc quản trị
@@ -1460,7 +1490,8 @@ hoặc phải thêm tham số kho vào ba module. Thay bằng một thẻ đọc
 
 `GET /api/v1/assistant/today` (`TodayCard`) chạy một danh sách tool cố định qua `AssistantTools.execute`, với quyền,
 scope và kho của chính người xem, đúng như khi một câu hỏi chạy tool: guard, data scope, quy tắc kho và việc che chữ
-tự do là của tool. Không gọi model, không lưu câu hỏi, không tính vào trần câu hỏi mỗi ngày, không lưu thẻ, không
+tự do là của tool. Từ 4/11 mọi lần đọc của thẻ được lên danh sách trước rồi chạy cùng lúc (`ParallelTools`, cùng giới
+hạn với các tool của một câu hỏi, §3.1); các phần vẫn được dựng theo thứ tự cố định. Không gọi model, không lưu câu hỏi, không tính vào trần câu hỏi mỗi ngày, không lưu thẻ, không
 cache: thẻ được đọc lại dưới quyền người xem đang có lúc mở. Mỗi phần chỉ có khi người xem được dùng tool của nó
 (§5.7):
 
@@ -1511,10 +1542,10 @@ thấy phần nào là quyết định của doanh nghiệp (§13 AQ-15); mặc 
 
 ### 10.1 Bộ câu hỏi chuẩn
 
-`src/test/resources/assistant/golden-set.json`, **74 ca** (41 ca ngày 25/10, thêm 22 ca ngày 28/10 và 11 ca ngày
-29/10): U1 (4), tồn kho S (9), U3 đơn hàng (14), PO P (7), doanh số R (6), U4 (4), U5 (4), U6 quy định (8), U7 catalog
-(3), U2 đề xuất (4), không được làm M (4), U14 giá theo khách (2), U15 công nợ (1), U16 hàng đợi của kho (4). Có 17 ca
-từ chối và 10 ca smoke.
+`src/test/resources/assistant/golden-set.json`, **78 ca** (41 ca ngày 25/10, thêm 22 ca ngày 28/10, 11 ca ngày
+29/10 và 4 ca ngày 4/11): U1 (4), tồn kho S (9), U3 đơn hàng (14), PO P (7), doanh số R (6), U4 (4), U5 (4), U6 quy định
+(8), U7 catalog (3), U2 đề xuất (4), không được làm M (4), U14 giá theo khách (2), U15 công nợ (2), U16 hàng đợi của kho
+(4), PAR nhiều tool trong một bước (3). Có 17 ca từ chối và 10 ca smoke.
 
 Mỗi ca có:
 
@@ -1533,7 +1564,10 @@ Ba trường thêm ngày 28/10 (định dạng ghi ở javadoc của `GoldenCase
   - Dữ kiện, tool và recall chỉ chấm ở câu cuối. Lộ dữ liệu thì xét mọi câu trả lời của ca.
   - Ví dụ S-07: hỏi tồn kho EVAL-LID-90, rồi hỏi "Lô nào của mã đó hết hạn sớm nhất". Model phải lấy mã từ câu
     trước, không hỏi lại.
-- `oracle` là một danh sách bước: một object cho một lần gọi, một mảng cho một chuỗi gọi. Ví dụ U7-03 hỏi theo tên
+- `oracle` là một danh sách bước: một object cho một bước, một mảng cho một chuỗi bước. Một bước có thể kèm
+  `together`: các lời gọi model đưa ra trong cùng lượt đó, mà vòng lặp chạy cùng lúc (4/11; PAR-01 cùng tool hai SKU,
+  PAR-02 hai tool khác nhau, PAR-03 một trong hai bị từ chối mà phần kia vẫn đúng kho). U15-02 hỏi tên khách viết thường,
+  hai dấu cách: `CustomerMatch` gộp khoảng trắng trước khi tìm, như khi so tên. Ví dụ U7-03 hỏi theo tên
   sản phẩm: `searchCatalog` rồi `getStockLevels`.
 - `smoke`: 10 ca, vừa một ngày hạn mức miễn phí của một model (§10.3).
 
@@ -1622,7 +1656,7 @@ Ba điểm cần biết khi đọc báo cáo đầu tiên với model thật:
 
 ### 10.3 Cách chạy
 
-**Harness, trong mọi `mvn test`:** `AssistantGoldenSetHarnessTest` chạy cả 74 ca với `OracleModel`. Oracle
+**Harness, trong mọi `mvn test`:** `AssistantGoldenSetHarnessTest` chạy cả 78 ca với `OracleModel`. Oracle
 gọi đúng tool (hoặc chuỗi tool) mà ca chỉ định, câu hỏi trước rồi tới câu hỏi của ca, rồi trả lời bằng chính kết
 quả tool. Nhờ vậy bộ câu hỏi kiểm các lớp bên dưới model: fixture tồn tại, câu SQL dữ kiện khớp với tool, và kết
 quả tool của một persona không bao giờ chứa thứ màn hình giấu họ. Harness cũng kiểm số request model của mỗi ca
@@ -1834,7 +1868,9 @@ sinh, xuất qua OTLP sang Jaeger như mọi span khác của ứng dụng:
 Span **không** chứa câu hỏi, prompt, tham số hay kết quả tool: chúng có chữ người gõ, và kho trace được nhiều người đọc
 và giữ lâu hơn bản ghi của trợ lý. Cùng các observation sinh metric: `assistant.answer`, `gen_ai.client.operation`,
 `assistant.tool` (có histogram, nên p50/p95 lấy từ Prometheus cho báo cáo §10), `gen_ai.client.token.usage` theo model
-và loại token, `assistant.route.events` cho mỗi lần chuyển model hay leo thang. Profile local lấy mẫu mọi trace và trả
+và loại token, `assistant.route.events` cho mỗi lần chuyển model hay leo thang, `assistant.answer.repairs` cho mỗi
+câu trả lời có số không căn cứ (tag `outcome`: `corrected`, `still_unverified`, `kept`, `failed`, `no_time`; §3.1). Các tool của
+một bước chạy song song là các span `execute_tool` anh em dưới cùng một `assistant answer`. Profile local lấy mẫu mọi trace và trả
 `traceId` kèm câu trả lời (`expose-trace-id`), để playground mở thẳng trace. Câu trả lời dạng luồng chạy trên một
 virtual thread, nhận người dùng, locale, MDC và trace qua `ThreadContext`, nên span của nó vẫn là con của request.
 Muốn dùng Langfuse thay Jaeger chỉ cần đổi `OTLP_TRACING_ENDPOINT`, vì tên span và thuộc tính đã theo quy ước chung.
@@ -1970,7 +2006,7 @@ có quyền; báo cáo đánh giá.
 
 | Rủi ro | Cách giảm thiểu |
 |---|---|
-| Một con số sai được trình bày như sự thật | con số chỉ lấy từ tool (prompt); kiểm tra số không căn cứ trong bộ câu hỏi chuẩn và, từ 29/10, trên mọi câu trả lời lúc chạy (`AnswerNumbers`, chỉ báo, không chặn); bảng lấy thẳng từ kết quả tool, không qua model; tool đã gọi hiện kèm câu trả lời |
+| Một con số sai được trình bày như sự thật | con số chỉ lấy từ tool (prompt); kiểm tra số không căn cứ trong bộ câu hỏi chuẩn và, từ 29/10, trên mọi câu trả lời lúc chạy (`AnswerNumbers`); từ 4/11 model tự sửa một lần khi còn số không căn cứ, số còn lại sau đó được báo, không chặn; bảng lấy thẳng từ kết quả tool, không qua model; tool đã gọi hiện kèm câu trả lời |
 | Một con số đúng bị đọc sai: giờ UTC, danh sách bị cắt, SKU gõ sai, số của lần quét đêm | giờ Việt Nam kèm độ lệch trong mọi kết quả tool (§3.2); `total` và `truncated` trên mọi danh sách; SKU lạ là `NOT_FOUND`; trường nói rõ số đó là gì (`quantityAtLastCheck`, `totalIncludingTax`) |
 | Dữ liệu bị hiển thị cho người không được xem | aspect trên mọi tool; guard bổ sung; `everyToolMirrorsItsScreen`; trạng thái và số đơn chỉ cho người có `sales-orders:READ` (§5.8); khối `picking` của `findOrder` chỉ cho người mở được task trên màn dòng nhặt; ngưỡng cứng không lộ dữ liệu; model chỉ được gửi định nghĩa tool của người hỏi (§5.7) |
 | Một tool và endpoint của nó lệch nhau về quyền | `everyToolMirrorsItsScreen`; `verify.py` so theo mã resource |
@@ -2254,8 +2290,9 @@ Bác bỏ: "`findPurchaseOrders` không bị giới hạn theo kho". `PurchaseOr
 
 Còn mở:
 
-- `AnswerNumbers` coi các chữ số nằm trong mã (`SO-20991231-900001`) là nguồn, nên một con số bịa trùng với chúng
-  không bị báo; phép kiểm chỉ để báo.
+- ~~`AnswerNumbers` coi các chữ số nằm trong mã (`SO-20991231-900001`) là nguồn, nên một con số bịa trùng với chúng
+  không bị báo; phép kiểm chỉ để báo.~~ **Làm 4/11:** chữ số trong mã chỉ làm căn cứ cho mã; model tự sửa một lần
+  (§3.1, §7).
 - Sau một lần leo thang, bảng, trích dẫn và nguồn của phép kiểm số của câu trả lời gồm cả kết quả tool của lần thử đầu,
   mà model thứ hai không hề thấy (cần lưu ranh giới giữa hai lần thử).
 - `getCustomerPrice` vẫn báo giá cho một SKU không còn bán (cần `product :: api`).

@@ -43,14 +43,16 @@ public interface LanguageModel {
      *                     reason: the same grants give the same bytes. The same list on every call of an answer, the
      *                     last one included: the history holds calls to them, which a provider may refuse to read
      *                     without their declarations
-     * @param history      the conversation so far, oldest first, ending with a user-side turn
+     * @param history      the conversation so far, oldest first, ending with a user-side turn — or with the model's
+     *                     own answer when a note follows it, asking for that answer to be written again
      * @param toolsAllowed false on the answer's last call: the adapter must not let the model call a tool (Anthropic
      *                     {@code tool_choice: none}, Gemini {@code functionCallingConfig.mode: NONE}). The model then
      *                     answers from the results it already has, instead of asking for a lookup the loop would not
      *                     run and leaving every result already in without an answer
-     * @param note         a line from the application, not from the user, that the adapter sends after the history,
-     *                     in its last user-side message: why this call is the last, or that the previous reply was
-     *                     empty. Sent with this call only and not stored; null for none
+     * @param note         a line from the application, not from the user, that the adapter sends after the history:
+     *                     in its last user-side message, or as a new user message after a model turn. Why this call is
+     *                     the last, that the previous reply was empty, or which numbers of the answer just written
+     *                     nothing holds. Sent with this call only and not stored; null for none
      */
     record Request(String systemPrompt, List<ToolSpec> tools, List<Turn> history, boolean toolsAllowed, String note) {
 
@@ -58,8 +60,10 @@ public interface LanguageModel {
             Objects.requireNonNull(systemPrompt, "systemPrompt");
             tools = List.copyOf(tools);
             history = List.copyOf(history);
-            if (history.isEmpty() || !history.getLast().fromUser()) {
-                throw new IllegalArgumentException("a request ends with a question or tool results");
+            // After the model's own turn only with a note, which every adapter sends as the user's turn that follows:
+            // the call asking a model to correct the answer it has just written (AssistantService).
+            if (history.isEmpty() || !history.getLast().fromUser() && note == null) {
+                throw new IllegalArgumentException("a request ends with a question or tool results, or with a note");
             }
             if (note != null && note.isBlank()) {
                 throw new IllegalArgumentException("a note says something, or is null");

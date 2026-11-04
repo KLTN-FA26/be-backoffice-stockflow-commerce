@@ -9,7 +9,6 @@ import java.math.BigDecimal;
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.NavigableSet;
@@ -24,9 +23,11 @@ import java.util.regex.Pattern;
  * result or the context; this is how the panel learns that one did not, and says so under the answer instead of
  * showing it as fact beside the green tool chips.
  *
- * <p><b>Advisory, never a filter.</b> Nothing is removed or blocked: a flagged number is shown as written, with the
- * list beside it. It catches a figure no source holds — a made-up revenue, a mis-copied quantity — not a true figure
- * put on the wrong SKU, which the tables under the answer cover ({@link ResultTable}).</p>
+ * <p><b>Advisory, never a filter.</b> Nothing here removes or blocks anything: a flagged number is shown as written,
+ * with the list beside it. The loop uses the same check to ask the model, once, to write the answer again
+ * ({@code AssistantService}); whatever is still flagged after that is shown, flagged. It catches a figure no source
+ * holds — a made-up revenue, a mis-copied quantity — not a true figure put on the wrong SKU, which the tables under
+ * the answer cover ({@link ResultTable}).</p>
  *
  * <p><b>What counts as grounded</b> is {@code GoldenScorer}'s definition, so the eval gate and the panel agree:</p>
  * <ul>
@@ -37,6 +38,14 @@ import java.util.regex.Pattern;
  *       rows listed beside it. Arithmetic across records is not grounded, so a sum of unrelated figures is caught;</li>
  *   <li>numbers under 10 (day and month parts, small counts), years and list markers are not checked at all.</li>
  * </ul>
+ *
+ * <p><b>Digits inside a code ground only codes.</b> {@code SO-20991231-900101} in a result lets the answer write that
+ * order number, and catches one mis-copied as {@code SO-20991231-900077}; it does not make "900101 cái" a quantity
+ * someone looked up. A number of the answer that is itself part of something code-like — a code, digits joined by a
+ * dash ({@code 20991231-900101}), digits against a letter ({@code 12oz}, {@code A01}) — is checked against every number,
+ * so "cốc 12oz" read off {@code CUP-12OZ} stands; one that stands alone, against the numbers that stood alone in the
+ * sources. A lone number that only a code holds ("lô 2401" for {@code EVAL-LOT-2401}) is flagged, and
+ * {@link #check} says so, for the rewrite to write the code whole.</p>
  *
  * <p><b>Where it reads more than the scorer did, and why.</b> Amounts are written the way people say them: "35 triệu"
  * is 35,000,000, and the scorer flagged it because only its fact check knew the multipliers. A number counts as what
@@ -56,6 +65,14 @@ public final class AnswerNumbers {
             Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     private static final Pattern PERCENT = Pattern.compile("\\s*%");
+
+    /**
+     * A code in a source: segments joined by {@code -} or {@code _}, one of them holding two letters in a row
+     * ({@code SO-20991231-900101}, {@code EVAL-LOT-2401}, {@code HCM-A01-1-B}). Not an ISO time
+     * ({@code 2026-10-28T23:59}), whose one letter sits between digits.
+     */
+    private static final Pattern CODE = Pattern.compile("[\\p{L}\\p{N}]+(?:[-_][\\p{L}\\p{N}]+)+");
+    private static final Pattern TWO_LETTERS = Pattern.compile("\\p{L}{2}");
     private static final Pattern YEAR = Pattern.compile("20\\d\\d");
     private static final BigDecimal HALF = new BigDecimal("0.5");
     private static final BigDecimal BILLION = new BigDecimal("1000000000");
@@ -79,14 +96,26 @@ public final class AnswerNumbers {
      * {@code "12%"}), in the order they first appear, each once.
      */
     public static List<String> unverified(String answer, Grounds grounds) {
+        return check(answer, grounds).stream().filter(checked -> !checked.grounded()).map(Checked::written).distinct()
+                .toList();
+    }
+
+    /**
+     * Every number of {@code answer} that is checked, in order, each time it appears: as written, whether
+     * {@code grounds} holds it, and, for one it does not, whether a code of the sources holds its digits.
+     */
+    static List<Checked> check(String answer, Grounds grounds) {
         String text = normalise(answer);
-        Set<String> unverified = new LinkedHashSet<>();
+        boolean[] codeLike = codeLike(text);
+        List<Checked> checked = new ArrayList<>();
         Matcher number = NUMBER.matcher(text);
         while (number.find()) {
             String token = number.group();
-            boolean inCode = partOfCode(text, number.start());
             Matcher unit = MULTIPLIER.matcher(text).region(number.end(), text.length());
-            boolean abbreviated = !inCode && unit.lookingAt();
+            boolean multiplied = unit.lookingAt();
+            boolean inCode = partOfCode(text, number.start()) || codeLike[number.start()]
+                    || !multiplied && number.end() < text.length() && Character.isLetter(text.charAt(number.end()));
+            boolean abbreviated = !inCode && multiplied;
             BigDecimal factor = abbreviated ? factor(unit.group(1)) : BigDecimal.ONE;
             if (!abbreviated && (YEAR.matcher(token).matches() || listMarker(text, number.start(), number.end()))) {
                 continue;
@@ -98,14 +127,26 @@ public final class AnswerNumbers {
                 continue;
             }
             boolean grounded = readings.stream().anyMatch(reading -> grounds.holds(reading.value().multiply(factor),
-                    reading.tolerance().multiply(factor)));
-            if (!grounded) {
-                int end = abbreviated ? unit.end() : number.end();
-                Matcher percent = PERCENT.matcher(text).region(end, text.length());
-                unverified.add(text.substring(number.start(), !inCode && percent.lookingAt() ? percent.end() : end));
-            }
+                    reading.tolerance().multiply(factor), inCode));
+            int end = abbreviated ? unit.end() : number.end();
+            Matcher percent = PERCENT.matcher(text).region(end, text.length());
+            String written = text.substring(number.start(), !inCode && percent.lookingAt() ? percent.end() : end);
+            boolean onlyInACode = !grounded && readings.stream().anyMatch(reading -> grounds.holds(
+                    reading.value().multiply(factor), reading.tolerance().multiply(factor), true));
+            checked.add(new Checked(written, grounded, onlyInACode));
         }
-        return List.copyOf(unverified);
+        return List.copyOf(checked);
+    }
+
+    /**
+     * One number of an answer that was checked.
+     *
+     * @param written     as the answer writes it, with its unit or percent sign
+     * @param grounded    whether something the model was given holds it
+     * @param onlyInACode not grounded, but the digits of a code in a source are its value: written whole, the code
+     *                    would be
+     */
+    record Checked(String written, boolean grounded, boolean onlyInACode) {
     }
 
     /**
@@ -115,13 +156,17 @@ public final class AnswerNumbers {
      */
     public static final class Grounds {
 
-        private static final Grounds NONE = new Grounds(new TreeSet<>());
+        private static final Grounds NONE = new Grounds(new TreeSet<>(), new TreeSet<>());
 
-        /** Compared with {@code compareTo}: 1.0 and 1.00 are one value. */
+        /** Numbers that stood alone in a source. Compared with {@code compareTo}: 1.0 and 1.00 are one value. */
         private final NavigableSet<BigDecimal> values;
 
-        private Grounds(NavigableSet<BigDecimal> values) {
+        /** Digit runs that were part of a code in a source ({@code SO-20991231-900101}): grounds for codes only. */
+        private final NavigableSet<BigDecimal> codes;
+
+        private Grounds(NavigableSet<BigDecimal> values, NavigableSet<BigDecimal> codes) {
             this.values = values;
+            this.codes = codes;
         }
 
         public static Grounds none() {
@@ -134,36 +179,46 @@ public final class AnswerNumbers {
          */
         public static Grounds of(Collection<String> sources) {
             NavigableSet<BigDecimal> values = new TreeSet<>();
+            NavigableSet<BigDecimal> codes = new TreeSet<>();
             for (String source : sources) {
                 if (source != null) {
-                    read(source, values);
+                    read(source, values, codes);
                 }
             }
-            return values.isEmpty() ? NONE : new Grounds(values);
+            return values.isEmpty() && codes.isEmpty() ? NONE : new Grounds(values, codes);
         }
 
         /** Every number either holds. */
         public Grounds and(Grounds other) {
-            if (other.values.isEmpty()) {
+            if (other.values.isEmpty() && other.codes.isEmpty()) {
                 return this;
             }
-            if (values.isEmpty()) {
+            if (values.isEmpty() && codes.isEmpty()) {
                 return other;
             }
             NavigableSet<BigDecimal> both = new TreeSet<>(values);
             both.addAll(other.values);
-            return new Grounds(both);
+            NavigableSet<BigDecimal> bothCodes = new TreeSet<>(codes);
+            bothCodes.addAll(other.codes);
+            return new Grounds(both, bothCodes);
         }
 
-        /** Whether some grounded value lies within {@code tolerance} of {@code value}, both ends included. */
-        boolean holds(BigDecimal value, BigDecimal tolerance) {
-            BigDecimal nearest = values.ceiling(value.subtract(tolerance));
+        /**
+         * Whether some grounded value lies within {@code tolerance} of {@code value}, both ends included: among the
+         * numbers that stood alone, and, for a number that is itself part of a code, among the codes' digits too.
+         */
+        boolean holds(BigDecimal value, BigDecimal tolerance, boolean inCode) {
+            return near(values, value, tolerance) || inCode && near(codes, value, tolerance);
+        }
+
+        private static boolean near(NavigableSet<BigDecimal> set, BigDecimal value, BigDecimal tolerance) {
+            BigDecimal nearest = set.ceiling(value.subtract(tolerance));
             return nearest != null && nearest.compareTo(value.add(tolerance)) <= 0;
         }
     }
 
     /** A JSON object or array is read as values; anything else, the question or an error line, as text. */
-    private static void read(String source, Set<BigDecimal> values) {
+    private static void read(String source, Set<BigDecimal> values, Set<BigDecimal> codes) {
         JsonNode root = null;
         String trimmed = source.strip();
         if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
@@ -174,9 +229,9 @@ public final class AnswerNumbers {
             }
         }
         if (root == null || !root.isContainerNode()) {
-            text(source, values);
+            text(source, values, codes);
         } else {
-            collect(root, values);
+            collect(root, values, codes);
         }
     }
 
@@ -185,17 +240,17 @@ public final class AnswerNumbers {
      * the sign, which an answer writes as a word ("giảm 12,5%" for -12.5, "quá hạn 15 ngày" for -15), never as a
      * minus that the answer's numbers would carry.
      */
-    private static void collect(JsonNode node, Set<BigDecimal> values) {
+    private static void collect(JsonNode node, Set<BigDecimal> values, Set<BigDecimal> codes) {
         if (node.isNumber()) {
             values.add(node.decimalValue().abs());
         } else if (node.isTextual()) {
-            text(node.textValue(), values);
+            text(node.textValue(), values, codes);
         } else if (node.isArray()) {
             values.add(BigDecimal.valueOf(node.size()));
-            node.forEach(child -> collect(child, values));
+            node.forEach(child -> collect(child, values, codes));
         } else if (node.isObject()) {
             workedOut(node, values);
-            node.forEach(child -> collect(child, values));
+            node.forEach(child -> collect(child, values, codes));
         }
     }
 
@@ -235,15 +290,23 @@ public final class AnswerNumbers {
         }
     }
 
-    /** Every number in free text, in every reading its separators allow, and multiplied when a unit follows. */
-    private static void text(String source, Set<BigDecimal> values) {
+    /**
+     * Every number in free text, in every reading its separators allow, and multiplied when a unit follows; a number
+     * inside a code goes to {@code codes} alone (class javadoc).
+     */
+    private static void text(String source, Set<BigDecimal> values, Set<BigDecimal> codes) {
         String text = normalise(source);
+        boolean[] code = codeCharacters(text);
         Matcher number = NUMBER.matcher(text);
         while (number.find()) {
             List<Reading> readings = readings(number.group());
+            if (code[number.start()] || afterALetter(text, number.start())) {
+                readings.forEach(reading -> codes.add(reading.value()));
+                continue;
+            }
             readings.forEach(reading -> values.add(reading.value()));
             Matcher unit = MULTIPLIER.matcher(text).region(number.end(), text.length());
-            if (!partOfCode(text, number.start()) && unit.lookingAt()) {
+            if (unit.lookingAt()) {
                 BigDecimal factor = factor(unit.group(1));
                 readings.forEach(reading -> values.add(reading.value().multiply(factor)));
             }
@@ -314,6 +377,41 @@ public final class AnswerNumbers {
         char before = text.charAt(start - 1);
         return Character.isLetter(before)
                 || (before == '-' || before == '_') && start > 1 && Character.isLetterOrDigit(text.charAt(start - 2));
+    }
+
+    /**
+     * Which characters of an answer lie in something code-like: segments joined by {@code -} or {@code _}, whatever
+     * they hold. Looser than a source's {@link #codeCharacters} on purpose: a number marked here is only checked
+     * against more of what the sources hold, never against less.
+     */
+    private static boolean[] codeLike(String text) {
+        boolean[] code = new boolean[text.length() + 1];
+        Matcher match = CODE.matcher(text);
+        while (match.find()) {
+            java.util.Arrays.fill(code, match.start(), match.end(), true);
+        }
+        return code;
+    }
+
+    /** Which characters of a source lie inside a {@link #CODE}. */
+    private static boolean[] codeCharacters(String text) {
+        boolean[] code = new boolean[text.length() + 1];
+        Matcher match = CODE.matcher(text);
+        while (match.find()) {
+            if (TWO_LETTERS.matcher(match.group()).find()) {
+                java.util.Arrays.fill(code, match.start(), match.end(), true);
+            }
+        }
+        return code;
+    }
+
+    /**
+     * Digits right after a letter that does not itself follow a digit: {@code A01}, {@code CUP12}; not the {@code T}
+     * of an ISO time ({@code 28T23}).
+     */
+    private static boolean afterALetter(String text, int start) {
+        return start > 0 && Character.isLetter(text.charAt(start - 1))
+                && (start < 2 || !Character.isDigit(text.charAt(start - 2)));
     }
 
     /** {@code 10.} or {@code 10)} opening a line: a list item's number, not a figure. */

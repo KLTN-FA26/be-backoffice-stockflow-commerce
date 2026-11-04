@@ -112,6 +112,15 @@ public class AssistantTelemetry {
         }
     }
 
+    /**
+     * What became of an answer whose numbers nothing held (design §3.1): {@code corrected}, {@code still_unverified}
+     * (rewritten, some still unheld), {@code kept} (the rewrite was unusable, or not better without losing something),
+     * {@code failed} (the rewrite call failed; the answer stands), {@code no_time} (the lease had no room to ask).
+     */
+    void repair(String outcome) {
+        meters.counter("assistant.answer.repairs", "outcome", outcome).increment();
+    }
+
     /** The router moved a question: {@code fallback} before any reply, {@code escalation} after a useless one. */
     void routeEvent(String event, String from) {
         meters.counter("assistant.route.events", "event", event, "from", from).increment();

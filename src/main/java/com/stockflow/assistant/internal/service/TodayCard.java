@@ -132,7 +132,7 @@ public class TodayCard {
             .comparingLong((JsonNode order) -> order.path("daysLate").asLong(0)).reversed()
             .thenComparing(order -> order.path("poNumber").asText(""));
 
-    private final AssistantTools tools;
+    private final ParallelTools tools;
     private final ToolAvailability availability;
     private final Messages messages;
     private final Clock clock;
@@ -141,7 +141,8 @@ public class TodayCard {
     /** Numbers as the tool wrote them: read as doubles, an amount of 12960000.00 would be written back as 1.296E7. */
     private final ObjectReader reader;
 
-    TodayCard(AssistantTools tools, ToolAvailability availability, ObjectMapper json, Messages messages, Clock clock,
+    /** @param tools runs the card's reads at once: none depends on another */
+    TodayCard(ParallelTools tools, ToolAvailability availability, ObjectMapper json, Messages messages, Clock clock,
               ToolRunRecorder recorder) {
         this.tools = tools;
         this.recorder = recorder;
@@ -165,39 +166,43 @@ public class TodayCard {
     }
 
     /**
-     * The card for {@code user}, read now: one section per thing their tools can look at, in a fixed order. On the
-     * request thread, as a question's tools run: they rely on the security context and the data scope bound to it
-     * (design §5.2).
+     * The card for {@code user}, read now: one section per thing their tools can look at, in a fixed order. Every read
+     * is planned first and they run at once ({@link ParallelTools}), each as the user, through the tool's guard, as a
+     * question's tools run (design §5.2); the sections are then built from the answers in that fixed order.
      */
     public Card of(CurrentUser user) {
         Instant generatedAt = clock.instant();
         Set<String> granted = Set.copyOf(availability.grantedTo(user));
+        List<ToolCall> planned = new ArrayList<>();
+        Reads lowStock = plan(granted, FIND_LOW_STOCK, planned, LOW_STOCK_ARGUMENTS);
+        // One call answers both lists, each with its own total: the expired ones are the more urgent.
+        Reads lots = plan(granted, FIND_EXPIRING_LOTS, planned, EXPIRING_LOTS_ARGUMENTS);
+        Reads orders = plan(granted, FIND_ORDERS, planned, ordersIn("ON_HOLD"), ordersIn("PENDING_PAYMENT"));
+        Reads purchaseOrders = plan(granted, FIND_PURCHASE_ORDERS, planned,
+                SENT_STATUSES.stream().map(TodayCard::purchaseOrdersIn).toArray(String[]::new));
+        Reads production = plan(granted, FIND_PRODUCTION_ORDERS, planned, OVERDUE_PRODUCTION_ARGUMENTS);
         List<ToolExecution> ran = new ArrayList<>();
         // Recorded whatever happens after the tools ran: the reads happened, so the trail has them.
         try {
+            ran.addAll(tools.run(planned, ToolChannel.TODAY, finished -> { }));
             List<Section> sections = new ArrayList<>();
-            if (granted.contains(FIND_LOW_STOCK)) {
-                sections.add(section(LOW_STOCK, run(FIND_LOW_STOCK, LOW_STOCK_ARGUMENTS, ran), LOW_STOCK_ROWS,
-                        answer -> null));
+            if (lowStock != null) {
+                sections.add(section(LOW_STOCK, lowStock.of(ran, 0), LOW_STOCK_ROWS, answer -> null));
             }
-            if (granted.contains(FIND_EXPIRING_LOTS)) {
-                // One call answers both lists, each with its own total: the expired ones are the more urgent.
-                ToolExecution lots = run(FIND_EXPIRING_LOTS, EXPIRING_LOTS_ARGUMENTS, ran);
-                sections.add(section(EXPIRED_LOTS, lots, EXPIRED_ROWS, answer -> nightlyCheck()));
-                sections.add(section(EXPIRING_LOTS, lots, EXPIRING_ROWS, this::expiringNote));
+            if (lots != null) {
+                sections.add(section(EXPIRED_LOTS, lots.of(ran, 0), EXPIRED_ROWS, answer -> nightlyCheck()));
+                sections.add(section(EXPIRING_LOTS, lots.of(ran, 0), EXPIRING_ROWS, this::expiringNote));
             }
-            if (granted.contains(FIND_ORDERS)) {
-                sections.add(section(HELD_ORDERS, run(FIND_ORDERS, ordersIn("ON_HOLD"), ran), HELD_ROWS,
-                        answer -> null));
-                sections.add(section(AWAITING_PAYMENT, run(FIND_ORDERS, ordersIn("PENDING_PAYMENT"), ran),
-                        AWAITING_PAYMENT_ROWS, answer -> awaitingPayment()));
+            if (orders != null) {
+                sections.add(section(HELD_ORDERS, orders.of(ran, 0), HELD_ROWS, answer -> null));
+                sections.add(section(AWAITING_PAYMENT, orders.of(ran, 1), AWAITING_PAYMENT_ROWS,
+                        answer -> awaitingPayment()));
             }
-            if (granted.contains(FIND_PURCHASE_ORDERS)) {
-                sections.add(overduePurchaseOrders(ran));
+            if (purchaseOrders != null) {
+                sections.add(overduePurchaseOrders(purchaseOrders.all(ran)));
             }
-            if (granted.contains(FIND_PRODUCTION_ORDERS)) {
-                sections.add(section(OVERDUE_PRODUCTION,
-                        run(FIND_PRODUCTION_ORDERS, OVERDUE_PRODUCTION_ARGUMENTS, ran), OVERDUE_PRODUCTION_ROWS,
+            if (production != null) {
+                sections.add(section(OVERDUE_PRODUCTION, production.of(ran, 0), OVERDUE_PRODUCTION_ROWS,
                         answer -> null));
             }
             log.info("Assistant today card for user {}: {}", user.userId(),
@@ -210,12 +215,33 @@ public class TodayCard {
         }
     }
 
-    /** One fixed call, through the tool's proxy as a question's call goes; the id only pairs it with its result. */
-    private ToolExecution run(String tool, String arguments, List<ToolExecution> ran) {
-        ToolExecution execution = tools.execute(new ToolCall("today-" + (ran.size() + 1), tool, arguments),
-                ToolChannel.TODAY);
-        ran.add(execution);
-        return execution;
+    /**
+     * Plans the calls of one tool, if the user is granted it, after those planned already; the id only pairs a call
+     * with its result.
+     *
+     * @return where its answers will be, or null when the tool is not the user's: its sections are left out
+     */
+    private static Reads plan(Set<String> granted, String tool, List<ToolCall> planned, String... arguments) {
+        if (!granted.contains(tool)) {
+            return null;
+        }
+        Reads reads = new Reads(planned.size(), arguments.length);
+        for (String argument : arguments) {
+            planned.add(new ToolCall("today-" + (planned.size() + 1), tool, argument));
+        }
+        return reads;
+    }
+
+    /** The answers of one tool's planned calls: {@code count} executions from {@code first}, in planned order. */
+    private record Reads(int first, int count) {
+
+        ToolExecution of(List<ToolExecution> ran, int call) {
+            return ran.get(first + call);
+        }
+
+        List<ToolExecution> all(List<ToolExecution> ran) {
+            return ran.subList(first, first + count);
+        }
     }
 
     private Section section(String key, ToolExecution run, Listing listing, Function<JsonNode, String> note) {
@@ -238,13 +264,14 @@ public class TodayCard {
      * them earliest expected first, so a page that ends on a late order may be followed by more late ones: the table is
      * then truncated and the note says so. Either read failing fails the section, since half the list would read as
      * all of it.
+     *
+     * @param reads one answer per {@link #SENT_STATUSES}, in that order
      */
-    private Section overduePurchaseOrders(List<ToolExecution> ran) {
+    private Section overduePurchaseOrders(List<ToolExecution> reads) {
         // By number: an order that moved from CONFIRMED to PARTIALLY_RECEIVED between the two reads counts once.
         Map<String, JsonNode> overdue = new LinkedHashMap<>();
         boolean readAll = true;
-        for (String status : SENT_STATUSES) {
-            ToolExecution run = run(FIND_PURCHASE_ORDERS, purchaseOrdersIn(status), ran);
+        for (ToolExecution run : reads) {
             if (run.outcome() != ToolOutcome.OK) {
                 return unanswered(OVERDUE_PURCHASE_ORDERS, run);
             }

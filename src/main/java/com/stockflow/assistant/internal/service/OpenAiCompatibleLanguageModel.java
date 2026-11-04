@@ -102,7 +102,7 @@ class OpenAiCompatibleLanguageModel implements LanguageModel {
         return Math.min(properties.maxOutputTokens(), properties.openaiCompatible().maxOutputTokens());
     }
 
-    /** @param note a line from the application, sent as a last user message; null for none */
+    /** @param note a line from the application, sent as a last user message, after a model turn too; null for none */
     ArrayNode messages(List<Turn> history, String note) {
         ArrayNode messages = JsonNodeFactory.instance.arrayNode();
         for (Turn turn : history) {

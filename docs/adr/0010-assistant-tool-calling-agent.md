@@ -236,6 +236,21 @@ tool đó, và system prompt vẫn kết bằng danh sách quyền của mọi t
   cách thi hành câu trả lời của AQ-01 nếu doanh nghiệp không cho dữ liệu rời hệ thống; nó không thay cho câu trả lời đó.
 - Vòng gọi HTTP của Gemini (trước đó chép ở ba adapter) gom về `GeminiCall`, hành vi giữ nguyên.
 
+## Sửa đổi thứ hai ngày 04/11/2026: tool của một bước chạy cùng lúc, model tự sửa số một lần
+
+- **Thay cho "mọi lời gọi tool chạy trên chính thread phục vụ request"** (mục "Vòng lặp chạy trên thread của request"):
+  vòng lặp vẫn chạy ở đó, nhưng các lời gọi tool của một bước chạy cùng lúc trên virtual thread (`ParallelTools`), tối
+  đa 4 của một bước và 8 của cả instance, vì mỗi lời gọi giữ một connection của pool chung với các màn hình. Một lời gọi
+  thì vẫn chạy trên thread của vòng lặp. Worker nhận người dùng, locale, MDC, trace và data scope của thread giao việc
+  (`ThreadContext.carryWithScope`), nên tool chạy đúng như khi chạy tuần tự: guard của nó kiểm người dùng và đặt scope
+  riêng. Kết quả gửi model theo thứ tự model gọi; ngân sách kết quả chia theo đợt để một lời gọi hoặc đã chạy và kết quả
+  được gửi, hoặc không chạy. Thẻ "hôm nay" dùng cùng cơ chế.
+- **Tự sửa số:** câu trả lời còn số không căn cứ được gửi lại cho chính model đó đúng một lần, không cho gọi tool, kèm
+  danh sách các số. Bản viết lại chỉ được dùng khi tốt hơn mà không mất gì (bớt số không căn cứ, không thêm số mới, giữ
+  mọi số có căn cứ và mọi quy định đã trích); nếu không, câu đầu đứng, vẫn gắn cờ. Model vẫn không có tool ghi nào.
+- Chữ số nằm trong một mã của nguồn chỉ làm căn cứ cho số cũng nằm trong mã; số dính chữ (`12oz`) hay nằm giữa gạch
+  nối được đọc là một phần của mã.
+
 ## Hệ quả
 
 - Không module nào khác phải đổi. Ngoại lệ là các method `api` được thêm khi một use case cần dữ liệu

@@ -285,7 +285,7 @@ class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
 
     /**
      * @param note a line from the application, sent as the last block of the last user message, after any tool
-     *             results (which must come first); null for none
+     *             results (which must come first), or as a user message of its own after a model turn; null for none
      */
     static List<MessageParam> messages(List<Turn> history, String note) {
         List<MessageParam> messages = new ArrayList<>();

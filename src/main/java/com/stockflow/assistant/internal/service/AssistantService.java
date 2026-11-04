@@ -21,6 +21,8 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.RequiresPermission;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -46,8 +48,16 @@ import java.util.function.Consumer;
  * pooled connection for the whole answer. The question is stored in one short transaction before the loop, what the
  * loop produced in another after it, and each tool's {@code api} method opens its own.</p>
  *
- * <p><b>On the request thread.</b> Tools rely on the {@code SecurityContext} and on the data scope the permission
- * aspect installs, both thread-bound, and {@code AsyncConfig} copies neither to another thread (design §5.2).</p>
+ * <p><b>On the request thread, its tools beside it.</b> Tools rely on the {@code SecurityContext} and on the data scope
+ * the permission aspect installs, both thread-bound, and {@code AsyncConfig} copies neither to another thread. The
+ * loop runs where it is called; the calls of one step run at once on workers that are handed both
+ * ({@link ParallelTools}), one call alone on the loop's own thread (design §5.2).</p>
+ *
+ * <p><b>Numbers it cannot point to are corrected once.</b> An answer stating a number that no tool result, question or
+ * context of the conversation holds ({@link AnswerNumbers}) is sent back once, without tools, with those numbers named,
+ * to be written again with only numbers it can point to. The rewrite is the answer only when it is complete and
+ * states fewer such numbers; otherwise the first stands, flagged as before. Both are stored and paid for; a rewrite
+ * that fails or would outlast the lease leaves the first answer as it is.</p>
  *
  * <p><b>What was looked up is not thrown away.</b> The answer's last call — the tool rounds are spent, or the lease
  * has room for this one call only — offers the model no tool and says why: it answers from the results it already
@@ -70,7 +80,8 @@ import java.util.function.Consumer;
  *
  * <p><b>Bounded cost.</b> Earlier questions go to the model with their answers only ({@link History}); one step runs
  * at most {@value #MAX_CALLS_PER_ROUND} tools and one question adds at most {@value #RESULT_BUDGET} characters of
- * tool results, the rest answered NOT_RUN; and no model call starts that could outlast the conversation's lease, so a
+ * tool results, the rest answered NOT_RUN, never run: a step runs at once only as many as the room left holds at
+ * their longest; and no model call starts that could outlast the conversation's lease, so a
  * slow provider ends the answer instead of letting a second question in while this one still writes. A question is
  * answered at most twice, the second time only when the first gave nothing usable (below).</p>
  *
@@ -89,6 +100,8 @@ import java.util.function.Consumer;
 @Service
 public class AssistantService {
 
+    private static final Logger log = LoggerFactory.getLogger(AssistantService.class);
+
     /** Tools one reply may run; a model asking for dozens at once is answered NOT_RUN for the rest. */
     static final int MAX_CALLS_PER_ROUND = 8;
 
@@ -105,6 +118,7 @@ public class AssistantService {
     /** How a note to the model starts: like the question's context, it is the system speaking, never the user. */
     private static final String NOTE = "Note from the system, not written by the user:";
 
+
     private final ConversationService conversations;
     private final ModelRouter models;
     private final AssistantTools tools;
@@ -115,19 +129,25 @@ public class AssistantService {
     private final ObjectMapper json;
     private final ToolAvailability availability;
     private final AssistantTelemetry telemetry;
+    private final ParallelTools parallel;
 
     AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
                      SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
                      ObjectMapper json, ToolAvailability availability) {
         this(conversations, models, tools, prompt, properties, messages, clock, json, availability,
-                AssistantTelemetry.NONE);
+                AssistantTelemetry.NONE, new ParallelTools(tools));
     }
 
-    /** @param telemetry where each answer's span, the parent of its model calls and tools, is recorded */
+    /**
+     * @param telemetry where each answer's span, the parent of its model calls and tools, is recorded
+     * @param parallel  runs a step's calls at once, in the order the model asked for them
+     */
     @Autowired
     AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
                      SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
-                     ObjectMapper json, ToolAvailability availability, AssistantTelemetry telemetry) {
+                     ObjectMapper json, ToolAvailability availability, AssistantTelemetry telemetry,
+                     ParallelTools parallel) {
+        this.parallel = parallel;
         this.conversations = conversations;
         this.models = models;
         this.tools = tools;
@@ -244,13 +264,27 @@ public class AssistantService {
      */
     private void answerOnRoute(ModelRouter.Route route, List<Turn> stored, List<PendingMessage> produced,
                                Progress progress, Instant leaseEnds, List<ToolSpec> offered) {
+        // What the earlier exchanges let an answer repeat, as the transcript reads it (AnswerSources.earlierGrounds).
+        AnswerNumbers.Grounds earlier = AnswerSources.earlierGrounds(stored);
         while (true) {
             LanguageModel model = route.model();
             int before = produced.size();
             Outcome outcome;
             try {
                 outcome = answer(model, new ArrayList<>(History.forModel(stored, model::closingTurn)), produced::add,
-                        progress, leaseEnds, offered);
+                        progress, leaseEnds, offered, earlier);
+            } catch (RepairFailed failed) {
+                // The answer stands as the model first wrote it. The model replied, so the route is told so first;
+                // a spent quota then still sets it aside, even on a route made of models all set aside.
+                route.replied();
+                if (failed.cause instanceof BusinessException refused) {
+                    route.failedAfterReplying(refused);
+                } else {
+                    log.warn("Assistant model {} failed rewriting an answer; the answer stands as written",
+                            route.name(), failed.cause);
+                }
+                telemetry.repair("failed");
+                return;
             } catch (BusinessException failed) {
                 if (produced.size() > before) {
                     // The model replied: the question is tied to it, and ends with it.
@@ -304,10 +338,11 @@ public class AssistantService {
      * @param model   the model of this attempt; every call of it goes there
      * @param history what this model is sent, ending with the question; the attempt's turns are added to it
      * @param offered the tools the user may use ({@link ToolAvailability#specsFor}), sent on every call
+     * @param earlier what the exchanges before this question let an answer repeat ({@link #repairNote})
      * @return how the attempt ended, for {@link #answerOnRoute} to decide whether another model should try
      */
     private Outcome answer(LanguageModel model, List<Turn> history, Consumer<PendingMessage> sink, Progress progress,
-                           Instant leaseEnds, List<ToolSpec> offered) {
+                           Instant leaseEnds, List<ToolSpec> offered, AnswerNumbers.Grounds earlier) {
         Consumer<PendingMessage> record = message -> {
             history.add(message.turn());
             sink.accept(message);
@@ -316,9 +351,14 @@ public class AssistantService {
         int rounds = 0;
         boolean askedAgain = false;
         boolean askingAgain = false;
+        // Set once the answer stated numbers nothing holds: the next call is the one chance to correct them.
+        String repairing = null;
+        // What this attempt's tools returned, for what the answer cites (a rewrite must keep it).
+        List<ToolExecution> ranInAttempt = new ArrayList<>();
         for (int call = 0; ; call++) {
             Instant now = clock.instant();
-            if (call > 0 && !fits(now, 1, leaseEnds)) {
+            // A rewrite was decided with the lease checked already: the answer is in, and must not be closed after.
+            if (call > 0 && repairing == null && !fits(now, 1, leaseEnds)) {
                 // The last step's results are in; another call could outlast the claim. Close, and say so.
                 record.accept(closing(model, outOfTime()));
                 return Outcome.OUT_OF_TIME;
@@ -326,32 +366,50 @@ public class AssistantService {
             // The last call offers no tool: the rounds are spent, or the lease has room for this call only. Not the
             // first call, whatever the lease: the start-up check leaves room for two, a few milliseconds aside.
             boolean roundsSpent = rounds >= properties.maxToolRounds();
-            boolean last = roundsSpent || call > 0 && !fits(now, 2, leaseEnds);
+            boolean last = roundsSpent || repairing != null || call > 0 && !fits(now, 2, leaseEnds);
             // Only the user's own tools, worked out once per question (ToolAvailability.specsFor): the same bytes on
             // every call, the last one included. A call to any other tool still runs, and its guard refuses it.
-            LanguageModel.Reply reply = model.next(new LanguageModel.Request(prompt.text(), offered, history,
-                    !last, note(last, askingAgain)));
+            LanguageModel.Reply reply;
+            if (repairing == null) {
+                reply = model.next(new LanguageModel.Request(prompt.text(), offered, history, !last,
+                        note(last, askingAgain)));
+            } else {
+                try {
+                    reply = model.next(new LanguageModel.Request(prompt.text(), offered, history, false, repairing));
+                } catch (RuntimeException failed) {
+                    // Optional, this call: nothing it fails with may replace the answer already written.
+                    throw new RepairFailed(failed);
+                }
+                return repaired(reply, record, sink, history, earlier, ranInAttempt);
+            }
             askingAgain = false;
             List<ToolCall> calls = reply.turn().toolCalls();
             if (reply.stopReason() == LanguageModel.StopReason.TOOL_USE && !calls.isEmpty() && !last) {
                 List<ToolExecution> executions = new ArrayList<>();
                 List<ToolResult> results = new ArrayList<>();
-                for (int i = 0; i < calls.size(); i++) {
-                    ToolCall toolCall = calls.get(i);
-                    if (i >= MAX_CALLS_PER_ROUND) {
-                        results.add(new ToolResult(toolCall.id(), "NOT_RUN: at most " + MAX_CALLS_PER_ROUND
-                                + " tools run in one step; ask for the rest in the next step", true));
-                    } else if (budget <= 0) {
-                        results.add(new ToolResult(toolCall.id(), "NOT_RUN: this question has used up its room for "
-                                + "tool results; answer with what you have, or ask the user to narrow the question",
-                                true));
-                    } else {
-                        ToolExecution execution = forTheRecord(tools.execute(toolCall));
+                List<ToolCall> admitted = calls.subList(0, Math.min(calls.size(), MAX_CALLS_PER_ROUND));
+                int ran = 0;
+                while (ran < admitted.size() && budget > 0) {
+                    // As many at once as the room left holds at their longest, one at least: a step ends no further
+                    // past the budget than one result, as when the calls ran one by one. Every call either ran and
+                    // its result was sent, or did not run: what the model received is what the record keeps.
+                    int wave = Math.min(admitted.size() - ran, Math.max(1, budget / ToolExecution.MAX_RESULT_LENGTH));
+                    for (ToolExecution done : parallel.run(admitted.subList(ran, ran + wave), ToolChannel.CHAT,
+                            finished -> progress.toolRan(ConversationService.ToolCallView.of(forTheRecord(finished))))) {
+                        ToolExecution execution = forTheRecord(done);
                         budget -= execution.result().length();
-                        progress.toolRan(ConversationService.ToolCallView.of(execution));
                         executions.add(execution);
+                        ranInAttempt.add(execution);
                         results.add(execution.toResult());
                     }
+                    ran += wave;
+                }
+                for (ToolCall notRun : calls.subList(ran, calls.size())) {
+                    results.add(new ToolResult(notRun.id(), results.size() >= MAX_CALLS_PER_ROUND
+                            ? "NOT_RUN: at most " + MAX_CALLS_PER_ROUND + " tools run in one step; ask for the rest "
+                                    + "in the next step"
+                            : "NOT_RUN: this question has used up its room for tool results; answer with what you "
+                                    + "have, or ask the user to narrow the question", true));
                 }
                 record.accept(PendingMessage.reply(reply, executions));
                 record.accept(PendingMessage.results(new Turn.ToolResults(results)));
@@ -375,7 +433,18 @@ public class AssistantService {
             if (calls.isEmpty()) {
                 record.accept(new PendingMessage(reply.turn(), displayText(reply), reply.model(), reply.stopReason(),
                         reply.usage(), List.of()));
-                return wroteNothing(reply) ? Outcome.NO_ANSWER : Outcome.ANSWERED;
+                if (wroteNothing(reply)) {
+                    return Outcome.NO_ANSWER;
+                }
+                String note = repairNote(reply, history, earlier);
+                if (note != null) {
+                    if (fits(clock.instant(), 1, leaseEnds)) {
+                        repairing = note;
+                        continue;
+                    }
+                    telemetry.repair("no_time");
+                }
+                return Outcome.ANSWERED;
             }
             // Tool calls that will not run: answer each, then close the turn, so the history stays well formed.
             record.accept(PendingMessage.reply(reply, List.of()));
@@ -429,6 +498,112 @@ public class AssistantService {
     /** Whether {@code calls} more model calls, each as long as the longest one can be, end within the lease. */
     private boolean fits(Instant now, int calls, Instant leaseEnds) {
         return !now.plus(properties.longestModelCall().multipliedBy(calls)).isAfter(leaseEnds);
+    }
+
+    /**
+     * The note that asks the model, once, to correct an answer that states numbers no tool result, question or
+     * context holds ({@link AnswerNumbers}, design §3.1); null when every number is grounded or the reply is not a
+     * finished answer. The grounds are what this model was shown: the questions and results of the exchanges before,
+     * and this question with everything its tools returned in this attempt. A number that only a code holds ("lô
+     * 2401" for {@code EVAL-LOT-2401}) is named as such, so the model writes the code whole instead of dropping it.
+     */
+    private static String repairNote(LanguageModel.Reply reply, List<Turn> history, AnswerNumbers.Grounds earlier) {
+        if (reply.stopReason() != LanguageModel.StopReason.END_TURN) {
+            return null;
+        }
+        List<AnswerNumbers.Checked> unheld = check(AnswerText.plain(reply.turn().text()), history, earlier).stream()
+                .filter(checked -> !checked.grounded()).toList();
+        if (unheld.isEmpty()) {
+            return null;
+        }
+        List<String> nowhere = unheld.stream().filter(checked -> !checked.onlyInACode())
+                .map(AnswerNumbers.Checked::written).distinct().toList();
+        List<String> inCodes = unheld.stream().filter(AnswerNumbers.Checked::onlyInACode)
+                .map(AnswerNumbers.Checked::written).distinct().toList();
+        StringBuilder note = new StringBuilder(NOTE);
+        if (!nowhere.isEmpty()) {
+            note.append(" these numbers in your answer appear in no tool result, nor in the question or its context: ")
+                    .append(String.join("; ", nowhere)).append('.');
+        }
+        if (!inCodes.isEmpty()) {
+            note.append(" These appear there only inside a code (an order, lot, bin or SKU code), not as figures of "
+                    + "their own: ").append(String.join("; ", inCodes))
+                    .append(". Write such a code whole, as the result does, or leave the number out.");
+        }
+        return note.append(" Write the answer again, in the user's language: keep every figure, code and rule you can "
+                + "point to above, and where a figure was not looked up, say so instead of giving one. No more lookups "
+                + "can be made.").toString();
+    }
+
+    /** The checked numbers of {@code text} against what the model was shown ({@link #repairNote}). */
+    private static List<AnswerNumbers.Checked> check(String text, List<Turn> history, AnswerNumbers.Grounds earlier) {
+        return AnswerNumbers.check(text, earlier.and(AnswerSources.groundsOf(history)));
+    }
+
+    /**
+     * The model's correction. It replaces the answer only when it is better and loses nothing: written in full (no
+     * tool asked for, not cut off or declined), its unverified numbers a strict subset of the answer's — so it adds no
+     * new one — and every number the answer had grounds for, and every rule it cited, still in it. Anything else
+     * leaves the answer as it was, stored already, its numbers flagged as before.
+     *
+     * <p>A correction is stored after the answer, so the transcript shows it as the answer and the first stays for the
+     * audit. One set aside is stored for its tokens with no text and no tool calls, its provider content kept for the
+     * audit: the transcript, the next question's history ({@link History}) and the cut-short flag all read the answer
+     * the user saw, never a rewrite nobody was shown.</p>
+     */
+    private Outcome repaired(LanguageModel.Reply reply, Consumer<PendingMessage> record, Consumer<PendingMessage> sink,
+                             List<Turn> history, AnswerNumbers.Grounds earlier, List<ToolExecution> ranInAttempt) {
+        String before = history.getLast() instanceof Turn.ModelTurn answer ? AnswerText.plain(answer.text()) : null;
+        String after = AnswerText.plain(reply.turn().text());
+        boolean usable = before != null && reply.stopReason() == LanguageModel.StopReason.END_TURN
+                && reply.turn().toolCalls().isEmpty() && !wroteNothing(reply)
+                && better(check(before, history, earlier), check(after, history, earlier))
+                && AnswerSources.citations(after, ranInAttempt, json)
+                        .containsAll(AnswerSources.citations(before, ranInAttempt, json));
+        if (usable) {
+            record.accept(new PendingMessage(reply.turn(), displayText(reply), reply.model(), reply.stopReason(),
+                    reply.usage(), List.of()));
+            telemetry.repair(check(after, history, earlier).stream().allMatch(AnswerNumbers.Checked::grounded)
+                    ? "corrected" : "still_unverified");
+        } else {
+            Turn.ModelTurn audit = new Turn.ModelTurn(reply.turn().providerContent(), null, List.of());
+            sink.accept(new PendingMessage(audit, null, reply.model(), reply.stopReason(), reply.usage(), List.of()));
+            telemetry.repair("kept");
+        }
+        return Outcome.ANSWERED;
+    }
+
+    /**
+     * Whether a rewrite is better than the answer: fewer unverified numbers, none of them new, and every grounded
+     * number of the answer still written. Compared as written: "12,5 triệu" for "12.500.000" is the same claim, not a
+     * correction, and keeps the answer.
+     */
+    private static boolean better(List<AnswerNumbers.Checked> answer, List<AnswerNumbers.Checked> rewrite) {
+        java.util.Set<String> wrong = written(answer, false);
+        java.util.Set<String> stillWrong = written(rewrite, false);
+        java.util.Set<String> written = new java.util.HashSet<>(written(rewrite, false));
+        written.addAll(written(rewrite, true));
+        return wrong.containsAll(stillWrong) && stillWrong.size() < wrong.size()
+                && written.containsAll(written(answer, true));
+    }
+
+    private static java.util.Set<String> written(List<AnswerNumbers.Checked> checked, boolean grounded) {
+        return checked.stream().filter(number -> number.grounded() == grounded).map(AnswerNumbers.Checked::written)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /**
+     * A repair call that failed, with any exception: the question keeps the answer it had ({@link #answerOnRoute}).
+     * Stackless, it only carries the failure there.
+     */
+    private static final class RepairFailed extends RuntimeException {
+
+        private final RuntimeException cause;
+
+        RepairFailed(RuntimeException cause) {
+            super(cause.getMessage(), cause, false, false);
+            this.cause = cause;
+        }
     }
 
     /**
