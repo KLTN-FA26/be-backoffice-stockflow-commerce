@@ -86,7 +86,14 @@ public class CurrentUserProvider {
     }
 
     public Optional<CurrentUser> current() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return userOf(SecurityContextHolder.getContext().getAuthentication());
+    }
+
+    /**
+     * The user an authentication stands for, read as {@link #current} reads the one in the security context: for an
+     * authentication not put there yet ({@link RunAs#authenticationFor} checks the one it built). Never throws.
+     */
+    static Optional<CurrentUser> userOf(Authentication authentication) {
         if (!(authentication instanceof JwtAuthenticationToken token)) {
             return Optional.empty();     // anonymous, a scheduled job, or an async event listener
         }

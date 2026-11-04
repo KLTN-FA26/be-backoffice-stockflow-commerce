@@ -44,6 +44,10 @@ import java.util.regex.Pattern;
  * <p><b>On the calling thread, then restored.</b> The security context is a thread-local; the caller's own one (none,
  * on a scheduler thread) is put back afterwards, and the data scope is restored as found, so nothing of this user
  * outlives the call. Work handed to another thread inherits nothing unless it is carried ({@code ThreadContext}).</p>
+ *
+ * <p><b>Also for a personal token</b> ({@link PersonalTokens}, ADR-0013): a request that carries one instead of a JWT
+ * is authenticated with {@link #authenticationFor}, the same authorization built the same way, which the request then
+ * carries as any other. The token says only whose it is.</p>
  */
 @Component
 public class RunAs {
@@ -125,10 +129,7 @@ public class RunAs {
      * @throws RefusedException when the user cannot be acted for (class javadoc); {@code work} has not run
      */
     public <T> T call(UUID userId, String actor, Function<CurrentUser, T> work) {
-        if (userId == null || actor == null || !ACTOR.matcher(actor).matches()) {
-            throw new IllegalArgumentException("a user and an actor such as assistant-watch are required");
-        }
-        StockflowAuthenticationToken token = tokenFor(userId, actor);
+        StockflowAuthenticationToken token = authenticationFor(userId, actor);
         SecurityContext previous = SecurityContextHolder.getContext();
         java.util.Optional<DataScopeContext.Scope> scope = DataScopeContext.current();
         SecurityContext acting = SecurityContextHolder.createEmptyContext();
@@ -138,14 +139,31 @@ public class RunAs {
         try {
             CurrentUser user = currentUsers.current().orElseThrow(() -> new IllegalStateException(
                     "the token built for " + userId + " does not read as a user"));
-            if (user.isPortalCustomer()) {
-                throw new RefusedException(Refusal.NO_STAFF_ROLE, userId, null);
-            }
             return work.apply(user);
         } finally {
             SecurityContextHolder.setContext(previous);
             DataScopeContext.restore(scope.orElse(null));
         }
+    }
+
+    /**
+     * The authorization {@code userId} holds now, marked as {@code actor}'s, without running anything or touching the
+     * security context: what a request carrying a personal token is authenticated with
+     * ({@link PersonalTokenAuthenticationProvider}).
+     *
+     * @throws RefusedException when the user cannot be acted for (class javadoc)
+     */
+    public StockflowAuthenticationToken authenticationFor(UUID userId, String actor) {
+        if (userId == null || actor == null || !ACTOR.matcher(actor).matches()) {
+            throw new IllegalArgumentException("a user and an actor such as assistant-watch are required");
+        }
+        StockflowAuthenticationToken token = tokenFor(userId, actor);
+        CurrentUser user = CurrentUserProvider.userOf(token).orElseThrow(() -> new IllegalStateException(
+                "the token built for " + userId + " does not read as a user"));
+        if (user.isPortalCustomer()) {
+            throw new RefusedException(Refusal.NO_STAFF_ROLE, userId, null);
+        }
+        return token;
     }
 
     private StockflowAuthenticationToken tokenFor(UUID userId, String actor) {

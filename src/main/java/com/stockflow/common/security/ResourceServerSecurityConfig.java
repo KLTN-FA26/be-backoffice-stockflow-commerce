@@ -1,11 +1,21 @@
 package com.stockflow.common.security;
 
+import io.micrometer.observation.ObservationRegistry;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AuthenticationEventPublisher;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationManagerResolver;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.ObservationAuthenticationManager;
+import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -15,11 +25,17 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationProvider;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AuthenticationEntryPointFailureHandler;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.cors.CorsConfigurationSource;
+
+import java.util.List;
 
 /**
  * Resource-server configuration. The application validates the JWT issued by the identity module.
@@ -46,6 +62,13 @@ import org.springframework.web.cors.CorsConfigurationSource;
  * default; {@code oauth2ResourceServer(...)} overrides the one
  * {@code BearerTokenAuthenticationFilter} installs for itself, which would otherwise win for an
  * expired or malformed token — the most common 401 there is.</p>
+ *
+ * <h2>Two kinds of bearer token, and where each is accepted</h2>
+ *
+ * <p>Every path takes the JWT the login endpoint issues. A {@link PersonalTokens personal token} is accepted only on
+ * the paths its issuer names, and only when it carries its prefix ({@link #authenticationManagers}); anywhere else it
+ * reaches the JWT decoder, which refuses it with 401. Without an issuer in the context (a module test, or the
+ * assistant's MCP endpoint switched off) there are no personal tokens at all.</p>
  */
 @Configuration
 @EnableWebSecurity
@@ -124,7 +147,10 @@ public class ResourceServerSecurityConfig {
     @Order(2)
     public SecurityFilterChain apiFilterChain(HttpSecurity http,
             @Qualifier(CorsConfig.SOURCE) CorsConfigurationSource cors,
-            StockflowJwtAuthenticationConverter converter) throws Exception {
+            StockflowJwtAuthenticationConverter converter, JwtDecoder jwtDecoder,
+            ObjectProvider<PersonalTokens> personalTokens, RunAs runAs,
+            ObjectProvider<AuthenticationEventPublisher> events,
+            ObjectProvider<ObservationRegistry> observations) throws Exception {
         return http
                 // Stateless JWT: there is no session cookie for an attacker to ride, so CSRF
                 // protection buys nothing and only breaks the API clients.
@@ -156,7 +182,9 @@ public class ResourceServerSecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/customers/portal-activation").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(converter))
+                        .authenticationManagerResolver(authenticationManagers(jwtDecoder, converter,
+                                personalTokens.getIfAvailable(), runAs, events.getIfAvailable(),
+                                observations.getIfAvailable(() -> ObservationRegistry.NOOP)))
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler)
                         .withObjectPostProcessor(reportUnavailableAsServiceError()))
@@ -164,6 +192,49 @@ public class ResourceServerSecurityConfig {
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
                 .build();
+    }
+
+    /**
+     * Which bearer tokens a request may carry: the JWT on every path, through the same decoder and converter as
+     * {@code jwt(...)} configured; a personal token on its own paths, told apart by its prefix before anything is
+     * decoded. Each manager publishes authentication events and is observed, as the one {@code jwt(...)} built was,
+     * so the authentication metrics and spans stay.
+     */
+    static AuthenticationManagerResolver<HttpServletRequest> authenticationManagers(JwtDecoder jwtDecoder,
+            StockflowJwtAuthenticationConverter converter, PersonalTokens personalTokens, RunAs runAs,
+            AuthenticationEventPublisher events, ObservationRegistry observations) {
+        JwtAuthenticationProvider jwt = new JwtAuthenticationProvider(jwtDecoder);
+        jwt.setJwtAuthenticationConverter(converter);
+        AuthenticationManager jwts = manager(jwt, events, observations);
+        if (personalTokens == null) {
+            return request -> jwts;
+        }
+        AuthenticationManager personal = manager(new PersonalTokenAuthenticationProvider(personalTokens, runAs),
+                events, observations);
+        List<RequestMatcher> paths = personalTokens.paths().stream()
+                .map(path -> (RequestMatcher) PathPatternRequestMatcher.withDefaults().matcher(path))
+                .toList();
+        RequestMatcher accepted = new OrRequestMatcher(paths);
+        String prefix = personalTokens.prefix();
+        return request -> accepted.matches(request) && carries(request, prefix) ? personal : jwts;
+    }
+
+    private static AuthenticationManager manager(AuthenticationProvider provider, AuthenticationEventPublisher events,
+                                                 ObservationRegistry observations) {
+        ProviderManager manager = new ProviderManager(provider);
+        if (events != null) {
+            manager.setAuthenticationEventPublisher(events);
+        }
+        return observations.isNoop() ? manager : new ObservationAuthenticationManager(observations, manager);
+    }
+
+    /** Whether the request's bearer token starts with {@code prefix}; the filter has already read it as a bearer. */
+    private static boolean carries(HttpServletRequest request, String prefix) {
+        String header = request.getHeader(HttpHeaders.AUTHORIZATION);
+        if (header == null || !header.regionMatches(true, 0, "Bearer ", 0, 7)) {
+            return false;
+        }
+        return header.substring(7).strip().startsWith(prefix);
     }
 
     /**

@@ -418,9 +418,13 @@ class ArchitectureTest {
         ArchRule rule = noClasses()
                 .that().haveNameNotMatching("com\\.stockflow\\.assistant\\.internal\\.service\\.AssistantWatch(\\$.*)?")
                 .and().haveNameNotMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
+                // A personal token's request is authenticated with the same authorization (ADR-0013); the chain
+                // that builds the provider only hands RunAs over.
+                .and().doNotHaveFullyQualifiedName("com.stockflow.common.security.PersonalTokenAuthenticationProvider")
+                .and().doNotHaveFullyQualifiedName("com.stockflow.common.security.ResourceServerSecurityConfig")
                 .should().dependOnClassesThat()
                 .haveNameMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
-                .because("acting for a user outside a request is reviewed per caller (ADR-0012)");
+                .because("acting for a user outside a request is reviewed per caller (ADR-0012, ADR-0013)");
         rule.check(CLASSES);
     }
 
