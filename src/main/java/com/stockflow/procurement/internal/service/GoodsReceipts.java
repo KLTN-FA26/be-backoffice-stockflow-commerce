@@ -12,7 +12,8 @@ import java.util.UUID;
 /**
  * Goods receipts against purchase orders (SCRUM-435, docs 03): count, confirm, move to QC, decide.
  *
- * <p>Not on {@code procurement :: api}: nothing outside this module drives a receipt. Other modules
+ * <p>Not on {@code procurement :: api}: nothing outside this module drives a receipt; other modules read receipts
+ * through {@code GoodsReceiptQueries}. Other modules
  * learn about receipts from the {@code GoodsReceiptConfirmed} and {@code ReceiptStockReadyForPutaway}
  * events.</p>
  */
