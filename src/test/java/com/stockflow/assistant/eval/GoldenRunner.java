@@ -29,6 +29,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * <p>A case with earlier questions asks them first, in the same conversation. The tools, recall and facts of the case
  * are those of its last question; numbers may be grounded in any result of the conversation, and a leak counts in
  * any answer.</p>
+ *
+ * <p><b>Facts and leaks are read from what the panel shows</b>: the answer's text and the cells of the tables under
+ * it (design §7). The prompt tells the model not to copy the rows a table already shows, so a fact in a table is
+ * stated to the user as surely as one in the text, and a forbidden value in a cell is as much a leak. Ungrounded
+ * numbers are still checked in the text alone: the cells are the tool results themselves.</p>
  */
 final class GoldenRunner {
 
@@ -63,6 +68,7 @@ final class GoldenRunner {
                 : jdbc.queryForObject(golden.invariantQuery(), String.class);
 
         List<String> earlierAnswers = new ArrayList<>();
+        List<String> shownAnswers = new ArrayList<>();
         for (GoldenCase.Earlier earlier : golden.earlier()) {
             Reply reply = ask(role, user, conversation, earlier.question(), tokens);
             if (reply.status() != 200) {
@@ -70,11 +76,13 @@ final class GoldenRunner {
                         modelRequests(conversation), tokens);
             }
             earlierAnswers.add(reply.answer());
+            shownAnswers.add(reply.shown());
         }
         long started = System.nanoTime();
         Reply reply = ask(role, user, conversation, golden.question(), tokens);
         long latencyMs = (System.nanoTime() - started) / 1_000_000;
         String answer = reply.answer();
+        shownAnswers.add(reply.shown());
 
         // Null when the question was refused before it was stored (the assistant off, the daily cap).
         Integer stored = jdbc.queryForObject("""
@@ -107,11 +115,10 @@ final class GoldenRunner {
                 : jdbc.queryForObject(golden.invariantQuery(), String.class);
 
         List<String> missing = golden.expectRefusal() ? List.of()
-                : facts.stream().filter(Objects::nonNull).filter(fact -> !GoldenScorer.states(answer, fact)).toList();
-        List<String> answers = new ArrayList<>(earlierAnswers);
-        answers.add(answer);
+                : facts.stream().filter(Objects::nonNull).filter(fact -> !GoldenScorer.states(reply.shown(), fact))
+                .toList();
         List<String> leaks = forbidden.stream().filter(Objects::nonNull)
-                .filter(value -> answers.stream().anyMatch(each -> GoldenScorer.states(each, value))).toList();
+                .filter(value -> shownAnswers.stream().anyMatch(each -> GoldenScorer.states(each, value))).toList();
         boolean toolsOk = tools.containsAll(golden.expectTools())
                 && golden.forbiddenTools().stream().noneMatch(tools::contains)
                 && (!golden.expectNoTools() || tools.isEmpty());
@@ -141,10 +148,22 @@ final class GoldenRunner {
         tokens[1] += usage.path("cachedInputTokens").asLong();
         tokens[2] += usage.path("outputTokens").asLong();
         return new Reply(result.getResponse().getStatus(), errorCode(body),
-                body.path("data").path("answer").asText(""));
+                body.path("data").path("answer").asText(""), shown(body.path("data")));
     }
 
-    private record Reply(int status, String errorCode, String answer) {
+    /** What the panel shows of an answer: its text, then every cell of the tables under it, one per line. */
+    private static String shown(JsonNode data) {
+        StringBuilder shown = new StringBuilder(data.path("answer").asText(""));
+        for (JsonNode table : data.path("tables")) {
+            for (JsonNode row : table.path("rows")) {
+                row.forEach(cell -> shown.append('\n').append(cell.asText()));
+            }
+        }
+        return shown.toString();
+    }
+
+    /** @param shown the answer and the cells of its tables ({@link #shown}) */
+    private record Reply(int status, String errorCode, String answer, String shown) {
     }
 
     private static String errorCode(JsonNode body) {

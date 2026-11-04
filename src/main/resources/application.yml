@@ -457,6 +457,17 @@ stockflow:
     gemini-api-key: ${GEMINI_API_KEY:}
     model: ${ASSISTANT_MODEL:claude-opus-5-5}
     daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
+    # Model routing (docs/assistant-design.md §11). Unset, `model` alone answers, as before. Otherwise a question
+    # starts on the first of `models` (cheapest first, same provider and key) whose quota is not spent. A first call
+    # refused for a spent quota or an unreachable provider goes to the next model; once a model has replied, the
+    # question stays on it. A question a model could not answer is asked once more on the next model
+    # (escalate-on-failure). Moving on needs answer-lease to still hold two of the longest calls. A spent model is
+    # skipped for quota-cooldown, an ISO-8601 duration; blank: until the provider's quota day ends (midnight Pacific
+    # time for Gemini, UTC for Anthropic).
+    routing:
+      models: ${ASSISTANT_MODELS:}
+      escalate-on-failure: ${ASSISTANT_ESCALATE_ON_FAILURE:true}
+      quota-cooldown: ${ASSISTANT_QUOTA_COOLDOWN:}
     # low | medium | high | xhigh | max. Low suits chat-style questions; raise it only if the golden set says so.
     effort: low
     max-tool-rounds: 6
@@ -470,6 +481,23 @@ stockflow:
     refusal-fallback: true
     # Idle conversations older than retention-days are deleted daily (business time).
     retention-cron: "0 30 3 * * *"
+    # Searching the rules by meaning beside their words (design §6.4): the rules are in English, the questions in
+    # Vietnamese. Gemini only - Anthropic has no embedding API - so with provider anthropic, or without a key, the
+    # search stays keyword-only. The key is api-key below, or else the Gemini assistant's own; never an Anthropic key.
+    embeddings:
+      enabled: ${ASSISTANT_EMBEDDINGS_ENABLED:true}
+      api-key: ${ASSISTANT_EMBEDDINGS_API_KEY:}
+      model: ${ASSISTANT_EMBEDDINGS_MODEL:gemini-embedding-001}
+      # 128-3072. A new model or length re-embeds every passage on the next start, in the background.
+      dimensions: ${ASSISTANT_EMBEDDINGS_DIMENSIONS:768}
+    # POST /api/v1/assistant/mcp (design §7): the tools for another AI client, whose answers go to whichever model
+    # provider that client uses. Off unless asked for until the business decides AQ-17; the local profile turns it on.
+    mcp:
+      enabled: ${ASSISTANT_MCP_ENABLED:false}
+    # POST /api/v1/assistant/receipt-drafts (design §8.1): the photo of a delivery note goes whole to the model
+    # provider, supplier prices and signatures included. Off unless asked for (AQ-01); the local profile turns it on.
+    receipt-drafts:
+      enabled: ${ASSISTANT_RECEIPT_DRAFTS_ENABLED:false}
 
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and

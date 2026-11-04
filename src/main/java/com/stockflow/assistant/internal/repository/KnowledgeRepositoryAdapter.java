@@ -2,40 +2,46 @@ package com.stockflow.assistant.internal.repository;
 
 import com.stockflow.assistant.internal.domain.KnowledgeChunk;
 import com.stockflow.assistant.internal.domain.KnowledgeRepository;
+import com.stockflow.assistant.internal.domain.KnowledgeSearch;
 import com.stockflow.assistant.internal.entity.AssistantKnowledgeChunkJpaEntity;
 import com.stockflow.common.id.Identifiers;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Array;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
-import java.text.Normalizer;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * {@link KnowledgeRepository}: the sync through JPA, the search in SQL (design §6.3).
+ * {@link KnowledgeRepository}: the sync through JPA, the search and the vectors in SQL (design §6.3–6.4).
  *
  * <p><b>Any word, not every word.</b> The question arrives as the model's search terms, several of which a rule may
- * not use; {@code websearch_to_tsquery} would require all of them and find nothing. The query is cut into words here
- * (letters and digits only, so nothing reaches {@code to_tsquery} that it could parse as an operator) and joined with
- * OR; {@code ts_rank_cd} then ranks the chunks that match more of them higher.</p>
+ * not use; {@code websearch_to_tsquery} would require all of them and find nothing. The query is cut into words
+ * ({@link KnowledgeSearch#words}: letters and digits only, so nothing reaches {@code to_tsquery} that it could parse as
+ * an operator) and joined with OR; {@code ts_rank_cd} then ranks the chunks that match more of them higher.</p>
+ *
+ * <p><b>Vectors in plain SQL, never through JPA.</b> The entity does not map the embedding columns, so a sync that
+ * rewrites a chunk leaves its old vector in place, and the vector's own {@code embedding_hash} — the content hash of
+ * the text it was made from — tells it is stale: {@link #embedded} returns only vectors of the current text and model,
+ * and {@link #saveEmbedding} stores a vector only while the chunk still has the text it was made from. A vector
+ * travels as text ({@code {0.1,-0.2,…}}) cast to {@code real[]} by the database, the one array form every JDBC driver
+ * passes the same way.</p>
  */
 @Repository
 class KnowledgeRepositoryAdapter implements KnowledgeRepository {
 
-    private static final Pattern WORD = Pattern.compile("[\\p{L}\\p{N}]{2,}");
-    private static final Pattern ANCHOR = Pattern.compile("BR-[A-Z]+-\\d+[a-z]?", Pattern.CASE_INSENSITIVE);
-    private static final int MAX_WORDS = 16;
+    private static final RowMapper<KnowledgeChunk> CHUNK = (rs, row) -> new KnowledgeChunk(rs.getString("source"),
+            rs.getString("anchor"), KnowledgeChunk.Kind.valueOf(rs.getString("kind")), rs.getString("title"),
+            rs.getString("body"));
 
     private final AssistantKnowledgeChunkJpaRepository chunks;
     private final NamedParameterJdbcTemplate jdbc;
@@ -89,16 +95,8 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
 
     @Override
     public List<KnowledgeChunk> search(String query, int limit) {
-        Set<String> words = new LinkedHashSet<>();
-        Matcher word = WORD.matcher(Normalizer.normalize(query, Normalizer.Form.NFC));
-        while (word.find() && words.size() < MAX_WORDS) {
-            words.add(word.group().toLowerCase(Locale.ROOT));
-        }
-        List<String> anchors = new ArrayList<>();
-        Matcher anchor = ANCHOR.matcher(query);
-        while (anchor.find()) {
-            anchors.add(anchor.group().toUpperCase(Locale.ROOT));
-        }
+        Set<String> words = KnowledgeSearch.words(query);
+        List<String> anchors = KnowledgeSearch.namedRules(query);
         if (words.isEmpty() && anchors.isEmpty()) {
             return List.of();
         }
@@ -121,8 +119,72 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
                    OR upper(c.anchor) = ANY(:anchors)
                    OR public.similarity(assistant.immutable_unaccent(lower(c.title)), q.text) > 0.3
                 ORDER BY score DESC, c.source, c.anchor
-                LIMIT :limit""", parameters, (rs, row) -> new KnowledgeChunk(rs.getString("source"),
-                rs.getString("anchor"), KnowledgeChunk.Kind.valueOf(rs.getString("kind")), rs.getString("title"),
-                rs.getString("body")));
+                LIMIT :limit""", parameters, CHUNK);
+    }
+
+    @Override
+    public List<KnowledgeChunk> withoutEmbedding(String model, int dimensions) {
+        return jdbc.query("""
+                SELECT source, anchor, kind, title, body
+                FROM assistant.knowledge_chunk
+                WHERE embedding IS NULL OR embedding_model <> :model OR embedding_hash <> content_hash
+                   OR cardinality(embedding) <> :dimensions
+                ORDER BY source, anchor""",
+                new MapSqlParameterSource("model", model).addValue("dimensions", dimensions), CHUNK);
+    }
+
+    @Override
+    public boolean saveEmbedding(KnowledgeChunk chunk, String model, float[] embedding) {
+        MapSqlParameterSource parameters = new MapSqlParameterSource()
+                .addValue("embedding", literal(embedding))
+                .addValue("model", model)
+                .addValue("hash", chunk.contentHash())
+                .addValue("source", chunk.source())
+                .addValue("anchor", chunk.anchor());
+        return jdbc.update("""
+                UPDATE assistant.knowledge_chunk
+                SET embedding = CAST(:embedding AS real[]), embedding_model = :model, embedding_hash = :hash
+                WHERE source = :source AND anchor = :anchor AND content_hash = :hash""", parameters) == 1;
+    }
+
+    @Override
+    public List<EmbeddedChunk> embedded(String model, int dimensions) {
+        return jdbc.query("""
+                SELECT source, anchor, kind, title, body, embedding
+                FROM assistant.knowledge_chunk
+                WHERE embedding_model = :model AND embedding_hash = content_hash
+                  AND cardinality(embedding) = :dimensions""",
+                new MapSqlParameterSource("model", model).addValue("dimensions", dimensions),
+                (rs, row) -> new EmbeddedChunk(CHUNK.mapRow(rs, row), floats(rs.getArray("embedding"))));
+    }
+
+    /** {@code {0.1,-0.25,1.0E-5}}: {@code Float.toString} for each value, which reads back as the same float. */
+    static String literal(float[] embedding) {
+        StringBuilder text = new StringBuilder(embedding.length * 12).append('{');
+        for (int i = 0; i < embedding.length; i++) {
+            if (i > 0) {
+                text.append(',');
+            }
+            text.append(embedding[i]);
+        }
+        return text.append('}').toString();
+    }
+
+    /** A {@code real[]} as the driver hands it over: boxed {@code Float}s, or a {@code float[]} where it can. */
+    private static float[] floats(Array array) throws SQLException {
+        try {
+            Object values = array.getArray();
+            if (values instanceof float[] primitive) {
+                return primitive;
+            }
+            Object[] boxed = (Object[]) values;
+            float[] floats = new float[boxed.length];
+            for (int i = 0; i < boxed.length; i++) {
+                floats[i] = ((Number) boxed[i]).floatValue();
+            }
+            return floats;
+        } finally {
+            array.free();
+        }
     }
 }

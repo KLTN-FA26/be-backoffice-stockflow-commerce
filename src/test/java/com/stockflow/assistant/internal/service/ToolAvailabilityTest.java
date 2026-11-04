@@ -25,9 +25,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * What the panel and the question context are told about each tool, read from the tool's own declarations: the guard
- * on {@code run}, the permissions {@code run} checks besides it, an either-or rule, and what a user limited to
- * warehouses gets. The real tools against the seeded roles are {@code AssistantCapabilitiesIntegrationTest}.
+ * What the panel and the question context are told about each tool, and which tools the model is offered, read from
+ * the tool's own declarations: the guard on {@code run}, the permissions {@code run} checks besides it, an either-or
+ * rule, and what a user limited to warehouses gets. The real tools against the seeded roles are
+ * {@code AssistantCapabilitiesIntegrationTest} and {@code AssistantOfferedToolsIntegrationTest}.
  */
 class ToolAvailabilityTest {
 
@@ -117,6 +118,43 @@ class ToolAvailabilityTest {
     }
 
     @Test
+    @DisplayName("the model is offered the definitions of the granted tools only, sorted by name: a persona without "
+            + "stock permissions is offered no stock tool")
+    void offeredSpecs() {
+        ToolAvailability availability = availability(new ReorderTool(), new StockTool(), new OrderTool(),
+                new LowStockTool(), new ExpiringTool());
+
+        assertThat(names(availability.specsFor(user(DataScope.ALL, "sales-orders:READ"))))
+                .containsExactly("findOrder");
+        CurrentUser planner = user(DataScope.ALL, "inventory-alerts:READ", "inventory-stock-items:READ");
+        assertThat(names(availability.specsFor(planner)))
+                .containsExactly("findExpiringLots", "findLowStock", "getStockLevels")
+                .isEqualTo(availability.grantedTo(planner));
+        assertThat(names(availability.specsFor(user(DataScope.WAREHOUSE, "inventory-alerts:READ"))))
+                .as("company-wide figures are not offered to a warehouse-limited user").containsExactly(
+                        "findExpiringLots");
+        assertThat(availability.specsFor(user(DataScope.ALL))).as("no grant, no tool").isEmpty();
+    }
+
+    @Test
+    @DisplayName("the offered list is the tools' own definitions, the same objects in the same order for anyone with "
+            + "the same grants: byte-identical, so the provider caches it per set of grants")
+    void offeredSpecsAreStable() {
+        StockTool stock = new StockTool();
+        ToolAvailability availability = availability(new LowStockTool(), stock, new ExpiringTool());
+        String[] grants = {"inventory-stock-items:READ", "inventory-alerts:READ"};
+
+        List<ToolSpec> first = availability.specsFor(user(DataScope.ALL, grants));
+        List<ToolSpec> second = availability.specsFor(user(DataScope.ALL, grants[1], grants[0]));
+
+        assertThat(second).isEqualTo(first);
+        for (int i = 0; i < first.size(); i++) {
+            assertThat(second.get(i)).as("the definition read once at startup, not rebuilt").isSameAs(first.get(i));
+        }
+        assertThat(first.get(2)).isEqualTo(stock.spec());
+    }
+
+    @Test
     @DisplayName("a tool without a guard stops the application from starting instead of being reported as open")
     void unguardedToolIsRefused() {
         assertThatThrownBy(() -> availability(new UnguardedTool()))
@@ -170,6 +208,10 @@ class ToolAvailabilityTest {
         return requirements.stream().map(ToolAvailability.Requirement::code).toList();
     }
 
+    private static List<String> names(List<ToolSpec> specs) {
+        return specs.stream().map(ToolSpec::name).toList();
+    }
+
     /** Only what availability reads: a name, a guard on run(), and the declarations a real tool makes. */
     private abstract static class Probe implements AssistantTool {
 
@@ -198,6 +240,19 @@ class ToolAvailabilityTest {
 
         @Override
         @RequiresPermission(resource = "inventory-stock-items", action = Action.READ)
+        public Object run(ToolArguments arguments) {
+            return null;
+        }
+    }
+
+    static final class OrderTool extends Probe {
+
+        OrderTool() {
+            super("findOrder");
+        }
+
+        @Override
+        @RequiresPermission(resource = "sales-orders", action = Action.READ)
         public Object run(ToolArguments arguments) {
             return null;
         }

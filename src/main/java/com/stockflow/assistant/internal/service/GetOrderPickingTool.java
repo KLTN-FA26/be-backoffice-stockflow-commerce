@@ -7,7 +7,6 @@ import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
-import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.fulfillment.api.OrderPicking;
@@ -38,26 +37,19 @@ import java.util.Set;
  * release, and for printed goods only once production is done, so "no task" alone does not mean "not released".</p>
  *
  * <p><b>Who may see a task</b> is fulfillment's rule ({@code TaskAccess}): its assignee, a packer once it waits at the
- * packing table, and whoever oversees tasks or re-verifies designs, in their own warehouses. The last part is declared
- * as {@link #alsoRequiresAnyOf()} for the panel; {@code pickingOf} applies the whole rule, which is why {@code run}
- * does not refuse on it. The declaration is the narrower reading: a picker holding neither permission is reported as
- * unable to use the tool, though their own tasks would answer. No role that may open the assistant is in that position
- * under the seeded grants; granting it to warehouse staff (design §13 AQ-02) is the day to revisit this.</p>
+ * packing table, and whoever oversees tasks or re-verifies designs, in their own warehouses. {@code pickingOf} applies
+ * the whole rule, so nothing is declared beside the screen's permission: warehouse staff, who may open the assistant
+ * since V20261029000200 and hold neither oversight nor re-verification, are served their own tasks, and a task they
+ * may not see gets the same note as an order without one.</p>
  */
 @Component
 class GetOrderPickingTool implements AssistantTool {
 
     /**
-     * {@code FulfillmentPermissions.TASK_OVERSIGHT} and {@code DESIGN_REVERIFICATION}, copied by value as
-     * {@link ToolPermissions} copies its codes; {@code AssistantCapabilitiesIntegrationTest} checks that the permission
-     * catalog still declares them.
+     * What fulfillment answers when the caller may not see a task: not theirs, or in another warehouse.
+     * {@link FindOrderTool} reads the same set for its picking block.
      */
-    private static final List<PermissionCode> SEES_OTHERS_TASKS = List.of(
-            PermissionCode.of("fulfillment-task-oversight", Action.READ),
-            PermissionCode.of("fulfillment-design-reverification", Action.READ));
-
-    /** What fulfillment answers when the caller may not see a task: not theirs, or in another warehouse. */
-    private static final Set<ErrorCode> TASK_HIDDEN = Set.of(ErrorCode.NOT_FOUND, ErrorCode.OUT_OF_DATA_SCOPE,
+    static final Set<ErrorCode> TASK_HIDDEN = Set.of(ErrorCode.NOT_FOUND, ErrorCode.OUT_OF_DATA_SCOPE,
             ErrorCode.FORBIDDEN);
 
     private static final String NO_VISIBLE_TASK = "No pick task for this order number is visible to this user. Say "
@@ -68,9 +60,11 @@ class GetOrderPickingTool implements AssistantTool {
     private static final ToolSpec SPEC = new ToolSpec("getOrderPicking",
             "The pick task of one customer order, looked up by the order number alone, with every pick line: SKU, "
                     + "location, lot, units allocated, picked, short (not found by the picker) and put back, and the "
-                    + "line status (SHORT when units were missing). Call it directly for any question about picking an "
-                    + "order: what was short and where, whether picking is done. Only tasks the user may see, in "
-                    + "warehouses they may see; when there is none, the note says what can be told.",
+                    + "line status (SHORT when units were missing). Call it directly, by the order number, for a "
+                    + "question about picking an order: what was short and where, whether picking is done. When "
+                    + "findOrder is offered too, its picking block already gives the task status and the lines still "
+                    + "short: call this one only to see every line (allocated, picked, put back). Only tasks the user "
+                    + "may see, in warehouses they may see; when there is none, the note says what can be told.",
             ToolSchema.object()
                     .string("orderNumber", "The order number exactly as shown on screen")
                     .build());
@@ -98,11 +92,6 @@ class GetOrderPickingTool implements AssistantTool {
     @Override
     public ScopeLimit scopeLimit() {
         return ScopeLimit.PARTIAL;
-    }
-
-    @Override
-    public List<PermissionCode> alsoRequiresAnyOf() {
-        return SEES_OTHERS_TASKS;
     }
 
     @Override

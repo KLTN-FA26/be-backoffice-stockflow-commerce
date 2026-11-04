@@ -19,6 +19,14 @@ import java.util.function.Function;
  * {@link AnswerText#plain}, as the panel showed it: an image or a link that some tool result talked the model into
  * writing is not handed back to it as its own earlier answer, which would only teach it to write one again.</p>
  *
+ * <p><b>Rebuilt for the model it is sent to.</b> An earlier answer goes back as a text turn of the model being called,
+ * never as the provider content stored with it. That content may be another model's or another provider's: a cheaper
+ * model of the route, the model before an escalation, the provider the deployment used before it switched. Its thought
+ * signatures, thinking blocks and tool ids are valid only for the model that wrote them, and another provider cannot
+ * even read its shape: replayed, it would have every later question of the conversation refused as a bad request.
+ * Only the question being answered goes with its own turns as they are, and one model wrote them all:
+ * {@code AssistantService} moves a question to another model only before any reply, or from the question alone.</p>
+ *
  * <p>The stored history is untouched: the transcript, the tool-call audit and the retention job all read every
  * turn.</p>
  */
@@ -37,8 +45,10 @@ public final class History {
 
     /**
      * @param turns    the stored turns, oldest first, ending with the question being answered and the turns already
-     *                 produced for it
-     * @param textTurn a model turn that holds only text ({@link LanguageModel#closingTurn})
+     *                 produced for it by the model this history is sent to
+     * @param textTurn a model turn that holds only text, made by the model this history is sent to
+     *                 ({@link LanguageModel#closingTurn}): every earlier answer is rebuilt with it, whichever model or
+     *                 provider wrote it
      */
     public static List<Turn> forModel(List<Turn> turns, Function<String, Turn.ModelTurn> textTurn) {
         List<List<Turn>> exchanges = new ArrayList<>();

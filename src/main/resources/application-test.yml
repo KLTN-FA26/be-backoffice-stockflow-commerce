@@ -60,6 +60,17 @@ stockflow:
     # Off: the integration tests exercise the service layer directly, not HTTP, so the filter chain
     # would add a JWT setup step without testing anything these tests are about.
     enabled: false
+  assistant:
+    embeddings:
+      # Nothing embeds behind the tests' back, whatever the environment holds: an exported ASSISTANT_ENABLED with a
+      # Gemini key would otherwise send the corpus to Google from every test context. KnowledgeEmbeddingIntegrationTest
+      # uses a fake model; AssistantGoldenSetEval switches embeddings back on.
+      enabled: false
+    mcp:
+      # The MCP endpoint's tests need it; it is off by default only for the deployments (application.yml, AQ-17).
+      enabled: true
+    receipt-drafts:
+      enabled: true
 
 logging:
   level:

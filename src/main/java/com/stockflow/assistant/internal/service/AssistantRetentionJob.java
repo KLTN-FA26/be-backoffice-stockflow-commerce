@@ -11,8 +11,9 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * Deletes conversations idle for longer than {@code stockflow.assistant.retention-days} (design §5.5): what was asked
- * and what the tools returned does not stay forever.
+ * Deletes conversations idle for longer than {@code stockflow.assistant.retention-days} (design §5.5): what was asked,
+ * what the tools returned and the verdicts people gave the answers do not stay forever. The verdicts need no delete of
+ * their own: each cascades from the message it rates, which cascades from its conversation, so none outlives it.
  *
  * <p>Runs as the system, so it uses the store's unscoped delete, in batches with one transaction each, and never
  * touches a conversation being answered right now.</p>

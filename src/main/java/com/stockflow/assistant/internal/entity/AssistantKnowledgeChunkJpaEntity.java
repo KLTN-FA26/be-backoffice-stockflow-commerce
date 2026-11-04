@@ -13,6 +13,11 @@ import java.util.UUID;
 /**
  * {@code assistant.knowledge_chunk}. The generated {@code search_document} column is not mapped: the database computes
  * it from the text, and the search reads it in SQL.
+ *
+ * <p>Neither are the embedding columns ({@code embedding}, {@code embedding_model}, {@code embedding_hash}): the
+ * repository adapter writes and reads them in SQL. So {@link #rewrite} never touches a vector, and never has to: the
+ * vector keeps the content hash of the text it was made from, and a vector whose hash is not the chunk's is ignored
+ * until the indexer embeds the new text.</p>
  */
 @Entity
 @Table(name = "knowledge_chunk", schema = "assistant")

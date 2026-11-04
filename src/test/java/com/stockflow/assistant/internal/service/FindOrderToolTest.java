@@ -3,7 +3,17 @@ package com.stockflow.assistant.internal.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.domain.Money;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.Action;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.PermissionCode;
+import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.security.Role;
+import com.stockflow.fulfillment.api.OrderPicking;
+import com.stockflow.fulfillment.api.OrderPickingQueries;
 import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.DeliveryFailureReason;
@@ -22,26 +32,41 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
  * What one order tells the model (design §4.2): the money that keeps a packed order in the warehouse, the shipments
- * of a split order, whether its prints are ready - and never the customer's contacts, typed or not.
+ * of a split order, whether its prints are ready, and the lines still short on its pick task for a caller who may see
+ * that task - and never the customer's contacts, typed or not.
  */
 class FindOrderToolTest {
 
     private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
     private static final Instant PLACED = Instant.parse("2026-10-20T02:00:00Z");
+    private static final String SHORT_BIN = "HCM-A01-1-B";
+    private static final String SHORT_LOT = "LOT-LID-A";
+
+    /** As seeded: orders, pick lists and task oversight (V20261026000200 and the role matrix). */
+    private static final CurrentUser COORDINATOR = staff(Role.ORDER_COORDINATOR, "sales-orders:READ",
+            "fulfillment-pick-lists:READ", "fulfillment-task-oversight:READ");
+    /** As seeded: orders, and nothing of fulfillment. */
+    private static final CurrentUser SALES = staff(Role.SALES_STAFF, "sales-orders:READ");
 
     private final OrderService orders = mock(OrderService.class);
-    private final FindOrderTool tool = new FindOrderTool(orders, mock(CurrentUserProvider.class));
+    private final OrderPickingQueries picking = mock(OrderPickingQueries.class);
+    private final CurrentUserProvider currentUsers = mock(CurrentUserProvider.class);
+    private final FindOrderTool tool = new FindOrderTool(orders, picking, currentUsers);
 
     @Test
     @DisplayName("a packed deposit order with its balance due before delivery says what must be paid before it leaves")
@@ -234,6 +259,146 @@ class FindOrderToolTest {
         assertThat(line.delivered()).isEqualTo(100);
     }
 
+    @Test
+    @DisplayName("a coordinator's order held for stock comes with its pick task: the status and the lines still short, "
+            + "with SKU, location, lot and units short - one lookup instead of findOrder then getOrderPicking")
+    void coordinatorGetsTheShortPick() throws Exception {
+        OrderSummary order = heldForStock();
+        as(COORDINATOR);
+        when(picking.pickingOf(order.orderId(), COORDINATOR)).thenReturn(Optional.of(task("PICKING",
+                pickLine("LID-90", SHORT_BIN, SHORT_LOT, 30, 25, 5, "SHORT"),
+                pickLine("CUP-12OZ", "HCM-A02-2-A", "LOT-CUP-B", 70, 70, 0, "PICKED"))));
+
+        FindOrderTool.Answer answer = find(order, List.of());
+
+        assertThat(answer.hold().reason()).isEqualTo("INVENTORY");
+        FindOrderTool.Picking picked = answer.picking();
+        assertThat(picked.taskStatus()).isEqualTo("PICKING");
+        assertThat(picked.shortLines()).containsExactly(new FindOrderTool.ShortLine("LID-90", SHORT_BIN, SHORT_LOT, 5));
+        assertThat(picked.shortLinesTotal()).isEqualTo(1);
+        assertThat(picked.shortLinesTruncated()).isFalse();
+        assertThat(JSON.writeValueAsString(picked)).as("a line picked in full answers nothing about the hold")
+                .doesNotContain("HCM-A02-2-A", "LOT-CUP-B");
+    }
+
+    @Test
+    @DisplayName("Sales read orders but not pick tasks: no picking block, the rest as before, and fulfillment is never "
+            + "asked")
+    void salesGetNoPicking() throws Exception {
+        OrderSummary order = heldForStock();
+        as(SALES);
+
+        FindOrderTool.Answer answer = find(order, List.of());
+
+        assertThat(answer.picking()).isNull();
+        assertThat(answer.hold().reason()).isEqualTo("INVENTORY");
+        assertThat(JSON.writeValueAsString(answer)).doesNotContain(SHORT_LOT);
+        verifyNoInteractions(picking);
+    }
+
+    @Test
+    @DisplayName("pick lists, getOrderPicking's guard, open the block; which task shows is fulfillment's rule, so a "
+            + "picker gets their own task and a re-verifier the tasks of their warehouse")
+    void taskVisibilityRule() {
+        OrderSummary order = heldForStock();
+        as(staff(Role.ORDER_COORDINATOR, "sales-orders:READ", "fulfillment-task-oversight:READ"));
+        assertThat(find(order, List.of()).picking()).as("oversight without pick lists").isNull();
+        verifyNoInteractions(picking);
+
+        CurrentUser picker = staff(Role.WAREHOUSE_STAFF, "sales-orders:READ", "fulfillment-pick-lists:READ");
+        as(picker);
+        assertThat(find(order, List.of()).picking()).as("a task fulfillment does not show them").isNull();
+        when(picking.pickingOf(order.orderId(), picker)).thenReturn(Optional.of(task("PICKING")));
+        assertThat(find(order, List.of()).picking().taskStatus()).as("their own task").isEqualTo("PICKING");
+
+        CurrentUser reverifier = staff(Role.QC_STAFF, "sales-orders:READ", "fulfillment-pick-lists:READ",
+                "fulfillment-design-reverification:READ");
+        as(reverifier);
+        when(picking.pickingOf(order.orderId(), reverifier)).thenReturn(Optional.of(task("PICKED")));
+        FindOrderTool.Picking picked = find(order, List.of()).picking();
+        assertThat(picked.taskStatus()).isEqualTo("PICKED");
+        assertThat(picked.shortLines()).isEmpty();
+        assertThat(picked.shortLinesTotal()).isZero();
+    }
+
+    @Test
+    @DisplayName("a task the caller may not see, no task yet, or a failure in fulfillment gives no block rather than a "
+            + "refusal: the order is still theirs to read")
+    void noBlockWithoutAVisibleTask() {
+        OrderSummary order = heldForStock();
+        as(COORDINATOR);
+        when(picking.pickingOf(order.orderId(), COORDINATOR))
+                .thenThrow(new BusinessException(ErrorCode.OUT_OF_DATA_SCOPE))
+                .thenThrow(new BusinessException(ErrorCode.NOT_FOUND))
+                .thenThrow(new BusinessException(ErrorCode.FORBIDDEN))
+                .thenReturn(Optional.empty())
+                .thenThrow(new IllegalStateException("fulfillment is down"));
+
+        for (int call = 1; call <= 5; call++) {
+            FindOrderTool.Answer answer = find(order, List.of());
+            assertThat(answer.picking()).as("call %d", call).isNull();
+            assertThat(answer.status()).isEqualTo("ON_HOLD");
+            assertThat(answer.hold().reason()).isEqualTo("INVENTORY");
+        }
+    }
+
+    @Test
+    @DisplayName("only lines still short are listed: a short line already reallocated to other bins is closed, and a "
+            + "line not picked yet is not short")
+    void onlyLinesStillShort() {
+        OrderSummary order = heldForStock();
+        as(COORDINATOR);
+        when(picking.pickingOf(order.orderId(), COORDINATOR)).thenReturn(Optional.of(task("PICKING",
+                pickLine("LID-90", "HCM-A02-2-A", "LOT-OLD", 10, 6, 4, "CANCELLED"),
+                pickLine("LID-90", SHORT_BIN, SHORT_LOT, 30, 25, 5, "SHORT"),
+                pickLine("LID-90", "HCM-A03-1-A", "LOT-NEW", 4, 0, 0, "OPEN"))));
+
+        assertThat(find(order, List.of()).picking().shortLines()).extracting(FindOrderTool.ShortLine::lotNumber)
+                .containsExactly(SHORT_LOT);
+    }
+
+    @Test
+    @DisplayName("a task with more short lines than the cap lists the first ones in pick order, with the total and "
+            + "the truncated flag")
+    void shortLinesAreCapped() {
+        OrderSummary order = heldForStock();
+        as(COORDINATOR);
+        OrderPicking.Line[] lines = new OrderPicking.Line[FindOrderTool.MAX_SHORT_LINES + 5];
+        for (int i = 0; i < lines.length; i++) {
+            lines[i] = pickLine("SKU-" + i, SHORT_BIN, "LOT-" + i, 10, 9, 1, "SHORT");
+        }
+        when(picking.pickingOf(order.orderId(), COORDINATOR)).thenReturn(Optional.of(task("PICKING", lines)));
+
+        FindOrderTool.Picking picked = find(order, List.of()).picking();
+
+        assertThat(picked.shortLines()).hasSize(FindOrderTool.MAX_SHORT_LINES);
+        assertThat(picked.shortLines().getFirst().sku()).isEqualTo("SKU-0");
+        assertThat(picked.shortLinesTotal()).isEqualTo(FindOrderTool.MAX_SHORT_LINES + 5);
+        assertThat(picked.shortLinesTruncated()).isTrue();
+    }
+
+    @Test
+    @DisplayName("the rule is getOrderPicking's: its guard alone, of the same scope, so the warehouse restriction in "
+            + "force when the task is read is the one its guard installs; fulfillment decides the rest")
+    void sameRuleAsGetOrderPicking() throws Exception {
+        GetOrderPickingTool getOrderPicking = new GetOrderPickingTool(orders, picking, currentUsers);
+
+        assertThat(getOrderPicking.alsoRequiresAnyOf()).as("nothing declared beside the screen's permission").isEmpty();
+        RequiresPermission findOrderGuard = FindOrderTool.class.getMethod("run", ToolArguments.class)
+                .getAnnotation(RequiresPermission.class);
+        RequiresPermission pickingGuard = GetOrderPickingTool.class.getMethod("run", ToolArguments.class)
+                .getAnnotation(RequiresPermission.class);
+        assertThat(findOrderGuard.scope()).isEqualTo(pickingGuard.scope());
+        assertThat(pickingGuard.resource()).isEqualTo(ToolPermissions.PICK_LISTS);
+        assertThat(pickingGuard.action()).isEqualTo(Action.READ);
+    }
+
+    @Test
+    @DisplayName("the description tells the model a short pick needs no second lookup")
+    void descriptionSaysOneLookup() {
+        assertThat(tool.spec().description()).contains("picking", "for a short pick you do not need getOrderPicking");
+    }
+
     private static OrderSummary order(OrderStatus status, PaymentTerm term, OrderSummary.Payment payment,
                                       OrderSummary.Lifecycle lifecycle, List<OrderSummary.LineSummary> lines) {
         return new OrderSummary(UUID.randomUUID(), "SO-20261020-000042", UUID.randomUUID(), status,
@@ -263,5 +428,34 @@ class FindOrderToolTest {
                 handedOver, status == OrderShipmentStatus.HANDED_OVER ? null : handedOver.plusSeconds(3_600), reason,
                 List.of(new OrderSummary.ShipmentLine(line, units)), BigDecimal.ZERO,
                 new ShipmentHandover.Carriage(code, 1, "Giao Hàng Nhanh", "PARCEL"));
+    }
+
+    /** Paid, then held for stock because the picker came up short; the note names no lot. */
+    private static OrderSummary heldForStock() {
+        return order(OrderStatus.ON_HOLD, PaymentTerm.PREPAID,
+                new OrderSummary.Payment(BigDecimal.valueOf(1_000_000), null, null, PLACED, PaymentStatus.PAID, null,
+                        null),
+                lifecycle(HoldReason.INVENTORY, "Nhặt thiếu, chờ kiểm đếm lại", BigDecimal.ZERO, BigDecimal.ZERO,
+                        List.of(), false, true),
+                List.of(line(UUID.randomUUID(), "LID-90", false), line(UUID.randomUUID(), "CUP-12OZ", false)));
+    }
+
+    private void as(CurrentUser user) {
+        when(currentUsers.current()).thenReturn(Optional.of(user));
+    }
+
+    private static CurrentUser staff(Role role, String... permissions) {
+        return new CurrentUser(UUID.randomUUID(), role.name().toLowerCase(java.util.Locale.ROOT), Set.of(role),
+                Arrays.stream(permissions).map(PermissionCode::parse).collect(Collectors.toSet()), DataScope.ALL,
+                Set.of());
+    }
+
+    private static OrderPicking task(String status, OrderPicking.Line... lines) {
+        return new OrderPicking(UUID.randomUUID(), status, PLACED, null, List.of(lines));
+    }
+
+    private static OrderPicking.Line pickLine(String sku, String location, String lot, int allocated, int picked,
+                                              int shortQty, String status) {
+        return new OrderPicking.Line(sku, location, lot, allocated, picked, shortQty, 0, status);
     }
 }

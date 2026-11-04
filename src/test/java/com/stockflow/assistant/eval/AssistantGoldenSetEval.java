@@ -1,6 +1,7 @@
 package com.stockflow.assistant.eval;
 
 import com.stockflow.assistant.internal.service.AssistantProperties;
+import com.stockflow.assistant.internal.service.KnowledgeService;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.InventoryService;
@@ -64,7 +65,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @TestPropertySource(properties = {
         "stockflow.assistant.enabled=true",
         // ASSISTANT_MODEL as the application reads it; a literal default here would send a Claude model to Gemini.
-        "stockflow.assistant.model=${assistant.eval.model:${ASSISTANT_MODEL:claude-opus-5-5}}"})
+        "stockflow.assistant.model=${assistant.eval.model:${ASSISTANT_MODEL:claude-opus-5-5}}",
+        // One model per run: results are filed under its name, and a routed run would mix models under it.
+        "stockflow.assistant.routing.models=",
+        // The test profile turns embeddings off; the eval measures the search the deployment runs (design §6.4).
+        "stockflow.assistant.embeddings.enabled=${ASSISTANT_EMBEDDINGS_ENABLED:true}"})
 class AssistantGoldenSetEval {
 
     /** Failures of the provider in a row after which the rest of the run would only spend quota on the same failure. */
@@ -84,6 +89,7 @@ class AssistantGoldenSetEval {
     @Autowired PickConsumption consumption;
     @Autowired CatalogProjectionService catalog;
     @Autowired AssistantProperties properties;
+    @Autowired KnowledgeService knowledge;
 
     @Test
     @DisplayName("the golden set against the real model meets every gate")
@@ -98,6 +104,8 @@ class AssistantGoldenSetEval {
         GoldenFixtures fixtures = new GoldenFixtures(jdbc, tx, entityManager, receipts, inventory, consumption,
                 catalog);
         Map<String, String> values = fixtures.ensure();
+        // Every passage has its vector before the first case asks (design §6.4); nothing happens when embeddings are off.
+        knowledge.embed();
         GoldenRunner runner = new GoldenRunner(new SecuredMvc(mockMvc, decoder), jdbc, fixtures);
 
         List<GoldenRunner.CaseResult> results = new ArrayList<>();

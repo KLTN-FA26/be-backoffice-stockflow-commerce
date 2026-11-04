@@ -1,6 +1,7 @@
 package com.stockflow.assistant.internal.service;
 
 import com.stockflow.assistant.internal.domain.BusinessDate;
+import com.stockflow.assistant.internal.domain.ToolSpec;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionCode;
@@ -19,11 +20,14 @@ import java.util.stream.Collectors;
 
 /**
  * Which tools a user may use, and what stops each of the others: for the panel ({@code GET
- * /api/v1/assistant/capabilities}) and for the question context, so the model knows a refusal before it calls the
- * tool, and a refusal the system can predict does not cost a model request to learn.
+ * /api/v1/assistant/capabilities}); for the question context, so the model knows a refusal before it calls the tool,
+ * and a refusal the system can predict does not cost a model request to learn; and for the model request itself,
+ * which offers only those tools ({@link #specsFor}).
  *
- * <p><b>It reports; it never decides.</b> Every tool still runs behind its proxy, its own checks in {@code run()} and
- * the rules of the module it calls, and nothing here lets a call through or stops one. The report is read from the
+ * <p><b>It decides what the model is offered, never what runs.</b> Every tool still runs behind its proxy, its own
+ * checks in {@code run()} and the rules of the module it calls, and nothing here lets a call through or stops one: a
+ * call to a tool that was not offered (a provider without strict tool use, a scripted model in a test) still reaches
+ * that tool, which refuses it, and the refusal is recorded like any other call. The report is read from the
  * declarations that enforcement reads: each {@code run()}'s {@code @RequiresPermission}, read once at startup as the
  * permission aspect and {@code AssistantIntegrationTest.everyToolMirrorsItsScreen} read it, plus
  * {@link AssistantTool#alsoRequires}, {@link AssistantTool#alsoRequiresAnyOf} and {@link AssistantTool#scopeLimit}.
@@ -62,6 +66,20 @@ public class ToolAvailability {
     /** The names of the tools this user may use, sorted: what the question context lists. */
     public List<String> grantedTo(CurrentUser user) {
         return toolsFor(user).stream().filter(ToolAccess::granted).map(ToolAccess::name).toList();
+    }
+
+    /**
+     * The definitions of the tools this user may use, sorted by name: what the model is offered, the tools of
+     * {@link #grantedTo} (ADR-0010, amended 29/10/2026). Not every tool, as before. The definitions are the largest
+     * part of a request before the history, sent again on every call of an answer, and a small model offered a tool
+     * its user may not use calls it all the same and spends a round learning the refusal.
+     *
+     * <p>The same grants and the same warehouse limit give the same definitions in the same order, so the list is
+     * byte-identical on every call and for every user who holds them: the provider caches it once per set of grants
+     * instead of once for everyone.</p>
+     */
+    public List<ToolSpec> specsFor(CurrentUser user) {
+        return tools.stream().filter(tool -> tool.accessOf(user).granted()).map(Declaration::spec).toList();
     }
 
     /**
@@ -122,8 +140,9 @@ public class ToolAvailability {
                                List<ToolAccess> tools) {
     }
 
-    /** A tool's declarations, read once. */
-    private record Declaration(String name, DataScope guardScope, List<Requirement> requires, ScopeLimit scopeLimit) {
+    /** A tool's declarations, read once, with the definition the model is offered. */
+    private record Declaration(ToolSpec spec, DataScope guardScope, List<Requirement> requires,
+                               ScopeLimit scopeLimit) {
 
         static Declaration of(AssistantTool tool) {
             RequiresPermission guard = guardOf(tool);
@@ -133,15 +152,19 @@ public class ToolAvailability {
             if (!tool.alsoRequiresAnyOf().isEmpty()) {
                 requires.add(new Requirement(tool.alsoRequiresAnyOf()));
             }
-            return new Declaration(tool.spec().name(), guard.scope(), List.copyOf(requires),
+            return new Declaration(tool.spec(), guard.scope(), List.copyOf(requires),
                     Objects.requireNonNull(tool.scopeLimit(), "scopeLimit"));
+        }
+
+        String name() {
+            return spec.name();
         }
 
         ToolAccess accessOf(CurrentUser user) {
             List<Requirement> missing = requires.stream().filter(requirement -> !requirement.metBy(user)).toList();
             boolean limited = limitedToWarehouses(user) && !DataScope.WAREHOUSE.isBroaderThan(guardScope);
             boolean refusedForScope = limited && scopeLimit == ScopeLimit.COMPANY_WIDE_ONLY;
-            return new ToolAccess(name, missing.isEmpty() && !refusedForScope, requires, missing, scopeLimit);
+            return new ToolAccess(name(), missing.isEmpty() && !refusedForScope, requires, missing, scopeLimit);
         }
     }
 

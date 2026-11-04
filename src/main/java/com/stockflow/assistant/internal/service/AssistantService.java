@@ -11,6 +11,7 @@ import com.stockflow.assistant.internal.domain.PendingMessage;
 import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolResult;
+import com.stockflow.assistant.internal.domain.ToolSpec;
 import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -63,12 +64,23 @@ import java.util.function.Consumer;
  * <p><b>An empty reply is asked again, once.</b> A small model sometimes returns nothing at all: a function call the
  * provider could not parse, an empty stop after tool results. Shown as it is, that reads as "nothing was found". The
  * same request goes again with a note, not as a tool round; a second empty reply closes with a message that the
- * assistant could not answer.</p>
+ * assistant could not answer, and the question goes to a stronger model if there is one (below).</p>
  *
  * <p><b>Bounded cost.</b> Earlier questions go to the model with their answers only ({@link History}); one step runs
  * at most {@value #MAX_CALLS_PER_ROUND} tools and one question adds at most {@value #RESULT_BUDGET} characters of
  * tool results, the rest answered NOT_RUN; and no model call starts that could outlast the conversation's lease, so a
- * slow provider ends the answer instead of letting a second question in while this one still writes.</p>
+ * slow provider ends the answer instead of letting a second question in while this one still writes. A question is
+ * answered at most twice, the second time only when the first gave nothing usable (below).</p>
+ *
+ * <p><b>A cheap model first, a stronger one when needed ({@link ModelRouter}).</b> A question starts on the cheapest
+ * model whose quota is not spent. If that model's first call fails with a spent quota, or with a provider that could
+ * not be reached, the question goes to the next model. Once a model has replied, the question stays on it and fails
+ * with it: the turns it wrote carry thought signatures and thinking blocks that only that model accepts back. A
+ * question the model replied to without a usable answer — empty or malformed twice, nothing left once its markup was
+ * removed, or still asking for lookups when they ran out — is answered once more, from the start, on the next model;
+ * what the first one did, tools included, is stored as well, and the answer is the second one's. Every attempt is sent
+ * the history rebuilt for its own model ({@link History}), never a turn another model wrote.
+ * {@code ASSISTANT_QUOTA_EXHAUSTED} reaches the user only when every model is spent.</p>
  *
  * <p><b>Plain text out.</b> The answer the panel shows has its links, images and URLs removed ({@link AnswerText}).</p>
  */
@@ -92,7 +104,7 @@ public class AssistantService {
     private static final String NOTE = "Note from the system, not written by the user:";
 
     private final ConversationService conversations;
-    private final LanguageModel model;
+    private final ModelRouter models;
     private final AssistantTools tools;
     private final SystemPrompt prompt;
     private final AssistantProperties properties;
@@ -101,11 +113,11 @@ public class AssistantService {
     private final ObjectMapper json;
     private final ToolAvailability availability;
 
-    AssistantService(ConversationService conversations, LanguageModel model, AssistantTools tools,
+    AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
                      SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
                      ObjectMapper json, ToolAvailability availability) {
         this.conversations = conversations;
-        this.model = model;
+        this.models = models;
         this.tools = tools;
         this.prompt = prompt;
         this.properties = properties;
@@ -130,8 +142,9 @@ public class AssistantService {
      * @throws BusinessException {@code ASSISTANT_DISABLED} when the assistant cannot answer at all (nothing is
      *         stored); {@code VALIDATION_FAILED} for an empty or overlong question; {@code ASSISTANT_DAILY_LIMIT};
      *         {@code ASSISTANT_BUSY} while another question in the conversation is being answered;
-     *         {@code ASSISTANT_UNAVAILABLE} and the provider's other failures as the adapter reports them (the
-     *         question, any partial work and a closing turn with the error's message are stored)
+     *         {@code ASSISTANT_UNAVAILABLE} and the provider's other failures as the adapter reports them, once no
+     *         other model may take the question; {@code ASSISTANT_QUOTA_EXHAUSTED} only when every model's quota is
+     *         spent (the question, any partial work and a closing turn with the error's message are stored)
      * @throws com.stockflow.common.error.NotFoundException when the conversation is not the caller's
      */
     public Answer ask(UUID conversationId, String text, CurrentUser user) {
@@ -161,7 +174,7 @@ public class AssistantService {
 
     /** @return the question, trimmed */
     private String refuseUpFront(String text, CurrentUser user, Instant now) {
-        if (!model.available()) {
+        if (!models.available()) {
             throw new BusinessException(ErrorCode.ASSISTANT_DISABLED);
         }
         String question = Conversation.question(text);
@@ -180,19 +193,68 @@ public class AssistantService {
         String question = refuseUpFront(text, user, now);
         Turn.Question turn = new Turn.Question(question, context(user, now));
         Instant claimedAt = now.truncatedTo(ChronoUnit.MICROS);
-        List<Turn> history = new ArrayList<>(History.forModel(conversations.claimAndAsk(conversationId,
-                PendingMessage.question(turn), claimedAt, properties.answerLease()), model::closingTurn));
+        ModelRouter.Route route = models.route();
+        List<Turn> stored = conversations.claimAndAsk(conversationId, PendingMessage.question(turn), claimedAt,
+                properties.answerLease());
         List<PendingMessage> produced = new ArrayList<>();
         try {
-            answer(history, produced::add, progress, claimedAt.plus(properties.answerLease()));
+            answerOnRoute(route, stored, produced, progress, claimedAt.plus(properties.answerLease()),
+                    availability.specsFor(user));
         } catch (RuntimeException failure) {
             // The transcript says what became of the question: the turns so far, tools that ran included, then the
             // error's message. Right after the question, that closing turn also keeps it out of the daily cap.
-            whileFailing(failure, () -> produced.add(closing(failureText(failure))));
+            whileFailing(failure, () -> produced.add(closing(route.model(), failureText(failure))));
             whileFailing(failure, () -> store(conversationId, claimedAt, produced));
             throw failure;
         }
-        return Answer.of(store(conversationId, claimedAt, produced), json);
+        return Answer.of(stored, store(conversationId, claimedAt, produced), json);
+    }
+
+    /**
+     * Takes the question along the route's models (class javadoc), each attempt sent the history rebuilt for its own
+     * model from {@code stored}: the earlier answers as text turns of that model, then the question alone. Nothing an
+     * earlier attempt wrote is sent: its turns are another model's, and the question starts again from the beginning.
+     *
+     * <p>A failure before the model's first reply moves the question on, or ends it with what the route says to tell
+     * the user; one after it ends the question there, a spent quota still setting the model aside for the next one. A
+     * model moved on to must have the lease room for a first call and a closing one, as the first model had: otherwise
+     * the question ends as it stands.</p>
+     *
+     * @param stored   the conversation as stored, ending with the question
+     * @param produced receives what every attempt produced, in order, failed ones included: the audit keeps every
+     *                 tool that ran
+     * @param offered  the tools the user may use, worked out once for the question: every attempt is offered the same
+     */
+    private void answerOnRoute(ModelRouter.Route route, List<Turn> stored, List<PendingMessage> produced,
+                               Progress progress, Instant leaseEnds, List<ToolSpec> offered) {
+        while (true) {
+            LanguageModel model = route.model();
+            int before = produced.size();
+            Outcome outcome;
+            try {
+                outcome = answer(model, new ArrayList<>(History.forModel(stored, model::closingTurn)), produced::add,
+                        progress, leaseEnds, offered);
+            } catch (BusinessException failed) {
+                if (produced.size() > before) {
+                    // The model replied: the question is tied to it, and ends with it.
+                    throw route.failedAfterReplying(failed);
+                }
+                route.failedBeforeReplying(failed);
+                if (fits(clock.instant(), 2, leaseEnds) && route.fallBack(failed)) {
+                    continue;
+                }
+                if (route.escalated()) {
+                    // The stronger model could not start: the answer stands as the first model closed it.
+                    return;
+                }
+                throw route.failure();
+            }
+            route.replied();
+            if (outcome == Outcome.NO_ANSWER && fits(clock.instant(), 2, leaseEnds) && route.escalate()) {
+                continue;
+            }
+            return;
+        }
     }
 
     /**
@@ -219,7 +281,16 @@ public class AssistantService {
         }
     }
 
-    private void answer(List<Turn> history, Consumer<PendingMessage> sink, Progress progress, Instant leaseEnds) {
+    /**
+     * One model's attempt at the answer: the loop of model calls and tool rounds (class javadoc).
+     *
+     * @param model   the model of this attempt; every call of it goes there
+     * @param history what this model is sent, ending with the question; the attempt's turns are added to it
+     * @param offered the tools the user may use ({@link ToolAvailability#specsFor}), sent on every call
+     * @return how the attempt ended, for {@link #answerOnRoute} to decide whether another model should try
+     */
+    private Outcome answer(LanguageModel model, List<Turn> history, Consumer<PendingMessage> sink, Progress progress,
+                           Instant leaseEnds, List<ToolSpec> offered) {
         Consumer<PendingMessage> record = message -> {
             history.add(message.turn());
             sink.accept(message);
@@ -232,14 +303,16 @@ public class AssistantService {
             Instant now = clock.instant();
             if (call > 0 && !fits(now, 1, leaseEnds)) {
                 // The last step's results are in; another call could outlast the claim. Close, and say so.
-                record.accept(closing(outOfTime()));
-                return;
+                record.accept(closing(model, outOfTime()));
+                return Outcome.OUT_OF_TIME;
             }
             // The last call offers no tool: the rounds are spent, or the lease has room for this call only. Not the
             // first call, whatever the lease: the start-up check leaves room for two, a few milliseconds aside.
             boolean roundsSpent = rounds >= properties.maxToolRounds();
             boolean last = roundsSpent || call > 0 && !fits(now, 2, leaseEnds);
-            LanguageModel.Reply reply = model.next(new LanguageModel.Request(prompt.text(), tools.specs(), history,
+            // Only the user's own tools, worked out once per question (ToolAvailability.specsFor): the same bytes on
+            // every call, the last one included. A call to any other tool still runs, and its guard refuses it.
+            LanguageModel.Reply reply = model.next(new LanguageModel.Request(prompt.text(), offered, history,
                     !last, note(last, askingAgain)));
             askingAgain = false;
             List<ToolCall> calls = reply.turn().toolCalls();
@@ -278,14 +351,14 @@ public class AssistantService {
                     askingAgain = true;
                     continue;
                 }
-                record.accept(closing(messages.get("assistant.noAnswer",
+                record.accept(closing(model, messages.get("assistant.noAnswer",
                         "The assistant did not manage to write an answer this time. Please ask again.")));
-                return;
+                return Outcome.NO_ANSWER;
             }
             if (calls.isEmpty()) {
                 record.accept(new PendingMessage(reply.turn(), displayText(reply), reply.model(), reply.stopReason(),
                         reply.usage(), List.of()));
-                return;
+                return wroteNothing(reply) ? Outcome.NO_ANSWER : Outcome.ANSWERED;
             }
             // Tool calls that will not run: answer each, then close the turn, so the history stays well formed.
             record.accept(PendingMessage.reply(reply, List.of()));
@@ -301,9 +374,39 @@ public class AssistantService {
                 // The last call asked for a tool anyway: an adapter that cannot refuse tools, or a model ignoring it.
                 default -> last && !roundsSpent ? outOfTime() : closingText(reply.stopReason());
             };
-            record.accept(closing(afterReplyText(reply, stop)));
-            return;
+            record.accept(closing(model, afterReplyText(reply, stop)));
+            return switch (reply.stopReason()) {
+                case MAX_TOKENS, REFUSAL -> Outcome.ANSWERED;
+                default -> last && !roundsSpent ? Outcome.OUT_OF_TIME : Outcome.NO_ANSWER;
+            };
         }
+    }
+
+    /**
+     * How one model's attempt ended. Only {@link #NO_ANSWER} is worth another model: a cut-off answer would be cut off
+     * again, a declined one is not to be asked around, and an answer out of time has no time left for another.
+     */
+    private enum Outcome {
+        /** The model had its say: an answer, one cut off at the output limit, or a refusal. */
+        ANSWERED,
+        /**
+         * The model replied without a usable answer: empty or malformed twice, nothing left once its markup was
+         * removed, or still asking for lookups when they ran out.
+         */
+        NO_ANSWER,
+        /** The lease ran short before the model could finish. */
+        OUT_OF_TIME
+    }
+
+    /**
+     * A final reply with nothing to show once {@link AnswerText} removed its markup: the user reads that the assistant
+     * could not answer ({@link #displayText}). A cut-off or declined one has its own message.
+     */
+    private static boolean wroteNothing(LanguageModel.Reply reply) {
+        String shown = AnswerText.plain(reply.turn().text());
+        return (shown == null || shown.isBlank())
+                && reply.stopReason() != LanguageModel.StopReason.MAX_TOKENS
+                && reply.stopReason() != LanguageModel.StopReason.REFUSAL;
     }
 
     /** Whether {@code calls} more model calls, each as long as the longest one can be, end within the lease. */
@@ -350,7 +453,8 @@ public class AssistantService {
                 execution.result(), execution.durationMs());
     }
 
-    private PendingMessage closing(String text) {
+    /** A closing turn in {@code model}'s own format, like every other turn of its attempt. */
+    private static PendingMessage closing(LanguageModel model, String text) {
         return PendingMessage.closing(model.closingTurn(text));
     }
 
@@ -460,20 +564,31 @@ public class AssistantService {
     /**
      * One answer as the panel shows it.
      *
-     * @param messageId the stored message holding the answer
-     * @param toolCalls every tool run for it, in order
-     * @param cutShort  the answer hit the output limit and may be incomplete
-     * @param usage     tokens across every model call it took
-     * @param citations rule anchors the answer names that its own searches returned (design §6.3)
-     * @param proposals purchase orders the panel may open pre-filled (design §8)
+     * @param messageId         the stored message holding the answer
+     * @param toolCalls         every tool run for it, in order
+     * @param cutShort          the answer hit the output limit and may be incomplete
+     * @param usage             tokens across every model call it took
+     * @param citations         rule anchors the answer names that its own searches returned (design §6.3)
+     * @param proposals         purchase orders the panel may open pre-filled (design §8)
+     * @param tables            the rows its lookups returned, as the panel shows them under it (design §7)
+     * @param unverifiedNumbers numbers it states that nothing the model was given for it holds, as written (design §7)
+     * @param followUps         the questions its lookups lead to, before the asker's permissions are applied
      */
     public record Answer(UUID messageId, String text, List<ConversationService.ToolCallView> toolCalls,
                          boolean cutShort, LanguageModel.Usage usage, List<String> citations,
-                         List<AnswerSources.Proposal> proposals) {
+                         List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
+                         List<String> unverifiedNumbers, List<FollowUps.FollowUp> followUps) {
 
-        /** Read as the transcript reads it ({@link ConversationService.TranscriptEntry#answer}), plus what it cost. */
-        static Answer of(List<Message> stored, ObjectMapper json) {
-            ConversationService.TranscriptEntry answer = ConversationService.TranscriptEntry.answer(stored, json)
+        /**
+         * Read as the transcript reads it ({@link ConversationService.TranscriptEntry#answer}), plus what it cost.
+         *
+         * @param asked  the conversation's stored turns, ending with the question answered: what its numbers are
+         *               checked against, as the transcript checks them
+         * @param stored the turns the answer produced
+         */
+        static Answer of(List<Turn> asked, List<Message> stored, ObjectMapper json) {
+            ConversationService.TranscriptEntry answer = ConversationService.TranscriptEntry
+                    .answer(asked, stored, json)
                     .orElseThrow(() -> new IllegalStateException(
                             "an answer always ends with an assistant turn holding text"));
             long input = 0;
@@ -488,7 +603,7 @@ public class AssistantService {
             }
             return new Answer(answer.messageId(), answer.text(), answer.toolCalls(), answer.cutShort(),
                     new LanguageModel.Usage(input, output, cacheRead, cacheWrite), answer.citations(),
-                    answer.proposals());
+                    answer.proposals(), answer.tables(), answer.unverifiedNumbers(), answer.followUps());
         }
     }
 }

@@ -1,5 +1,7 @@
 /**
- * The application layer: the agent loop, the tools, and the adapter to the model provider.
+ * The application layer: the agent loop, the tools, the adapters to the model provider (the chat's
+ * {@code LanguageModel} and the {@code DocumentReader}), and the draft goods receipt read from a delivery-note photo
+ * ({@code ReceiptDraftService}).
  *
  * <p><b>Transactions.</b> The loop itself is deliberately not transactional: a model call takes seconds and must not
  * hold a pooled connection. Each tool calls an {@code api} method that opens and closes its own transaction, and the

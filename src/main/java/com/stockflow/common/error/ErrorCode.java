@@ -616,8 +616,10 @@ public enum ErrorCode {
     ASSISTANT_DAILY_LIMIT("You have asked the assistant as many questions as allowed today", 429),
     /**
      * ADR-0010: the model provider's own quota is used up — a daily quota, or a wait longer than
-     * a minute. Not retryable: the same question meets the same refusal until the provider renews
-     * the quota, hours later.
+     * a minute — for every model the assistant routes to ({@code stockflow.assistant.routing}).
+     * Not retryable: the same question meets the same refusal until the provider renews a quota,
+     * hours later. While one model still has a quota, a spent one is reported as
+     * {@code ASSISTANT_UNAVAILABLE}: asking again moves on to that model.
      */
     ASSISTANT_QUOTA_EXHAUSTED("The assistant has used up its model provider's quota; it answers "
             + "again once the quota is renewed", 429),

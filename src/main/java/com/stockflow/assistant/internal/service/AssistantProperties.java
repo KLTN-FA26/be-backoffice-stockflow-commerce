@@ -22,7 +22,9 @@ import java.util.Set;
  * @param apiKey             the key, from the environment and never from a YAML file: {@code ASSISTANT_API_KEY}, or
  *                           when that is unset the chosen provider's own variable ({@code anthropicApiKey},
  *                           {@code geminiApiKey})
- * @param model              the provider's model id; a cost decision to make from the golden set (design §13 AQ-07)
+ * @param model              the provider's model id; a cost decision to make from the golden set (design §13 AQ-07).
+ *                           With {@code stockflow.assistant.routing.models} set, that list decides which models answer
+ *                           ({@link ModelRoutingProperties})
  * @param effort             {@code low}, {@code medium}, {@code high}, {@code xhigh} or {@code max}; Anthropic only
  * @param maxToolRounds      how many times one question may run tools before the assistant must answer
  * @param maxOutputTokens    room for thinking and the answer of one model call

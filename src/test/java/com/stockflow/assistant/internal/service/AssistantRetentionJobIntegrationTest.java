@@ -20,7 +20,10 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Design §5.5: idle conversations go after the retention period, with their messages and tool calls. */
+/**
+ * Design §5.5: idle conversations go after the retention period, with their messages, tool calls and the verdicts
+ * given their answers.
+ */
 @SecuredIntegrationTest
 class AssistantRetentionJobIntegrationTest {
 
@@ -51,6 +54,45 @@ class AssistantRetentionJobIntegrationTest {
                 Long.class, idle)).isZero();
         assertThat(exists(recent)).isTrue();
         assertThat(exists(answering)).as("never while a question is being answered").isTrue();
+    }
+
+    @Test
+    @DisplayName("a verdict on an answer goes with its conversation, through the message it rates; a recent one stays")
+    void feedbackGoesWithItsConversation() {
+        UUID owner = tx.execute(s -> ReferenceRows.user(entityManager));
+        Instant old = Instant.now().minus(120, ChronoUnit.DAYS);
+        UUID idle = conversation(owner, old, null);
+        UUID recent = conversation(owner, Instant.now().minus(1, ChronoUnit.DAYS), null);
+        UUID idleVerdict = verdict(owner, answer(idle, old));
+        UUID recentVerdict = verdict(owner, answer(recent, Instant.now()));
+
+        job.deleteIdleConversations();
+
+        assertThat(exists(idle)).isFalse();
+        assertThat(jdbc.queryForObject("select count(*) from assistant.answer_feedback where id = ?", Long.class,
+                idleVerdict)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from assistant.answer_feedback where id = ?", Long.class,
+                recentVerdict)).isOne();
+    }
+
+    /** An answer in {@code conversation}: an assistant turn holding text, as the loop stores one. */
+    private UUID answer(UUID conversation, Instant at) {
+        UUID id = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO assistant.message (id, conversation_id, sequence, role, text, content, stop_reason, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, version, created_at)
+                VALUES (?, ?, 1, 'ASSISTANT', 'Kho HCM còn 75.', '{"closing":true}'::jsonb, 'END_TURN', 'scripted',
+                        10, 5, 0, 0, 0, ?)""", id, conversation, Timestamp.from(at)));
+        return id;
+    }
+
+    private UUID verdict(UUID owner, UUID message) {
+        UUID id = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO assistant.answer_feedback (id, message_id, owner_user_id, verdict, reason, version,
+                    created_at)
+                VALUES (?, ?, ?, 'DOWN', 'Số tồn của kho EVN không đúng', 0, now())""", id, message, owner));
+        return id;
     }
 
     private UUID conversation(UUID owner, Instant lastActivity, Instant answeringSince) {

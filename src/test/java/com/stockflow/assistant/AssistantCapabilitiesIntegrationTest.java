@@ -62,9 +62,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * permission aspect and the real tools: what the panel says a role may ask is what the context tells the model, and
  * it is what the tools then enforce.
  *
- * <p>{@link #GRANTED} is the matrix of the seeded grants for the tools that existed when it was written. A tool added
- * later is still covered by the context and the enforcement cases, which compare against the endpoint's own answer;
- * add it to the tables when its grants are decided.</p>
+ * <p>{@link #GRANTED} is the matrix of the seeded grants for the tools that existed when it was last brought up to date
+ * (29/10/2026: the customer price and credit tools, the pick-task and goods-receipt queues, and the two floor roles
+ * V20261029000200 opened the assistant to). A tool added later is still covered by the context and the enforcement
+ * cases, which compare against the endpoint's own answer; add it to the tables when its grants are decided.</p>
  */
 @SecuredIntegrationTest
 class AssistantCapabilitiesIntegrationTest {
@@ -74,9 +75,15 @@ class AssistantCapabilitiesIntegrationTest {
     /** Never created: {@link #order} draws its numbers from 100000 up. */
     private static final String NO_SUCH_ORDER = "SO-20991230-000000";
     private static final String SKU = "SOFA-3S-GREY";
+    /** Matches no customer by name, e-mail, phone or tax code, so the customer tools answer with a note. */
+    private static final String NO_SUCH_CUSTOMER = "No such customer of the capabilities test";
+    /** {@code AssistantService.MAX_CALLS_PER_ROUND}: more in one step would come back NOT_RUN. */
+    private static final int CALLS_PER_STEP = 8;
 
     private static final Map<String, String> ARGUMENTS = Map.ofEntries(
             Map.entry("findExpiringLots", "{\"withinDays\":30,\"limit\":5}"),
+            Map.entry("findFulfillmentTasks", "{\"status\":\"ANY\",\"limit\":5}"),
+            Map.entry("findGoodsReceipts", "{\"status\":\"OPEN\",\"receiptNumber\":\"\",\"limit\":5}"),
             Map.entry("findLowStock", "{\"limit\":5}"),
             Map.entry("findOrder", "{\"orderNumber\":\"" + NO_SUCH_ORDER + "\"}"),
             Map.entry("findOrders", "{\"status\":\"ANY\",\"holdReason\":\"ANY\",\"placedFrom\":\"\","
@@ -84,6 +91,9 @@ class AssistantCapabilitiesIntegrationTest {
             Map.entry("findProductionOrders", "{\"productionOrderNumber\":\"\",\"salesOrderNumber\":\"\","
                     + "\"status\":\"OPEN\",\"due\":\"ANY\",\"limit\":5}"),
             Map.entry("findPurchaseOrders", "{\"status\":\"ANY\",\"poNumber\":\"\",\"supplier\":\"\",\"limit\":5}"),
+            Map.entry("getCustomerCredit", "{\"customer\":\"" + NO_SUCH_CUSTOMER + "\"}"),
+            Map.entry("getCustomerPrice", "{\"customer\":\"" + NO_SUCH_CUSTOMER + "\",\"sku\":\"" + SKU
+                    + "\",\"quantity\":0}"),
             Map.entry("getOrderPicking", "{\"orderNumber\":\"" + NO_SUCH_ORDER + "\"}"),
             Map.entry("getSalesSummary", "{\"days\":7,\"top\":3}"),
             Map.entry("getStockLevels", "{\"sku\":\"" + SKU + "\"}"),
@@ -98,13 +108,18 @@ class AssistantCapabilitiesIntegrationTest {
     private static final Set<String> KNOWN = new TreeSet<>(ARGUMENTS.keySet());
 
     /** What a warehouse-limited user gets from each tool; a tool not listed answers the same for everyone. */
-    private static final Map<String, String> LIMITATIONS = Map.of(
-            "findLowStock", "COMPANY_WIDE_ONLY", "proposeReorder", "COMPANY_WIDE_ONLY",
-            "getStockLevels", "PARTIAL", "getStockLots", "PARTIAL", "findExpiringLots", "PARTIAL",
-            "traceLot", "PARTIAL", "findPurchaseOrders", "PARTIAL", "getOrderPicking", "PARTIAL",
-            "findProductionOrders", "PARTIAL");
+    private static final Map<String, String> LIMITATIONS = Map.ofEntries(
+            Map.entry("findLowStock", "COMPANY_WIDE_ONLY"), Map.entry("proposeReorder", "COMPANY_WIDE_ONLY"),
+            Map.entry("getStockLevels", "PARTIAL"), Map.entry("getStockLots", "PARTIAL"),
+            Map.entry("findExpiringLots", "PARTIAL"), Map.entry("traceLot", "PARTIAL"),
+            Map.entry("findPurchaseOrders", "PARTIAL"), Map.entry("getOrderPicking", "PARTIAL"),
+            Map.entry("findProductionOrders", "PARTIAL"), Map.entry("findFulfillmentTasks", "PARTIAL"),
+            Map.entry("findGoodsReceipts", "PARTIAL"));
 
-    /** The tools of {@link #KNOWN} each seeded persona may use (identity.role_permission, 28/10/2026). */
+    /**
+     * The tools of {@link #KNOWN} each seeded persona may use (identity.role_permission, 28/10/2026, plus
+     * V20261029000200).
+     */
     private static final Map<Persona, Set<String>> GRANTED = granted();
 
     @Autowired MockMvc mockMvc;
@@ -135,21 +150,30 @@ class AssistantCapabilitiesIntegrationTest {
         granted.put(new Persona(Role.INVENTORY_PLANNER, false), Set.of("findExpiringLots", "findLowStock",
                 "getStockLevels", "getStockLots", "searchCatalog", "searchKnowledge", "traceLot"));
         // findLowStock and proposeReorder give company-wide figures: refused to a manager of one warehouse.
-        granted.put(new Persona(Role.WAREHOUSE_MANAGER, true), Set.of("findExpiringLots", "findProductionOrders",
-                "findPurchaseOrders", "getOrderPicking", "getSalesSummary", "getStockLevels", "getStockLots",
-                "searchCatalog", "searchKnowledge", "traceLot"));
+        granted.put(new Persona(Role.WAREHOUSE_MANAGER, true), Set.of("findExpiringLots", "findFulfillmentTasks",
+                "findGoodsReceipts", "findProductionOrders", "findPurchaseOrders", "getOrderPicking",
+                "getSalesSummary", "getStockLevels", "getStockLots", "searchCatalog", "searchKnowledge", "traceLot"));
         granted.put(new Persona(Role.SALES_STAFF, false), Set.of("findOrder", "findOrders", "findProductionOrders",
-                "searchCatalog", "searchKnowledge"));
+                "getCustomerCredit", "getCustomerPrice", "searchCatalog", "searchKnowledge"));
         // proposeReorder: the purchase-order permission, but neither sales nor stock (design §13 AQ-08).
-        granted.put(new Persona(Role.PROCUREMENT_STAFF, false), Set.of("findProductionOrders", "findPurchaseOrders",
-                "getSupplierTerms", "searchCatalog", "searchKnowledge"));
-        granted.put(new Persona(Role.ORDER_COORDINATOR, false), Set.of("findOrder", "findOrders",
-                "findProductionOrders", "getOrderPicking", "getSalesSummary", "searchCatalog", "searchKnowledge"));
-        granted.put(new Persona(Role.ACCOUNTANT, false), Set.of("findOrder", "findOrders", "getSalesSummary",
-                "searchCatalog", "searchKnowledge"));
-        // getOrderPicking through design re-verification, the other half of the task-visibility rule.
-        granted.put(new Persona(Role.QC_STAFF, true), Set.of("findProductionOrders", "getOrderPicking",
-                "getStockLevels", "getStockLots", "searchCatalog", "searchKnowledge"));
+        granted.put(new Persona(Role.PROCUREMENT_STAFF, false), Set.of("findGoodsReceipts", "findProductionOrders",
+                "findPurchaseOrders", "getSupplierTerms", "searchCatalog", "searchKnowledge"));
+        // The customer tools without customer-customers:READ: a customer is named exactly, never listed.
+        granted.put(new Persona(Role.ORDER_COORDINATOR, false), Set.of("findFulfillmentTasks", "findOrder",
+                "findOrders", "findProductionOrders", "getCustomerCredit", "getCustomerPrice", "getOrderPicking",
+                "getSalesSummary", "searchCatalog", "searchKnowledge"));
+        granted.put(new Persona(Role.ACCOUNTANT, false), Set.of("findOrder", "findOrders", "getCustomerCredit",
+                "getSalesSummary", "searchCatalog", "searchKnowledge"));
+        // getOrderPicking: fulfillment shows a design re-verifier the tasks of their warehouse (TaskAccess).
+        granted.put(new Persona(Role.QC_STAFF, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
+                "findProductionOrders", "getOrderPicking", "getStockLevels", "getStockLots", "searchCatalog",
+                "searchKnowledge"));
+        // V20261029000200: a picker's own tasks, through fulfillment's rule.
+        granted.put(new Persona(Role.WAREHOUSE_STAFF, true), Set.of("findExpiringLots", "findFulfillmentTasks",
+                "findGoodsReceipts", "findProductionOrders", "findPurchaseOrders", "getOrderPicking", "getStockLevels",
+                "getStockLots", "searchCatalog", "searchKnowledge", "traceLot"));
+        granted.put(new Persona(Role.PRODUCTION_STAFF, true), Set.of("findProductionOrders", "getStockLevels",
+                "getStockLots", "searchCatalog", "searchKnowledge"));
         return granted;
     }
 
@@ -216,6 +240,12 @@ class AssistantCapabilitiesIntegrationTest {
         assertThat(capabilities(persona.role(), user).path("askedToday").asLong()).isEqualTo(1);
     }
 
+    /**
+     * A permission the panel reports missing is refused by the tool, naming the first of them - except an either-or
+     * ({@code a|b}), which {@link AssistantTool#alsoRequiresAnyOf} reports and leaves to the module behind the tool:
+     * fulfillment still answers a picker who holds neither half about their own tasks, so a picker's getOrderPicking
+     * is refused or answered by fulfillment's rule, never by the panel's.
+     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("personas")
     @DisplayName("every tool does what the panel says: a granted one is not refused, one with a permission missing is "
@@ -225,8 +255,13 @@ class AssistantCapabilitiesIntegrationTest {
         Map<String, JsonNode> byName = byName(capabilities(persona.role(), user));
         List<ToolCall> calls = KNOWN.stream()
                 .map(name -> new ToolCall("toolu_" + name, name, ARGUMENTS.get(name))).toList();
-        when(model.next(any())).thenReturn(toolUse(calls.subList(0, 4)), toolUse(calls.subList(4, 8)),
-                toolUse(calls.subList(8, calls.size())), answer("Xong."));
+        List<LanguageModel.Reply> steps = new ArrayList<>();
+        for (int from = 0; from < calls.size(); from += CALLS_PER_STEP) {
+            steps.add(toolUse(calls.subList(from, Math.min(from + CALLS_PER_STEP, calls.size()))));
+        }
+        steps.add(answer("Xong."));
+        when(model.next(any())).thenReturn(steps.getFirst(),
+                steps.subList(1, steps.size()).toArray(LanguageModel.Reply[]::new));
         String conversation = start(persona.role(), user);
         http.asRole(persona.role(), user, ask(conversation, "Thử mọi tool.")).andExpect(status().isOk());
 
@@ -242,6 +277,9 @@ class AssistantCapabilitiesIntegrationTest {
             List<String> missing = texts(tool.path("missing"));
             if (tool.path("granted").asBoolean()) {
                 assertThat(outcome).as("%s is open to %s: %s", name, persona, result).isNotEqualTo("DENIED");
+            } else if (!missing.isEmpty() && missing.stream().allMatch(code -> code.contains("|"))) {
+                assertThat(outcome).as("%s is left to its module's own rule for %s: %s", name, persona, result)
+                        .isIn("DENIED", "OK");
             } else if (!missing.isEmpty()) {
                 assertThat(outcome).as("%s is closed to %s", name, persona).isEqualTo("DENIED");
                 if (!missing.getFirst().contains("|")) {

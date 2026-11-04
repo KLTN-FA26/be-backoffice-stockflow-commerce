@@ -1,16 +1,24 @@
 package com.stockflow.assistant.internal.service;
 
 import com.stockflow.assistant.internal.domain.ToolSpec;
+import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
+import com.stockflow.common.web.CorrelationIdFilter;
+import com.stockflow.fulfillment.api.OrderPicking;
+import com.stockflow.fulfillment.api.OrderPickingQueries;
 import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -18,6 +26,7 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -41,12 +50,31 @@ import java.util.stream.Collectors;
  * <p><b>Shipments.</b> When one shipment of a split order fails while other units are still to ship, the order stays
  * PARTIALLY_FULFILLED and its history has no reason, so every shipment's outcome is returned. Not its carriage: the
  * carrier and the shipment code are the shipments screen's, not the order screen's.</p>
+ *
+ * <p><b>The pick task, for whoever may also see it.</b> The question asked most about an order, why it is held and
+ * where it is short, took two rounds: this tool, then {@code getOrderPicking}. A caller who may also open the order's
+ * task on the pick-lines screen gets it here: its status and the lines still short. "May also open" is
+ * {@code getOrderPicking}'s guard, {@code fulfillment-pick-lists:READ}, checked by hand because {@code run} carries the
+ * order screen's, and then fulfillment's own rule: the task comes from {@link OrderPickingQueries}, which applies all
+ * of {@code TaskAccess} (its assignee, a packer once it waits at packing, whoever oversees tasks or re-verifies
+ * designs, in their own warehouses), so no line shows here that the screen would not show. Both guards are scope ALL,
+ * so the warehouse restriction in force is the one {@code getOrderPicking}'s guard would install. A task the caller may
+ * not see gives no block rather than a refusal: the order is still theirs to read. So does a failure in fulfillment,
+ * logged: the block adds to the order's answer and must not take it down. For everyone else the block is null, and
+ * the answer is what it was before the block existed.</p>
  */
 @Component
 class FindOrderTool implements AssistantTool {
 
+    private static final Logger log = LoggerFactory.getLogger(FindOrderTool.class);
+
     static final int MAX_HISTORY = 30;
     static final int MAX_SHIPMENTS = 10;
+    /** Short lines of one task: a whole bin missing for a large order must not push the answer past its limit. */
+    static final int MAX_SHORT_LINES = 20;
+
+    /** A pick line the picker found short and nobody has reallocated yet; a reallocated one turns CANCELLED. */
+    private static final String SHORT = "SHORT";
 
     private static final ToolSpec SPEC = new ToolSpec("findOrder",
             "One customer order by its order number: status, whether and why it is on hold (reason and note) and the "
@@ -57,7 +85,10 @@ class FindOrderTool implements AssistantTool {
                     + "shipped, delivered and closed - an order may ship in parts, and units still to come are "
                     + "ordered minus shipped minus closed); its shipments (status, failure reason, when handed over "
                     + "and when delivered or failed, units per line); the dates it was placed, released, packed, "
-                    + "shipped, delivered, completed or closed; and its status history with reasons. Whether the "
+                    + "shipped, delivered, completed or closed; and its status history with reasons. When the user "
+                    + "may also see the order's pick task, picking gives its taskStatus and the lines still short "
+                    + "(SKU, location, lot, shortQuantity): for a short pick you do not need getOrderPicking. Without "
+                    + "picking, this result says nothing about picking. Whether the "
                     + "customer has paid is payment.status, never the order status: a CONFIRMED order may still owe "
                     + "money. On a live order not yet handed over, amountDueBeforeHandover above zero means the goods "
                     + "may not leave the warehouse until it is paid, even when the order is PACKED and not on hold: "
@@ -77,10 +108,12 @@ class FindOrderTool implements AssistantTool {
                     .build());
 
     private final OrderService orders;
+    private final OrderPickingQueries picking;
     private final CurrentUserProvider currentUsers;
 
-    FindOrderTool(OrderService orders, CurrentUserProvider currentUsers) {
+    FindOrderTool(OrderService orders, OrderPickingQueries picking, CurrentUserProvider currentUsers) {
         this.orders = orders;
+        this.picking = picking;
         this.currentUsers = currentUsers;
     }
 
@@ -97,7 +130,8 @@ class FindOrderTool implements AssistantTool {
     @Override
     @RequiresPermission(resource = ToolPermissions.SALES_ORDERS, action = Action.READ)
     public Answer run(ToolArguments arguments) {
-        currentUsers.current().ifPresent(ScopeGuards::requireBackOffice);
+        Optional<CurrentUser> caller = currentUsers.current();
+        caller.ifPresent(ScopeGuards::requireBackOffice);
         String number = arguments.text("orderNumber", 32);
         // The list matches a substring of the number (and of names and phones); only an exact number is this order.
         OrderSummary match = orders.list(new ListOrdersQuery(0, 20, number, null, null, null, null, null)).items()
@@ -108,6 +142,7 @@ class FindOrderTool implements AssistantTool {
         OrderSummary order = orders.findById(match.orderId())
                 .orElseThrow(() -> new NotFoundException("Order", number));
         List<OrderStatusChange> history = orders.history(order.orderId());
+        Picking task = caller.map(user -> pickingOf(order, user)).orElse(null);
         OrderSummary.Lifecycle life = order.lifecycle();
         Map<UUID, OrderSummary.LineProgress> progress = life == null ? Map.of() : life.lines().stream()
                 .collect(Collectors.toMap(OrderSummary.LineProgress::lineId, Function.identity(), (a, b) -> a));
@@ -129,6 +164,7 @@ class FindOrderTool implements AssistantTool {
                 life == null || life.holdReason() == null ? null
                         : new Hold(life.holdReason().name(), TypedText.masked(life.holdNote()),
                         life.statusBeforeHold() == null ? null : life.statusBeforeHold().name()),
+                task,
                 Payment.of(order),
                 cancelled ? Cancellation.of(order) : null,
                 life == null ? null : life.allowPartialShipment(),
@@ -151,7 +187,33 @@ class FindOrderTool implements AssistantTool {
     }
 
     /**
+     * The order's pick task as the pick-lines screen shows it to {@code caller}, cut to its short lines; null when
+     * that screen shows the caller nothing of it: they may not open pick lists, the order has no task yet, or
+     * fulfillment's rule keeps its task from them (another warehouse, another picker's task).
+     */
+    private Picking pickingOf(OrderSummary order, CurrentUser caller) {
+        if (!caller.can(ToolPermissions.PICK_LISTS, Action.READ)) {
+            return null;
+        }
+        try {
+            return picking.pickingOf(order.orderId(), caller).map(Picking::of).orElse(null);
+        } catch (RuntimeException failure) {
+            boolean hidden = failure instanceof BusinessException refused
+                    && GetOrderPickingTool.TASK_HIDDEN.contains(refused.errorCode());
+            if (!hidden) {
+                // The order is the answer and its task only adds to it: a failure in fulfillment leaves the block out,
+                // logged as AssistantTools logs a failed tool, instead of taking the order's answer down with it.
+                log.error("findOrder left out the pick task of order {} (correlation id {})", order.orderNumber(),
+                        MDC.get(CorrelationIdFilter.MDC_KEY), failure);
+            }
+            return null;
+        }
+    }
+
+    /**
      * @param hold                 null when the order is not on hold
+     * @param picking              the order's pick task, for a caller who may also see it on the pick-lines screen;
+     *                             null for anyone else and when there is none they may see
      * @param cancellation         set only on a CANCELLED order: what was kept, the fee and what is to go back
      * @param allowPartialShipment Sales allowed it to ship in parts: part of it may leave while the rest is packed, or
      *                             printed
@@ -162,14 +224,53 @@ class FindOrderTool implements AssistantTool {
      * @param shipmentsTruncated   only the latest {@value #MAX_SHIPMENTS} shipments are listed
      * @param historyTruncated     only the latest {@value #MAX_HISTORY} changes are listed
      */
-    record Answer(String orderNumber, String status, Hold hold, Payment payment, Cancellation cancellation,
-                  Boolean allowPartialShipment,
+    record Answer(String orderNumber, String status, Hold hold, Picking picking, Payment payment,
+                  Cancellation cancellation, Boolean allowPartialShipment,
                   Boolean printLinesReady, List<Line> lines, List<Shipment> shipments, boolean shipmentsTruncated,
                   Dates dates, List<Change> history, boolean historyTruncated) {
+
+        /** An answer with no pick task: what a caller who may not see pick tasks gets. */
+        Answer(String orderNumber, String status, Hold hold, Payment payment, Cancellation cancellation,
+               Boolean allowPartialShipment, Boolean printLinesReady, List<Line> lines, List<Shipment> shipments,
+               boolean shipmentsTruncated, Dates dates, List<Change> history, boolean historyTruncated) {
+            this(orderNumber, status, hold, null, payment, cancellation, allowPartialShipment, printLinesReady, lines,
+                    shipments, shipmentsTruncated, dates, history, historyTruncated);
+        }
     }
 
     /** @param note what the coordinator wrote, masked */
     record Hold(String reason, String note, String statusBeforeHold) {
+    }
+
+    /**
+     * The order's pick task, cut to what a hold for stock needs: where the picker found less than was allocated.
+     *
+     * @param taskStatus          PENDING (not started), PICKING (also while a line is short), PICKED (picking done, at
+     *                            packing or later) or CANCELLED
+     * @param shortLinesTotal     the lines still short: reported short and not reallocated to other bins yet (a
+     *                            reallocated line is closed and its new lines are picked instead)
+     * @param shortLinesTruncated only the first {@value #MAX_SHORT_LINES} are listed, in pick order
+     */
+    record Picking(String taskStatus, int shortLinesTotal, boolean shortLinesTruncated, List<ShortLine> shortLines) {
+
+        static Picking of(OrderPicking task) {
+            List<OrderPicking.Line> stillShort = task.lines().stream().filter(line -> SHORT.equals(line.status()))
+                    .toList();
+            return new Picking(task.status(), stillShort.size(), stillShort.size() > MAX_SHORT_LINES,
+                    stillShort.stream().limit(MAX_SHORT_LINES).map(ShortLine::of).toList());
+        }
+    }
+
+    /**
+     * One short pick line, named as {@code getOrderPicking} names it.
+     *
+     * @param shortQuantity units the picker did not find at that location
+     */
+    record ShortLine(String sku, String locationCode, String lotNumber, int shortQuantity) {
+
+        static ShortLine of(OrderPicking.Line line) {
+            return new ShortLine(line.sku(), line.locationCode(), line.lotNumber(), line.shortQty());
+        }
     }
 
     /**

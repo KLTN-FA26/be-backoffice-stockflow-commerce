@@ -59,6 +59,32 @@ class HistoryTest {
     }
 
     @Test
+    @DisplayName("an earlier answer goes back as a text turn of the model called, whichever model or provider wrote "
+            + "it: no thinking block, thought signature or tool id of another model is sent")
+    void earlierAnswersRebuiltForTheModelCalled() {
+        Turn.ModelTurn byClaude = new Turn.ModelTurn("{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\","
+                + "\"thinking\":\"\",\"signature\":\"EqQB-claude\"},{\"type\":\"text\",\"text\":\"Còn 40 cái.\"}]}",
+                "Còn 40 cái.", List.of());
+        Turn.ModelTurn byFlashLite = new Turn.ModelTurn("{\"role\":\"model\",\"parts\":[{\"text\":\"Còn 12 cái.\","
+                + "\"thoughtSignature\":\"Eu0C-flash-lite\"}]}", "Còn 12 cái.", List.of());
+        List<Turn> turns = new ArrayList<>(List.of(new Turn.Question("Q1", "ctx"), byClaude));
+        turns.addAll(exchange(2).subList(0, 3));
+        turns.add(byFlashLite);
+        turns.add(new Turn.Question("now", "ctx"));
+
+        List<Turn> sent = History.forModel(turns,
+                text -> new Turn.ModelTurn("{\"by\":\"gemini-3.5-flash\"}", text, List.of()));
+
+        assertThat(sent).hasSize(5);
+        assertThat(sent).filteredOn(Turn.ModelTurn.class::isInstance)
+                .extracting(turn -> ((Turn.ModelTurn) turn).providerContent())
+                .containsOnly("{\"by\":\"gemini-3.5-flash\"}");
+        assertThat(((Turn.ModelTurn) sent.get(1)).text()).isEqualTo("Còn 40 cái.");
+        assertThat(((Turn.ModelTurn) sent.get(3)).text()).isEqualTo("Còn 12 cái.");
+        assertThat(((Turn.ModelTurn) sent.get(3)).toolCalls()).isEmpty();
+    }
+
+    @Test
     @DisplayName("only the last ten earlier questions are sent, and a long or missing answer is marked")
     void bounded() {
         List<Turn> turns = new ArrayList<>();

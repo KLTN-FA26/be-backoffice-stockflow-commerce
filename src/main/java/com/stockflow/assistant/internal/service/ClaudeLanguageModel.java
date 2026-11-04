@@ -223,7 +223,8 @@ class ClaudeLanguageModel implements LanguageModel, AutoCloseable {
                 .cacheControl(CacheControlEphemeral.builder().build())
                 .messages(messages(request.history(), request.note()));
         request.tools().forEach(tool -> params.addTool(tool(tool)));
-        if (!request.toolsAllowed()) {
+        // A tool_choice with no tools is refused; a user with no tool at all (a hand-made role) has none to offer.
+        if (!request.toolsAllowed() && !request.tools().isEmpty()) {
             params.toolChoice(ToolChoiceNone.builder().build());
         }
         if (properties.refusalFallback()) {

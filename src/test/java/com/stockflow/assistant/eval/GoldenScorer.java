@@ -1,8 +1,6 @@
 package com.stockflow.assistant.eval;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.assistant.internal.service.AnswerNumbers;
 
 import java.math.BigDecimal;
 import java.text.Normalizer;
@@ -55,80 +53,16 @@ public final class GoldenScorer {
     }
 
     /**
-     * Numbers in {@code answer} that no source contains: the hallucination check. Numbers under 10 (list markers, day
-     * and month parts), years and the number formats of a date are not counted. What the system prompt lets the model
-     * work out counts as grounded too, but only inside one record of a tool result ({@link #workedOut}), so a number
-     * made up from unrelated figures is still caught.
+     * Numbers in {@code answer} that no source contains: the hallucination check. The same definition the panel
+     * applies to every live answer ({@link AnswerNumbers}), so the eval gate and the "not found in the looked-up data"
+     * list never disagree: it reads amounts in triệu, tỷ or nghìn, a figure at the precision it was written, a
+     * result's numbers as the values they are, and what the prompt lets the model work out inside one record.
      *
      * @param sources the tool results of the turn, the question and its context
+     * @return the numbers as written ({@code "128,4 triệu"}), each once
      */
     public static List<String> ungroundedNumbers(String answer, List<String> sources) {
-        Set<BigDecimal> grounded = new HashSet<>();
-        for (String source : sources) {
-            grounded.addAll(numbers(normalise(source)));
-            grounded.addAll(workedOut(source));
-        }
-        List<String> ungrounded = new ArrayList<>();
-        Matcher matcher = NUMBER.matcher(normalise(answer));
-        while (matcher.find()) {
-            String token = matcher.group();
-            List<BigDecimal> readings = readings(token);
-            boolean small = readings.stream().allMatch(reading -> reading.compareTo(BigDecimal.TEN) < 0);
-            boolean year = token.matches("20\\d\\d");
-            boolean known = readings.stream().anyMatch(reading -> grounded.stream()
-                    .anyMatch(source -> source.compareTo(reading) == 0));
-            if (!small && !year && !known) {
-                ungrounded.add(token);
-            }
-        }
-        return ungrounded;
-    }
-
-    private static final ObjectMapper JSON = new ObjectMapper();
-
-    /**
-     * The numbers the model may work out from one tool result: the rows of a list, and inside one record the sum or
-     * difference of two of its numbers, one less two others (units still to come are ordered - shipped - closed) and
-     * one less the rows of a list beside it (how many a total leaves out). Empty for a source that is not JSON.
-     */
-    static Set<BigDecimal> workedOut(String source) {
-        JsonNode root;
-        try {
-            root = JSON.readTree(source);
-        } catch (JsonProcessingException notJson) {
-            return Set.of();
-        }
-        Set<BigDecimal> worked = new HashSet<>();
-        if (root != null) {
-            collect(root, worked);
-        }
-        return worked;
-    }
-
-    private static void collect(JsonNode node, Set<BigDecimal> worked) {
-        if (node.isArray()) {
-            worked.add(BigDecimal.valueOf(node.size()));
-        }
-        if (node.isObject()) {
-            List<BigDecimal> values = new ArrayList<>();
-            List<BigDecimal> rows = new ArrayList<>();
-            node.forEach(field -> {
-                if (field.isNumber()) {
-                    values.add(field.decimalValue());
-                } else if (field.isArray()) {
-                    rows.add(BigDecimal.valueOf(field.size()));
-                }
-            });
-            for (BigDecimal a : values) {
-                rows.forEach(count -> worked.add(a.subtract(count)));
-                for (BigDecimal b : values) {
-                    worked.add(a.add(b));
-                    worked.add(a.subtract(b).abs());
-                    values.forEach(c -> worked.add(a.subtract(b).subtract(c)));
-                }
-            }
-        }
-        node.forEach(child -> collect(child, worked));
+        return AnswerNumbers.unverified(answer, sources);
     }
 
     private static final Pattern RULE = Pattern.compile("BR-[A-Z]+-\\d+[a-z]?", Pattern.CASE_INSENSITIVE);

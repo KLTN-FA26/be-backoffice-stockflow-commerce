@@ -3,6 +3,7 @@ package com.stockflow.assistant.internal.controller;
 import com.stockflow.assistant.internal.controller.dto.AnswerResponse;
 import com.stockflow.assistant.internal.controller.dto.AskRequest;
 import com.stockflow.assistant.internal.controller.dto.ConversationResponse;
+import com.stockflow.assistant.internal.controller.dto.FeedbackRequest;
 import com.stockflow.assistant.internal.controller.dto.TranscriptEntryResponse;
 import com.stockflow.assistant.internal.service.AssistantService;
 import com.stockflow.assistant.internal.service.AssistantStreams;
@@ -21,10 +22,14 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
+import com.stockflow.common.web.CorrelationIdFilter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -42,7 +47,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The assistant panel (ADR-0010): a user's own conversations, and questions to the assistant.
+ * The assistant panel (ADR-0010): a user's own conversations, questions to the assistant, and their verdicts on its
+ * answers.
  *
  * <p><b>The permission opens the panel and nothing else.</b> {@code assistant-conversations} grants no data: each tool
  * the assistant runs carries the permission of the screen showing the same data, so a user learns through the
@@ -71,11 +77,7 @@ import java.util.UUID;
         actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE})
 class AssistantController {
 
-    /** The rate-limit bucket both ways of asking draw on (class javadoc). */
-    private static final String QUESTIONS = "assistant-questions";
-
-    /** Questions one user may ask a minute, whichever endpoint they use (design §3.1). */
-    private static final int QUESTIONS_PER_MINUTE = 10;
+    private static final Logger log = LoggerFactory.getLogger(AssistantController.class);
 
     private final ConversationService conversations;
     private final AssistantService assistant;
@@ -115,12 +117,14 @@ class AssistantController {
 
     @GetMapping("/{conversationId}/messages")
     @Operation(summary = "A conversation's questions and answers, oldest first, each answer with the tools behind it",
-            description = "Needs assistant-conversations:READ. 404 for a conversation that is not the caller's.")
+            description = "Needs assistant-conversations:READ. 404 for a conversation that is not the caller's. Each "
+                    + "answer carries its tables and unverified numbers as when it was given, the follow-up "
+                    + "questions the caller may ask now, and the caller's verdict on it.")
     @RequiresPermission(resource = AssistantResources.CONVERSATIONS, action = Action.READ, scope = DataScope.OWN)
     public ApiResponse<List<TranscriptEntryResponse>> transcript(@AuthenticatedUser CurrentUser user,
                                                                  @PathVariable UUID conversationId) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(conversations.transcript(conversationId).stream().map(mapper::toResponse).toList());
+        return ApiResponse.ok(mapper.toResponse(conversations.transcript(conversationId), user));
     }
 
     @PostMapping("/{conversationId}/messages")
@@ -129,15 +133,16 @@ class AssistantController {
                     + "caller's other permissions, tool by tool. Send an Idempotency-Key: a retry must not ask twice. "
                     + "10 questions a minute per user, shared with the streamed endpoint. 409 ASSISTANT_BUSY while a "
                     + "question in the same conversation is being answered; 429 ASSISTANT_DAILY_LIMIT, or "
-                    + "ASSISTANT_QUOTA_EXHAUSTED when the model provider's quota is used up (do not retry until it "
+                    + "ASSISTANT_QUOTA_EXHAUSTED when every model's quota is used up (do not retry until one "
                     + "is renewed); 503 ASSISTANT_UNAVAILABLE (retry), ASSISTANT_MISCONFIGURED or ASSISTANT_DISABLED "
                     + "(do not: an administrator must act).")
     @RequiresPermission(resource = AssistantResources.CONVERSATIONS, action = Action.CREATE, scope = DataScope.OWN)
-    @RateLimit(limit = QUESTIONS_PER_MINUTE, perSeconds = 60, key = RateLimit.Key.USER, bucket = QUESTIONS)
+    @RateLimit(limit = AssistantResources.QUESTIONS_PER_MINUTE, perSeconds = 60, key = RateLimit.Key.USER,
+            bucket = AssistantResources.QUESTIONS_BUCKET)
     public ApiResponse<AnswerResponse> ask(@AuthenticatedUser CurrentUser user, @PathVariable UUID conversationId,
                                            @Valid @RequestBody AskRequest request) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(mapper.toResponse(assistant.ask(conversationId, request.text(), user)));
+        return ApiResponse.ok(answered(assistant.ask(conversationId, request.text(), user), user));
     }
 
     @PostMapping(path = "/{conversationId}/messages/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -151,7 +156,8 @@ class AssistantController {
                     + "ASSISTANT_DISABLED. A failure while answering is an event: ASSISTANT_UNAVAILABLE (retry), "
                     + "ASSISTANT_QUOTA_EXHAUSTED or ASSISTANT_MISCONFIGURED (do not).")
     @RequiresPermission(resource = AssistantResources.CONVERSATIONS, action = Action.CREATE, scope = DataScope.OWN)
-    @RateLimit(limit = QUESTIONS_PER_MINUTE, perSeconds = 60, key = RateLimit.Key.USER, bucket = QUESTIONS)
+    @RateLimit(limit = AssistantResources.QUESTIONS_PER_MINUTE, perSeconds = 60, key = RateLimit.Key.USER,
+            bucket = AssistantResources.QUESTIONS_BUCKET)
     public SseEmitter askStreaming(@AuthenticatedUser CurrentUser user, @PathVariable UUID conversationId,
                                    @Parameter(hidden = true)
                                    @RequestHeader(name = IdempotencyKeys.HEADER, required = false)
@@ -164,6 +170,33 @@ class AssistantController {
                     + "streamed answer, which is never stored or replayed; send it to POST .../messages instead");
         }
         assistant.refuseEarly(conversationId, request.text(), user);
-        return streams.ask(conversationId, request.text(), user, answer -> mapper.toResponse(answer));
+        return streams.ask(conversationId, request.text(), user, answer -> answered(answer, user));
+    }
+
+    @PostMapping("/{conversationId}/messages/{messageId}/feedback")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Operation(summary = "Give an answer a verdict: up or down, with a reason if wanted",
+            description = "Needs assistant-conversations:CREATE. Only an answer in the caller's own conversation; 404 "
+                    + "for any other message id, and for another person's conversation. A second verdict on the same "
+                    + "answer replaces the first; the transcript shows the latest.")
+    @RequiresPermission(resource = AssistantResources.CONVERSATIONS, action = Action.CREATE, scope = DataScope.OWN)
+    public void feedback(@AuthenticatedUser CurrentUser user, @PathVariable UUID conversationId,
+                         @PathVariable UUID messageId, @Valid @RequestBody FeedbackRequest request) {
+        ScopeGuards.requireBackOffice(user);
+        conversations.rateAnswer(conversationId, messageId, user, mapper.toFeedback(request));
+    }
+
+    /**
+     * The answer's body for {@code user}, on the request thread or the stream's worker alike. An answer stating numbers
+     * that nothing it was given holds is logged with the correlation id, which MDC carries on both: the count and the
+     * message, never the figures themselves, which are business data.
+     */
+    private AnswerResponse answered(AssistantService.Answer answer, CurrentUser user) {
+        if (!answer.unverifiedNumbers().isEmpty()) {
+            log.warn("Assistant answer {} states {} number(s) that no lookup, question or context holds "
+                            + "(correlation id {})", answer.messageId(), answer.unverifiedNumbers().size(),
+                    MDC.get(CorrelationIdFilter.MDC_KEY));
+        }
+        return mapper.toResponse(answer, user);
     }
 }

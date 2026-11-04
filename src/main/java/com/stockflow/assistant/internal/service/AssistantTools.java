@@ -62,7 +62,8 @@ public class AssistantTools {
                 (first, second) -> {
                     throw new IllegalStateException("two tools are named " + first.spec().name());
                 }));
-        // Sorted, so the tool list is byte-identical on every call and every start: the provider caches it.
+        // Sorted by name, the order ToolAvailability.specsFor keeps when it offers each user their own tools. This
+        // full list answers whether a called tool exists at all (AssistantService.forTheRecord).
         this.specs = tools.stream().map(AssistantTool::spec).sorted(Comparator.comparing(ToolSpec::name)).toList();
         this.json = json;
         this.results = resultMapper(json);

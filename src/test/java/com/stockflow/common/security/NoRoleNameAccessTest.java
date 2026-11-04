@@ -117,6 +117,9 @@ class NoRoleNameAccessTest {
             new Allowed("order/", "CUSTOMER, FRAUD", "the hold reason CUSTOMER (HoldReason), not a role"),
             new Allowed("assistant/internal/service/ClaudeLanguageModel.java", "MessageParam.Role.",
                     "the model provider's message role (user or assistant), not a StockFlow role"),
+            new Allowed("assistant/internal/service/GetCustomerPriceTool.java",
+                    "is: CUSTOMER (the customer's own price list)",
+                    "the price source CUSTOMER (the customer's own price list), not a role"),
             // ---- told, not checked: the assistant's model is given the asker's roles as context (ADR-0010)
             new Allowed("assistant/internal/service/AssistantService.java", "user.roles().stream().map(Enum::name)",
                     "the asker's roles told to the model as context; every tool decides access by permission"));

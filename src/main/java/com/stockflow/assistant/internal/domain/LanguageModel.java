@@ -39,8 +39,10 @@ public interface LanguageModel {
 
     /**
      * @param systemPrompt the instructions, byte-identical on every call so the provider can cache them
-     * @param tools        sorted by name, for the same reason. Every tool on every call, the last one included: the
-     *                     history holds calls to them, which a provider may refuse to read without their declarations
+     * @param tools        the tools the user may use ({@code ToolAvailability.specsFor}), sorted by name, for the same
+     *                     reason: the same grants give the same bytes. The same list on every call of an answer, the
+     *                     last one included: the history holds calls to them, which a provider may refuse to read
+     *                     without their declarations
      * @param history      the conversation so far, oldest first, ending with a user-side turn
      * @param toolsAllowed false on the answer's last call: the adapter must not let the model call a tool (Anthropic
      *                     {@code tool_choice: none}, Gemini {@code functionCallingConfig.mode: NONE}). The model then

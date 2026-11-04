@@ -23,12 +23,31 @@ final class ToolPermissions {
     static final String REPORTS = "reporting-reports";
     /** {@code FulfillmentResources.PICK_LISTS}. */
     static final String PICK_LISTS = "fulfillment-pick-lists";
+    /**
+     * {@code FulfillmentPermissions.TASK_OVERSIGHT} and {@code DESIGN_REVERIFICATION}: read here only to say which of
+     * fulfillment's task-visibility rules applied to a caller ({@link FindFulfillmentTasksTool}).
+     */
+    static final String TASK_OVERSIGHT = "fulfillment-task-oversight";
+    static final String DESIGN_REVERIFICATION = "fulfillment-design-reverification";
     /** {@code SupplierResources.SUPPLIER_ITEMS}. */
     static final String SUPPLIER_ITEMS = "procurement-supplier-items";
     /** {@code ProductionResources.PRODUCTION_ORDERS}. */
     static final String PRODUCTION_ORDERS = "production-orders";
     /** {@code ProductionResources.SAMPLE_REQUESTS}: read here only to decide what a production order may name. */
     static final String SAMPLE_REQUESTS = "production-sample-requests";
+    /** {@code PurchaseOrderResources.GOODS_RECEIPTS}. */
+    static final String GOODS_RECEIPTS = "procurement-goods-receipts";
+    /** {@code CustomerPriceController.RESOURCE}. */
+    static final String CUSTOMER_PRICES = "catalog-customer-prices";
+    /** {@code CustomerResources.CREDIT_PROFILES}: a customer's commercial terms. */
+    static final String CREDIT_PROFILES = "customer-credit-profiles";
+    /** {@code PaymentResources.RECEIVABLES}. */
+    static final String RECEIVABLES = "payment-receivables";
+    /**
+     * {@code CustomerResources.CUSTOMERS}: read here only to decide whether a caller may be shown which customers a
+     * name matches, as the customer list does ({@link CustomerMatch}).
+     */
+    static final String CUSTOMERS = "customer-customers";
     /** The assistant's own resource, for a tool that mirrors no guarded screen: rule search, catalog search. */
     static final String ASSISTANT = "assistant-conversations";
 

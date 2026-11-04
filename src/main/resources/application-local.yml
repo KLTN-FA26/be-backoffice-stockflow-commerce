@@ -54,3 +54,10 @@ stockflow:
     enabled: false
   inventory:
     reservation-sweep-interval: PT15S   # faster than production, so expiry is testable by hand
+  assistant:
+    mcp:
+      # On a laptop and in the assistant playground; off by default elsewhere (application.yml, AQ-17).
+      enabled: ${ASSISTANT_MCP_ENABLED:true}
+    receipt-drafts:
+      # The same: off by default elsewhere (application.yml, AQ-01).
+      enabled: ${ASSISTANT_RECEIPT_DRAFTS_ENABLED:true}

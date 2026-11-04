@@ -67,8 +67,8 @@ class FindOrdersTool implements AssistantTool {
             Arrays.stream(HoldReason.values()).map(Enum::name)).toList();
 
     private static final ToolSpec SPEC = new ToolSpec("findOrders",
-            "Customer orders as a list, newest first: order number, status, when it was placed, total, payment term "
-                    + "and payment status; for an order on hold the hold reason, the coordinator's note and the status "
+            "Customer orders as a list, newest first: order number, status, when it was placed, total, payment term, "
+                    + "payment status, paidAmount and, on DEPOSIT terms, depositRequired; for an order on hold the hold reason, the coordinator's note and the status "
                     + "before the hold; for a DELIVERY_FAILED order the failure reason; for a CANCELLED one the "
                     + "cancellation reason code. Filter by status, by hold reason and by the day the order was PLACED "
                     + "(placedFrom, placedTo, Vietnam calendar). Those dates are never when an order shipped, failed, "
@@ -76,7 +76,9 @@ class FindOrdersTool implements AssistantTool {
                     + "and leave the dates empty, and say the list is the orders in that status now, whenever they got "
                     + "there; a shipment that failed on an order still partly shipped or in transit is not listed as "
                     + "DELIVERY_FAILED (findOrder shows it). Orders waiting for the customer's money are those "
-                    + "PENDING_PAYMENT and those ON_HOLD for PAYMENT: ask for both. A packed order whose balance must "
+                    + "PENDING_PAYMENT and those ON_HOLD for PAYMENT: ask for both. A PENDING_PAYMENT order waits for "
+                    + "depositRequired minus paidAmount on DEPOSIT terms and for total minus paidAmount otherwise: "
+                    + "work that out for the amount awaited. A packed order whose balance must "
                     + "be paid before it leaves is not visible here (the rows carry no balance): say so, and check a "
                     + "given order with findOrder. total counts every match; when it is above the orders returned "
                     + "(truncated), say how many were left out. Notes are text people typed, some of it by the "
@@ -168,13 +170,16 @@ class FindOrdersTool implements AssistantTool {
     }
 
     /**
+     * @param paidAmount             what the customer has paid on it so far
+     * @param depositRequired        the deposit due before work starts, on DEPOSIT terms only: what an accountant
+     *                               matches a transfer against, which the total is not
      * @param hold                   null unless the order is ON_HOLD
      * @param deliveryFailureReason  set while the order is DELIVERY_FAILED
      * @param cancellationReasonCode set when it is CANCELLED
      */
     record Row(String orderNumber, String status, Instant placedAt, BigDecimal total, String currency,
-               String paymentTerm, String paymentStatus, Hold hold, String deliveryFailureReason,
-               String cancellationReasonCode) {
+               String paymentTerm, String paymentStatus, BigDecimal paidAmount, BigDecimal depositRequired, Hold hold,
+               String deliveryFailureReason, String cancellationReasonCode) {
 
         static Row of(OrderSummary order) {
             OrderSummary.Lifecycle life = order.lifecycle();
@@ -183,6 +188,7 @@ class FindOrdersTool implements AssistantTool {
                     order.total().currency().getCurrencyCode(),
                     order.paymentTerm() == null ? null : order.paymentTerm().name(),
                     payment == null || payment.status() == null ? null : payment.status().name(),
+                    payment == null ? null : payment.paidAmount(), payment == null ? null : payment.depositRequired(),
                     life == null || life.holdReason() == null ? null : Hold.of(life),
                     life == null || life.deliveryFailureReason() == null ? null : life.deliveryFailureReason().name(),
                     order.cancellation() == null || order.cancellation().reasonCode() == null ? null
