@@ -125,4 +125,23 @@ public interface ReceivableBook {
     /** @param amount what is still unpaid on OVERDUE receivables; zero when none. @param oldestDueDate null when none */
     record Overdue(BigDecimal amount, LocalDate oldestDueDate) {
     }
+
+    /**
+     * The customers with an OVERDUE receivable they pay themselves, the rows {@link #overdue} sums per customer: what
+     * is unpaid on them by currency, the oldest due date, how many, and the orders they are for. At most {@code limit}
+     * rows, one per customer and currency, the largest amount or the oldest due date first.
+     */
+    List<OverdueCustomerRow> overdueCustomers(boolean oldestFirst, int limit);
+
+    /** What {@link #overdueCustomers} would list without a limit: customers, rows, and the unpaid sum per currency. */
+    OverdueTotals overdueTotals();
+
+    /** @param orderNumbers the orders the overdue receivables are for, earliest due first; none when not recorded */
+    record OverdueCustomerRow(UUID customerId, String currency, BigDecimal amount, LocalDate oldestDueDate,
+                              int receivables, List<String> orderNumbers) {
+    }
+
+    /** @param rows one per customer and currency, as {@link #overdueCustomers} lists them */
+    record OverdueTotals(long customers, long rows, java.util.Map<String, BigDecimal> amountByCurrency) {
+    }
 }

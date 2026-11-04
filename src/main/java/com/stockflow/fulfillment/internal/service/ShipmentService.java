@@ -96,6 +96,14 @@ class ShipmentService implements Shipments {
     @Transactional(readOnly = true)
     public PageResponse<ShipmentRow> list(UUID warehouseId, String status, UUID orderId, UUID carrierId,
                                           String search, int page, int size) {
+        // Inside this method's transaction: the call below reaches this object directly, past its proxy.
+        return list(warehouseId, status, orderId, carrierId, search, page, size, false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ShipmentRow> list(UUID warehouseId, String status, UUID orderId, UUID carrierId,
+                                          String search, int page, int size, boolean oldestFirst) {
         if (warehouseId != null) {
             WarehouseScope.requireWarehouse(warehouseId);
         }
@@ -116,8 +124,8 @@ class ShipmentService implements Shipments {
         if (search != null && !search.isBlank()) {
             filters.add(Specs.contains("code", search.trim()));
         }
-        var found = shipments.findAll(Specification.allOf(filters),
-                Pages.of(page, size, Sort.by(Sort.Direction.DESC, "readyAt", "id")));
+        var found = shipments.findAll(Specification.allOf(filters), Pages.of(page, size,
+                Sort.by(oldestFirst ? Sort.Direction.ASC : Sort.Direction.DESC, "readyAt", "id")));
         Map<UUID, ShipmentRow> rows = rows(found.getContent()).stream()
                 .collect(Collectors.toMap(ShipmentRow::shipmentId, Function.identity()));
         return Pages.toResponse(found, row -> rows.get(row.getId()));

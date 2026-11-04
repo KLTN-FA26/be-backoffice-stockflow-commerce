@@ -342,6 +342,52 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
                 e.getRecordedAt(), e.getNote(), e.getChannel(), e.getCarrierName(), e.getVersion());
     }
 
+    @Override
+    public List<OverdueCustomerRow> overdueCustomers(boolean oldestFirst, int limit) {
+        // The rows overdue(customer) sums, grouped: a customer listed here has hasOverdue true, and the same amount.
+        String order = oldestFirst ? "MIN(due_date) ASC, SUM(amount - paid_amount) DESC"
+                : "SUM(amount - paid_amount) DESC, MIN(due_date) ASC";
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT customer_id, currency, SUM(amount - paid_amount), MIN(due_date), COUNT(*),
+                               string_agg(order_number, ',' ORDER BY due_date, order_number)
+                          FROM payment.receivable
+                         WHERE collector = 'CUSTOMER' AND status = 'OVERDUE'
+                         GROUP BY customer_id, currency""" + " ORDER BY " + order + ", customer_id")
+                .setMaxResults(limit)
+                .getResultList();
+        return rows.stream().map(row -> new OverdueCustomerRow((UUID) row[0], (String) row[1], decimal(row[2]),
+                date(row[3]), ((Number) row[4]).intValue(),
+                row[5] == null ? List.of() : List.of(((String) row[5]).split(",")))).toList();
+    }
+
+    @Override
+    public OverdueTotals overdueTotals() {
+        Object[] counts = (Object[]) entityManager.createNativeQuery("""
+                        SELECT COUNT(DISTINCT customer_id), COUNT(DISTINCT (customer_id, currency))
+                          FROM payment.receivable
+                         WHERE collector = 'CUSTOMER' AND status = 'OVERDUE'""")
+                .getSingleResult();
+        @SuppressWarnings("unchecked")
+        List<Object[]> sums = entityManager.createNativeQuery("""
+                        SELECT currency, SUM(amount - paid_amount) FROM payment.receivable
+                         WHERE collector = 'CUSTOMER' AND status = 'OVERDUE'
+                         GROUP BY currency ORDER BY currency""")
+                .getResultList();
+        java.util.Map<String, BigDecimal> byCurrency = new java.util.LinkedHashMap<>();
+        sums.forEach(row -> byCurrency.put((String) row[0], decimal(row[1])));
+        return new OverdueTotals(((Number) counts[0]).longValue(), ((Number) counts[1]).longValue(), byCurrency);
+    }
+
+    private static LocalDate date(Object value) {
+        return switch (value) {
+            case null -> null;
+            case LocalDate d -> d;
+            case java.sql.Date d -> d.toLocalDate();
+            default -> LocalDate.parse(value.toString());
+        };
+    }
+
     private static BigDecimal decimal(Object value) {
         return value instanceof BigDecimal d ? d : new BigDecimal(value.toString());
     }

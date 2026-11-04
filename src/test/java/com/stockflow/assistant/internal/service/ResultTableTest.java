@@ -45,7 +45,10 @@ class ResultTableTest {
             Map.entry("findProductionOrders", FindProductionOrdersTool.Answer.class),
             Map.entry("getSalesSummary", GetSalesSummaryTool.Answer.class),
             Map.entry("findFulfillmentTasks", FindFulfillmentTasksTool.Answer.class),
-            Map.entry("findGoodsReceipts", FindGoodsReceiptsTool.Answer.class));
+            Map.entry("findGoodsReceipts", FindGoodsReceiptsTool.Answer.class),
+            Map.entry("findPendingAdjustments", FindPendingAdjustmentsTool.Answer.class),
+            Map.entry("findShipments", FindShipmentsTool.Answer.class),
+            Map.entry("findOverdueCustomers", FindOverdueCustomersTool.Answer.class));
 
     /** What Spring Boot builds from {@code application.yml}: java.time as ISO text, null fields left out. */
     private final ObjectMapper json = JsonMapper.builder()

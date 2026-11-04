@@ -13,6 +13,8 @@ import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.order.api.CustomerCredit;
+import com.stockflow.order.api.CustomerCreditQueries;
 import com.stockflow.payment.api.CreditPosition;
 import com.stockflow.payment.api.PaymentService;
 import org.springframework.stereotype.Component;
@@ -34,12 +36,13 @@ import java.util.List;
  * {@code run} checks that very list. Under the seeded grants the two go together, so nobody is turned away who holds
  * one; the declaration keeps it so the day they part.</p>
  *
- * <p><b>No credit left, on purpose.</b> What a customer may still buy on credit is its limit minus its exposure, and
- * the exposure also counts credit orders placed and not yet delivered, which only the order module counts
- * ({@code CreditHoldService.position}, behind {@code GET /api/v1/orders/credit-position/{customerId}}) and no
- * {@code api} offers. The limit minus the receivables here would overstate it: a limit of 100M with 30M owed and 50M on
+ * <p><b>Credit left, from the module that counts it</b> (P8). What a customer may still buy on credit is its limit
+ * minus its exposure, and the exposure also counts credit orders placed and not yet billed, which only the order module
+ * counts. The limit minus the receivables here would overstate it: a limit of 100M with 30M owed and 50M on
  * undelivered credit orders leaves 20M, not 70M, and a salesperson who promises the 70M sends the next order to the
- * credit-hold queue. So the figure is not returned, and the description forbids working it out (design §16, ROLE-8).</p>
+ * credit-hold queue. So the figure comes from {@code order :: api} ({@code CustomerCreditQueries}), the very number
+ * {@code GET /api/v1/orders/credit-position/{customerId}} shows and the checkout's credit check uses, under the same
+ * guard as this tool's; the description forbids working it out from the other figures (design §16, ROLE-8).</p>
  *
  * <p><b>What is left out.</b> Who approved the terms and the approver's note (staff free text), and of the customer
  * everything but its name and account status (design §5.5). The customer is named as people name one
@@ -62,10 +65,13 @@ class GetCustomerCreditTool implements AssistantTool {
                     + "customer prepays. receivables: outstanding is what the customer still owes on the receivables "
                     + "it pays itself (goods delivered on credit, deposit balances put on credit, cancellation fees), "
                     + "hasOverdue and overdueAmount the part past its due date, oldestOverdueDueDate the earliest due "
-                    + "date among those; a balance a carrier collects on delivery is not in it. The credit still "
-                    + "available is NOT creditLimit minus outstanding: credit orders placed and not yet delivered also "
-                    + "count against the limit and are in neither figure, so never work it out, subtract or estimate "
-                    + "it; say it is not shown here. While hasOverdue is true the customer gets no new credit: a "
+                    + "date among those; a balance a carrier collects on delivery is not in it. credit: exposure is "
+                    + "everything counted against the limit, the receivables owed plus credit orders placed and not "
+                    + "yet billed; availableCredit is creditLimit minus exposure, never below zero, what the next "
+                    + "credit order may come to without going on hold; both null when the customer may not buy on "
+                    + "credit. Give availableCredit as returned and never work it out from creditLimit and "
+                    + "outstanding, which leave the unbilled orders out. While hasOverdue is true the customer gets "
+                    + "no new credit, whatever availableCredit says: a "
                     + "credit order goes on hold for the credit approver and none is released without them "
                     + "(BR-PAY-008); say so when the question is about selling on credit. The customer is named as "
                     + "the user named it: the company name, "
@@ -81,11 +87,14 @@ class GetCustomerCreditTool implements AssistantTool {
 
     private final CustomerService customers;
     private final PaymentService payments;
+    private final CustomerCreditQueries credit;
     private final CurrentUserProvider currentUsers;
 
-    GetCustomerCreditTool(CustomerService customers, PaymentService payments, CurrentUserProvider currentUsers) {
+    GetCustomerCreditTool(CustomerService customers, PaymentService payments, CustomerCreditQueries credit,
+                          CurrentUserProvider currentUsers) {
         this.customers = customers;
         this.payments = payments;
+        this.credit = credit;
         this.currentUsers = currentUsers;
     }
 
@@ -115,20 +124,37 @@ class GetCustomerCreditTool implements AssistantTool {
         CustomerMatch customer = CustomerMatch.find(customers, arguments.text("customer", 200),
                 user.can(ToolPermissions.CUSTOMERS, Action.READ));
         if (!customer.found()) {
-            return new Answer(null, null, null, null, customer.candidates(), customer.note());
+            return new Answer(null, null, null, null, null, customer.candidates(), customer.note());
         }
         return new Answer(customer.name(), customer.status(), Terms.of(customers.creditTerms(customer.customerId())),
-                Receivables.of(payments.creditPosition(customer.customerId())), List.of(), null);
+                Receivables.of(payments.creditPosition(customer.customerId())),
+                Credit.of(credit.creditOf(customer.customerId())), List.of(), null);
     }
 
     /**
      * @param terms       null when no customer was chosen
      * @param receivables null when no customer was chosen
+     * @param credit      null when no customer was chosen
      * @param candidates  the customers the text matched, when it named none exactly
      * @param note        why no customer was chosen
      */
-    record Answer(String customerName, String customerStatus, Terms terms, Receivables receivables,
+    record Answer(String customerName, String customerStatus, Terms terms, Receivables receivables, Credit credit,
                   List<CustomerMatch.Candidate> candidates, String note) {
+    }
+
+    /**
+     * What is used of the credit limit and what is left, as the checkout's credit check counts it (BR-PAY-005).
+     *
+     * @param exposure        the receivables owed plus credit orders placed and not yet billed, less what was paid on
+     *                        them; null when the customer may not buy on credit
+     * @param availableCredit {@code creditLimit} less {@code exposure}, never below zero; null likewise
+     */
+    record Credit(BigDecimal exposure, BigDecimal availableCredit) {
+
+        static Credit of(CustomerCredit position) {
+            return position.creditAllowed() ? new Credit(position.exposure(), position.availableCredit())
+                    : new Credit(null, null);
+        }
     }
 
     /**

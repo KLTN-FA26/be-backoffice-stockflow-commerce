@@ -198,9 +198,11 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
         assertThat(JsonPath.<Number>read(owed, "$.receivables.overdueAmount").doubleValue()).isEqualTo(15_000_000d);
         assertThat(JsonPath.<String>read(owed, "$.receivables.oldestOverdueDueDate"))
                 .isEqualTo(jdbc.queryForObject("SELECT (CURRENT_DATE - 15)::text", String.class));
-        assertThat(owed).doesNotContainIgnoringCase("available")
-                .doesNotContain("anh Nam", "0903", approver.toString(), customers.taxCode(), "@example.vn",
-                        customers.abc().toString());
+        // No credit order is open: the exposure is what is owed, and the rest of the limit is left.
+        assertThat(JsonPath.<Number>read(owed, "$.credit.exposure").doubleValue()).isEqualTo(45_000_000d);
+        assertThat(JsonPath.<Number>read(owed, "$.credit.availableCredit").doubleValue()).isEqualTo(55_000_000d);
+        assertThat(owed).doesNotContain("anh Nam", "0903", approver.toString(), customers.taxCode(), "@example.vn",
+                customers.abc().toString());
 
         String fragment = result(conversation, "toolu_fragment");
         assertThat(JsonPath.<Map<String, Object>>read(fragment, "$").get("terms")).isNull();

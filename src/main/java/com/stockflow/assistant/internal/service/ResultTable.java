@@ -99,7 +99,20 @@ public final class ResultTable {
             Map.entry("findGoodsReceipts", List.of(
                     Shape.of("findGoodsReceipts.receipts", "receipts", "total", "truncated", List.of(),
                             "receiptNumber", "purchaseOrderNumber", "supplierName", "warehouseCode", "status",
-                            "receivedAt", "confirmedAt", "closedAt"))));
+                            "receivedAt", "confirmedAt", "closedAt"))),
+            Map.entry("findPendingAdjustments", List.of(
+                    Shape.of("findPendingAdjustments.adjustments", "adjustments", "total", "truncated", List.of(),
+                            "adjustmentNumber", "warehouseCode", "locationCode", "sku", "lotNumber", "quantityDelta",
+                            "reason", "requestedAt", "daysWaiting", "requestedByMe", "carton", "note"))),
+            Map.entry("findShipments", List.of(
+                    Shape.of("findShipments.shipments", "shipments", "total", "truncated", List.of(),
+                            "shipmentCode", "orderNumber", "warehouseCode", "status", "deliveryMode", "packageCount",
+                            "carrierName", "loadCode", "partial", "codAmount", "currency", "readyAt",
+                            "handedOverAt", "outcomeAt", "failureReason"))),
+            Map.entry("findOverdueCustomers", List.of(
+                    Shape.of("findOverdueCustomers.customers", "customers", "totalCustomers", "truncated",
+                            List.of(), "customerName", "orderNumbers", "overdueAmount", "currency", "oldestDueDate",
+                            "daysOverdue", "overdueReceivables"))));
 
     private ResultTable() {
     }

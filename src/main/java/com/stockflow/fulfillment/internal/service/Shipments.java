@@ -51,6 +51,13 @@ public interface Shipments {
     PageResponse<ShipmentRow> list(UUID warehouseId, String status, UUID orderId, UUID carrierId, String search,
                                    int page, int size);
 
+    /**
+     * As {@link #list}, the oldest ready first with {@code oldestFirst}: a queue (waiting for dispatch, delivery failed)
+     * is worked from its head, which the newest-first page would cut when the queue is longer than a page.
+     */
+    PageResponse<ShipmentRow> list(UUID warehouseId, String status, UUID orderId, UUID carrierId, String search,
+                                   int page, int size, boolean oldestFirst);
+
     /** @throws com.stockflow.common.error.BusinessException {@code SHIPMENT_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE} */
     ShipmentDetail get(UUID shipmentId);
 

@@ -15,6 +15,11 @@ final class ToolPermissions {
     static final String INVENTORY_STOCK_ITEMS = "inventory-stock-items";
     /** {@code InventoryResources.STOCK_MOVEMENTS}. */
     static final String INVENTORY_STOCK_MOVEMENTS = "inventory-stock-movements";
+    /**
+     * {@code InventoryResources.STOCK_ADJUSTMENTS}: READ for the approval queue; APPROVE read here only to say whether
+     * the caller may approve ({@link FindPendingAdjustmentsTool}).
+     */
+    static final String STOCK_ADJUSTMENTS = "inventory-stock-adjustments";
     /** {@code OrderResources.ORDERS}. */
     static final String SALES_ORDERS = "sales-orders";
     /** {@code PurchaseOrderResources.PURCHASE_ORDERS}. */
@@ -23,6 +28,8 @@ final class ToolPermissions {
     static final String REPORTS = "reporting-reports";
     /** {@code FulfillmentResources.PICK_LISTS}. */
     static final String PICK_LISTS = "fulfillment-pick-lists";
+    /** {@code FulfillmentResources.SHIPMENTS}. */
+    static final String SHIPMENTS = "fulfillment-shipments";
     /**
      * {@code FulfillmentPermissions.TASK_OVERSIGHT} and {@code DESIGN_REVERIFICATION}: read here only to say which of
      * fulfillment's task-visibility rules applied to a caller ({@link FindFulfillmentTasksTool}).

@@ -35,8 +35,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * getCustomerCredit (ROLE-8): the terms and what is owed, field by field, and never a credit-left figure that the
- * receivables alone would overstate.
+ * getCustomerCredit (ROLE-8): the terms and what is owed, field by field, and the credit left as the order module
+ * counts it, never one worked out from the receivables alone, which would overstate it.
  */
 class GetCustomerCreditToolTest {
 
@@ -49,7 +49,9 @@ class GetCustomerCreditToolTest {
     private final CustomerService customers = mock(CustomerService.class);
     private final PaymentService payments = mock(PaymentService.class);
     private final CurrentUserProvider users = mock(CurrentUserProvider.class);
-    private final GetCustomerCreditTool tool = new GetCustomerCreditTool(customers, payments, users);
+    private final com.stockflow.order.api.CustomerCreditQueries credit =
+            mock(com.stockflow.order.api.CustomerCreditQueries.class);
+    private final GetCustomerCreditTool tool = new GetCustomerCreditTool(customers, payments, credit, users);
 
     @BeforeEach
     void signedIn() {
@@ -62,6 +64,10 @@ class GetCustomerCreditToolTest {
                 APPROVER, Instant.parse("2026-10-01T02:00:00Z"), APPROVER_NOTE, 4, DepositBalancePolicy.ON_CREDIT));
         when(payments.creditPosition(ABC.customerId())).thenReturn(new CreditPosition(new BigDecimal("45000000"),
                 true, new BigDecimal("15000000"), LocalDate.of(2026, 10, 14)));
+        // 45 million owed and 35 million on credit orders not billed yet: 80 used, 20 left, not 55.
+        when(credit.creditOf(ABC.customerId())).thenReturn(new com.stockflow.order.api.CustomerCredit(true,
+                new BigDecimal("100000000.0000"), new BigDecimal("80000000"), new BigDecimal("20000000"), "VND",
+                true));
     }
 
     private static ToolArguments arguments(String customer) {
@@ -94,14 +100,29 @@ class GetCustomerCreditToolTest {
     }
 
     @Test
-    @DisplayName("no figure for the credit left, which undelivered credit orders would make smaller; the description "
-            + "forbids working it out")
-    void noCreditLeft() throws Exception {
-        String sent = JSON.writeValueAsString(tool.run(arguments("Công ty In Ly ABC")));
+    @DisplayName("the credit left is the order module's, unbilled credit orders counted: 20 million, never the 55 the "
+            + "limit less the receivables would give; the description forbids working it out")
+    void creditLeftAsTheOrderModuleCountsIt() throws Exception {
+        GetCustomerCreditTool.Answer answer = tool.run(arguments("Công ty In Ly ABC"));
+        String sent = JSON.writeValueAsString(answer);
 
-        assertThat(sent).doesNotContainIgnoringCase("available").doesNotContain("55000000", "exposure");
-        assertThat(tool.spec().description()).contains("NOT creditLimit minus outstanding",
-                "credit orders placed and not yet delivered", "never work it out");
+        assertThat(answer.credit().exposure()).isEqualByComparingTo("80000000");
+        assertThat(answer.credit().availableCredit()).isEqualByComparingTo("20000000");
+        assertThat(sent).doesNotContain("55000000");
+        assertThat(tool.spec().description()).contains("credit orders placed and not yet billed",
+                "never work it out from creditLimit and outstanding", "whatever availableCredit says");
+    }
+
+    @Test
+    @DisplayName("a customer who may not buy on credit has no exposure or credit left to show")
+    void noCreditNoFigures() {
+        when(credit.creditOf(ABC.customerId())).thenReturn(new com.stockflow.order.api.CustomerCredit(false, null,
+                BigDecimal.ZERO, null, "VND", false));
+
+        GetCustomerCreditTool.Answer answer = tool.run(arguments("Công ty In Ly ABC"));
+
+        assertThat(answer.credit().exposure()).isNull();
+        assertThat(answer.credit().availableCredit()).isNull();
     }
 
     @Test

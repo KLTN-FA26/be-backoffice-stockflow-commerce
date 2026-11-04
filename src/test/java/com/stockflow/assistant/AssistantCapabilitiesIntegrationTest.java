@@ -86,6 +86,9 @@ class AssistantCapabilitiesIntegrationTest {
             Map.entry("findGoodsReceipts", "{\"status\":\"OPEN\",\"receiptNumber\":\"\",\"limit\":5}"),
             Map.entry("findLowStock", "{\"limit\":5}"),
             Map.entry("findOrder", "{\"orderNumber\":\"" + NO_SUCH_ORDER + "\"}"),
+            Map.entry("findOverdueCustomers", "{\"order\":\"LARGEST_FIRST\",\"limit\":5}"),
+            Map.entry("findPendingAdjustments", "{\"sku\":\"\",\"limit\":5}"),
+            Map.entry("findShipments", "{\"status\":\"ANY\",\"search\":\"\",\"limit\":5}"),
             Map.entry("findOrders", "{\"status\":\"ANY\",\"holdReason\":\"ANY\",\"placedFrom\":\"\","
                     + "\"placedTo\":\"\",\"limit\":5}"),
             Map.entry("findProductionOrders", "{\"productionOrderNumber\":\"\",\"salesOrderNumber\":\"\","
@@ -114,7 +117,8 @@ class AssistantCapabilitiesIntegrationTest {
             Map.entry("findExpiringLots", "PARTIAL"), Map.entry("traceLot", "PARTIAL"),
             Map.entry("findPurchaseOrders", "PARTIAL"), Map.entry("getOrderPicking", "PARTIAL"),
             Map.entry("findProductionOrders", "PARTIAL"), Map.entry("findFulfillmentTasks", "PARTIAL"),
-            Map.entry("findGoodsReceipts", "PARTIAL"));
+            Map.entry("findGoodsReceipts", "PARTIAL"), Map.entry("findPendingAdjustments", "PARTIAL"),
+            Map.entry("findShipments", "PARTIAL"));
 
     /**
      * The tools of {@link #KNOWN} each seeded persona may use (identity.role_permission, 28/10/2026, plus
@@ -148,30 +152,34 @@ class AssistantCapabilitiesIntegrationTest {
         Map<Persona, Set<String>> granted = new LinkedHashMap<>();
         granted.put(new Persona(Role.SYSTEM_ADMIN, false), KNOWN);
         granted.put(new Persona(Role.INVENTORY_PLANNER, false), Set.of("findExpiringLots", "findLowStock",
-                "getStockLevels", "getStockLots", "searchCatalog", "searchKnowledge", "traceLot"));
+                "findPendingAdjustments", "getStockLevels", "getStockLots", "searchCatalog", "searchKnowledge",
+                "traceLot"));
         // findLowStock and proposeReorder give company-wide figures: refused to a manager of one warehouse.
         granted.put(new Persona(Role.WAREHOUSE_MANAGER, true), Set.of("findExpiringLots", "findFulfillmentTasks",
-                "findGoodsReceipts", "findProductionOrders", "findPurchaseOrders", "getOrderPicking",
+                "findGoodsReceipts", "findPendingAdjustments", "findProductionOrders", "findPurchaseOrders",
+                "findShipments", "getOrderPicking",
                 "getSalesSummary", "getStockLevels", "getStockLots", "searchCatalog", "searchKnowledge", "traceLot"));
-        granted.put(new Persona(Role.SALES_STAFF, false), Set.of("findOrder", "findOrders", "findProductionOrders",
-                "getCustomerCredit", "getCustomerPrice", "searchCatalog", "searchKnowledge"));
+        granted.put(new Persona(Role.SALES_STAFF, false), Set.of("findOrder", "findOrders", "findOverdueCustomers",
+                "findProductionOrders", "getCustomerCredit", "getCustomerPrice", "searchCatalog", "searchKnowledge"));
         // proposeReorder: the purchase-order permission, but neither sales nor stock (design §13 AQ-08).
         granted.put(new Persona(Role.PROCUREMENT_STAFF, false), Set.of("findGoodsReceipts", "findProductionOrders",
                 "findPurchaseOrders", "getSupplierTerms", "searchCatalog", "searchKnowledge"));
         // The customer tools without customer-customers:READ: a customer is named exactly, never listed.
         granted.put(new Persona(Role.ORDER_COORDINATOR, false), Set.of("findFulfillmentTasks", "findOrder",
-                "findOrders", "findProductionOrders", "getCustomerCredit", "getCustomerPrice", "getOrderPicking",
+                "findOrders", "findOverdueCustomers", "findProductionOrders", "findShipments", "getCustomerCredit",
+                "getCustomerPrice", "getOrderPicking",
                 "getSalesSummary", "searchCatalog", "searchKnowledge"));
-        granted.put(new Persona(Role.ACCOUNTANT, false), Set.of("findOrder", "findOrders", "getCustomerCredit",
-                "getSalesSummary", "searchCatalog", "searchKnowledge"));
+        granted.put(new Persona(Role.ACCOUNTANT, false), Set.of("findOrder", "findOrders", "findOverdueCustomers",
+                "getCustomerCredit", "getSalesSummary", "searchCatalog", "searchKnowledge"));
         // getOrderPicking: fulfillment shows a design re-verifier the tasks of their warehouse (TaskAccess).
         granted.put(new Persona(Role.QC_STAFF, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
                 "findProductionOrders", "getOrderPicking", "getStockLevels", "getStockLots", "searchCatalog",
                 "searchKnowledge"));
         // V20261029000200: a picker's own tasks, through fulfillment's rule.
         granted.put(new Persona(Role.WAREHOUSE_STAFF, true), Set.of("findExpiringLots", "findFulfillmentTasks",
-                "findGoodsReceipts", "findProductionOrders", "findPurchaseOrders", "getOrderPicking", "getStockLevels",
-                "getStockLots", "searchCatalog", "searchKnowledge", "traceLot"));
+                "findGoodsReceipts", "findPendingAdjustments", "findProductionOrders", "findPurchaseOrders",
+                "findShipments", "getOrderPicking", "getStockLevels", "getStockLots", "searchCatalog",
+                "searchKnowledge", "traceLot"));
         granted.put(new Persona(Role.PRODUCTION_STAFF, true), Set.of("findProductionOrders", "getStockLevels",
                 "getStockLots", "searchCatalog", "searchKnowledge"));
         return granted;
