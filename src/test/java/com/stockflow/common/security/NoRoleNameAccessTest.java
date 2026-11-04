@@ -84,6 +84,10 @@ class NoRoleNameAccessTest {
                     "inventory-alert.expiry-roles:", "expiry-alert audience, configurable"),
             new Allowed("application.yml", "stock-level-roles:", "stock-alert audience (who is told), not access"),
             new Allowed("application.yml", "expiry-roles:", "expiry-alert audience (who is told), not access"),
+            new Allowed("application.yml", "heldOrders: ${ASSISTANT_WATCH_HELD_ORDERS_ROLES",
+                    "assistant watch audience (whose list it is), not access: the tool's guard still decides"),
+            new Allowed("application.yml", "overduePurchaseOrders: ${ASSISTANT_WATCH_OVERDUE_PO_ROLES",
+                    "assistant watch audience (whose list it is), not access: the tool's guard still decides"),
             // ---- checks on the user an action is about, not on the caller
             new Allowed("design/internal/service/DesignWorkflowService.java", "Role.CUSTOMER.authority()",
                     "the design's owner must be a customer account"),

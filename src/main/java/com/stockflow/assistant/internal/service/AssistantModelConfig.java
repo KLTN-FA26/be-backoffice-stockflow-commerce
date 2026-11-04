@@ -88,6 +88,32 @@ class AssistantModelConfig {
     ModelRouter modelRouter(LanguageModel languageModel, AssistantProperties properties,
                             ModelRoutingProperties routing, RestClientFactory http, Clock clock,
                             AssistantTelemetry telemetry) {
+        return router(languageModel, properties, routing, http, clock, telemetry, "questions");
+    }
+
+    /**
+     * The models the assistant's watch asks its own questions on ({@link BackgroundModels}, design §9.1):
+     * {@code stockflow.assistant.watch.models} routed exactly as {@code routing.models} is, the same provider rules and
+     * data policy applying, the questions' escalation and cooldown with them; the questions' router itself when no list
+     * is set.
+     */
+    @Bean
+    BackgroundModels backgroundModels(ModelRouter modelRouter, LanguageModel languageModel,
+                                      AssistantProperties properties, ModelRoutingProperties routing,
+                                      AssistantWatchProperties watch, RestClientFactory http, Clock clock,
+                                      AssistantTelemetry telemetry) {
+        if (watch.models().isEmpty()) {
+            return new BackgroundModels(modelRouter, false);
+        }
+        return new BackgroundModels(router(languageModel, properties,
+                new ModelRoutingProperties(watch.models(), routing.escalateOnFailure(), routing.quotaCooldown()),
+                http, clock, telemetry, "the watch's questions"), true);
+    }
+
+    /** @param purpose what the router answers, for its log lines */
+    private static ModelRouter router(LanguageModel languageModel, AssistantProperties properties,
+                                      ModelRoutingProperties routing, RestClientFactory http, Clock clock,
+                                      AssistantTelemetry telemetry, String purpose) {
         List<ModelCatalog.ModelSpec> specs = ModelCatalog.route(properties, routing);
         ModelRouter.Candidate own = new ModelRouter.Candidate(ModelCatalog.spec(properties, properties.model()),
                 languageModel);
@@ -96,8 +122,8 @@ class AssistantModelConfig {
             return new ModelRouter(List.of(own), routing, quotaDay, clock, List.of(), telemetry);
         }
         if (specs.stream().noneMatch(spec -> spec.isOwnModel(properties))) {
-            log.warn("stockflow.assistant.model {} is not one of stockflow.assistant.routing.models, so no question "
-                    + "goes to it; questions start on {}", properties.model(), specs.getFirst().name());
+            log.warn("stockflow.assistant.model {} is not one of the models {} go to, so none goes to it; they start "
+                    + "on {}", properties.model(), purpose, specs.getFirst().name());
         }
         List<ModelRouter.Candidate> candidates = new ArrayList<>();
         List<AutoCloseable> owned = new ArrayList<>();
@@ -118,12 +144,11 @@ class AssistantModelConfig {
             candidates.add(new ModelRouter.Candidate(spec, model));
         }
         if (candidates.isEmpty()) {
-            log.warn("No model of stockflow.assistant.routing.models can be used: questions go to {} alone",
-                    properties.model());
+            log.warn("No model of those {} go to can be used: they go to {} alone", purpose, properties.model());
             return new ModelRouter(List.of(own), routing, quotaDay, clock, List.of(), telemetry);
         }
-        log.info("The assistant routes questions over {}, cheapest first: a spent quota moves them on to the next "
-                + "model{}", candidates.stream().map(ModelRouter.Candidate::name).toList(), routing.escalateOnFailure()
+        log.info("The assistant routes {} over {}, cheapest first: a spent quota moves them on to the next model{}",
+                purpose, candidates.stream().map(ModelRouter.Candidate::name).toList(), routing.escalateOnFailure()
                 ? ", and so does, once, a question a model could not answer" : "");
         return new ModelRouter(candidates, routing, quotaDay, clock, owned, telemetry);
     }

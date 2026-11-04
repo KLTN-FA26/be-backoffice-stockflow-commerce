@@ -17,13 +17,17 @@ interface AssistantMessageJpaRepository extends BaseJpaRepository<AssistantMessa
     List<AssistantMessageJpaEntity> findByConversationIdOrderBySequenceAsc(UUID conversationId);
 
     /**
-     * The daily cap ({@code ConversationRepository#questionsSince}). The turns an answer produced are stored right
+     * The daily cap ({@code ConversationRepository#questionsSince}), of the questions the user asked: the first question
+     * of a proactive conversation is the watch's, under its own cap; what the user asks there afterwards is theirs. The
+     * turns an answer produced are stored right
      * after its question, in one write, so the question's next sequence is the first of them: a closing turn there
      * means the provider never replied. Nothing there yet means the answer is still running, and the question counts.
      */
     @Query("""
             select count(m) from AssistantMessageJpaEntity m, AssistantConversationJpaEntity c
             where m.conversationId = c.id and c.ownerUserId = :owner
+              and not (c.origin = com.stockflow.assistant.internal.domain.ConversationOrigin.PROACTIVE
+                       and m.sequence = 0)
               and m.role = com.stockflow.assistant.internal.domain.MessageRole.USER
               and m.createdAt >= :since
               and not exists (select n.id from AssistantMessageJpaEntity n

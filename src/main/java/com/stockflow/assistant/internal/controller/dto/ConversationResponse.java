@@ -11,5 +11,8 @@ public record ConversationResponse(
         String title,
         int messageCount,
         Instant lastActivityAt,
-        Instant createdAt) {
+        Instant createdAt,
+        @Schema(description = "CHAT when its owner opened it; PROACTIVE when the assistant's watch opened it for them, "
+                + "with a question it asked about something new on their lists", example = "CHAT")
+        String origin) {
 }

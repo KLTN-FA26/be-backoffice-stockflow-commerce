@@ -49,6 +49,19 @@ public class ToolRunRecorder {
         }
     }
 
+    /**
+     * What a watch read keeps in place of its result: the same lists are read every few minutes for every user, and
+     * their rows would be most of the table while telling an auditor nothing the arguments do not. What the watch made
+     * of them is in {@code assistant.watch_item} and the user's inbox.
+     */
+    static final String RESULT_NOT_KEPT = "{\"resultNotKept\":\"a watch read; what it found is in assistant.watch_item\"}";
+
+    /** {@link #record}, each result replaced by {@link #RESULT_NOT_KEPT}: who read what, when, and how it ended. */
+    public void recordReadsOnly(ToolChannel channel, UUID userId, List<ToolExecution> executions) {
+        record(channel, userId, executions.stream().map(execution -> new ToolExecution(execution.call(),
+                execution.outcome(), RESULT_NOT_KEPT, execution.durationMs())).toList());
+    }
+
     /** Deletes standalone runs older than {@code cutoff}, at most {@code limit}, in a transaction of its own. */
     public int deleteBefore(Instant cutoff, int limit) {
         Integer deleted = own.execute(status -> runs.deleteStandaloneBefore(cutoff, limit));

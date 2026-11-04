@@ -30,10 +30,12 @@ class AssistantRetentionJob {
     private final AssistantProperties properties;
     private final Clock clock;
     private final AssistantActions actions;
+    private final AssistantWatch watch;
 
     AssistantRetentionJob(ConversationService conversations, ToolRunRecorder runs, AssistantProperties properties,
-                          Clock clock, AssistantActions actions) {
+                          Clock clock, AssistantActions actions, AssistantWatch watch) {
         this.actions = actions;
+        this.watch = watch;
         this.conversations = conversations;
         this.runs = runs;
         this.properties = properties;
@@ -43,6 +45,29 @@ class AssistantRetentionJob {
     @Scheduled(cron = "${stockflow.assistant.retention-cron:0 30 3 * * *}", zone = "Asia/Ho_Chi_Minh")
     @SchedulerLock(name = "assistant-retention", lockAtMostFor = "PT30M")
     public void deleteIdleConversations() {
+        int forgotten = 0;
+        int forgottenBatch;
+        do {
+            forgottenBatch = watch.forgetIdle(clock.instant().minus(Duration.ofDays(properties.retentionDays())),
+                    BATCH);
+            forgotten += forgottenBatch;
+        } while (forgottenBatch == BATCH);
+        if (forgotten > 0) {
+            log.info("Assistant retention: forgot {} watched list(s) nobody looked at for {} days", forgotten,
+                    properties.retentionDays());
+        }
+        // A proactive conversation is asked in right after it is opened; one still empty an hour later was left by a
+        // look that stopped in between, and would only show the user an empty conversation.
+        int abandoned = 0;
+        int abandonedBatch;
+        do {
+            abandonedBatch = conversations.deleteAbandonedProactiveBefore(clock.instant().minus(Duration.ofHours(1)),
+                    BATCH);
+            abandoned += abandonedBatch;
+        } while (abandonedBatch == BATCH);
+        if (abandoned > 0) {
+            log.info("Assistant retention: deleted {} empty proactive conversation(s)", abandoned);
+        }
         Instant cutoff = clock.instant().minus(Duration.ofDays(properties.retentionDays()));
         int deleted = 0;
         int batch;

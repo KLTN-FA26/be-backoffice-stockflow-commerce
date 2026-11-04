@@ -1,6 +1,7 @@
 package com.stockflow.assistant.internal.repository;
 
 import com.stockflow.assistant.internal.domain.Conversation;
+import com.stockflow.assistant.internal.domain.ConversationOrigin;
 import com.stockflow.assistant.internal.domain.ConversationRepository;
 import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.Message;
@@ -67,6 +68,18 @@ class ConversationRepositoryAdapter implements ConversationRepository {
     }
 
     @Override
+    public Conversation createProactive(UUID ownerUserId, Instant at) {
+        return toDomain(conversations.save(new AssistantConversationJpaEntity(Identifiers.newId(), ownerUserId, at,
+                ConversationOrigin.PROACTIVE)));
+    }
+
+    @Override
+    public long proactiveSince(UUID ownerUserId, Instant since) {
+        return conversations.countByOwnerUserIdAndOriginAndCreatedAtGreaterThanEqual(ownerUserId,
+                ConversationOrigin.PROACTIVE, since);
+    }
+
+    @Override
     public Optional<Conversation> findInScope(UUID id) {
         return conversations.findByIdInScope(id).map(ConversationRepositoryAdapter::toDomain);
     }
@@ -111,11 +124,11 @@ class ConversationRepositoryAdapter implements ConversationRepository {
 
     @Override
     public List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced, Instant at,
-                                          Instant claimedAt) {
+                                          Instant claimedAt, ToolChannel channel) {
         AssistantConversationJpaEntity conversation = lockOwned(conversationId);
         List<Message> stored = new ArrayList<>();
         for (PendingMessage message : produced) {
-            stored.add(insert(conversation, message, at));
+            stored.add(insert(conversation, message, at, channel));
         }
         conversation.release(claimedAt);
         return stored;
@@ -136,6 +149,11 @@ class ConversationRepositoryAdapter implements ConversationRepository {
         return conversations.deleteIdleBefore(cutoff, limit);
     }
 
+    @Override
+    public int deleteAbandonedProactiveBefore(Instant cutoff, int limit) {
+        return conversations.deleteAbandonedProactiveBefore(cutoff, limit);
+    }
+
     private AssistantConversationJpaEntity lockOwned(UUID conversationId) {
         conversations.findByIdInScope(conversationId)
                 .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
@@ -145,7 +163,18 @@ class ConversationRepositoryAdapter implements ConversationRepository {
         return locked;
     }
 
+    @Override
+    public boolean deleteEmptyProactive(UUID conversationId, UUID ownerUserId) {
+        return conversations.deleteEmptyProactive(conversationId, ownerUserId, ConversationOrigin.PROACTIVE) == 1;
+    }
+
     private Message insert(AssistantConversationJpaEntity conversation, PendingMessage pending, Instant at) {
+        return insert(conversation, pending, at, ToolChannel.CHAT);
+    }
+
+    /** @param channel the channel of the question being answered: a proactive conversation's follow-ups are CHAT */
+    private Message insert(AssistantConversationJpaEntity conversation, PendingMessage pending, Instant at,
+                           ToolChannel channel) {
         int sequence = conversation.nextSequence(at);
         LanguageModel.Usage usage = pending.usage();
         boolean modelTurn = pending.model() != null;
@@ -157,7 +186,7 @@ class ConversationRepositoryAdapter implements ConversationRepository {
                 modelTurn ? Math.toIntExact(usage.cacheReadTokens()) : null,
                 modelTurn ? Math.toIntExact(usage.cacheWriteTokens()) : null));
         for (ToolExecution execution : pending.executions()) {
-            toolCalls.save(new AssistantToolCallJpaEntity(Identifiers.newId(), ToolChannel.CHAT,
+            toolCalls.save(new AssistantToolCallJpaEntity(Identifiers.newId(), channel,
                     conversation.getOwnerUserId(), conversation.getId(), row.getId(), execution.call().id(),
                     execution.call().name(), ToolRunRepositoryAdapter.storable(execution.call().arguments()),
                     execution.outcome(), execution.result(), (int) Math.min(Integer.MAX_VALUE, execution.durationMs())));
@@ -178,7 +207,7 @@ class ConversationRepositoryAdapter implements ConversationRepository {
 
     private static Conversation toDomain(AssistantConversationJpaEntity row) {
         return new Conversation(row.getId(), row.getOwnerUserId(), row.getTitle(), row.getMessageCount(),
-                row.getLastActivityAt(), row.getAnsweringSince(), row.getCreatedAt());
+                row.getLastActivityAt(), row.getAnsweringSince(), row.getCreatedAt(), row.getOrigin());
     }
 
     private static long orZero(Integer value) {

@@ -1705,6 +1705,138 @@ Chưa làm: "ghim" một câu trả lời thành phép kiểm tra chạy lại (
 request, tính vào trần); phần PO chờ duyệt cho người duyệt, PO bị nhà cung cấp từ chối, đơn giao thất bại. Mỗi vai trò
 thấy phần nào là quyết định của doanh nghiệp (§13 AQ-15); mặc định đã làm là "phần mà tool của họ trả lời được".
 
+### 9.1 Theo dõi chủ động (P6, 05/11, ADR-0012)
+
+Mỗi mười lăm phút trong giờ làm, trợ lý đọc lại vài danh sách cho từng người dùng back-office, **bằng quyền của chính
+người đó**, rồi báo vào chuông (hộp thư trong app, `notification :: api Inbox`) những mục mới so với lần trước. Tùy
+chọn, nó tự trả lời một câu hỏi cố định về các mục mới, trong một hội thoại của người đó.
+
+**Tắt trừ khi bật** (`stockflow.assistant.watch.enabled`, biến `ASSISTANT_WATCH_ENABLED`), và không bao giờ chạy khi tắt
+security. `AssistantWatchJob` chạy theo `watch.cron`, mặc định `0 */15 7-19 * * MON-SAT` giờ Việt Nam, có
+`@SchedulerLock` (giữ tối đa 55 phút). Nó duyệt người dùng ACTIVE qua `identity :: api` theo trang 100. Danh sách này bỏ
+mọi tài khoản có vai trò CUSTOMER, kể cả tài khoản nhân viên có thêm vai trò đó. Lỗi của một người được log, không chặn
+người tiếp theo.
+
+**Bằng quyền của người nhận** (`RunAs`, ADR-0012):
+- vai trò, trạng thái, quyền, scope và kho đọc lại ở mỗi lần quét;
+- tài khoản bị khóa, bị vô hiệu hóa, hay không có vai trò nào thì bị bỏ qua trước khi đọc gì; tài khoản khách hàng
+  cũng vậy;
+- người không có `assistant-conversations:CREATE` không được xem hộ;
+- mỗi danh sách là một tool của khung chat, chạy qua guard của nó, nên quản lý một kho chỉ được báo về kho của mình,
+  như màn hình của họ;
+- những gì được ghi trong lúc đó mang người tạo là "`username via assistant-watch`", trong cột audit và trong nhật ký
+  audit.
+
+**Ba danh sách, mỗi danh sách cho đúng người** (`watch.post`, `watch.roles`):
+
+| Danh sách | Tool, đọc tới đâu | Mặc định báo cho |
+|---|---|---|
+| `heldOrders`: đơn bị giữ | `findOrders`, 50 đơn ON_HOLD mới đặt nhất | ORDER_COORDINATOR |
+| `overduePurchaseOrders`: PO đã gửi mà quá ngày giao | `findPurchaseOrders`, 20 PO mỗi trạng thái đã gửi, ngày giao sớm nhất trước | PROCUREMENT_STAFF, WAREHOUSE_MANAGER |
+| `lowStock`: SKU tới điểm đặt hàng | `findLowStock`, 50 SKU | (không báo mặc định) |
+
+- Người nhận phải vừa có tool, vừa có một trong các vai trò của danh sách. Có quyền đọc không có nghĩa là việc đó của
+  mình: mọi nhân viên bán hàng và kế toán đọc được đơn bị giữ (danh sách là của cả công ty), nhưng điều phối viên mới là
+  người gỡ. Báo cho mọi nhân viên bán hàng thì mỗi đơn bị giữ làm cả phòng nhận tin.
+- Danh sách không ghi vai trò thì gửi cho ai đọc được.
+- Hàng xuống mức đặt hàng đã có cảnh báo tồn kho của module notification gửi vào chuông, nên mặc định không báo lại;
+  báo lại thì chuông kêu hai lần cho một việc.
+- Danh sách lô và sản xuất không được đọc.
+- Vai trò nào nhận danh sách nào là quyết định của doanh nghiệp (§13).
+
+**Đọc trọn danh sách, nên "mới" là mới thật.**
+- Lớp theo dõi không dùng mười dòng khẩn cấp nhất của thẻ "hôm nay". Ở đó một PO vừa trễ một ngày đứng cuối và không
+  bao giờ được thấy.
+- Danh sách đọc trọn thì bỏ những mục không còn trên đó, nên một mục quay lại là tin mới.
+- Danh sách dài hơn một lần đọc thì "chỉ đọc được một phần": không bỏ mục nào, vì mục vắng có thể chỉ nằm xa hơn; không
+  báo mục nào mới xuất hiện, vì nó có thể đã ở đó từ trước. Người dùng được báo một lần ("có quá nhiều PO trễ để trợ lý
+  báo PO mới trễ"), tới khi danh sách đọc trọn lại được. Trường hợp này cũng được log WARN. Với PO, lúc có từ 20 PO ở
+  cùng một trạng thái đã gửi mà ngày giao đã qua (kể cả PO bị nhà cung cấp từ chối mà chưa ai hủy), danh sách chỉ đọc
+  được một phần. Cách sửa tận gốc là một bộ lọc "đã trễ" trong `procurement :: api`, xếp PO mới trễ lên đầu; việc đó
+  thuộc module procurement.
+- PO được đọc theo ngày giao sớm nhất trước, nên khi dòng cuối đã là ngày hôm nay trở đi (hoặc không có ngày) thì mọi
+  PO trễ đều đã được đọc.
+- Danh sách không đọc được (tool lỗi, bị từ chối) không thay đổi gì.
+- Mục được nhận ra bằng mã của chính nó: SKU; số đơn kèm lý do giữ (bị giữ lại vì lý do khác là một lần giữ mới); số
+  PO.
+
+**Lúc nào không phải tin mới** (`assistant.watch_state`, `V20261104000400`). Ba trường hợp chỉ ghi nhận, không báo:
+- lần nhìn đầu tiên một danh sách;
+- lần nhìn sau khi tầm nhìn của người dùng đổi (scope hay kho, ví dụ quản lý chuyển kho): tin cũ của kho mới không phải
+  tin mới;
+- lần nhìn sau một khoảng nghỉ dài hơn `watch.rebaseline-after` (mặc định 4 ngày, đủ qua cuối tuần và lễ ngắn).
+
+Một danh sách người dùng không còn đọc được thì bị quên, nên khi có lại quyền thì đó là lần nhìn đầu.
+
+**Báo một lần, kể cả khi dừng giữa chừng.**
+- Mục được ghi trước, xử lý sau: báo đi, hoặc để qua không báo.
+- Mục còn chờ ở lần nhìn sau (lần trước dừng giữa chừng) được xử lý ở lần đó.
+- Khóa chống trùng của tin là `assistant:watch:<danh sách>:<id mục đầu tiên>`, và `Inbox.post` idempotent theo khóa.
+- Tin chỉ chứa mã, cắt cho vừa 1.000 ký tự và đếm phần còn lại; không bao giờ chứa chữ người gõ.
+- Hạng mục tin: `ASSISTANT_WATCH` cho tin mới, `ASSISTANT_ANSWER` cho câu trả lời.
+- Link: đơn bị giữ `/admin/orders`, PO trễ `/admin/purchase-orders`, hàng thấp `/admin/inventory/alerts?kind=REORDER`.
+  Câu trả lời chủ động không có link vì frontend chưa có trang trợ lý; id hội thoại nằm ở `sourceId`
+  (`ASSISTANT_CONVERSATION`) để frontend mở khi có trang đó.
+
+**Tự trả lời** (`watch.analyse`, mặc định rỗng):
+- Với mỗi danh sách có mục mới, trợ lý mở một hội thoại `origin = PROACTIVE` của người đó và hỏi một câu cố định:
+  - `lowStock`: đề xuất nhập theo nhà cung cấp;
+  - `heldOrders`: vì sao bị giữ, cần làm gì;
+  - `overduePurchaseOrders`: tình trạng từng PO, việc nên làm.
+- Câu hỏi đi qua `AssistantService.askProactively`, cùng guard với một câu hỏi, và **chỉ được đưa các tool câu đó
+  cần**, trong số tool của người dùng:
+  - `lowStock`: findLowStock, proposeReorder, getStockLevels, getSupplierTerms;
+  - `heldOrders`: findOrders, findOrder, getCustomerCredit;
+  - `overduePurchaseOrders`: findPurchaseOrders, getSupplierTerms, findGoodsReceipts.
+
+  Lời gọi tới một tool khác bị từ chối mà không chạy (`NOT_OFFERED`), kể cả tool người dùng được dùng. Trong khung chat,
+  một lời gọi như vậy vẫn chạy và guard của tool quyết định; ở đây thì không. Nhờ vậy ghi chú gõ tay trên một đơn bị giữ
+  không thể lái câu trả lời thành một đề xuất nhập hàng. Đề xuất nhập của `lowStock` thành đề xuất của chính người đó,
+  chờ họ xác nhận (§8.2).
+- Câu hỏi đầu của hội thoại chủ động là của lớp theo dõi, không tính vào giới hạn câu hỏi mỗi ngày của người dùng. Những
+  câu họ hỏi tiếp trong hội thoại đó là của họ: có tính, và tool ghi kênh CHAT. Người dùng không hỏi được câu đầu tiên
+  trong một hội thoại chủ động còn rỗng (409 `ASSISTANT_BUSY`), nên câu miễn tính luôn là của lớp theo dõi.
+  `AssistantRetentionJob` xóa hội thoại chủ động còn rỗng sau một giờ (một lần nhìn dừng ngay giữa lúc mở hội thoại và
+  lúc hỏi).
+- Mục được đánh dấu "đã hỏi" trong cùng transaction mở hội thoại, nên không có sự cố nào làm một mục bị hỏi hai lần. Mỗi
+  câu hỏi có tối đa 30 mục; phần còn lại chờ lần nhìn sau.
+- Danh sách đã được trả lời thì được báo đúng một lần, bằng tin của câu trả lời, và tin nói đúng điều đã xảy ra: với
+  `lowStock`, "đã chuẩn bị đề xuất nhập" chỉ khi câu trả lời có đề xuất, không thì "đã xem, chưa có đề xuất nhập".
+- Giới hạn:
+  - `watch.daily-analyses` hội thoại mỗi người mỗi ngày làm việc (mặc định 3);
+  - `watch.analyses-per-run` mỗi lần quét (mặc định 5);
+  - không bắt đầu câu trả lời nào có thể kết thúc sau `watch.run-budget` (mặc định 30 phút) tính từ đầu lần quét;
+  - không hỏi khi model của lớp theo dõi không dùng được hay mọi model đều hết hạn mức;
+  - mỗi mục chỉ được hỏi một lần.
+- Khi trả lời lỗi:
+  - Lỗi sau khi câu hỏi đã được lưu thì hội thoại giữ câu hỏi và lỗi. Danh sách có báo tin thì mục được báo như tin mới;
+    danh sách chỉ để tự trả lời thì có một tin "trợ lý chưa trả lời xong", trỏ tới hội thoại (có thể đã có đề xuất).
+  - Câu hỏi bị từ chối trước khi lưu thì hội thoại rỗng bị xóa, không tính vào giới hạn, mục được bỏ dấu "đã hỏi" và
+    chờ lần nhìn sau.
+- Mục của danh sách chỉ để tự trả lời mà bị giới hạn giữ lại thì chờ tối đa một ngày cho một câu trả lời, rồi bị để
+  qua. Người dùng được duyệt theo thứ tự mới ở mỗi lần quét, để vài câu trả lời của một lần quét không luôn rơi vào cùng
+  những người đầu danh sách.
+- Hai router (của câu hỏi và của lớp theo dõi) giữ trạng thái hết hạn mức riêng. Đặt `watch.models` trùng nhà cung cấp
+  và key với khung chat thì lớp theo dõi có thể tiêu hạn mức chung mà router của khung chat không biết.
+- Model là `watch.models` (định tuyến như `routing.models`, cùng chính sách dữ liệu); để trống thì dùng model của câu
+  hỏi.
+
+**Hiệu năng.** Mỗi lần quét một người là vài lần đọc database qua tool, chạy tuần tự trên thread của job. Riêng
+`lowStock` là bản quét SKU toàn công ty, lặp lại cho từng người được báo; vì vậy nó không được báo mặc định.
+
+**Kiểm toán và dọn dẹp.**
+- Lời gọi tool của lần quét ghi `assistant.tool_call` kênh PROACTIVE, không có hội thoại. Kết quả được thay bằng một dấu
+  "không giữ" (`ToolRunRecorder.RESULT_NOT_KEPT`), vì cùng danh sách được đọc lại vài phút một lần cho mọi người.
+- Hội thoại chủ động ghi tool của câu hỏi lớp theo dõi kênh PROACTIVE, có kèm kết quả như mọi câu trả lời.
+- `AssistantRetentionJob` xóa trạng thái theo dõi (và mục của nó) không được nhìn trong `retention-days` ngày.
+
+**Chưa làm:**
+- Kiểm lại ngay khi có event (giao hàng thất bại, phiếu nhập cần QC). Chưa có danh sách cho các việc này; giao hàng sẽ
+  có ở P8 (`findShipments`), và cảnh báo tồn kho đã được báo ngay qua event của chúng.
+- Mỗi người tự chọn danh sách muốn được báo: hiện là cấu hình chung theo vai trò.
+- Trang PO và trang trợ lý ở frontend, để tin có link.
+- Ai được bật tự trả lời và với chi phí nào là quyết định của doanh nghiệp (cùng câu hỏi với AQ-01).
+
 ---
 
 ## 10. Đánh giá

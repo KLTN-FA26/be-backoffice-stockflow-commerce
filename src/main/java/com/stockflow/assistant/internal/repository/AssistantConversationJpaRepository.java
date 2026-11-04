@@ -14,6 +14,18 @@ import java.util.UUID;
 
 interface AssistantConversationJpaRepository extends ScopedJpaRepository<AssistantConversationJpaEntity> {
 
+    long countByOwnerUserIdAndOriginAndCreatedAtGreaterThanEqual(java.util.UUID ownerUserId,
+            com.stockflow.assistant.internal.domain.ConversationOrigin origin, java.time.Instant since);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("""
+            delete from AssistantConversationJpaEntity c
+            where c.id = :id and c.ownerUserId = :owner and c.origin = :origin and c.messageCount = 0""")
+    int deleteEmptyProactive(@org.springframework.data.repository.query.Param("id") java.util.UUID id,
+                             @org.springframework.data.repository.query.Param("owner") java.util.UUID owner,
+                             @org.springframework.data.repository.query.Param("origin")
+                             com.stockflow.assistant.internal.domain.ConversationOrigin origin);
+
     @Override
     default AssistantConversationJpaEntity scopePrototype() {
         return AssistantConversationJpaEntity.SCOPE_PROTOTYPE;
@@ -42,4 +54,16 @@ interface AssistantConversationJpaRepository extends ScopedJpaRepository<Assista
                 LIMIT :limit
                 FOR UPDATE SKIP LOCKED)""", nativeQuery = true)
     int deleteIdleBefore(@Param("cutoff") Instant cutoff, @Param("limit") int limit);
+
+    /** Empty proactive conversations opened before {@code cutoff} and never asked in: a look stopped right there. */
+    @Modifying
+    @Query(value = """
+            DELETE FROM assistant.conversation WHERE id IN (
+                SELECT id FROM assistant.conversation
+                WHERE origin = 'PROACTIVE' AND message_count = 0 AND answering_since IS NULL
+                  AND created_at < :cutoff
+                ORDER BY created_at
+                LIMIT :limit
+                FOR UPDATE SKIP LOCKED)""", nativeQuery = true)
+    int deleteAbandonedProactiveBefore(@Param("cutoff") Instant cutoff, @Param("limit") int limit);
 }

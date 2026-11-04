@@ -151,6 +151,12 @@ class ModelRouter implements AutoCloseable {
         return ready.isEmpty() ? new Route(candidates, true) : new Route(ready, false);
     }
 
+    /** Whether every model is set aside for a spent quota now: a question would still be tried, on all of them. */
+    boolean everyModelSetAside() {
+        Instant now = clock.instant();
+        return candidates.stream().allMatch(candidate -> setAside(candidate, now));
+    }
+
     private boolean setAside(Candidate candidate, Instant now) {
         Instant until = spentUntil.get(candidate.name());
         return until != null && now.isBefore(until);

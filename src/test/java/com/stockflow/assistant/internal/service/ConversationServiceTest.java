@@ -117,7 +117,8 @@ class ConversationServiceTest {
                 model(3, "Nên nhập thêm CUP-12OZ.", LanguageModel.StopReason.END_TURN));
         UUID owner = UUID.randomUUID();
         when(store.appendAndRelease(org.mockito.ArgumentMatchers.eq(CONVERSATION), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any())).thenReturn(produced);
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(produced);
 
         suggesting.appendAndRelease(CONVERSATION, owner, NOW, List.of());
 
@@ -149,7 +150,7 @@ class ConversationServiceTest {
         ConversationService suggesting = new ConversationService(store, verdicts, Clock.fixed(NOW, ZoneOffset.UTC),
                 json, actions);
         when(store.appendAndRelease(org.mockito.ArgumentMatchers.eq(CONVERSATION), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(List.of(model(1, "Xin chào.", LanguageModel.StopReason.END_TURN)));
 
         suggesting.appendAndRelease(CONVERSATION, UUID.randomUUID(), NOW, List.of());

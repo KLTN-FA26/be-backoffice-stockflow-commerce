@@ -20,6 +20,12 @@ public interface ConversationRepository {
 
     Conversation create(UUID ownerUserId, Instant at);
 
+    /** A conversation the assistant's watch opens for {@code ownerUserId} (design §9.1). */
+    Conversation createProactive(UUID ownerUserId, Instant at);
+
+    /** How many conversations the watch has opened for {@code ownerUserId} since {@code since}: its daily cap. */
+    long proactiveSince(UUID ownerUserId, Instant since);
+
     /** The conversation, if it is the caller's. */
     Optional<Conversation> findInScope(UUID id);
 
@@ -44,7 +50,18 @@ public interface ConversationRepository {
      * {@code produced} holds the turns up to it and a closing turn saying what happened, so tools that already ran
      * are still on record.
      */
-    List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced, Instant at, Instant claimedAt);
+    /** @param channel the channel the answer's tool runs are recorded on: CHAT for the user's question, PROACTIVE for
+     *                 the watch's */
+    List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced, Instant at, Instant claimedAt,
+                                   ToolChannel channel);
+
+    /**
+     * Deletes {@code conversationId} if it is a proactive conversation of {@code ownerUserId} with nothing in it: the
+     * watch opened it, and its question was refused before it was stored.
+     *
+     * @return whether it was deleted
+     */
+    boolean deleteEmptyProactive(UUID conversationId, UUID ownerUserId);
 
     /**
      * Releases the claim made at {@code claimedAt}, and only that one, without storing anything: for an answer whose
@@ -62,4 +79,7 @@ public interface ConversationRepository {
 
     /** Deletes up to {@code limit} conversations idle since before {@code cutoff}, with their messages and calls. */
     int deleteIdleBefore(Instant cutoff, int limit);
+
+    /** Deletes proactive conversations left empty since before {@code cutoff}, at most {@code limit}. */
+    int deleteAbandonedProactiveBefore(Instant cutoff, int limit);
 }

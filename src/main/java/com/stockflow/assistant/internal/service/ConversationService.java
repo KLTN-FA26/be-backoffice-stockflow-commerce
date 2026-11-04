@@ -11,6 +11,7 @@ import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.Message;
 import com.stockflow.assistant.internal.domain.MessageRole;
 import com.stockflow.assistant.internal.domain.PendingMessage;
+import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.domain.Turn;
@@ -69,6 +70,62 @@ public class ConversationService {
 
     public ConversationView start(CurrentUser user) {
         return ConversationView.of(conversations.create(user.userId(), clock.instant()));
+    }
+
+    /** A conversation the assistant's watch opens for {@code ownerUserId}, to ask its question in (design §9.1). */
+    public ConversationView startProactive(UUID ownerUserId) {
+        return ConversationView.of(conversations.createProactive(ownerUserId, clock.instant()));
+    }
+
+    /**
+     * Deletes a proactive conversation of {@code ownerUserId}'s that is still empty: the watch's question was refused
+     * before anything was stored, and an empty conversation in their list would say nothing.
+     *
+     * @return whether it was deleted
+     */
+    public boolean discardEmptyProactive(UUID conversationId, UUID ownerUserId) {
+        return conversations.deleteEmptyProactive(conversationId, ownerUserId);
+    }
+
+    /** How many conversations the watch has opened for {@code ownerUserId} since {@code since}. */
+    @Transactional(readOnly = true)
+    public long proactiveSince(UUID ownerUserId, Instant since) {
+        return conversations.proactiveSince(ownerUserId, since);
+    }
+
+    /**
+     * Refuses a question of the watch's in a conversation it did not open: its question is not counted against the
+     * user's daily limit, which is only right where the user did not ask it.
+     *
+     * @throws NotFoundException     when the conversation is not the caller's
+     * @throws IllegalStateException when it is one the user opened
+     */
+    @Transactional(readOnly = true)
+    public void requireProactive(UUID conversationId) {
+        Conversation conversation = conversations.findInScope(conversationId)
+                .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
+        if (conversation.origin() != com.stockflow.assistant.internal.domain.ConversationOrigin.PROACTIVE
+                || conversation.messageCount() != 0) {
+            throw new IllegalStateException("conversation " + conversationId + " is not one the watch just opened");
+        }
+    }
+
+    /**
+     * Refuses its owner's question in a proactive conversation the watch has not asked in yet: the first question
+     * there is the watch's, which the daily limit does not count, so it must never be the user's.
+     *
+     * @throws NotFoundException when the conversation is not the caller's
+     * @throws BusinessException {@code ASSISTANT_BUSY} while the watch's question is still to come
+     */
+    @Transactional(readOnly = true)
+    public void requireAskable(UUID conversationId) {
+        Conversation conversation = conversations.findInScope(conversationId)
+                .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
+        if (conversation.origin() == com.stockflow.assistant.internal.domain.ConversationOrigin.PROACTIVE
+                && conversation.messageCount() == 0) {
+            throw new BusinessException(ErrorCode.ASSISTANT_BUSY,
+                    "The assistant is still asking its own question in this conversation");
+        }
     }
 
     @Transactional(readOnly = true)
@@ -195,7 +252,14 @@ public class ConversationService {
      */
     public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
                                           List<PendingMessage> produced) {
-        List<Message> stored = conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt);
+        return appendAndRelease(conversationId, ownerUserId, claimedAt, produced, ToolChannel.CHAT);
+    }
+
+    /** @param channel CHAT for the user's own question, PROACTIVE for the watch's: where its tool runs are recorded */
+    public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
+                                          List<PendingMessage> produced, ToolChannel channel) {
+        List<Message> stored = conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt,
+                channel);
         if (actions != null) {
             suggest(conversationId, ownerUserId, stored);
         }
@@ -251,13 +315,19 @@ public class ConversationService {
         return conversations.deleteIdleBefore(cutoff, limit);
     }
 
+    /** @see ConversationRepository#deleteAbandonedProactiveBefore */
+    public int deleteAbandonedProactiveBefore(Instant cutoff, int limit) {
+        return conversations.deleteAbandonedProactiveBefore(cutoff, limit);
+    }
+
     /** @param title null until the first question */
+    /** @param origin who opened it: its owner, or the assistant's watch for them */
     public record ConversationView(UUID id, String title, int messageCount, Instant lastActivityAt,
-                                   Instant createdAt) {
+                                   Instant createdAt, com.stockflow.assistant.internal.domain.ConversationOrigin origin) {
 
         static ConversationView of(Conversation conversation) {
             return new ConversationView(conversation.id(), conversation.title(), conversation.messageCount(),
-                    conversation.lastActivityAt(), conversation.createdAt());
+                    conversation.lastActivityAt(), conversation.createdAt(), conversation.origin());
         }
     }
 

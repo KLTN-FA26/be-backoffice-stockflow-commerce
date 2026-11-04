@@ -542,6 +542,28 @@ stockflow:
       # Blank: the chat's model. Otherwise a model named as in routing.models, e.g. openai/qwen2.5vl:3b for a vision
       # model on the local server: a text model cannot see. Its vendor's own key only; the data policy applies.
       model: ${ASSISTANT_RECEIPT_DRAFTS_MODEL:}
+    # The watch (design §9.1, ADR-0012): every few minutes it reads, AS EACH back-office USER (their roles, scope and
+    # warehouses now), the lists below that are theirs to act on, and posts what is new to their inbox. Off unless asked
+    # for; never with security off. post: lists whose news is posted (lowStock, heldOrders, overduePurchaseOrders); by
+    # default the two nothing else tells anyone about, as inventory alerts already post low stock. roles: per list, the
+    # roles it is posted to (a business decision, design §13); a list not named goes to whoever may read it. analyse:
+    # lists whose news the assistant also answers a question about in a conversation of the user's (lowStock gives a
+    # reorder proposal to confirm); each is a model call, so none by default. models: where those answers go, named as
+    # in routing.models; blank for the questions' own. run-budget: no answer starts that could end later in a run.
+    watch:
+      enabled: ${ASSISTANT_WATCH_ENABLED:false}
+      cron: ${ASSISTANT_WATCH_CRON:0 */15 7-19 * * MON-SAT}
+      post: ${ASSISTANT_WATCH_POST:heldOrders,overduePurchaseOrders}
+      roles:
+        heldOrders: ${ASSISTANT_WATCH_HELD_ORDERS_ROLES:ORDER_COORDINATOR}
+        overduePurchaseOrders: ${ASSISTANT_WATCH_OVERDUE_PO_ROLES:PROCUREMENT_STAFF,WAREHOUSE_MANAGER}
+        lowStock: ${ASSISTANT_WATCH_LOW_STOCK_ROLES:}
+      analyse: ${ASSISTANT_WATCH_ANALYSE:}
+      daily-analyses: ${ASSISTANT_WATCH_DAILY_ANALYSES:3}
+      analyses-per-run: ${ASSISTANT_WATCH_ANALYSES_PER_RUN:5}
+      run-budget: ${ASSISTANT_WATCH_RUN_BUDGET:PT30M}
+      rebaseline-after: ${ASSISTANT_WATCH_REBASELINE_AFTER:P4D}
+      models: ${ASSISTANT_WATCH_MODELS:}
 
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and

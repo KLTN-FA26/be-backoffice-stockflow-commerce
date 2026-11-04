@@ -11,6 +11,7 @@ import com.stockflow.assistant.internal.domain.PendingMessage;
 import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolExecution;
+import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.domain.ToolResult;
 import com.stockflow.assistant.internal.domain.ToolSpec;
 import com.stockflow.assistant.internal.domain.Turn;
@@ -37,8 +38,10 @@ import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * The agent loop (design §3.1): one question in, one answer out, with as many tool rounds as the model needs up to
@@ -121,6 +124,8 @@ public class AssistantService {
 
     private final ConversationService conversations;
     private final ModelRouter models;
+    /** The watch's questions go here (design §9.1); the questions' own router when no list of its own is set. */
+    private final ModelRouter background;
     private final AssistantTools tools;
     private final SystemPrompt prompt;
     private final AssistantProperties properties;
@@ -138,18 +143,28 @@ public class AssistantService {
                 AssistantTelemetry.NONE, new ParallelTools(tools));
     }
 
+    AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
+                     SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
+                     ObjectMapper json, ToolAvailability availability, AssistantTelemetry telemetry,
+                     ParallelTools parallel) {
+        this(conversations, models, tools, prompt, properties, messages, clock, json, availability, telemetry,
+                parallel, new BackgroundModels(models, false));
+    }
+
     /**
-     * @param telemetry where each answer's span, the parent of its model calls and tools, is recorded
-     * @param parallel  runs a step's calls at once, in the order the model asked for them
+     * @param telemetry  where each answer's span, the parent of its model calls and tools, is recorded
+     * @param parallel   runs a step's calls at once, in the order the model asked for them
+     * @param background the models the watch's questions go to
      */
     @Autowired
     AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
                      SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
                      ObjectMapper json, ToolAvailability availability, AssistantTelemetry telemetry,
-                     ParallelTools parallel) {
+                     ParallelTools parallel, BackgroundModels background) {
         this.parallel = parallel;
         this.conversations = conversations;
         this.models = models;
+        this.background = background.router();
         this.tools = tools;
         this.prompt = prompt;
         this.properties = properties;
@@ -201,19 +216,66 @@ public class AssistantService {
      * inside a 200 stream. {@link #ask} checks them again: this answers early, it does not reserve.
      */
     public void refuseEarly(UUID conversationId, String text, CurrentUser user) {
-        refuseUpFront(text, user, clock.instant());
+        refuseUpFront(text, user, clock.instant(), models, ToolChannel.CHAT);
         conversations.requireIdle(conversationId, properties.answerLease());
+        conversations.requireAskable(conversationId);
+    }
+
+    /**
+     * A question the assistant's watch asks for {@code user}, in a proactive conversation of theirs (design §9.1,
+     * ADR-0012): answered as a question of theirs is — their tools, their scope, their proposals becoming suggestions
+     * of theirs — on the background models, and not counted against their daily limit (the watch has its own). Called
+     * through the proxy, as the user {@code RunAs} acts for, on the watch's own thread.
+     *
+     * @throws IllegalStateException when the conversation was not opened by the watch
+     * @throws BusinessException     as {@link #ask} does, the daily limit apart
+     */
+    @RequiresPermission(resource = ToolPermissions.ASSISTANT, action = Action.CREATE, scope = DataScope.OWN)
+    public Answer askProactively(UUID conversationId, String text, CurrentUser user, java.util.Set<String> tools) {
+        conversations.requireProactive(conversationId);
+        return telemetry.answer(ToolChannel.PROACTIVE,
+                () -> answering(conversationId, text, user, Progress.NONE, ToolChannel.PROACTIVE, tools));
+    }
+
+    /**
+     * Whether the watch's questions can be answered now: its models are configured and usable, and not every one of
+     * them is set aside for a spent quota (a question would then only store its failure).
+     */
+    public boolean answersInTheBackground() {
+        return background.available() && !background.everyModelSetAside();
+    }
+
+    /**
+     * Runs one wave of a step's calls, results in call order. With {@code allowed}, a call to any other tool is refused
+     * without running: NOT_OFFERED, which the model reads like any refusal.
+     */
+    private List<ToolExecution> runWave(List<ToolCall> wave, ToolChannel channel, Set<String> allowed,
+                                        Progress progress) {
+        java.util.function.Consumer<ToolExecution> told =
+                finished -> progress.toolRan(ConversationService.ToolCallView.of(forTheRecord(finished)));
+        if (allowed == null) {
+            return parallel.run(wave, channel, told);
+        }
+        java.util.Iterator<ToolExecution> ran = parallel.run(
+                wave.stream().filter(call -> allowed.contains(call.name())).toList(), channel, told).iterator();
+        List<ToolExecution> all = new ArrayList<>();
+        for (ToolCall call : wave) {
+            all.add(allowed.contains(call.name()) ? ran.next() : new ToolExecution(call, ToolOutcome.DENIED,
+                    "NOT_OFFERED: this question may use only " + String.join(", ", new java.util.TreeSet<>(allowed)),
+                    0));
+        }
+        return all;
     }
 
     /** @return the question, trimmed */
-    private String refuseUpFront(String text, CurrentUser user, Instant now) {
-        if (!models.available()) {
+    private String refuseUpFront(String text, CurrentUser user, Instant now, ModelRouter router, ToolChannel channel) {
+        if (!router.available()) {
             throw new BusinessException(ErrorCode.ASSISTANT_DISABLED);
         }
         String question = Conversation.question(text);
         // A soft cap: two questions racing in two conversations may both pass at the limit. It bounds cost, it is not
-        // a security boundary.
-        if (conversations.questionsSince(user.userId(), BusinessDate.startOfDay(now))
+        // a security boundary. The watch's questions are not the user's, and are capped by the watch.
+        if (channel == ToolChannel.CHAT && conversations.questionsSince(user.userId(), BusinessDate.startOfDay(now))
                 >= properties.dailyMessageLimit()) {
             throw new BusinessException(ErrorCode.ASSISTANT_DAILY_LIMIT,
                     "The daily limit of " + properties.dailyMessageLimit() + " questions is reached");
@@ -222,29 +284,41 @@ public class AssistantService {
     }
 
     private Answer ask(UUID conversationId, String text, CurrentUser user, Progress progress) {
-        return telemetry.answer(ToolChannel.CHAT, () -> answering(conversationId, text, user, progress));
+        return telemetry.answer(ToolChannel.CHAT,
+                () -> answering(conversationId, text, user, progress, ToolChannel.CHAT, null));
     }
 
-    private Answer answering(UUID conversationId, String text, CurrentUser user, Progress progress) {
+    /**
+     * @param channel CHAT for the user's own question, PROACTIVE for the watch's: which models, which cap
+     * @param only    the tools the question may be offered, of the user's own; null for all of them
+     */
+    private Answer answering(UUID conversationId, String text, CurrentUser user, Progress progress,
+                             ToolChannel channel, java.util.Set<String> only) {
         Instant now = clock.instant();
-        String question = refuseUpFront(text, user, now);
+        ModelRouter router = channel == ToolChannel.PROACTIVE ? background : models;
+        String question = refuseUpFront(text, user, now, router, channel);
+        if (channel == ToolChannel.CHAT) {
+            conversations.requireAskable(conversationId);
+        }
         Turn.Question turn = new Turn.Question(question, context(user, now));
         Instant claimedAt = now.truncatedTo(ChronoUnit.MICROS);
-        ModelRouter.Route route = models.route();
+        ModelRouter.Route route = router.route();
         List<Turn> stored = conversations.claimAndAsk(conversationId, PendingMessage.question(turn), claimedAt,
                 properties.answerLease());
         List<PendingMessage> produced = new ArrayList<>();
         try {
             answerOnRoute(route, stored, produced, progress, claimedAt.plus(properties.answerLease()),
-                    availability.specsFor(user));
+                    only == null ? availability.specsFor(user)
+                            : availability.specsFor(user).stream().filter(spec -> only.contains(spec.name())).toList(),
+                    channel);
         } catch (RuntimeException failure) {
             // The transcript says what became of the question: the turns so far, tools that ran included, then the
             // error's message. Right after the question, that closing turn also keeps it out of the daily cap.
             whileFailing(failure, () -> produced.add(closing(route.model(), failureText(failure))));
-            whileFailing(failure, () -> store(conversationId, user.userId(), claimedAt, produced));
+            whileFailing(failure, () -> store(conversationId, user.userId(), claimedAt, produced, channel));
             throw failure;
         }
-        Answer answer = Answer.of(stored, store(conversationId, user.userId(), claimedAt, produced), json);
+        Answer answer = Answer.of(stored, store(conversationId, user.userId(), claimedAt, produced, channel), json);
         return answer.proposals().isEmpty() ? answer
                 : answer.withActions(conversations.actionsOf(answer.messageId(), user.userId()));
     }
@@ -265,7 +339,7 @@ public class AssistantService {
      * @param offered  the tools the user may use, worked out once for the question: every attempt is offered the same
      */
     private void answerOnRoute(ModelRouter.Route route, List<Turn> stored, List<PendingMessage> produced,
-                               Progress progress, Instant leaseEnds, List<ToolSpec> offered) {
+                               Progress progress, Instant leaseEnds, List<ToolSpec> offered, ToolChannel channel) {
         // What the earlier exchanges let an answer repeat, as the transcript reads it (AnswerSources.earlierGrounds).
         AnswerNumbers.Grounds earlier = AnswerSources.earlierGrounds(stored);
         while (true) {
@@ -274,7 +348,7 @@ public class AssistantService {
             Outcome outcome;
             try {
                 outcome = answer(model, new ArrayList<>(History.forModel(stored, model::closingTurn)), produced::add,
-                        progress, leaseEnds, offered, earlier);
+                        progress, leaseEnds, offered, earlier, channel);
             } catch (RepairFailed failed) {
                 // The answer stands as the model first wrote it. The model replied, so the route is told so first;
                 // a spent quota then still sets it aside, even on a route made of models all set aside.
@@ -316,9 +390,10 @@ public class AssistantService {
      * the rest of the lease with nothing answering. What it held is lost; storing it again without its tool calls
      * would drop exactly the audit rows this class promises to keep.
      */
-    private List<Message> store(UUID conversationId, UUID owner, Instant claimedAt, List<PendingMessage> produced) {
+    private List<Message> store(UUID conversationId, UUID owner, Instant claimedAt, List<PendingMessage> produced,
+                                ToolChannel channel) {
         try {
-            return conversations.appendAndRelease(conversationId, owner, claimedAt, produced);
+            return conversations.appendAndRelease(conversationId, owner, claimedAt, produced, channel);
         } catch (RuntimeException failed) {
             whileFailing(failed, () -> conversations.release(conversationId, claimedAt));
             throw failed;
@@ -344,7 +419,8 @@ public class AssistantService {
      * @return how the attempt ended, for {@link #answerOnRoute} to decide whether another model should try
      */
     private Outcome answer(LanguageModel model, List<Turn> history, Consumer<PendingMessage> sink, Progress progress,
-                           Instant leaseEnds, List<ToolSpec> offered, AnswerNumbers.Grounds earlier) {
+                           Instant leaseEnds, List<ToolSpec> offered, AnswerNumbers.Grounds earlier,
+                           ToolChannel channel) {
         Consumer<PendingMessage> record = message -> {
             history.add(message.turn());
             sink.accept(message);
@@ -390,14 +466,18 @@ public class AssistantService {
                 List<ToolExecution> executions = new ArrayList<>();
                 List<ToolResult> results = new ArrayList<>();
                 List<ToolCall> admitted = calls.subList(0, Math.min(calls.size(), MAX_CALLS_PER_ROUND));
+                // The watch's question may use only the tools it was offered: in the chat a call to another tool runs
+                // and its own guard decides, but there text the question quotes (a held order's note) must not be able
+                // to reach a tool that writes the user a suggestion they did not ask for.
+                Set<String> allowed = channel == ToolChannel.PROACTIVE
+                        ? offered.stream().map(ToolSpec::name).collect(Collectors.toUnmodifiableSet()) : null;
                 int ran = 0;
                 while (ran < admitted.size() && budget > 0) {
                     // As many at once as the room left holds at their longest, one at least: a step ends no further
                     // past the budget than one result, as when the calls ran one by one. Every call either ran and
                     // its result was sent, or did not run: what the model received is what the record keeps.
                     int wave = Math.min(admitted.size() - ran, Math.max(1, budget / ToolExecution.MAX_RESULT_LENGTH));
-                    for (ToolExecution done : parallel.run(admitted.subList(ran, ran + wave), ToolChannel.CHAT,
-                            finished -> progress.toolRan(ConversationService.ToolCallView.of(forTheRecord(finished))))) {
+                    for (ToolExecution done : runWave(admitted.subList(ran, ran + wave), channel, allowed, progress)) {
                         ToolExecution execution = forTheRecord(done);
                         budget -= execution.result().length();
                         executions.add(execution);

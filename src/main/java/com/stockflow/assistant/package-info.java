@@ -25,5 +25,6 @@
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {
         "inventory :: api", "order :: api", "procurement :: api", "reporting :: api", "fulfillment :: api",
-        "catalog :: api", "production :: api", "customer :: api", "payment :: api", "warehouse :: api"})
+        "catalog :: api", "production :: api", "customer :: api", "payment :: api", "warehouse :: api",
+        "identity :: api", "notification :: api"})
 package com.stockflow.assistant;

@@ -49,6 +49,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -91,7 +92,7 @@ class AssistantServiceTest {
             history.add(((PendingMessage) call.getArgument(1)).turn());
             return history;
         });
-        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList())).thenAnswer(call -> {
+        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any())).thenAnswer(call -> {
             List<PendingMessage> produced = call.getArgument(3);
             stored.addAll(produced);
             List<Message> messages = new ArrayList<>();
@@ -632,7 +633,7 @@ class AssistantServiceTest {
             + "left busy for the whole lease")
     void storeFailureReleasesTheClaim() {
         model.then(LanguageModel.StopReason.END_TURN, "ok");
-        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList()))
+        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any()))
                 .thenThrow(new IllegalStateException("the database is gone"));
 
         assertThatThrownBy(() -> service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER))
@@ -645,7 +646,7 @@ class AssistantServiceTest {
             + "errors")
     void failureAndStoreFailure() {
         model.failNext();
-        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList()))
+        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any()))
                 .thenThrow(new IllegalStateException("the database is gone"));
 
         assertThatThrownBy(() -> service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER))
@@ -690,6 +691,43 @@ class AssistantServiceTest {
                 .endsWith(" They are limited to warehouses HCM: they see no other warehouse and no company-wide "
                         + "stock figure.")
                 .doesNotContain("minh.vo");
+    }
+
+    @Test
+    @DisplayName("the watch's question is offered only the tools it names, of the user's own, and does not count "
+            + "against the user's daily questions")
+    void aProactiveQuestionGetsOnlyItsTools() {
+        model.then(LanguageModel.StopReason.END_TURN, "Không có gì cần làm.");
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        when(conversations.questionsSince(any(), any())).thenReturn(1_000L);
+
+        service().askProactively(CONVERSATION, "Các PO sau đã trễ: PO-1.", MANAGER, Set.of("findPurchaseOrders"));
+        service().askProactively(CONVERSATION, "Các mã sau đã thấp: CUP-12OZ.", MANAGER, Set.of("getStockLevels"));
+
+        assertThat(model.requests.getFirst().tools()).as("findPurchaseOrders is not the user's").isEmpty();
+        assertThat(model.requests.get(1).tools()).extracting(ToolSpec::name).containsExactly("getStockLevels");
+        verify(conversations, times(2)).requireProactive(CONVERSATION);
+        assertThat(stored).filteredOn(message -> message.role() == MessageRole.ASSISTANT).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("in the watch's question a call to a tool it was not offered is refused without running, even one "
+            + "the user may use: text it quotes cannot reach another tool")
+    void aProactiveQuestionCannotReachAnotherTool() {
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "Không xem được tồn kho trong câu này.");
+
+        AssistantService.Answer answer = service().askProactively(CONVERSATION, "Các PO sau đã trễ: PO-1.",
+                MANAGER, Set.of("findPurchaseOrders"));
+
+        assertThat(toolRuns).as("never run").hasValue(0);
+        assertThat(answer.toolCalls()).singleElement().satisfies(call -> {
+            assertThat(call.tool()).isEqualTo("getStockLevels");
+            assertThat(call.outcome()).isEqualTo(ToolOutcome.DENIED);
+        });
+        assertThat(stored).flatExtracting(PendingMessage::executions)
+                .allSatisfy(run -> assertThat(run.result()).startsWith("NOT_OFFERED"));
     }
 
     @Test

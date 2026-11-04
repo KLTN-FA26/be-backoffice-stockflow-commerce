@@ -409,6 +409,69 @@ class ArchitectureTest {
         rule.allowEmptyShould(true).check(CLASSES);
     }
 
+    /**
+     * {@code RunAs} builds an authorization that no request carried (ADR-0012). Every caller is one more way to act for
+     * someone without them, so each is added here on purpose, reviewed as such; today only the assistant's watch.
+     */
+    @Test
+    void onlyTheAssistantsWatchActsForAUser() {
+        ArchRule rule = noClasses()
+                .that().haveNameNotMatching("com\\.stockflow\\.assistant\\.internal\\.service\\.AssistantWatch(\\$.*)?")
+                .and().haveNameNotMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
+                .should().dependOnClassesThat()
+                .haveNameMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
+                .because("acting for a user outside a request is reviewed per caller (ADR-0012)");
+        rule.check(CLASSES);
+    }
+
+    /**
+     * An authorization is built in two places only: from a request's token, and by {@code RunAs}. A third would be a
+     * way round both, and is reviewed as one (ADR-0008, ADR-0012).
+     */
+    @Test
+    void onlyTheConverterAndRunAsBuildAnAuthorization() {
+        ArchRule rule = noClasses()
+                .that().haveNameNotMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
+                .and().doNotHaveFullyQualifiedName(
+                        "com.stockflow.common.security.StockflowJwtAuthenticationConverter")
+                .and().doNotHaveFullyQualifiedName("com.stockflow.common.security.StockflowAuthenticationToken")
+                .should().callConstructorWhere(com.tngtech.archunit.core.domain.JavaCall.Predicates.target(
+                        com.tngtech.archunit.core.domain.properties.HasOwner.Predicates.With.owner(
+                                com.tngtech.archunit.base.DescribedPredicate.describe("StockflowAuthenticationToken",
+                                        owner -> owner.getName().equals(
+                                                "com.stockflow.common.security.StockflowAuthenticationToken")))))
+                .because("an authorization comes from a request's token or from RunAs, nowhere else");
+        rule.check(CLASSES);
+    }
+
+    /** A proactive question is not counted against its user's daily limit: only the watch asks one. */
+    @Test
+    void onlyTheWatchAsksProactively() {
+        ArchRule rule = noClasses()
+                .that().haveNameNotMatching("com\\.stockflow\\.assistant\\.internal\\.service\\.AssistantWatch(\\$.*)?")
+                .should().callMethodWhere(com.tngtech.archunit.core.domain.JavaCall.Predicates.target(
+                        com.tngtech.archunit.base.DescribedPredicate.describe("AssistantService.askProactively",
+                                target -> target.getOwner().getName().equals(
+                                        "com.stockflow.assistant.internal.service.AssistantService")
+                                        && target.getName().equals("askProactively"))))
+                .because("the watch's question bypasses the user's daily limit (design §9.1)");
+        rule.check(CLASSES);
+    }
+
+    /** The watch acts for any user it is given: only its job gives it users, and only the retention job tidies it. */
+    @Test
+    void onlyItsJobsUseTheWatch() {
+        ArchRule rule = noClasses()
+                .that().haveNameNotMatching(
+                        "com\\.stockflow\\.assistant\\.internal\\.service\\.Assistant(Watch|WatchJob|RetentionJob)(\\$.*)?")
+                .and().doNotHaveFullyQualifiedName(
+                        "com.stockflow.assistant.internal.service.AssistantWatchProperties")
+                .should().dependOnClassesThat()
+                .haveNameMatching("com\\.stockflow\\.assistant\\.internal\\.service\\.AssistantWatch(\\$.*)?")
+                .because("the watch acts for whichever user it is handed (ADR-0012)");
+        rule.check(CLASSES);
+    }
+
     /** Field injection makes dependencies invisible and objects impossible to construct in a test. */
     @Test
     void noFieldInjection() {

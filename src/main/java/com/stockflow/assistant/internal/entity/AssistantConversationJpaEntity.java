@@ -1,9 +1,12 @@
 package com.stockflow.assistant.internal.entity;
 
+import com.stockflow.assistant.internal.domain.ConversationOrigin;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.common.security.ScopedEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
@@ -36,13 +39,22 @@ public class AssistantConversationJpaEntity extends BaseEntity implements Scoped
     @Column(name = "answering_since")
     private Instant answeringSince;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "origin", nullable = false, length = 16, updatable = false)
+    private ConversationOrigin origin = ConversationOrigin.CHAT;
+
     protected AssistantConversationJpaEntity() {
     }
 
     public AssistantConversationJpaEntity(UUID id, UUID ownerUserId, Instant createdAt) {
+        this(id, ownerUserId, createdAt, ConversationOrigin.CHAT);
+    }
+
+    public AssistantConversationJpaEntity(UUID id, UUID ownerUserId, Instant createdAt, ConversationOrigin origin) {
         super(id);
         this.ownerUserId = ownerUserId;
         this.lastActivityAt = createdAt;
+        this.origin = origin;
     }
 
     @Override
@@ -85,4 +97,5 @@ public class AssistantConversationJpaEntity extends BaseEntity implements Scoped
     public int getMessageCount() { return messageCount; }
     public Instant getLastActivityAt() { return lastActivityAt; }
     public Instant getAnsweringSince() { return answeringSince; }
+    public ConversationOrigin getOrigin() { return origin; }
 }

@@ -16,9 +16,10 @@ import java.util.UUID;
  * @param title          the first question, cut to {@link #TITLE_LENGTH}; null until one is asked
  * @param messageCount   messages stored so far; the next one's sequence
  * @param answeringSince when the question being answered now was claimed; null when none is
+ * @param origin         who opened it: its owner, or the assistant's watch for them
  */
 public record Conversation(UUID id, UUID ownerUserId, String title, int messageCount, Instant lastActivityAt,
-                           Instant answeringSince, Instant createdAt) {
+                           Instant answeringSince, Instant createdAt, ConversationOrigin origin) {
 
     /** Also {@code ck_conversation_title}. */
     public static final int TITLE_LENGTH = 120;
@@ -33,6 +34,13 @@ public record Conversation(UUID id, UUID ownerUserId, String title, int messageC
         if (messageCount < 0) {
             throw new IllegalArgumentException("messageCount must not be negative");
         }
+        origin = origin == null ? ConversationOrigin.CHAT : origin;
+    }
+
+    /** One its owner opened. */
+    public Conversation(UUID id, UUID ownerUserId, String title, int messageCount, Instant lastActivityAt,
+                        Instant answeringSince, Instant createdAt) {
+        this(id, ownerUserId, title, messageCount, lastActivityAt, answeringSince, createdAt, ConversationOrigin.CHAT);
     }
 
     /**

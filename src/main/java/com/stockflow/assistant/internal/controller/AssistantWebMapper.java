@@ -44,7 +44,7 @@ class AssistantWebMapper {
 
     ConversationResponse toResponse(ConversationService.ConversationView conversation) {
         return new ConversationResponse(conversation.id(), conversation.title(), conversation.messageCount(),
-                conversation.lastActivityAt(), conversation.createdAt());
+                conversation.lastActivityAt(), conversation.createdAt(), conversation.origin().name());
     }
 
     /** A transcript for {@code reader}: what they may use is read once, for every answer in it. */
