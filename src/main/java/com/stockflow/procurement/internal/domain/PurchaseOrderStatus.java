@@ -1,26 +1,62 @@
 package com.stockflow.procurement.internal.domain;
 
 /**
- * Lifecycle of a purchase order. {@code CLOSED_SHORT} = closed with less received than ordered.
- *
- * <p><b>Scope note (SCRUM-113/116/119, WBS 3.2.1/3.2.4/3.2.7):</b> this is a simplified subset of
- * the full ten-state machine in {@code docs/business-design/03-state-machines.md} §2. It merges
- * away {@code PENDING_APPROVAL} (submit+approve is one step, {@code approve()}), {@code CONFIRMED}
- * (no separate "supplier acknowledged" step), and {@code RECEIVED} (reaching zero open quantity
- * closes the PO directly rather than waiting for a three-way-matched invoice, BR-INV-003 — that
- * gate needs {@code supplier_invoice} matching logic this sprint does not build). Flagged here
- * rather than silently narrowed, since a future story implementing approval limits (BR-PO-002) or
- * invoice matching will need to widen this enum and every switch over it.</p>
+ * Lifecycle of a purchase order, decision D4 ({@code ck_purchase_orders_status}).
  *
  * <pre>
- *   DRAFT ──approve──▶ APPROVED ──send──▶ SENT ──receiveGoods──▶ PARTIALLY_RECEIVED ──closeShort──▶ CLOSED_SHORT
- *                                           │                         │
- *                                           │                         └──receiveGoods (open qty = 0)──▶ CLOSED
- *                                           └──receiveGoods (open qty = 0)──▶ CLOSED
+ *   DRAFT ──submit, total above the submitter's limit──▶ PENDING_APPROVAL ──approve (four-eyes, approver's limit)──┐
+ *     │  ▲                                                      │                                                │
+ *     │  └──────────────────reject (reason)────────────────────┘                                                ▼
+ *     └──submit, total within the submitter's own limit (auto-approved)──────────────────────────────────▶ APPROVED
+ *                                                                                                                │ confirm (= send)
+ *                                                                                                                ▼
+ *   CLOSED ◀──close── RECEIVED ◀── PARTIALLY_RECEIVED ◀──goods receipts (SCRUM-435)── CONFIRMED
+ *     ▲  ▲                                  │                                              │
+ *     │  └──────────close short─────────────┘                                              │
+ *     └──────────────────────force close (reason; nothing was received)────────────────────┘
  *
- *   DRAFT/APPROVED/SENT ──cancel──▶ CANCELLED   (only while nothing has been received)
+ *   DRAFT / PENDING_APPROVAL / APPROVED / CONFIRMED ──cancel──▶ CANCELLED   (nothing received)
  * </pre>
+ *
+ * <p>The old model's {@code SENT} is {@code CONFIRMED}: confirming the order locks its content and
+ * sends it to the supplier in one step (C4 plan Q1). The supplier's answer is recorded beside the
+ * status ({@link SupplierConfirmationStatus}), it does not move it. {@code CLOSED_SHORT} is
+ * {@code CLOSED} with {@link CloseKind#SHORT_CLOSE} (Q2). Receiving moves CONFIRMED and
+ * PARTIALLY_RECEIVED forward; that is the goods receipt's own transition, not an edge of this table.</p>
  */
 public enum PurchaseOrderStatus {
-    DRAFT, APPROVED, SENT, PARTIALLY_RECEIVED, CLOSED, CLOSED_SHORT, CANCELLED
+    DRAFT, PENDING_APPROVAL, APPROVED, CONFIRMED, PARTIALLY_RECEIVED, RECEIVED, CLOSED, CANCELLED;
+
+    public boolean canTransitionTo(PurchaseOrderStatus target) {
+        return switch (this) {
+            // DRAFT -> APPROVED is the under-limit submission only (PurchaseOrder#submitWithinLimit); approve() refuses a draft.
+            case DRAFT -> target == PENDING_APPROVAL || target == APPROVED || target == CANCELLED;
+            case PENDING_APPROVAL -> target == APPROVED || target == DRAFT || target == CANCELLED;
+            case APPROVED -> target == CONFIRMED || target == CANCELLED;
+            // CONFIRMED -> CLOSED is the force close: the order will not be received at all (PurchaseOrder#closeShort).
+            case CONFIRMED -> target == CANCELLED || target == CLOSED;
+            case PARTIALLY_RECEIVED, RECEIVED -> target == CLOSED;
+            case CLOSED, CANCELLED -> false;
+        };
+    }
+
+    /**
+     * Approved and not finished: an amendment asked of an order in this status can still be decided (SCRUM-117). A
+     * standard order narrows it further - nothing received yet ({@code PurchaseOrder#requireAmendable}) - while a
+     * subcontract supplement may be asked for through receipt. On a CANCELLED or CLOSED order a revision still named
+     * pending is one nobody can decide any more, so it is not shown or treated as a pending amendment.
+     */
+    public boolean takesAmendments() {
+        return this == APPROVED || this == CONFIRMED || this == PARTIALLY_RECEIVED || this == RECEIVED;
+    }
+
+    /** The names of the statuses that {@linkplain #takesAmendments take amendments}, for a query's IN list. */
+    public static java.util.List<String> takingAmendments() {
+        return java.util.Arrays.stream(values()).filter(PurchaseOrderStatus::takesAmendments).map(Enum::name).toList();
+    }
+
+    /** Still to be received or still on its way to the supplier: a supplier cannot be retired under it. */
+    public boolean isOpen() {
+        return this != RECEIVED && this != CLOSED && this != CANCELLED;
+    }
 }

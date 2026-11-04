@@ -1,0 +1,149 @@
+package com.stockflow.procurement.internal.repository;
+
+import com.stockflow.procurement.internal.domain.PoLineStatus;
+import com.stockflow.procurement.internal.domain.PurchaseOrder;
+import com.stockflow.procurement.internal.domain.PurchaseOrderId;
+import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
+import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
+import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder;
+import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrders;
+import com.stockflow.procurement.internal.domain.SupplierConfirmationStatus;
+import com.stockflow.procurement.internal.entity.PoLineJpaEntity;
+import com.stockflow.procurement.internal.entity.PurchaseOrderJpaEntity;
+import com.stockflow.procurement.internal.entity.SupplierJpaEntity;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.PersistenceContext;
+import org.springframework.stereotype.Repository;
+
+import java.math.BigDecimal;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+/**
+ * Receiving's view of a purchase order, read and written through the same JPA entities as the
+ * {@code PurchaseOrder} aggregate ({@link PurchaseOrderRepositoryAdapter}). The view stays narrow on
+ * purpose — receiving changes line and header status and adds a timeline event, and the first receipt withdraws an
+ * amendment still waiting (through the aggregate's port, {@link #withdrawPendingAmendment}), nothing else — but it
+ * no longer has SQL of its own against the order tables: the {@code @Version} column, the audit
+ * columns and the entity's own guards ({@link PurchaseOrderJpaEntity#advanceByReceipt}) apply to it
+ * the same way they apply to every other write.
+ */
+@Repository
+class ReceivingPurchaseOrderAdapter implements ReceivingPurchaseOrders {
+
+    private final PurchaseOrderJpaRepository orders;
+    private final SupplierJpaRepository suppliers;
+    private final PurchaseOrderEventLog events;
+    private final PurchaseOrderRepository purchaseOrders;
+
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    ReceivingPurchaseOrderAdapter(PurchaseOrderJpaRepository orders, SupplierJpaRepository suppliers,
+                                  PurchaseOrderEventLog events, PurchaseOrderRepository purchaseOrders) {
+        this.orders = orders;
+        this.suppliers = suppliers;
+        this.events = events;
+        this.purchaseOrders = purchaseOrders;
+    }
+
+    @Override
+    public Optional<ReceivingPurchaseOrder> find(UUID purchaseOrderId) {
+        return orders.findWithLinesById(purchaseOrderId).map(this::toView);
+    }
+
+    /**
+     * Locked, then re-read: the persistence context may already hold the order from before the lock,
+     * and computing the status from that copy would make the lock decorative. The supplier row is read,
+     * not locked.
+     */
+    @Override
+    public Optional<ReceivingPurchaseOrder> lock(UUID purchaseOrderId) {
+        return orders.findByIdForUpdate(purchaseOrderId).map(order -> {
+            entityManager.refresh(order, LockModeType.PESSIMISTIC_WRITE);
+            order.getLines().forEach(entityManager::refresh);
+            return toView(order);
+        });
+    }
+
+    @Override
+    public void recordProgress(ReceivingPurchaseOrder view, Map<UUID, ReceivingPurchaseOrder.LineStatus> lineStatuses,
+                               ReceivingPurchaseOrder.Status newStatus, UUID actorId, UUID receiptId,
+                               String receiptNumber) {
+        PurchaseOrderJpaEntity order = orders.findWithLinesById(view.id()).orElseThrow(() ->
+                new IllegalStateException("Purchase order " + view.id() + " vanished while it was being received"));
+        for (PoLineJpaEntity line : order.getLines()) {
+            ReceivingPurchaseOrder.LineStatus next = lineStatuses.get(line.getId());
+            if (next != null && line.getStatus() != PoLineStatus.valueOf(next.name())) {
+                line.setStatus(PoLineStatus.valueOf(next.name()));
+            }
+        }
+        boolean statusChanges = newStatus != view.status();
+        if (statusChanges) {
+            order.advanceByReceipt(PurchaseOrderStatus.valueOf(newStatus.name()));
+        }
+        orders.saveAndFlush(order);
+        if (statusChanges) {
+            events.record(order.getId(), order.getActiveRevisionId(), newStatus.name(), actorId,
+                    view.status().name(), newStatus.name(), "Goods receipt " + receiptNumber,
+                    Map.of("receiptId", receiptId.toString(), "receiptNumber", receiptNumber), "goods-receipt");
+            if (view.status() == ReceivingPurchaseOrder.Status.CONFIRMED) {
+                withdrawPendingAmendment(order, newStatus.name(), actorId, receiptNumber);
+            }
+        }
+    }
+
+    /**
+     * The first receipt posted withdraws the amendment still waiting on a standard order (SCRUM-117, design D5), in
+     * this transaction and under the order lock receiving already holds. Receiving is never blocked by an amendment;
+     * instead, once goods are counted against the revision in force, the amendment can no longer be approved - it
+     * would rewrite lines goods were received against - and left pending it would only wait to be refused. Withdrawn,
+     * with the person who posted the receipt as the actor, the requester sees why at once and can ask again for what
+     * is still open.
+     *
+     * <p>A SUBCONTRACT order's supplement is left alone: it is a resend after a QC shortfall, meant for an order that
+     * is being received, and approving it reopens the order for the extra units.</p>
+     */
+    private void withdrawPendingAmendment(PurchaseOrderJpaEntity order, String status, UUID actorId,
+                                          String receiptNumber) {
+        if (order.getType() != PurchaseOrder.Type.STANDARD || order.getPendingRevisionId() == null) {
+            return;
+        }
+        PurchaseOrderId id = new PurchaseOrderId(order.getId());
+        purchaseOrders.pendingAmendment(id).ifPresent(amendment -> {
+            String reason = "Goods received (receipt " + receiptNumber + ")";
+            purchaseOrders.dropAmendment(id);
+            purchaseOrders.recordApproval(amendment.revisionId(), actorId, "WITHDRAWN", reason);
+            events.record(order.getId(), amendment.revisionId(), "WITHDRAWN", actorId, status, status, reason, null,
+                    "goods-receipt");
+        });
+    }
+
+    @Override
+    public Optional<String> supplierName(UUID supplierId) {
+        return supplierId == null ? Optional.empty() : suppliers.findById(supplierId).map(SupplierJpaEntity::getName);
+    }
+
+    private ReceivingPurchaseOrder toView(PurchaseOrderJpaEntity order) {
+        BigDecimal tolerance = suppliers.findById(order.getSupplierId())
+                .map(SupplierJpaEntity::getOverReceiptTolerancePercent)
+                .orElse(null);
+        return new ReceivingPurchaseOrder(order.getId(), order.getPoNumber(),
+                ReceivingPurchaseOrder.Status.valueOf(order.getStatus().name()), order.getSupplierId(),
+                order.getWarehouseId(), order.getActiveRevisionId(), tolerance,
+                order.getSupplierConfirmationStatus() == SupplierConfirmationStatus.REJECTED,
+                // A line withdrawn from a draft is no longer part of the order (SCRUM-462).
+                order.getLines().stream()
+                        .filter(line -> line.getStatus() != PoLineStatus.WITHDRAWN)
+                        .sorted(Comparator.comparingInt(PoLineJpaEntity::getLineNo))
+                        .map(line -> new ReceivingPurchaseOrder.Line(line.getId(), line.getLineNo(),
+                                line.getInventoryItemId(), line.getOrderedQuantity(),
+                                ReceivingPurchaseOrder.LineStatus.valueOf(line.getStatus().name()),
+                                line.getUomConversionId()))
+                        .toList(),
+                order.getType() == com.stockflow.procurement.internal.domain.PurchaseOrder.Type.SUBCONTRACT);
+    }
+}

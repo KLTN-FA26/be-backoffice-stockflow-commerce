@@ -2,9 +2,14 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.StockAvailability;
+import com.stockflow.inventory.api.StockLevel;
+import com.stockflow.inventory.internal.controller.dto.StockLevelResponse;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
+import com.stockflow.inventory.internal.controller.dto.ReservationRowResponse;
 import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
+import com.stockflow.inventory.internal.controller.dto.WarehouseStockItemResponse;
+import com.stockflow.inventory.internal.service.StockBrowsing;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.ReportingPolicy;
@@ -27,9 +32,14 @@ interface InventoryWebMapper {
 
     @Mapping(target = "id", source = "stockItemId")
     @Mapping(target = "status", constant = "AVAILABLE")
+    @Mapping(target = "hiddenDuringCount", constant = "false")
     StockItemResponse toResponse(StockAvailability availability);
 
     List<StockItemResponse> toResponses(List<StockAvailability> availabilities);
+
+    StockLevelResponse toResponse(StockLevel level);
+
+    List<StockLevelResponse> toLevelResponses(List<StockLevel> levels);
 
     @Mapping(target = "holds", source = "reservations")
     ReservationResponse toResponse(ReserveStockResult result);
@@ -42,4 +52,8 @@ interface InventoryWebMapper {
      * than pointing at the enclosing method.</p>
      */
     ReservationResponse.Hold toHold(StockReservation hold);
+
+    ReservationRowResponse toResponse(StockBrowsing.Reservation reservation);
+
+    WarehouseStockItemResponse toResponse(StockBrowsing.StockRow row);
 }

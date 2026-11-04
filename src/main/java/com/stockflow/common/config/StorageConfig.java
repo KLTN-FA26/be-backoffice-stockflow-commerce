@@ -12,6 +12,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.net.URI;
 
@@ -34,6 +35,22 @@ import java.net.URI;
 @ConditionalOnProperty(prefix = "stockflow.storage", name = "provider",
         havingValue = "s3", matchIfMissing = true)
 public class StorageConfig {
+
+    @Bean
+    public S3Presigner s3Presigner(StorageProperties properties,
+                                  @Value("${stockflow.storage.access-key:}") String accessKey,
+                                  @Value("${stockflow.storage.secret-key:}") String secretKey) {
+        var builder = S3Presigner.builder().region(Region.of(properties.region()))
+                .serviceConfiguration(S3Configuration.builder()
+                        .pathStyleAccessEnabled(properties.pathStyle()).build());
+        if (properties.usesCustomEndpoint()) {
+            builder.endpointOverride(URI.create(properties.endpoint()));
+        }
+        builder.credentialsProvider(!accessKey.isBlank() && !secretKey.isBlank()
+                ? StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey))
+                : DefaultCredentialsProvider.create());
+        return builder.build();
+    }
 
     @Bean
     public S3Client s3Client(StorageProperties properties,

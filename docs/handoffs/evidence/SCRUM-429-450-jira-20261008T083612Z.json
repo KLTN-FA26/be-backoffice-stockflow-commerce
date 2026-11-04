@@ -1,0 +1,86 @@
+{
+  "retrievedAtUtc": "2026-10-08T08:36:12Z",
+  "retrievalWindowUtc": {
+    "issueFields": "2026-10-08T08:35:59Z",
+    "commentsCompleted": "2026-10-08T08:36:12Z"
+  },
+  "source": "Authenticated Atlassian connector; getJiraIssue(view=full) and listJiraIssueComments(view=evidence,startAt=0,maxResults=100,orderBy=created)",
+  "cloudId": "9d70f2ac-2fc7-4d70-a709-e1ad4ec1686c",
+  "scope": "Read-only evidence; no Jira writes. Exact returned descriptions and mapped custom fields. No separate acceptance-criteria field was returned.",
+  "issues": [
+    {
+      "key": "SCRUM-429",
+      "url": "https://minh7n3.atlassian.net/browse/SCRUM-429",
+      "summary": "B2B Customer Onboarding — Sales-created accounts, no guest checkout (WBS 3.18.3)",
+      "status": "In Progress",
+      "updated": "2026-10-08T15:05:19.522+0700",
+      "description": "New (decision 2026-10-06, B2B only).\n\n* Sales creates the customer (company, tax code, contacts, payment terms) and invites the customer to activate a portal account. Open self-registration either goes away or ends in \"pending approval\".\n* **Disable guest checkout** — `GuestCheckoutController` (`/api/v1/orders/guest-checkout`) and the public registration endpoint (`/api/v1/customers/registrations`) exist on develop today.\n* The storefront availability endpoint on branch SCRUM-158 (`/api/v1/public/products/availability`) must require a customer login instead of being public.\n\n**Owner: not decided yet.** Plan §4.",
+      "appliedContentFormat": "markdown",
+      "customFields": {
+        "Sprint": {
+          "id": "customfield_10020",
+          "value": [
+            {
+              "id": 3,
+              "name": "SCRUM Sprint 2",
+              "state": "active",
+              "boardId": 1,
+              "goal": "",
+              "startDate": "2026-10-06T16:50:38.579Z",
+              "endDate": "2026-10-13T16:30:00.000Z"
+            }
+          ]
+        },
+        "Rank": {
+          "id": "customfield_10019",
+          "value": "0|i002l4:"
+        }
+      },
+      "comments": {
+        "startAt": 0,
+        "maxResults": 100,
+        "total": 0,
+        "isLast": true,
+        "appliedContentFormat": "markdown",
+        "comments": []
+      }
+    },
+    {
+      "key": "SCRUM-450",
+      "url": "https://minh7n3.atlassian.net/browse/SCRUM-450",
+      "summary": "[BE] Sales-created customers, portal invitation, disable guest checkout (WBS 3.18.3.1)",
+      "status": "In Progress",
+      "updated": "2026-10-08T15:05:22.070+0700",
+      "description": "Sales creates the company customer (tax code, contacts, allowed payment terms) and sends a portal activation invite; self-registration removed or ends in pending approval; remove `/api/v1/orders/guest-checkout`; storefront availability endpoint requires a customer login.",
+      "appliedContentFormat": "markdown",
+      "customFields": {
+        "Sprint": {
+          "id": "customfield_10020",
+          "value": [
+            {
+              "id": 3,
+              "name": "SCRUM Sprint 2",
+              "state": "active",
+              "boardId": 1,
+              "goal": "",
+              "startDate": "2026-10-06T16:50:38.579Z",
+              "endDate": "2026-10-13T16:30:00.000Z"
+            }
+          ]
+        },
+        "Rank": {
+          "id": "customfield_10019",
+          "value": "0|i002pp:"
+        }
+      },
+      "comments": {
+        "startAt": 0,
+        "maxResults": 100,
+        "total": 0,
+        "isLast": true,
+        "appliedContentFormat": "markdown",
+        "comments": []
+      }
+    }
+  ]
+}

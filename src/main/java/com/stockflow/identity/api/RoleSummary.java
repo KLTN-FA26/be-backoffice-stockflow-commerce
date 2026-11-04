@@ -1,5 +1,16 @@
 package com.stockflow.identity.api;
 
-/** One row of the role list: the fields {@code identity.app_role} actually carries. */
-public record RoleSummary(String code, String name, String description) {
+import java.time.Instant;
+
+/**
+ * One row of the role list.
+ *
+ * @param system      a role the code knows by name: never renamed or deleted
+ * @param version     the version of its grants; send it back when editing them
+ * @param holderCount accounts holding the role
+ * @param dataScope   which rows holders reach: OWN, WAREHOUSE (their assigned warehouses) or ALL
+ */
+public record RoleSummary(String code, String name, String description, boolean system, long version,
+                          long holderCount, String dataScope, Instant createdAt, String createdBy,
+                          Instant lastModifiedAt, String lastModifiedBy) {
 }

@@ -3,7 +3,9 @@ package com.stockflow.inventory.api;
 import java.util.UUID;
 
 /**
- * One hold, on one stock item, created by a reservation.
+ * One hold created by a reservation or an allocation. A SKU reservation taken at checkout (SCRUM-152) is not on a
+ * stock item yet: its {@code stockItemId}, {@code locationCode} and {@code lotNumber} are null until the order is
+ * released and it is allocated.
  *
  * <p>Its existence is the consequence of a fact about warehouses: a single order line is often
  * drawn from more than one lot or location. Ten units may be six from an older lot and four from a

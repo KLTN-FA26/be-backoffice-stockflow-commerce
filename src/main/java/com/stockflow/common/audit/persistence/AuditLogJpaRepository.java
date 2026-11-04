@@ -1,5 +1,7 @@
 package com.stockflow.common.audit.persistence;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -10,6 +12,14 @@ import java.util.UUID;
 
 /** Writes and purges {@code platform.audit_log}. There is deliberately no update method. */
 interface AuditLogJpaRepository extends JpaRepository<AuditLogEntity, UUID> {
+
+    /**
+     * SCRUM-86 (WBS 3.1.8.2): the read side of the trail — "what happened to this record, in
+     * order" — backed by {@code ix_audit_resource (resource_type, resource_id)}, the same index
+     * {@link AuditLogEntity}'s own javadoc calls out for exactly this question.
+     */
+    Page<AuditLogEntity> findByResourceTypeAndResourceIdOrderByOccurredAtDesc(
+            String resourceType, String resourceId, Pageable pageable);
 
     /**
      * Retention purge, in bounded batches and respecting the security classification.

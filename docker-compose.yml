@@ -67,23 +67,10 @@ services:
       timeout: 3s
       retries: 10
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
-    container_name: stockflow-elasticsearch
-    environment:
-      discovery.type: single-node
-      xpack.security.enabled: "false"
-      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
-    ports:
-      - "9200:9200"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    # Community-maintained build of MinIO: the official quay.io/minio and minio/minio images no longer
+    # allow anonymous pulls (2026). Same server, same S3 API, same `mc` for the healthcheck below.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: stockflow-minio
     # S3-compatible object storage for product images and design renders, so the application code
     # is written against S3 from day one rather than against the local filesystem.
@@ -166,6 +153,24 @@ services:
       DB_HOST: postgres
       REDIS_HOST: redis
       MINIO_ENDPOINT: http://minio:9000
+      MAIL_HOST: ${DOCKER_MAIL_HOST:-mailpit}
+      MAIL_PORT: ${MAIL_PORT:-1025}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-noreply@stockflow.local}
+      MAIL_SMTP_AUTH: ${MAIL_SMTP_AUTH:-false}
+      MAIL_SMTP_STARTTLS: ${MAIL_SMTP_STARTTLS:-false}
+      # Mailpit by default; EMAIL_PROVIDER=resend with RESEND_API_KEY and RESEND_FROM tries Resend from a laptop.
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      SUPPLIER_API_ALLOWED_HOSTS: ${SUPPLIER_API_ALLOWED_HOSTS:-}
+      PO_BUYER_COMPANY_NAME: ${PO_BUYER_COMPANY_NAME:-}
+      PO_BUYER_COMPANY_ADDRESS: ${PO_BUYER_COMPANY_ADDRESS:-}
+      PO_BUYER_CONTACT_NAME: ${PO_BUYER_CONTACT_NAME:-}
+      PO_BUYER_PHONE: ${PO_BUYER_PHONE:-}
+      PO_BUYER_EMAIL: ${PO_BUYER_EMAIL:-}
+      PO_RECEIVING_ADDRESS: ${PO_RECEIVING_ADDRESS:-}
       OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
     ports:
       - "8080:8080"

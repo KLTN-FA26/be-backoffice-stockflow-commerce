@@ -1,6 +1,8 @@
 package com.stockflow.identity.internal.controller;
 
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.LoginCommand;
+import jakarta.servlet.http.HttpServletRequest;
 import com.stockflow.identity.internal.controller.dto.AuthTokenResponse;
 import com.stockflow.identity.internal.controller.dto.LoginRequest;
 import com.stockflow.common.api.ApiResponse;
@@ -38,7 +40,10 @@ class AuthController {
     @PostMapping("/login")
     @Operation(summary = "Sign in with a username and password, get a bearer token")
     @RateLimit(limit = 5, perSeconds = 60, key = RateLimit.Key.IP)
-    public ApiResponse<AuthTokenResponse> login(@Valid @RequestBody LoginRequest request) {
-        return ApiResponse.ok(mapper.toResponse(identityService.login(mapper.toCommand(request))));
+    public ApiResponse<AuthTokenResponse> login(@Valid @RequestBody LoginRequest request,
+                                                HttpServletRequest http) {
+        return ApiResponse.ok(mapper.toResponse(identityService.login(new LoginCommand(
+                request.username(), request.password(), http.getRemoteAddr(),
+                http.getHeader("User-Agent")))));
     }
 }

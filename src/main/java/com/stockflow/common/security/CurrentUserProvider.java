@@ -70,15 +70,40 @@ public class CurrentUserProvider {
             return Optional.empty();
         }
 
-        List<String> warehouses = jwt.getClaimAsStringList("warehouses");
+        // Resolved on the server for a warehouse-bound caller (SCRUM-457). The claim is only read for an
+        // authentication built some other way — a test — since tokens no longer carry it.
+        Set<String> codes;
+        Set<UUID> ids;
+        if (token instanceof StockflowAuthenticationToken resolved) {
+            codes = resolved.warehouses().prefixes();
+            ids = resolved.warehouses().ids();
+        } else {
+            List<String> claimed = jwt.getClaimAsStringList("warehouses");
+            codes = claimed == null ? Set.of() : Set.copyOf(claimed);
+            ids = Set.of();
+        }
 
         return Optional.of(new CurrentUser(
                 userId,
                 jwt.getClaimAsString("preferred_username"),
                 roles,
                 permissions,
-                parseScope(jwt.getClaimAsString("scope_level")),
-                warehouses == null ? Set.of() : Set.copyOf(warehouses)));
+                scopeOf(token, jwt),
+                codes,
+                ids));
+    }
+
+    /**
+     * The scope resolved on the server with the permissions (ADR-0008). Tokens no longer carry
+     * {@code scope_level}, so reading only the claim would put every caller at {@code OWN} and
+     * narrow every scoped query. The claim is still read for an authentication built some other way
+     * — a test, or a token issued before the change and converted by something else.
+     */
+    private static DataScope scopeOf(JwtAuthenticationToken token, Jwt jwt) {
+        if (token instanceof StockflowAuthenticationToken resolved && resolved.scope() != null) {
+            return resolved.scope();
+        }
+        return parseScope(jwt.getClaimAsString("scope_level"));
     }
 
     /**

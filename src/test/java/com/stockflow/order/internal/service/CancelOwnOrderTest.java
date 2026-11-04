@@ -1,0 +1,174 @@
+package com.stockflow.order.internal.service;
+
+import com.stockflow.order.api.CancellationOutcome;
+import com.stockflow.order.api.CancellationReasonCode;
+import com.stockflow.order.internal.domain.CancellationRequestRepository;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderPayments;
+import com.stockflow.common.domain.Money;
+import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.customer.api.CustomerService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.internal.domain.Order;
+import com.stockflow.order.internal.domain.OrderNumber;
+import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
+import com.stockflow.order.internal.repository.OrderSearchRepository;
+import com.stockflow.design.api.DesignService;
+import org.junit.jupiter.api.Test;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Orders belong to the customer profile, not to the sign-in account. Cancelling "my" order therefore
+ * cannot go through the ambient OWN data scope (which compares with the sign-in id and matched no
+ * order at all): the service checks the owner explicitly and answers 404 for anyone else's order.
+ */
+class CancelOwnOrderTest {
+
+    private static final Instant NOW = Instant.parse("2026-09-20T03:00:00Z");
+    private final OrderRepository repository = mock(OrderRepository.class);
+    private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
+    private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
+            mock(InventoryService.class), mock(OrderEventPublisher.class), Clock.systemUTC(),
+            mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
+            mock(com.stockflow.catalog.api.CatalogService.class), mock(OrderPayments.class), requests,
+            mock(com.stockflow.order.internal.domain.CreditChecks.class),
+                mock(com.stockflow.payment.api.PaymentService.class));
+
+    private Order orderOf(UUID customerId) {
+        var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),
+                List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(100_000), null)), NOW);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(repository.save(any())).thenAnswer(call -> call.getArgument(0));
+        return order;
+    }
+
+    @Test
+    void theOwnerCancelsTheirOrder() {
+        UUID customer = UUID.randomUUID();
+        var order = orderOf(customer);
+
+        var outcome = service.cancelOwn(order.id().value(), customer, null, null, UUID.randomUUID());
+
+        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.CANCELLED);
+        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(order.cancellationReasonCode()).isEqualTo(CancellationReasonCode.CUSTOMER_REQUEST);
+        verify(repository).save(order);
+        verify(requests, never()).save(any());
+    }
+
+    @Test
+    void onceReleasedTheCustomerAsksAndTheOrderGoesOn() {
+        UUID customer = UUID.randomUUID();
+        var order = released(customer);
+        when(requests.save(any())).thenAnswer(call -> call.getArgument(0));
+
+        var outcome = service.cancelOwn(order.id().value(), customer, CancellationReasonCode.CUSTOMER_REQUEST,
+                "wrong logo", UUID.randomUUID());
+
+        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.REQUESTED);
+        assertThat(outcome.requestId()).isNotNull();
+        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    void aSecondRequestWhileOneIsPendingIsRefused() {
+        UUID customer = UUID.randomUUID();
+        var order = released(customer);
+        when(requests.hasPending(order.id().value())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.cancelOwn(order.id().value(), customer, null, null, UUID.randomUUID()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.ORDER_CANCELLATION_REQUEST_PENDING));
+        verify(requests, never()).save(any());
+    }
+
+    @Test
+    void aPaymentFailureCancellationClosesThePendingRequest() {
+        var order = released(UUID.randomUUID());
+        when(repository.save(any())).thenAnswer(call -> call.getArgument(0));
+        var pending = com.stockflow.order.internal.domain.CancellationRequest.open(order.id().value(),
+                UUID.randomUUID(), CancellationReasonCode.CUSTOMER_REQUEST, null, NOW);
+        when(requests.findPending(order.id().value())).thenReturn(Optional.of(pending));
+
+        service.cancelAfterPaymentFailure(order.id().value(), "BANK_REJECTED");
+
+        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
+        verify(requests).save(pending);
+        assertThat(pending.status()).isEqualTo(com.stockflow.order.internal.domain.CancellationRequestStatus.EXPIRED);
+        assertThat(pending.decidedBy()).isNull();
+        assertThat(pending.decisionNote()).isEqualTo("Closed: the order was cancelled.");
+    }
+
+    private Order released(UUID customerId) {
+        var order = new Order(OrderId.newId(), OrderNumber.of(LocalDate.of(2026, 9, 20), 8), customerId,
+                UUID.randomUUID(), List.of(Order.line(new Sku("CUP-12OZ-WHITE"), 500, Money.vnd(2_000), UUID.randomUUID())),
+                OrderStatus.IN_PRODUCTION, NOW, null, 0L);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        return order;
+    }
+
+    @Test
+    void aCustomerGivesOnlyTheirOwnReasons() {
+        UUID customer = UUID.randomUUID();
+        var order = released(customer);
+        for (CancellationReasonCode shops : List.of(CancellationReasonCode.SUSPECTED_FRAUD,
+                CancellationReasonCode.PAYMENT_FAILED, CancellationReasonCode.PAYMENT_NOT_RECEIVED,
+                CancellationReasonCode.OUT_OF_STOCK, CancellationReasonCode.CREDIT_REJECTED,
+                CancellationReasonCode.PRODUCTION_ISSUE)) {
+            assertThatThrownBy(() -> service.cancelOwn(order.id().value(), customer, shops, "x", UUID.randomUUID()))
+                    .as(shops.name())
+                    .isInstanceOfSatisfying(BusinessException.class, ex -> {
+                        assertThat(ex.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                        assertThat(ex.fieldErrors()).singleElement()
+                                .satisfies(error -> assertThat(error.field()).isEqualTo("reasonCode"));
+                    });
+        }
+        verify(requests, never()).save(any());
+        assertThat(java.util.Arrays.stream(CancellationReasonCode.values())
+                .filter(CancellationReasonCode::customerMayGive))
+                .containsExactly(CancellationReasonCode.CUSTOMER_REQUEST, CancellationReasonCode.DUPLICATE_ORDER,
+                        CancellationReasonCode.OTHER);
+        when(requests.save(any())).thenAnswer(call -> call.getArgument(0));
+        var outcome = service.cancelOwn(order.id().value(), customer, CancellationReasonCode.DUPLICATE_ORDER, null,
+                UUID.randomUUID());
+        assertThat(outcome.result()).isEqualTo(com.stockflow.order.api.CancellationOutcome.Result.REQUESTED);
+    }
+
+    @Test
+    void anotherCustomerGetsNotFoundAndNothingChanges() {
+        var order = orderOf(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.cancelOwn(order.id().value(), UUID.randomUUID(), null, "x", null))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
+        assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    void aMissingCustomerIdNeverMatchesAnOrder() {
+        var order = orderOf(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.cancelOwn(order.id().value(), null, null, "x", null))
+                .isInstanceOf(BusinessException.class);
+    }
+}

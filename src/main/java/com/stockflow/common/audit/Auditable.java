@@ -45,11 +45,27 @@ public @interface Auditable {
      * SpEL over the method's arguments naming the affected record, e.g. {@code "#id"} or
      * {@code "#command.orderId()"}.
      *
+     * <p>{@code #result} is the return value, for a method that creates its subject and so has no
+     * argument naming it: {@code "#result?.productId()"}. Null-safe, because {@code #result} is
+     * null on a failure entry.</p>
+     *
      * <p>Optional, because some audited actions have no single subject — a bulk price import, a
      * report export. An entry with no resource id is still worth having: it says the action
      * happened.</p>
      */
     String resourceId() default "";
+
+    /**
+     * SpEL over the method's arguments for what the entry should say beyond "this action happened to
+     * this record": an inline map such as {@code "{change: #change.name(), reason: #reason}"}. The entry's
+     * {@code details} becomes that map as one JSON object (strings quoted, numbers and booleans as
+     * they are). On a failure the object is kept next to the error, under {@code "context"}.
+     *
+     * <p>Callers put in what an auditor would ask for later and nothing more (see {@code AuditEntry}):
+     * never a credential, never a whole entity. A bad expression is logged and the entry is still
+     * written without it. Optional.</p>
+     */
+    String details() default "";
 
     /**
      * Whether to record an entry when the method throws.

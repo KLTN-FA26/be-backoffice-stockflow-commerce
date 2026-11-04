@@ -1,0 +1,137 @@
+package com.stockflow.order.internal.service;
+
+import com.stockflow.common.domain.Money;
+import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.customer.api.CheckoutCustomer;
+import com.stockflow.customer.api.CustomerService;
+import com.stockflow.design.api.DesignService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.ReserveStockResult;
+import com.stockflow.order.api.PlaceGuestOrderCommand;
+import com.stockflow.order.api.PlaceOrderCommand;
+import com.stockflow.order.internal.domain.Order;
+import com.stockflow.order.internal.domain.OrderNumber;
+import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
+import org.junit.jupiter.api.Test;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class GuestCheckoutServiceTest {
+
+    @Test
+    void publicDesignCheckoutCannotFallBackToTheSubmittedPriceAfterQuoteSplit() {
+        OrderRepository orders = mock(OrderRepository.class);
+        InventoryService inventory = mock(InventoryService.class);
+        when(orders.findByRequestId(any())).thenReturn(Optional.empty());
+        var service = new OrderServiceImpl(orders,
+                mock(com.stockflow.order.internal.repository.OrderSearchRepository.class),
+                inventory, mock(OrderEventPublisher.class), Clock.systemUTC(), mock(DesignService.class),
+                mock(OrderHoldJpaRepository.class), mock(CustomerService.class), catalog(),
+                mock(com.stockflow.order.internal.domain.OrderPayments.class),
+                mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
+                mock(com.stockflow.order.internal.domain.CreditChecks.class),
+                mock(com.stockflow.payment.api.PaymentService.class));
+        var command = new PlaceOrderCommand(UUID.randomUUID(), UUID.randomUUID(), null, null, true,
+                List.of(new PlaceOrderCommand.Line(new Sku("TABLE-OAK"), 1, Money.vnd(1), UUID.randomUUID())));
+
+        assertThatThrownBy(() -> service.placeOrder(command))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.DESIGN_QUOTE_REQUIRED));
+        verify(orders, org.mockito.Mockito.never()).save(any());
+        verify(inventory, org.mockito.Mockito.never()).reserve(any());
+    }
+
+    private static com.stockflow.catalog.api.CatalogService catalog() {
+        var catalog = mock(com.stockflow.catalog.api.CatalogService.class);
+        when(catalog.checkoutPrices(any())).thenReturn(java.util.Map.of("TABLE-OAK", Money.vnd(100)));
+        when(catalog.checkoutPrices(any(UUID.class), org.mockito.ArgumentMatchers.anyMap()))
+                .thenReturn(java.util.Map.of("TABLE-OAK", Money.vnd(100)));
+        return catalog;
+    }
+
+    @Test
+    void accountCheckoutResolvesSavedAddressesAndFreezesThemOnTheOrder() {
+        OrderRepository orders = mock(OrderRepository.class);
+        InventoryService inventory = mock(InventoryService.class);
+        OrderEventPublisher events = mock(OrderEventPublisher.class);
+        CustomerService customers = mock(CustomerService.class);
+        Instant now = Instant.parse("2026-09-18T10:00:00Z");
+        UUID customerId = UUID.randomUUID();
+        UUID shippingId = UUID.randomUUID();
+        var address = new CheckoutCustomer.CheckoutAddress("Minh", "0901234567",
+                "12 Nguyen Hue", null, "26734", "Ben Nghe", "79",
+                "Ho Chi Minh City", "VN", null);
+        when(orders.findByRequestId(any())).thenReturn(Optional.empty());
+        when(orders.nextOrderNumber(LocalDate.of(2026, 9, 18)))
+                .thenReturn(OrderNumber.of(LocalDate.of(2026, 9, 18), 1));
+        when(inventory.reserve(any())).thenReturn(new ReserveStockResult(UUID.randomUUID(),
+                List.of(new com.stockflow.inventory.api.StockReservation(UUID.randomUUID(),
+                        UUID.randomUUID(), "A-01", null, 1)), 1, 0, now));
+        when(orders.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(customers.lockCreditTerms(customerId))
+                .thenReturn(com.stockflow.customer.api.CreditTerms.prepaidOnly(customerId));
+        when(customers.resolveCheckout(customerId, shippingId, null))
+                .thenReturn(new CheckoutCustomer(customerId, "Minh", "minh@example.com",
+                        "0901234567", address, address));
+        var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
+                Clock.fixed(now, ZoneOffset.UTC), mock(DesignService.class),
+                mock(OrderHoldJpaRepository.class), customers, catalog(),
+                mock(com.stockflow.order.internal.domain.OrderPayments.class),
+                mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
+                mock(com.stockflow.order.internal.domain.CreditChecks.class),
+                mock(com.stockflow.payment.api.PaymentService.class));
+
+        var result = service.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customerId,
+                shippingId, null, true,
+                List.of(new PlaceOrderCommand.Line(new Sku("TABLE-OAK"), 1,
+                        Money.vnd(100), null))));
+
+        assertThat(result.customerId()).isEqualTo(customerId);
+        assertThat(result.contactEmail()).isEqualTo("minh@example.com");
+        assertThat(result.shippingAddress().line1()).isEqualTo("12 Nguyen Hue");
+        verify(customers).resolveCheckout(customerId, shippingId, null);
+        verify(orders).save(any(Order.class));
+    }
+
+    @Test
+    void guestCheckoutCannotReadOldOrdersReserveStockOrPublishEvents() {
+        OrderRepository orders = mock(OrderRepository.class);
+        InventoryService inventory = mock(InventoryService.class);
+        OrderEventPublisher events = mock(OrderEventPublisher.class);
+        CustomerService customers = mock(CustomerService.class);
+        var service = new OrderServiceImpl(orders,
+                mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
+                Clock.systemUTC(), mock(DesignService.class), mock(OrderHoldJpaRepository.class), customers, catalog(),
+                mock(com.stockflow.order.internal.domain.OrderPayments.class),
+                mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
+                mock(com.stockflow.order.internal.domain.CreditChecks.class),
+                mock(com.stockflow.payment.api.PaymentService.class));
+        var address = new PlaceGuestOrderCommand.Address("Minh", "0901234567", "12 Nguyen Hue",
+                null, "26734", "Ben Nghe", "79", "Ho Chi Minh City", "VN", null);
+        var command = new PlaceGuestOrderCommand(UUID.randomUUID(), "guest@example.test", address, address,
+                List.of(new PlaceGuestOrderCommand.Line(new Sku("TABLE-OAK"), 1, Money.vnd(100))));
+
+        for (int retry = 0; retry < 2; retry++) {
+            assertThatThrownBy(() -> service.placeGuestOrder(command))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.GUEST_CHECKOUT_DISABLED));
+        }
+        org.mockito.Mockito.verifyNoInteractions(orders, inventory, events, customers);
+    }
+}

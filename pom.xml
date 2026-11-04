@@ -20,7 +20,7 @@
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.5.0</version>
+    <version>3.5.16</version>
     <relativePath/>
   </parent>
 
@@ -45,6 +45,17 @@
     <jacoco.version>0.8.12</jacoco.version>
 
     <!--
+      SCRUM-495: security overrides of versions managed by the Spring Boot BOM. Boot 3.5.16 ships
+      versions that Trivy still flags (critical/high); these are the newest patch releases of the
+      SAME minor lines, so behaviour is unchanged. Remove an override once the Boot BOM catches up
+      to that version or higher - an override left behind silently pins an old library.
+    -->
+    <jackson-bom.version>2.21.8</jackson-bom.version>
+    <netty.version>4.1.139.Final</netty.version>
+    <tomcat.version>10.1.61</tomcat.version>
+    <postgresql.version>42.7.14</postgresql.version>
+
+    <!--
       Versions NOT managed by the Spring Boot BOM. Each one is pinned, and each is a version the
       build will complain loudly about if it is wrong - a failed resolution, not a silent problem.
       Check them when upgrading Boot.
@@ -52,6 +63,9 @@
     <aws-sdk.version>2.31.0</aws-sdk.version>
     <shedlock.version>5.16.0</shedlock.version>
     <logstash-encoder.version>8.0</logstash-encoder.version>
+    <!-- Location labels (SCRUM-97): ZXing encodes Code 128 / QR, PDFBox draws the PDF. -->
+    <zxing.version>3.5.3</zxing.version>
+    <pdfbox.version>3.0.6</pdfbox.version>
 
     <!--
       Recorded in build-info.properties and served at /actuator/info. CI overrides them with
@@ -61,6 +75,18 @@
     -->
     <git.commit>unknown</git.commit>
     <git.branch>unknown</git.branch>
+
+    <!-- Filled in by jacoco:prepare-agent; empty so @{argLine} below still resolves with -Djacoco.skip=true. -->
+    <argLine></argLine>
+
+    <!--
+      SonarQube Cloud (.github/workflows/build.yml, step "SonarQube Cloud analysis"). The organisation
+      is NOT here: CI passes it from the SONAR_ORGANIZATION repository variable, and the JaCoCo XML
+      path (target/site/jacoco/jacoco.xml, written by jacoco:report in the `test` phase) is passed
+      on the command line next to it.
+    -->
+    <sonar.projectKey>KLTN-FA26_be-backoffice-stockflow-commerce</sonar.projectKey>
+    <sonar.host.url>https://sonarcloud.io</sonar.host.url>
   </properties>
 
   <dependencyManagement>
@@ -74,7 +100,7 @@
       </dependency>
       <!--
         The AWS SDK ships dozens of artifacts that must share a version. Importing the BOM means
-        adding s3-presigner later needs no version, and cannot drift from the s3 client.
+        the S3 client and its bundled presigner use the same SDK version.
       -->
       <dependency>
         <groupId>software.amazon.awssdk</groupId>
@@ -87,6 +113,27 @@
   </dependencyManagement>
 
   <dependencies>
+
+    <dependency>
+      <groupId>com.twelvemonkeys.imageio</groupId>
+      <artifactId>imageio-webp</artifactId>
+      <version>3.13.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.drewnoakes</groupId>
+      <artifactId>metadata-extractor</artifactId>
+      <version>2.19.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.zxing</groupId>
+      <artifactId>core</artifactId>
+      <version>${zxing.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>${pdfbox.version}</version>
+    </dependency>
 
     <!-- ==================== web, validation, persistence ==================== -->
     <dependency>
@@ -155,6 +202,11 @@
       <groupId>org.springframework.modulith</groupId>
       <artifactId>spring-modulith-starter-jpa</artifactId>
     </dependency>
+    <!-- Read the existing publication registry for fair, bounded PO retry selection. -->
+    <dependency>
+      <groupId>org.springframework.modulith</groupId>
+      <artifactId>spring-modulith-events-core</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.springframework.modulith</groupId>
       <artifactId>spring-modulith-actuator</artifactId>
@@ -170,8 +222,7 @@
     <!--
       S3 protocol, used against MinIO locally and S3 in a deployment - the same code path in both,
       so the storage layer is exercised everywhere rather than only in production.
-      Add s3-presigner here (no version needed, the BOM manages it) to enable presigned download
-      URLs; see S3FileStorage.presignedDownloadUrl.
+      S3Presigner is included in the s3 artifact and shares StorageConfig with the upload client.
     -->
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
@@ -384,6 +435,23 @@
               <version>${project.parent.version}</version>
             </path>
           </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+
+      <!--
+        A heap ceiling for the test JVM. Left alone it takes a quarter of RAM and holds every cached
+        Spring context until it exits; together with Docker that froze 16 GB laptops. The context cache
+        is capped in src/test/resources/spring.properties, which is what keeps the suite inside this.
+        @{argLine} (late-bound) keeps the JaCoCo agent that prepare-agent puts there.
+        3 GB since 2026-10-23: with ~3000 tests the suite ran out of 2 GB on GitHub's runners (7 GB) late
+        in the run - OutOfMemoryError while a context loaded (#164, runs 39868719561 / 39874622762).
+        3 GB still leaves the runner's Postgres and Redis containers their room.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>@{argLine} -Xmx3g</argLine>
         </configuration>
       </plugin>
 

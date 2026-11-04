@@ -1,6 +1,6 @@
 # State Machines
 
-Thirteen machines. For each: the diagram, then a transition table giving the **trigger**, the
+Eighteen machines. For each: the diagram, then a transition table giving the **trigger**, the
 **actor allowed to fire it**, the **guard** that must hold, and the **event emitted**.
 
 Rules that apply to every machine on this page:
@@ -15,7 +15,7 @@ Rules that apply to every machine on this page:
 
 ## 1. Product — `product-service`
 
-WBS 3.1.1.3 (Draft → Pending → Approved), 3.1.8.1 (discontinuation).
+WBS 3.1.1.3 (Draft → Pending → Approved), 3.1.8.1 (discontinuation), SCRUM-461 (suspension, brand, reason, history).
 
 ```mermaid
 stateDiagram-v2
@@ -25,22 +25,34 @@ stateDiagram-v2
     PENDING_APPROVAL --> APPROVED: approve
     APPROVED --> PUBLISHED: publish to catalog
     PUBLISHED --> APPROVED: unpublish
+    APPROVED --> INACTIVE: suspend
+    PUBLISHED --> INACTIVE: suspend
+    INACTIVE --> APPROVED: resume
     APPROVED --> DISCONTINUED: discontinue
     PUBLISHED --> DISCONTINUED: discontinue
+    INACTIVE --> DISCONTINUED: discontinue
     DISCONTINUED --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
 | — | DRAFT | create | E-commerce admin | SKU unique (BR-PRD-002) | — |
-| DRAFT | PENDING_APPROVAL | submit | E-commerce admin | all mandatory fields present (BR-PRD-001) | — |
-| PENDING_APPROVAL | APPROVED | approve | E-commerce admin (approver) | approver ≠ submitter (BR-PRD-003) | `ProductApproved` |
+| DRAFT | PENDING_APPROVAL | submit | E-commerce admin | all mandatory fields present, brand included (BR-PRD-001) | — |
+| PENDING_APPROVAL | APPROVED | approve | E-commerce admin (approver) | approver ≠ submitter, unless the approver holds `product-lifecycle:APPROVE`, SYSTEM_ADMIN's (BR-PRD-003; flagged `self_approved`) | `ProductApproved` |
 | PENDING_APPROVAL | DRAFT | reject | E-commerce admin (approver) | rejection reason given | — |
 | APPROVED | PUBLISHED | publish | E-commerce admin | has price, image, category (BR-PRD-004) | `ProductPublished` |
 | PUBLISHED | APPROVED | unpublish | E-commerce admin | — | `ProductUnpublished` |
-| APPROVED / PUBLISHED | DISCONTINUED | discontinue | E-commerce admin | no open PO and no unshipped order line (BR-PRD-005) | `ProductDiscontinued` |
+| APPROVED / PUBLISHED | INACTIVE | suspend | `product-lifecycle:APPROVE` (System Admin only, kltn-docs 01 §5.1) | reason given (BR-PRD-007) | `CatalogListingChanged` |
+| INACTIVE | APPROVED | resume | `product-lifecycle:APPROVE` (System Admin only, kltn-docs 01 §5.1) | — (publish again to show it) | `CatalogListingChanged` |
+| APPROVED / PUBLISHED / INACTIVE | DISCONTINUED | discontinue | `product-lifecycle:APPROVE` (System Admin only, kltn-docs 01 §5.1) | reason given (BR-PRD-007). Open POs and unshipped orders are **warned about, not blocked** (BR-PRD-005) | `ProductDiscontinued` (with the reason) |
 
-**DISCONTINUED is terminal.** Existing stock stays sellable-through but nothing new is ordered.
+**INACTIVE** (kltn-docs 01 §5.1): not shown on the storefront, no new purchase order lines; orders and
+receipts already running continue. Its variants and images are still maintained.
+
+**DISCONTINUED is terminal.** Every variant becomes `OBSOLETE` (kltn-docs 01 §5.2: shipped and adjusted
+only to clear the stock). Existing stock stays sellable-through, goods on open purchase orders are received
+as usual, but no new purchase order line takes the SKU. Only a DRAFT product is deleted (BR-PRD-008).
+Every move is written to `product.product_change_log` with its from/to status, reason and actor.
 
 ---
 
@@ -73,7 +85,8 @@ stateDiagram-v2
 |---|---|---|---|---|---|
 | — | DRAFT | create | Procurement staff | supplier active, ≥1 line | — |
 | DRAFT | PENDING_APPROVAL | submit | Procurement staff | total ≥ 0, MOQ respected (BR-PO-001) | — |
-| PENDING_APPROVAL | APPROVED | approve | approver per threshold | approver's limit ≥ PO total (BR-PO-002) | `PurchaseOrderApproved` |
+| DRAFT | APPROVED | submit (auto-approval) | Procurement staff | PO total after tax ≤ the limit of the submitter (of whoever split the production order, for a SUBCONTRACT PO), configured and in force in the PO currency; never rejected before; with the same holder's AUTO_APPROVED POs to the same supplier in the last 7 days still ≤ the limit; recorded as `AUTO_APPROVED` with the limit used (BR-PO-002, kltn-docs 02 §4 step 7) | `AUTO_APPROVED` |
+| PENDING_APPROVAL | APPROVED | approve | approver per threshold | not the submitter; approver's limit, when configured, ≥ PO total (BR-PO-002; 409 `PO_APPROVAL_LIMIT_EXCEEDED`) | `PurchaseOrderApproved` |
 | PENDING_APPROVAL | DRAFT | reject | approver | reason given | — |
 | APPROVED | SENT | send | Procurement staff | supplier has email or API endpoint | `PurchaseOrderSent` |
 | SENT | CONFIRMED | supplier confirms | Procurement staff (records it) | — | `PurchaseOrderConfirmed` |
@@ -81,90 +94,119 @@ stateDiagram-v2
 | CONFIRMED / PARTIALLY_RECEIVED | PARTIALLY_RECEIVED | receipt posted | system | receipt total < ordered | — |
 | CONFIRMED / PARTIALLY_RECEIVED | RECEIVED | receipt posted | system | open qty = 0, within over-receipt tolerance (BR-RCP-001) | `PurchaseOrderFullyReceived` |
 | PARTIALLY_RECEIVED | CLOSED_SHORT | close short | Procurement staff | reason given; remaining qty written off | `PurchaseOrderClosedShort` |
+| CONFIRMED | CLOSED (`FORCE_CLOSE`) | force close | Procurement staff | reason given; nothing received and none expected (kltn-docs 02 §5); refused while a goods receipt is being counted | — |
 | RECEIVED | CLOSED | invoice approved | Accountant | three-way match passed or override approved (BR-INV-003) | `PurchaseOrderClosed` |
 
-**Amendment (WBS 3.2.5)** is not a state. Amending a PO in `SENT` or later creates
-**revision n+1** of the same PO number and emits `PurchaseOrderAmended`; the previous revision is
-retained for the audit trail. Amendment is forbidden once any receipt exists (BR-PO-004).
+**Amendment (WBS 3.2.5)** is not a state. A STANDARD PO in `APPROVED` or `CONFIRMED` can be amended while nothing
+has been received, no goods receipt is being counted and the supplier has not rejected it: the request records
+**revision n+1** of the same PO number as a pending revision, and approving it (automatically within the requester's
+limit, otherwise by someone else) makes it the active one; the previous revision is retained for the audit trail.
+There is no `SENT` status and no `PurchaseOrderAmended` event: when the order had already been sent, the supplier
+is told with `PurchaseOrderSent` carrying `amendmentRevisionNo`, and the supplier response returns to `PENDING`.
+A waiting amendment is withdrawn by the first posted receipt, by cancelling and by closing the order. Amendment is
+forbidden once any receipt exists (BR-PO-004).
 
 ---
 
 ## 3. Goods Receipt — `procurement-service`
 
-WBS 3.3.5.2 names the inventory outcome `Inbound → Available/Quarantine`; 3.3.4.4 adds RTV.
+**Changed 2026-10-09** to the receiving docs (KLTN-FA26/docs 03 Receipt, 05 Putaway, commit
+`084365d`) and migration `V20260929000250`. Receiving is a 2-step or 3-step flow, chosen per SKU by
+the inventory item's **QC required** flag (snapshotted on the receipt line):
+
+| Flow | SKU | Path |
+|---|---|---|
+| 3 steps | `qc_required` | supplier → Area `RECEIVING` → Area `QUALITY_CONTROL` → bin |
+| 2 steps | not QC-required | supplier → Area `RECEIVING` → bin |
 
 ```mermaid
 stateDiagram-v2
     [*] --> DRAFT
-    DRAFT --> COUNTING: start counting
-    COUNTING --> COUNTED: finish counting
-    COUNTED --> QC_PENDING: QC required
-    COUNTED --> POSTED: QC not required
-    QC_PENDING --> QC_PASSED: accept
-    QC_PENDING --> QC_QUARANTINED: quarantine
-    QC_PENDING --> QC_REJECTED: reject
-    QC_PASSED --> POSTED: post
-    QC_QUARANTINED --> QC_PASSED: re-inspect and accept
-    QC_QUARANTINED --> QC_REJECTED: re-inspect and reject
-    QC_REJECTED --> RTV: return to vendor
-    POSTED --> [*]
-    RTV --> [*]
+    DRAFT --> CONFIRMED: confirm counts
+    DRAFT --> PENDING_APPROVAL: confirm, a PO line beyond its tolerance (BR-RCP-001)
+    PENDING_APPROVAL --> CONFIRMED: manager approves / rejects the excess
+    PENDING_APPROVAL --> CANCELLED: cancel, or nothing within the tolerance is left
     DRAFT --> CANCELLED: cancel
+    CONFIRMED --> IN_QC: a QC-required line has no verdict yet
+    CONFIRMED --> IN_PUTAWAY: no line needs QC
+    IN_QC --> IN_PUTAWAY: every QC line has a verdict
+    IN_QC --> CLOSED: nothing accepted is left to put away
+    IN_PUTAWAY --> CLOSED: putaway done, rejected returned, quarantine decided
+    CLOSED --> [*]
     CANCELLED --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | DRAFT | create from PO, or blind | Warehouse staff | PO in CONFIRMED/PARTIALLY_RECEIVED, or blind receipt allowed (BR-RCP-002) | — |
-| DRAFT | COUNTING | start | Warehouse staff | — | — |
-| COUNTING | COUNTED | finish | Warehouse staff | every line counted; lot/expiry captured where the SKU requires it (BR-RCP-003) | — |
-| COUNTED | QC_PENDING | — | system | product flagged QC-required | `QcTaskCreated` |
-| COUNTED | POSTED | post | Warehouse staff | over-receipt within tolerance, else manager approval (BR-RCP-001) | `GoodsReceived` |
-| QC_PENDING | QC_PASSED | accept | QC staff | — | `QcCompleted(ACCEPTED)` |
-| QC_PENDING | QC_QUARANTINED | quarantine | QC staff | reason given | `QcCompleted(QUARANTINED)` |
-| QC_PENDING | QC_REJECTED | reject | QC staff | reason given | `QcCompleted(REJECTED)` |
-| QC_PASSED | POSTED | post | Warehouse staff | — | `GoodsReceived` |
-| QC_REJECTED | RTV | return to vendor | Procurement staff | supplier notified | `ReturnToVendorRaised` |
+| — | DRAFT | create from PO | Warehouse staff | PO `CONFIRMED` / `PARTIALLY_RECEIVED` (BR-RCP-001) | — |
+| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance | `GoodsReceived` |
+| DRAFT | PENDING_APPROVAL | confirm | Warehouse staff | a PO line goes beyond its over-receipt tolerance (BR-RCP-001, SCRUM-477); nothing is counted in, no event | — |
+| PENDING_APPROVAL | CONFIRMED | approve, or reject the excess | holder of `procurement-goods-receipts:APPROVE` (warehouse manager), not the receiver nor whoever sent it for approval | reason required; approve posts the whole count, reject-excess cuts each PO line to its remaining limit and posts (BR-RCP-001) | `GoodsReceived` |
+| PENDING_APPROVAL | CANCELLED | cancel; or reject the excess with nothing within the tolerance left; or, for a receipt without a PO, reject it | Warehouse staff / manager | never confirmed | — |
+| DRAFT | PENDING_APPROVAL | confirm a receipt **without a PO** (BR-RCP-002, SCRUM-478) | Warehouse staff | always, whatever the count; supplier and reason were required at creation; nothing is counted in | — |
+| PENDING_APPROVAL | CONFIRMED | approve a receipt without a PO | holder of `procurement-goods-receipts:APPROVE`, not the receiver nor whoever sent it | reason required; posts the count, no PO progress; the decision `APPROVED` is a database check for a posted receipt without a PO | `GoodsReceived` (no PO id) |
+| DRAFT | CANCELLED | cancel | Warehouse staff | never confirmed (`ck_goods_receipts_cancelled`) | — |
+| CONFIRMED | IN_QC | — | system | ≥1 line with `qc_required`; a **move-to-QC task** (`move_task.origin = RECEIPT_QC`) is created per such line | — |
+| CONFIRMED | IN_PUTAWAY | — | system | no line needs QC; putaway tasks from `RECEIVING` | — |
+| IN_QC | IN_PUTAWAY | last QC verdict | QC staff | QC only on goods already in the QC area (BR-08); accepted + quarantined + rejected = moved quantity | `QcCompleted` |
+| IN_PUTAWAY / IN_QC | CLOSED | — | system | every line handled | — |
 
-**What `POSTED` does to inventory.** It is the only transition here that changes stock. It
-creates stock rows in condition **GOOD** when QC passed or was not required, and condition
-**QUARANTINE** when QC quarantined them. Quarantined stock is physically present and counted in
-on-hand, but excluded from ATP — see machine 5.
+`PENDING_APPROVAL` is not in kltn-docs 03 §5.1, which says only that a count beyond the tolerance "needs the
+Warehouse Manager's exception approval or rejection of the excess" (§4 step 5): it is the form that wait takes (owner
+decision OVER-RCPT, 29/10). A receipt in it holds nothing: no stock, no PO progress, no event, and it does not count
+against the PO line's tolerance until posted.
+
+A receipt without a PO (blind receipt, BR-RCP-002) takes the same `PENDING_APPROVAL` wait on every confirmation, not
+only past a tolerance: it is rejected as a whole (cancelled, decision `REJECTED`) rather than cut back. The PO attached to
+it afterwards is a reference only and changes nothing in this machine or in the order's.
+
+**What confirming does to inventory.** Stock rows appear in the `RECEIVING` area in condition
+**INBOUND** (machine 5). A QC-required line then moves `RECEIVING → QUALITY_CONTROL` (still INBOUND);
+QC splits it: **accepted** → putaway task from the QC area; **quarantine** → Area `QUARANTINE`,
+condition QUARANTINE; **rejected** → Area `QUARANTINE`, condition BLOCKED, return to vendor. A
+confirmed receipt is never deleted; mistakes are reversals or adjustments with a reason (BR-05).
 
 ---
 
 ## 4. Supplier Invoice — `procurement-service`
 
-WBS 3.4.3 (three-way match), 3.4.4 (exceptions), 3.4.5.2 (Pending/Paid).
+WBS 3.4.1 (entry, SCRUM-308), 3.4.2 (three-way match, SCRUM-309), 3.4.3 (exceptions and payment, SCRUM-310).
+
+Built: entering, correcting, matching and cancelling (`/api/v1/supplier-invoices`, `procurement-supplier-invoices`). The
+entered, not yet matched invoice is `DRAFT`; matching is a step the accountant runs, again after
+QC concluded or goods arrived. Override, dispute, approval for payment and payment are SCRUM-310's (not built).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> DRAFT
-    DRAFT --> MATCHING: link PO and receipt
-    MATCHING --> MATCHED: within tolerance
-    MATCHING --> EXCEPTION: outside tolerance
-    EXCEPTION --> MATCHED: override approved
-    EXCEPTION --> DISPUTED: raise with supplier
-    DISPUTED --> MATCHING: supplier issues credit note
-    MATCHED --> APPROVED_FOR_PAYMENT: approve
-    APPROVED_FOR_PAYMENT --> PAID: payment recorded
+    [*] --> DRAFT: enter
+    DRAFT --> MATCHED: match, no variance
+    DRAFT --> EXCEPTION: match, variances
+    EXCEPTION --> MATCHED: match again, none left
+    EXCEPTION --> DRAFT: correct
+    DRAFT --> DRAFT: correct
+    EXCEPTION --> MATCHED: override approved (SCRUM-310)
+    EXCEPTION --> DISPUTED: raise with supplier (SCRUM-310)
+    DISPUTED --> DRAFT: supplier issues credit note (SCRUM-310)
+    MATCHED --> APPROVED_FOR_PAYMENT: approve (SCRUM-310)
+    APPROVED_FOR_PAYMENT --> PAID: payment recorded (SCRUM-310)
     PAID --> [*]
-    DRAFT --> VOID: void
-    EXCEPTION --> VOID: void
-    VOID --> [*]
+    DRAFT --> CANCELLED: cancel
+    EXCEPTION --> CANCELLED: cancel
+    CANCELLED --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | DRAFT | enter invoice | Accountant | supplier invoice number unique per supplier (BR-INV-001) | — |
-| DRAFT | MATCHING | link | Accountant | at least one PO and one receipt linked | — |
-| MATCHING | MATCHED | auto | system | qty and price within tolerance (BR-INV-002) | `InvoiceMatched` |
-| MATCHING | EXCEPTION | auto | system | outside tolerance | `InvoiceMatchException` |
-| EXCEPTION | MATCHED | override | Accountant with approval limit | approver's limit ≥ variance (BR-INV-003) | `InvoiceOverrideApproved` |
-| EXCEPTION | DISPUTED | dispute | Accountant | reason recorded | — |
-| DISPUTED | MATCHING | credit note posted | Accountant | credit note linked | — |
-| MATCHED | APPROVED_FOR_PAYMENT | approve | Accountant | within payment approval limit | `InvoiceApprovedForPayment` |
-| APPROVED_FOR_PAYMENT | PAID | record payment | Accountant | — | `SupplierInvoicePaid` |
+| — | DRAFT | enter · `POST /supplier-invoices` | Accountant only (`:CREATE`); procurement staff only read (decision 2026-11-02, kltn-docs 04 §2) | number unique per supplier, case aside (BR-INV-001); every line bills a PO line of the supplier (of the invoice's order when it names one; none named: lines of several of its orders), on an order past approval (not DRAFT, PENDING_APPROVAL, CANCELLED), in one currency; a named receipt line is a delivery of that PO line; dated today or earlier, due not before it; amounts worked out from the lines (net, tax per line rounded half up) | — |
+| DRAFT, EXCEPTION | DRAFT | correct · `PUT /supplier-invoices/{id}` | `:UPDATE` | the whole header and lines again, `version` as read; an EXCEPTION's variances are dropped | — |
+| DRAFT, EXCEPTION | MATCHED | match · `POST /supplier-invoices/{id}/match` | `:UPDATE` | no variance (BR-INV-002): from then on its units count as billed | — |
+| DRAFT, EXCEPTION | EXCEPTION | match | `:UPDATE` | variances, kept per line with expected, invoiced and the amount at stake (`supplier_invoice_variances`), with the tolerance used | — |
+| DRAFT, EXCEPTION | CANCELLED | cancel · `POST /supplier-invoices/{id}/cancel` | `:UPDATE` | reason required (entered by mistake, withdrawn by the supplier) | — |
+| EXCEPTION | MATCHED | override (SCRUM-310) | Accountant with approval limit | approver's limit ≥ variance (BR-INV-003) | `InvoiceOverrideApproved` |
+| EXCEPTION | DISPUTED | dispute (SCRUM-310) | Accountant | reason recorded | — |
+| DISPUTED | DRAFT | credit note posted (SCRUM-310) | Accountant | credit note linked; matched again | — |
+| MATCHED | APPROVED_FOR_PAYMENT | approve (SCRUM-310) | Accountant | within payment approval limit | `InvoiceApprovedForPayment` |
+| APPROVED_FOR_PAYMENT | PAID | record payment (SCRUM-310) | Accountant | — | `SupplierInvoicePaid` |
 
 ---
 
@@ -172,38 +214,101 @@ stateDiagram-v2
 
 This machine governs the **condition** dimension only. Quantities (on hand / reserved /
 allocated) are numbers on the same record, not states — see `01-ubiquitous-language.md`.
+Stored as `inventory.stock_item.status`; `GOOD` in older text is `AVAILABLE`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> QUARANTINE: received, QC pending
-    [*] --> GOOD: received, QC passed or not required
-    QUARANTINE --> GOOD: QC accepts
-    QUARANTINE --> DAMAGED: QC finds damage
-    GOOD --> DAMAGED: damage reported
-    GOOD --> EXPIRED: expiry date passes
-    GOOD --> QUARANTINE: recall or re-inspection
+    [*] --> INBOUND: receipt confirmed (RECEIVING / QUALITY_CONTROL area)
+    INBOUND --> AVAILABLE: putaway (QC accepted, or not required)
+    INBOUND --> QUARANTINE: QC puts on hold
+    INBOUND --> BLOCKED: QC rejects
+    QUARANTINE --> AVAILABLE: re-inspected and accepted, then put away
+    QUARANTINE --> BLOCKED: re-inspected and rejected
+    BLOCKED --> [*]: returned to vendor
+    AVAILABLE --> DAMAGED: damage reported (moved to a QUARANTINE area)
+    AVAILABLE --> EXPIRED: expiry date passes
+    AVAILABLE --> QUARANTINE: recall or re-inspection
+    DAMAGED --> AVAILABLE: re-inspected, fine (restored onto a bin)
     DAMAGED --> [*]: written off
+    DAMAGED --> [*]: handed back to the supplier
     EXPIRED --> [*]: written off
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | GOOD | receipt posted | system | QC passed or not required | `StockReceived` |
-| — | QUARANTINE | receipt posted | system | QC quarantined | `StockReceived` |
-| QUARANTINE | GOOD | release | QC staff | inspection recorded | `StockReleasedFromQuarantine` |
-| QUARANTINE / GOOD | DAMAGED | report damage | Warehouse staff | reason and photo (BR-STK-003) | `StockBlocked(DAMAGED)` |
-| GOOD | EXPIRED | nightly sweep | system | `expiry_date < today` (BR-STK-004) | `StockBlocked(EXPIRED)` |
-| GOOD | QUARANTINE | recall | Warehouse manager | reason given | `StockBlocked(QUARANTINE)` |
-| DAMAGED / EXPIRED | written off | write-off | Warehouse manager | approved adjustment (BR-STK-005) | `StockWrittenOff` |
+| — | INBOUND | receipt confirmed | system | — | `StockReceived` |
+| INBOUND | AVAILABLE | putaway completed | Warehouse staff | QC accepted or not required (docs 05 BR-01) | `StockPutAway` |
+| INBOUND | QUARANTINE / BLOCKED | QC verdict | QC staff | reason given | `QcCompleted` |
+| QUARANTINE | AVAILABLE | re-inspection accepts | QC staff | then putaway from the `QUARANTINE` area | `StockReleasedFromQuarantine` |
+| QUARANTINE | BLOCKED | re-inspection rejects | QC staff | reason given | `StockBlocked(BLOCKED)` |
+| BLOCKED | left stock | return to vendor | Procurement staff | movement out of the warehouse | `ReturnToVendorRaised` |
+| AVAILABLE | DAMAGED | report damage on a shelf | Warehouse / QC staff (`inventory-damage-reports:CREATE`) | reason and 1-5 photos (BR-STK-003); free units only | `StockDamageReported` |
+| AVAILABLE | DAMAGED | report damage at a pick line's bin | the task's picker (`fulfillment-picking:UPDATE`) | reason and photos; units of the line's allocation | `StockDamageReported` |
+| (picked, off the books) | DAMAGED | report damage at the packing bench | the session's packer or a manager (`fulfillment-packing:UPDATE`) | reason and photos; units the pick line took, out of every parcel; never more than it took | `StockDamageReported` |
+| AVAILABLE | EXPIRED | nightly sweep | system | `expiry_date < today` (BR-STK-004) | `StockBlocked(EXPIRED)` |
+| AVAILABLE | QUARANTINE | recall | Warehouse manager | reason given | `StockBlocked(QUARANTINE)` |
+| DAMAGED | written off | decision WRITE_OFF | Warehouse manager (`inventory-damage-reports:APPROVE`), never the reporter | the units unheld; a DAMAGED adjustment posted at once (BR-STK-005) | `StockDamageDisposed` |
+| DAMAGED | (stays, earmarked) | decision RETURN_TO_SUPPLIER | Warehouse manager, never the reporter | note; intent until handed over (see below) | `StockDamageDisposed` |
+| DAMAGED (earmarked) | left stock | hand-over to the supplier under a delivery note | Warehouse manager (`inventory-damage-reports:APPROVE`) | some or all of the units of the decision, never more; unheld | — |
+| DAMAGED (earmarked) | DAMAGED (undecided again) | the supplier refused (or took fewer) | Warehouse manager | the supplier's answer in the note | — |
+| DAMAGED | AVAILABLE | decision RESTORE | Warehouse manager, never the reporter | note; onto an active bin of the warehouse; not expired. Units an order's impaired allocation holds go back only with everything left of the report: the allocation goes onto the bin with them, and the coordinator's reallocation keeps it there | `StockDamageDisposed` |
+| EXPIRED | written off | write-off | Warehouse manager | approved adjustment (BR-STK-005) | `StockWrittenOff` |
 
-**Only GOOD counts towards ATP.** That single sentence is the reason this dimension is separate
-from the quantity buckets: quarantined stock is on hand, occupies its bin, appears in a physical
-count, and is invisible to the storefront.
+**Only AVAILABLE counts towards ATP.** That single sentence is the reason this dimension is separate
+from the quantity buckets: inbound, quarantined and blocked stock is on hand, occupies its location, appears in a
+physical count, and is invisible to the storefront.
 
-**Reserved stock whose condition turns bad.** If GOOD stock with an outstanding reservation moves
+**Reserved stock whose condition turns bad.** If AVAILABLE stock with an outstanding reservation moves
 to DAMAGED or EXPIRED, the reservation is *not* silently dropped — `inventory-service` emits
 `ReservationImpaired`, and `order-service` puts the order on hold with reason
 `INVENTORY_ISSUE` (WBS 3.17.6.1). Dropping it quietly is how a paid order never ships.
+
+**As built for DAMAGED (SCRUM-475, SCRUM-277; 2026-10-24).** One document, the damage report
+(`inventory.stock_damage_report`, number `DMG-yyyyMMdd-nnnn`), records what, how many, why (BROKEN, DEFORMED,
+WET_OR_MOULDY, DIRTY_OR_MISPRINTED, OTHER with a note), who, and 1-5 photos (category `qc-evidence`, checked by
+their first bytes, deleted again if the report fails). Expired goods are never "damaged": they are the sweep's.
+
+- **Where the units go.** The damaged units leave their row and move, DAMAGED, to a QUARANTINE area of the same
+  warehouse - the one the reporter names, or the first usable one by code that can take them - with one `MOVE`
+  ledger line (reference `DAMAGE_REPORT`, AVAILABLE → DAMAGED). They cannot stay "DAMAGED at the bin": a receipt
+  layer has one row per location whatever its status, and damaged goods belong apart from good ones on the floor too.
+  A carton (stock package) they came out of is opened, or closed CONSUMED when emptied; they arrive loose.
+- **Holds are never broken behind their owner's back.** A shelf report takes free units only (`DAMAGE_EXCEEDS_FREE_STOCK`
+  otherwise): held units are reported where they are taken. A picker's report takes units of the line's
+  allocation and makes the order whole in the same transaction: the same quantity is allocated again FEFO on
+  pickable stock of the warehouse (the bin included - its count is not in doubt, unlike a short pick's), or, when
+  there is none, the order keeps that share as an **impaired allocation** on the damaged units - never pickable,
+  its pick line SHORT, the order ON_HOLD (`INVENTORY`) - until the coordinator reallocates it (the X-SHORT
+  endpoint). Checkout reservations hold no units: when the damage leaves them promising more than the free stock,
+  `StockDamageReported.skuReservationShortfall` says by how much, and their release refuses as it would for any
+  shortage. Production holds (blanks in storage) and transfer holds are never taken by a shelf report; blanks
+  spoilt in the print shop keep production's own scrap write-off.
+- **Found after the pick** (origin `PACKING`): units a pick line already took - broken in the tote while the task is
+  still picked, or seen at the packing bench - were deducted when picked; reported whatever hold the order is on, as
+  long as it is not cancelled (a cancelled order's goods are put back, then reported on the shelf). They come back into stock as DAMAGED in quarantine with one `PUT_BACK`
+  ledger line from nowhere (reference `DAMAGE_REPORT`), never more than the pick took
+  (`tg_stock_damage_report_after_pick`); the consumed hold stays consumed. The order is made whole as at picking -
+  replacement FEFO or an impaired allocation - and the pick task goes back to PICKING for the new lines; the picked
+  line keeps the damaged units on record (`pick_line.packing_damaged_qty`), so packing no longer counts them and a
+  cancelled order puts back only the rest. Units already in a parcel are taken out of it first
+  (`PACK_DAMAGED_UNITS_PACKED`). A task back at picking can be handed to someone else
+  (`PUT /fulfillment/tasks/{id}/assignment` while PENDING or PICKING): its picker may have gone home.
+- **Who hears of it.** The warehouse managers of the warehouse (they decide), the order coordinators when an order
+  is ON_HOLD for it, the inventory planners when checkout reservations now exceed free stock: in-app, then e-mail
+  best effort (`StockDamageNotificationListener`).
+- **Decisions, four eyes.** A warehouse manager who did not report decides some or all units (several decisions
+  per report, never more units than reported): WRITE_OFF posts a DAMAGED stock adjustment at once - the reporter
+  as requester, the manager as approver - and numbers the destruction record (`WO-yyyyMMdd-nnnn`);
+  RETURN_TO_SUPPLIER records the intent (supplier from the lot when known) and the units stay DAMAGED in quarantine
+  until a manager records them handed to the supplier or their carrier under a delivery note
+  (`POST /damage-reports/{id}/dispositions/{dispositionId}/supplier-shipment`, `stock_damage_supplier_shipment`): in
+  one or several parts, off the books with one `SUPPLIER_RETURN` ledger line each. Units the supplier refuses
+  (`.../supplier-refusal`, with its answer) stay in quarantine and wait for a decision again. A report whose units are
+  all decided but some still wait for the supplier reads AWAITING_SUPPLIER (a list filter of its own). The debit note
+  to the supplier is procurement's, from `StockDamageDisposed` (not built). RESTORE moves them back onto a bin as
+  AVAILABLE. Units an impaired allocation holds are guarded per report, not per row (several reports' units share one
+  DAMAGED row of a layer): a write-off or a return never takes them (`DAMAGED_STOCK_HELD`); restoring everything left
+  gives them back to the order - the allocation rides onto the bin, and reallocating the short line keeps it there.
 
 ---
 
@@ -232,39 +337,55 @@ stateDiagram-v2
 | ALLOCATED | CONSUMED | pick confirmed | Warehouse staff | picked qty = allocated qty | `StockDeducted` |
 | ALLOCATED | RELEASED | cancel after allocation | Order coordinator | not yet picked; put-back task raised (WBS 3.7.7.2) | `StockReservationReleased(ORDER_CANCELLED)` |
 
+**As built (SCRUM-152, 2026-10-17).** Both kinds live in `inventory.stock_reservation`. A SKU reservation
+(`stock_item_id` NULL) is the HELD row above: checkout, payment pin/re-arm, expiry sweep, cancellation. Release
+to a warehouse turns it ALLOCATED and writes one allocation per bin and lot (`stock_item_id` set,
+`allocated_from_id` = the reservation, `expires_at` NULL); each allocation then goes HELD → CONSUMED (pick) or
+RELEASED (cancel, `SHORT_PICKED` when X-SHORT reallocates it elsewhere, or `DAMAGED` when a picker reports all of its
+units damaged; for part of them it keeps its id over fewer units, SCRUM-277 - see §5). The order line swaps the reservation id
+for the allocation ids. Production holds and checkout holds placed before this change are stock-item rows that
+were never SKU reservations; they keep their old lifecycle.
+
 **The reservation clock is the most under-specified part of the BRD.** WBS 3.14.5.1 says
 "time-limited" without saying how long. See `06-open-questions.md`, OQ-03.
 
 ---
 
-## 7. Putaway task — `warehouse-service`
+## 7. Putaway task — `warehouse`, confirmed by `inventory`
 
 WBS 3.3.6 (generation), 3.5.4 (management).
 
+**Changed 2026-11-02** to KLTN-FA26/docs 05 Putaway (commit `beccca6`) and the SCRUM-92 code.
+Assignment, a reason code for leaving the suggestions, an exception state with a manager override
+and multi-leg putaway are later scope (docs open question C18): every clerk of the warehouse sees
+and puts away every task. Table `warehouse.putaway_task`, enum `PutawayStatus`.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED: receipt posted
-    CREATED --> ASSIGNED: assign to staff
-    ASSIGNED --> IN_PROGRESS: staff scans first item
-    IN_PROGRESS --> COMPLETED: destination scanned and confirmed
-    IN_PROGRESS --> EXCEPTION: suggested location unusable
-    EXCEPTION --> IN_PROGRESS: manager overrides location
-    CREATED --> CANCELLED: cancel
-    COMPLETED --> [*]
-    CANCELLED --> [*]
+    [*] --> PENDING: goods ready for putaway
+    PENDING --> IN_PROGRESS: part of a loose task put away
+    PENDING --> DONE: the carton, or all loose units, put away
+    IN_PROGRESS --> IN_PROGRESS: another part put away
+    IN_PROGRESS --> DONE: nothing left
+    DONE --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | CREATED | receipt posted | system | slotting engine returns ≥1 suggestion (BR-SLT-001) | `PutawayTaskCreated` |
-| CREATED | ASSIGNED | assign | Warehouse manager, or auto | staff assigned to that warehouse | — |
-| ASSIGNED | IN_PROGRESS | scan item | Warehouse staff | scanned SKU matches the task | — |
-| IN_PROGRESS | COMPLETED | confirm location | Warehouse staff | scanned location = suggested, or override approved (BR-SLT-002) | `PutawayCompleted` |
-| IN_PROGRESS | EXCEPTION | report blocked | Warehouse staff | reason given | — |
-| EXCEPTION | IN_PROGRESS | override | Warehouse manager | new location passes hard constraints (BR-SLT-003) | — |
+| — | PENDING | receipt line confirmed without QC, or QC accepts part of it (`ReceiptStockReadyForPutaway`) | system | one task per `IN_STOCK` carton holding INBOUND units, one for the loose remainder; a receipt line that already has a task opens nothing | — |
+| PENDING / IN_PROGRESS | IN_PROGRESS | confirm part of a loose task | Warehouse staff | 1 ≤ quantity < left (left is read from the ledger); the scanned bin passes the hard constraints (BR-SLT-001, BR-SLT-003), suggested or not (BR-SLT-002) | — |
+| PENDING / IN_PROGRESS | DONE | confirm a carton by its LPN, or the last loose units | Warehouse staff | a carton goes whole; same bin checks | `PutawayCompleted` |
 
-`PutawayCompleted` is what moves stock from the receiving dock to a real bin. Until then, the
-stock exists with a location code of the inbound staging area and is **not** pickable.
+`CANCELLED` exists in the enum and the table but nothing moves a task into it (docs 05 §5). No
+task outlives a cancelled receipt: a receipt can be cancelled only before it posts, and tasks open
+after it posts.
+
+Confirming is what moves stock from the `RECEIVING` or `QUALITY_CONTROL` area to a real bin,
+INBOUND → AVAILABLE, in the same transaction as the task (`PutawayService.confirm`). Until then
+the stock stands at the area's location code (e.g. `HCM-RCV01`) and is **not** pickable.
+`PutawayCompleted` tells procurement to close the receipt once every line is put away. Up to ten
+suggested bins, each with its reason, are computed on every read of the task and never stored
+(BR-SLT-004).
 
 ---
 
@@ -309,60 +430,150 @@ The central machine. WBS 3.17.1.1 spells it out:
 `Pending Payment → Confirmed → Ready to Fulfill → In Production → Picking → Packed → Shipped →
 Delivered → Completed/Cancelled`. Hold (3.17.6) and RMA (3.17.5) attach to it.
 
+**Changed 2026-10-06** (B2B only, production module): an order is a wholesale order created from
+an accepted quote or on the customer portal. A **credit** order skips `PENDING_PAYMENT` — it is
+`CONFIRMED` within the customer's credit limit, `ON_HOLD` (reason `CREDIT`) above it. Release
+sends print lines to production **before** the order is ready to fulfil: `CONFIRMED →
+IN_PRODUCTION → READY_TO_FULFILL`, and the order leaves `IN_PRODUCTION` only when every production
+order of the order is completed (machine 16).
+
+**Implemented 2026-10-19 (G3-2, SCRUM-239/246/247).** The statuses of kltn-docs 17 §5, written twice: the
+exhaustive switch `OrderStatus.canTransitionTo` and the table `ordering.order_status_transition`, which the trigger
+`tg_order_status_transition` enforces on every `UPDATE` of a status (the two are compared by
+`OrderStatusTest`, `OrderLifecycleIntegrationTest` and `OrderLifecycleMigrationUpgradeTest`). `IN_FULFILMENT` is gone
+(rows became `PICKING`, or `PACKED` when a package was completed); there is no `PAYMENT_FAILED` (G3-Q2: a bank
+transfer that never comes is a cancellation when the hold runs out). Every change writes a history row with who made
+it and why (`order_status_history.actor_id`, `reason`).
+
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING_PAYMENT: checkout completed
-    PENDING_PAYMENT --> CONFIRMED: payment captured
-    PENDING_PAYMENT --> PAYMENT_FAILED: payment declined or timed out
-    PAYMENT_FAILED --> [*]
-    CONFIRMED --> READY_TO_FULFILL: released by coordinator
-    READY_TO_FULFILL --> IN_PRODUCTION: print job started
-    READY_TO_FULFILL --> PICKING: no print items
-    IN_PRODUCTION --> PICKING: printing done
-    PICKING --> PACKED: packing confirmed
-    PACKED --> SHIPPED: handed to carrier
-    SHIPPED --> DELIVERED: POD received
-    SHIPPED --> RTO: undeliverable
-    DELIVERED --> COMPLETED: return window closes
-    DELIVERED --> RETURN_REQUESTED: customer opens RMA
-    RETURN_REQUESTED --> DELIVERED: RMA rejected
-    RETURN_REQUESTED --> RETURNED: return received
-    RETURNED --> [*]
-    RTO --> [*]
-    COMPLETED --> [*]
-
-    PENDING_PAYMENT --> CANCELLED: cancel
-    CONFIRMED --> CANCELLED: cancel
-    READY_TO_FULFILL --> CANCELLED: cancel
-    IN_PRODUCTION --> CANCELLED: cancel
-    PICKING --> CANCELLED: cancel
+    [*] --> PENDING_PAYMENT: prepay / deposit order placed
+    [*] --> CONFIRMED: credit order within limit
+    [*] --> ON_HOLD: credit order over limit (hold CREDIT)
+    PENDING_PAYMENT --> CONFIRMED: paid in full / deposit in
+    CONFIRMED --> IN_PRODUCTION: released, has print lines
+    CONFIRMED --> READY_TO_FULFILL: released, no print lines
+    IN_PRODUCTION --> READY_TO_FULFILL: every production order completed
+    IN_PRODUCTION --> PARTIALLY_FULFILLED: stock handed over while printing (PACK-EARLY)
+    READY_TO_FULFILL --> PARTIALLY_FULFILLED: stock packed while printing, handed over (PACK-EARLY)
+    READY_TO_FULFILL --> PICKING: task created (startPicking)
+    READY_TO_FULFILL --> PACKED: printed goods only (17 §4.2.6)
+    PICKING --> PACKED: everything packed (markPacked)
+    PICKING --> PARTIALLY_FULFILLED: part handed over
+    PACKED --> PARTIALLY_FULFILLED: part handed over
+    PACKED --> SHIPPED: everything handed over
+    PARTIALLY_FULFILLED --> PACKED: the rest packed
+    PARTIALLY_FULFILLED --> SHIPPED: the rest handed over / closed
+    PARTIALLY_FULFILLED --> DELIVERED: rest closed, every shipment arrived
+    PARTIALLY_FULFILLED --> DELIVERY_FAILED: rest closed, a shipment failed
+    PARTIALLY_FULFILLED --> RETURNED: rest closed, everything came back
+    SHIPPED --> DELIVERED: every shipment arrived
+    SHIPPED --> DELIVERY_FAILED: all have an outcome, one failed
+    SHIPPED --> PARTIALLY_FULFILLED: a shipment came back
+    DELIVERY_FAILED --> DELIVERED: delivered on a retry
+    DELIVERY_FAILED --> RETURNED: back at the warehouse (RTO)
+    DELIVERY_FAILED --> PARTIALLY_FULFILLED: one came back, others arrived
+    DELIVERED --> COMPLETED: return window passed, paid, no RMA open
+    DELIVERED --> RETURN_REQUESTED: RMA
+    RETURN_REQUESTED --> RETURNED: last return ended, money given back
+    RETURN_REQUESTED --> DELIVERED: last return ended without money (refused 2026-10-21, withdrawn, expired, replaced)
+    RETURNED --> REFUNDED
+    RETURNED --> PARTIALLY_REFUNDED
+    COMPLETED --> CLOSED: after 30 days
+    REFUNDED --> CLOSED: after 30 days
+    PARTIALLY_REFUNDED --> CLOSED: after 30 days
+    CONFIRMED --> ON_HOLD
+    IN_PRODUCTION --> ON_HOLD
+    READY_TO_FULFILL --> ON_HOLD
+    PICKING --> ON_HOLD
+    PARTIALLY_FULFILLED --> ON_HOLD
+    PACKED --> ON_HOLD
+    ON_HOLD --> CONFIRMED: back where held from / credit approved
+    ON_HOLD --> PENDING_PAYMENT: credit refused, re-termed
+    PENDING_PAYMENT --> CANCELLED
+    CONFIRMED --> CANCELLED
+    IN_PRODUCTION --> CANCELLED
+    READY_TO_FULFILL --> CANCELLED
+    PICKING --> CANCELLED
+    ON_HOLD --> CANCELLED
     CANCELLED --> [*]
-
-    CONFIRMED --> ON_HOLD: exception raised
-    READY_TO_FULFILL --> ON_HOLD: exception raised
-    IN_PRODUCTION --> ON_HOLD: exception raised
-    ON_HOLD --> CONFIRMED: resolved
-    ON_HOLD --> CANCELLED: unresolvable
+    CLOSED --> [*]
 ```
 
-| From | To | Trigger | Actor | Guard | Event |
-|---|---|---|---|---|---|
-| — | PENDING_PAYMENT | checkout | Customer / Sales staff | every line reserved (BR-ORD-001) | `OrderPlaced` |
-| PENDING_PAYMENT | CONFIRMED | payment captured | system | amount = order total, or deposit rule met (BR-PAY-002) | `OrderConfirmed` |
-| PENDING_PAYMENT | PAYMENT_FAILED | declined or timed out | system | reservations released first | `OrderPaymentFailed` |
-| CONFIRMED | READY_TO_FULFILL | release | Order coordinator | fulfilling warehouse chosen; stock allocated (BR-ORD-002) | `OrderReleased` |
-| READY_TO_FULFILL | IN_PRODUCTION | start print job | Warehouse staff | order has ≥1 print line with a LOCKED snapshot | `ProductionStarted` |
-| READY_TO_FULFILL | PICKING | pick list generated | system | no print lines | `PickListGenerated` |
-| IN_PRODUCTION | PICKING | printing done | Warehouse staff | printed qty = ordered qty | `PickListGenerated` |
-| PICKING | PACKED | packing confirmed | Warehouse staff | every line picked; design checksums match (BR-DSG-003) | `OrderPacked` |
-| PACKED | SHIPPED | handover | Warehouse staff | manifest signed by carrier | `ShipmentDispatched` |
-| SHIPPED | DELIVERED | POD received | system, via carrier webhook | POD payload valid | `OrderDelivered` |
-| SHIPPED | RTO | undeliverable | system, via carrier webhook | carrier reports RTO | `OrderReturnedToOrigin` |
-| DELIVERED | COMPLETED | window closes | system | 7 days after delivery, no open RMA (BR-ORD-005) | `OrderCompleted` |
-| DELIVERED | RETURN_REQUESTED | open RMA | Customer / Sales staff | within return window | `RmaRequested` |
-| any of PENDING_PAYMENT…PICKING | CANCELLED | cancel | see below | see BR-ORD-003 | `OrderCancelled` |
-| CONFIRMED / READY_TO_FULFILL / IN_PRODUCTION | ON_HOLD | raise exception | Order coordinator, or system | reason is one of PAYMENT / ADDRESS / INVENTORY (WBS 3.17.6.1) | `OrderPutOnHold` |
-| ON_HOLD | CONFIRMED | resolve | Order coordinator | resolution note recorded | `OrderHoldResolved` |
+| From | To | Called by | Guard |
+|---|---|---|---|
+| READY_TO_FULFILL | PICKING | fulfillment `createTask` → `OrderService.startPicking` (same transaction, A1) | released; IN_PRODUCTION with stock lines is a no-op (stock lines picked in parallel, 17 §4.2.5); IN_PRODUCTION with print lines only is refused |
+| READY_TO_FULFILL / PICKING / PARTIALLY_FULFILLED | PACKED | fulfillment `completePacking` → `markPacked` | not ON_HOLD (resolve first); records `packed_at`; a completion leaving goods behind needs `allow_partial_shipment` (`PACK_PARTIAL_NOT_ALLOWED`) |
+| PICKING / PACKED / PARTIALLY_FULFILLED, and IN_PRODUCTION / READY_TO_FULFILL (PACK-EARLY) | PARTIALLY_FULFILLED / SHIPPED | G4-2a handover → `recordHandover(shipment, lines, leavingWith)` | `ORDER_BALANCE_NOT_PAID` when money is due before the goods leave (G3-Q4); units ≤ what is left; everything at once from PICKING / IN_PRODUCTION / READY_TO_FULFILL is refused (pack first); goods left behind (not in this shipment nor in the order's others signed with it) need `allow_partial_shipment` (`ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED`) |
+| PACKED | SHIPPED | `markShipped` (whole order, no shipment recorded) | as above |
+| SHIPPED … | DELIVERED / DELIVERY_FAILED / RETURNED / PARTIALLY_FULFILLED | `recordShipmentDelivered / …DeliveryFailed / …Returned` per shipment; `POST /orders/{id}/delivery`, `/delivery-failure` for an order without shipments (`ORDER_DELIVERY_VIA_SHIPMENT` otherwise, G4-Q5) | failure needs a reason (09 BR-02) |
+| PARTIALLY_FULFILLED | the shipments' status | `POST /orders/{id}/remainder-closure` (Sales / coordinator) | the unshipped units are closed (`order_line.cancelled_quantity`), their holds released, `OrderRemainderClosed` asks payment to refund what was received above the order's new worth |
+| CONFIRMED … PACKED, PARTIALLY_FULFILLED | ON_HOLD | `POST /orders/{id}/hold` (coordinator), design mismatch at packing (system), credit check (system) | reasons PAYMENT, ADDRESS, INVENTORY, CUSTOMER, FRAUD, OTHER (with note) by hand; CREDIT, DESIGN_MISMATCH by the system |
+| ON_HOLD | `status_before_hold` | `POST /orders/{id}/hold/resolution` | note required; a CREDIT hold → `ORDER_CREDIT_HOLD_USE_APPROVAL`; the trigger refuses leaving a hold anywhere else |
+| DELIVERED | COMPLETED | `OrderSettlementJob` nightly | `delivered_at` + `stockflow.order.return-window-days` (7, BR-ORD-005) passed, nothing owed, no return request open |
+| DELIVERED | RETURN_REQUESTED | `ReturnRequestService` opening a return (SCRUM-243, §12) | under the order's row lock, so a return and the nightly completion see each other |
+| RETURN_REQUESTED | DELIVERED / RETURNED → REFUNDED, PARTIALLY_REFUNDED | `ReturnRequestService` when the order's last open return ends (§12) | money given back (refunded, credited, set off) ≥ what the order is worth → REFUNDED, less → PARTIALLY_REFUNDED, none → DELIVERED |
+| COMPLETED / REFUNDED / PARTIALLY_REFUNDED | CLOSED | `OrderSettlementJob` | `stockflow.order.close-after-days` (30, G3-Q1) passed, no return request open |
+
+**Split shipments (decision G4-Q3, 2026-10-19).** The order records each shipment it is told of
+(`ordering.order_shipment`, `_line`): the units, their value, the outcome. A credit order bills each delivered
+shipment (`OrderDelivered.shipmentId`, `billedAmount` → one `payment.receivable` per shipment); the credit exposure
+counts, per order, what is still unbilled - total less closed units less billed less money paid outside receivables -
+for the statuses `OrderStatus.countsTowardCreditExposure` names, plus the open receivables, so a split order is counted
+once and a new status cannot leak out of the limit. A deposit order's balance policy (before / on delivery / credit)
+comes with G2-3; until then nothing is billed per shipment for it and nothing blocks its handover.
+
+**Partial shipments are Sales' decision (PACK-PARTIAL, lead 2026-10-21).** `customer_order.allow_partial_shipment`,
+false by default, set by `PUT /orders/{id}/partial-shipment` (`sales-order-partial-shipments:UPDATE`, SALES_STAFF)
+until the order is SHIPPED or later (`ORDER_PARTIAL_SHIPMENT_LOCKED`); each decision is a row of
+`ordering.order_partial_shipment_decision`, shown to staff in `GET /orders/{id}/history` as an entry of
+`type = PARTIAL_SHIPMENT_DECISION` (`partialShipmentAllowed`, the note as `reason`; status changes are
+`type = STATUS_CHANGE`). Without it the packer cannot complete part of the order and the dispatcher cannot put part of
+it on a load (refused when the shipment is added, 409 `ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED`) or hand it over; the packer
+still says why when completing a part. It cannot be stopped while the order waits for production after its stock left
+(409 `ORDER_PARTIAL_SHIPMENT_LOCKED`).
+
+**Delivery mode is the coordinator's, until packing starts (LP-1 / LP-2, lead 2026-10-22; 09 §3, 17 §4.2 step 4).**
+`customer_order.delivery_mode` is `PARCEL` (default; every order before V20261022000800) or `FULL_TRUCKLOAD`. The Order
+Coordinator sets it with the release (`POST /orders/{id}/release {warehouseId, deliveryMode?}`; a mode other than the
+order's needs `sales-order-delivery-modes:UPDATE` besides `sales-orders:APPROVE`) or with
+`PUT /orders/{id}/delivery-mode {deliveryMode, note?}` (`sales-order-delivery-modes:UPDATE`: ORDER_COORDINATOR,
+SYSTEM_ADMIN). Open while the order is DRAFT..PICKING (or on hold from there) and no package of it was opened yet:
+fulfillment records `packing_started_at` (`OrderService.recordPackingStarted`, under the order's row lock) when it opens
+the first package; from then on, and from PARTIALLY_FULFILLED on, 409 `DELIVERY_MODE_LOCKED`. A full truckload is never
+collected on delivery: `FULL_TRUCKLOAD` on a DEPOSIT / ON_DELIVERY order, and ON_DELIVERY terms on a full-truckload
+order (a draft's terms, a switch after a credit refusal), are 409 `DELIVERY_MODE_FTL_NO_COD` (DB: `ck_order_ftl_no_cod`,
+twin of `ck_shipment_ftl_no_cod`). Each change is a row of `ordering.order_delivery_mode_change`, shown to staff as
+`type = DELIVERY_MODE_CHANGE` (`deliveryMode`, `previousDeliveryMode`, note as `reason`). Packing copies the mode onto
+every shipment; a FULL_TRUCKLOAD shipment is refused on a parcel load (409 `PACKAGE_REQUIRES_LOAD_PLAN`, and a load
+opened without ids picks PARCEL shipments only), so it waits at READY_TO_DISPATCH until load-plan dispatch (PR E).
+
+**Stock first, prints later (PACK-EARLY, lead 2026-10-21; 17 BR-06 "trừ khi chính sách split-ship", D9).** A mixed
+order IN_PRODUCTION gets its fulfillment task for the stock lines (the order stays IN_PRODUCTION). With partial
+shipments allowed, the stock is packed as a partial shipment (the print lines are not at packing:
+`OrderSummary.Lifecycle.printLinesReady` is false) and handed over: IN_PRODUCTION → PARTIALLY_FULFILLED with
+`awaiting_production`. When production completes the flag clears (the status stays), the printed goods are at packing,
+and the rest follows the split-order path: PARTIALLY_FULFILLED → PACKED → SHIPPED. Staff may instead close the print
+lines (`remainder-closure`): production stops their jobs as on a cancellation (`OrderRemainderClosed`), printed goods
+not shipped are scrapped, and after printing started Sales may keep an agreed fee (at most the value of the print units
+closed; the money above the order's new worth pays it first - a deposit included - the rest is refunded, a shortfall is a
+receivable, decisions 2026-10-17 / 2026-10-19). Stock packed while printing but not handed over does not stop a
+cancellation (with the printing fee rules): its shipment is cancelled, parcels voided, the picked stock put back
+(17 §4.5 step 15); once a shipment left, the order is returned. Production
+completing before the stock left takes the order to READY_TO_FULFILL as usual; its packed stock may still leave first
+(READY_TO_FULFILL → PARTIALLY_FULFILLED). Money per shipment as for any split order: a credit (or ON_CREDIT) delivery
+bills its shipment, the carrier collects each ON_DELIVERY shipment's COD, money paid ahead goes to the earliest
+shipments first.
+
+**Deposit balance on credit (BALCREDIT, lead 2026-10-21; 15 §4.2 step 3).** `balance_policy = ON_CREDIT`, for a
+customer allowed CREDIT: placement checks the remaining balance (total − deposit) plus what the customer owes on credit
+against the limit, and an overdue customer, and refuses with 409 (`BALANCE_CREDIT_LIMIT_EXCEEDED`,
+`CUSTOMER_CREDIT_OVERDUE`) rather than holding the order - when Sales asked for ON_CREDIT; when it came from the
+customer's terms (a portal checkout cannot choose), the order falls back to BEFORE_DELIVERY. An overdue customer's
+ON_CREDIT order is not released, as a credit order is not. Only the deposit is wanted before the handover; each delivery
+bills its goods less the deposit not yet used as a DEPOSIT_BALANCE receivable of the customer, due after
+`credit_term_days`. The exposure counts such an order from PENDING_PAYMENT, its deposit as paid ahead, so the balance is
+counted once: here until delivered, then as the receivable.
 
 ### Who may cancel, and until when
 
@@ -375,9 +586,51 @@ artwork and cannot be resold.
 | PENDING_PAYMENT | yes | yes | release reservations |
 | CONFIRMED | yes | yes | release reservations, refund in full |
 | READY_TO_FULFILL | no — must request | yes | release allocations, raise put-back task |
-| IN_PRODUCTION | no — must request | yes, with reason | printed items are **not refunded** (BR-ORD-004) |
+| IN_PRODUCTION | no — must request | yes, with reason | production orders not yet printing are cancelled and blanks returned; printed items are **not refunded** (BR-ORD-004, BR-PRD-10) |
 | PICKING | no | yes, with reason | put-back task (WBS 3.7.7.2) |
 | PACKED and later | no | no — must go through RMA | — |
+
+**Refund and fee (decision 2026-10-17, audit of #109).**
+- **Before printing** - no production order of the order has printed or been sent to a subcontractor
+  (`customer_order.printing_started_at` is empty) - a cancellation is **refunded in full** and keeps nothing:
+  neither an agreed amount nor a share (`CANCELLATION_FEE_BEFORE_PRINTING`). A stock-only order is never printed,
+  so it is always refunded in full.
+- **From the first print run** (or work sent out) Sales enters the amount **agreed with the customer**, with its
+  reason and detail. It may be **above what was paid** (a deposit): the money received pays it first and the rest
+  is owed as one `CANCELLATION_FEE` receivable; a payment of that receivable counts as kept (retained = the fee,
+  at most what was paid). It is **never above the order total**. Below what was paid the rest is refunded through
+  the refund process. `ck_order_fee_after_printing`, `ck_order_fee_within_total` say it again in the table.
+- **No cancellation by the system once printing started** (decision 2026-10-17): a failed payment or an unpaid
+  hold running out does not cancel such an order; it stays as it is and Sales and the order coordinators are told
+  (`OrderCancellationReferred`, in-app) to settle the fee, the blanks and the printed goods and to cancel by hand
+  if they must (`CANCELLATION_NEEDS_STAFF` for any cancellation without a person).
+- **PACKED and later** is enforced on every path, including an approved request and a payment failure: once a
+  package of the order is completed (`customer_order.packed_at`) the order goes through a return (RMA). Printing
+  started and package completed are recorded by production and fulfillment under the order's row lock, so a
+  cancellation either comes before them (and the print or the package is refused) or after them.
+
+**Implemented 2026-10-10 (SCRUM-460).**
+- **One state for "may go ahead":** the code has `CONFIRMED` (kltn-docs 17 §5); `PAID` became `CONFIRMED`.
+  The money is the order's `paid_amount`, from which the payment status of kltn-docs 15 §5.2 (UNPAID /
+  PARTIALLY_PAID / ON_CREDIT / PAID) is derived. A prepaid order is confirmed when paid in full, a
+  deposit order when its deposit is in (15 BR-02). Money arriving later never moves the order.
+- **Every cancellation names a reason code** — CUSTOMER_REQUEST, PAYMENT_NOT_RECEIVED, PAYMENT_FAILED,
+  OUT_OF_STOCK, SUSPECTED_FRAUD, CREDIT_REJECTED, DUPLICATE_ORDER, PRODUCTION_ISSUE, or OTHER with a note.
+- **When the customer cancels directly:** in DRAFT / PENDING_PAYMENT / CONFIRMED, at once. From
+  IN_PRODUCTION / READY_TO_FULFILL / PICKING / ON_HOLD (no package completed) the customer opens a **cancellation
+  request**, one pending at a time, with one of their own reasons (CUSTOMER_REQUEST, DUPLICATE_ORDER, OTHER; G3-2).
+  The portal shows the latest request and its decision.
+- **Who decides a request:** Sales or the coordinator approve or reject it with
+  `sales-order-cancellations:UPDATE` (kltn-docs 17 §2), the permission that also cancels from the back
+  office.
+- **Fee kept:** approving or cancelling from the back office may keep a percentage of what was paid
+  (17 §4.4, 15 §4.4, never more than paid — 15 BR-05) - since 2026-10-17 only once printing started; see
+  "Refund and fee" above for the agreed amount.
+- **`OrderCancelled` is published on every path.**
+  - Payment cancels awaited payments and asks back the refundable amount as PENDING refunds.
+  - Fulfillment cancels the pick and pack, flagging picked goods for put-back.
+  - Production (SCRUM-393) cancels the production orders not yet printing and holds the others; the
+    contract is `contracts.OrderCancelled`.
 
 ### Order-line status
 
@@ -428,71 +681,195 @@ stateDiagram-v2
 **A deposit is a payment for part of the total.** The order moves to `CONFIRMED` when
 `sum(captured) ≥ deposit_required` (BR-PAY-002), not when it equals the order total.
 
----
+### Receivable (credit orders) — implemented 2026-10-10 (SCRUM-431)
 
-## 11. Shipment — `fulfillment-service`
-
-WBS 3.9.
+kltn-docs 15 §4.3 and §5.3. One receivable per delivered credit order, for what the order still owes.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED
-    CREATED --> LABELLED: carrier label obtained
-    LABELLED --> MANIFESTED: added to manifest
-    MANIFESTED --> HANDED_OVER: carrier signs
-    HANDED_OVER --> IN_TRANSIT: first carrier scan
-    IN_TRANSIT --> OUT_FOR_DELIVERY
-    OUT_FOR_DELIVERY --> DELIVERED: POD captured
-    OUT_FOR_DELIVERY --> FAILED_ATTEMPT: recipient unavailable
-    FAILED_ATTEMPT --> OUT_FOR_DELIVERY: retry
-    FAILED_ATTEMPT --> RTO_IN_TRANSIT: attempts exhausted
-    RTO_IN_TRANSIT --> RTO_RECEIVED: back at warehouse
-    RTO_RECEIVED --> [*]
-    DELIVERED --> [*]
+    [*] --> OPEN: order delivered (due = delivery day + days to pay, Saigon)
+    OPEN --> PARTIALLY_PAID: transfer allocated, part
+    OPEN --> PAID: transfer allocated, all
+    PARTIALLY_PAID --> PAID: transfer allocated, rest
+    OPEN --> OVERDUE: nightly run, past due
+    PARTIALLY_PAID --> OVERDUE: nightly run, past due
+    OVERDUE --> PAID: paid in full
+    PAID --> [*]
 ```
 
-Carrier statuses are normalised into this machine (WBS 3.9.5.2) — every carrier names them
-differently, and the rest of the platform must never see a carrier's vocabulary.
+- **Overdue stays overdue.** A part payment keeps the receivable `OVERDUE` until it is paid in full. Being overdue is what blocks new credit and release (15 §4.3 step 4).
+- **Transfers.** The accountant records each transfer from the bank statement, once per reference (BR-04, BR-07). It pays the receivables the customer named, otherwise the earliest due first (BR-09). Whatever is left stays as the customer's credit and pays their next receivable as it opens.
+- **The order learns of every payment.** Each allocation is published as `PaymentCaptured` (source `RECEIVABLE_ALLOCATION`), so the order's `paidAmount` follows.
+- **Allocations are append-only** (BR-06).
 
-`RTO_RECEIVED` triggers a **re-putaway** (WBS 3.9.7.2): the goods return to stock through the
+
+---
+
+## 11. Shipment and load — `fulfillment-service`
+
+WBS 3.9. **The carrier is a third party outside the system** (decided 2026-10-06, docs 09): no carrier
+API, no carrier waybill, no tracking. The system records the handover and the outcome the carrier
+reports back; nothing in between.
+
+```mermaid
+stateDiagram-v2
+    [*] --> READY_TO_DISPATCH: packed
+    READY_TO_DISPATCH --> HANDED_OVER: loaded onto the truck, manifest signed
+    READY_TO_DISPATCH --> CANCELLED: order cancelled before handover
+    HANDED_OVER --> DELIVERED: carrier reports delivered
+    HANDED_OVER --> DELIVERY_FAILED: carrier reports not delivered
+    DELIVERY_FAILED --> DELIVERED: carrier delivered on a retry
+    DELIVERY_FAILED --> RETURNED: parcel back at the warehouse
+    DELIVERED --> [*]
+    RETURNED --> [*]
+    CANCELLED --> [*]
+```
+
+| From | To | Trigger | Actor | Guard |
+|---|---|---|---|---|
+| READY_TO_DISPATCH | HANDED_OVER | handover | Warehouse staff | parcel is on a load that is being dispatched; scanned onto that vehicle |
+| HANDED_OVER | DELIVERED / DELIVERY_FAILED | outcome reported | Order coordinator | failure carries a reason (absent, refused, wrong address, lost) |
+| DELIVERY_FAILED | RETURNED | parcel received back | Warehouse staff | through the returns receipt, never straight into stock |
+
+A **load** is one vehicle (truck or container) and the parcels placed on it:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PLANNED: load plan accepted
+    PLANNED --> VEHICLE_BOOKED: vehicle booked with the carrier (outside the system)
+    PLANNED --> CANCELLED: parcels go back to READY_TO_DISPATCH
+    VEHICLE_BOOKED --> LOADING: vehicle arrived
+    LOADING --> DISPATCHED: every planned parcel scanned on, manifest signed
+    DISPATCHED --> [*]
+    CANCELLED --> [*]
+```
+
+The load plan respects the vehicle's internal volume and payload, and never puts a `FRAGILE`
+parcel under a heavier one (docs 09 BR-02).
+
+`RETURNED` triggers a **re-putaway** (WBS 3.9.7.2): the goods return to stock through the
 same putaway machine, in condition GOOD if the parcel is intact and QUARANTINE otherwise.
+
+> **Implemented (G4-5, `V20261021000300`):** `fulfillment.shipment` carries the six statuses above
+> (old `PENDING` → `READY_TO_DISPATCH`, `DISPATCHED` → `HANDED_OVER`), a number per order
+> (`<order>-S<n>`), its warehouse, delivery mode, package count, COD amount (09 BR-04) and the
+> handover / outcome / cancellation facts, each step also a `MANUAL` `shipment_event` row naming who
+> recorded it (09 BR-02). The domain is `fulfillment.internal.domain.Shipment`; G4-5 creates shipments
+> (READY_TO_DISPATCH) and cancels them with their order, G4-2a hands them over, SCRUM-294/295 record
+> outcomes. Still to come (G4-1/G4-2a): the vehicle-type catalogue, the load plan and the load.
+> `tracking_number` and carrier-sourced events are unused (no carrier API).
+
+**Packing session (G4-5, kltn-docs 08 §5).** One per task (`fulfillment.pack`):
+`PENDING → PACKING` (a packer takes the order; another packer is refused, a manager is not) `→ PACKED`
+(nothing the order wants is left unshipped), `PACKING ⇄ ON_HOLD` (a printed design does not match its
+snapshot, BR-DSG-003; QC or a manager re-verifies and packing is back in progress — docs 08
+"Verification Failed → In Progress"), `→ CANCELLED` with the order. Its parcels (`fulfillment.package`)
+go `OPEN → SEALED` (weight and size required, 08 BR-03) `→` in a shipment; before that a parcel may be
+re-opened or `VOIDED`. Every scan is kept (`fulfillment.package_scan`, append-only). Completing ships
+every sealed parcel not yet shipped as one shipment; part of the order may ship first (split shipments,
+G4-Q3; a mixed order's stock lines first, decision 2026-10-21) with a reason, the rest later.
 
 ---
 
 ## 12. RMA — `order-service`
 
-WBS 3.17.5.
+WBS 3.17.5. **Implemented 2026-10-25 (SCRUM-243 / SCRUM-260, GitHub #192), corrected after the review of the same day
+(R1–R14).** The aggregate is `order.internal.domain.ReturnRequest` (`ordering.return_request`, `return_request_line`;
+migrations `V20261101020000`, `V20261101020100`, `V20261101020200`); the transition table is
+`ReturnStatus.canTransitionTo`; every change is a row of `ordering.return_request_status_history` (who, why) and an
+`@Auditable` entry. SCRUM-243 narrowed returns to **production defects and delivery faults** (B2B plan 2026-10-06): a
+change of mind is refused (configurable for stock items only, off by default).
+
+Every deadline is a **calendar day in Vietnam time** (`BusinessCalendar`, Asia/Ho_Chi_Minh): a window of N days after
+an event closes at the end of the N-th day after the day it happened, not N × 24 hours later.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> REQUESTED
-    REQUESTED --> APPROVED: sales approves
-    REQUESTED --> REJECTED: outside policy
-    APPROVED --> AWAITING_RETURN: label sent
-    AWAITING_RETURN --> RECEIVED: parcel arrives
-    AWAITING_RETURN --> EXPIRED: never returned
-    RECEIVED --> INSPECTED: QC inspects
-    INSPECTED --> REFUNDED: refund issued
-    INSPECTED --> EXCHANGED: replacement shipped
-    INSPECTED --> REJECTED: goods not as described
-    REFUNDED --> [*]
-    EXCHANGED --> [*]
+    [*] --> REQUESTED: customer (portal) or Sales opens it
+    REQUESTED --> AWAITING_RETURN: approved, goods come back
+    REQUESTED --> INSPECTED: approved, goods stay (low value, or a short delivery)
+    REQUESTED --> REJECTED: refused (outside policy)
+    REQUESTED --> CANCELLED: withdrawn
+    AWAITING_RETURN --> RECEIVED: first parcel counted into quarantine
+    AWAITING_RETURN --> CANCELLED: withdrawn before sending
+    AWAITING_RETURN --> EXPIRED: deadline passed (hourly sweep)
+    RECEIVED --> RECEIVED: a later parcel
+    EXPIRED --> RECEIVED: the goods arrive late after all
+    CANCELLED --> RECEIVED: goods of an approved return arrive after it was withdrawn
+    RECEIVED --> INSPECTED: QC accepts at least one unit
+    RECEIVED --> REJECTED: QC finds no defect
+    INSPECTED --> SETTLEMENT_PENDING: remedy proposed (replacement, money or both)
+    SETTLEMENT_PENDING --> RESOLVED: approved by a second person
+    SETTLEMENT_PENDING --> INSPECTED: sent back
+    RESOLVED --> [*]
     REJECTED --> [*]
-    EXPIRED --> [*]
 ```
 
-| From | To | Trigger | Actor | Guard | Event |
+`CANCELLED` and `EXPIRED` are final for the paperwork but not for the goods: a parcel that turns up anyway is counted
+in (it is in the warehouse, so it must be on the books) and the return goes on from `RECEIVED` - unless the order was
+CLOSED meanwhile: CLOSED is final (BR-05), so the warehouse refuses that parcel (`RETURN_ORDER_NOT_RETURNABLE`) and Sales
+deals with the customer outside the return.
+
+Staff limited to warehouses (scope WAREHOUSE: warehouse staff, manager, QC) list, read and add photos to the returns of
+orders their warehouses shipped only (BR-SEC-002); the return has no warehouse of its own, its order's is the one that
+takes the goods back.
+
+| From | To | Trigger · endpoint | Actor (permission) | Guard | Event |
 |---|---|---|---|---|---|
-| — | REQUESTED | open RMA | Customer / Sales staff | order DELIVERED, within window (BR-RMA-001) | `RmaRequested` |
-| REQUESTED | APPROVED | approve | Sales staff | reason in policy; **custom-printed items are not returnable unless defective** (BR-RMA-002) | `RmaApproved` |
-| APPROVED | AWAITING_RETURN | send label | system | return label generated | — |
-| AWAITING_RETURN | RECEIVED | parcel arrives | Warehouse staff | RMA number on parcel | `RmaGoodsReceived` |
-| RECEIVED | INSPECTED | inspect | QC staff | condition recorded | `RmaInspected` |
-| INSPECTED | REFUNDED | refund | Accountant | within refund limit | `RefundCompleted` |
-| INSPECTED | EXCHANGED | ship replacement | Order coordinator | replacement stock available | `ExchangeShipped` |
+| — | REQUESTED | open · `POST /orders/{id}/returns` | Customer on own order / Sales any (`sales-rmas:CREATE`) | order DELIVERED or RETURN_REQUESTED; Sales only, for a further claim: COMPLETED, REFUNDED, PARTIALLY_REFUNDED (the portal says the window closed, or to ask Sales); never CLOSED. Window: until the end of the `stockflow.order.return-window-days`-th calendar day after delivery (BR-RMA-001); Sales may accept a late claim with a reason (`lateClaimReason`, history reason `LATE_CLAIM_ACCEPTED`, `ck_return_request_window_override`), the portal never. Units ≤ delivered (ordered − closed) − what other returns of the line claim; one open return per order line; printed goods only for a named defect (BR-RMA-002): CHANGED_MIND and OTHER are refused for them (`RETURN_CUSTOM_ITEM_NOT_DEFECTIVE`, again in the trigger `check_return_request_line`) (SCRUM-243); portal account ACTIVE; idempotent on `requestId`. A claim on a replacement order is valued at the prices of the order it replaced (the replacement itself is free) | `ReturnRequested` |
+| REQUESTED | AWAITING_RETURN | approve · `POST /returns/{id}/approval` | Sales, coordinator (`sales-rmas:APPROVE`); a return Sales opened is approved by someone else (`RETURN_SELF_APPROVAL`, `ck_return_request_approval_four_eyes`) | at least one CLAIM photo, whatever the reason (a short delivery: the signed delivery note) - the customer's, or Sales' for them, `POST /returns/{id}/evidence`; approved ≤ asked per line, > 0 in total; deadline = end of the `returns.deadline-days`-th (14) calendar day after the approval. Return instructions = the RMA number on the parcel (no carrier API, no label) | `ReturnApproved` |
+| REQUESTED | INSPECTED | approve with `returnRequired=false` | as above | value (price × approved) plus what the order's other returns already left with the customer ≤ `returns.no-return-max-value` (2 000 000 VND) - the limit is per order, so a claim split into small returns still comes back - or SHORT_DELIVERY (nothing to send); never for a change of mind. The photos are the inspection: accepted = approved | `ReturnApproved` |
+| REQUESTED | REJECTED | reject · `POST /returns/{id}/rejection` | Sales (`sales-rmas:APPROVE`) | reason required | `ReturnRejected(REVIEW)` |
+| REQUESTED, AWAITING_RETURN | CANCELLED | `POST /returns/{id}/cancellation` | Customer (own) / Sales (`sales-rmas:UPDATE`) | only before the goods are counted in | `ReturnClosed(CANCELLED)` |
+| AWAITING_RETURN | EXPIRED | `ReturnExpirySweeper` (hourly, ShedLock) | system | the deadline day is over | `ReturnClosed(EXPIRED)` |
+| AWAITING_RETURN, RECEIVED, EXPIRED, CANCELLED (approved, goods expected) | RECEIVED | count a parcel · `POST /returns/{id}/receipt` with the return's `version` (a parcel sent twice is refused the second time, never counted as another parcel) | Warehouse staff / manager (`sales-rma-receipts:UPDATE`, scope WAREHOUSE) | into a QUARANTINE (else QUALITY_CONTROL) area of the order's warehouse, never a bin (OQ-12); a later parcel goes to the same area, with the same SKU and lot per line; one parcel at a time (`parcel_count`): per line the units and the SKU that actually arrived; another SKU, units beyond the approval, unexpected items are discrepancies at once, a shortfall only at inspection (more parcels may come). An EXPIRED or withdrawn return reopens (reason `RECEIVED_AFTER_DEADLINE` / `RECEIVED_AFTER_WITHDRAWAL`, the order back to RETURN_REQUESTED) - unless the order is CLOSED (`RETURN_ORDER_NOT_RETURNABLE`, BR-05) or the line's other returns claim the units meanwhile (`RETURN_LINE_ALREADY_OPEN`, `RETURN_QUANTITY_EXCEEDED`: Sales decides). Photos of the parcel as it arrived: `POST /returns/{id}/receipt-evidence` (stage RECEIPT, same permission, AWAITING_RETURN or RECEIVED). One lot per line: a later parcel of another lot is not counted in on the line (known limit, see below). Stock: `InventoryService.receiveReturn` → QUARANTINE layer, ledger `RETURN_IN` / `RETURN_REQUEST_LINE`, idempotent per line on its running total | `ReturnReceived` (with the parcel number; one e-mail per parcel) |
+| RECEIVED | INSPECTED / REJECTED | inspect · `POST /returns/{id}/inspection` | QC, warehouse manager (`sales-rma-inspections:UPDATE`) | while approved units have not all arrived, only with `noMoreParcels` (`RETURN_PARCELS_OUTSTANDING` otherwise): QC does not close a return on its first parcel; the shortfall is recorded then. Per line accepted + rejected = received, accepted ≤ approved. Accepted units: back on sale only when QC graded them GOOD or UNOPENED (`ck_return_request_line_restock_condition`) and confirms them plain stock (`plainStock`; never printed goods - BR-RMA-002 -, never another SKU than was delivered without QC's word; `ck_return_request_line_restock_plain`), onto a selling BIN of the receiving warehouse (`RETURN_RESTOCK_LOCATION_INVALID`), else scrapped (SCRAP adjustment). Rejected units are still the customer's: sent back to them, or scrapped only with their recorded consent (`disposalConsent`, `RETURN_DISPOSAL_CONSENT_REQUIRED`, `ck_return_request_line_customer_goods`), never put on sale. Adjustments approved by a second person (BR-STK-005). Nothing accepted → REJECTED: the customer reads `NO_DEFECT_FOUND`, QC's note stays with staff. QC's photos: `POST /returns/{id}/inspection-evidence` (stage INSPECTION, same permission, RECEIVED or INSPECTED) | `ReturnRejected(INSPECTION)` when rejected |
+| INSPECTED | SETTLEMENT_PENDING | propose · `POST /returns/{id}/resolution` | Sales, coordinator (`sales-rma-resolutions:UPDATE`) | per line replacement + credit = accepted; credit → mode REFUND or CREDIT_NOTE; REFUND refused for a customer with overdue receivables, and above what the order's own open receivables plus the money it received (less refunds already asked) can carry (`RETURN_REFUND_EXCEEDS_PAID` as Sales propose it - checked again at approval, money may have gone back meanwhile); a replacement needs an ACTIVE customer and, for printed goods, an approved sample or an earlier print run (BR-PRD-08). Every remedy waits for a second person, a free replacement too (history reason `SETTLEMENT_PROPOSED_REPLACEMENT`) | — |
+| SETTLEMENT_PENDING | RESOLVED | `POST /returns/{id}/settlement-approval` | Accountant (`sales-rma-resolutions:APPROVE`), never the proposer (four eyes; `ck_return_request_four_eyes`) | the replacement order is placed; payment books the money in the same transaction (`ReturnSettlement`) on the order that was paid - for a claim on a replacement order, the order it replaced | `ReturnResolved` |
+| SETTLEMENT_PENDING | INSPECTED | `POST /returns/{id}/settlement-rejection` | Accountant | reason required | — |
+| RESOLVED | RESOLVED (replacement withdrawn) | propose · `POST /returns/{id}/replacement-withdrawal`, then `.../replacement-withdrawal/approval` or `/rejection` | Sales proposes (`sales-rma-resolutions:UPDATE`), an accountant decides (`:APPROVE`), never the proposer | the replacement order is not packed yet - it is cancelled (`REPLACEMENT_WITHDRAWN`) - or it shipped in part (PARTIALLY_FULFILLED) - its rest is closed (`REMAINDER_CLOSED_REPLACEMENT_WITHDRAWN`) and the customer keeps what reached them; anything else is `RETURN_REPLACEMENT_NOT_WITHDRAWABLE`. The value of the units withdrawn (the claimed order's prices) is credited (CREDIT_NOTE, reference `<RMA>-W`: the order's open receivables first, the rest kept as the customer's credit), and flags the adjustment invoice (`vat_adjustment_required`) | `ReturnReplacementWithdrawn` |
+
+**Making accepted units good** (SCRUM-260):
+- **Replacement** ("in lại / giao bù"): a new order of the same customer at price 0 (`customer_order.replaces_return_request_id`,
+  `ck_order_replacement_free`), CONFIRMED at once with its stock (blanks for printed lines) held and pinned, released by
+  the coordinator and printed / picked / shipped / delivered like any order - production creates the reprint from the
+  release (`OrderLinesReleasedForProduction`), under its own rules. Each return line names the replacement line. A
+  replacement order is cancelled - or its rest closed, after a partial shipment - only by withdrawing it from its
+  return (above): never by the customer on the portal (`RETURN_REPLACEMENT_ORDER_LOCKED`), never with another reason
+  (`ck_order_replacement_cancellation`, `Order.closeRemainder`) - otherwise the return would say "made good by order X"
+  about goods that will never come, and the customer would get neither them nor the money.
+- **Money** = price × credited units, at the order's line prices (they carry any negotiated discount; tax is not stored
+  separately). Payment first reduces the order's own open receivables (credit orders, deposit balances on credit - not a
+  carrier's, not a fee) through a `RETURN_CREDIT` ledger entry (reference = RMA number, method `CREDIT_NOTE`); the rest is
+  either refunded - PENDING refunds of source RETURN on the money the order received, never more of a payment than is left
+  (`RETURN_REFUND_EXCEEDS_PAID` otherwise, nothing booked) - or kept as the customer's credit (CREDIT_NOTE), which pays their
+  next receivable or is refunded on request. An overdue receivable stays OVERDUE until settled in full.
+- **VAT**: money given back sets `vat_adjustment_required`; accounting issues the adjustment invoice (hóa đơn điều chỉnh
+  giảm, Nghị định 123/2020/NĐ-CP, Thông tư 78/2021/TT-BTC). There is no e-invoicing in the system.
+- **Reporting**: the credited value and units come off the sales of the day the paid order was placed
+  (`reporting.processed_return_events`, kept through a rebuild); a replacement order is never a sale.
+
+**The order follows its returns** (§9): DELIVERED → RETURN_REQUESTED when the first opens (it cannot complete, BR-ORD-005);
+when the last open one ends, back to DELIVERED if none gave money back (refused, withdrawn, expired, replaced only) - it
+then completes once its window has passed and it is paid - or RETURN_REQUESTED → RETURNED → REFUNDED (money ≥ what the
+order is worth) / PARTIALLY_REFUNDED. Sales may open a further claim on a COMPLETED, REFUNDED or PARTIALLY_REFUNDED order
+(→ RETURN_REQUESTED again); an order closes only when nothing is owed on it (`Order.close`), and a CLOSED order takes no
+return. Nightly closing waits while a return is open.
 
 Returned goods re-enter stock in condition **QUARANTINE**, never GOOD. Whether they become
-sellable again is a QC decision, not an automatic one.
+sellable again is a QC decision, not an automatic one - and never for goods printed to a customer's design.
+
+**What the customer sees** (portal): their own claim photos (never the warehouse's or QC's, nor a download link to
+them), the units at every step, and what is made good - replacement units, credited units and amounts - only once a
+second person approved it (RESOLVED): a proposal waiting for approval shows no amount, and accounting's flags are staff
+only.
+
+**Known limit**: a return line holds one SKU and one lot across all its parcels. A line picked from two lots that comes
+back in full is counted in under one lot (or the second lot is refused as another lot); per-lot return lines are a
+follow-up.
+
+Not built here (other stories): return shipping labels (SCRUM-259), carrier returns to origin (RTO, SCRUM-295), payout of
+refunds (SCRUM-220). E-mails: the notification module listens to the `Return*` events.
 
 ---
 
@@ -541,13 +918,60 @@ truck. This is the single most common transfer bug.
 
 ## 14. Cycle count — `inventory-service`
 
-WBS 3.6.6.
+WBS 3.6.6. Implemented 2026-10-23 (SCRUM-146, SCRUM-162, SCRUM-164). Stored as
+`inventory.cycle_count.status`.
 
-`PLANNED → COUNTING → VARIANCE_REVIEW → APPROVED → POSTED`, plus `CANCELLED` from PLANNED.
+```mermaid
+stateDiagram-v2
+    [*] --> PLANNED: plan (scope → lines) / short pick
+    PLANNED --> IN_PROGRESS: first count entered
+    IN_PROGRESS --> COMPLETED: submit (every line counted)
+    PLANNED --> CANCELLED: cancel
+    IN_PROGRESS --> CANCELLED: cancel
+    COMPLETED --> [*]
+    CANCELLED --> [*]
+```
 
-A count with zero variance may skip `VARIANCE_REVIEW` and post directly. Any variance needs
-manager approval (WBS 3.6.5.2) before it touches stock — a cycle count is the one place where an
-unapproved number can silently rewrite inventory.
+| From | To | Trigger | Actor | Guard | Event |
+|---|---|---|---|---|---|
+| — | PLANNED | plan a count over zones, shelves, bins and/or SKUs (`MANUAL`) | Warehouse manager / Inventory planner | scope not empty, at most `max-lines` lines; a busy slot is skipped and listed | — |
+| — | PLANNED | short pick reported (`SHORT_PICK`) | system | the slot (bin, SKU and lot, or one carton) is not busy; a busy slot's count is reused, whatever its trigger | — |
+| PLANNED | IN_PROGRESS | first count entered on a line | assignee, or a holder of `APPROVE` | the book quantity is re-read at that moment | — |
+| IN_PROGRESS | COMPLETED | submit | assignee, or a holder of `APPROVE` | every line counted; no shortage larger than what the slot holds now (`CYCLE_COUNT_STALE`) | — |
+| PLANNED / IN_PROGRESS | CANCELLED | cancel | Warehouse manager (`APPROVE`) | — | — |
+
+**The count is a thin document; review and posting belong to the adjustment.** Submitting a count
+turns every line whose count differs from the book into `COUNT_VARIANCE` stock adjustment(s) in the
+same transaction, and the count is `COMPLETED`. "Variance review" is the adjustment's
+`PENDING_APPROVAL`; approval posts the stock and the ledger (`POSTED`), or the manager rejects it
+(`REJECTED`) and may send the line for a recount, which opens a new blind count — nothing reopens a
+completed one. A count with no variance raises no adjustment at all. Every variance still needs
+manager approval (BR-STK-005, four-eyes) before it touches stock: a cycle count is the one place where
+an unapproved number could otherwise silently rewrite inventory.
+
+- **A slot is busy** while it is on an open count, or on a `COMPLETED` one whose `COUNT_VARIANCE`
+  adjustment of that line is still `PENDING_APPROVAL`. A busy slot is skipped by a new plan, refused to
+  a found line or a recount (`CYCLE_COUNT_SLOT_BUSY`), and a short pick on it reuses the count holding
+  it instead of opening a second one: two counts of the same stock would correct the books twice.
+  Once the adjustment is decided the slot is free again (which is what lets a rejected line be
+  recounted).
+- A loose shortage is split over the slot's rows taking free units (`on_hand − reserved`) first, in
+  FEFO order, then held units, again in FEFO order — one adjustment per row; `CYCLE_COUNT_STALE` only
+  beyond what the rows hold in all. A surplus goes on the most recently received row — for a FIFO SKU,
+  whose layers are never raised, into a new layer received at approval.
+- A carton raises one adjustment for the whole carton; approval decides its state once — found again,
+  opened, consumed, or `LOST` when the count found nothing. A write-up refills the carton's own row
+  (after `found()` for a `LOST` one), never a new layer, FIFO or not: the carton is the identity of
+  those units. A carton line follows its carton moved whole to another bin of the warehouse; one emptied
+  (`CONSUMED`) after it was counted makes its line `CYCLE_COUNT_STALE` at submission.
+- The free units of a `SHORT_PICK` slot stay out of ATP and FEFO while the count is open and until
+  every `COUNT_VARIANCE` adjustment of its line is decided, not just until the count closes. A pending
+  **shortage** freezes its slot's free units whatever the count's trigger. A short pick that reuses an
+  *open* `MANUAL` count leaves the slot sellable until that count is submitted — an accepted window.
+- A `COUNT_VARIANCE` adjustment is approved or rejected, never withdrawn
+  (`COUNT_VARIANCE_NOT_WITHDRAWABLE`).
+- Submitting a `COMPLETED` count again returns it unchanged; cancelling a `COMPLETED` one is refused
+  (`CYCLE_COUNT_NOT_OPEN`).
 
 ---
 
@@ -557,3 +981,158 @@ WBS 3.16.2.2 names the states: `OPEN → RESOLVED`, with `ESCALATED` in between.
 
 `OPEN → ASSIGNED → RESOLVED`, `ASSIGNED → ESCALATED → ASSIGNED`, `RESOLVED → OPEN` on a customer
 reply within 24 hours. SLA timers (WBS 3.16.6) run on `OPEN` and `ESCALATED` only.
+
+---
+
+## 16. Production order — `production`
+
+New 2026-10-06. One per custom order line (`ORDER`) or per sample request (`SAMPLE`). Both kinds
+run the same workshop steps; only the source and the end differ. Business doc:
+`kltn-docs/docs/warehouse/19-production`.
+
+**Subcontracting** (added 2026-10-06, §4.4 of the business doc): when the in-house shop cannot meet
+the due date, the warehouse manager splits part of an `ORDER` production order into a **child**
+production order with `execution = SUBCONTRACTED`, linked to its parent and to a `SUBCONTRACT`
+purchase order. The child skips `MATERIAL_ISSUED` / `PRINTING` and goes
+`READY → SUBCONTRACTED → QC`. Splitting does not change the parent's state, only its quantity.
+Two modes, chosen per split: `SUPPLIED_BLANKS` (we send the blanks; they stay our stock at a
+virtual subcontractor location, outside ATP) and `FULL_SERVICE` (the subcontractor sources the
+blanks; we buy finished goods).
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING_PREPRESS: created from release / sample request
+    PENDING_PREPRESS --> READY: prepress passed
+    READY --> MATERIAL_ISSUED: blanks issued to PRODUCTION area
+    MATERIAL_ISSUED --> PRINTING: print started
+    PRINTING --> QC: printed + scrap recorded
+    QC --> COMPLETED: good quantity reached
+    QC --> READY: shortfall → reprint
+    READY --> COMPLETED: completed short, within the customer's agreement (S6)
+    MATERIAL_ISSUED --> COMPLETED: completed short, within the customer's agreement (S6)
+    READY --> SUBCONTRACTED: subcontracted child sent out (PO approved)
+    SUBCONTRACTED --> QC: subcontract goods receipt posted
+    PENDING_PREPRESS --> ON_HOLD
+    READY --> ON_HOLD
+    MATERIAL_ISSUED --> ON_HOLD
+    PRINTING --> ON_HOLD
+    SUBCONTRACTED --> ON_HOLD
+    QC --> ON_HOLD
+    ON_HOLD --> PENDING_PREPRESS: resume (back to the state it left)
+    PENDING_PREPRESS --> CANCELLED
+    READY --> CANCELLED
+    MATERIAL_ISSUED --> CANCELLED: blanks returned
+    SUBCONTRACTED --> CANCELLED: blanks recalled, PO cancelled
+    COMPLETED --> [*]
+    CANCELLED --> [*]
+```
+
+| From | To | Trigger | Actor | Guard | Event |
+|---|---|---|---|---|---|
+| — | PENDING_PREPRESS | release / sample submitted | system | one per source line (BR-PRD-01) | — |
+| PENDING_PREPRESS | READY | prepress pass | Production staff | file checksum = locked snapshot (BR-PRD-02) | — |
+| READY | MATERIAL_ISSUED | blanks scanned out | Warehouse staff | issued ≤ remaining need (BR-PRD-03) | — |
+| MATERIAL_ISSUED | PRINTING | start | Production staff | — | — |
+| PRINTING | QC | record output | Production staff | good + scrap = printed; scrap has a reason (BR-PRD-04) | — |
+| QC | COMPLETED | QC pass | QC staff | good quantity = required; ORDER compared with the approved sample (BR-PRD-05) | `ProductionCompleted` (ORDER) |
+| QC | READY | shortfall | QC staff | more blanks reserved; none → ON_HOLD | — |
+| READY / MATERIAL_ISSUED (or ON_HOLD from one) | COMPLETED (short) | `POST /production/orders/{id}/short-completion` | Warehouse manager (`production-orders:APPROVE`) | an order's in-house job with good units, fewer than planned, every printed unit through QC, and **Sales recorded on the order line that the customer goes without at least that many** (`POST /orders/{id}/lines/{lineId}/production-shortfall-agreement`, `sales-order-cancellations:UPDATE`: how many at most, how the customer agreed, who, when; 0 withdraws it while nothing was closed under it - `PRODUCTION_SHORTFALL_NOT_AGREED` otherwise, and nothing changes), recorded by someone else than the manager closing it (`PRODUCTION_SHORTFALL_SELF_APPROVAL`). Closing all of a line is a cancellation, refused here. In one transaction: the sales order line gives up the units not made (`OrderService.closeProductionShortfall` → `OrderRemainderClosed` reason `PRODUCTION_SHORTFALL`: the order is worth less, payment refunds what was paid above that), the goods go to packing as on any completion, unprinted blanks go back and the line's blanks never issued are let go. `short_completion_reason`, `ck_production_order_completed_quantity`, `ck_order_line_shortfall_agreement` / `_closed` (review 2026-10-25, S6) | `ProductionCompleted` with the good quantity |
+| PENDING_PREPRESS / READY / MATERIAL_ISSUED (or ON_HOLD from one), **no good unit** | CANCELLED (closed short) | the same endpoint | Warehouse manager | as above, within the agreement: nothing to deliver, so the job is cancelled and its whole plan leaves the line - a subcontract's shortfall job the blanks never came for, its siblings having made the rest. Its blanks go back free. The closure's own announcement moves the order on when what the others made now covers the line (BR-PRD-06) | `OrderRemainderClosed` |
+| PENDING_PREPRESS / READY / ON_HOLD | *(unchanged)* + child PENDING_PREPRESS or READY | split for subcontracting | Warehouse manager | ORDER only (BR-PRD-11); 0 < split < quantity not yet issued (BR-PRD-12); active subcontractor; child inherits the parent's prepress result | — |
+| READY | SUBCONTRACTED | send to subcontractor (child only) | Warehouse staff | `SUBCONTRACT` PO approved (BR-PRD-13); SUPPLIED_BLANKS: blanks scanned to the subcontractor location (BR-PRD-15) | — |
+| SUBCONTRACTED | QC | subcontract goods receipt posted | system | SUPPLIED_BLANKS: blank reconciliation done, excess loss approved (BR-PRD-16, 17) | — |
+| any before COMPLETED | ON_HOLD | hold | Production staff / Warehouse manager | reason: bad file, out of blanks, machine down, waiting for customer, subcontractor late | — |
+| PENDING_PREPRESS / READY / MATERIAL_ISSUED | CANCELLED | cancel | Warehouse manager | issued blanks returned to stock | — |
+| SUBCONTRACTED | CANCELLED | cancel | Warehouse manager | blanks recalled from the subcontractor, PO cancelled (or fee paid per BR-PRD-10) | — |
+
+Once `PRINTING` or `SUBCONTRACTED`, the design cannot change (BR-PRD-07, BR-PRD-14) and
+cancellation follows BR-PRD-10.
+
+**Short of the plan** (review 2026-10-25, S6): a stop scraps the good units because they are sold to nobody else -
+right when the customer cancels, wrong when the customer still wants what was printed. Completing short is the way
+for the second case: the 9,940 good cups of 10,000 go to the customer, the order is billed for 9,940. Lowering what
+an order is worth is a sale's decision, so it takes two people: Sales records the customer's agreement on the line
+(at most how many units, how it was given - the line keeps who and when), the warehouse manager completes the job
+within it. A cancellation of the order afterwards keeps and refunds out of the money still the order's: the refund
+the shortfall asked for is not paid out twice (`Order.cancel`, `ck_order_cancellation_fee`). Delivering part of a
+print run *before* the job completes (5,000 now for an event, the rest later) is not built: it needs the order and
+packing to take print goods in parts - a decision for the team (open question). Reporting and payment status (owner decision SHORT-LIMITS,
+2026-11-02): the closure takes its value and units off the sales rollups, on the day the order was placed, as a
+cancellation does (`reporting.processed_order_closures`, kept through a rebuild; the order count stays, a cancellation
+afterwards takes out only what is left; closing the rest of a split order is not applied to the rollups - not decided);
+"paid in full" is measured on what the order is worth now (`Order.billable` plus the fees closures agreed, the point
+where the amount due is 0), not on the original total: an order that paid that much reads PAID, whether the money came
+before the closure (re-evaluated when it lowers the worth, a closed remainder too) or after, and a reversal below it
+undoes it (`closed_amount`, `ck_order_paid_in_full`). A known limit remains: a new agreement replaces the last on the
+line, the audit trail keeps who recorded each.
+
+Decided 2026-10-13: a subcontractor's goods get **one** inspection, the production QC against the approved sample.
+The warehouse counts the receipt and reconciles the blanks; receiving runs no QC of its own on a `SUBCONTRACT` PO and
+puts nothing away; the goods stay held for their production order, outside ATP, in the QUALITY_CONTROL area until
+QC. A subcontracted order cancelled while its sales order still wants the goods is replaced by an in-house child
+(origin `REPLACEMENT`); a shortfall taken back to the print shop is an in-house child with origin `SHORTFALL`. A shortfall on a subcontracted child goes back to `READY`, from
+where the manager either sends more to the same subcontractor (PO supplement) or splits the gap
+into a new in-house child.
+
+---
+
+## 17. Sample request — `production`
+
+New 2026-10-06. Mandatory for a new design (design + blank pair without an approved sample).
+
+```mermaid
+stateDiagram-v2
+    [*] --> DRAFT
+    DRAFT --> SUBMITTED: sent to the workshop
+    SUBMITTED --> IN_PRODUCTION
+    IN_PRODUCTION --> READY: sample production order COMPLETED
+    READY --> SENT_TO_CUSTOMER: sample handed over (off-system)
+    SENT_TO_CUSTOMER --> APPROVED: customer approves
+    SENT_TO_CUSTOMER --> CHANGES_REQUESTED: customer asks for changes
+    CHANGES_REQUESTED --> [*]: next round is a new request (round + 1)
+    DRAFT --> CANCELLED
+    APPROVED --> [*]
+    CANCELLED --> [*]
+```
+
+| From | To | Trigger | Actor | Guard | Event |
+|---|---|---|---|---|---|
+| DRAFT | SUBMITTED | submit | Sales staff | confirmed design snapshot; blanks reservable | — |
+| READY | SENT_TO_CUSTOMER | mark sent | Sales staff | — | — |
+| SENT_TO_CUSTOMER | APPROVED | approve | Customer (portal) / Sales staff on their behalf | — | `SampleApproved` |
+| SENT_TO_CUSTOMER | CHANGES_REQUESTED | request changes | Customer / Sales staff | feedback recorded | — |
+
+`APPROVED` locks the design for the design + blank pair and becomes the QC reference for order
+production (BR-PRD-05, BR-PRD-08).
+
+---
+
+## 18. Quote — `order`
+
+New 2026-10-06 (B2B only). Partly built in PR #38 (`DesignQuote`).
+
+```mermaid
+stateDiagram-v2
+    [*] --> DRAFT
+    DRAFT --> SENT: sent to the customer
+    SENT --> ACCEPTED: customer accepts
+    SENT --> CHANGES_REQUESTED: customer asks for changes
+    CHANGES_REQUESTED --> DRAFT: revised
+    SENT --> EXPIRED: validity ends
+    ACCEPTED --> CONVERTED: sales order created
+    ACCEPTED --> CANCELLED: a SKU on it stopped (Sales, reason)
+    DRAFT --> CANCELLED
+    CONVERTED --> [*]
+    EXPIRED --> [*]
+    CANCELLED --> [*]
+```
+
+| From | To | Trigger | Actor | Guard | Event |
+|---|---|---|---|---|---|
+| DRAFT | SENT | send | Sales staff | discount within the sales staff's limit, or approved | — |
+| SENT | ACCEPTED | accept | Customer (portal) | within validity; every new design has an APPROVED sample (BR-PRD-08) | — |
+| ACCEPTED | CONVERTED | create order | Sales staff or order coordinator (`sales-quote-conversions:CREATE`; editing a quote is Sales' - `sales-quotes:UPDATE`, which the coordinator does not hold, decision 2026-10-17) | lines reserved (BR-ORD-001) | `OrderPlaced` |
+| ACCEPTED | CANCELLED | cancel | Sales staff | a SKU on the quote is INACTIVE/DISCONTINUED, so it can never be converted; reason required and kept in the history; the customer still sees it; a new quote follows if the goods are still wanted (decision 2026-10-17) | — |
+| DRAFT (revision 2 or later) | CANCELLED | drop the revision | Sales staff | reason required; the customer, who saw the earlier revision, sees the quote ended with its lines but without the dropped draft's prices - they were never offered; a customer answering the version they still hold is told it was withdrawn and why, not that it changed (review 2026-10-25) | — |
+| SENT | EXPIRED | validity ends | system | — | — |
+

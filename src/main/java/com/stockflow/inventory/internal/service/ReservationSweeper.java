@@ -2,6 +2,9 @@ package com.stockflow.inventory.internal.service;
 
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
+import com.stockflow.inventory.internal.domain.ReleaseReason;
+import com.stockflow.inventory.internal.domain.SkuReservation;
+import com.stockflow.inventory.internal.domain.SkuReservationRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -36,11 +39,14 @@ class ReservationSweeper {
     private static final int BATCH_SIZE = 200;
 
     private final StockItemRepository repository;
+    private final SkuReservationRepository skuReservations;
     private final InventoryEventPublisher events;
     private final Clock clock;
 
-    ReservationSweeper(StockItemRepository repository, InventoryEventPublisher events, Clock clock) {
+    ReservationSweeper(StockItemRepository repository, SkuReservationRepository skuReservations,
+                       InventoryEventPublisher events, Clock clock) {
         this.repository = repository;
+        this.skuReservations = skuReservations;
         this.events = events;
         this.clock = clock;
     }
@@ -65,6 +71,21 @@ class ReservationSweeper {
     @Transactional
     public void releaseExpiredReservations() {
         Instant now = clock.instant();
+        // SKU reservations first (SCRUM-152): every checkout hold made since Sprint 3 is one. Each expiry announces
+        // StockReservationReleased(RESERVATION_EXPIRED), on which order cancels the unpaid order (X-RESV).
+        int expired = 0;
+        for (SkuReservation reservation : skuReservations.findExpiredForUpdate(now, BATCH_SIZE)) {
+            if (reservation.release(ReleaseReason.RESERVATION_EXPIRED, now)) {
+                skuReservations.save(reservation);
+                events.publishEventsOf(reservation);
+                expired++;
+            }
+        }
+        if (expired > 0) {
+            log.info("Reservation sweep expired {} SKU reservation(s)", expired);
+        }
+
+        // Holds on stock items: checkout holds placed before SKU reservations existed. Allocations never expire.
         List<StockItem> stale = repository.findWithReservationsExpiredBefore(now, BATCH_SIZE);
         if (stale.isEmpty()) {
             return;

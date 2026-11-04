@@ -1,0 +1,96 @@
+package com.stockflow.inventory.internal.repository;
+
+import com.stockflow.inventory.api.InventoryItemPolicy;
+import com.stockflow.inventory.internal.domain.InventoryItemDirectory;
+import jakarta.persistence.EntityManager;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+/** One read by primary key on this module's own table; no entity until the item screens need one. */
+@Repository
+class InventoryItemDirectoryAdapter implements InventoryItemDirectory {
+
+    private final EntityManager entityManager;
+
+    InventoryItemDirectoryAdapter(EntityManager entityManager) {
+        this.entityManager = entityManager;
+    }
+
+    @Override
+    public Optional<InventoryItemPolicy> policyOf(UUID inventoryItemId) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT sku, lot_tracked, expiry_tracked, qc_required, max_shelf_life_days
+                          FROM inventory.inventory_items WHERE id = :id""")
+                .setParameter("id", inventoryItemId)
+                .getResultList();
+        return rows.stream().findFirst().map(row -> new InventoryItemPolicy(inventoryItemId, (String) row[0],
+                (Boolean) row[1], (Boolean) row[2], (Boolean) row[3], days(row[4])));
+    }
+
+    @Override
+    public Optional<InventoryItemPolicy> policyOf(String sku) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT id, lot_tracked, expiry_tracked, qc_required, max_shelf_life_days
+                          FROM inventory.inventory_items WHERE sku = :sku""")
+                .setParameter("sku", sku)
+                .getResultList();
+        return rows.stream().findFirst().map(row -> new InventoryItemPolicy((UUID) row[0], sku,
+                (Boolean) row[1], (Boolean) row[2], (Boolean) row[3], days(row[4])));
+    }
+
+    @Override
+    public java.util.Map<UUID, InventoryItemPolicy> policiesOf(java.util.Collection<UUID> inventoryItemIds) {
+        if (inventoryItemIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT id, sku, lot_tracked, expiry_tracked, qc_required, max_shelf_life_days
+                          FROM inventory.inventory_items WHERE id IN (:ids)""")
+                .setParameter("ids", java.util.Set.copyOf(inventoryItemIds))
+                .getResultList();
+        var policies = new java.util.HashMap<UUID, InventoryItemPolicy>();
+        rows.forEach(row -> policies.put((UUID) row[0], new InventoryItemPolicy((UUID) row[0], (String) row[1],
+                (Boolean) row[2], (Boolean) row[3], (Boolean) row[4], days(row[5]))));
+        return policies;
+    }
+
+    private static Integer days(Object column) {
+        return column == null ? null : ((Number) column).intValue();
+    }
+
+    @Override
+    public java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds) {
+        if (inventoryItemIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery(
+                        "SELECT id, sku FROM inventory.inventory_items WHERE id IN (:ids)")
+                .setParameter("ids", java.util.Set.copyOf(inventoryItemIds))
+                .getResultList();
+        var skus = new java.util.HashMap<UUID, String>();
+        rows.forEach(row -> skus.put((UUID) row[0], (String) row[1]));
+        return skus;
+    }
+
+    @Override
+    public java.util.Map<String, UUID> itemIdsOf(java.util.Collection<String> skus) {
+        if (skus.isEmpty()) {
+            return java.util.Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery(
+                        "SELECT sku, id FROM inventory.inventory_items WHERE sku IN (:skus)")
+                .setParameter("skus", java.util.Set.copyOf(skus))
+                .getResultList();
+        var ids = new java.util.HashMap<String, UUID>();
+        rows.forEach(row -> ids.put((String) row[0], (UUID) row[1]));
+        return ids;
+    }
+}

@@ -1,0 +1,294 @@
+package com.stockflow.product.internal.repository;
+
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.product.api.ProductEcommerce;
+import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.api.PublicationProduct;
+import com.stockflow.product.api.Purchasability;
+
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+
+/** Canonical PIM access; no legacy product/variant/sku tables and no cross-schema joins. */
+@Repository
+public class ProductCommerceRepository {
+    private final JdbcTemplate jdbc;
+
+    public ProductCommerceRepository(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public PublicationProduct read(UUID id, boolean lock) {
+        var rows =
+                jdbc.query(
+                        "select * from product.products where id=?" + (lock ? " for update" : ""),
+                        (r, n) ->
+                                new PublicationProduct(
+                                        id,
+                                        r.getString("name"),
+                                        r.getString("description"),
+                                        null,
+                                        status(r.getString("status")),
+                                        List.of(),
+                                        kind(r.getString("kind"))),
+                        id);
+        if (rows.isEmpty()) throw new BusinessException(ErrorCode.PRODUCT_NOT_FOUND);
+        var p = rows.getFirst();
+        var categories =
+                jdbc.query(
+                        """
+select pc.category_id from product.product_categories pc
+join product.categories c on c.id=pc.category_id where pc.product_id=? and c.is_active
+order by pc.is_primary desc, pc.id limit 1
+""",
+                        (r, n) -> r.getObject(1, UUID.class),
+                        id);
+        var skus =
+                jdbc.query(
+                        "select id,sku from product.variants where product_id=? and status='ACTIVE'"
+                                + " order by id",
+                        (r, n) ->
+                                new PublicationProduct.PublicationSku(
+                                        r.getObject(1, UUID.class), r.getString(2)),
+                        id);
+        return new PublicationProduct(
+                id,
+                p.name(),
+                p.description(),
+                categories.isEmpty() ? null : categories.getFirst(),
+                p.status(),
+                skus,
+                p.kind());
+    }
+
+    private static ProductStatus status(String status) {
+        // The expanded schema still allows the legacy ACTIVE, which was never storefront publication: it
+        // was the approved state. INACTIVE is the suspended state since SCRUM-461 and maps to itself.
+        return switch (status) {
+            case "ACTIVE" -> ProductStatus.APPROVED;
+            default -> ProductStatus.valueOf(status);
+        };
+    }
+
+    /**
+     * Whether each SKU may go on a new purchase order line, in one query (kltn-docs 01 BR-04, 02 BR-01).
+     * Every SKU asked for is a key; one no variant carries is {@code VARIANT_NOT_ACTIVE}. The product's
+     * status decides first, then the variant's.
+     *
+     * <p>{@code hold}: the products asked about are read {@code FOR SHARE}, in id order, and stay so until the
+     * caller's transaction ends. Every status move of a product or of one of its variants locks the product row
+     * {@code FOR UPDATE}, so it either committed before this read (and is seen) or waits for the caller.</p>
+     */
+    public Map<String, Purchasability> purchasability(Collection<String> skus, boolean hold) {
+        Map<String, Purchasability> result = new HashMap<>();
+        skus.forEach(sku -> result.put(sku, Purchasability.VARIANT_NOT_ACTIVE));
+        if (skus.isEmpty()) return result;
+        String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
+        jdbc.query(
+                "select v.sku, v.status, p.status from product.variants v join product.products p"
+                        + " on p.id = v.product_id where v.sku in (" + placeholders + ")"
+                        + (hold ? " order by p.id for share of p" : ""),
+                r -> {
+                    result.put(r.getString(1), purchasabilityOf(status(r.getString(3)), r.getString(2)));
+                },
+                skus.toArray());
+        return result;
+    }
+
+    private static Purchasability purchasabilityOf(ProductStatus product, String variant) {
+        return switch (product) {
+            case INACTIVE -> Purchasability.PRODUCT_INACTIVE;
+            case DISCONTINUED -> Purchasability.PRODUCT_DISCONTINUED;
+            case DRAFT, PENDING_APPROVAL -> Purchasability.PRODUCT_NOT_APPROVED;
+            case APPROVED, PUBLISHED -> "ACTIVE".equals(variant)
+                    ? Purchasability.PURCHASABLE : Purchasability.VARIANT_NOT_ACTIVE;
+        };
+    }
+
+    public Set<UUID> published(Set<UUID> ids) {
+        if (ids.isEmpty()) return Set.of();
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        return Set.copyOf(
+                jdbc.query(
+                        "select id from product.products where status='PUBLISHED' and id in ("
+                                + placeholders
+                                + ")",
+                        (r, n) -> r.getObject(1, UUID.class),
+                        ids.toArray()));
+    }
+
+    /** The kind of each PUBLISHED product among {@code ids}; one that is not published, or unknown, has no entry. */
+    public java.util.Map<UUID, com.stockflow.product.api.ProductKind> publishedKinds(Set<UUID> ids) {
+        if (ids.isEmpty()) return java.util.Map.of();
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        java.util.Map<UUID, com.stockflow.product.api.ProductKind> kinds = new java.util.LinkedHashMap<>();
+        jdbc.query(
+                "select id,kind from product.products where status='PUBLISHED' and id in (" + placeholders + ")",
+                (r, n) -> kinds.put(r.getObject(1, UUID.class), kind(r.getString(2))),
+                ids.toArray());
+        return kinds;
+    }
+
+    private static com.stockflow.product.api.ProductKind kind(String kind) {
+        return "CUSTOMIZABLE".equals(kind) ? com.stockflow.product.api.ProductKind.CUSTOMIZABLE
+                : com.stockflow.product.api.ProductKind.STANDARD;
+    }
+
+    public List<UUID> publishedPage(UUID after, int size) {
+        return jdbc.query(
+                "select id from product.products where status='PUBLISHED'"
+                        + (after == null ? "" : " and id>?") + " order by id limit ?",
+                (r, n) -> r.getObject(1, UUID.class),
+                after == null ? new Object[] {size} : new Object[] {after, size});
+    }
+
+    /**
+     * One variant of a product, whatever its status, for the screens that read and edit its inventory item's
+     * purchasing information and units (#121). An OBSOLETE variant is included: its stock is still shipped or
+     * adjusted away (kltn-docs 01 §5.2), so it stays readable; refusing to edit it is the caller's decision.
+     *
+     * @throws BusinessException {@code NOT_FOUND} when the product has no such variant
+     */
+    public VariantSku variantSku(UUID productId, UUID variantId) {
+        return jdbc.query("select id,sku,status from product.variants where product_id=? and id=?",
+                        (r, n) -> new VariantSku(r.getObject(1, UUID.class), r.getString(2),
+                                "OBSOLETE".equals(r.getString(3))),
+                        productId, variantId)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+    }
+
+    /** A variant's id and SKU, and whether it is OBSOLETE. */
+    public record VariantSku(UUID variantId, String sku, boolean obsolete) {}
+
+    public ProductEcommerce ecommerce(UUID id) {
+        return jdbc
+                .query(
+                        "select slug,seo_title,seo_description,ever_published,version from"
+                                + " product.products where id=?",
+                        (r, n) ->
+                                new ProductEcommerce(
+                                        r.getString(1),
+                                        r.getString(2),
+                                        r.getString(3),
+                                        r.getBoolean(4),
+                                        r.getLong(5)),
+                        id)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
+    }
+
+    public void advanceCommerceRevision(UUID id, String actor) {
+        jdbc.update(
+                "update product.products set"
+                        + " version=version+1,last_modified_at=now(),last_modified_by=? where id=?",
+                actor,
+                id);
+    }
+
+    public void edit(UUID id, String slug, String title, String description, String actor) {
+        try {
+            jdbc.update(
+                    """
+update product.products set slug=?,seo_title=?,seo_description=?,version=version+1,
+last_modified_at=now(),last_modified_by=? where id=?
+""",
+                    slug,
+                    title,
+                    description,
+                    actor,
+                    id);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(ErrorCode.CATALOG_SLUG_EXISTS);
+        }
+    }
+
+    public record PublishedMedia(
+            UUID productId,
+            UUID id,
+            UUID variantId,
+            String sku,
+            String url,
+            String renditionKey,
+            String altText,
+            int sortOrder,
+            boolean primary,
+            String createdBy,
+            UUID publishedBy) {}
+
+    public List<PublishedMedia> publishedMedia(UUID id) {
+        return publishedMedia(List.of(id));
+    }
+
+    /** The published images of many products in one query, each product's in gallery order. */
+    public List<PublishedMedia> publishedMedia(Collection<UUID> productIds) {
+        if (productIds.isEmpty()) return List.of();
+        String placeholders = String.join(",", Collections.nCopies(productIds.size(), "?"));
+        return jdbc.query(
+                """
+select v.product_id,m.id,m.variant_id,v.sku,m.url,
+                    (select rendition->'file'->>'key' from jsonb_array_elements(m.renditions) rendition
+                     order by (rendition->>'edge')::integer desc limit 1),
+                    m.alt_text,m.sort_order,m.is_primary,m.created_by,m.published_by
+from product.media m join product.variants v on v.id=m.variant_id
+where v.product_id in (%s) and v.status='ACTIVE' and m.kind='IMAGE' and m.is_published
+and m.published_by is not null and m.published_at is not null
+and m.created_by is not null
+                and (m.storage_key is null or jsonb_array_length(m.renditions)>0)
+order by v.product_id,v.position,v.id,m.sort_order,m.id
+""".formatted(placeholders),
+                (r, n) ->
+                        new PublishedMedia(
+                                r.getObject(1, UUID.class),
+                                r.getObject(2, UUID.class),
+                                r.getObject(3, UUID.class),
+                                r.getString(4),
+                                r.getString(5),
+                                r.getString(6),
+                                r.getString(7),
+                                r.getInt(8),
+                                r.getBoolean(9),
+                                r.getString(10),
+                                r.getObject(11, UUID.class)),
+                productIds.toArray());
+    }
+
+    /** One ACTIVE variant of a product: SKU code and name. */
+    public record ActiveVariant(UUID productId, String sku, String name) {}
+
+    /** The ACTIVE variants of many products in one query, each product's in display order. */
+    public List<ActiveVariant> activeVariants(Collection<UUID> productIds) {
+        if (productIds.isEmpty()) return List.of();
+        String placeholders = String.join(",", Collections.nCopies(productIds.size(), "?"));
+        return jdbc.query(
+                "select product_id,sku,name from product.variants where status='ACTIVE' and product_id in ("
+                        + placeholders + ") order by product_id,position,id",
+                (r, n) -> new ActiveVariant(r.getObject(1, UUID.class), r.getString(2), r.getString(3)),
+                productIds.toArray());
+    }
+
+    public void publication(UUID id, boolean published, String actor) {
+        jdbc.update(
+                """
+update product.products set status=?,published_at=case when ? then coalesce(published_at,now()) else published_at end,
+ever_published=ever_published or ?,version=version+1,last_modified_at=now(),last_modified_by=? where id=?
+""",
+                published ? "PUBLISHED" : "APPROVED",
+                published,
+                published,
+                actor,
+                id);
+    }
+}

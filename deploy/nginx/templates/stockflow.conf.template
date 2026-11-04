@@ -1,0 +1,301 @@
+# =============================================================================
+# Sites. ${DOMAIN} and ${S3_BUCKET} are substituted at container start; every other $variable is
+# nginx's own and is left alone (the entrypoint only substitutes variables that are set).
+#
+#   api.${DOMAIN}    DNS-only  the application
+#   s3.${DOMAIN}     DNS-only  MinIO's S3 API - presigned downloads, and the application's own uploads
+#   media.${DOMAIN}  DNS-only  published product images only
+#   jaeger.${DOMAIN} proxied   trace UI, behind basic auth
+#   mail.${DOMAIN}   proxied   Mailpit, every email the application sent, behind basic auth
+#   logs.${DOMAIN}   proxied   Dozzle, live container logs of this stack, behind basic auth
+#
+# DNS-only (grey cloud) for what a browser or the frontend calls: Cloudflare Free sends Vietnamese
+# ISPs to PoPs as far as Europe and back to a VPS in Vietnam, adding up to seconds per request.
+# Those servers carry no origin lock and get the edge_req/edge_conn limits instead. The internal
+# UIs stay proxied and locked: nobody needs them fast, and the lock keeps them off the open
+# internet even though the VPS address is now public.
+# =============================================================================
+
+# Mailpit's UI updates live over a WebSocket; the upgrade headers must be forwarded for it.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      "";
+}
+
+# -----------------------------------------------------------------------------
+# Back-office BFF client IP (login rate limit).
+#
+# The Next.js back-office calls the API server-to-server, so after Cloudflare/realip every admin
+# has the BFF's egress address and RateLimitInterceptor puts the whole team in one login bucket.
+# The BFF sends the browser IP it took from its hosting platform, plus the shared
+# BFF_ORIGIN_SECRET. Only with the exact secret is that IP used; otherwise X-Stockflow-Client-IP
+# is ignored and $remote_addr (CF-Connecting-IP via realip) stays the identity, as before.
+#
+# Fail closed: compose refuses an unset or empty BFF_ORIGIN_SECRET, and the explicit "" key makes
+# an empty rendering a duplicate key - `nginx -t` fails instead of every header-less request
+# matching. The secret must be hex (openssl rand -hex 32): it is pasted into this file verbatim.
+# proxy-headers.conf consumes $effective_client_ip and strips both headers before Spring; the
+# edge_req/edge_conn limits in nginx.conf key on it too.
+# map_hash_bucket_size (nginx.conf) is sized for the 64-character secret key.
+# -----------------------------------------------------------------------------
+map $http_x_stockflow_bff_secret $stockflow_bff_trusted {
+    default                0;
+    ""                     0;
+    "${BFF_ORIGIN_SECRET}" 1;
+}
+
+# Defence in depth on top of the BFF's own validation: one bare IPv4/IPv6 token, no list.
+map "$stockflow_bff_trusted:$http_x_stockflow_client_ip" $effective_client_ip {
+    default                                     $remote_addr;
+    "~^1:(?<bff_client_ip>[0-9A-Fa-f:.]{2,45})$" $bff_client_ip;
+}
+
+# Product image keys contain a UUIDv7 and are never overwritten, so a successful response may be
+# cached for a year. Anything else - a 404 for an image not uploaded yet, a 403 - must not be,
+# or a browser (or a CDN, if media is ever proxied again) would serve the error for a year after
+# the image appears.
+map $upstream_status $media_cache_control {
+    200     "public, max-age=31536000, immutable";
+    default "no-store";
+}
+
+# -----------------------------------------------------------------------------
+# Plain HTTP: redirect only. With Cloudflare in "Full (strict)" the edge always connects on 443;
+# this catches anything else. The DNS-only hosts get their own redirect without the lock - a
+# browser that types http://api... reaches the VPS directly, not through Cloudflare.
+# -----------------------------------------------------------------------------
+server {
+    listen 80 default_server;
+    server_name _;
+    include /etc/nginx/snippets/cloudflare-only.conf;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 80;
+    server_name api.${DOMAIN} s3.${DOMAIN} media.${DOMAIN};
+    return 301 https://$host$request_uri;
+}
+
+# An unknown Host on 443 gets no certificate and no response.
+server {
+    listen 443 ssl default_server;
+    ssl_reject_handshake on;
+}
+
+# -----------------------------------------------------------------------------
+# API
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name api.${DOMAIN};
+
+    include /etc/nginx/snippets/tls.conf;
+
+    limit_req  zone=edge_req burst=40 nodelay;
+    limit_conn edge_conn 50;
+
+    # nginx's default is 1 MB. The application accepts 50 MB design renders
+    # (spring.servlet.multipart.max-request-size: 51MB); this sits just above it so the
+    # application, not nginx, produces the error body for an oversized file.
+    client_max_body_size 52m;
+
+    # /actuator is passed through: on this dev server the team uses loggers and threaddump. The
+    # application guards it itself - only the liveness/readiness probes and info are anonymous,
+    # everything else needs an ECOMMERCE_ADMIN token (ResourceServerSecurityConfig). For a
+    # production server, return 404 here instead.
+    #
+    # Swagger UI for the frontend team: https://api.${DOMAIN}/swagger-ui.html (anonymous).
+
+    location / {
+        set $app_upstream http://stockflow-app-1:8080;
+        proxy_pass $app_upstream;
+        include /etc/nginx/snippets/proxy-headers.conf;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# S3 API (MinIO)
+#
+# Host must reach MinIO unchanged: a presigned URL's signature covers the Host header, and
+# the application signs for s3.${DOMAIN}. Rewriting it (nginx's default is the upstream name)
+# turns every download link into 403 SignatureDoesNotMatch.
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name s3.${DOMAIN};
+
+    include /etc/nginx/snippets/tls.conf;
+
+    # A page of design renders fetches many presigned links at once, hence the larger burst.
+    limit_req  zone=edge_req burst=100 nodelay;
+    limit_conn edge_conn 50;
+
+    client_max_body_size 52m;
+
+    # Presigned links are short-lived credentials for PRIVATE files. If a CDN or a browser cached
+    # one, the file would stay reachable after the link expired.
+    proxy_hide_header Cache-Control;
+    add_header Cache-Control "private, no-store" always;
+
+    location / {
+        set $minio_upstream http://minio:9000;
+        proxy_pass $minio_upstream;
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # Stream uploads and downloads rather than spooling 50 MB to nginx's disk first.
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Public product media (PRODUCT_MEDIA_CDN_BASE_URL)
+#
+# The single bucket also holds private files (design renders, documents). Only product-images/
+# is anonymously readable in MinIO (minio-init), and only that prefix is routed here - two
+# independent locks, the same as the CloudFront function in infra/aws/media-cloudfront.yaml.
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name media.${DOMAIN};
+
+    include /etc/nginx/snippets/tls.conf;
+
+    # A catalogue page loads every thumbnail at once. No limit_conn: over HTTP/2 nginx counts each
+    # concurrent request as a connection, and fifty images on one page would trip it.
+    limit_req zone=edge_req burst=200 nodelay;
+
+    location /product-images/ {
+        limit_except GET {
+            deny all;
+        }
+
+        # With a variable in proxy_pass nginx no longer swaps the location prefix for the URI, so
+        # the bucket is added with an explicit rewrite.
+        set $minio_upstream minio:9000;
+        rewrite ^/product-images/(.*)$ /${S3_BUCKET}/product-images/$1 break;
+        proxy_pass http://$minio_upstream;
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host minio:9000;
+        # The client gets the image, not MinIO's internals.
+        proxy_hide_header x-amz-request-id;
+        proxy_hide_header x-amz-id-2;
+        proxy_hide_header Set-Cookie;
+        proxy_hide_header Cache-Control;
+        proxy_hide_header X-Content-Type-Options;
+        add_header Cache-Control $media_cache_control always;
+        add_header X-Content-Type-Options nosniff always;
+    }
+
+    location / {
+        return 404;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Jaeger UI
+#
+# Jaeger has no authentication, and a trace carries request paths, SQL text and user ids - so it
+# is never reachable without the password in auth/htpasswd (README: "Jaeger password").
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name jaeger.${DOMAIN};
+
+    include /etc/nginx/snippets/tls.conf;
+    include /etc/nginx/snippets/cloudflare-only.conf;
+
+    auth_basic           "StockFlow dev";
+    auth_basic_user_file /etc/nginx/auth/htpasswd;
+
+    # Never cached at the edge: Cloudflare could otherwise serve one user's authenticated page to
+    # the next visitor.
+    add_header Cache-Control "private, no-store" always;
+
+    location / {
+        set $jaeger_upstream http://jaeger:16686;
+        proxy_pass $jaeger_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        # The password is for nginx; Jaeger has no use for it.
+        proxy_set_header Authorization "";
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Mailpit UI
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name mail.${DOMAIN};
+
+    include /etc/nginx/snippets/tls.conf;
+    include /etc/nginx/snippets/cloudflare-only.conf;
+
+    auth_basic           "StockFlow dev";
+    auth_basic_user_file /etc/nginx/auth/htpasswd;
+
+    add_header Cache-Control "private, no-store" always;
+
+    location / {
+        set $mailpit_upstream http://mailpit:8025;
+        proxy_pass $mailpit_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization "";
+        # Keep the live-update WebSocket open between messages.
+        proxy_read_timeout 1h;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Dozzle UI (container logs)
+#
+# Logs are streamed as server-sent events. Any buffering on the way makes them arrive in bursts or
+# not at all, so it is off here; Dozzle also sends X-Accel-Buffering: no, but saying it twice costs
+# nothing. A quiet container sends nothing for minutes, hence the long read timeout.
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name logs.${DOMAIN};
+
+    include /etc/nginx/snippets/tls.conf;
+    include /etc/nginx/snippets/cloudflare-only.conf;
+
+    auth_basic           "StockFlow dev";
+    auth_basic_user_file /etc/nginx/auth/htpasswd;
+
+    add_header Cache-Control "private, no-store" always;
+
+    location / {
+        set $dozzle_upstream http://dozzle:8080;
+        proxy_pass $dozzle_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header Authorization "";
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 1h;
+    }
+}

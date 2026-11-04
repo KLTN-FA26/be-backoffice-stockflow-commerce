@@ -18,7 +18,7 @@ import java.util.Locale;
  *
  * <h2>Vietnamese is the default, not English</h2>
  *
- * <p>The users are a Vietnamese furniture business. A client that sends no {@code Accept-Language}
+ * <p>The users are a Vietnamese business printing cups and packaging. A client that sends no {@code Accept-Language}
  * — most mobile apps, most server-to-server calls — gets Vietnamese. English is available for the
  * developer-facing surface and for anybody who asks for it.</p>
  *

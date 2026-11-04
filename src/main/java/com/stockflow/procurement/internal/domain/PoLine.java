@@ -3,30 +3,72 @@ package com.stockflow.procurement.internal.domain;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * One line of a {@link PurchaseOrder}. An entity inside the aggregate, no repository of its own —
- * same shape as {@code order.internal.domain.OrderLine}.
+ * One line of a {@link PurchaseOrder}: so many units of one inventory item at one price. An entity
+ * inside the aggregate, no repository of its own.
  *
- * <p>{@code quantityReceived} is carried (not always zero) because rehydrating an existing PO must
- * reflect receipts already posted, even though nothing in this story (SCRUM-113, creation only)
- * ever sets it above zero — see SCRUM-116 for the transition that does.</p>
+ * <p>A line orders an inventory item ({@code purchase_order_lines.inventory_item_id}); its SKU is
+ * carried alongside because that is what people and the supplier read. {@code quantityReceived} is
+ * not stored on the line: it is the sum of the confirmed goods receipts against it, read with the
+ * order. The amounts follow {@code ck_purchase_order_lines_amounts}: no line discount yet, tax at
+ * {@code taxRate} percent of the net, rounded to the cent.</p>
+ *
+ * <p>A line may be ordered in a {@link PackingUnit} (SCRUM-473); its quantity is then exactly what those units hold,
+ * and everything priced or checked against the supplier's terms stays in base units.</p>
  */
 public final class PoLine {
 
     private final UUID id;
+    private final int lineNo;
+    private final UUID inventoryItemId;
     private final Sku sku;
+    private final String uom;
     private final String description;
     private final int quantityOrdered;
     private final int quantityReceived;
     private final Money unitPrice;
+    private final BigDecimal taxRate;
+    private PoLineStatus status;
+    private final PackingUnit packingUnit;
+    private final boolean removedByAmendment;
 
-    public PoLine(UUID id, Sku sku, String description, int quantityOrdered, int quantityReceived,
-                 Money unitPrice) {
+    /** A line in base units. */
+    public PoLine(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
+                  int quantityOrdered, int quantityReceived, Money unitPrice, BigDecimal taxRate, PoLineStatus status) {
+        this(id, lineNo, inventoryItemId, sku, uom, description, quantityOrdered, quantityReceived, unitPrice, taxRate,
+                status, null);
+    }
+
+    /** {@code packingUnit} null: in base units. */
+    public PoLine(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
+                  int quantityOrdered, int quantityReceived, Money unitPrice, BigDecimal taxRate, PoLineStatus status,
+                  PackingUnit packingUnit) {
+        this(id, lineNo, inventoryItemId, sku, uom, description, quantityOrdered, quantityReceived, unitPrice, taxRate,
+                status, packingUnit, false);
+    }
+
+    /**
+     * As stored, with whether an approved amendment removed the line (SCRUM-117). That is a fact of the line, not of
+     * its status: a cancelled order's lines are CANCELLED too, and only the ones an amendment removed before the
+     * cancellation were no longer ordered when it happened. The adapter knows it from the revision the line still
+     * points at.
+     */
+    public PoLine(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
+                  int quantityOrdered, int quantityReceived, Money unitPrice, BigDecimal taxRate, PoLineStatus status,
+                  PackingUnit packingUnit, boolean removedByAmendment) {
         this.id = Objects.requireNonNull(id, "id");
+        if (lineNo <= 0) {
+            throw new IllegalArgumentException("lineNo must be positive");
+        }
+        this.lineNo = lineNo;
+        this.inventoryItemId = Objects.requireNonNull(inventoryItemId, "inventoryItemId");
         this.sku = Objects.requireNonNull(sku, "sku");
+        this.uom = uom == null ? "EACH" : uom;
         this.description = description;
         if (quantityOrdered <= 0) {
             throw new IllegalArgumentException("quantityOrdered must be positive");
@@ -37,27 +79,68 @@ public final class PoLine {
         }
         this.quantityReceived = quantityReceived;
         this.unitPrice = Objects.requireNonNull(unitPrice, "unitPrice");
-        if (unitPrice.amount().signum() < 0) {
-            throw new IllegalArgumentException("unitPrice must not be negative");
+        if (unitPrice.amount().signum() <= 0) {
+            throw new IllegalArgumentException("unitPrice must be positive");
         }
+        this.taxRate = taxRate == null ? BigDecimal.ZERO : taxRate;
+        if (this.taxRate.signum() < 0 || this.taxRate.compareTo(BigDecimal.valueOf(100)) > 0) {
+            throw new IllegalArgumentException("taxRate must be between 0 and 100");
+        }
+        this.status = Objects.requireNonNull(status, "status");
+        if (packingUnit != null && packingUnit.quantity() != quantityOrdered) {
+            throw new IllegalArgumentException("%d %s hold %d units, not %d".formatted(packingUnit.count(),
+                    packingUnit.unitOfMeasure(), packingUnit.quantity(), quantityOrdered));
+        }
+        this.packingUnit = packingUnit;
+        if (removedByAmendment && status != PoLineStatus.CANCELLED) {
+            throw new IllegalArgumentException("A line an amendment removed is CANCELLED");
+        }
+        this.removedByAmendment = removedByAmendment;
     }
 
-    static PoLine draft(UUID id, Sku sku, String description, int quantityOrdered, Money unitPrice) {
-        return new PoLine(id, sku, description, quantityOrdered, 0, unitPrice);
+    static PoLine draft(UUID id, int lineNo, UUID inventoryItemId, Sku sku, String uom, String description,
+                        int quantityOrdered, Money unitPrice, BigDecimal taxRate, PackingUnit packingUnit) {
+        return new PoLine(id, lineNo, inventoryItemId, sku, uom, description, quantityOrdered, 0, unitPrice, taxRate,
+                PoLineStatus.OPEN, packingUnit);
     }
 
-    public Money lineTotal() {
-        return unitPrice.times(quantityOrdered);
+    /** Quantity × price, before tax. */
+    public BigDecimal subtotal() {
+        return unitPrice.amount().multiply(BigDecimal.valueOf(quantityOrdered)).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    public BigDecimal tax() {
+        return subtotal().multiply(taxRate).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+    }
+
+    public BigDecimal total() {
+        return subtotal().add(tax());
     }
 
     public int openQuantity() {
-        return quantityOrdered - quantityReceived;
+        return Math.max(0, quantityOrdered - quantityReceived);
+    }
+
+    /** What is still open goes with the order: cancelled, or closed short. */
+    void settle(PoLineStatus closing) {
+        if (status == PoLineStatus.OPEN || status == PoLineStatus.PARTIALLY_RECEIVED) {
+            status = closing;
+        }
     }
 
     public UUID id() { return id; }
+    public int lineNo() { return lineNo; }
+    public UUID inventoryItemId() { return inventoryItemId; }
     public Sku sku() { return sku; }
+    public String uom() { return uom; }
     public String description() { return description; }
     public int quantityOrdered() { return quantityOrdered; }
     public int quantityReceived() { return quantityReceived; }
     public Money unitPrice() { return unitPrice; }
+    public BigDecimal taxRate() { return taxRate; }
+    public PoLineStatus status() { return status; }
+    /** The packing unit the line was ordered in; null for base units. */
+    public PackingUnit packingUnit() { return packingUnit; }
+    /** An approved amendment removed it (SCRUM-117); always CANCELLED then. */
+    public boolean removedByAmendment() { return removedByAmendment; }
 }

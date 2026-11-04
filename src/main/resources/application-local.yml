@@ -30,6 +30,24 @@ logging:
     # org.hibernate.orm.jdbc.bind: TRACE
 
 stockflow:
+  payment:
+    # Obviously not a real account (SCRUM-193): demo values so the transfer instructions render on a laptop.
+    company-bank:
+      bank-name: ${COMPANY_BANK_NAME:DEMO BANK (not a real bank)}
+      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0000000000}
+      account-name: ${COMPANY_BANK_ACCOUNT_NAME:DEMO STOCKFLOW CO LTD}
+  customer:
+    # The Next.js customer portal on its default dev port (SCRUM-451); mail goes to Mailpit.
+    portal-activation-url: ${PORTAL_ACTIVATION_URL:http://localhost:3000/portal/activate}
+  notification:
+    email:
+      # Every message into Mailpit (http://localhost:8025), whatever its recipient. EMAIL_PROVIDER=resend with a
+      # RESEND_API_KEY tries the real thing from a laptop.
+      provider: ${EMAIL_PROVIDER:smtp}
+  upload-inspection:
+    # No ClamAV container needed on a laptop. Everywhere else the default (true) applies and a
+    # missing scanner fails the upload closed. To scan locally: docker-compose.media.yml.
+    enabled: false
   storage:
     # Keep MinIO for local work: it exercises the same S3 code path the deployment uses.
     # Switch to 'local' only to run without Docker; see LocalFileStorage for what it cannot do.

@@ -6,6 +6,11 @@
  * <p><b>May depend on:</b> none — this module calls no other business module. Plus {@code common} and {@code contracts}, which are
  * available to every module.</p>
  *
+ * <p><b>Called by:</b> every module holding a reference to {@code warehouse.storage_location} -
+ * procurement (receiving, QC), inventory (stock, movements, adjustments, counts) and fulfillment
+ * (picking, move tasks) - through {@code WarehouseService.findLocation}, to check a location before
+ * writing a reference to it (ADR-0007). Nothing else of the map is public (issue #18 D6).</p>
+ *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
  *   <li>{@code api} — the public API, exposed as a named interface. This is all any other module

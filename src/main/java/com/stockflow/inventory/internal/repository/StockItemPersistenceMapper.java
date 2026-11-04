@@ -9,6 +9,7 @@ import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemId;
+import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.common.domain.Sku;
 
 import java.util.List;
@@ -44,13 +45,16 @@ final class StockItemPersistenceMapper {
                 Quantity.of(entity.getOnHand()),
                 entity.getStatus(),
                 reservations,
-                entity.getVersion());
+                entity.getVersion(), entity.getReceivedAt(), entity.getSerialNumber(), entity.getLotId(),
+                entity.getStockPackageId() == null ? null : new StockPackageId(entity.getStockPackageId()));
     }
 
     static Reservation toDomain(ReservationJpaEntity entity) {
         return new Reservation(
                 new ReservationId(entity.getId()),
                 entity.getOrderId(),
+                entity.getProductionOrderId(),
+                entity.getTransferOrderId(),
                 entity.getRootRequestId(),
                 entity.getRequestId(),
                 Quantity.of(entity.getQuantity()),
@@ -58,7 +62,8 @@ final class StockItemPersistenceMapper {
                 entity.getExpiresAt(),
                 entity.getStatus(),
                 entity.getReleaseReason(),
-                entity.getClosedAt());
+                entity.getClosedAt(),
+                entity.getAllocatedFrom());
     }
 
     /** Fresh row for an aggregate that has never been persisted. */
@@ -71,7 +76,8 @@ final class StockItemPersistenceMapper {
                 item.expiryDate(),
                 item.onHand().value(),
                 item.reserved().value(),
-                item.status());
+                item.status(), item.receivedAt(), item.serialNumber(), item.lotId(),
+                item.stockPackageId() == null ? null : item.stockPackageId().value());
         entity.replaceReservations(toEntities(item));
         return entity;
     }
@@ -83,7 +89,7 @@ final class StockItemPersistenceMapper {
      * {@code reserved} in lockstep with the children by construction.
      */
     static void applyToEntity(StockItem item, StockItemJpaEntity entity) {
-        entity.apply(item.onHand().value(), item.reserved().value(), item.status());
+        entity.apply(item.onHand().value(), item.reserved().value(), item.status(), item.location().code());
         entity.replaceReservations(toEntities(item));
     }
 
@@ -91,7 +97,9 @@ final class StockItemPersistenceMapper {
         return item.reservations().stream()
                 .map(r -> new ReservationJpaEntity(
                         r.id().value(),
+                        item.sku().code(),
                         r.orderId(),
+                        r.productionOrderId(),
                         r.rootRequestId(),
                         r.requestId(),
                         r.quantity().value(),
@@ -99,7 +107,8 @@ final class StockItemPersistenceMapper {
                         r.expiresAt(),
                         r.status(),
                         r.releaseReason(),
-                        r.closedAt()))
+                        r.closedAt(),
+                        r.allocatedFrom()).forTransfer(r.transferOrderId()))
                 .toList();
     }
 }

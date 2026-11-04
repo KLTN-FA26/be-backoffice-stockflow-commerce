@@ -1,36 +1,64 @@
 package com.stockflow.catalog.internal.domain;
 
-import com.stockflow.common.domain.AggregateRoot;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 
+import java.text.Normalizer;
+import java.util.Locale;
 import java.util.UUID;
 
-/**
- * <b>Aggregate root of the catalog module.</b>
- *
- * <p>STARTER STUB. The aggregate owns its invariants and is the only thing loaded and saved as a
- * unit. Keep it {@code final} and keep every framework annotation off it — that is what lets its
- * unit test run with no Spring context, and {@code ArchitectureTest.domainDoesNotDependOnFrameworks}
- * enforces it.</p>
- *
- * <p>Fill in: the fields that must be consistent together, a factory for each way the aggregate is
- * born, and one method per state transition — each checking its precondition and calling
- * {@code registerEvent(...)}. See {@code inventory.internal.domain.StockItem} for the worked
- * example and {@code docs/adding-a-module.md} §4.2.</p>
- */
-public final class Listing extends AggregateRoot {
-
-    private final UUID id;
-
-    private Listing(UUID id) {
-        this.id = java.util.Objects.requireNonNull(id, "id");
+/** Catalog read snapshot and projection progress; editable SEO is owned by product.products. */
+public record Listing(
+        UUID productId,
+        String slug,
+        String seoTitle,
+        String seoDescription,
+        long revision,
+        long projectedRevision,
+        boolean enabled,
+        boolean everPublished,
+        String publishedTitle,
+        String publishedDescription,
+        String publishedSeoTitle,
+        String publishedSeoDescription) {
+    public static String normalizeSlug(String input) {
+        if (input == null) throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+        String value =
+                Normalizer.normalize(
+                                input.trim().toLowerCase(Locale.ROOT).replace('đ', 'd'),
+                                Normalizer.Form.NFD)
+                        .replaceAll("\\p{M}+", "")
+                        .replaceAll("[^a-z0-9]+", "-")
+                        .replaceAll("^-|-$", "");
+        if (value.isBlank() || value.length() > 255)
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+        return value;
     }
 
-    /** TODO: replace with the real birth of the aggregate, taking the fields it needs. */
-    public static Listing create(UUID id) {
-        return new Listing(id);
+    public Listing edit(String slug, String title, String description, long expectedRevision) {
+        String normalized = normalizeSlug(slug);
+        if (revision != expectedRevision) throw new BusinessException(ErrorCode.CONFLICT);
+        if (everPublished && !this.slug.equals(normalized))
+            throw new BusinessException(ErrorCode.CONFLICT);
+        if (title != null && title.length() > 255
+                || description != null && description.length() > 5000)
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+        return new Listing(
+                productId,
+                normalized,
+                trim(title),
+                trim(description),
+                revision + 1,
+                projectedRevision,
+                enabled,
+                everPublished,
+                publishedTitle,
+                publishedDescription,
+                publishedSeoTitle,
+                publishedSeoDescription);
     }
 
-    public UUID id() {
-        return id;
+    private static String trim(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 }

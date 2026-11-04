@@ -11,21 +11,33 @@ name: build
 
 on:
   push:
-    branches: [main, develop]
+    # develop is the only branch that deploys (SCRUM-463: the old infra/deploy branch was never a
+    # trigger, so the conditions that still named it were dead).
+    branches: [develop]
   pull_request:
 
 # A new push to the same branch cancels the previous run. Without this a busy branch queues five
 # builds of superseded commits and the useful one waits behind them.
+#
+# Except on develop, which deploys: cancelling there could kill a run in the middle of its deploy
+# job, between replacing the container and confirming it is healthy. A newer push waits instead
+# (GitHub keeps only the newest pending run, so superseded commits are still skipped).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' }}
+
+# The token reads the repository and nothing else unless a job asks for more (docker: packages:
+# write, deploy: packages: read). Without this block it inherits the repository default.
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     # Integration tests start Postgres through Testcontainers, which needs a Docker socket. The
     # ubuntu runner has one; a container-based runner would not.
-    timeout-minutes: 20
+    # The suite alone takes about 17 minutes (5,175 tests on 02/11); 20 cut green runs short.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +56,19 @@ jobs:
           # would still be saved and restored, and Maven would ignore it, so every run
           # re-downloads every dependency while the cache step reports success.
           cache: maven
+
+      # ---------------------------------------------------------------------
+      # The repository's own static checks (tools/verify.py, CLAUDE.md §1): module boundaries by
+      # import, DTO and pagination conventions, migration naming. No Maven, no network, about a
+      # second - so it goes first, and a violation fails here rather than after the test suite.
+      # ---------------------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static checks (verify.py)
+        run: python3 tools/verify.py
 
       # ---------------------------------------------------------------------
       # Compile first, on its own. A compile error should fail in thirty seconds with a clear
@@ -91,6 +116,12 @@ jobs:
           fi
           echo "No applied migration was modified."
 
+      # Coverage per module on the run's own page. The artifact below holds the full HTML report,
+      # but a number nobody downloads a zip to read is a number nobody reads.
+      - name: Coverage summary
+        if: always()
+        run: python3 tools/ci/coverage_summary.py >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish test report
         uses: actions/upload-artifact@v4
         # Uploaded even on failure - a red build is when the report is actually wanted.
@@ -112,23 +143,206 @@ jobs:
           path: target/spring-modulith-docs/
           retention-days: 30
 
+      # ---------------------------------------------------------------------
+      # SonarQube Cloud. Reuses the classes, test reports and JaCoCo XML the steps above already
+      # produced - the tests are NOT run a second time.
+      #
+      # Warning-only for the first week: continue-on-error keeps a Sonar outage or a misconfigured
+      # project from turning the required `build` check red, and the quality gate is not awaited
+      # (no sonar.qualitygate.wait). Once the gate has proved stable, drop continue-on-error and
+      # consider -Dsonar.qualitygate.wait=true.
+      #
+      # Skips cleanly until the repository owner has added the SONAR_TOKEN secret and the
+      # SONAR_ORGANIZATION variable. Also skipped for fork and Dependabot pull requests, which GitHub
+      # runs without repository secrets. The secret is read by the one shell step below, not by the
+      # whole job, and reaches Maven only through that step's env.
+      # ---------------------------------------------------------------------
+      - name: Check SonarQube Cloud is configured
+        id: sonar
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ] && [ -n "$SONAR_ORGANIZATION" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SonarQube Cloud analysis skipped: SONAR_TOKEN secret or SONAR_ORGANIZATION variable is not available."
+          fi
+
+      # Version pinned: sonar-maven-plugin 5.8.0.7211. fetch-depth: 0 above gives Sonar the history
+      # it needs for blame and new-code detection; setup-java above caches ~/.m2.
+      - name: SonarQube Cloud analysis
+        if: steps.sonar.outputs.enabled == 'true'
+        continue-on-error: true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: >-
+          mvn -B -ntp
+          org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar
+          -Dsonar.organization="$SONAR_ORGANIZATION"
+          -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+
   # -------------------------------------------------------------------------
   # The image is built on every push to a protected branch, not only at release. An image that is
   # only built at release time is one whose Dockerfile breaks silently for weeks.
+  #
+  # Pushed to GHCR as sha-<7 chars> (what is deployed - immutable, so a rollback is exact) and as
+  # the branch name (a moving pointer, for humans).
   # -------------------------------------------------------------------------
   docker:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push'
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      # Only for uploading the Trivy SARIF to code scanning (step below).
+      security-events: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build image
-        uses: docker/build-push-action@v6
+
+      # GHCR rejects upper-case repository names, and the organisation is KLTN-FA26. A tag may not
+      # contain '/', so a branch name's slashes become dashes.
+      - name: Image name and tag
+        id: meta
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "branch=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
+      # Third-party actions are pinned to a commit: a tag can be moved to other code, a SHA cannot.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          push: false
-          tags: stockflow/monolith:${{ github.sha }}
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.branch }}
+          # Links the package to this repository, so it inherits the repository's access and the
+          # deploy job's GITHUB_TOKEN can pull it.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------------------
+      # Image vulnerability scan, after the push and before deploy (deploy needs this job).
+      #
+      # WARNING-ONLY: exit-code is 0, so findings never block a deploy yet. Switch exit-code to '1'
+      # after one week (and drop continue-on-error on the scan step) once the existing findings
+      # have been triaged. Results go to code scanning (Security tab) as SARIF.
+      #
+      # continue-on-error covers infrastructure trouble (Trivy DB download, a registry hiccup) so
+      # the scanner can never stop a deploy while it is still in its trial week.
+      # ---------------------------------------------------------------------
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        env:
+          # The image lives in GHCR; the scanner pulls it from the registry.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          # TODO: one week after this landed, change to '1' so fixable CRITICAL/HIGH findings block deploy.
+          exit-code: '0'
+
+      - name: Upload Trivy results to code scanning
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        continue-on-error: true
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+  # -------------------------------------------------------------------------
+  # develop -> the VPS. deploy/README.md describes the server side and the secrets this needs.
+  #
+  # The `vps` environment holds the secrets; add required reviewers to it in the repository
+  # settings to turn this into a manual approval step without touching this file.
+  # -------------------------------------------------------------------------
+  deploy:
+    runs-on: ubuntu-latest
+    needs: docker
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/develop'
+    # deploy.sh may wait 300 s for readiness and another 300 s for a rollback; a job timeout
+    # inside that window would cut the SSH session in the middle of the rollback.
+    timeout-minutes: 25
+    environment:
+      name: vps
+      url: https://api.${{ vars.DOMAIN }}
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-vps
+      cancel-in-progress: false
+    env:
+      DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/opt/stockflow' }}
+      SSH_TARGET: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Secrets reach the shell through env, never by ${{ }} inside `run:` - interpolated text
+      # becomes part of the script, and a value containing a quote would break or inject into it.
+      # known_hosts is pinned from a secret rather than learned with ssh-keyscan, which would trust
+      # whatever answered on that address the first time.
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # Keepalives: the runner's network drops a connection that stays silent for about four
+          # minutes, and a deploy can wait that long for the application to become ready. A dropped
+          # session kills deploy.sh half way - before it records the tag or can roll back.
+          printf 'Host vps\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n  ServerAliveInterval 30\n  ServerAliveCountMax 10\n' \
+            "${SSH_TARGET#*@}" "${SSH_TARGET%@*}" "$SSH_PORT" > ~/.ssh/config
+
+      # --delete removes files dropped from deploy/ in the repository; excluded paths are
+      # server-only state and are neither overwritten nor deleted.
+      - name: Sync deploy files
+        run: >-
+          rsync -az --delete
+          --exclude='.env' --exclude='certs/' --exclude='auth/' --exclude='backups/' --exclude='jwt/'
+          --exclude='.nginx-config-hash'
+          deploy/ "vps:$DEPLOY_PATH/"
+
+      # The token is piped over stdin, so it never appears in a process list on the server, and it
+      # expires when this job ends - the server holds no long-lived registry credential.
+      - name: Log the server in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | ssh vps "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+
+      - name: Deploy ${{ needs.docker.outputs.tag }}
+        run: ssh vps "cd '$DEPLOY_PATH' && bash scripts/deploy.sh '${{ needs.docker.outputs.tag }}'"
+
+      - name: Log the server out of GHCR
+        if: always()
+        run: ssh vps "docker logout ghcr.io" || true

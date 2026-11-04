@@ -13,7 +13,7 @@ keeps a replica built from events, and a replica is never the place a decision i
 | Supplier, Purchase Order | `procurement-service` | — | — |
 | Goods Receipt, QC result | `procurement-service` | `inventory-service` (quantities only) | `GoodsReceived`, `QcCompleted` |
 | Supplier Invoice, three-way match | `procurement-service` | `reporting-service` | `InvoiceMatched` |
-| Warehouse, Zone/Aisle/Rack/Level/Bin | `warehouse-service` | `inventory-service` (location code only) | `LocationCreated`, `LocationDeactivated` |
+| Warehouse, Zone, Shelf → Shelf level → Bin, Area, Boundary, **Storage location** | `warehouse-service` | — not replicated. Inventory, procurement and fulfillment hold foreign keys to `storage_location`, by id or by `location_code`, and check one through `WarehouseService.findLocation` before writing it | — |
 | Slotting rules, Putaway task | `warehouse-service` | — | — |
 | Stock on hand, reservation, allocation | `inventory-service` | `catalog-service` (ATP per SKU) | `StockLevelChanged` |
 | Pick / Pack / Shipment | `fulfillment-service` | `order-service` (status only) | `PickCompleted`, `ShipmentDispatched` |

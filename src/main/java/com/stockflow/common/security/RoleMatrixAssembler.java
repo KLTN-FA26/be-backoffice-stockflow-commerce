@@ -20,6 +20,8 @@ public final class RoleMatrixAssembler {
     public static RoleMatrixView assemble(String roleCode,
                                           String roleLabel,
                                           boolean systemRole,
+                                          boolean editable,
+                                          long version,
                                           DataScope dataScope,
                                           PermissionCatalog catalog,
                                           Set<PermissionCode> granted) {
@@ -59,7 +61,7 @@ public final class RoleMatrixAssembler {
             totalAll += groupTotal;
         }
 
-        return new RoleMatrixView(roleCode, roleLabel, systemRole, dataScope,
+        return new RoleMatrixView(roleCode, roleLabel, systemRole, editable, version, dataScope,
                 totalGranted, totalAll, groups);
     }
 

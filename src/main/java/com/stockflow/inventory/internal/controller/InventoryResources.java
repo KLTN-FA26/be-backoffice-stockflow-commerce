@@ -19,6 +19,20 @@ public final class InventoryResources {
     // rendered in the matrix is rejected at startup rather than at the first 403.
     public static final String STOCK_ITEMS = "inventory-stock-items";
     public static final String RESERVATIONS = "inventory-reservations";
+    public static final String STOCK_MOVEMENTS = "inventory-stock-movements";
+    public static final String STOCK_ADJUSTMENTS = "inventory-stock-adjustments";
+    public static final String TRANSFER_ORDERS = "inventory-transfer-orders";
+    public static final String ALERTS = "inventory-alerts";
+    /** Seeded by V20260903000100; read by the recounts a short pick opens (X-SHORT). */
+    public static final String CYCLE_COUNTS = "inventory-cycle-counts";
+    public static final String INVENTORY_ITEMS = "inventory-inventory-items";
+    /** Seeded by V20261101030200: report damaged stock (CREATE), decide it (APPROVE, four eyes). */
+    public static final String DAMAGE_REPORTS = "inventory-damage-reports";
+    /** Seeded by V20261020000700; printing and reprinting carton labels (SCRUM-473). */
+    public static final String STOCK_PACKAGES = "inventory-stock-packages";
+
+    /** Seeded by V20260903000100; putaway tasks (SCRUM-92) are served here, though the resource is the warehouse's. */
+    public static final String PUTAWAY_TASKS = "warehouse-putaway-tasks";
 
     private InventoryResources() {
     }

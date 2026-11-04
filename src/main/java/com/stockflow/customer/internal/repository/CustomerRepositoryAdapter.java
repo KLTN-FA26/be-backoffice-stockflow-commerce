@@ -1,0 +1,159 @@
+package com.stockflow.customer.internal.repository;
+
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.persistence.Specs;
+import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.customer.internal.domain.AddressType;
+import com.stockflow.customer.internal.domain.Customer;
+import com.stockflow.customer.internal.domain.CustomerRepository;
+import com.stockflow.customer.internal.entity.AddressJpaEntity;
+import com.stockflow.customer.internal.entity.CustomerJpaEntity;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.stereotype.Repository;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRepository {
+
+    private final CustomerJpaRepository customers;
+    private final AddressJpaRepository addresses;
+    private final SegmentJpaRepository segments;
+
+    CustomerRepositoryAdapter(CustomerJpaRepository customers, AddressJpaRepository addresses,
+                              SegmentJpaRepository segments) {
+        this.customers = customers;
+        this.addresses = addresses;
+        this.segments = segments;
+    }
+
+    @Override
+    public java.util.Map<UUID, String> fullNames(java.util.Collection<UUID> customerIds) {
+        if (customerIds == null || customerIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<UUID, String> names = new java.util.HashMap<>();
+        for (Object[] row : customers.findNames(java.util.Set.copyOf(customerIds))) {
+            names.put((UUID) row[0], (String) row[1]);
+        }
+        return names;
+    }
+
+    @Override
+    public boolean segmentExists(UUID segmentId) {
+        return segments.existsById(segmentId);
+    }
+
+    @Override
+    public Optional<Customer> findById(UUID id) {
+        return customers.findById(id).map(this::withAddresses);
+    }
+
+    @Override
+    public Optional<Customer> findForUpdate(UUID id) {
+        return customers.lockById(id).map(this::withAddresses);
+    }
+
+    @Override
+    public Optional<Customer> findByUserId(UUID userId) {
+        return customers.findByUserId(userId).map(this::withAddresses);
+    }
+
+    @Override
+    public Optional<Customer> findByUserIdForUpdate(UUID userId) {
+        return customers.lockByUserId(userId).map(this::withAddresses);
+    }
+
+    @Override
+    public boolean isTaxCodeTaken(String taxCode, UUID exceptCustomerId) {
+        return customers.existsTaxCode(taxCode, exceptCustomerId);
+    }
+
+    @Override
+    public Optional<Customer> findByEmail(String email) {
+        return customers.findByEmailIgnoreCase(email).map(this::withAddresses);
+    }
+
+    @Override
+    public boolean existsById(UUID id) {
+        return customers.existsById(id);
+    }
+
+    @Override
+    public Customer save(Customer customer) {
+        CustomerJpaEntity row = customers.findById(customer.id()).orElseGet(() ->
+                customers.save(CustomerPersistenceMapper.toNewEntity(customer)));
+        CustomerPersistenceMapper.apply(customer, row);
+        customers.save(row);
+
+        // Clear first (this also empties the persistence context), then load: the loaded rows must
+        // come from the database as it is after the clear, or an address that stays the default
+        // would look unchanged and never be written back as one.
+        for (AddressType type : AddressType.values()) addresses.clearDefault(customer.id(), type);
+
+        var existing = new HashMap<UUID, AddressJpaEntity>();
+        addresses.findByCustomerIdOrderByCreatedAtAsc(customer.id())
+                .forEach(address -> existing.put(address.getId(), address));
+
+        var retained = new HashSet<UUID>();
+        for (var address : customer.addresses()) {
+            retained.add(address.id());
+            AddressJpaEntity addressRow = existing.get(address.id());
+            if (addressRow == null) {
+                addresses.save(CustomerPersistenceMapper.toNewEntity(customer.id(), address));
+            } else {
+                CustomerPersistenceMapper.apply(address, addressRow);
+                addresses.save(addressRow);
+            }
+        }
+        existing.values().stream().filter(rowToDelete -> !retained.contains(rowToDelete.getId()))
+                .forEach(addresses::delete);
+        addresses.flush();
+        return withAddresses(customers.findById(customer.id()).orElseThrow());
+    }
+
+    private static Specification<CustomerJpaEntity> taxCodeIs(String search) {
+        if (search == null || search.isBlank()) {
+            return Specs.all();   // no search: no restriction, like the other terms
+        }
+        try {
+            return Specs.eq("taxCode", com.stockflow.customer.internal.domain.TaxCode.normalise(search));
+        } catch (IllegalArgumentException notATaxCode) {
+            return Specs.none();
+        }
+    }
+
+    @Override
+    public Page<CustomerSummary> search(String search, String status, UUID segmentId, Pageable pageable) {
+        Specification<CustomerJpaEntity> specification = Specification
+                .<CustomerJpaEntity>where(Specs.contains("fullName", search))
+                .or(Specs.contains("email", search))
+                .or(Specs.contains("phone", search))
+                // A tax code or personal id is matched whole, never by a part of it (review of #109, item 9): a
+                // search box must not let anyone walk the codes digit by digit.
+                .or(taxCodeIs(search));
+        if (segmentId != null) {
+            specification = specification.and(Specs.eq("segmentId", segmentId));
+        }
+        if (status != null && !status.isBlank()) {
+            try {
+                specification = specification.and(Specs.eq("status",
+                        com.stockflow.customer.internal.domain.CustomerStatus.valueOf(status)));
+            } catch (IllegalArgumentException invalid) {
+                throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown customer status " + status);
+            }
+        }
+        return customers.findAll(specification, pageable).map(CustomerPersistenceMapper::toSummary);
+    }
+
+    private Customer withAddresses(CustomerJpaEntity entity) {
+        return CustomerPersistenceMapper.toDomain(entity,
+                addresses.findByCustomerIdOrderByCreatedAtAsc(entity.getId()));
+    }
+}

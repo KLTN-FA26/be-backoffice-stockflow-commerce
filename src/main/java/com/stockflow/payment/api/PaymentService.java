@@ -1,23 +1,27 @@
 package com.stockflow.payment.api;
 
+import java.util.UUID;
+
 /**
  * THE public API of the payment module — the only package other modules may import.
  *
- * <p>STARTER STUB. Replace the empty body with the module's real use cases. Two rules from
- * {@code docs/adding-a-module.md} §1:</p>
- * <ul>
- *   <li>declare only what other modules actually call — the shortest surface that works;</li>
- *   <li>every parameter and return type is a record or enum declared in THIS package, never a
- *       domain object or JPA entity. {@code ArchitectureTest.theApiPackageLeaksNothingInternal}
- *       and {@code theApiPublishesNoEntities} enforce it.</li>
- * </ul>
- *
- * <p>To finish the module: add a migration, then the entity + repository adapter, then a
- * controller — see {@code docs/adding-a-module.md} §4.</p>
+ * <p>Declares only what other modules call; every parameter and return type is a record or enum of
+ * this package ({@code docs/adding-a-module.md} §1).</p>
  */
 public interface PaymentService {
 
-    // TODO: declare this module's use cases here. Every parameter and return type is a record
-    //       or enum declared in THIS package, never a domain object. See
-    //       inventory.api.InventoryService for the worked example.
+    /** What the customer owes on receivables and whether any is overdue (SCRUM-431). */
+    CreditPosition creditPosition(UUID customerId);
+
+    /**
+     * The order's money in the ledger now (G2-3). The order module reads it under the order's row lock at the handover:
+     * every allocation takes that lock first, so one committed a moment ago is counted.
+     */
+    OrderLedger ledgerOf(UUID orderId);
+
+    /**
+     * The account customers transfer to (SCRUM-193), from this deployment's configuration; empty while any of its parts
+     * is not set, so a customer is never shown half an account - or a demo one.
+     */
+    java.util.Optional<CompanyBankAccount> companyBankAccount();
 }

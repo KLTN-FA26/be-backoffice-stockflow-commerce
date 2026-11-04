@@ -1,149 +1,197 @@
 package com.stockflow.product.internal.domain;
 
-import com.stockflow.product.api.ProductStatus;
-import com.stockflow.product.api.TaxClass;
+import com.stockflow.common.api.FieldError;
+import com.stockflow.common.domain.AggregateRoot;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.contracts.CatalogListingChanged;
 import com.stockflow.contracts.ProductApproved;
 import com.stockflow.contracts.ProductDiscontinued;
-import com.stockflow.common.domain.AggregateRoot;
+import com.stockflow.product.api.ProductKind;
+import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.api.TaxClass;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
- * <b>Aggregate root of the product module: one product master row.</b>
+ * <b>Aggregate root of the product module: one product master row</b> ({@code product.products}).
  *
  * <p>SCRUM-56 (WBS 3.1.1.2) landed the master-data fields; SCRUM-57 (WBS 3.1.1.3) adds the
  * approval workflow on top: {@code submit()}/{@code approve()}/{@code reject()}. SCRUM-85
- * (WBS 3.1.8.1) adds {@code discontinue()}, the terminal edge — all following
- * {@link ProductStatus#canTransitionTo}'s table. {@link #updateDetails} guards on
- * {@code DRAFT} for real — that guard was a dead branch before SCRUM-57 added any other
- * reachable status.</p>
+ * (WBS 3.1.8.1) adds {@code discontinue()}, the terminal edge, and SCRUM-461 adds the reason it
+ * needs, {@code suspend()}/{@code resume()} (kltn-docs 01 §5.1 "Inactive"), the brand a submission
+ * needs, and the version check an edit quotes — all following {@link ProductStatus#canTransitionTo}'s
+ * table. {@link #updateDetails} guards on {@code DRAFT}. SCRUM-87 requires the English name and the tax
+ * class of every new or edited draft, and of every submission.</p>
+ *
+ * <p>What is deliberately <b>not</b> on the product (the PIM model, docs 01): logistics — weight,
+ * dimensions, package, storage class — belong to the inventory item of each SKU (BR-08), and images
+ * belong to a variant (decision D5). The product's selling SKUs are its variants, created with the
+ * product: one default variant whose SKU is the product code, or, for a product created with variant
+ * axes, every combination of its options, SKUs by the code rule and the first one the default.
+ * Publication (status
+ * {@code PUBLISHED}) is decided by the catalog through {@code ProductPublication}, never here.</p>
  *
  * <p>No Spring, no JPA, no annotations — {@code ArchitectureTest.domainDoesNotDependOnFrameworks}
- * enforces it. {@code code} is immutable once created (like {@code Sku}/{@code OrderNumber}); every
- * other field goes through {@link #updateDetails}. Transition guards throw
- * {@link InvalidProductStatusTransitionException}/{@link SelfApprovalNotAllowedException}
- * (dedicated {@code BusinessException}s), never {@code IllegalStateException} — see
- * {@code InvalidProductStatusTransitionException}'s javadoc for why that distinction matters here.</p>
+ * enforces it. {@code code} is immutable once created, as the {@code tg_products_immutable} trigger
+ * states again. Transition guards throw {@link InvalidProductStatusTransitionException}/
+ * {@link SelfApprovalNotAllowedException} (dedicated {@code BusinessException}s), never
+ * {@code IllegalStateException}.</p>
  */
 public final class Product extends AggregateRoot {
+
+    /** {@code ck_products_code}, stated again. Also a valid variant SKU, which the default variant of a
+     *  product without axes needs, and the stem of the rule-built SKUs of one with axes. */
+    public static final Pattern CODE = Pattern.compile("[A-Z0-9][A-Z0-9_-]{0,49}");
+
+    /** {@code product.products.discontinue_reason} / {@code suspend_reason}: the longest reason stored. */
+    public static final int MAX_REASON_LENGTH = 500;
 
     private final ProductId id;
     private final String code;
 
     private String name;
     private String nameEn;
+    private UUID brandId;
     private UUID categoryId;
+    private String shortDescription;
     private String description;
     private String descriptionEn;
-    private String brand;
     private TaxClass taxClass;
-    private boolean customizable;
-    private final List<ProductImage> images;
+    private ProductKind kind;
     private ProductStatus status;
     private final long version;
-
-    /** SCRUM-74 (WBS 3.1.3.1): shipping weight/dimensions, for later rate/carton calculations.
-     *  Nullable — a product can exist before these are known; when set, each must be positive. */
-    private BigDecimal weightKg;
-    private BigDecimal lengthCm;
-    private BigDecimal widthCm;
-    private BigDecimal heightCm;
-
-    /** Read-only: who/when created this row. Carried for the API response, never checked by an
-     *  invariant — same treatment {@code version} gets, not a protected business rule. */
-    private final Instant createdAt;
-    private final String createdBy;
 
     private UUID submittedBy;
     private Instant submittedAt;
     private UUID approvedBy;
     private Instant approvedAt;
+    private boolean selfApproved;
     private String rejectionReason;
+    private Instant discontinuedAt;
+    private String discontinueReason;
+    private Instant suspendedAt;
+    private String suspendReason;
 
-    public Product(ProductId id, String code, String name, String nameEn, UUID categoryId,
-                   String description, String descriptionEn, String brand, TaxClass taxClass,
-                   boolean customizable, List<ProductImage> images, ProductStatus status,
-                   long version, Instant createdAt, String createdBy,
+    public Product(ProductId id, String code, String name, String nameEn, UUID brandId, UUID categoryId,
+                   String shortDescription, String description, String descriptionEn, TaxClass taxClass,
+                   ProductKind kind, ProductStatus status, long version,
                    UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
-                   String rejectionReason, BigDecimal weightKg, BigDecimal lengthCm,
-                   BigDecimal widthCm, BigDecimal heightCm) {
+                   boolean selfApproved, String rejectionReason, Instant discontinuedAt, String discontinueReason,
+                   Instant suspendedAt, String suspendReason) {
         this.id = Objects.requireNonNull(id, "id");
-        this.code = requireNonBlank(code, "code");
+        this.code = requireCode(code);
         this.name = requireNonBlank(name, "name");
-        this.nameEn = requireNonBlank(nameEn, "nameEn");
+        this.nameEn = nameEn;
+        this.brandId = brandId;
         this.categoryId = categoryId;
+        this.shortDescription = shortDescription;
         this.description = description;
         this.descriptionEn = descriptionEn;
-        this.brand = requireNonBlank(brand, "brand");
-        this.taxClass = Objects.requireNonNull(taxClass, "taxClass");
-        this.customizable = customizable;
-        this.images = new ArrayList<>(images == null ? List.of() : images);
+        this.taxClass = taxClass;
+        this.kind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
         this.status = Objects.requireNonNull(status, "status");
         this.version = version;
-        this.createdAt = createdAt;
-        this.createdBy = createdBy;
         this.submittedBy = submittedBy;
         this.submittedAt = submittedAt;
         this.approvedBy = approvedBy;
         this.approvedAt = approvedAt;
+        this.selfApproved = selfApproved;
         this.rejectionReason = rejectionReason;
-        this.weightKg = requirePositive(weightKg, "weightKg");
-        this.lengthCm = requirePositive(lengthCm, "lengthCm");
-        this.widthCm = requirePositive(widthCm, "widthCm");
-        this.heightCm = requirePositive(heightCm, "heightCm");
-    }
-
-    /** A new product master row, always born {@link ProductStatus#DRAFT}. */
-    public static Product draft(String code, String name, String nameEn, UUID categoryId,
-                                String description, String descriptionEn, String brand,
-                                TaxClass taxClass, boolean customizable, List<ProductImage> images,
-                                BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                                BigDecimal heightCm) {
-        return new Product(ProductId.newId(), code, name, nameEn, categoryId, description,
-                descriptionEn, brand, taxClass, customizable, images, ProductStatus.DRAFT, 0L,
-                null, null, null, null, null, null, null, weightKg, lengthCm, widthCm, heightCm);
+        this.discontinuedAt = discontinuedAt;
+        this.discontinueReason = discontinueReason;
+        this.suspendedAt = suspendedAt;
+        this.suspendReason = suspendReason;
     }
 
     /**
-     * Replace every editable field. {@code code} is not a parameter: it is fixed at creation, the
-     * same way {@code Sku}/{@code OrderNumber} are immutable once assigned elsewhere in this
-     * codebase.
+     * A new product master row, always born {@link ProductStatus#DRAFT}. The English name and the tax
+     * class are required here, as the request requires them; the constructor still accepts a row without
+     * them, because legacy rows are loaded through it.
+     */
+    public static Product draft(String code, String name, String nameEn, UUID brandId, UUID categoryId,
+                                String shortDescription, String description, String descriptionEn,
+                                TaxClass taxClass, ProductKind kind) {
+        return new Product(ProductId.newId(), code, name, requireNonBlank(nameEn, "nameEn"), brandId, categoryId,
+                shortDescription, description, descriptionEn, requireTaxClass(taxClass), kind, ProductStatus.DRAFT,
+                0L, null, null, null, null, false, null, null, null, null, null);
+    }
+
+    /**
+     * Replace every editable field. {@code code} is not a parameter: it is fixed at creation. Returns the
+     * names of the fields whose value changed, for the product's history.
      *
      * <p>{@code DRAFT}-only: no business rule defines what an edit means once a product is
      * {@code PENDING_APPROVAL} or {@code APPROVED} — refusing outright is the honest choice until
-     * product/PM decide whether an edit should reset the workflow or is allowed to pass through.</p>
+     * product/PM decide whether an edit should reset the workflow or is allowed to pass through.
+     * The selling content (slug, SEO) is edited through the catalog and is not affected.</p>
      */
-    public void updateDetails(String name, String nameEn, UUID categoryId, String description,
-                              String descriptionEn, String brand, TaxClass taxClass,
-                              boolean customizable, List<ProductImage> images,
-                              BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                              BigDecimal heightCm) {
+    public List<String> updateDetails(String name, String nameEn, UUID brandId, UUID categoryId,
+                                      String shortDescription, String description, String descriptionEn,
+                                      TaxClass taxClass, ProductKind kind) {
         requireStatus(ProductStatus.DRAFT, "edited");
-        this.name = requireNonBlank(name, "name");
-        this.nameEn = requireNonBlank(nameEn, "nameEn");
+        String newName = requireNonBlank(name, "name");
+        String newNameEn = requireNonBlank(nameEn, "nameEn");
+        TaxClass newTaxClass = requireTaxClass(taxClass);
+        ProductKind newKind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
+        List<String> changed = new ArrayList<>();
+        if (!Objects.equals(this.name, newName)) changed.add("name");
+        if (!Objects.equals(this.nameEn, newNameEn)) changed.add("nameEn");
+        if (!Objects.equals(this.brandId, brandId)) changed.add("brandId");
+        if (!Objects.equals(this.categoryId, categoryId)) changed.add("categoryId");
+        if (!Objects.equals(this.shortDescription, shortDescription)) changed.add("shortDescription");
+        if (!Objects.equals(this.description, description)) changed.add("description");
+        if (!Objects.equals(this.descriptionEn, descriptionEn)) changed.add("descriptionEn");
+        if (this.taxClass != newTaxClass) changed.add("taxClass");
+        if (this.kind != newKind) changed.add("kind");
+        this.name = newName;
+        this.nameEn = newNameEn;
+        this.brandId = brandId;
         this.categoryId = categoryId;
+        this.shortDescription = shortDescription;
         this.description = description;
         this.descriptionEn = descriptionEn;
-        this.brand = requireNonBlank(brand, "brand");
-        this.taxClass = Objects.requireNonNull(taxClass, "taxClass");
-        this.customizable = customizable;
-        this.images.clear();
-        this.images.addAll(images == null ? List.of() : images);
-        this.weightKg = requirePositive(weightKg, "weightKg");
-        this.lengthCm = requirePositive(lengthCm, "lengthCm");
-        this.widthCm = requirePositive(widthCm, "widthCm");
-        this.heightCm = requirePositive(heightCm, "heightCm");
+        this.taxClass = newTaxClass;
+        this.kind = newKind;
+        return List.copyOf(changed);
     }
 
     /**
-     * Submit for approval. BR-PRD-001's fuller precondition (name + category + UoM + ≥1 variant +
-     * dimensions) is WBS 3.1.9.1, a later story — those fields don't exist on this module yet, so
-     * only the minimal subset this module can actually check applies: a category must be set.
+     * An edit quotes the version it read (SCRUM-461): a product changed since answers
+     * {@code OPTIMISTIC_LOCK}. The row is locked when this is called, so the comparison cannot be
+     * overtaken between the check and the write.
+     */
+    public void requireVersion(long expected) {
+        if (expected != version) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "Product %s changed since it was read (version %d, now %d); reload it".formatted(id, expected, version));
+        }
+    }
+
+    /**
+     * Submit for approval. BR-PRD-001's fuller precondition (UoM, dimensions) is about the SKUs'
+     * inventory items now, not the product; what the product itself must have is a category and,
+     * since a product is identified by name, code, category and brand (kltn-docs 01 §3), a brand —
+     * {@code ck_products_brand_on_submit} says it again. A DRAFT may be saved without one. The product
+     * always has at least one variant — it is created with its default one.
+     *
+     * <p>The English name and the tax class (SCRUM-87) are required by {@link #draft} and
+     * {@link #updateDetails}, so only a row written some other way — the legacy bridge, carried rows —
+     * reaches this point without them; it is refused with one field error per missing detail, after the
+     * category and brand refusals. The database's statement of the same rule,
+     * {@code ck_products_details_on_submit}, is requested in
+     * {@code docs/business-design/db-design/SCRUM-73-schema-change-request.md}.</p>
+     *
+     * <p><b>The category rule is stated once, here.</b> The category lives in
+     * {@code product.product_categories}, which a {@code CHECK} cannot see; the only database statement
+     * would be a trigger whose body names that table and {@code is_primary} as text, so a later rename
+     * would pass its migration and then fail every submission at runtime. Only this aggregate writes
+     * the primary category, and only while DRAFT, so the trigger would guard a path nothing takes.</p>
      */
     public void submit(UUID submittedBy, Instant now) {
         requireCanTransitionTo(ProductStatus.PENDING_APPROVAL);
@@ -151,22 +199,40 @@ public final class Product extends AggregateRoot {
             throw new InvalidProductStatusTransitionException(id,
                     "cannot be submitted for approval: a category is required (BR-PRD-001, minimal subset)");
         }
+        if (brandId == null) {
+            String message = "A brand is required before submitting for approval";
+            throw new BusinessException(ErrorCode.PRODUCT_BRAND_REQUIRED, message,
+                    List.of(new FieldError("brandId", message, ErrorCode.PRODUCT_BRAND_REQUIRED.name())));
+        }
+        requireDetails();
         this.status = ProductStatus.PENDING_APPROVAL;
         this.submittedBy = Objects.requireNonNull(submittedBy, "submittedBy");
         this.submittedAt = Objects.requireNonNull(now, "now");
         this.rejectionReason = null;
     }
 
-    /** BR-PRD-003: the approver must not be the person who submitted it. */
-    public void approve(UUID approverId, Instant now) {
+    /**
+     * BR-PRD-003: the approver must not be the person who submitted it, unless {@code mayApproveOwn} - the
+     * approver holds {@code product-lifecycle:APPROVE}, SYSTEM_ADMIN's (owner decision of 02/11). Such an approval
+     * is flagged {@link #selfApproved()}, which is what lets {@code ck_products_approver_not_submitter} stand aside
+     * for exactly that case.
+     *
+     * <p>The English name and the tax class are checked again (SCRUM-87): a row that was already waiting
+     * for approval before {@link #submit} required them would otherwise be approved without them, until
+     * {@code ck_products_details_on_submit} is in the database. The approver rejects it back to DRAFT.</p>
+     */
+    public void approve(UUID approverId, boolean mayApproveOwn, Instant now) {
         requireCanTransitionTo(ProductStatus.APPROVED);
         Objects.requireNonNull(approverId, "approverId");
-        if (submittedBy != null && submittedBy.equals(approverId)) {
+        boolean own = approverId.equals(submittedBy);
+        if (own && !mayApproveOwn) {
             throw new SelfApprovalNotAllowedException(id, approverId);
         }
+        requireDetails();
         this.status = ProductStatus.APPROVED;
         this.approvedBy = approverId;
         this.approvedAt = Objects.requireNonNull(now, "now");
+        this.selfApproved = own;
         registerEvent(new ProductEvent.Approved(new ProductApproved(id.value(), approverId, submittedBy)));
     }
 
@@ -181,20 +247,65 @@ public final class Product extends AggregateRoot {
     }
 
     /**
-     * Terminal (WBS 3.1.8.1). Valid from {@code APPROVED} or {@code PUBLISHED} per
-     * {@link ProductStatus#canTransitionTo}.
+     * Terminal (WBS 3.1.8.1). Valid from {@code APPROVED}, {@code PUBLISHED} or {@code INACTIVE} per
+     * {@link ProductStatus#canTransitionTo}. {@code reason} is mandatory (kltn-docs 01 §5.2) and is what
+     * {@code ck_products_discontinue_reason} requires of a discontinued row; {@code discontinuedAt} is
+     * what {@code ck_products_discontinued} requires.
      *
-     * <p><b>BR-PRD-005 is not enforced here</b> ("no open PO and no unshipped order line
-     * references it"): checking it needs {@code procurement} (still an empty skeleton — there is
-     * nothing to check against yet) and a cross-module read of {@code order}, which this module
-     * does not depend on today. Enforcing it properly belongs in the application service once
-     * procurement exists, not as a silent no-op invariant here — flagged rather than faked.</p>
+     * <p><b>BR-PRD-005 is a warning, not a block</b>: discontinuing leaves the remaining stock and the
+     * orders and purchase orders already running to be processed (kltn-docs 01 step 12, 02 edge cases).
+     * Which of them still reference the product is read by the application service
+     * ({@code SkuReferenceProbe}), which needs other modules; it is shown to the person, never refused.
+     * What a discontinued product cannot do is take new purchase order lines.</p>
      */
-    public void discontinue(Instant now) {
+    public void discontinue(String reason, Instant now) {
         requireCanTransitionTo(ProductStatus.DISCONTINUED);
+        this.discontinueReason = requireReason(reason);
         this.status = ProductStatus.DISCONTINUED;
-        registerEvent(new ProductEvent.Discontinued(
-                new ProductDiscontinued(id.value(), Objects.requireNonNull(now, "now"))));
+        this.discontinuedAt = Objects.requireNonNull(now, "now");
+        registerEvent(new ProductEvent.Discontinued(new ProductDiscontinued(id.value(), now)));
+    }
+
+    /**
+     * Temporarily off sale (kltn-docs 01 §5.1): {@code APPROVED} or {@code PUBLISHED} to {@code INACTIVE}.
+     * {@code publishedAt} stays; the catalog hides a product that is not {@code PUBLISHED}, and is told to
+     * look again. When and why are what {@code ck_products_inactive} requires of an INACTIVE row.
+     */
+    public void suspend(String reason, Instant now) {
+        requireCanTransitionTo(ProductStatus.INACTIVE);
+        this.suspendReason = requireReason(reason);
+        this.status = ProductStatus.INACTIVE;
+        this.suspendedAt = Objects.requireNonNull(now, "now");
+        registerEvent(new ProductEvent.CatalogChanged(new CatalogListingChanged(id.value())));
+    }
+
+    /**
+     * Back on the books: {@code INACTIVE} to {@code APPROVED} (the docs' "Active" is APPROVED in the code).
+     * It returns to the storefront only by being published again, which re-checks the gallery and the price.
+     */
+    public void resume(Instant now) {
+        // Not requireCanTransitionTo(APPROVED): PENDING_APPROVAL and PUBLISHED may move there too (approving,
+        // unpublishing), and neither of those is a resumption.
+        requireStatus(ProductStatus.INACTIVE, "resumed");
+        Objects.requireNonNull(now, "now");
+        this.status = ProductStatus.APPROVED;
+        this.suspendedAt = null;
+        this.suspendReason = null;
+        registerEvent(new ProductEvent.CatalogChanged(new CatalogListingChanged(id.value())));
+    }
+
+    /** Only a product that was never submitted, or was sent back, is deleted (kltn-docs 01 BR-02). */
+    public void requireDeletable() {
+        if (status != ProductStatus.DRAFT) {
+            throw new BusinessException(ErrorCode.PRODUCT_NOT_DELETABLE,
+                    "Product %s is %s; only a DRAFT product can be deleted".formatted(id, status));
+        }
+    }
+
+    /** Whether the product's media and variants may be changed now: not while it is under review,
+     *  and never once it is discontinued. A suspended product is still maintained. */
+    public boolean acceptsChanges() {
+        return status != ProductStatus.PENDING_APPROVAL && status != ProductStatus.DISCONTINUED;
     }
 
     private void requireCanTransitionTo(ProductStatus target) {
@@ -210,6 +321,24 @@ public final class Product extends AggregateRoot {
         }
     }
 
+    /** A reason people can read later: not blank, at most the column's length; stored stripped. */
+    private static String requireReason(String reason) {
+        String value = reason == null ? "" : reason.strip();
+        if (value.isEmpty() || value.length() > MAX_REASON_LENGTH) {
+            String message = "A reason of 1.." + MAX_REASON_LENGTH + " characters is required";
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, message,
+                    List.of(new FieldError("reason", message, value.isEmpty() ? "NotBlank" : "Size")));
+        }
+        return value;
+    }
+
+    private static String requireCode(String code) {
+        if (code == null || !CODE.matcher(code).matches()) {
+            throw new IllegalArgumentException("code must match " + CODE.pattern());
+        }
+        return code;
+    }
+
     private static String requireNonBlank(String value, String field) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(field + " must not be blank");
@@ -217,36 +346,50 @@ public final class Product extends AggregateRoot {
         return value;
     }
 
-    /** {@code null} means "not yet known" and passes; a supplied value must be positive. */
-    private static BigDecimal requirePositive(BigDecimal value, String field) {
-        if (value != null && value.signum() <= 0) {
-            throw new IllegalArgumentException(field + " must be positive");
+    private static TaxClass requireTaxClass(TaxClass taxClass) {
+        if (taxClass == null) {
+            throw new IllegalArgumentException("taxClass must not be null");
         }
-        return value;
+        return taxClass;
+    }
+
+    /** Refused with one field error per detail the product still lacks, in the order the form shows them. */
+    private void requireDetails() {
+        String code = ErrorCode.PRODUCT_DETAILS_REQUIRED.name();
+        List<FieldError> missing = new ArrayList<>();
+        if (nameEn == null || nameEn.isBlank()) {
+            missing.add(new FieldError("nameEn", "An English name is required before submitting for approval", code));
+        }
+        if (taxClass == null) {
+            missing.add(new FieldError("taxClass", "A tax class is required before submitting for approval", code));
+        }
+        if (!missing.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCT_DETAILS_REQUIRED,
+                    "An English name and a tax class are required before submitting for approval", missing);
+        }
     }
 
     public ProductId id() { return id; }
     public String code() { return code; }
     public String name() { return name; }
     public String nameEn() { return nameEn; }
+    public UUID brandId() { return brandId; }
     public UUID categoryId() { return categoryId; }
+    public String shortDescription() { return shortDescription; }
     public String description() { return description; }
     public String descriptionEn() { return descriptionEn; }
-    public String brand() { return brand; }
     public TaxClass taxClass() { return taxClass; }
-    public boolean customizable() { return customizable; }
-    public List<ProductImage> images() { return List.copyOf(images); }
+    public ProductKind kind() { return kind; }
     public ProductStatus status() { return status; }
     public long version() { return version; }
-    public Instant createdAt() { return createdAt; }
-    public String createdBy() { return createdBy; }
     public UUID submittedBy() { return submittedBy; }
     public Instant submittedAt() { return submittedAt; }
     public UUID approvedBy() { return approvedBy; }
     public Instant approvedAt() { return approvedAt; }
+    public boolean selfApproved() { return selfApproved; }
     public String rejectionReason() { return rejectionReason; }
-    public BigDecimal weightKg() { return weightKg; }
-    public BigDecimal lengthCm() { return lengthCm; }
-    public BigDecimal widthCm() { return widthCm; }
-    public BigDecimal heightCm() { return heightCm; }
+    public Instant discontinuedAt() { return discontinuedAt; }
+    public String discontinueReason() { return discontinueReason; }
+    public Instant suspendedAt() { return suspendedAt; }
+    public String suspendReason() { return suspendReason; }
 }

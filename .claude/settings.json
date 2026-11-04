@@ -1,3 +1,27 @@
 {
-  "includeCoAuthoredBy": false
+  "includeCoAuthoredBy": false,
+  "permissions": {
+    "deny": [
+      "Read(./target/**)",
+      "Read(./.git/**)",
+      "Read(./.idea/**)",
+      "Read(./.vscode/**)",
+      "Read(./.local-storage/**)",
+      "Read(./.mvn/wrapper/*.jar)",
+      "Read(./**/*.log)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./deploy/certs/**)",
+      "Read(./deploy/auth/**)",
+      "Read(./deploy/backups/**)",
+      "Read(./tools/db/seed/seed_test_data.sql)",
+      "Read(./docs/business-design/stockflow-dataflow.drawio)",
+      "Read(./**/*.drawio)",
+      "Read(./**/*.png)",
+      "Read(./**/*.jpg)",
+      "Read(./**/*.pdf)",
+      "Read(./**/*.docx)",
+      "Read(./**/*.xlsx)"
+    ]
+  }
 }

@@ -4,37 +4,48 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
-import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 /**
- * Turns the {@code roles} and {@code permissions} claims of the JWT into Spring Security
- * authorities.
+ * Turns a token into Spring Security authorities: the {@code roles} claim from the token, and the
+ * permissions those roles grant from {@link RoleAuthorizationLookup}.
  *
  * <p><b>Why this class is not optional.</b> Spring Security's default converter reads the
  * {@code scope} / {@code scp} claim and prefixes every value with {@code SCOPE_}. Anything in a
  * custom claim is ignored, so a permission check would never match and every guarded endpoint
  * would answer 403 with nothing in the log to explain it.</p>
  *
- * <p><b>On putting permissions in the token.</b> A role with 134 of 382 permissions produces
- * roughly 3 KB of claim, which is close to the practical header limit and grows with the product.
- * More importantly a token is a snapshot: revoking a permission does not reach a token already
- * issued. Both problems have the same fix and it is deliberately not implemented here - the token
- * should carry only {@code roles} plus a {@code perm_ver} counter, with each service resolving
- * role to permission from a locally cached catalog and rejecting a token whose {@code perm_ver} is
- * behind. Until identity-service exists, the {@code permissions} claim below keeps the skeleton
- * runnable; see ADR-0004 for the migration path.</p>
+ * <h2>Permissions are not read from the token (ADR-0008)</h2>
  *
- * <p>Unknown roles and malformed permission codes are dropped rather than trusted: identity-service
- * is the only authority on what is valid, and a token carrying something else must not gain access.</p>
+ * <p>Tokens used to carry every permission. A role with 134 of 382 permissions made a 4 KB token,
+ * which the frontend sent twice (cookie and header) and Tomcat refused as an oversized header; and
+ * a token is a snapshot, so unticking a permission reached nobody until their token expired. The
+ * token now names only the roles, and the permissions are resolved here on every request from a
+ * cache keyed by role and role version.</p>
+ *
+ * <p>A token issued before this change still has a {@code permissions} claim. It is ignored on
+ * purpose, not merged: trusting it would keep a revoked permission alive for the rest of that
+ * token's life, which is the defect this design exists to remove.</p>
+ *
+ * <p>Roles are no longer limited to the {@link Role} enum: administrators can add roles at runtime
+ * (SCRUM-455). A role code is kept if it has the shape of one; whether it grants anything is
+ * decided by the lookup, which only knows roles that exist in {@code identity.app_role} — a code
+ * that does not exist there grants nothing. A value that is not even shaped like a role code is
+ * dropped, so it can never be mistaken for a permission authority (those contain {@code ':'}).</p>
+ *
+ * <h2>When the lookup cannot answer</h2>
+ *
+ * <p>The request is refused with {@link AuthenticationServiceException} — an authorisation question
+ * nobody could answer is never a yes. In practice this means Redis <i>and</i> Postgres are both
+ * down; the lookup falls back to the database on its own when only Redis is, and a token cannot even
+ * reach this point without the session check in the decoder reading Postgres first.</p>
  */
 public class StockflowJwtAuthenticationConverter
         implements Converter<Jwt, AbstractAuthenticationToken> {
@@ -42,37 +53,70 @@ public class StockflowJwtAuthenticationConverter
     private static final Logger log = LoggerFactory.getLogger(StockflowJwtAuthenticationConverter.class);
 
     public static final String ROLES_CLAIM = "roles";
-    public static final String PERMISSIONS_CLAIM = "permissions";
+
+    /** Same rule as {@code ck_app_role_code_format}. */
+    private static final java.util.regex.Pattern ROLE_CODE = java.util.regex.Pattern.compile("^[A-Z][A-Z0-9_]{1,63}$");
+
+    private final RoleAuthorizationLookup lookup;
+    private final UserWarehouseLookup warehouses;
+
+    public StockflowJwtAuthenticationConverter(RoleAuthorizationLookup lookup) {
+        this(lookup, null);
+    }
+
+    /**
+     * @param warehouses resolves the warehouses of a caller whose scope is {@link DataScope#WAREHOUSE};
+     *                   null only where no such caller can exist (tests)
+     */
+    public StockflowJwtAuthenticationConverter(RoleAuthorizationLookup lookup, UserWarehouseLookup warehouses) {
+        this.lookup = lookup;
+        this.warehouses = warehouses;
+    }
 
     @Override
     public AbstractAuthenticationToken convert(Jwt jwt) {
-        return new JwtAuthenticationToken(jwt, authorities(jwt), jwt.getSubject());
-    }
+        Set<String> roles = knownRoles(jwt);
 
-    private Collection<GrantedAuthority> authorities(Jwt jwt) {
-        Set<GrantedAuthority> authorities = new LinkedHashSet<>();
-
-        List<String> roles = jwt.getClaimAsStringList(ROLES_CLAIM);
-        if (roles != null) {
-            roles.stream()
-                    .map(Role::fromAuthority)
-                    .flatMap(Optional::stream)
-                    .map(role -> new SimpleGrantedAuthority(role.authority()))
-                    .forEach(authorities::add);
+        ResolvedAuthorization resolved;
+        try {
+            resolved = roles.isEmpty() ? ResolvedAuthorization.none() : lookup.resolve(roles);
+        } catch (RuntimeException unavailable) {
+            log.error("Cannot resolve permissions for subject {} with roles {}; refusing the request",
+                    jwt.getSubject(), roles, unavailable);
+            throw new AuthenticationServiceException("Permissions are unavailable", unavailable);
         }
 
-        List<String> permissions = jwt.getClaimAsStringList(PERMISSIONS_CLAIM);
-        if (permissions != null) {
-            for (String raw : permissions) {
-                try {
-                    authorities.add(new SimpleGrantedAuthority(PermissionCode.parse(raw).toString()));
-                } catch (IllegalArgumentException ex) {
-                    log.warn("Dropping malformed permission '{}' from token of subject {}",
-                            raw, jwt.getSubject());
-                }
+        AssignedWarehouses assigned = AssignedWarehouses.none();
+        if (resolved.scope() == DataScope.WAREHOUSE && warehouses != null) {
+            try {
+                assigned = warehouses.warehousesOf(java.util.UUID.fromString(jwt.getSubject()));
+            } catch (RuntimeException unavailable) {
+                // Not knowing someone's warehouses is not "every warehouse": refuse, as above.
+                log.error("Cannot resolve the warehouses of subject {}; refusing the request", jwt.getSubject(),
+                        unavailable);
+                throw new AuthenticationServiceException("Warehouse assignment is unavailable", unavailable);
             }
         }
 
-        return authorities;
+        Set<GrantedAuthority> authorities = new LinkedHashSet<>();
+        roles.forEach(role -> authorities.add(new SimpleGrantedAuthority(role)));
+        resolved.permissions().forEach(code -> authorities.add(new SimpleGrantedAuthority(code.toString())));
+        return new StockflowAuthenticationToken(jwt, authorities, resolved.scope(), assigned);
+    }
+
+    private static Set<String> knownRoles(Jwt jwt) {
+        Set<String> known = new LinkedHashSet<>();
+        List<String> claimed = jwt.getClaimAsStringList(ROLES_CLAIM);
+        if (claimed == null) {
+            return known;
+        }
+        for (String raw : claimed) {
+            if (raw != null && ROLE_CODE.matcher(raw).matches()) {
+                known.add(raw);
+            } else {
+                log.warn("Dropping malformed role '{}' from token of subject {}", raw, jwt.getSubject());
+            }
+        }
+        return known;
     }
 }

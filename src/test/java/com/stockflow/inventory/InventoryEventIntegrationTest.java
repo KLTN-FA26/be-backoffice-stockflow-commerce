@@ -10,6 +10,7 @@ import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.support.Await;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.DisplayName;
@@ -50,7 +51,7 @@ class InventoryEventIntegrationTest {
     @Autowired TransactionTemplate transactions;
 
     private OrderSummary placeOrder(int quantity) {
-        return orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), UUID.randomUUID(),
+        return orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
                 List.of(new PlaceOrderCommand.Line(SOFA, quantity, Money.vnd(12_000_000), null))));
     }
 

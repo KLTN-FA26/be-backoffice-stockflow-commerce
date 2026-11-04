@@ -17,6 +17,7 @@ import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -40,6 +41,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.sql.SQLException;
 import java.util.List;
 
 /**
@@ -59,6 +61,11 @@ import java.util.List;
  * a developer and regularly contains a SQL fragment, a file path or a class name — free
  * reconnaissance for anyone probing the API. The correlation id, which <i>is</i> returned, is how
  * the response and the stack trace are joined up instead.</p>
+ *
+ * <p>Every response sets {@code Content-Type: application/json} itself. A preset concrete content
+ * type skips {@code Accept} negotiation, so a client that asked for a binary - the location label
+ * PDF sends {@code Accept: application/pdf} - still receives the envelope with the status chosen
+ * here, instead of a 406 or 500 because no converter writes an {@code ApiResponse} as a PDF.</p>
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -121,7 +128,12 @@ public class GlobalExceptionHandler {
         String message = serverFault || ex.getMessage() == null || ex.getMessage().isBlank()
                 ? messages.forCode(ex.errorCode())
                 : ex.getMessage();
-        return respond(ex.errorCode(), message, null);
+        // Fields a business rule pointed at (SCRUM-464): each message translated by its own code.
+        List<FieldError> fields = ex.fieldErrors().isEmpty() ? null : ex.fieldErrors().stream()
+                .map(f -> new FieldError(f.field(),
+                        f.code() == null ? f.message() : messages.get("error." + f.code(), f.message()), f.code()))
+                .toList();
+        return respond(ex.errorCode(), message, fields, ex.details());
     }
 
     /**
@@ -172,6 +184,23 @@ public class GlobalExceptionHandler {
                 error.getCode())));
 
         log.warn("Validation failed on {} field(s): {}", fieldErrors.size(), fieldErrors);
+        return respond(ErrorCode.VALIDATION_FAILED,
+                messages.forCode(ErrorCode.VALIDATION_FAILED), fieldErrors);
+    }
+
+    /** Spring MVC validates constrained query parameters without a service proxy. */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMethodValidation(HandlerMethodValidationException ex) {
+        if (ex.isForReturnValue()) {
+            log.error("Controller return value failed validation", ex);
+            return respond(ErrorCode.INTERNAL_ERROR, messages.forCode(ErrorCode.INTERNAL_ERROR), null);
+        }
+        List<FieldError> fieldErrors = ex.getParameterValidationResults().stream()
+                .flatMap(result -> result.getResolvableErrors().stream().map(error -> FieldError.of(
+                        result.getMethodParameter().getParameterName(),
+                        messageSource.getMessage(error, LocaleContextHolder.getLocale()))))
+                .toList();
+        log.warn("Request parameter validation failed: {}", fieldErrors);
         return respond(ErrorCode.VALIDATION_FAILED,
                 messages.forCode(ErrorCode.VALIDATION_FAILED), fieldErrors);
     }
@@ -256,11 +285,20 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * A unique or foreign-key constraint refused the write.
+     * The database refused the write.
      *
-     * <p>Logged at {@code ERROR} even though it returns a 4xx: reaching the database with a duplicate
-     * means the application-level check was missing or lost a race, and something in the code should
-     * have caught it first.</p>
+     * <p>Logged at {@code ERROR} even though it returns a 4xx: reaching the database with a value
+     * it refuses means the application-level check was missing or lost a race, and something in
+     * the code should have caught it first.</p>
+     *
+     * <h2>Why the SQLSTATE decides the code</h2>
+     *
+     * <p>Spring translates far more than duplicates into this exception: a string longer than its
+     * column, a number past its precision, a {@code NOT NULL}, a {@code CHECK} and a foreign key all
+     * arrive here. Answering all of them {@code DUPLICATE_KEY} told a client that a 301-character
+     * description "already exists", and a client that retries a duplicate with a fresh value would
+     * retry those forever. The class of the SQLSTATE says which kind it was without reading the
+     * database's message.</p>
      *
      * <p>The database's message is never returned — it names the constraint, the table and the
      * column, which is a free schema map for anyone probing the API.</p>
@@ -268,7 +306,57 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleIntegrity(DataIntegrityViolationException ex) {
         log.error("Database constraint violated - the application should have caught this first", ex);
-        return respond(ErrorCode.DUPLICATE_KEY, messages.forCode(ErrorCode.DUPLICATE_KEY), null);
+        ErrorCode code = integrityCode(sqlState(ex));
+        return respond(code, messages.forCode(code), null);
+    }
+
+    /**
+     * A rule the database checks at the commit (a deferred constraint trigger, such as a kit shipping whole) refuses
+     * the transaction after the code returned: Spring reports the failed commit as a {@code TransactionSystemException}
+     * or a {@code JpaSystemException}, not as a {@link DataIntegrityViolationException}. With an integrity SQLSTATE
+     * (class {@code 23}) in its cause chain it is the same refusal, answered the same way (review of #155: it was a
+     * 500); anything else is still a defect.
+     */
+    @ExceptionHandler({org.springframework.transaction.TransactionSystemException.class,
+            org.springframework.orm.jpa.JpaSystemException.class})
+    public ResponseEntity<ApiResponse<Void>> handleFailedCommit(Exception ex) {
+        String state = sqlState(ex);
+        if (state == null || !state.startsWith("23")) {
+            return handleUnexpected(ex);
+        }
+        log.error("Database constraint violated at commit - the application should have caught this first", ex);
+        ErrorCode code = integrityCode(state);
+        return respond(code, messages.forCode(code), null);
+    }
+
+    /**
+     * {@code 23505} is the only duplicate. Class {@code 22} (data exception: too long, out of range,
+     * unparseable) and {@code 23502} ({@code NOT NULL}) mean the request carried a value the column
+     * cannot hold — the same answer a missing {@code @Size} would have given. The remaining
+     * integrity violations ({@code CHECK}, foreign key, exclusion) refuse a value that is
+     * well-formed but clashes with a rule or with other rows, which is what {@code CONFLICT} means.
+     */
+    static ErrorCode integrityCode(String sqlState) {
+        if (sqlState == null) {
+            return ErrorCode.CONFLICT;
+        }
+        if (sqlState.equals("23505")) {
+            return ErrorCode.DUPLICATE_KEY;
+        }
+        if (sqlState.startsWith("22") || sqlState.equals("23502")) {
+            return ErrorCode.VALIDATION_FAILED;
+        }
+        return ErrorCode.CONFLICT;
+    }
+
+    /** The first SQLSTATE in the cause chain — Hibernate and the driver each wrap the one below. */
+    private static String sqlState(Throwable ex) {
+        for (Throwable t = ex; t != null && t.getCause() != t; t = t.getCause()) {
+            if (t instanceof SQLException sql && sql.getSQLState() != null) {
+                return sql.getSQLState();
+            }
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------ framework
@@ -295,9 +383,7 @@ public class GlobalExceptionHandler {
      * a new one arriving in a future Spring version should be a deliberate addition here rather
      * than something silently swept into a catch-all.</p>
      *
-     * <p>{@code HandlerMethodValidationException} is in the list because since Spring 6.1 a
-     * constraint on a controller <b>parameter</b> raises that rather than
-     * {@code ConstraintViolationException} — so the handler further up would not have fired.</p>
+     * <p>Controller parameter validation has its own handler so field messages are retained.</p>
      *
      * <p>Every omission from this list costs the same thing twice: the client gets 500 instead of
      * the 400/404/503 the request actually deserved, and the server logs a full stack trace at
@@ -311,7 +397,6 @@ public class GlobalExceptionHandler {
             MissingServletRequestParameterException.class,
             MissingServletRequestPartException.class,
             ServletRequestBindingException.class,
-            HandlerMethodValidationException.class,
             // BindException is the SUPERCLASS of MethodArgumentNotValidException, which has its own
             // handler above. Listing the subclass does not cover the parent, and the parent is what
             // a failed @Valid @ModelAttribute (query-object binding) raises. Spring picks the most
@@ -338,7 +423,8 @@ public class GlobalExceptionHandler {
         ErrorCode code = switch (status) {
             case 400 -> ErrorCode.VALIDATION_FAILED;
             case 404 -> ErrorCode.NOT_FOUND;
-            case 405, 406, 415 -> ErrorCode.UNSUPPORTED_PARAMETER;
+            case 405, 406 -> ErrorCode.UNSUPPORTED_PARAMETER;
+            case 415 -> ErrorCode.UNSUPPORTED_MEDIA_TYPE;
             case 413 -> ErrorCode.PAYLOAD_TOO_LARGE;
             case 429 -> ErrorCode.RATE_LIMITED;
             default -> status >= 500 ? ErrorCode.INTERNAL_ERROR : ErrorCode.VALIDATION_FAILED;
@@ -352,6 +438,7 @@ public class GlobalExceptionHandler {
         }
         // The framework's own status wins over the mapped code's, so a 405 stays a 405.
         return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
                 .body(ApiResponse.error(code.name(), messages.forCode(code), null,
                         MDC.get(CorrelationIdFilter.MDC_KEY)));
     }
@@ -411,8 +498,15 @@ public class GlobalExceptionHandler {
      */
     private ResponseEntity<ApiResponse<Void>> respond(ErrorCode code, String message,
                                                       List<FieldError> fieldErrors) {
+        return respond(code, message, fieldErrors, null);
+    }
+
+    private ResponseEntity<ApiResponse<Void>> respond(ErrorCode code, String message,
+                                                      List<FieldError> fieldErrors,
+                                                      java.util.Map<String, Object> details) {
         return ResponseEntity.status(code.httpStatus())
-                .body(ApiResponse.error(code.name(), message, fieldErrors,
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(ApiResponse.error(code.name(), message, fieldErrors, details,
                         MDC.get(CorrelationIdFilter.MDC_KEY)));
     }
 }

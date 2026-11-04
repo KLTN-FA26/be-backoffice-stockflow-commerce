@@ -237,12 +237,12 @@ no test can enforce it.
 
 ### 4.1 Migration first
 
-`src/main/resources/db/migration/V<yyyyMMddHHmmss>__procurement_purchase_order.sql`
+`src/main/resources/db/migration/V<yyyyMMddHHmmss>__procurement_purchase_orders.sql`
 
 Timestamped, not `V7__`. With five people committing in parallel, sequential numbers collide daily.
 
 ```sql
-CREATE TABLE procurement.purchase_order
+CREATE TABLE procurement.purchase_orders
 (
     id               UUID         NOT NULL,
     version          BIGINT       NOT NULL DEFAULT 0,   -- BaseEntity
@@ -251,12 +251,12 @@ CREATE TABLE procurement.purchase_order
     last_modified_at TIMESTAMPTZ,
     last_modified_by VARCHAR(100),
     ...
-    CONSTRAINT pk_purchase_order PRIMARY KEY (id)
+    CONSTRAINT pk_purchase_orders PRIMARY KEY (id)
 );
 ```
 
-Three rules from ADR-0005: your module writes only its own schema, no foreign key crosses a schema,
-no JOIN crosses a schema.
+Three rules from ADR-0005/ADR-0007: your module writes only its own schema, a reference to another
+module's row is a real single-column foreign key (`ON DELETE RESTRICT`), no JOIN crosses a schema.
 
 State every invariant **twice** — once in the aggregate, once as a `CHECK`. The domain gives the
 good error message; the constraint is what a bad migration or a manual `UPDATE` cannot talk its way
@@ -272,7 +272,9 @@ public final class PurchaseOrder extends AggregateRoot {
 
     public void approve(UserId approver, Instant now) {
         if (!status.canTransitionTo(APPROVED)) {
-            throw new IllegalStateException("...");   // handled as 400
+            // a dedicated BusinessException (409): GlobalExceptionHandler logs a bare
+            // IllegalStateException at ERROR, as the bug it usually is
+            throw new InvalidPurchaseOrderTransitionException(id, status, APPROVED);
         }
         this.status = APPROVED;
         registerEvent(new PurchaseOrderEvent.Approved(...));
@@ -296,7 +298,7 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
 
 ```java
 @Entity
-@Table(name = "purchase_order", schema = "procurement")
+@Table(name = "purchase_orders", schema = "procurement")
 class PurchaseOrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     static final PurchaseOrderJpaEntity SCOPE_PROTOTYPE = new PurchaseOrderJpaEntity();
@@ -394,7 +396,7 @@ class and the boundary — read it before changing the rule.
 - [ ] `package-info.java` with the shortest `allowedDependencies` that works, each entry `"<module> :: api"`
 - [ ] `api/package-info.java` carries `@NamedInterface("api")`, and the module base package holds only `package-info.java`
 - [ ] Names follow `## 2. Naming` — role suffix where there is a role, plain nouns for values, `Command`/`Result` sharing a stem, one word per concept
-- [ ] Migration: timestamped, own schema, no cross-schema FK, invariants as `CHECK`
+- [ ] Migration: timestamped, own schema, cross-schema references as FK (ADR-0007), invariants as `CHECK`
 - [ ] Aggregate is `final`, has no framework annotation, protects its invariants
 - [ ] Entity extends `BaseEntity`; enums are `EnumType.STRING`
 - [ ] `ScopedEntity` + `ScopedJpaRepository` if rows belong to someone

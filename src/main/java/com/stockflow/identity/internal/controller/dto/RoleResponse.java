@@ -2,6 +2,8 @@ package com.stockflow.identity.internal.controller.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.time.Instant;
+
 /**
  * What the API returns for one role.
  *
@@ -15,6 +17,19 @@ import io.swagger.v3.oas.annotations.media.Schema;
 public record RoleResponse(
         @Schema(example = "ACCOUNTANT") String code,
         String name,
-        String description
+        String description,
+        @Schema(description = "A role the code knows by name: it cannot be renamed or deleted")
+        boolean system,
+        @Schema(description = "Version of the role; send it back when renaming it or saving its matrix")
+        long version,
+        @Schema(description = "How many accounts hold the role")
+        long holderCount,
+        @Schema(example = "WAREHOUSE", allowableValues = {"OWN", "WAREHOUSE", "ALL"},
+                description = "Which rows holders reach; WAREHOUSE = only their assigned warehouses")
+        String dataScope,
+        Instant createdAt,
+        String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy
 ) {
 }

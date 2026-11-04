@@ -1,64 +1,269 @@
 package com.stockflow.identity.internal.domain;
 
 import com.stockflow.common.domain.AggregateRoot;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * <b>Aggregate root of the identity module: one staff/customer account.</b>
  *
- * <p>SCRUM-378 (WBS 3.19.7) gives this account real behaviour: {@link #signIn} is the one
- * invariant worth protecting here — a {@code LOCKED}/{@code DISABLED} account must never be
- * allowed to authenticate, no matter what else changes about the login flow later. Password
- * verification itself stays in {@code IdentityServiceImpl}: {@code PasswordEncoder} is a framework
- * type and {@code ArchitectureTest.domainDoesNotDependOnFrameworks} keeps it out of this class, so
- * this aggregate only ever sees a hash to compare against, never performs the comparison.</p>
+ * <p>Two invariants live here. A {@code LOCKED}/{@code DISABLED} account never authenticates
+ * ({@link #signIn}), and an account locked out by too many wrong passwords stays out until the lock
+ * ends ({@link #recordFailedSignIn}). Password verification itself stays in
+ * {@code IdentityServiceImpl}: {@code PasswordEncoder} is a framework type and
+ * {@code ArchitectureTest.domainDoesNotDependOnFrameworks} keeps it out of this class, so this
+ * aggregate only ever sees hashes, never a raw password.</p>
  *
- * <p>No Spring, no JPA, no annotations. {@code username}/{@code email} are immutable once created
- * (this story does not add a "change username" use case); every other field is set at
- * reconstruction and mutated only through {@link #signIn}.</p>
+ * <h2>Two kinds of lock</h2>
+ *
+ * <ul>
+ *   <li>{@code status = LOCKED}: an administrator's decision. Only {@link #unlock} ends it.</li>
+ *   <li>{@code lockedUntil}: the automatic lock after too many wrong passwords (SCRUM-456). It ends
+ *       on its own; {@link #unlock} also ends it early.</li>
+ * </ul>
+ *
+ * <p>{@code username} is immutable: it is the sign-in name, and the audit trail records actors by
+ * it. Everything else changes only through the methods below.</p>
  */
 public final class User extends AggregateRoot {
 
+    /**
+     * How long an administrator-set password works (SCRUM-474 FIRST-LOGIN, decision 29/10/2026). After that
+     * sign-in fails until an administrator resets it. Accounts already flagged when the column was added were
+     * stamped with the migration time (PWD-LEGACY, 02/11/2026), so they expire 72 hours after the deploy; a
+     * flagged account whose {@code temporaryPasswordSetAt} is still null is treated as not expiring.
+     */
+    public static final Duration TEMPORARY_PASSWORD_VALIDITY = Duration.ofHours(72);
+
     private final UserId id;
     private final String username;
-    private final String email;
-    private final String passwordHash;
-    private final String fullName;
+    private String email;
+    private String passwordHash;
+    private String fullName;
     private UserStatus status;
     private Instant lastLoginAt;
+    private boolean mustChangePassword;
+    private Instant temporaryPasswordSetAt;
+    private int failedLoginCount;
+    private Instant lockedUntil;
     private final long version;
     private final Instant createdAt;
     private final String createdBy;
 
     public User(UserId id, String username, String email, String passwordHash, String fullName,
-               UserStatus status, Instant lastLoginAt, long version, Instant createdAt,
-               String createdBy) {
+                UserStatus status, Instant lastLoginAt, boolean mustChangePassword, Instant temporaryPasswordSetAt,
+                int failedLoginCount, Instant lockedUntil, long version, Instant createdAt, String createdBy) {
         this.id = Objects.requireNonNull(id, "id");
         this.username = requireNonBlank(username, "username");
         this.email = requireNonBlank(email, "email");
-        this.passwordHash = requireNonBlank(passwordHash, "passwordHash");
+        // Null only for an invited account that has not been activated (inviteCustomer).
+        this.passwordHash = passwordHash == null ? null : requireNonBlank(passwordHash, "passwordHash");
         this.fullName = fullName;
         this.status = Objects.requireNonNull(status, "status");
         this.lastLoginAt = lastLoginAt;
+        this.mustChangePassword = mustChangePassword;
+        this.temporaryPasswordSetAt = temporaryPasswordSetAt;
+        this.failedLoginCount = Math.max(0, failedLoginCount);
+        this.lockedUntil = lockedUntil;
         this.version = version;
         this.createdAt = createdAt;
         this.createdBy = createdBy;
     }
 
+    /** A self-registered customer: signs in with the e-mail address, chose the password. */
+    public static User register(UUID id, String email, String passwordHash, String fullName) {
+        String normalisedEmail = normaliseEmail(email);
+        return new User(new UserId(id), normalisedEmail, normalisedEmail, passwordHash, fullName,
+                UserStatus.ACTIVE, null, false, null, 0, null, 0L, null, null);
+    }
+
+    /**
+     * A staff account created by an administrator (SCRUM-454).
+     *
+     * @param temporaryPassword true when the administrator chose or generated the password, so the
+     *                          user must replace it at the first opportunity (within
+     *                          {@link #TEMPORARY_PASSWORD_VALIDITY} of {@code now})
+     */
+    public static User createStaff(UUID id, String username, String email, String passwordHash,
+                                   String fullName, boolean temporaryPassword, Instant now) {
+        return new User(new UserId(id), requireNonBlank(username, "username").trim(), normaliseEmail(email),
+                passwordHash, fullName, UserStatus.ACTIVE, null, temporaryPassword,
+                temporaryPassword ? Objects.requireNonNull(now, "now") : null, 0, null, 0L, null, null);
+    }
+
+    /**
+     * A customer contact that Sales onboarded (SCRUM-450): signs in with the e-mail address, but has
+     * no password - {@code passwordHash} is null - until they redeem their {@link PortalInvitation}.
+     * Until then nothing can authenticate as this account, Sales included.
+     */
+    public static User inviteCustomer(UUID id, String email, String fullName) {
+        String normalisedEmail = normaliseEmail(email);
+        return new User(new UserId(id), normalisedEmail, normalisedEmail, null, fullName,
+                UserStatus.ACTIVE, null, false, null, 0, null, 0L, null, null);
+    }
+
+    /** No password has been chosen yet: the account of a contact who has not activated. */
+    public boolean awaitingActivation() {
+        return passwordHash == null;
+    }
+
+    /**
+     * The contact redeemed an invitation and chose this password. Only an account that never had a
+     * password, and that no administrator locked or disabled, can be activated; every refusal looks
+     * the same to the caller, so a link cannot be probed for why it failed.
+     *
+     * @throws BusinessException {@code PORTAL_INVITATION_INVALID}
+     */
+    public void activate(String newPasswordHash) {
+        if (!awaitingActivation() || status != UserStatus.ACTIVE) {
+            throw new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID);
+        }
+        this.passwordHash = requireNonBlank(newPasswordHash, "passwordHash");
+        this.mustChangePassword = false;
+        this.temporaryPasswordSetAt = null;
+        this.failedLoginCount = 0;
+        this.lockedUntil = null;
+    }
+
     /**
      * Records a successful authentication. The caller has already verified the password against
-     * {@link #passwordHash()} — this only enforces the account-status invariant and stamps
-     * {@code lastLoginAt}.
+     * {@link #passwordHash()} — this only enforces the account-status invariant, stamps
+     * {@code lastLoginAt} and forgets earlier wrong passwords.
      *
      * @throws AccountNotActiveException if the account is {@code LOCKED} or {@code DISABLED}
+     * @throws BusinessException {@code ACCOUNT_TEMPORARILY_LOCKED} while a lockout is running;
+     *         {@code TEMPORARY_PASSWORD_EXPIRED} when the password is a temporary one older than
+     *         {@link #TEMPORARY_PASSWORD_VALIDITY}
      */
     public void signIn(Instant now) {
+        Objects.requireNonNull(now, "now");
         if (status != UserStatus.ACTIVE) {
             throw new AccountNotActiveException(id, status);
         }
-        this.lastLoginAt = Objects.requireNonNull(now, "now");
+        if (isTemporarilyLocked(now)) {
+            throw new BusinessException(ErrorCode.ACCOUNT_TEMPORARILY_LOCKED,
+                    "Account %s is locked until %s after too many wrong passwords".formatted(id, lockedUntil));
+        }
+        if (temporaryPasswordExpired(now)) {
+            throw new BusinessException(ErrorCode.TEMPORARY_PASSWORD_EXPIRED,
+                    "The temporary password of account %s was set at %s and has expired".formatted(id, temporaryPasswordSetAt));
+        }
+        this.lastLoginAt = now;
+        this.failedLoginCount = 0;
+        this.lockedUntil = null;
+    }
+
+    /** A temporary password whose 72 hours are over. False for a permanent one, and for one set at an unknown time. */
+    public boolean temporaryPasswordExpired(Instant now) {
+        return mustChangePassword && temporaryPasswordSetAt != null
+                && !now.isBefore(temporaryPasswordSetAt.plus(TEMPORARY_PASSWORD_VALIDITY));
+    }
+
+    public boolean isTemporarilyLocked(Instant now) {
+        return lockedUntil != null && lockedUntil.isAfter(now);
+    }
+
+    /**
+     * Counts a wrong password. The {@code maxAttempts}-th in a row locks the account for
+     * {@code lockFor} and starts the count again. Attempts made while a lock runs are not counted:
+     * they cannot succeed anyway, and counting them would let anyone extend a lock forever.
+     *
+     * @return true when this attempt started a lock
+     */
+    public boolean recordFailedSignIn(Instant now, int maxAttempts, Duration lockFor) {
+        if (isTemporarilyLocked(now)) {
+            return false;
+        }
+        failedLoginCount++;
+        if (failedLoginCount >= maxAttempts) {
+            failedLoginCount = 0;
+            lockedUntil = now.plus(lockFor);
+            return true;
+        }
+        return false;
+    }
+
+    /** The user replaced their own password: it is no longer a temporary one. Takes a hash. */
+    public void changePasswordHash(String newHash) {
+        this.passwordHash = requireNonBlank(newHash, "passwordHash");
+        this.mustChangePassword = false;
+        this.temporaryPasswordSetAt = null;
+    }
+
+    /**
+     * An administrator set a new password. It is temporary by definition — the administrator knows
+     * it — it stops working {@link #TEMPORARY_PASSWORD_VALIDITY} after {@code now}, and resetting is
+     * also how someone locked out by wrong passwords, or by an expired temporary password, gets back in.
+     */
+    public void resetPassword(String newHash, Instant now) {
+        this.passwordHash = requireNonBlank(newHash, "passwordHash");
+        this.mustChangePassword = true;
+        this.temporaryPasswordSetAt = Objects.requireNonNull(now, "now");
+        this.failedLoginCount = 0;
+        this.lockedUntil = null;
+    }
+
+    public void updateProfile(String email, String fullName) {
+        if (email != null) {
+            this.email = normaliseEmail(email);
+        }
+        if (fullName != null) {
+            this.fullName = fullName.isBlank() ? null : fullName.trim();
+        }
+    }
+
+    /** ACTIVE → LOCKED. Locking a locked account is a no-op; a disabled one has to be enabled first. */
+    public void lock() {
+        switch (status) {
+            case ACTIVE -> status = UserStatus.LOCKED;
+            case LOCKED -> { }
+            case DISABLED -> throw invalidTransition(UserStatus.LOCKED);
+        }
+    }
+
+    /** LOCKED → ACTIVE, and ends a running wrong-password lock either way. */
+    public void unlock() {
+        switch (status) {
+            case LOCKED, ACTIVE -> {
+                status = UserStatus.ACTIVE;
+                failedLoginCount = 0;
+                lockedUntil = null;
+            }
+            case DISABLED -> throw invalidTransition(UserStatus.ACTIVE);
+        }
+    }
+
+    /** Any status → DISABLED: the account is retired but kept, so its history keeps a name. */
+    public void disable() {
+        status = UserStatus.DISABLED;
+    }
+
+    /** DISABLED → ACTIVE. A locked account is unlocked, not enabled: two decisions, two actions. */
+    public void enable() {
+        switch (status) {
+            case DISABLED -> {
+                status = UserStatus.ACTIVE;
+                failedLoginCount = 0;
+                lockedUntil = null;
+            }
+            case ACTIVE -> { }
+            case LOCKED -> throw invalidTransition(UserStatus.ACTIVE);
+        }
+    }
+
+    private BusinessException invalidTransition(UserStatus target) {
+        return new BusinessException(ErrorCode.INVALID_USER_STATUS_TRANSITION,
+                "Account %s cannot go from %s to %s".formatted(id, status, target));
+    }
+
+    private static String normaliseEmail(String email) {
+        return requireNonBlank(email, "email").trim().toLowerCase(Locale.ROOT);
     }
 
     private static String requireNonBlank(String value, String field) {
@@ -75,6 +280,10 @@ public final class User extends AggregateRoot {
     public String fullName() { return fullName; }
     public UserStatus status() { return status; }
     public Instant lastLoginAt() { return lastLoginAt; }
+    public boolean mustChangePassword() { return mustChangePassword; }
+    public Instant temporaryPasswordSetAt() { return temporaryPasswordSetAt; }
+    public int failedLoginCount() { return failedLoginCount; }
+    public Instant lockedUntil() { return lockedUntil; }
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
     public String createdBy() { return createdBy; }

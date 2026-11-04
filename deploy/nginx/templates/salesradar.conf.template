@@ -1,0 +1,19 @@
+# -----------------------------------------------------------------------------
+# Sales Radar API (anti-app)
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name salesradar-api.${DOMAIN};
+
+    include /etc/nginx/snippets/tls.conf;
+    include /etc/nginx/snippets/cloudflare-only.conf;
+
+    client_max_body_size 20m;
+
+    location / {
+        set $salesradar_upstream http://anti-app:8080;
+        proxy_pass $salesradar_upstream;
+        include /etc/nginx/snippets/proxy-headers.conf;
+    }
+}

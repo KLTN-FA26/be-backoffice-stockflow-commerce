@@ -21,9 +21,19 @@ target/
 .env
 .env.*
 !.env.example
+# Server-only state of deploy/ (TLS key, JWT signing key, database dumps, the running tag) - never committed.
+deploy/certs/
+deploy/auth/
+deploy/jwt/
+deploy/backups/
+deploy/.nginx-config-hash
 
 # LocalFileStorage's directory when the local storage provider is selected.
 .local-storage/
 
 # Generated from the code by ModularityTest on every build; never committed, or it goes stale.
 target/spring-modulith-docs/
+
+# Python bytecode (tools/)
+__pycache__/
+*.pyc

@@ -24,13 +24,14 @@ import java.util.UUID;
                 @UniqueConstraint(name = "uk_app_user_email", columnNames = "email")})
 public class UserJpaEntity extends BaseEntity {
 
-    @Column(name = "username", nullable = false, length = 100)
+    @Column(name = "username", nullable = false, length = 320)
     private String username;
 
     @Column(name = "email", nullable = false, length = 320)
     private String email;
 
-    @Column(name = "password_hash", nullable = false, length = 200)
+    /** Null for an invited customer account that has not been activated (SCRUM-450). */
+    @Column(name = "password_hash", length = 200)
     private String passwordHash;
 
     @Column(name = "full_name", length = 200)
@@ -42,6 +43,19 @@ public class UserJpaEntity extends BaseEntity {
 
     @Column(name = "last_login_at")
     private Instant lastLoginAt;
+
+    @Column(name = "must_change_password", nullable = false)
+    private boolean mustChangePassword;
+
+    /** When the administrator-set password was set; null once replaced. Accounts flagged before the column existed were stamped with the migration time. */
+    @Column(name = "temporary_password_set_at")
+    private Instant temporaryPasswordSetAt;
+
+    @Column(name = "failed_login_count", nullable = false)
+    private int failedLoginCount;
+
+    @Column(name = "locked_until")
+    private Instant lockedUntil;
 
     protected UserJpaEntity() {
     }
@@ -57,9 +71,22 @@ public class UserJpaEntity extends BaseEntity {
         this.lastLoginAt = lastLoginAt;
     }
 
-    /** The only mutation this login flow needs; other fields have no write use case yet. */
-    public void recordLogin(Instant now) {
-        this.lastLoginAt = now;
+    /**
+     * Copies the aggregate's mutable state. {@code username} is not among it: it never changes once
+     * the account exists.
+     */
+    public void apply(String email, String passwordHash, String fullName, UserStatus status,
+                      Instant lastLoginAt, boolean mustChangePassword, Instant temporaryPasswordSetAt,
+                      int failedLoginCount, Instant lockedUntil) {
+        this.email = email;
+        this.passwordHash = passwordHash;
+        this.fullName = fullName;
+        this.status = status;
+        this.lastLoginAt = lastLoginAt;
+        this.mustChangePassword = mustChangePassword;
+        this.temporaryPasswordSetAt = temporaryPasswordSetAt;
+        this.failedLoginCount = failedLoginCount;
+        this.lockedUntil = lockedUntil;
     }
 
     public String getUsername() { return username; }
@@ -68,4 +95,8 @@ public class UserJpaEntity extends BaseEntity {
     public String getFullName() { return fullName; }
     public UserStatus getStatus() { return status; }
     public Instant getLastLoginAt() { return lastLoginAt; }
+    public boolean isMustChangePassword() { return mustChangePassword; }
+    public Instant getTemporaryPasswordSetAt() { return temporaryPasswordSetAt; }
+    public int getFailedLoginCount() { return failedLoginCount; }
+    public Instant getLockedUntil() { return lockedUntil; }
 }

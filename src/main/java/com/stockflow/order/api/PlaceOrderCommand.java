@@ -13,7 +13,38 @@ import java.util.UUID;
  * valid. The caller cannot hand the service a command with zero lines and discover the problem
  * three layers down.</p>
  */
-public record PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> lines) {
+public record PlaceOrderCommand(
+        UUID requestId,
+        UUID customerId,
+        UUID shippingAddressId,
+        UUID billingAddressId,
+        boolean snapshotCustomer,
+        List<Line> lines,
+        PaymentTerm paymentTerm,
+        java.math.BigDecimal depositPercent,
+        BalancePolicy balancePolicy
+) {
+
+    /**
+     * Without a balance policy: a deposit order takes the customer's (G2-3).
+     */
+    public PlaceOrderCommand(UUID requestId, UUID customerId, UUID shippingAddressId, UUID billingAddressId,
+                             boolean snapshotCustomer, List<Line> lines, PaymentTerm paymentTerm,
+                             java.math.BigDecimal depositPercent) {
+        this(requestId, customerId, shippingAddressId, billingAddressId, snapshotCustomer, lines, paymentTerm,
+                depositPercent, null);
+    }
+
+    /** Compatibility constructor for trusted internal callers and existing integrations. */
+    public PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> lines) {
+        this(requestId, customerId, null, null, false, lines, null, null, null);
+    }
+
+    /** Prepaid, the default terms (kltn-docs 15 §4.1). */
+    public PlaceOrderCommand(UUID requestId, UUID customerId, UUID shippingAddressId, UUID billingAddressId,
+                             boolean snapshotCustomer, List<Line> lines) {
+        this(requestId, customerId, shippingAddressId, billingAddressId, snapshotCustomer, lines, null, null, null);
+    }
 
     public PlaceOrderCommand {
         if (requestId == null) throw new IllegalArgumentException("requestId is required");
@@ -30,8 +61,17 @@ public record PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> line
      * @param designSnapshotId set only for print-on-demand items; identifies the frozen design the
      *                         customer approved, so a later edit to the design cannot change what
      *                         was ordered
+     * @param requestedDeliveryDate the date the customer asked to receive a print line (SCRUM-502, from its
+     *                         quote); it becomes the production order's due date. Null when none was asked;
+     *                         never set on a stock line
      */
-    public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId) {
+    public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId,
+                       java.time.LocalDate requestedDeliveryDate) {
+
+        /** Without a requested delivery date. */
+        public Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId) {
+            this(sku, quantity, unitPrice, designSnapshotId, null);
+        }
 
         public Line {
             if (sku == null) throw new IllegalArgumentException("sku is required");
@@ -39,6 +79,9 @@ public record PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> line
             if (unitPrice == null) throw new IllegalArgumentException("unitPrice is required");
             if (unitPrice.isNegative()) {
                 throw new IllegalArgumentException("unitPrice must not be negative");
+            }
+            if (requestedDeliveryDate != null && designSnapshotId == null) {
+                throw new IllegalArgumentException("only a print line has a requested delivery date");
             }
         }
     }

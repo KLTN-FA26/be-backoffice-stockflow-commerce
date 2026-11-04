@@ -216,29 +216,29 @@ Mười chín bước, sáu service, sáu database. Luồng dài nhất và là 
 
 ### 18. fulfillment-service — NV kho
 
-`POST /api/v1/shipping/shipments/{id}/label`
+`POST /api/v1/shipping/load-plans`, rồi quét từng kiện lên xe và `POST /api/v1/shipping/loads/{id}/dispatch`
 
 | Nơi lưu | | Bảng | Ghi gì |
 |---|---|---|---|
-| `sf_fulfillment` | `+` | `shipment` | status = LABELLED, tracking_number, AWB |
-| `sf_fulfillment` | `+` | `manifest_entry` | gom vào manifest trong ngày |
+| `sf_fulfillment` | `+` | `load_plan`, `load × N`, `load_line × N` | loại xe, số xe, kiện nào lên xe nào; load = PLANNED → VEHICLE_BOOKED → LOADING |
+| `sf_fulfillment` | `~` | `shipment` | status = HANDED_OVER khi xe được bàn giao |
+| `sf_fulfillment` | `+` | `manifest` | biên bản bàn giao của chuyến xe |
 | `sf_fulfillment` | `+` | `outbox_event` | ShipmentDispatched |
-| `MinIO` | `+` | `labels/{awb}.pdf` | file nhãn vận đơn |
 
-> **⇢ event** — order → SHIPPED, notification gửi mã vận đơn cho khách
+> **⇢ event** — order → SHIPPED, notification báo khách đơn đã giao cho đơn vị vận chuyển (không kèm mã vận đơn — hệ thống không tích hợp hãng)
 
-### 19. fulfillment-service — Webhook hãng vận chuyển
+### 19. fulfillment-service — Điều phối đơn
 
-`POST /api/v1/webhooks/carriers/{carrier}`
+`POST /api/v1/shipping/shipments/{id}/outcome`
 
 | Nơi lưu | | Bảng | Ghi gì |
 |---|---|---|---|
-| `sf_fulfillment` | `~` | `shipment` | tracking_status đã chuẩn hoá về máy trạng thái của mình |
-| `sf_fulfillment` | `+` | `tracking_event` | nhật ký thô từ hãng vận chuyển |
-| `sf_fulfillment` | `+` | `pod` | ảnh và chữ ký khi giao thành công |
+| `sf_fulfillment` | `~` | `shipment` | status → DELIVERED / DELIVERY_FAILED (kèm lý do), người cập nhật, thời điểm |
 | `sf_fulfillment` | `+` | `outbox_event` | OrderDelivered |
 
 > **⇢ event** — order → DELIVERED; sau 7 ngày không có RMA thì → COMPLETED
+>
+> ⚠ Không có webhook, không có tracking: kết quả giao do nhân viên cập nhật khi hãng báo lại (docs 09, chốt 06/10/2026).
 
 
 ---
@@ -338,7 +338,7 @@ Mười ba bước. Chú ý bước 12: trước đó hàng đã tồn tại tro
 | Nơi lưu | | Bảng | Ghi gì |
 |---|---|---|---|
 | `sf_inventory` | `+` | `processed_event` |  |
-| `sf_inventory` | `+` | `stock_item` | location = khu vực nhận hàng, condition = GOOD hoặc QUARANTINE |
+| `sf_inventory` | `+` | `stock_item` | location_code = mã của khu nhận hàng (`storage_location` loại `AREA`, ví dụ `HCM-RCV01`), condition = GOOD hoặc QUARANTINE |
 | `sf_inventory` | `+` | `stock_movement` | bút toán nhập |
 | `sf_inventory` | `+` | `outbox_event` | StockReceived |
 
@@ -360,9 +360,10 @@ Mười ba bước. Chú ý bước 12: trước đó hàng đã tồn tại tro
 
 | Nơi lưu | | Bảng | Ghi gì |
 |---|---|---|---|
-| `sf_warehouse` | `~` | `putaway_task` | status → COMPLETED, actual_location, completed_by |
-| `sf_warehouse` | `~` | `location` | occupied_weight +=, occupied_volume += |
+| `sf_warehouse` | `~` | `putaway_task` | status → COMPLETED, target_location_id (một `storage_location`), completed_by |
 | `sf_warehouse` | `+` | `outbox_event` | PutawayCompleted |
+
+> · Không ghi gì vào `storage_location`: mức đầy **suy ra** từ tồn so với `capacity_units` (và tải trọng tầng), không lưu thành cột ([module 06 §5](https://github.com/KLTN-FA26/docs/blob/b11945a/docs/warehouse/06-warehouse-map-slotting/README.md)).
 
 > **⇢ event** — inventory-service dời hàng khỏi khu nhận hàng
 
@@ -370,7 +371,7 @@ Mười ba bước. Chú ý bước 12: trước đó hàng đã tồn tại tro
 
 | Nơi lưu | | Bảng | Ghi gì |
 |---|---|---|---|
-| `sf_inventory` | `~` | `stock_item` | location_code = vị trí thật trên kệ |
+| `sf_inventory` | `~` | `stock_item` | location_code = mã của bin đích, ví dụ `HCM-A01-2-B` |
 | `sf_inventory` | `+` | `stock_movement` | bút toán chuyển vị trí |
 | `sf_inventory` | `+` | `outbox_event` | StockLevelChanged |
 
@@ -486,14 +487,9 @@ Tám bước. Khác luồng nhập kho thường ở chỗ hàng trả về luô
 
 > ⚠ Hàng in theo yêu cầu **không được trả** trừ khi lỗi — BR-RMA-002. Cái cốc in ảnh của khách không bán lại cho ai được.
 
-### 03. fulfillment-service — hệ thống
+### 03. Khách hàng — gửi trả (ngoài hệ thống)
 
-`POST /api/v1/rma/{id}/return-label`
-
-| Nơi lưu | | Bảng | Ghi gì |
-|---|---|---|---|
-| `sf_fulfillment` | `+` | `return_shipment` | tracking_number chiều về |
-| `MinIO` | `+` | `labels/return-{rma}.pdf` | nhãn gửi cho khách |
+Khách gửi hàng trả qua đơn vị vận chuyển tự chọn, ghi **số RMA** lên kiện. Hệ thống không tạo nhãn hay mã vận đơn chiều về và không theo dõi hành trình — kho đối chiếu số RMA khi kiện tới (bước 04).
 
 ### 04. procurement-service — NV kho
 
@@ -551,7 +547,7 @@ Tám bước. Khác luồng nhập kho thường ở chỗ hàng trả về luô
 
 **Chỉ ghi thêm, không bao giờ UPDATE hay DELETE**
 
-`stock_movement`, `order_status_history`, `payment_transaction`, `tracking_event`, `qc_result`,
+`stock_movement`, `order_status_history`, `payment_transaction`, `qc_result`,
 `outbox_event`, `audit_log`. Sai thì ghi một dòng đảo ngược, không sửa dòng cũ. Đây là cách duy
 nhất trả lời được câu "tối thứ ba tuần trước tồn kho là bao nhiêu".
 

@@ -1,190 +1,476 @@
 package com.stockflow.product.internal.service;
 
-import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ListProductsQuery;
-import com.stockflow.product.api.ProductService;
-import com.stockflow.product.api.ProductSummary;
-import com.stockflow.product.api.UpdateProductCommand;
-import com.stockflow.product.internal.domain.Product;
-import com.stockflow.product.internal.domain.ProductId;
-import com.stockflow.product.internal.domain.ProductImage;
-import com.stockflow.product.internal.domain.ProductRepository;
-import com.stockflow.product.internal.repository.ProductSearchCriteria;
-import com.stockflow.product.internal.repository.ProductSearchRepository;
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
-
+import com.stockflow.common.security.Action;
+import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.identity.api.IdentityService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.product.api.CreateProductCommand;
+import com.stockflow.product.api.ListProductsQuery;
+import com.stockflow.product.api.OpenReferences;
+import com.stockflow.product.api.ProductChange;
+import com.stockflow.product.api.ProductDiscontinuation;
+import com.stockflow.product.api.ProductService;
+import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.api.ProductSummary;
+import com.stockflow.product.api.Purchasability;
+import com.stockflow.product.api.SkuReference;
+import com.stockflow.product.api.SkuReferenceProbe;
+import com.stockflow.product.api.UpdateProductCommand;
+import com.stockflow.product.internal.domain.AxisSpec;
+import com.stockflow.product.internal.domain.Product;
+import com.stockflow.product.internal.domain.ProductChangeType;
+import com.stockflow.product.internal.domain.ProductId;
+import com.stockflow.product.internal.domain.ProductRepository;
+import com.stockflow.product.internal.domain.ReferenceStatus;
+import com.stockflow.product.internal.repository.ProductChangeLogRepository;
+import com.stockflow.product.internal.repository.ProductCommerceRepository;
+import com.stockflow.product.internal.repository.ProductSearchCriteria;
+import com.stockflow.product.internal.repository.ProductSearchRepository;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Stream;
+import java.util.stream.IntStream;
 
 /**
  * The only implementation of {@link ProductService}, and the module's transaction boundary.
  *
  * <p>Package-private class, public interface: Spring injects it by the interface, so nobody can
  * bypass the port by autowiring the concrete class.</p>
+ *
+ * <p>Every write answers with {@link ProductSearchRepository#summary}, read after the write, rather
+ * than with a summary built from the aggregate: the brand name and the primary category are read
+ * from other tables, and the audit columns are set by the flush.</p>
+ *
+ * <p>Every change to the product also goes to its history ({@code product_change_log}) in the same
+ * transaction. A move that an edit makes of its own ({@code suspend}, {@code discontinue}, {@code delete})
+ * locks the product row first and checks the version the caller read, so two people acting on one
+ * screen cannot both win.</p>
+ *
+ * <p>What other modules hold against the product's SKUs (open purchase order lines, order lines not yet
+ * shipped) is asked of every {@link SkuReferenceProbe} Spring hands in. The product module cannot call
+ * procurement or order itself: {@code catalog} depends on it and {@code order} on {@code catalog}, so the
+ * call would be a cycle.</p>
  */
 @Service
 @Transactional
 class ProductServiceImpl implements ProductService {
 
     private static final SortWhitelist SORT =
-            SortWhitelist.of("name", "code", "createdAt", "status").withDefault("createdAt", Sort.Direction.DESC);
+            SortWhitelist.of("name", "code", "createdAt", "lastModifiedAt", "status")
+                    .withDefault("lastModifiedAt", Sort.Direction.DESC);
 
     private final ProductRepository products;
     private final ProductSearchRepository search;
+    private final ProductVariantService variants;
+    private final ProductMediaService media;
+    private final ProductAttributeService attributes;
     private final ProductEventPublisher events;
+    private final ProductChangeLogRepository history;
+    private final ProductCommerceRepository commerce;
+    private final InventoryService inventory;
+    private final IdentityService identity;
+    private final CurrentUserProvider users;
+    private final List<SkuReferenceProbe> probes;
     private final Clock clock;
 
-    ProductServiceImpl(ProductRepository products, ProductSearchRepository search,
-                       ProductEventPublisher events, Clock clock) {
+    ProductServiceImpl(ProductRepository products, ProductSearchRepository search, ProductVariantService variants,
+                       ProductMediaService media, ProductAttributeService attributes, ProductEventPublisher events,
+                       ProductChangeLogRepository history, ProductCommerceRepository commerce,
+                       InventoryService inventory, IdentityService identity, CurrentUserProvider users,
+                       List<SkuReferenceProbe> probes, Clock clock) {
         this.products = products;
         this.search = search;
+        this.variants = variants;
+        this.media = media;
+        this.attributes = attributes;
         this.events = events;
+        this.history = history;
+        this.commerce = commerce;
+        this.inventory = inventory;
+        this.identity = identity;
+        this.users = users;
+        this.probes = probes;
         this.clock = clock;
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public boolean containsSku(UUID productId, String sku) {
+        return products.containsSku(productId, sku);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<String> nameForSku(String sku) {
+        return products.nameForSku(sku);
+    }
+
+    /**
+     * A draft product and its variants; each variant creates its SKU's inventory item (trigger), where
+     * its logistics are then filled in.
+     *
+     * <p>Without axes the product gets one default variant whose SKU is the product code, so that code
+     * must be free as a SKU too. With axes (spec D2) the axes are written and every combination of their
+     * active options becomes a variant, SKUs by the code rule and the first combination as the default:
+     * no SKU equal to the bare code is ever made, so only the product code is checked here, and a SKU
+     * that is taken, an invalid axis or a matrix over the limit rolls the whole product back. The checks
+     * give a clean 409; {@code uk_products_code} and {@code uk_variants_sku} are the real guards against
+     * a race.</p>
+     */
+    // The id is generated inside Product.draft(), so it is read off the result: the CREATE entry
+    // is the first row of the product's version history (SCRUM-86). It covers the axes and variants
+    // made here too, which is why the calls below are the unaudited variants of those operations.
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "product", resourceId = "#result?.productId()")
     public ProductSummary create(CreateProductCommand command) {
-        if (command.categoryId() != null && !products.categoryExists(command.categoryId())) {
-            throw new BusinessException(ErrorCode.CATEGORY_NOT_FOUND,
-                    "No category with id " + command.categoryId());
-        }
+        requireReferences(command.brandId(), command.categoryId(), null, null);
         if (products.existsByCode(command.code())) {
-            // Proactive check for a clean message; uk_product_code is the real guard against a
-            // race, the same "check then insert loses a race, the database does not" reasoning as
-            // StockItemJpaEntity.
             throw new BusinessException(ErrorCode.PRODUCT_CODE_ALREADY_EXISTS,
                     "A product with code " + command.code() + " already exists");
         }
-        Product product = Product.draft(command.code(), command.name(), command.nameEn(),
-                command.categoryId(), command.description(), command.descriptionEn(),
-                command.brand(), command.taxClass(), command.customizable(),
-                toImages(command.images()), command.weightKg(), command.lengthCm(),
-                command.widthCm(), command.heightCm());
-        return toSummary(products.save(product));
+        boolean withAxes = !command.axes().isEmpty();
+        if (!withAxes && products.skuExists(command.code())) {
+            throw new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
+                    "SKU " + command.code() + " already belongs to another product's variant");
+        }
+        Product product = Product.draft(command.code(), command.name(), command.nameEn(), command.brandId(),
+                command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
+                command.taxClass(), command.kind());
+        products.save(product);
+        UUID productId = product.id().value();
+        history.record(productId, ProductChangeType.CREATED, null, null, ProductStatus.DRAFT.name(), null, List.of());
+        if (withAxes) {
+            attributes.defineAxes(productId, axisSpecs(command.axes()));
+            variants.createMatrix(productId);
+        } else {
+            variants.createDefault(productId, product.code(), product.name());
+        }
+        return summaryOf(productId);
+    }
+
+    /** A null sort order is the axis's place in the list, as on {@code PUT /axes}. */
+    private static List<AxisSpec> axisSpecs(List<CreateProductCommand.Axis> axes) {
+        return IntStream.range(0, axes.size()).mapToObj(i -> {
+            CreateProductCommand.Axis axis = axes.get(i);
+            return new AxisSpec(axis.attributeId(), axis.sortOrder() != null ? axis.sortOrder() : i,
+                    axis.optionValueIds());
+        }).toList();
     }
 
     @Override
     @Transactional(readOnly = true)
     public Optional<ProductSummary> findById(UUID productId) {
-        return products.findById(new ProductId(productId)).map(ProductServiceImpl::toSummary);
+        return search.summary(productId);
     }
 
     @Override
     @Transactional(readOnly = true)
     public PageResponse<ProductSummary> list(ListProductsQuery query) {
         var pageable = Pages.of(query.page(), query.size(), SORT.parse(query.sort()));
-        var criteria = new ProductSearchCriteria(query.search(), query.statuses());
+        var criteria = new ProductSearchCriteria(query.search(), query.statuses(), query.categoryId(), query.brandId());
         return Pages.toResponse(search.search(criteria, pageable));
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The row is locked and its version compared before anything else: the caller edited the product
+     * as it was when it read it.</p>
+     */
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "product", resourceId = "#command.productId()")
     public ProductSummary update(UpdateProductCommand command) {
-        Product product = requireProduct(command.productId());
-        if (command.categoryId() != null && !products.categoryExists(command.categoryId())) {
-            throw new BusinessException(ErrorCode.CATEGORY_NOT_FOUND,
-                    "No category with id " + command.categoryId());
+        Product product = requireProductForUpdate(command.productId());
+        product.requireVersion(command.version());
+        requireReferences(command.brandId(), command.categoryId(), product.brandId(), product.categoryId());
+        List<String> changed = product.updateDetails(command.name(), command.nameEn(), command.brandId(),
+                command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
+                command.taxClass(), command.kind());
+        products.save(product);
+        if (!changed.isEmpty()) {
+            history.record(command.productId(), ProductChangeType.UPDATED, null, null, null, null, changed);
         }
-        product.updateDetails(command.name(), command.nameEn(), command.categoryId(),
-                command.description(), command.descriptionEn(), command.brand(),
-                command.taxClass(), command.customizable(), toImages(command.images()),
-                command.weightKg(), command.lengthCm(), command.widthCm(), command.heightCm());
-        return toSummary(products.save(product));
+        return summaryOf(command.productId());
     }
 
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "product", resourceId = "#productId")
     public ProductSummary submit(UUID productId, UUID submittedBy) {
         Product product = requireProduct(productId);
+        ProductStatus from = product.status();
         product.submit(submittedBy, clock.instant());
-        Product saved = products.save(product);
-        events.publishEventsOf(saved);
-        return toSummary(saved);
+        ProductSummary saved = saveAndPublish(product);
+        history.record(productId, ProductChangeType.SUBMITTED, null, from.name(), saved.status().name(), null, List.of());
+        return saved;
     }
 
+    /**
+     * Approval makes the product sellable, and its draft variants with it. Only an approver holding
+     * {@code product-lifecycle:APPROVE} (SYSTEM_ADMIN's) may approve what they submitted themselves (BR-PRD-003) -
+     * a permission of the caller, never a role name, and only when the caller is the approver named.
+     */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "product", resourceId = "#productId")
     public ProductSummary approve(UUID productId, UUID approverId) {
         Product product = requireProduct(productId);
-        product.approve(approverId, clock.instant());
-        Product saved = products.save(product);
-        events.publishEventsOf(saved);
-        return toSummary(saved);
+        ProductStatus from = product.status();
+        boolean mayApproveOwn = approverId != null && approverId.equals(product.submittedBy())
+                && users.current().filter(actor -> approverId.equals(actor.userId()))
+                        .map(actor -> actor.can(ProductPermissions.LIFECYCLE, Action.APPROVE)).orElse(false);
+        product.approve(approverId, mayApproveOwn, clock.instant());
+        variants.activateDrafts(productId);
+        ProductSummary saved = saveAndPublish(product);
+        history.record(productId, ProductChangeType.APPROVED, null, from.name(), saved.status().name(), null, List.of());
+        return saved;
     }
 
     @Override
     @Auditable(action = AuditAction.REJECT, resourceType = "product", resourceId = "#productId")
     public ProductSummary reject(UUID productId, UUID approverId, String reason) {
         Product product = requireProduct(productId);
+        ProductStatus from = product.status();
         product.reject(approverId, reason, clock.instant());
-        Product saved = products.save(product);
-        events.publishEventsOf(saved);
-        return toSummary(saved);
+        ProductSummary saved = saveAndPublish(product);
+        history.record(productId, ProductChangeType.REJECTED, null, from.name(), saved.status().name(), reason,
+                List.of());
+        return saved;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Order: the product row is locked and its version checked; the aggregate takes the move (which
+     * refuses a status that cannot be discontinued, or a blank reason, before anything else changes); what
+     * the other modules still hold is read; every variant is made OBSOLETE; the history gets the variants'
+     * moves and then the discontinuation, so it reads newest-first the way it happened. The warnings never
+     * stop it. A purchase order created at the same moment is turned away by {@link #purchasability} once
+     * this commits.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "product", resourceId = "#productId")
+    public ProductDiscontinuation discontinue(UUID productId, String reason, long version) {
+        Product product = requireProductForUpdate(productId);
+        product.requireVersion(version);
+        ProductStatus from = product.status();
+        product.discontinue(reason, clock.instant());
+        OpenReferences open = referencesOf(products.skusOf(product.id()));
+        variants.obsoleteAll(productId, product.discontinueReason());
+        ProductSummary saved = saveAndPublish(product);
+        history.record(productId, ProductChangeType.DISCONTINUED, null, from.name(), saved.status().name(),
+                product.discontinueReason(), List.of());
+        return new ProductDiscontinuation(saved, warningsOf(open), open);
     }
 
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "product", resourceId = "#productId")
-    public ProductSummary discontinue(UUID productId) {
-        Product product = requireProduct(productId);
-        product.discontinue(clock.instant());
-        Product saved = products.save(product);
-        events.publishEventsOf(saved);
-        return toSummary(saved);
+    public ProductSummary suspend(UUID productId, String reason, long version) {
+        Product product = requireProductForUpdate(productId);
+        product.requireVersion(version);
+        ProductStatus from = product.status();
+        product.suspend(reason, clock.instant());
+        ProductSummary saved = saveAndPublish(product);
+        history.record(productId, ProductChangeType.SUSPENDED, null, from.name(), saved.status().name(),
+                product.suspendReason(), List.of());
+        return saved;
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "product", resourceId = "#productId")
+    public ProductSummary resume(UUID productId, long version) {
+        Product product = requireProductForUpdate(productId);
+        product.requireVersion(version);
+        ProductStatus from = product.status();
+        product.resume(clock.instant());
+        ProductSummary saved = saveAndPublish(product);
+        history.record(productId, ProductChangeType.RESUMED, null, from.name(), saved.status().name(), null, List.of());
+        return saved;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Refused while a purchase order line or an order line that is still open points at one of its SKUs,
+     * then while a SKU's inventory item is used by any document ({@code InventoryService.skusInUse}: stock, the
+     * ledger, warehouse tasks, a price, procurement), and then by the foreign keys for everything else (order and
+     * cart lines, designs, a storefront listing): that is the last line of defence, and it is a 409
+     * {@code PRODUCT_IN_USE}, never a 500. The inventory item each SKU got when its variant was created is deleted
+     * with it, its stock alerts too (a note about the item, not a use of it); the stored image files are removed
+     * only after the commit.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.DELETE, resourceType = "product", resourceId = "#productId")
+    public void deleteDraft(UUID productId, long version) {
+        Product product = requireProductForUpdate(productId);
+        product.requireVersion(version);
+        product.requireDeletable();
+        List<String> skus = products.skusOf(product.id());
+        OpenReferences open = referencesOf(skus);
+        if (!open.references().isEmpty()) {
+            SkuReference first = open.references().getFirst();
+            throw new BusinessException(ErrorCode.PRODUCT_IN_USE, "%s %s still refers to %s".formatted(
+                    first.kind(), first.documentNumber(), first.sku()));
+        }
+        List<String> used = inventory.skusInUse(skus);
+        if (!used.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCT_IN_USE,
+                    "SKU %s has stock, warehouse, pricing or purchasing history".formatted(used.getFirst()));
+        }
+        List<String> stored = media.storedKeysOf(productId);
+        try {
+            inventory.deleteUnusedItems(skus);
+        } catch (DataIntegrityViolationException stillReferenced) {
+            throw new BusinessException(ErrorCode.PRODUCT_IN_USE,
+                    "A SKU of product %s still has stock, purchasing or order history".formatted(productId),
+                    stillReferenced);
+        }
+        products.delete(product.id());
+        media.deleteStoredAfterCommit(stored);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public OpenReferences openReferences(UUID productId) {
+        requireProduct(productId);
+        return referencesOf(products.skusOf(new ProductId(productId)));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Purchasability> purchasability(Collection<String> skus) {
+        return commerce.purchasability(normalised(skus), false);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Map<String, Purchasability> lockedPurchasability(Collection<String> skus) {
+        return commerce.purchasability(normalised(skus), true);
+    }
+
+    private static java.util.Set<String> normalised(Collection<String> skus) {
+        return skus.stream().filter(java.util.Objects::nonNull)
+                .map(sku -> sku.strip().toUpperCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ProductChange> history(UUID productId, int page, int size) {
+        requireProduct(productId);
+        var rows = history.page(productId, Pages.of(page, size));
+        Map<UUID, String> names = identity.displayNames(
+                rows.getContent().stream().map(ProductChangeLogRepository.Entry::actorId).toList());
+        return Pages.toResponse(rows.map(row -> new ProductChange(row.type().name(), row.type().subject().name(),
+                row.subjectId(), row.fromStatus(), row.toStatus(), row.reason(), row.changedFields(), row.actorId(),
+                row.actorId() == null ? "system" : names.getOrDefault(row.actorId(), "unknown"), row.occurredAt())));
+    }
+
+    /**
+     * What each probe found, at most {@link OpenReferences#LIMIT} in all: taken from the probes in turn, so a
+     * product with hundreds of purchase order lines still shows the order lines it has too. Each probe is
+     * asked for one more than the limit to know whether the list was cut.
+     */
+    private OpenReferences referencesOf(Collection<String> skus) {
+        if (skus.isEmpty()) {
+            return new OpenReferences(List.of(), false);
+        }
+        List<List<SkuReference>> found = probes.stream()
+                .map(probe -> probe.openReferences(skus, OpenReferences.LIMIT + 1))
+                .filter(list -> !list.isEmpty()).toList();
+        int total = found.stream().mapToInt(List::size).sum();
+        List<SkuReference> sample = new ArrayList<>();
+        for (int i = 0; sample.size() < OpenReferences.LIMIT && sample.size() < total; i++) {
+            for (List<SkuReference> list : found) {
+                if (i < list.size() && sample.size() < OpenReferences.LIMIT) {
+                    sample.add(list.get(i));
+                }
+            }
+        }
+        return new OpenReferences(sample, total > OpenReferences.LIMIT);
+    }
+
+    /** One warning per kind of document that still refers to the product. */
+    private static List<String> warningsOf(OpenReferences open) {
+        Set<String> warnings = new LinkedHashSet<>();
+        Stream.of(SkuReference.Kind.values()).forEach(kind -> {
+            if (open.references().stream().anyMatch(r -> r.kind() == kind)) {
+                warnings.add(kind == SkuReference.Kind.PURCHASE_ORDER_LINE
+                        ? ProductDiscontinuation.OPEN_PURCHASE_ORDER_LINES
+                        : ProductDiscontinuation.UNSHIPPED_ORDER_LINES);
+            }
+        });
+        return List.copyOf(warnings);
+    }
+
+    /** Events are drained from the instance that recorded them: {@code save} returns a fresh one. */
+    private ProductSummary saveAndPublish(Product product) {
+        products.save(product);
+        events.publishEventsOf(product);
+        return summaryOf(product.id().value());
+    }
+
+    /**
+     * The brand and category must exist, and one the product newly chooses must be active (SCRUM-87). One it
+     * already points at ({@code keptBrandId}, {@code keptCategoryId}) is accepted even if deactivated since:
+     * deactivating retires a brand or category without touching the products that chose it. The rule spans
+     * two rows, so it has no {@code CHECK} of its own; the foreign keys still refuse an id that does not exist.
+     */
+    private void requireReferences(UUID brandId, UUID categoryId, UUID keptBrandId, UUID keptCategoryId) {
+        if (brandId != null) {
+            ReferenceStatus brand = products.brandStatus(brandId);
+            if (brand == ReferenceStatus.MISSING) {
+                throw new BusinessException(ErrorCode.BRAND_NOT_FOUND, "No brand with id " + brandId);
+            }
+            if (brand == ReferenceStatus.INACTIVE && !brandId.equals(keptBrandId)) {
+                throw inactive(ErrorCode.BRAND_INACTIVE, "brandId", "Brand " + brandId + " is inactive");
+            }
+        }
+        if (categoryId != null) {
+            ReferenceStatus category = products.categoryStatus(categoryId);
+            if (category == ReferenceStatus.MISSING) {
+                throw new BusinessException(ErrorCode.CATEGORY_NOT_FOUND, "No category with id " + categoryId);
+            }
+            if (category == ReferenceStatus.INACTIVE && !categoryId.equals(keptCategoryId)) {
+                throw inactive(ErrorCode.CATEGORY_INACTIVE, "categoryId", "Category " + categoryId + " is inactive");
+            }
+        }
+    }
+
+    private static BusinessException inactive(ErrorCode code, String field, String message) {
+        return new BusinessException(code, message, List.of(new FieldError(field, message, code.name())));
     }
 
     private Product requireProduct(UUID productId) {
         return products.findById(new ProductId(productId))
-                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND,
-                        "No product with id " + productId));
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND, "No product with id " + productId));
     }
 
-    private static List<ProductImage> toImages(List<String> urls) {
-        if (urls == null) {
-            return List.of();
-        }
-        List<ProductImage> images = new java.util.ArrayList<>();
-        for (int i = 0; i < urls.size(); i++) {
-            images.add(new ProductImage(Identifiers.newId(), urls.get(i), i));
-        }
-        return images;
+    /** The product, locked: a move or a deletion serialises with every other writer of the same product. */
+    private Product requireProductForUpdate(UUID productId) {
+        return products.findForUpdate(new ProductId(productId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND, "No product with id " + productId));
     }
 
-    private static ProductSummary toSummary(Product product) {
-        return new ProductSummary(
-                product.id().value(),
-                product.code(),
-                product.name(),
-                product.nameEn(),
-                product.categoryId(),
-                product.description(),
-                product.descriptionEn(),
-                product.brand(),
-                product.taxClass(),
-                product.customizable(),
-                product.images().stream().map(ProductImage::url).toList(),
-                product.status(),
-                product.createdAt(),
-                product.createdBy(),
-                product.submittedBy(),
-                product.submittedAt(),
-                product.approvedBy(),
-                product.approvedAt(),
-                product.rejectionReason(),
-                product.weightKg(),
-                product.lengthCm(),
-                product.widthCm(),
-                product.heightCm());
+    private ProductSummary summaryOf(UUID productId) {
+        return search.summary(productId).orElseThrow();
     }
 }

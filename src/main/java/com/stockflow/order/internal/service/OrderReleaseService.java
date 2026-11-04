@@ -1,0 +1,162 @@
+package com.stockflow.order.internal.service;
+
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.internal.domain.Order;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderLine;
+import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.ProductionRecords;
+import com.stockflow.order.internal.domain.WarehouseDirectory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+/**
+ * Releasing an order, and moving it on when production has delivered (SCRUM-423, docs 17 / 19 §4.1).
+ *
+ * <p>Release is where an ORDER production order is born: the event carries every print line, so the
+ * production orders of one customer order are created together. The two rules release checks before
+ * anything is printed — an approved sample for a new design (BR-PRD-08), the deposit (BR-PRD-09, in
+ * the aggregate) — are the ones that cost money when they are missed: a print run nobody approved.</p>
+ */
+@Service
+@Transactional
+class OrderReleaseService implements OrderReleases {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderReleaseService.class);
+
+    private final OrderRepository repository;
+    private final ProductionRecords production;
+    private final WarehouseDirectory warehouses;
+    private final OrderEventPublisher events;
+    private final OrderService orders;
+    private final Clock clock;
+    private final InventoryService inventory;
+    private final com.stockflow.payment.api.PaymentService paymentService;
+    private final OrderStockAllocation allocation;
+    private final DeliveryModeHistory deliveryModes;
+
+    OrderReleaseService(OrderRepository repository, ProductionRecords production, WarehouseDirectory warehouses,
+                        OrderEventPublisher events, OrderService orders, Clock clock,
+                        InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
+                        OrderStockAllocation allocation, DeliveryModeHistory deliveryModes) {
+        this.allocation = allocation;
+        this.repository = repository;
+        this.production = production;
+        this.warehouses = warehouses;
+        this.events = events;
+        this.orders = orders;
+        this.clock = clock;
+        this.inventory = inventory;
+        this.paymentService = paymentService;
+        this.deliveryModes = deliveryModes;
+    }
+
+    /** Declared here, not as an interface default: the class's {@code @Transactional} must cover it (a default
+     *  method of the interface would run on the proxy without a transaction). */
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
+    public OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy) {
+        return releaseLocked(orderId, warehouseId, null, null, releasedBy);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
+    public OrderSummary release(UUID orderId, UUID warehouseId, com.stockflow.order.api.DeliveryMode deliveryMode,
+                                com.stockflow.common.security.CurrentUser actor) {
+        java.util.Objects.requireNonNull(actor, "actor");
+        return releaseLocked(orderId, warehouseId, deliveryMode, actor, actor.userId());
+    }
+
+    /** @param actor whose permissions a delivery mode is checked against; only read when {@code deliveryMode} is set */
+    private OrderSummary releaseLocked(UUID orderId, UUID warehouseId,
+                                       com.stockflow.order.api.DeliveryMode deliveryMode,
+                                       com.stockflow.common.security.CurrentUser actor, UUID releasedBy) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
+        if (deliveryMode != null && deliveryMode != order.deliveryMode()) {
+            // LP-1 (review of #157): releasing does not by itself let the caller choose the mode. Decided here, under
+            // the order's row lock, so a change made meanwhile by someone allowed to is never undone by someone who
+            // is not; keeping the order's own mode needs nothing more.
+            actor.require(OrderPermissions.DELIVERY_MODES, com.stockflow.common.security.Action.UPDATE);
+        }
+        String warehouseCode = warehouses.codeOf(warehouseId).orElseThrow(() ->
+                new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
+
+        // BR-PRD-08: each new design needs a sample the customer approved; a design already printed to
+        // completion for an earlier order is a repeat and needs none.
+        Map<UUID, UUID> approvedSamples = new HashMap<>();
+        List<String> missing = new ArrayList<>();
+        for (OrderLine line : order.printLines()) {
+            Optional<UUID> sample = production.approvedSample(line.designSnapshotId(), line.sku().code());
+            if (sample.isPresent()) {
+                approvedSamples.put(line.id(), sample.get());
+            } else if (!production.producedBefore(line.designSnapshotId(), orderId)) {
+                missing.add(line.sku().code());
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw new BusinessException(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED,
+                    "Order %s has new designs without an approved sample on %s (BR-PRD-08)"
+                            .formatted(order.orderNumber(), String.join(", ", missing)));
+        }
+
+        // kltn-docs 15 §4.3 step 4, 17 BR-02: no credit order is released for a customer who is overdue - nor a deposit
+        // order whose balance goes on credit (BALCREDIT, review of #150): it gives the same credit on delivery.
+        if ((order.paymentTerm() == com.stockflow.order.api.PaymentTerm.CREDIT || order.balanceOnCredit())
+                && paymentService.creditPosition(order.customerId()).hasOverdue()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE,
+                    "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));
+        }
+        order.release(warehouseId, warehouseCode, releasedBy, clock.instant(), approvedSamples);
+        // F-FUL step 02 (SCRUM-152): the SKU reservations taken at checkout become allocations on pickable bins of
+        // this warehouse, FEFO - every line, print lines included, whose blanks production issues from them. All
+        // or nothing: a warehouse that cannot cover a line refuses the release, and the order stays as it was.
+        allocation.allocate(order, warehouseCode);
+        if (deliveryMode != null) {
+            // LP-1: the coordinator's choice at release, recorded at the status the order was released to. A refusal
+            // (LP-2, DELIVERY_MODE_FTL_NO_COD) rolls the whole release back: nothing is released.
+            deliveryModes.apply(order, deliveryMode, null, releasedBy);
+        }
+        // A deposit order leaves PENDING_PAYMENT here (BR-PRD-09): from now on its holds must not
+        // expire (kltn-docs 14 BR-07, SCRUM-465). Idempotent for an order already paid and pinned.
+        inventory.pinReservations(orderId);
+        repository.save(order);
+        events.publishEventsOf(order);
+        log.info("Released order {} from {}: {} ({} print line(s))", order.orderNumber(), warehouseCode,
+                order.status(), order.printLines().size());
+        return orders.findById(orderId).orElseThrow();
+    }
+
+    /** Called by the production listener once a production order of a line is recorded as finished. */
+    public void productionFinished(UUID orderId) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId)).orElse(null);
+        if (order == null || order.warehouseId() == null) {
+            log.warn("Production finished for order {}, which is unknown or was never released", orderId);
+            return;
+        }
+        String warehouseCode = warehouses.codeOf(order.warehouseId()).orElse(null);
+        Instant now = clock.instant();
+        if (order.completeProduction(production.producedByLine(orderId), warehouseCode, now)) {
+            repository.save(order);
+            events.publishEventsOf(order);
+            log.info("Order {} is ready to fulfil: every print line produced", order.orderNumber());
+        }
+    }
+}

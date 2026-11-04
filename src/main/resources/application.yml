@@ -7,8 +7,31 @@
 # =============================================================================
 
 spring:
+  servlet:
+    multipart:
+      # Category policy still enforces 10 MiB product / 50 MiB design limits.
+      max-file-size: 50MB
+      max-request-size: 51MB
   application:
     name: stockflow-monolith
+
+  mail:
+    host: ${MAIL_HOST:localhost}
+    port: ${MAIL_PORT:1025}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: ${MAIL_SMTP_AUTH:false}
+      mail.smtp.starttls.enable: ${MAIL_SMTP_STARTTLS:false}
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
+      # JavaMail otherwise derives the Message-ID and the EHLO name from this machine's canonical host
+      # name, a reverse DNS lookup that took ~10 s per e-mail on a developer laptop. mail.from covers
+      # the Message-ID (the sender header is still set per message); MAIL_SMTP_LOCALHOST names the
+      # host in EHLO when the deployment's DNS is slow. Blank keeps JavaMail's own lookup.
+      mail.from: ${MAIL_FROM:noreply@stockflow.local}
+      mail.smtp.localhost: ${MAIL_SMTP_LOCALHOST:}
 
   # ---------------------------------------------------------------------------
   # ONE datasource. This single block is what replaced fourteen of them.
@@ -36,6 +59,13 @@ spring:
       # Belt and braces with the server-side setting in docker-compose: a statement still running
       # after 10s is not going to finish usefully and is holding a connection every module shares.
       connection-init-sql: SET statement_timeout = 10000
+      # MUST stay true while auto-commit is false. Without it Hikari runs the init SQL above and
+      # neither commits nor rolls back, so every new connection enters the pool "idle in
+      # transaction": Postgres kills it after idle_in_transaction_session_timeout (60s in
+      # docker-compose) and the pool logs "Failed to validate connection ... has been closed" on
+      # the next borrow. SET is transactional too, so the first rollback on such a connection
+      # would also undo the statement_timeout it was opened to set.
+      isolate-internal-queries: true
       # Every module shares this pool. That is the monolith's main operational risk: a runaway
       # report query can starve checkout. Mitigated by statement timeouts below, and revisited in
       # docs/adr/0005 if reporting ever needs its own read replica.
@@ -191,8 +221,10 @@ management:
     health:
       show-details: when-authorized
       # when-authorized alone means ANY authenticated user - a CUSTOMER - sees every detail,
-      # including the storage bucket and endpoint. Naming the role narrows it to administrators.
-      roles: ECOMMERCE_ADMIN
+      # including the storage bucket and endpoint. Boot matches these against the caller's
+      # authorities, so a permission works here: whoever holds platform-actuator:READ
+      # (ActuatorPermission, granted in the role matrix) - never a role name.
+      roles: platform-actuator:READ
       probes:
         # /actuator/health/liveness and /readiness, which is what Kubernetes probes.
         enabled: true
@@ -248,17 +280,26 @@ management:
 springdoc:
   api-docs:
     path: /v3/api-docs
+
   swagger-ui:
     path: /swagger-ui.html
     operations-sorter: alpha
     tags-sorter: alpha
-    # Groups the generated OpenAPI document by module, so a reader sees inventory's endpoints
-    # together rather than one flat alphabetical list of 500 paths.
+
   group-configs:
+    - group: all
+      packages-to-scan: com.stockflow
+
     - group: inventory
       packages-to-scan: com.stockflow.inventory
+
     - group: order
       packages-to-scan: com.stockflow.order
+    - group: procurement
+      packages-to-scan: com.stockflow.procurement
+
+    - group: warehouse
+      packages-to-scan: com.stockflow.warehouse
 
 # -----------------------------------------------------------------------------
 # Application settings owned by this system rather than by a framework.
@@ -277,6 +318,14 @@ stockflow:
     # whose DTOs gained a field starts from a clean namespace instead of deserialising yesterday's
     # objects into the new class.
     version: v1
+
+  # ---------------------------------------------------------------------------
+  # Reporting (SCRUM-344): the sales rollups behind the dashboard.
+  # ---------------------------------------------------------------------------
+  reporting:
+    # On the first start after deploy, roll up the orders placed before the listeners existed. Does nothing once the
+    # history is in. POST /api/v1/reports/rebuild does the same by hand.
+    backfill-on-startup: true
 
   # ---------------------------------------------------------------------------
   # HTTP idempotency. Applies to any unsafe request carrying an Idempotency-Key header.
@@ -304,6 +353,70 @@ stockflow:
     connect-timeout: PT3S
     read-timeout: PT10S
 
+  procurement:
+    buyer:
+      company-name: ${PO_BUYER_COMPANY_NAME:}
+      company-address: ${PO_BUYER_COMPANY_ADDRESS:}
+      contact-name: ${PO_BUYER_CONTACT_NAME:}
+      phone: ${PO_BUYER_PHONE:}
+      email: ${PO_BUYER_EMAIL:}
+      receiving-address: ${PO_RECEIVING_ADDRESS:}
+    # Three-way match of supplier invoices (SCRUM-309, BR-INV-002): an invoice's unit price may stray this far, in
+    # percent either way, from the purchase order's net price before the match calls it a variance. Quantities have no
+    # tolerance: an invoice bills no more than was received and passed QC (kltn-docs 04 BR-02).
+    invoice-match:
+      price-tolerance-percent: ${INVOICE_PRICE_TOLERANCE_PERCENT:2}
+
+  notification:
+    # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
+    supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
+    po-retry-interval: PT1M
+    # -------------------------------------------------------------------------
+    # E-mail (SCRUM-352). Every message - supplier POs, staff notices, the portal invitation, customer order mail -
+    # goes through one transport. resend: Resend's HTTP API (the dev and prod profiles' default); smtp: spring.mail
+    # above (Mailpit locally); recording: kept in memory, never sent (the test profile). See EmailProperties.
+    # -------------------------------------------------------------------------
+    email:
+      provider: ${EMAIL_PROVIDER:smtp}
+      # "StockFlow <no-reply@your-domain>". With Resend the domain must be verified in its dashboard.
+      from: ${RESEND_FROM:${MAIL_FROM:noreply@stockflow.local}}
+      # Where a customer's reply goes (e.g. Sales' shared mailbox). Blank: customer mail says not to reply.
+      reply-to: ${RESEND_REPLY_TO:}
+      locale: vi
+      sender-name: ${EMAIL_SENDER_NAME:StockFlow}
+      customer:
+        # Off sends no customer order mail (recorded as skipped) and leaves staff and supplier mail alone.
+        enabled: ${CUSTOMER_EMAIL_ENABLED:true}
+        max-attempts: 10
+        first-retry-delay: PT1M
+        max-retry-delay: PT6H
+        # How often failed customer mail is looked at again (CustomerEmailRetry).
+        retry-interval: PT1M
+      resend:
+        # Never commit a key. Required when provider is resend: without it the application does not start.
+        api-key: ${RESEND_API_KEY:}
+        base-url: https://api.resend.com
+        # Signing secret of the Resend webhook (whsec_...). Blank: POST /api/v1/notifications/webhooks/resend
+        # answers 503 and Resend retries until it is set.
+        webhook-secret: ${RESEND_WEBHOOK_SECRET:}
+        webhook-tolerance: PT5M
+        # Resend allows a team 2 requests per second by default; each instance keeps to this.
+        requests-per-second: ${RESEND_REQUESTS_PER_SECOND:2}
+        max-concurrent-requests: 2
+    # In-app inbox: read messages older than this are deleted by the nightly purge (unread ones are kept).
+    inbox-retention-days: 90
+    inbox-purge-cron: "0 45 3 * * *"
+    # Language of system-generated inbox messages (the bundle i18n/messages_<locale>.properties).
+    inbox-locale: vi
+    # Stock alerts: who is told, by staff role. The scope (all warehouses, or the ones a person is assigned to) and the
+    # exclusion of customers are applied by IdentityService.notificationRecipients.
+    inventory-alert:
+      stock-level-roles: INVENTORY_PLANNER,SYSTEM_ADMIN
+      expiry-roles: WAREHOUSE_MANAGER,INVENTORY_PLANNER,SYSTEM_ADMIN
+    # Open question Q3: also e-mail the same text to the people newly told in-app. Off until an SMTP server is configured.
+    inventory-alert-email:
+      enabled: false
+
   # ---------------------------------------------------------------------------
   # File storage. 's3' talks to MinIO locally and to S3 in a deployment - the same code path.
   # 'local' writes to the filesystem and is for development only; it cannot work with more than
@@ -323,6 +436,29 @@ stockflow:
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
 
+  catalog:
+    availability:
+      # At or under this many units the catalog shows "low stock" (docs 13 §4.2, an assumption
+      # the docs leave open). 0 never warns.
+      low-stock-threshold: ${CATALOG_LOW_STOCK_THRESHOLD:5}
+      # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
+      max-skus-per-request: 50
+    search:
+      # Ranking weights (SCRUM-182): score = text-rank*w1 + title-similarity*w2 + exact-SKU*w3 + in-stock*w4.
+      # Text rank and similarity are 0..1, so an exact SKU always wins and stock only breaks near ties.
+      text-rank-weight: 1.0
+      similarity-weight: 1.0
+      exact-sku-weight: 10.0
+      in-stock-weight: 0.25
+      # Typo fallback when nothing matches exactly: minimum trigram similarity with the title.
+      fallback-similarity: 0.2
+      # Best matches that are ranked and pageable (stock is ranked in memory, over this many).
+      ranking-window: 500
+
+  product-media:
+    # Public CloudFront/custom-domain origin. Blank keeps private upload working but public gallery returns 503.
+    cloud-front-base-url: ${PRODUCT_MEDIA_CDN_BASE_URL:}
+
   web:
     request-log:
       enabled: true
@@ -330,12 +466,79 @@ stockflow:
   inventory:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
     reservation-sweep-interval: PT1M
+    # A lot that expires within this many days of the day it is received, or of today, is "near expiry"
+    # (docs 03 BR-06; plan G5a-3 §6 #11): goods receipts warn, the expiry alerts use the same window.
+    expiry-warning-days: 30
+    # Most lines one planned cycle count may hold (SCRUM-146); a wider scope is refused so the count stays countable.
+    cycle-count-max-lines: 500
+    # Stock alerts (SCRUM-147). The drain evaluates the SKUs whose stock changed (a trigger on stock_item queues them).
+    alert-drain-interval: PT30S
+    alert-drain-initial-delay: PT30S
+    # A condition that clears and returns inside this window reopens its alert row but is not announced again.
+    alert-reopen-cooldown: PT6H
+    # Nightly net under the drain (01:30) and the expiry sweep that moves expired stock to EXPIRED (02:00), business time.
+    alert-reconcile-cron: "0 30 1 * * *"
+    expiry-sweep-cron: "0 0 2 * * *"
+
+  payment:
+    # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and
+    # in prod: GET /orders/me/{id}/transfer-instructions answers 503 TRANSFER_INSTRUCTIONS_UNAVAILABLE until all three
+    # are set per deployment, so a customer is never shown a made-up account. local, dev and test carry a demo one.
+    company-bank:
+      bank-name: ${COMPANY_BANK_NAME:}
+      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
+      account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
+
+  customer:
+    # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
+    # appended as a URL fragment, which browsers never send to a server. Blank switches invitations
+    # off (503 PORTAL_INVITATION_UNAVAILABLE) rather than failing startup. Set it per deployment.
+    portal-activation-url: ${PORTAL_ACTIVATION_URL:}
+
+  identity:
+    portal-invitation:
+      # How long an invitation link works, and how soon Sales may replace an open one.
+      lifetime: ${PORTAL_INVITATION_LIFETIME:PT72H}
+      resend-cooldown: ${PORTAL_INVITATION_RESEND_COOLDOWN:PT1M}
+
+  fulfillment:
+    load-planning:
+      # How much search one load-plan calculation gets (decision LP2-10), counted in work, not wall time, so the plan is
+      # the same on a slow or a fast machine; the planner returns the best plan found so far when it runs out
+      # (LoadPlanRequest.budget). On the benchmark (100, 300 and 500 cartons with
+      # sets, LoadPlannerBenchmarkTest) 3 s already matched the 30 s reference on a laptop; 5 s keeps a margin for a
+      # smaller server, where the same search runs slower. Read by the load-estimate service (PR EST) and the
+      # load-plan service (SCRUM-287 PR D).
+      solver-budget: PT5S
+      # Real time cap of one calculation, apart from the budget (owner decision SOLVER-CAP, 02/11): a slow or busy
+      # machine cannot hang a request; when it passes, the planner returns the best plan found so far, flagged
+      # budgetExhausted (LoadPlanRequest.wallLimit).
+      solver-wall-limit: PT12S
+
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
     # same switch on purpose: a state where the chain is on but the aspect is off means every
     # @RequiresPermission is silently unenforced, which is worse than either being off.
     # Default is ON. Switch it off per profile, never here.
     enabled: true
+    # How long a sign-in lasts (ISO-8601, at most 24h). Each token has a server-side session that
+    # logout, "sign out other devices", a password change and a role change end immediately, so this
+    # only bounds how long an abandoned or stolen device keeps working. Changing it affects tokens
+    # issued from then on; existing ones keep the lifetime they were signed with.
+    token-ttl: PT8H
+    jwt:
+      # The RSA key tokens are signed with (JwtSigningKey). key-path: a PKCS#8 PEM file, generated and written there
+      # (owner-only) on the first start if missing, read on every start after - so tokens survive a restart or a
+      # deploy. private-key: the PEM content itself, for platforms that inject secrets as variables; wins over
+      # key-path. Neither: a key generated per process, as local development and tests want. A configured key that
+      # cannot be read or parsed stops the application at startup.
+      key-path: ${JWT_PRIVATE_KEY_PATH:}
+      private-key: ${JWT_PRIVATE_KEY:}
+    cors:
+      # Browser origins that may call the API (CorsProperties). Patterns: a port or a subdomain may
+      # be '*', the host itself may not. A deployment overrides this with
+      # STOCKFLOW_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS, comma-separated.
+      allowed-origin-patterns: http://localhost:*,https://*.stockflow.vn
 
 logging:
   level:

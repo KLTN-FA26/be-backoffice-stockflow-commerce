@@ -1,5 +1,6 @@
 package com.stockflow.common.security;
 
+import com.stockflow.common.logging.LogSafe;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.ErrorCode;
@@ -10,6 +11,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.stereotype.Component;
@@ -53,9 +55,14 @@ public class ApiAuthenticationEntryPoint implements AuthenticationEntryPoint {
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response,
                          AuthenticationException authException) throws IOException {
+        if (authException instanceof AuthenticationServiceException) {
+            unavailable(request, response, authException);
+            return;
+        }
         // The real reason goes to the log, where an operator can see it, and not to the caller.
         log.warn("Unauthenticated request to {} {}: {}",
-                request.getMethod(), request.getRequestURI(), authException.getMessage());
+                LogSafe.text(request.getMethod()), LogSafe.text(request.getRequestURI()),
+                LogSafe.text(authException.getMessage()));
 
         response.setStatus(ErrorCode.UNAUTHORIZED.httpStatus());
         response.setContentType("application/json;charset=UTF-8");
@@ -68,6 +75,26 @@ public class ApiAuthenticationEntryPoint implements AuthenticationEntryPoint {
                 ApiResponse.error(
                         ErrorCode.UNAUTHORIZED.name(),
                         messages.forCode(ErrorCode.UNAUTHORIZED),
+                        MDC.get(CorrelationIdFilter.MDC_KEY))));
+    }
+
+    /**
+     * The token may be perfectly good; the server could not check it — the permission lookup, the
+     * session check or the key set is unreachable. A 401 here would make the frontend sign a valid
+     * user out, so it is a retryable 503 instead. {@code ResourceServerSecurityConfig} turns off
+     * Spring's rethrow of this exception type so that it reaches this entry point at all.
+     */
+    private void unavailable(HttpServletRequest request, HttpServletResponse response,
+                             AuthenticationException cause) throws IOException {
+        log.error("Could not authenticate {} {}: {}",
+                LogSafe.text(request.getMethod()), LogSafe.text(request.getRequestURI()),
+                LogSafe.text(cause.getMessage()));
+        response.setStatus(ErrorCode.AUTHORIZATION_UNAVAILABLE.httpStatus());
+        response.setContentType("application/json;charset=UTF-8");
+        response.getWriter().write(objectMapper.writeValueAsString(
+                ApiResponse.error(
+                        ErrorCode.AUTHORIZATION_UNAVAILABLE.name(),
+                        messages.forCode(ErrorCode.AUTHORIZATION_UNAVAILABLE),
                         MDC.get(CorrelationIdFilter.MDC_KEY))));
     }
 }

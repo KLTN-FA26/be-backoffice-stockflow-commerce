@@ -3,6 +3,8 @@ package com.stockflow.order.internal.domain;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -29,8 +31,55 @@ public final class OrderLine {
     private final int quantity;
     private final Money unitPrice;
     private final UUID designSnapshotId;
+    private String designChecksum;
+
+    public String designChecksum() { return designChecksum; }
+    public void recordDesignChecksum(String checksum) {
+        if (designSnapshotId == null || checksum == null || !checksum.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("A confirmed design requires a SHA-256 checksum");
+        }
+        if (designChecksum != null && !designChecksum.equals(checksum)) {
+            throw new IllegalStateException("An order's confirmed design checksum cannot change");
+        }
+        designChecksum = checksum;
+    }
 
     private final List<UUID> reservationIds;
+
+    /**
+     * SCRUM-502 (PROD-DUE): the date the customer asked to receive this print line, copied from its quote when the
+     * order is placed and fixed from then on. It becomes the production order's due date at release. Null: none
+     * was asked.
+     */
+    private LocalDate requestedDeliveryDate;
+
+    /**
+     * Units closed out of the line - the rest of a partly fulfilled order (17 edge "short pick"), or a production
+     * shortfall the customer agreed to: they will not be delivered.
+     */
+    private int cancelledQuantity;
+
+    /**
+     * Review 2026-10-25 of S6: what the customer agreed with Sales to go without on a print line production cannot
+     * finish - at most {@code quantity} units, why (the call, the message), who recorded it and when. Production
+     * completing a job short closes at most that many ({@link #shortfallClosedQuantity}): the warehouse manager does not
+     * lower what an order is worth on their own.
+     */
+    public record ShortfallAgreement(int quantity, String note, UUID agreedBy, Instant agreedAt) {
+    }
+
+    private ShortfallAgreement shortfallAgreement;
+    /** Of {@link #cancelledQuantity}, the units closed because production completed the line short. */
+    private int shortfallClosedQuantity;
+
+    public OrderLine(UUID id, Sku sku, int quantity, Money unitPrice,
+                     UUID designSnapshotId, List<UUID> reservationIds, int cancelledQuantity) {
+        this(id, sku, quantity, unitPrice, designSnapshotId, reservationIds);
+        if (cancelledQuantity < 0 || cancelledQuantity > quantity) {
+            throw new IllegalArgumentException("Closed units are between 0 and the line's quantity");
+        }
+        this.cancelledQuantity = cancelledQuantity;
+    }
 
     public OrderLine(UUID id, Sku sku, int quantity, Money unitPrice,
                      UUID designSnapshotId, List<UUID> reservationIds) {
@@ -56,6 +105,18 @@ public final class OrderLine {
      * being reserved again means a code path ran twice — and appending would silently double the
      * stock held for one line.</p>
      */
+    /** Holds added after checkout, each once (see {@code Order#addProductionHolds}). */
+    boolean addHolds(List<UUID> more) {
+        boolean added = false;
+        for (UUID id : more) {
+            if (!reservationIds.contains(java.util.Objects.requireNonNull(id, "reservationId"))) {
+                reservationIds.add(id);
+                added = true;
+            }
+        }
+        return added;
+    }
+
     void attachReservations(List<UUID> granted) {
         if (!this.reservationIds.isEmpty()) {
             throw new IllegalStateException(
@@ -69,6 +130,20 @@ public final class OrderLine {
 
     void clearReservations() {
         this.reservationIds.clear();
+    }
+
+    /** One hold gives way to the holds that replace it, in its place on the line; each kept once. */
+    void replaceHold(UUID replaced, List<UUID> replacements) {
+        if (replacements == null || replacements.isEmpty()) {
+            throw new IllegalArgumentException("A hold is replaced by at least one hold");
+        }
+        int at = reservationIds.indexOf(replaced);
+        if (at < 0) {
+            return;
+        }
+        reservationIds.remove(at);
+        List<UUID> fresh = replacements.stream().filter(id -> !reservationIds.contains(id)).distinct().toList();
+        reservationIds.addAll(at, fresh);
     }
 
     public boolean isReserved() {
@@ -88,6 +163,76 @@ public final class OrderLine {
     /** Unmodifiable: holds are attached and cleared through this class's own methods. */
     public List<UUID> reservationIds() {
         return java.util.Collections.unmodifiableList(reservationIds);
+    }
+
+    /** Package-private: only {@link Order#closeRemainder} and {@link #closeShortfall} close units. */
+    void closeUnits(int units) {
+        if (units <= 0 || cancelledQuantity + units > quantity) {
+            throw new IllegalArgumentException("Cannot close %d more of line %s".formatted(units, id));
+        }
+        cancelledQuantity += units;
+    }
+
+    /** Package-private: {@link Order#closeProductionShortfall}, within the agreement. */
+    void closeShortfall(int units) {
+        if (shortfallAgreement == null || shortfallClosedQuantity + units > shortfallAgreement.quantity()) {
+            throw new IllegalStateException("Line %s has no agreement for %d more unit(s)".formatted(id, units));
+        }
+        closeUnits(units);
+        shortfallClosedQuantity += units;
+    }
+
+    /** Package-private: {@link Order#agreeProductionShortfall}, which checks it first. */
+    void agreeShortfall(ShortfallAgreement agreement) {
+        this.shortfallAgreement = java.util.Objects.requireNonNull(agreement, "agreement");
+    }
+
+    /** Package-private: {@link Order#agreeProductionShortfall} with 0 units, nothing closed under it. */
+    void withdrawShortfall() {
+        if (shortfallClosedQuantity > 0) {
+            throw new IllegalStateException("Line %s has units closed under its agreement".formatted(id));
+        }
+        this.shortfallAgreement = null;
+    }
+
+    /** Rehydration of the agreement and what production closed under it. */
+    public OrderLine withShortfall(ShortfallAgreement agreement, int closed) {
+        if (closed < 0 || closed > cancelledQuantity || closed > (agreement == null ? 0 : agreement.quantity())) {
+            throw new IllegalArgumentException("Units closed for a shortfall are within the agreement and the closed units");
+        }
+        this.shortfallAgreement = agreement;
+        this.shortfallClosedQuantity = closed;
+        return this;
+    }
+
+    public int cancelledQuantity() {
+        return cancelledQuantity;
+    }
+
+    /** Null until Sales records the customer's agreement. */
+    public ShortfallAgreement shortfallAgreement() {
+        return shortfallAgreement;
+    }
+
+    public int shortfallClosedQuantity() {
+        return shortfallClosedQuantity;
+    }
+
+    /** Null when the customer asked for no date. */
+    public LocalDate requestedDeliveryDate() {
+        return requestedDeliveryDate;
+    }
+
+    /**
+     * Records the date the customer asked for; only a print line is produced to a date. Used when the line is
+     * built (placing the order, rehydration) - there is no way to change it on a placed order.
+     */
+    public OrderLine withRequestedDeliveryDate(LocalDate date) {
+        if (date != null && designSnapshotId == null) {
+            throw new IllegalArgumentException("Only a print line has a requested delivery date");
+        }
+        this.requestedDeliveryDate = date;
+        return this;
     }
 
     public boolean isMadeToOrder() {

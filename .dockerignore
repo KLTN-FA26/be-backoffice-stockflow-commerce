@@ -11,6 +11,8 @@ target/
 .vscode/
 .local-storage/
 docs/
+deploy/
+infra/
 *.md
 !README.md
 .env

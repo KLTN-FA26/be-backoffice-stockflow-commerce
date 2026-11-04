@@ -2,6 +2,7 @@ package com.stockflow.order.internal.service;
 
 import com.stockflow.contracts.PaymentCaptured;
 import com.stockflow.contracts.PaymentFailed;
+import com.stockflow.contracts.PaymentReversed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
@@ -36,15 +37,40 @@ class PaymentEventListener {
 
     private final OrderServiceImpl orders;
 
+    /** A receivable's payment; the fee kind pays a fee a closure left owed (re-review of #150). */
+    private static final String FEE_RECEIVABLE_ALLOCATION = "FEE_RECEIVABLE_ALLOCATION";
+
+    private static boolean ofReceivable(String source) {
+        return "RECEIVABLE_ALLOCATION".equals(source) || FEE_RECEIVABLE_ALLOCATION.equals(source);
+    }
+
     PaymentEventListener(OrderServiceImpl orders) {
         this.orders = orders;
     }
 
+    /** Money in: counted once per payment; confirms the order when its terms are met (SCRUM-460). */
     @ApplicationModuleListener
     public void on(PaymentCaptured event) {
-        orders.markPaid(event.orderId());
-        log.info("Order {} marked PAID after payment {} captured {} {}",
+        // A receivable's payment pays what a delivery billed: the order keeps it apart, so what it still has to bill
+        // (credit exposure, G3-2) is not lowered twice.
+        orders.recordPayment(event.orderId(), event.paymentId(), event.amount(), event.currency(),
+                ofReceivable(event.source()), FEE_RECEIVABLE_ALLOCATION.equals(event.source()));
+        log.info("Order {}: payment {} captured {} {}",
                 event.orderId(), event.paymentId(), event.amount(), event.currency());
+    }
+
+    /**
+     * Money taken back by the accountant (G2-3, 15 BR-06): counted once per reversal; a confirmed order left short of
+     * its terms goes ON_HOLD (reason PAYMENT) rather than silently back to unpaid.
+     */
+    @ApplicationModuleListener
+    public void on(PaymentReversed event) {
+        orders.reversePayment(event.orderId(), event.reversalId(), event.amount(), event.currency(),
+                ofReceivable(event.source()), FEE_RECEIVABLE_ALLOCATION.equals(event.source()),
+                "allocation %s reversed (reversal %s)".formatted(event.allocationId(), event.reversalId()),
+                event.reversedBy(), event.reversedAt());
+        log.info("Order {}: payment {} reversed, {} {} taken back", event.orderId(), event.allocationId(),
+                event.amount(), event.currency());
     }
 
     /**
@@ -56,7 +82,7 @@ class PaymentEventListener {
      */
     @ApplicationModuleListener
     public void on(PaymentFailed event) {
-        orders.cancelAfterPaymentFailure(event.orderId(), "PAYMENT_FAILED: " + event.failureCode());
+        orders.cancelAfterPaymentFailure(event.orderId(), event.failureCode());
         log.info("Order {} cancelled after payment {} failed ({})",
                 event.orderId(), event.paymentId(), event.failureMessage());
     }

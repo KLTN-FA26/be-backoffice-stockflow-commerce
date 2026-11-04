@@ -1,13 +1,12 @@
 package com.stockflow.product.internal.controller.dto;
 
+import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.TaxClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 
-import java.math.BigDecimal;
-import java.util.List;
 import java.util.UUID;
 
 /** Request body for updating a product master row. No {@code code}: it is fixed at creation. */
@@ -15,37 +14,30 @@ import java.util.UUID;
 public record UpdateProductRequest(
 
         @NotBlank(message = "name is required")
+        @Size(max = 255, message = "name must be at most 255 characters")
         String name,
 
         @NotBlank(message = "nameEn is required")
+        @Size(max = 300, message = "nameEn must be at most 300 characters")
         String nameEn,
 
+        UUID brandId,
+
         UUID categoryId,
+
+        String shortDescription,
 
         String description,
 
         String descriptionEn,
 
-        @NotBlank(message = "brand is required")
-        String brand,
-
         @NotNull(message = "taxClass is required")
         TaxClass taxClass,
 
-        boolean customizable,
+        ProductKind kind,
 
-        List<String> images,
-
-        @Positive(message = "weightKg must be positive")
-        BigDecimal weightKg,
-
-        @Positive(message = "lengthCm must be positive")
-        BigDecimal lengthCm,
-
-        @Positive(message = "widthCm must be positive")
-        BigDecimal widthCm,
-
-        @Positive(message = "heightCm must be positive")
-        BigDecimal heightCm
+        @Schema(description = "The product's version as last read; a changed product answers 409 OPTIMISTIC_LOCK")
+        @NotNull(message = "version is required")
+        Long version
 ) {
 }

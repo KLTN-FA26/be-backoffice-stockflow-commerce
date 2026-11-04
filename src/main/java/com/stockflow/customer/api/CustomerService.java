@@ -1,5 +1,11 @@
 package com.stockflow.customer.api;
 
+import com.stockflow.common.api.PageResponse;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
 /**
  * THE public API of the customer module — the only package other modules may import.
  *
@@ -17,7 +23,78 @@ package com.stockflow.customer.api;
  */
 public interface CustomerService {
 
-    // TODO: declare this module's use cases here. Every parameter and return type is a record
-    //       or enum declared in THIS package, never a domain object. See
-    //       inventory.api.InventoryService for the worked example.
+    /** Retained for caller compatibility; always refuses self-registration under the B2B policy. */
+    CustomerRegistration register(RegisterCustomerCommand command);
+
+    Optional<CustomerSummary> findById(UUID customerId);
+
+    /**
+     * The full names of these customers, in one query (review of #150: a page of task candidates needs a name per
+     * row). Unknown ids are absent; null or empty in, empty out.
+     */
+    java.util.Map<UUID, String> fullNames(java.util.Collection<UUID> customerIds);
+
+    /** Whether this customer group ({@code customer.segment}) exists: catalog prices groups (P7). */
+    boolean segmentExists(UUID segmentId);
+
+    Optional<CustomerSummary> findByUserId(UUID userId);
+
+    PageResponse<CustomerSummary> list(ListCustomersQuery query);
+
+    CustomerSummary update(UpdateCustomerCommand command);
+
+    /**
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_CUSTOMER_STATUS_TRANSITION};
+     *         {@code VALIDATION_FAILED} when reopening a closed customer without a reason;
+     *         {@code CUSTOMER_TAX_CODE_ALREADY_EXISTS} when the code is held by another live customer
+     */
+    CustomerSummary changeStatus(ChangeCustomerStatusCommand command);
+
+    /** Oldest first. @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND} */
+    List<CustomerStatusEntry> statusHistory(UUID customerId);
+
+    /** Every change of the customer's company name and tax code, oldest first (decision 2026-10-17). */
+    List<CustomerChangeEntry> changeHistory(UUID customerId);
+
+    List<CustomerAddressSummary> listAddresses(UUID customerId, UUID actorUserId, boolean privileged);
+
+    CustomerAddressSummary addAddress(UUID customerId, UUID actorUserId, boolean privileged,
+                                      SaveAddressCommand command);
+
+    CustomerAddressSummary updateAddress(UUID customerId, UUID addressId, UUID actorUserId,
+                                         boolean privileged, SaveAddressCommand command);
+
+    void deleteAddress(UUID customerId, UUID addressId, UUID actorUserId, boolean privileged);
+
+    CustomerAddressSummary setDefaultAddress(UUID customerId, UUID addressId, UUID actorUserId,
+                                             boolean privileged);
+
+    /** Resolves defaults and returns immutable checkout data without exposing internal entities. */
+    CheckoutCustomer resolveCheckout(UUID customerId, UUID shippingAddressId, UUID billingAddressId);
+
+    /**
+     * The customer's commercial terms (kltn-docs 18 §3); prepaid only when none were set (SCRUM-427).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND}
+     */
+    CreditTerms creditTerms(UUID customerId);
+
+    /**
+     * {@link #creditTerms}, with the customer row locked for the rest of the caller's transaction: two
+     * credit orders of one customer are checked against the limit one after the other, never on the
+     * same exposure (kltn-docs 15 BR-03).
+     */
+    CreditTerms lockCreditTerms(UUID customerId);
+
+    /**
+     * Set the terms; whoever approves credit only (18 BR-02), recorded with who and when.
+     *
+     * <p>Terms that already exist are changed only against the version the caller read
+     * ({@link SaveCreditTermsCommand#expectedVersion()}); only the first set may omit it.</p>
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CREDIT_PROFILE_INVALID},
+     *         {@code CUSTOMER_NOT_FOUND}, {@code VALIDATION_FAILED} (field {@code expectedVersion}) when the
+     *         customer has terms and no version was sent, {@code OPTIMISTIC_LOCK} when they changed since read
+     */
+    CreditTerms saveCreditTerms(SaveCreditTermsCommand command);
 }

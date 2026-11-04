@@ -9,9 +9,13 @@ import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.security.DataScope;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RecordedEvents;
+import com.stockflow.support.TestUsers;
+import com.stockflow.support.WithCurrentUser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import({PostgresContainer.class, RecordedEvents.class})
 class PlaceOrderIntegrationTest {
 
-    /** From the demo seed: 25 units at HCM-A-01-02-B plus 8 at HCM-A-02-01-A. */
+    /** From the demo seed: 25 units at HCM-A01-2-B plus 8 at HCM-A02-1-A. */
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
 
     @Autowired OrderService orders;
@@ -54,8 +58,19 @@ class PlaceOrderIntegrationTest {
     @Autowired RecordedEvents.Recorder events;
 
     private static PlaceOrderCommand order(int quantity) {
-        return new PlaceOrderCommand(UUID.randomUUID(), UUID.randomUUID(), List.of(
+        return new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID, List.of(
                 new PlaceOrderCommand.Line(SOFA, quantity, Money.vnd(12_000_000), null)));
+    }
+
+    /**
+     * SCRUM-242: {@code OrderServiceImpl.cancel} now looks the order up via
+     * {@code findByIdInScope}, so it requires a {@link com.stockflow.common.security.DataScope}
+     * in force - correct for the two real HTTP endpoints, but this plain service-layer test call
+     * is otherwise a "background job" with no scope at all. {@link WithCurrentUser} installs one
+     * for the duration of the call, same as any other scoped-repository test.
+     */
+    private void cancel(UUID orderId, String reason) {
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(orderId, reason));
     }
 
     @Test
@@ -72,7 +87,7 @@ class PlaceOrderIntegrationTest {
                 .isNotEmpty();
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before - 3);
 
-        orders.cancel(summary.orderId(), "TEST_CLEANUP");
+        cancel(summary.orderId(), "TEST_CLEANUP");
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
     }
 
@@ -121,25 +136,25 @@ class PlaceOrderIntegrationTest {
     }
 
     /**
-     * A line big enough to exhaust the first lot must draw from the second.
+     * A line bigger than any one lot is still one hold at checkout.
      *
      * <p>The seed puts 25 units at one location and 8 at another, so 30 units cannot come from one
-     * stock item. This is the case that a single shared idempotency key would break — the second
-     * lot's reservation would violate {@code uk_stock_reservation_request} — and the case where
-     * keeping only the first reservation id would strand the second hold on cancellation.</p>
+     * stock item. Since SCRUM-152 checkout holds the SKU, not the lots: the line carries one SKU
+     * reservation, and the two lots are chosen when the order is released (one allocation per lot,
+     * {@code SkuReservationAllocationIntegrationTest}); cancelling before that releases the one hold.</p>
      */
     @Test
-    @DisplayName("an order line spanning two lots gets a hold on each, and releases both")
+    @DisplayName("an order line bigger than any lot holds the SKU once, and releases it")
     void aLineSpanningTwoLotsHoldsAndReleasesBoth() {
         int before = inventory.availableToPromise(SOFA);
         int quantity = before - 2;   // more than any single lot holds
 
         OrderSummary summary = orders.placeOrder(order(quantity));
 
-        assertThat(summary.lines().getFirst().reservationIds()).hasSizeGreaterThan(1);
+        assertThat(summary.lines().getFirst().reservationIds()).hasSize(1);
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before - quantity);
 
-        orders.cancel(summary.orderId(), "CUSTOMER_REQUEST");
+        cancel(summary.orderId(), "CUSTOMER_REQUEST");
 
         // Every hold released, not just the first one.
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
@@ -157,7 +172,7 @@ class PlaceOrderIntegrationTest {
         assertThat(retry.orderId()).isEqualTo(first.orderId());
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before - 2);
 
-        orders.cancel(first.orderId(), "TEST_CLEANUP");
+        cancel(first.orderId(), "TEST_CLEANUP");
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
     }
 
@@ -167,7 +182,7 @@ class PlaceOrderIntegrationTest {
         int before = inventory.availableToPromise(SOFA);
         OrderSummary summary = orders.placeOrder(order(4));
 
-        orders.cancel(summary.orderId(), "CUSTOMER_REQUEST");
+        cancel(summary.orderId(), "CUSTOMER_REQUEST");
 
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
         assertThat(orders.findById(summary.orderId()))
@@ -184,6 +199,6 @@ class PlaceOrderIntegrationTest {
         assertThat(events.matching(OrderPlaced.class,
                 event -> event.orderId().equals(summary.orderId()))).hasSize(1);
 
-        orders.cancel(summary.orderId(), "TEST_CLEANUP");
+        cancel(summary.orderId(), "TEST_CLEANUP");
     }
 }

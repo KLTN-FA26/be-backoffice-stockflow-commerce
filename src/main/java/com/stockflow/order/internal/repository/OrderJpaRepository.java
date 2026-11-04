@@ -10,6 +10,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -68,4 +69,34 @@ interface OrderJpaRepository extends ScopedJpaRepository<OrderJpaEntity> {
             order by o.placedAt desc
             """)
     List<OrderJpaEntity> findByCustomerIdWithLines(@Param("customerId") UUID customerId);
+
+    @Query("""
+            select distinct o from OrderJpaEntity o
+            left join fetch o.lines
+            where o.customerId = :customerId and o.placedAt >= :since
+              and o.status <> com.stockflow.order.api.OrderStatus.CANCELLED
+            order by o.placedAt desc
+            """)
+    List<OrderJpaEntity> findLiveSinceWithLines(@Param("customerId") UUID customerId,
+                                                @Param("since") java.time.Instant since);
+
+    @Query("select new com.stockflow.order.api.OrderHoldState(o.id, o.status, o.holdReason, o.allowPartialShipment) "
+            + "from OrderJpaEntity o where o.id in :ids")
+    List<com.stockflow.order.api.OrderHoldState> holdStates(@Param("ids") java.util.Collection<UUID> ids);
+
+    /** {@code [orderId, lineCount]} per order, for a list that shows how many lines each order has. */
+    @Query("""
+            select l.order.id, count(l) from OrderLineJpaEntity l
+            where l.order.id in :orderIds
+            group by l.order.id
+            """)
+    List<Object[]> countLinesByOrder(@Param("orderIds") Collection<UUID> orderIds);
+
+    /** {@code [orderId, lineId, sku, quantity, designSnapshotId]} of these orders' lines, for a list showing them. */
+    @Query("""
+            select l.order.id, l.id, l.sku, l.quantity, l.designSnapshotId from OrderLineJpaEntity l
+            where l.order.id in :orderIds
+            order by l.order.id, l.id
+            """)
+    List<Object[]> findLineRowsByOrder(@Param("orderIds") Collection<UUID> orderIds);
 }

@@ -78,7 +78,8 @@ class ValidatorsTest {
             assertThat(validator.isValid("SOFA-3S-GREY", null)).isTrue();
             assertThat(validator.isValid("sofa-3s-grey", null)).isTrue();
             assertThat(validator.isValid("A B", null)).isFalse();
-            assertThat(validator.isValid("AB", null)).isFalse();
+            assertThat(validator.isValid("AB", null)).isTrue();
+            assertThat(validator.isValid("-AB", null)).isFalse();
             assertThat(validator.isValid(null, null)).isTrue();
         }
     }

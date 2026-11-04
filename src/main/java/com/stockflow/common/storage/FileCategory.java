@@ -12,8 +12,26 @@ import java.util.Set;
  */
 public enum FileCategory {
 
-    /** Catalogue and product photography. Public-ish: served to the storefront. */
+    /**
+     * Approved display renditions, and nothing else: the CDN serves this whole prefix. Objects get
+     * here only by {@link FileTransfers#publish} when a gallery is approved - never by an upload -
+     * so a draft image is never reachable from the internet.
+     */
     PRODUCT_IMAGE("product-images", 10 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp")),
+
+    /**
+     * Re-encoded display renditions as generated at upload, before anyone has approved them.
+     * Private, like the original; a rendition is copied to {@link #PRODUCT_IMAGE} on approval.
+     */
+    PRODUCT_RENDITION("product-renditions", 10 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp")),
+
+    /**
+     * The photograph exactly as uploaded, EXIF/GPS included. Private: outside the CDN's origin
+     * path and bucket policy, reachable only through a presigned link from the application.
+     */
+    PRODUCT_IMAGE_ORIGINAL("product-originals", 10 * 1024 * 1024,
             Set.of("image/jpeg", "image/png", "image/webp")),
 
     /** Renders produced by the design studio. Larger, because they are print-resolution. */
@@ -26,9 +44,24 @@ public enum FileCategory {
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
 
+    /**
+     * A supplier's invoice as received (SCRUM-308): the PDF it came as, or a photo or scan of the paper. A financial
+     * record - a replaced scan is kept in storage, not deleted.
+     */
+    SUPPLIER_INVOICE("supplier-invoices", 15 * 1024 * 1024,
+            Set.of("application/pdf", "image/jpeg", "image/png")),
+
     /** Photographs taken during goods receipt and QC. Evidence - never deleted casually. */
     QC_EVIDENCE("qc-evidence", 20 * 1024 * 1024,
             Set.of("image/jpeg", "image/png")),
+
+    /**
+     * Photographs of a return (SCRUM-243): the customer's of the defect, the warehouse's and QC's of what came back.
+     * Private, served only through a short presigned link; a phone photo, so WebP too, and no documents - a delivery
+     * note is photographed like the goods.
+     */
+    RETURN_EVIDENCE("return-evidence", 15 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp")),
 
     /** Generated reports awaiting download. Short-lived; the retention job clears them. */
     EXPORT("exports", 100 * 1024 * 1024,

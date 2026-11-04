@@ -50,6 +50,18 @@ public sealed interface StockEvent extends DomainEvent {
         }
     }
 
+    record Allocated(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockAllocated payload)
+            implements StockEvent {
+        public Allocated(com.stockflow.contracts.StockAllocated payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.sku() + "@" + payload.locationCode();
+        }
+    }
+
     record Deducted(UUID eventId, Instant occurredAt, StockDeducted payload) implements StockEvent {
         public Deducted(StockDeducted payload) {
             this(UUID.randomUUID(), Instant.now(), payload);
@@ -58,6 +70,32 @@ public sealed interface StockEvent extends DomainEvent {
         @Override
         public String aggregateId() {
             return payload.sku() + "@" + payload.locationCode();
+        }
+    }
+
+    /** Recorded by a damage report: its units left available-to-promise for a quarantine area. */
+    record DamageReported(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockDamageReported payload)
+            implements StockEvent {
+        public DamageReported(com.stockflow.contracts.StockDamageReported payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.reportId().toString();
+        }
+    }
+
+    /** Recorded by a damage report when a manager decided some of its units. */
+    record DamageDisposed(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockDamageDisposed payload)
+            implements StockEvent {
+        public DamageDisposed(com.stockflow.contracts.StockDamageDisposed payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.reportId().toString();
         }
     }
 }

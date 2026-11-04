@@ -2,12 +2,14 @@ package com.stockflow.common.security;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.web.cors.CorsConfigurationSource;
 
 /**
  * The chain used when {@code stockflow.security.enabled=false}.
@@ -25,8 +27,8 @@ import org.springframework.security.web.SecurityFilterChain;
  * Swagger UI cannot call anything, and the {@code app} container in docker-compose never passes its
  * readiness probe, so {@code docker compose --profile app up} hangs and never converges.</p>
  *
- * <p>Declaring a permissive chain removes the ambiguity: "off" means a chain that permits
- * everything, not the absence of a chain.</p>
+ * <p>Declaring a permissive chain removes the ambiguity: "off" opens development routes,
+ * while retired B2C routes remain closed even when an old idempotency result exists.</p>
  *
  * <p>{@link UnsecuredDataScopeFilter} is the second half of the same job. This class opens the
  * filter chain; that one supplies the row scope, which is otherwise never established once
@@ -48,19 +50,31 @@ public class PermissiveSecurityConfig {
     private static final Logger log = LoggerFactory.getLogger(PermissiveSecurityConfig.class);
 
     @Bean
-    public SecurityFilterChain permitAllFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain permitAllFilterChain(HttpSecurity http,
+            @Qualifier(CorsConfig.SOURCE) CorsConfigurationSource cors)
+            throws Exception {
         log.warn("""
                 ============================================================
                 SECURITY IS DISABLED (stockflow.security.enabled=false).
-                Every endpoint is open and @RequiresPermission is NOT enforced.
+                Authentication and @RequiresPermission are NOT enforced.
+                Retired B2C routes remain blocked.
                 This is for local development only.
                 ============================================================""");
 
         return http
                 .csrf(csrf -> csrf.disable())
-                .cors(cors -> cors.configurationSource(new org.springframework.web.cors
-                        .UrlBasedCorsConfigurationSource()))
-                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+                // The same origins as the secured chain (CorsConfig). "Security off" opens the
+                // endpoints, not the browser's same-origin policy: without a policy here a
+                // frontend on another localhost port could call nothing.
+                .cors(c -> c.configurationSource(cors))
+                .authorizeHttpRequests(auth -> auth
+                        // Keep the same retirement as the secured chain, before idempotency can
+                        // replay an old registration token or guest-order success in local mode.
+                        .requestMatchers("/api/v1/customers/registrations", "/api/v1/customers/registrations/**",
+                                "/api/v1/orders/guest-checkout", "/api/v1/orders/guest-checkout/**",
+                                "/api/v1/public/products/availability", "/api/v1/public/products/availability/**")
+                        .denyAll()
+                        .anyRequest().permitAll())
                 .build();
     }
 }

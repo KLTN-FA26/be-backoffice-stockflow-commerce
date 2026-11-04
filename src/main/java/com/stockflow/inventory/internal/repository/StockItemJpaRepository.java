@@ -3,10 +3,13 @@ package com.stockflow.inventory.internal.repository;
 import com.stockflow.inventory.internal.entity.StockItemJpaEntity;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDate;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,7 +28,22 @@ import java.util.UUID;
  * past two conditions ({@code findByStatusAndReservationsStatusAndReservationsExpiresAtBefore}),
  * and cannot express the fetch joins and lock modes these need.</p>
  */
-interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID> {
+interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>,
+        JpaSpecificationExecutor<StockItemJpaEntity> {
+
+    interface AvailableTotal {
+        String getSku();
+        Long getQuantity();
+    }
+
+    @Query("""
+            select s.sku as sku, sum(s.onHand-s.reserved) as quantity from StockItemJpaEntity s
+            where s.sku in :skus and s.status=com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
+              and s.onHand>s.reserved and (s.expiryDate is null or s.expiryDate>=:today)
+            group by s.sku
+            """)
+    List<AvailableTotal> availableTotals(@Param("skus") java.util.Set<String> skus,
+                                        @Param("today") LocalDate today);
 
     /**
      * Load one aggregate with its children in a single query.
@@ -65,29 +83,105 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
      * re-check under the lock would run against pre-lock data.</p>
      *
      * <p>{@code reserved} is read from the denormalised column rather than aggregated from the
-     * child table, which keeps this a single-table scan on the partial index.</p>
+     * child table, which keeps this a single-table scan on the partial index. The carton, when there
+     * is one, is joined by its primary key only to say whether the row is that whole sealed carton
+     * (SCRUM-473); a carton holding stock is IN_STOCK, so no status filter is needed on it.</p>
      */
     @Query("""
             select new com.stockflow.inventory.internal.repository.AvailabilityRow(
-                s.id, s.locationCode, s.lotNumber, s.expiryDate, s.status, s.onHand, s.reserved)
+                s.id, s.locationCode, s.lotNumber, s.expiryDate, s.status, s.onHand, s.reserved, s.receivedAt,
+                s.stockPackageId,
+                case when p.unopened = true and s.reserved = 0 and s.onHand = p.receivedQty then true else false end)
             from StockItemJpaEntity s
+            left join StockPackageJpaEntity p on p.id = s.stockPackageId
             where s.sku = :sku
               and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
               and s.onHand > s.reserved
             """)
     List<AvailabilityRow> findAvailabilityBySku(@Param("sku") String sku);
 
+    /**
+     * Available to promise for many SKUs in one grouped scan, without loading a single entity.
+     *
+     * <p>Same filter as {@link #findAvailabilityBySku}: AVAILABLE stock with something left after
+     * reservations, so the difference is never negative.</p>
+     */
+    @Query("""
+            select new com.stockflow.inventory.internal.repository.SkuAtpRow(
+                s.sku, sum(s.onHand - s.reserved))
+            from StockItemJpaEntity s
+            where s.sku in :skus
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
+              and s.onHand > s.reserved
+              and (s.expiryDate is null or s.expiryDate >= :today)
+            group by s.sku
+            """)
+    List<SkuAtpRow> sumAvailableBySkus(@Param("skus") Collection<String> skus,
+                                     @Param("today") LocalDate today);
+
+    /** Subtotals for the warehouse roll-up; every status, because on-hand counts them all. */
+    @Query("""
+            select new com.stockflow.inventory.internal.repository.StockLevelRow(
+                s.locationCode, s.status, sum(s.onHand), sum(s.reserved), s.expiryDate)
+            from StockItemJpaEntity s
+            where s.sku = :sku
+            group by s.locationCode, s.status, s.expiryDate
+            """)
+    List<StockLevelRow> findLevelRowsBySku(@Param("sku") String sku);
+
+    /**
+     * Live allocations of one SKU per location: the hard holds a release placed on a bin and lot
+     * ({@code allocated_from_id} set), a subset of {@code reserved} on the same rows.
+     */
+    @Query("""
+            select new com.stockflow.inventory.internal.repository.AllocatedRow(s.locationCode, sum(r.quantity))
+            from StockItemJpaEntity s join s.reservations r
+            where s.sku = :sku
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+              and r.allocatedFrom is not null
+            group by s.locationCode
+            """)
+    List<AllocatedRow> findAllocatedRowsBySku(@Param("sku") String sku);
+
     @Query("""
             select distinct s from StockItemJpaEntity s
             left join fetch s.reservations
-            where s.sku = :sku and s.locationCode = :locationCode
+            where s.sku = :sku and s.locationCode = :locationCode and s.stockPackageId is null
             """)
-    List<StockItemJpaEntity> findBySkuAndLocation(@Param("sku") String sku,
-                                                  @Param("locationCode") String locationCode);
+    List<StockItemJpaEntity> findLooseBySkuAndLocation(@Param("sku") String sku,
+                                                       @Param("locationCode") String locationCode);
+
+    @Query("""
+            select distinct s from StockItemJpaEntity s
+            left join fetch s.reservations
+            where s.sku = :sku and s.lotId = :lotId and s.stockPackageId is null
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.INBOUND
+            order by s.id
+            """)
+    List<StockItemJpaEntity> findLooseInboundByLot(@Param("sku") String sku, @Param("lotId") UUID lotId);
+
+    @Query("""
+            select s.lotId, s.locationCode from StockItemJpaEntity s
+            where s.lotId in :lotIds and s.stockPackageId is null and s.onHand > 0
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.INBOUND
+            order by s.id
+            """)
+    List<Object[]> findLooseInboundLocations(@Param("lotIds") Collection<UUID> lotIds);
+
+    /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
+    @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
+    List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);
+
+    /** JPQL for the same reason as {@link #findIdsInStockPackage}. */
+    @Query("select s.id from StockItemJpaEntity s where s.stockPackageId in :stockPackageIds order by s.id")
+    List<UUID> findIdsInStockPackages(@Param("stockPackageIds") java.util.Collection<UUID> stockPackageIds);
+
+    @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
+    long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);
 
     /** Ids only, so the sweeper can page through the backlog before locking anything. */
     @Query("""
-            select distinct r.stockItem.id from ReservationJpaEntity r
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
               and r.expiresAt < :cutoff
             """)
@@ -95,19 +189,65 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
                                                        org.springframework.data.domain.Pageable page);
 
     @Query("""
-            select distinct r.stockItem.id from ReservationJpaEntity r
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.rootRequestId = :rootRequestId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             """)
     List<UUID> findStockItemIdsForRequest(@Param("rootRequestId") UUID rootRequestId);
 
+    /** In id order: the caller locks each in turn, and two orders sharing rows must never lock them crosswise. */
     @Query("""
-            select distinct r.stockItem.id from ReservationJpaEntity r
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.orderId = :orderId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by r.stockItem.id
             """)
     List<UUID> findStockItemIdsHoldingOrder(@Param("orderId") UUID orderId);
 
-    @Query("select r.stockItem.id from ReservationJpaEntity r where r.id = :reservationId")
+    @Query("""
+            select new com.stockflow.inventory.internal.domain.HeldStock(s.sku, s.locationCode, r.quantity)
+            from ReservationJpaEntity r join r.stockItem s
+            where r.orderId = :orderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by s.sku, s.locationCode
+            """)
+    List<com.stockflow.inventory.internal.domain.HeldStock> findHeldForOrder(@Param("orderId") UUID orderId);
+
+    @Query("""
+            select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
+                   r.quantity, r.status, r.expiresAt, s.expiryDate, s.serialNumber, p.lpn,
+                   case when p.unopened = true and r.quantity = s.onHand and s.onHand = p.receivedQty
+                        then true else false end)
+            from ReservationJpaEntity r join r.stockItem s
+            left join StockPackageJpaEntity p on p.id = s.stockPackageId
+            where r.id in :ids
+            """)
+    List<com.stockflow.inventory.internal.domain.HoldDetail> findHolds(@Param("ids") java.util.Collection<UUID> ids);
+
+    @Query("select s.id from ReservationJpaEntity r join r.stockItem s where r.id = :reservationId")
     Optional<UUID> findStockItemIdByReservationId(@Param("reservationId") UUID reservationId);
+
+    @Query("""
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
+            where r.productionOrderId = :productionOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            """)
+    List<UUID> findStockItemIdsHoldingProductionOrder(@Param("productionOrderId") UUID productionOrderId);
+
+    /** SCRUM-287 PR T: the stock rows holding a transfer order's live allocation. */
+    @Query("""
+            select distinct r.stockItem.id from ReservationJpaEntity r
+            where r.transferOrderId = :transferOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            """)
+    List<UUID> findStockItemIdsHoldingTransferOrder(@Param("transferOrderId") UUID transferOrderId);
+
+    /** The live holds of a production order, oldest first; nothing is locked. */
+    @Query("""
+            select r.id from ReservationJpaEntity r
+            where r.productionOrderId = :productionOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by r.reservedAt, r.id
+            """)
+    List<UUID> findHeldReservationIdsOfProductionOrder(@Param("productionOrderId") UUID productionOrderId);
 }

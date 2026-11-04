@@ -60,4 +60,14 @@ public interface FileStorage {
     void delete(String key);
 
     boolean exists(String key);
+
+    /**
+     * Copy an object to another key in the same store, overwriting the target.
+     *
+     * <p>Server-side where the store supports it, so publishing an image does not pull its bytes
+     * through the application. Idempotent: copying twice leaves the same object.</p>
+     *
+     * @throws StorageException if the source does not exist or the store refuses the copy
+     */
+    void copy(String sourceKey, String targetKey);
 }

@@ -1,10 +1,39 @@
 package com.stockflow.inventory.internal.service;
 
+import com.stockflow.common.logging.LogSafe;
+import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.InventoryItemPolicy;
+import com.stockflow.inventory.api.IssueReservedStockCommand;
+import com.stockflow.inventory.api.IssueReservedStockResult;
+import com.stockflow.inventory.api.ReserveProductionStockCommand;
+import com.stockflow.inventory.api.LowStockItem;
+import com.stockflow.inventory.internal.domain.StockThresholds;
+import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
+import com.stockflow.inventory.api.ReceiveStockCommand;
+import com.stockflow.inventory.api.OrderHold;
+import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
+import com.stockflow.inventory.api.RequestAdjustmentCommand;
+
+import com.stockflow.inventory.api.StockAdjustmentSummary;
+import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
+import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.api.StockReservation;
+import com.stockflow.inventory.api.AllocateStockCommand;
+import com.stockflow.inventory.api.AllocateStockResult;
+import com.stockflow.inventory.api.ReallocateStockCommand;
+import com.stockflow.inventory.internal.domain.InsufficientStockException;
+import com.stockflow.inventory.internal.domain.LocationDirectory;
+import com.stockflow.inventory.internal.domain.SkuReservation;
+import com.stockflow.inventory.internal.domain.SkuReservationRepository;
+import com.stockflow.inventory.internal.domain.InventoryItemDirectory;
+import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
@@ -13,20 +42,37 @@ import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
+import com.stockflow.inventory.internal.domain.StockLevelLine;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.WarehouseScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.inventory.api.InventoryControlService;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.util.stream.Collectors;
 
 /**
  * The only implementation of {@link InventoryService}, and the module's transaction boundary.
@@ -46,39 +92,358 @@ import java.util.UUID;
  */
 @Service
 @Transactional
-class InventoryServiceImpl implements InventoryService, StockConsumption {
+class InventoryServiceImpl implements InventoryService {
 
     private static final Logger log = LoggerFactory.getLogger(InventoryServiceImpl.class);
 
     private final StockItemRepository repository;
     private final InventoryEventPublisher events;
+    private final StockOperations operations;
+    private final InventoryItemDirectory items;
     private final Clock clock;
+    private final InventoryControlService controls;
+    private final InventoryPolicyRepository policies;
+    private final SkuReservationRepository skuReservations;
+    private final LocationDirectory locations;
+    private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
+    private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
+    private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports;
 
-    InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events, Clock clock) {
+    /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
+    private final java.time.Duration reservationTtl;
+
+    InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
+                         StockOperations operations, InventoryItemDirectory items, Clock clock,
+                         InventoryControlService controls, InventoryPolicyRepository policies,
+                         SkuReservationRepository skuReservations, LocationDirectory locations,
+                         com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
+                         com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages,
+                         com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports,
+                         @org.springframework.beans.factory.annotation.Value(
+                                 "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
+        if (reservationTtl == null || reservationTtl.isZero() || reservationTtl.isNegative()) {
+            throw new IllegalArgumentException("stockflow.inventory.reservation-ttl must be positive");
+        }
+        this.stockPackages = stockPackages;
+        this.damageReports = damageReports;
+        this.reservationTtl = reservationTtl;
         this.repository = repository;
         this.events = events;
+        this.operations = operations;
+        this.items = items;
         this.clock = clock;
+        this.controls = controls;
+        this.policies = policies;
+        this.skuReservations = skuReservations;
+        this.locations = locations;
+        this.cycleCounts = cycleCounts;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<LowStockItem> lowStockBatch(String afterSku, int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be at least 1");
+        }
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        List<LowStockItem> low = new ArrayList<>();
+        String cursor = afterSku == null ? "" : afterSku;
+        while (low.size() < limit) {
+            // A scan page is every SKU with a threshold, low or not, so keep reading until enough are low.
+            var page = policies.thresholdPage(cursor, Math.max(limit, 200), today);
+            for (var row : page) {
+                if (StockThresholds.isLow(row.usableOnHand(), row.reorderPoint(), row.safetyStock())) {
+                    low.add(new LowStockItem(row.sku(), row.usableOnHand(), row.reorderPoint(), row.safetyStock(),
+                            Boolean.TRUE.equals(StockThresholds.reorderRequired(row.usableOnHand(), row.reorderPoint())),
+                            Boolean.TRUE.equals(StockThresholds.belowSafetyStock(row.usableOnHand(), row.safetyStock()))));
+                    if (low.size() == limit) {
+                        return low;
+                    }
+                }
+                cursor = row.sku();
+            }
+            if (page.size() < Math.max(limit, 200)) {
+                break;
+            }
+        }
+        return low;
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void prepareReservation(Set<Sku> skus) {
+        // SKU advisory locks only (SCRUM-152): a SKU reservation touches no stock row, so locking every stock row of
+        // the basket, as checkout did while it chose lots, would only serialise checkouts against picking.
+        skus.stream().map(Sku::code).distinct().sorted().forEach(policies::lock);
+    }
+
+    /** Delegated: moves and adjustments write the ledger, which {@link StockOperations} owns. */
+    @Override
+    public StockMove move(MoveStockCommand command) {
+        return operations.move(command);
+    }
+
+    @Override
+    public StockMove receive(ReceiveStockCommand command) {
+        return operations.receive(command);
+    }
+
+    @Override
+    public List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command) {
+        return operations.countReceivingPackages(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
+        return operations.receivingPackagesOf(receiptLineIds);
+    }
+
+    @Override
+    public StockMove reclassify(ReclassifyStockCommand command) {
+        return operations.reclassify(command);
+    }
+
+    @Override
+    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
+        return operations.receiveReturn(command);
+    }
+
+    @Override
+    public List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command) {
+        return operations.moveStockPackages(command);
+    }
+
+    @Override
+    public List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command) {
+        return operations.reclassifyStockPackages(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId) {
+        return items.policyOf(inventoryItemId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<InventoryItemPolicy> itemPolicy(Sku sku) {
+        return items.policyOf(sku.code());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, InventoryItemPolicy> itemPolicies(java.util.Collection<UUID> inventoryItemIds) {
+        return items.policiesOf(inventoryItemIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds) {
+        return items.skusOf(inventoryItemIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, UUID> itemIdsOf(java.util.Collection<String> skus) {
+        return items.itemIdsOf(skus);
+    }
+
+    @Override
+    public void deleteUnusedItems(java.util.Collection<String> skus) {
+        policies.deleteItems(skus);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.List<String> skusInUse(java.util.Collection<String> skus) {
+        return policies.skusInUse(skus);
+    }
+
+    @Override
+    public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
+        return operations.requestAdjustment(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Set<UUID> receiptLinesWithStockPackages(java.util.Collection<UUID> receiptLineIds) {
+        return stockPackages.findByReceiptLines(receiptLineIds).stream()
+                .map(com.stockflow.inventory.internal.domain.StockPackage::goodsReceiptLineId)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /**
+     * Locked like every carton write (V20261020000100), though a carton being received holds no stock row to lock
+     * after it: the receipt's own lock keeps two edits of it apart, this keeps the cartons' rule in one place.
+     */
+    @Override
+    public void voidStockPackagesOfReceiptLines(java.util.Collection<UUID> receiptLineIds) {
+        Instant now = clock.instant();
+        var ids = stockPackages.findByReceiptLines(receiptLineIds).stream()
+                .map(com.stockflow.inventory.internal.domain.StockPackage::id).toList();
+        for (var carton : stockPackages.findAllByIdForUpdate(ids)) {
+            if (carton.status() == com.stockflow.inventory.internal.domain.StockPackageStatus.RECEIVING) {
+                carton.cancel(now);
+                stockPackages.save(carton);
+            }
+        }
     }
 
     @Override
     @Transactional(readOnly = true)
     public int availableToPromise(Sku sku) {
-        return repository.findAvailableBySku(sku).stream()
-                .mapToInt(item -> item.available().value())
-                .sum();
+        return Math.toIntExact(
+                availableQuantities(Set.of(sku.code())).getOrDefault(sku.code(), 0L));
+    }
+
+    /** Unheld sellable units minus live SKU reservations, per SKU, never below zero; absent keys mean zero. */
+    private Map<String, Long> netOfSkuReservations(Map<String, Long> unheld, Set<String> skus) {
+        Map<String, Long> reserved = skuReservations.heldBySku(skus);
+        Map<String, Long> net = new java.util.HashMap<>();
+        for (String sku : skus) {
+            long value = unheld.getOrDefault(sku, 0L) - reserved.getOrDefault(sku, 0L);
+            if (value > 0) {
+                net.put(sku, value);
+            }
+        }
+        return net;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Long> availableQuantities(Set<String> skus) {
+        var normalized =
+                skus.stream()
+                .map(code -> new Sku(code).code())
+                .collect(Collectors.toSet());
+        if (normalized.isEmpty()) return Map.of();
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        Map<String, Long> unheld = new java.util.HashMap<>(repository.availableQuantities(normalized, today));
+        frozenBySku(normalized, today).forEach((sku, frozen) -> unheld.merge(sku, -frozen, Long::sum));
+        return netOfSkuReservations(unheld, normalized);
+    }
+
+    /**
+     * Free units in doubt per SKU code (X-SHORT step 03): a picker came up short in their bin and the recount is
+     * open, so they are not promised. Every figure of available to promise subtracts them, the planner skips them.
+     */
+    private Map<String, Long> frozenBySku(Collection<String> skus, LocalDate today) {
+        return cycleCounts.frozen(skus, today).stream().collect(Collectors.groupingBy(
+                com.stockflow.inventory.internal.domain.CycleCountRepository.Frozen::sku,
+                Collectors.summingLong(com.stockflow.inventory.internal.domain.CycleCountRepository.Frozen::free)));
+    }
+
+    private Set<StockItemId> frozenLayers(Sku sku, LocalDate today) {
+        return cycleCounts.frozen(List.of(sku.code()), today).stream()
+                .map(frozen -> new StockItemId(frozen.stockItemId())).collect(Collectors.toSet());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<Sku, Integer> availableToPromise(Collection<Sku> skus) {
+        Set<Sku> wanted = new LinkedHashSet<>(skus);
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        Map<Sku, Integer> found = repository.sumAvailableBySkus(wanted, today);
+        Map<String, Long> reserved = skuReservations.heldBySku(wanted.stream().map(Sku::code).toList());
+        Map<String, Long> frozen = frozenBySku(wanted.stream().map(Sku::code).toList(), today);
+        Map<Sku, Integer> result = new LinkedHashMap<>();
+        // Every SKU asked for gets an answer: no stock is an answer (0), not a missing key.
+        wanted.forEach(sku -> result.put(sku, (int) Math.max(0, found.getOrDefault(sku, 0)
+                - reserved.getOrDefault(sku.code(), 0L) - frozen.getOrDefault(sku.code(), 0L))));
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public int availableToPromise(Sku sku, String warehouseCode) {
+        String wanted = new LocationId(warehouseCode).code();
+        return levelsOf(sku).stream()
+                .filter(level -> level.warehouseCode().equals(wanted))
+                .mapToInt(StockLevel::atp)
+                .sum();     // levelsOf already caps each warehouse at the system-wide figure
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<StockAvailability> availabilityOf(Sku sku) {
-        // Earliest expiry first, matching the order the allocator would draw from, so what a
-        // warehouse user sees on screen is the order the system will actually pick in.
+        var today = BusinessCalendar.date(clock.instant());
+        Set<StockItemId> frozen = frozenLayers(sku, today);
+        // Use the configured picking order and one business date for the entire result.
         return repository.findAvailableBySku(sku).stream()
-                .sorted(Comparator.<StockItem, java.time.LocalDate>comparing(
-                                StockItem::expiryDate,
-                                Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(item -> item.location().code()))
+                .filter(item -> notExpired(item, today))
+                .filter(item -> !frozen.contains(item.id()))
+                .sorted(Comparator.comparing(item ->
+                                        new StockAllocator.Candidate(
+                                                item.id(),
+                                                item.location(),
+                                                item.lotNumber(),
+                                                item.expiryDate(),
+                                                item.status(),
+                                                item.available(),
+                                                item.receivedAt()),
+                                StockAllocator.comparator(controls.policy(sku).removalStrategy())))
                 .map(this::toAvailability)
+                // BR-SEC-002: a warehouse-bound caller sees the stock of their own warehouses only.
+                .filter(row -> com.stockflow.common.security.WarehouseScope.restriction()
+                        .map(allowed -> allowed.prefixes().contains(
+                                com.stockflow.common.security.WarehouseScope.prefixOf(row.locationCode())))
+                        .orElse(true))
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StockLevel> levelsOf(Sku sku) {
+        record Totals(int onHand, int available, int reserved, int atp) {
+            static Totals of(StockLevelLine line, LocalDate today) {
+                boolean usable = line.status() == StockStatus.AVAILABLE
+                                && (line.expiryDate() == null
+                                        || !line.expiryDate().isBefore(today));
+                int sellable = usable ? line.onHand() : 0;
+                return new Totals(line.onHand(), sellable, line.reserved(),
+                        usable ? line.onHand() - line.reserved() : 0);
+            }
+
+            Totals plus(Totals other) {
+                return new Totals(onHand + other.onHand, available + other.available,
+                        reserved + other.reserved,
+                        atp + other.atp);
+            }
+        }
+        Map<String, Totals> byWarehouse = new TreeMap<>();
+        var today = BusinessCalendar.date(clock.instant());
+        for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
+            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
+        }
+        // Allocations are holds on these same rows: counted in reserved above, shown apart below (glossary: a
+        // reservation is a soft hold on the SKU, an allocation a hard hold on a bin), so the two never add up twice.
+        Map<String, Integer> allocatedByWarehouse = new TreeMap<>();
+        repository.findAllocatedBySku(sku).forEach((locationCode, units) ->
+                allocatedByWarehouse.merge(new LocationId(locationCode).warehouseCode(), units, Integer::sum));
+        for (var frozen : cycleCounts.frozen(List.of(sku.code()), today)) {
+            byWarehouse.computeIfPresent(new LocationId(frozen.locationCode()).warehouseCode(), (code, totals) ->
+                    new Totals(totals.onHand(), totals.available(), totals.reserved(),
+                            (int) Math.max(0, totals.atp() - frozen.free())));
+        }
+        // A SKU reservation is promised against the whole system, not against a warehouse (SCRUM-152): no warehouse
+        // can promise more than is left system-wide once those are counted - from these same lines and this same day.
+        long unheld = byWarehouse.values().stream().mapToLong(Totals::atp).sum();
+        int systemWide = (int) Math.max(0, unheld - skuReservations.heldBySku(List.of(sku.code()))
+                .getOrDefault(sku.code(), 0L));
+        return byWarehouse.entrySet().stream()
+                // BR-SEC-002: a warehouse-bound caller sees their own warehouses' levels only.
+                .filter(entry -> com.stockflow.common.security.WarehouseScope.restriction()
+                        .map(allowed -> allowed.prefixes().contains(entry.getKey()))
+                        .orElse(true))
+                .map(entry -> {
+                    Totals totals = entry.getValue();
+                    int allocated = Math.min(allocatedByWarehouse.getOrDefault(entry.getKey(), 0), totals.reserved());
+                    return new StockLevel(sku.code(), entry.getKey(),
+                            totals.onHand(), totals.available(),
+                            totals.reserved() - allocated, allocated,
+                            Math.min(totals.atp(), systemWide));
+                })
                 .toList();
     }
 
@@ -91,78 +456,470 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      * commit covers both. If the order insert then violates a constraint, this reservation
      * disappears with it, automatically.</p>
      *
-     * <p>The microservices version of this same step needed: an outbox row, a Kafka topic, a saga
-     * orchestrator holding the in-flight state, a compensating {@code ReleaseStock} command for
-     * when the order failed after the reservation succeeded, a reservation timeout in case the
-     * compensation itself was lost, and an idempotent consumer so a redelivered command did not
-     * reserve twice. All of that existed to approximate what one database transaction gives for
-     * free — see {@code docs/adr/0005-modular-monolith.md}.</p>
+     * <p><b>A SKU reservation, not a choice of lots (SCRUM-152).</b> Until Sprint 3 this method planned FEFO over
+     * every location and placed the hold on stock items — choosing a bin and a lot at checkout, before anybody
+     * knew which warehouse would ship the order. It now holds quantity against the SKU only; {@link #allocate}
+     * chooses bins and lots when the order is released (docs 01, 03 §6, 04c F-FUL).</p>
+     *
+     * <ol>
+     *   <li><b>Replay first.</b> A retried checkout finds the reservation its first attempt made — or, for a retry
+     *       of a checkout placed before this change, the holds it placed on stock items.</li>
+     *   <li><b>Under the SKU's advisory lock</b> — the lock every path that changes what is promised takes before
+     *       any row lock — read available-to-promise: unheld sellable stock minus live SKU reservations.</li>
+     *   <li>Open the reservation, refused below that figure. {@code tg_stock_reservation_soft_atp} checks the same
+     *       rule again in the database, without the expiry dates, as the safety net.</li>
+     * </ol>
      */
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
     public ReserveStockResult reserve(ReserveStockCommand command) {
         Instant now = clock.instant();
-
-        // 0. REPLAY CHECK, BEFORE ANY PLANNING. This has to come first, and the reason is not
-        //    obvious: the first attempt's own holds have already reduced availability, so a
-        //    replanned retry would pick DIFFERENT lots, derive different per-item keys, and hold
-        //    the stock a second time - or throw "insufficient stock" for a request that already
-        //    succeeded. Answering from the existing holds sidesteps both.
-        Optional<ReserveStockResult> alreadyServed = replayOf(command);
-        if (alreadyServed.isPresent()) {
-            log.info("Request {} was already served; returning the original {} hold(s)",
-                    command.requestId(), alreadyServed.get().reservations().size());
-            return alreadyServed.get();
+        List<SkuReservation> served = skuReservations.findHeldForRequest(command.requestId());
+        if (!served.isEmpty()) {
+            log.info("Request {} was already served; returning its reservation", command.requestId());
+            return resultOf(command.orderId(), command.sku(), served);
+        }
+        Optional<ReserveStockResult> placedOnStock = replayOf(command.requestId(), command.sku(), command.orderId());
+        if (placedOnStock.isPresent()) {
+            return placedOnStock.get();
         }
 
-        // 1. PLAN. Which lots, in what order, for how much. Built from a projection rather than
-        //    from aggregates so that planning puts nothing in the persistence context: an entity
-        //    read here would be returned again by the locked read in step 3, which would then be
-        //    checking availability against pre-lock data. (Step 0 above can load aggregates only
-        //    because it returns immediately when it finds any - it never reaches step 3.)
-        List<StockAllocator.Candidate> candidates = repository.findAvailabilityBySku(command.sku());
-        List<StockAllocator.AllocationLine> plan = StockAllocator.plan(
-                command.sku().code(), candidates, Quantity.of(command.quantity()));
+        policies.lock(command.sku().code());   // re-entrant: checkout took it in prepareReservation already
+        int available = availableToPromise(command.sku());
+        SkuReservation reservation = SkuReservation.open(command.sku(), command.orderId(), command.requestId(),
+                Quantity.of(command.quantity()), available, now, reservationTtl);
+        skuReservations.save(reservation);
+        events.publishEventsOf(reservation);
 
-        // 2. ORDER THE LOCKS. Two checkouts touching the same two stock items in opposite orders
-        //    deadlock; sorting by id gives every transaction the same acquisition order.
-        List<StockAllocator.AllocationLine> ordered = plan.stream()
-                .sorted(Comparator.comparing(line -> line.stockItemId().value().toString()))
-                .toList();
+        log.info("Reserved {} units of {} for order {} (SKU reservation {})",
+                command.quantity(), command.sku(), command.orderId(), reservation.id());
+        return new ReserveStockResult(command.orderId(), List.of(toApiReservation(reservation)), command.quantity(),
+                available - command.quantity(), now);
+    }
 
-        List<StockReservation> reservations = new ArrayList<>();
+    private ReserveStockResult resultOf(UUID orderId, Sku sku, List<SkuReservation> reservations) {
+        return new ReserveStockResult(orderId, reservations.stream().map(InventoryServiceImpl::toApiReservation).toList(),
+                reservations.stream().mapToInt(r -> r.quantity().value()).sum(), availableToPromise(sku),
+                reservations.stream().map(SkuReservation::reservedAt).min(Comparator.naturalOrder()).orElseThrow());
+    }
 
-        for (StockAllocator.AllocationLine line : ordered) {
-            // 3. LOCK AND RE-READ. The plan's numbers are already stale - another checkout may have
-            //    taken the same units in between. findByIdForUpdate takes a write lock AND forces a
-            //    reload, so the aggregate re-checks availability against what is true right now and
-            //    throws if it no longer holds.
-            StockItem locked = repository.findByIdForUpdate(line.stockItemId()).orElseThrow(() ->
-                    new IllegalStateException(
-                            "Stock item %s vanished mid-reservation".formatted(line.stockItemId())));
+    private static StockReservation toApiReservation(SkuReservation reservation) {
+        return new StockReservation(reservation.id().value(), null, null, null, reservation.quantity().value());
+    }
 
-            Reservation reservation = locked.reserve(
-                    command.orderId(),
-                    command.requestId(),
-                    // One derived key per stock item. Reusing the caller's single id across the
-                    // loop would violate uk_stock_reservation_request on the second lot, so any
-                    // line spanning two lots would fail outright.
-                    perStockItemRequestId(command.requestId(), line.stockItemId()),
-                    line.quantity(),
-                    now);
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The order of locks is the one every checkout and move uses: the SKUs' advisory locks (sorted), then the
+     * order's reservations, then the stock rows in id order. Planning reads projections only, so the locked read of
+     * each stock row is its first read in this transaction and the re-check in {@link StockItem#allocate} runs on
+     * current numbers. Each stock row is locked once even when two lines of the order draw on it — refreshing a
+     * row twice would discard the first line's unflushed allocation.</p>
+     */
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED)
+    public AllocateStockResult allocate(AllocateStockCommand command) {
+        Instant now = clock.instant();
+        String warehouse = new LocationId(command.warehouseCode()).code();
+        List<SkuReservation> unlocked = skuReservations.findHeldForOrder(command.orderId());
+        if (unlocked.isEmpty()) {
+            requireNoneLapsed(command.orderId());
+            return new AllocateStockResult(command.orderId(), warehouse, List.of());
+        }
+        unlocked.stream().map(r -> r.sku().code()).distinct().sorted().forEach(policies::lock);
+        List<SkuReservation> held = skuReservations.findHeldForOrderForUpdate(command.orderId());
+        // After the lock: a reservation the sweeper expired a moment ago is seen as expired here, not skipped.
+        requireNoneLapsed(command.orderId());
+        LocalDate today = BusinessCalendar.date(now);
+
+        record Planned(SkuReservation from, int sequence, StockAllocator.AllocationLine line) { }
+        List<Planned> planned = new ArrayList<>();
+        Map<Sku, List<StockAllocator.Candidate>> pools = new LinkedHashMap<>();
+        int sequence = 0;
+        for (SkuReservation reservation : held) {
+            List<StockAllocator.Candidate> pool = pools.computeIfAbsent(reservation.sku(),
+                    sku -> pickableCandidates(sku, warehouse, null));
+            List<StockAllocator.AllocationLine> lines = plan(reservation.sku(), pool, reservation.quantity(),
+                    warehouse, today);
+            for (StockAllocator.AllocationLine line : lines) {
+                planned.add(new Planned(reservation, sequence++, line));
+            }
+            pools.put(reservation.sku(), without(pool, lines));
+        }
+
+        Map<StockItemId, List<Planned>> byItem = new TreeMap<>(Comparator.comparing(id -> id.value().toString()));
+        planned.forEach(p -> byItem.computeIfAbsent(p.line().stockItemId(), id -> new ArrayList<>()).add(p));
+        Map<Integer, StockReservation> made = new TreeMap<>();
+        for (Map.Entry<StockItemId, List<Planned>> entry : byItem.entrySet()) {
+            StockItem locked = repository.findByIdForUpdate(entry.getKey()).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-allocation".formatted(entry.getKey())));
+            for (Planned p : entry.getValue()) {
+                Reservation allocation = locked.allocate(p.from(), allocationRequestId(p.from().id(), entry.getKey()),
+                        p.line().quantity(), now);
+                made.put(p.sequence(), toApiReservation(locked, allocation));
+            }
             repository.save(locked);
             events.publishEventsOf(locked);
-
-            reservations.add(toApiReservation(locked, reservation));
         }
 
-        log.info("Reserved {} units of {} for order {} across {} stock item(s)",
-                command.quantity(), command.sku(), command.orderId(), reservations.size());
+        List<AllocateStockResult.Allocation> allocations = new ArrayList<>();
+        for (SkuReservation reservation : held) {
+            reservation.markAllocated(now);
+            skuReservations.save(reservation);
+            allocations.add(new AllocateStockResult.Allocation(reservation.id().value(), reservation.sku().code(),
+                    planned.stream().filter(p -> p.from() == reservation).map(p -> made.get(p.sequence())).toList()));
+        }
+        log.info("Allocated {} reservation(s) of order {} in warehouse {} to {} bin/lot hold(s)", held.size(),
+                command.orderId(), warehouse, made.size());
+        return new AllocateStockResult(command.orderId(), warehouse, allocations);
+    }
 
-        return new ReserveStockResult(command.orderId(), reservations, command.quantity(),
-                // Across every location, not only the lots just drawn from: a caller shown
-                // "3 left" when 30 sit in the next aisle would reasonably call that a bug.
-                availableToPromise(command.sku()), now);
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks: the SKU, then the short allocation's row and the new rows together, in id order. The new
+     * allocations remember the SKU reservation the short one came from, so the lot trace and the order keep one
+     * line of descent.</p>
+     */
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED)
+    public List<StockReservation> reallocate(ReallocateStockCommand command) {
+        Instant now = clock.instant();
+        ReservationId shortId = ReservationId.of(command.reservationId());
+        StockItem view = repository.findIdByReservationId(shortId).flatMap(repository::findById)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No allocation with id " + command.reservationId()));
+        Reservation shortHold = view.findReservation(shortId).orElseThrow();
+        if (!command.orderId().equals(shortHold.orderId())) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                    "Allocation %s is not order %s's".formatted(command.reservationId(), command.orderId()));
+        }
+        List<StockReservation> replayed = repository.findWithReservationsForRequest(command.requestId()).stream()
+                .flatMap(item -> item.activeReservationsFor(command.requestId()).stream()
+                        .map(r -> toApiReservation(item, r)))
+                .toList();
+        if (!replayed.isEmpty()) {
+            return replayed;
+        }
+        policies.lock(view.sku().code());
+        LocalDate today = BusinessCalendar.date(now);
+        if (restoredImpairment(shortId, now)) {
+            // A damage report's impaired allocation whose units a manager found fine and restored onto a bin, the
+            // order's share with them: a sound allocation on pickable stock now, nothing about that bin in doubt. Kept
+            // where it is; the short line gives way to one that picks it there.
+            StockItem current = repository.findByIdForUpdate(view.id()).orElseThrow();
+            Reservation hold = current.findReservation(shortId).orElseThrow();
+            log.info("Allocation {} of order {}: restored from damage at {}, kept for picking", shortId,
+                    command.orderId(), current.location());
+            return List.of(toApiReservation(current, hold));
+        }
+        String warehouse = view.location().warehouseCode();
+        List<StockAllocator.AllocationLine> lines = plan(view.sku(),
+                pickableCandidates(view.sku(), warehouse, view.location()), shortHold.quantity(), warehouse, today);
+        UUID origin = shortHold.allocatedFrom() != null ? shortHold.allocatedFrom() : shortHold.id().value();
+
+        Set<StockItemId> ids = new java.util.TreeSet<>(Comparator.comparing(id -> id.value().toString()));
+        ids.add(view.id());
+        lines.forEach(line -> ids.add(line.stockItemId()));
+        Map<StockItemId, StockReservation> made = new LinkedHashMap<>();
+        for (StockItemId id : ids) {
+            StockItem locked = repository.findByIdForUpdate(id).orElseThrow();
+            if (id.equals(view.id())) {
+                Reservation current = locked.findReservation(shortId).orElseThrow();
+                if (!current.status().isActive()) {
+                    throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                            "Allocation %s is already %s".formatted(shortId, current.status()));
+                }
+                locked.releaseReservation(shortId, ReleaseReason.SHORT_PICKED, now);
+            }
+            for (StockAllocator.AllocationLine line : lines) {
+                if (line.stockItemId().equals(id)) {
+                    Reservation allocation = locked.allocate(command.orderId(), origin, command.requestId(),
+                            allocationRequestId(ReservationId.of(command.requestId()), id), line.quantity(), now);
+                    made.put(id, toApiReservation(locked, allocation));
+                }
+            }
+            repository.save(locked);
+            events.publishEventsOf(locked);
+        }
+        log.info("Allocation {} of order {} came up short at {}; reallocated {} unit(s) to {} hold(s)", shortId,
+                command.orderId(), view.location(), shortHold.quantity(), made.size());
+        return lines.stream().map(line -> made.get(line.stockItemId())).toList();
+    }
+
+    /**
+     * Whether the allocation is a damage report's impaired share that went back onto good stock with its units
+     * (RESTORE of everything left): AVAILABLE, unexpired, on a pickable location of a layer no count has frozen.
+     * Read under the SKU lock.
+     */
+    private boolean restoredImpairment(ReservationId holdId, Instant now) {
+        if (!damageReports.isImpairedAllocation(holdId.value())) {
+            return false;
+        }
+        StockItem item = repository.findIdByReservationId(holdId).flatMap(repository::findById).orElseThrow();
+        LocalDate today = BusinessCalendar.date(now);
+        boolean frozen = cycleCounts.frozen(List.of(item.sku().code()), today).stream()
+                .anyMatch(layer -> layer.stockItemId().equals(item.id().value()));
+        return item.findReservation(holdId).map(r -> r.status().isActive()).orElse(false)
+                && item.status() == StockStatus.AVAILABLE
+                && !com.stockflow.inventory.internal.domain.ExpiryPolicy.isExpired(item.expiryDate(), today)
+                && !frozen
+                && locations.pickable(List.of(item.location().code())).containsKey(item.location().code());
+    }
+
+    /**
+     * Sellable stock of the SKU on pickable, usable locations of one warehouse (module 06 BR-12), never at
+     * {@code excluded}; read as projections, so nothing lands in the persistence context before the locked reads.
+     * The one definition, shared with the damage reported at picking: {@link PickableStock}.
+     */
+    private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, LocationId excluded) {
+        return new PickableStock(repository, locations, cycleCounts).candidates(sku, warehouse, excluded, clock.instant());
+    }
+
+    /**
+     * All or nothing (docs 04c F-FUL): a line whose reservation expired or was released before the release has no
+     * stock behind it, and allocating the other lines would send the order to the warehouse short. Only a
+     * cancellation releases an order's reservations, and an expiry cancels an unpaid order, so this is the race
+     * where the release came first.
+     */
+    private void requireNoneLapsed(UUID orderId) {
+        if (skuReservations.anyLapsedForOrder(orderId)) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "A reservation of order %s expired or was released; the order cannot be allocated".formatted(orderId));
+        }
+    }
+
+    /** BR-STK-006 through {@link StockAllocator}, with the SKU's own removal strategy; names the warehouse when short. */
+    private List<StockAllocator.AllocationLine> plan(Sku sku, List<StockAllocator.Candidate> pool, Quantity quantity,
+                                                     String warehouse, LocalDate today) {
+        try {
+            return StockAllocator.plan(sku.code(), pool, quantity, controls.policy(sku).removalStrategy(), today);
+        } catch (InsufficientStockException shortage) {
+            throw new BusinessException(ErrorCode.INSUFFICIENT_STOCK,
+                    "Warehouse %s has %d pickable unit(s) of %s; %d are needed".formatted(warehouse,
+                            shortage.available(), sku.code(), quantity.value()));
+        }
+    }
+
+    /**
+     * The pool after {@code taken}: what a second line of the same SKU may still draw on. A row keeps its carton, so the
+     * next line is planned in carton order too; a carton a line has drawn on is no longer whole for the next.
+     */
+    private static List<StockAllocator.Candidate> without(List<StockAllocator.Candidate> pool,
+                                                          List<StockAllocator.AllocationLine> taken) {
+        Map<StockItemId, Integer> used = new java.util.HashMap<>();
+        taken.forEach(line -> used.merge(line.stockItemId(), line.quantity().value(), Integer::sum));
+        return pool.stream().map(c -> {
+            int drawn = used.getOrDefault(c.stockItemId(), 0);
+            return new StockAllocator.Candidate(c.stockItemId(), c.location(), c.lotNumber(), c.expiryDate(),
+                    c.status(), Quantity.of(Math.max(c.available().value() - drawn, 0)), c.receivedAt(),
+                    c.stockPackageId(), c.wholeCarton() && drawn == 0);
+        }).toList();
+    }
+
+    /** Same reservation and stock item, same key: allocating again after a retry finds the first allocation. */
+    private static UUID allocationRequestId(ReservationId from, StockItemId stockItemId) {
+        return UUID.nameUUIDFromBytes(("allocation:" + from.value() + ":" + stockItemId)
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The steps of {@link #reserve}: replay first, plan over a projection, lock in id order, re-check
+     * under the lock. The plan draws only on the production order's warehouse.</p>
+     */
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED)
+    public ReserveStockResult reserveForProduction(ReserveProductionStockCommand command) {
+        Instant now = clock.instant();
+        String warehouse = new LocationId(command.warehouseCode()).code();
+        Optional<ReserveStockResult> alreadyServed = replayOf(command.requestId(), command.sku(), null);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        // SCRUM-152: checkout reservations sit on no stock item, so a production hold taken from the warehouse's
+        // free stock must also leave every one of them covered - under the SKU lock checkout takes.
+        policies.lock(command.sku().code());
+        int systemWide = availableToPromise(command.sku());
+        if (systemWide < command.quantity()) {
+            throw new InsufficientStockException(command.sku().code(), command.quantity(), systemWide);
+        }
+        List<StockAllocator.Candidate> candidates = repository.findAvailabilityBySku(command.sku()).stream()
+                .filter(candidate -> candidate.location().warehouseCode().equals(warehouse))
+                .toList();
+        List<StockAllocator.AllocationLine> ordered = StockAllocator.plan(
+                        command.sku().code(), candidates, Quantity.of(command.quantity()),
+                        controls.policy(command.sku()).removalStrategy(), BusinessCalendar.date(now))
+                .stream()
+                .sorted(Comparator.comparing(line -> line.stockItemId().value().toString()))
+                .toList();
+        List<StockReservation> reservations = new ArrayList<>();
+        for (StockAllocator.AllocationLine line : ordered) {
+            StockItem locked = repository.findByIdForUpdate(line.stockItemId()).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-reservation".formatted(line.stockItemId())));
+            Reservation reservation = locked.reserveForProduction(command.productionOrderId(), command.requestId(),
+                    perStockItemRequestId(command.requestId(), line.stockItemId()), line.quantity(), now);
+            repository.save(locked);
+            reservations.add(toApiReservation(locked, reservation));
+        }
+        log.info("Held {} units of {} in {} for production order {} across {} stock item(s)", command.quantity(),
+                command.sku(), warehouse, command.productionOrderId(), reservations.size());
+        return new ReserveStockResult(null, reservations, command.quantity(),
+                availableToPromise(command.sku(), warehouse), now);
+    }
+
+    @Override
+    public int releaseProductionHolds(UUID productionOrderId) {
+        Instant now = clock.instant();
+        int released = 0;
+        // SKU locks first, rows second: the order every move and checkout takes them in (review of #109, item 4).
+        // Locking the rows first and a move of the same transaction taking the SKU lock after (a completion
+        // releasing unissued blanks, then handing the goods to packing) can deadlock against a checkout (40P01).
+        productionHoldViews(productionOrderId).stream().map(com.stockflow.inventory.api.HoldView::sku).distinct()
+                .sorted().forEach(policies::lock);
+        for (StockItem item : repository.findWithReservationsForProductionOrder(productionOrderId)) {
+            if (item.status() != StockStatus.AVAILABLE) {
+                continue;   // issued, received for production, or finished: production closes those itself
+            }
+            List<Reservation> live = item.reservations().stream()
+                    .filter(r -> r.status().isActive() && productionOrderId.equals(r.productionOrderId()))
+                    .toList();
+            for (Reservation hold : live) {
+                item.releaseReservation(hold.id(), ReleaseReason.PRODUCTION_CANCELLED, now);
+                released += hold.quantity().value();
+            }
+            if (!live.isEmpty()) {
+                repository.save(item);
+            }
+        }
+        if (released > 0) {
+            log.info("Released {} unit(s) held for production order {}", released, productionOrderId);
+        }
+        return released;
+    }
+
+    /**
+     * Read without locking anything (review of #109, item 4). Every caller then moves or releases some of these holds
+     * through a path that takes the SKU lock first and the stock rows second; locking the rows here, before that SKU
+     * lock, inverted the order every checkout and move use, and two such transactions could deadlock (40P01). The
+     * production order's own row lock is what keeps two steps of one order apart.
+     */
+    @Override
+    public List<StockReservation> productionHolds(UUID productionOrderId) {
+        return liveHolds(repository.findHeldReservationIdsOfProductionOrder(productionOrderId)).stream()
+                .sorted(java.util.Comparator.comparing(hold -> hold.stockItemId().toString()))
+                .toList();
+    }
+
+    /** Delegated: the hold moves with its goods and the ledger records it, see {@link StockOperations}. */
+    @Override
+    public IssueReservedStockResult issueReserved(IssueReservedStockCommand command) {
+        if (skuReservations.exists(ReservationId.of(command.reservationId()))) {
+            // SCRUM-152: a SKU reservation holds no goods yet - the order's release allocates it to a bin first.
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Reservation %s is not allocated to a bin yet; the order must be released first"
+                            .formatted(command.reservationId()));
+        }
+        return operations.issueReserved(command);
+    }
+
+    @Override
+    public StockReservation holdReceived(com.stockflow.inventory.api.HoldReceivedStockCommand command) {
+        return operations.holdReceived(command);
+    }
+
+    @Override
+    public StockMove consumeHeld(com.stockflow.inventory.api.ConsumeHeldStockCommand command) {
+        return operations.consumeHeld(command);
+    }
+
+    @Override
+    public IssueReservedStockResult unissueHeld(IssueReservedStockCommand command) {
+        return operations.unissueHeld(command);
+    }
+
+    @Override
+    public IssueReservedStockResult finishHeld(IssueReservedStockCommand command) {
+        return operations.finishHeld(command);
+    }
+
+    @Override
+    public StockAdjustmentSummary writeOffHeld(com.stockflow.inventory.api.WriteOffHeldStockCommand command) {
+        return operations.writeOffHeld(command);
+    }
+
+    @Override
+    public Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
+                                                                UUID requestedBy) {
+        if (skuReservations.exists(ReservationId.of(reservationId))) {
+            return Optional.empty();    // never allocated, so nothing was ever printed from it
+        }
+        return operations.scrapCancelledPrint(reservationId, orderId, note, requestedBy);
+    }
+
+    @Override
+    public List<StockAdjustmentSummary> scrapCancelledPrint(
+            com.stockflow.inventory.api.ScrapCancelledPrintCommand command) {
+        return operations.scrapCancelledPrint(command);
+    }
+
+    @Override
+    public StockMove consumeFinishedGoods(UUID reservationId, UUID orderId, UUID productionOrderId, UUID actorId) {
+        return operations.consumeFinishedGoods(reservationId, orderId, productionOrderId, actorId);
+    }
+
+    @Override
+    public StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command) {
+        return operations.returnHeld(command);
+    }
+
+    @Override
+    public void handHoldToOrder(UUID reservationId, UUID productionOrderId, UUID orderId) {
+        ReservationId id = ReservationId.of(reservationId);
+        StockItem item = holderOf(id);
+        Reservation hold = item.findReservation(id).orElseThrow();
+        if (hold.status().isActive() && orderId.equals(hold.orderId())) {
+            return;
+        }
+        if (!hold.status().isActive() || !productionOrderId.equals(hold.productionOrderId())) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s is not a live hold of production order %s".formatted(reservationId, productionOrderId));
+        }
+        item.handHoldToOrder(id, productionOrderId, orderId);
+        repository.save(item);
+        log.info("Hold {} of production order {} is now order {}'s", reservationId, productionOrderId, orderId);
+    }
+
+    @Override
+    public void reduceHold(UUID reservationId, UUID orderId, UUID productionOrderId, int quantity) {
+        ReservationId id = ReservationId.of(reservationId);
+        // The SKU lock before the row lock, the order allocation and checkout take them in: the subcontract flow
+        // reduces a hold and then holds blanks again for the child order in the same transaction.
+        repository.findHolds(List.of(reservationId)).stream().findFirst()
+                .ifPresent(hold -> policies.lock(hold.sku()));
+        StockItem item = holderOf(id);
+        Reservation hold = item.findReservation(id).orElseThrow();
+        if (!hold.isHeldFor(orderId, productionOrderId) || !hold.status().isActive()
+                || item.status() == StockStatus.IN_PRODUCTION || quantity < 1
+                || hold.quantity().value() < quantity) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s cannot give up %d unit(s) here".formatted(reservationId, quantity));
+        }
+        item.reduceHold(id, Quantity.of(quantity), ReleaseReason.SUBCONTRACTED, clock.instant());
+        repository.save(item);
+        log.info("Hold {} gave up {} unit(s) for subcontracting", reservationId, quantity);
+    }
+
+    @Override
+    public List<StockReservation> liveHolds(Collection<UUID> reservationIds) {
+        List<StockReservation> live = new ArrayList<>();
+        for (UUID id : new java.util.LinkedHashSet<>(reservationIds)) {
+            repository.findIdByReservationId(ReservationId.of(id)).flatMap(repository::findById).ifPresent(item ->
+                    item.findReservation(ReservationId.of(id)).filter(r -> r.status().isActive())
+                            .ifPresent(r -> live.add(toApiReservation(item, r))));
+        }
+        return live;
     }
 
     /**
@@ -172,8 +929,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      * partially-applied earlier attempt reports what is actually held rather than what was asked
      * for.</p>
      */
-    private Optional<ReserveStockResult> replayOf(ReserveStockCommand command) {
-        List<StockItem> holders = repository.findWithReservationsForRequest(command.requestId())
+    private Optional<ReserveStockResult> replayOf(UUID requestId, Sku sku, UUID orderId) {
+        List<StockItem> holders = repository.findWithReservationsForRequest(requestId)
                 .stream()
                 // Same id ordering as the reserve loop. These loads take write locks too, and two
                 // replays of different requests touching the same pair of stock items in opposite
@@ -187,7 +944,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         List<StockReservation> reservations = new ArrayList<>();
         Instant earliest = null;
         for (StockItem item : holders) {
-            for (Reservation reservation : item.activeReservationsFor(command.requestId())) {
+            for (Reservation reservation : item.activeReservationsFor(requestId)) {
                 reservations.add(toApiReservation(item, reservation));
                 if (earliest == null || reservation.reservedAt().isBefore(earliest)) {
                     earliest = reservation.reservedAt();
@@ -199,8 +956,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         }
 
         int quantityHeld = reservations.stream().mapToInt(StockReservation::quantity).sum();
-        return Optional.of(new ReserveStockResult(command.orderId(), reservations, quantityHeld,
-                availableToPromise(command.sku()), earliest));
+        return Optional.of(new ReserveStockResult(orderId, reservations, quantityHeld,
+                availableToPromise(sku), earliest));
     }
 
     private static StockReservation toApiReservation(StockItem item, Reservation reservation) {
@@ -213,12 +970,126 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                 reservation.quantity().value());
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>{@code findWithReservationsForOrder} locks each stock row, the same lock the expiry sweep
+     * takes, so a hold is either pinned here or expired there — never both.</p>
+     */
+    @Override
+    public int pinReservations(UUID orderId) {
+        int pinned = 0;
+        for (SkuReservation reservation : skuReservations.findHeldForOrderForUpdate(orderId)) {
+            if (reservation.pin()) {
+                skuReservations.save(reservation);
+                pinned++;
+            }
+        }
+        for (StockItem item : repository.findWithReservationsForOrder(orderId)) {
+            int here = item.pinReservationsOf(orderId);
+            if (here > 0) {
+                repository.save(item);
+                pinned += here;
+            }
+        }
+        if (pinned > 0) {
+            log.info("Pinned {} hold(s) of order {}: it no longer waits for payment", pinned, orderId);
+        }
+        return pinned;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<OrderHold> holdsOf(UUID orderId) {
+        List<OrderHold> holds = new ArrayList<>();
+        skuReservations.findHeldForOrder(orderId)
+                .forEach(r -> holds.add(new OrderHold(r.sku().code(), null, r.quantity().value())));
+        repository.findHeldForOrder(orderId)
+                .forEach(held -> holds.add(new OrderHold(held.sku(), held.locationCode(), held.quantity())));
+        return holds;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<com.stockflow.inventory.api.HoldView> productionHoldViews(UUID productionOrderId) {
+        List<UUID> ids = repository.findHeldReservationIdsOfProductionOrder(productionOrderId);
+        Map<UUID, com.stockflow.inventory.api.HoldView> byId = holds(ids).stream()
+                .collect(java.util.stream.Collectors.toMap(com.stockflow.inventory.api.HoldView::reservationId,
+                        java.util.function.Function.identity()));
+        return ids.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<com.stockflow.inventory.api.HoldView> holds(Collection<UUID> reservationIds) {
+        List<com.stockflow.inventory.api.HoldView> views = new ArrayList<>(
+                repository.findHolds(Set.copyOf(reservationIds)).stream()
+                .map(hold -> new com.stockflow.inventory.api.HoldView(hold.reservationId(), hold.sku(),
+                        hold.locationCode(), hold.lotNumber(), hold.quantity(),
+                        com.stockflow.inventory.api.HoldView.Status.valueOf(hold.status().name()), hold.expiresAt(),
+                        hold.expiryDate(), hold.serialNumber(), hold.lpn(), hold.wholeCarton()))
+                .toList());
+        skuReservations.findAll(Set.copyOf(reservationIds)).forEach(r -> views.add(
+                new com.stockflow.inventory.api.HoldView(r.id().value(), r.sku().code(), null, null,
+                        r.quantity().value(), com.stockflow.inventory.api.HoldView.Status.valueOf(r.status().name()),
+                        r.expiresAt(), null, null)));
+        return views;
+    }
+
+    @Override
+    public int rearmReservations(UUID orderId) {
+        Instant deadline = clock.instant().plus(reservationTtl);
+        int rearmed = 0;
+        for (SkuReservation reservation : skuReservations.findHeldForOrderForUpdate(orderId)) {
+            if (reservation.rearm(deadline)) {
+                skuReservations.save(reservation);
+                rearmed++;
+            }
+        }
+        // Allocations do not expire (X-RESV): Reservation#rearm leaves them pinned.
+        for (StockItem item : repository.findWithReservationsForOrder(orderId)) {
+            int here = item.rearmReservationsOf(orderId, deadline);
+            if (here > 0) {
+                repository.save(item);
+                rearmed += here;
+            }
+        }
+        if (rearmed > 0) {
+            log.info("Order {} waits for payment again: {} hold(s) expire at {}", orderId, rearmed, deadline);
+        }
+        return rearmed;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A hold whose goods are in the print shop is <b>not</b> released here (SCRUM-401, Q3): an order cancelled
+     * after its blanks were issued releases its holds in its own transaction, before production knows. The goods
+     * stay held, unsellable, until production stops the job and decides unit by unit — printed goods written
+     * off, unprinted blanks returned ({@link #returnHeld}). Releasing here would leave production unable to tell
+     * the printed units from the blank ones.</p>
+     */
     @Override
     public void release(UUID reservationId, String reason) {
         ReleaseReason releaseReason = parseReason(reason);
-        StockItem item = repository.findByReservationIdForUpdate(ReservationId.of(reservationId))
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No reservation with id " + reservationId));
+        if (skuReservations.exists(ReservationId.of(reservationId))) {
+            releaseSkuReservation(ReservationId.of(reservationId), releaseReason);
+            return;
+        }
+        StockItem item = holderOf(ReservationId.of(reservationId));
+        if (item.status() == StockStatus.IN_PRODUCTION) {
+            log.info("Hold {} is in the print shop; production closes it, not a {} release", reservationId,
+                    releaseReason);
+            return;
+        }
+        // BR-PRD-10: printed for this order, waiting in packing - packed with it, or scrapped (scrapCancelledPrint),
+        // never freed for someone else to buy.
+        Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        if (operations.isFinishedCustomGoods(item, hold)) {
+            log.info("Hold {} is printed goods in packing; it is packed or scrapped, not a {} release", reservationId,
+                    releaseReason);
+            return;
+        }
 
         item.releaseReservation(ReservationId.of(reservationId), releaseReason, clock.instant());
         repository.save(item);
@@ -228,23 +1099,35 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     }
 
     /**
-     * {@inheritDoc}
-     *
-     * <p>Reached from {@code POST /reservations/{id}/consumption}, which {@code fulfillment} calls
-     * when a pick is confirmed. Not on the published {@link InventoryService} port — see
-     * {@link StockConsumption} for why.</p>
+     * A SKU reservation sits in no warehouse, so a warehouse-bound caller cannot reach one (BR-SEC-002): it is not
+     * theirs to release. Once ALLOCATED its units live in allocations, which the order releases by their own ids;
+     * releasing the reservation itself then changes nothing.
      */
-    @Override
-    public void consume(UUID reservationId) {
-        ReservationId id = ReservationId.of(reservationId);
-        StockItem item = repository.findByReservationIdForUpdate(id)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No reservation with id " + reservationId));
-        item.consumeReservation(id, clock.instant());
-        repository.save(item);
-        events.publishEventsOf(item);
+    private void releaseSkuReservation(ReservationId id, ReleaseReason reason) {
+        if (WarehouseScope.restriction().isPresent()) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_FOUND, "No reservation with id " + id.value());
+        }
+        SkuReservation reservation = skuReservations.findByIdForUpdate(id).orElseThrow();
+        if (reservation.release(reason, clock.instant())) {
+            skuReservations.save(reservation);
+            events.publishEventsOf(reservation);
+            log.info("Released SKU reservation {} ({})", id, reason);
+        } else {
+            log.info("SKU reservation {} is already {}; nothing to release", id, reservation.status());
+        }
+    }
 
-        log.info("Consumed reservation {}: stock deducted for real", reservationId);
+    /**
+     * The stock item holding {@code reservationId}, locked. A warehouse-bound caller reaches only
+     * holds in their own warehouses (BR-SEC-002); the system — an event listener, the sweeper — is
+     * not limited.
+     */
+    private StockItem holderOf(ReservationId reservationId) {
+        StockItem item = repository.findByReservationIdForUpdate(reservationId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No reservation with id " + reservationId.value()));
+        WarehouseScope.requireLocation(item.location().code());
+        return item;
     }
 
     /**
@@ -258,7 +1141,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      */
     private static UUID perStockItemRequestId(UUID requestId, StockItemId stockItemId) {
         return UUID.nameUUIDFromBytes((requestId + ":" + stockItemId)
-                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -272,7 +1155,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         try {
             return ReleaseReason.valueOf(reason.trim().toUpperCase());
         } catch (IllegalArgumentException ex) {
-            log.warn("Unknown release reason '{}', recording as MANUAL_OVERRIDE", reason);
+            log.warn("Unknown release reason '{}', recording as MANUAL_OVERRIDE", LogSafe.text(reason));
             return ReleaseReason.MANUAL_OVERRIDE;
         }
     }
@@ -288,5 +1171,9 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                 item.reserved().value(),
                 0,
                 item.available().value());
+    }
+
+    private static boolean notExpired(StockItem item, LocalDate today) {
+        return item.expiryDate() == null || !item.expiryDate().isBefore(today);
     }
 }

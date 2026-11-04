@@ -95,18 +95,18 @@ public class AuditAspect {
 
         try {
             Object result = joinPoint.proceed();
-            record(auditable, joinPoint, method, AuditEntry.Outcome.SUCCESS, null);
+            record(auditable, joinPoint, method, AuditEntry.Outcome.SUCCESS, null, result);
             return result;
         } catch (Throwable failure) {
             if (auditable.includeFailures()) {
-                record(auditable, joinPoint, method, AuditEntry.Outcome.FAILURE, failure);
+                record(auditable, joinPoint, method, AuditEntry.Outcome.FAILURE, failure, null);
             }
             throw failure;
         }
     }
 
     private void record(Auditable auditable, ProceedingJoinPoint joinPoint, Method method,
-                        AuditEntry.Outcome outcome, Throwable failure) {
+                        AuditEntry.Outcome outcome, Throwable failure, Object result) {
         try {
             Optional<CurrentUser> user = currentUserProvider.current();
             auditTrail.record(new AuditEntry(
@@ -114,11 +114,11 @@ public class AuditAspect {
                     user.map(CurrentUser::username).orElse("system"),
                     auditable.action(),
                     auditable.resourceType(),
-                    resolveResourceId(auditable, joinPoint, method),
+                    resolveResourceId(auditable, joinPoint, method, result),
                     outcome,
                     MDC.get(CorrelationIdFilter.MDC_KEY),
                     clientAddress(),
-                    describe(failure),
+                    describe(failure, resolveDetails(auditable, joinPoint, method)),
                     clock.instant()));
         } catch (RuntimeException ex) {
             // Belt and braces. AuditTrail.record is contractually not allowed to throw, but this
@@ -129,22 +129,29 @@ public class AuditAspect {
     }
 
     /**
-     * Evaluates the {@code resourceId} expression against the method's arguments.
+     * Evaluates the {@code resourceId} expression against the method's arguments, with the return
+     * value as {@code #result}.
+     *
+     * <p>{@code #result} is what makes a creation auditable: the new record's id is generated
+     * inside the method, so no argument names it. It is null when the method threw — there is no
+     * record to name — which is why such expressions use the null-safe {@code #result?.id()}.</p>
      *
      * <p>A bad expression must never fail the audited operation — approving a purchase order should
      * not break because somebody wrote {@code "#od"} instead of {@code "#id"}. It returns null and
      * logs, so the entry is still written and the mistake is visible.</p>
      */
     private String resolveResourceId(Auditable auditable, ProceedingJoinPoint joinPoint,
-                                     Method method) {
+                                     Method method, Object result) {
         String expression = auditable.resourceId();
         if (expression == null || expression.isBlank()) {
             return null;
         }
         try {
             Expression parsed = EXPRESSIONS.computeIfAbsent(expression, PARSER::parseExpression);
-            Object value = parsed.getValue(new MethodBasedEvaluationContext(
-                    joinPoint.getTarget(), method, joinPoint.getArgs(), PARAMETER_NAMES));
+            MethodBasedEvaluationContext context = new MethodBasedEvaluationContext(
+                    joinPoint.getTarget(), method, joinPoint.getArgs(), PARAMETER_NAMES);
+            context.setVariable("result", result);
+            Object value = parsed.getValue(context);
             return value == null ? null : String.valueOf(value);
         } catch (RuntimeException ex) {
             log.warn("Audit resourceId expression '{}' on {}.{} could not be evaluated: {}",
@@ -155,19 +162,63 @@ public class AuditAspect {
     }
 
     /**
-     * The exception type and message, as the entry's details.
+     * Evaluates {@link Auditable#details()} to a JSON object, or null when there is none (or it cannot
+     * be evaluated: logged, never thrown - same rule as {@link #resolveResourceId}).
+     */
+    private String resolveDetails(Auditable auditable, ProceedingJoinPoint joinPoint, Method method) {
+        String expression = auditable.details();
+        if (expression == null || expression.isBlank()) {
+            return null;
+        }
+        try {
+            Expression parsed = EXPRESSIONS.computeIfAbsent(expression, PARSER::parseExpression);
+            MethodBasedEvaluationContext context = new MethodBasedEvaluationContext(
+                    joinPoint.getTarget(), method, joinPoint.getArgs(), PARAMETER_NAMES);
+            Object value = parsed.getValue(context);
+            if (value instanceof java.util.Map<?, ?> map) {
+                return toJson(map);
+            }
+            return value == null ? null : toJson(java.util.Map.of("detail", value));
+        } catch (RuntimeException ex) {
+            log.warn("Audit details expression '{}' on {}.{} could not be evaluated: {}",
+                    expression, method.getDeclaringClass().getSimpleName(), method.getName(),
+                    ex.toString());
+            return null;
+        }
+    }
+
+    private static String toJson(java.util.Map<?, ?> map) {
+        StringBuilder out = new StringBuilder("{");
+        boolean first = true;
+        for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
+            out.append(first ? "" : ",").append(quote(String.valueOf(entry.getKey()))).append(':');
+            Object value = entry.getValue();
+            if (value == null || value instanceof Number || value instanceof Boolean) {
+                out.append(value);
+            } else {
+                out.append(quote(String.valueOf(value)));
+            }
+            first = false;
+        }
+        return out.append('}').toString();
+    }
+
+    /**
+     * The entry's details: the exception type and message for a failure, with the evaluated
+     * {@link Auditable#details()} under {@code "context"}; for a success just {@code context}'s object.
      *
      * <p>The message only — no stack trace. A stack trace in an audit row is noise that makes the
      * table expensive to store and hard to read; the correlation id on the entry leads to the log,
      * where the trace already is.</p>
      */
-    private static String describe(Throwable failure) {
+    private static String describe(Throwable failure, String context) {
         if (failure == null) {
-            return null;
+            return context;
         }
         String message = failure.getMessage();
-        return "{\"error\":\"%s\",\"message\":%s}".formatted(
+        String error = "{\"error\":\"%s\",\"message\":%s".formatted(
                 failure.getClass().getSimpleName(), quote(message));
+        return context == null ? error + "}" : error + ",\"context\":" + context + "}";
     }
 
     /** Minimal JSON string escaping, so a message containing a quote cannot break the details. */

@@ -1,5 +1,6 @@
 package com.stockflow.common.ratelimit;
 
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUserProvider;
@@ -73,7 +74,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             long retryAfterSeconds = Math.max(1, (decision.retryAfter().toMillis() + 999) / 1000);
             response.setHeader(HEADER_RETRY_AFTER, String.valueOf(retryAfterSeconds));
             log.info("Rate limit hit: bucket={} identity={} retryAfter={}s",
-                    bucket, identity, retryAfterSeconds);
+                    LogSafe.text(bucket), LogSafe.text(identity), retryAfterSeconds);
             throw new BusinessException(ErrorCode.RATE_LIMITED,
                     "Too many requests. Try again in %d second(s).".formatted(retryAfterSeconds));
         }
@@ -94,24 +95,21 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     }
 
     /**
-     * The client address as far as it can be trusted.
+     * The address the container reports for the caller, and nothing else.
      *
-     * <p>{@code X-Forwarded-For} is used only because the application sits behind a reverse proxy
-     * that sets it. Note the risk being accepted: the header is client-supplied, so a caller
-     * talking to the application directly can forge it and get a fresh bucket per request. The
-     * mitigation is at the network edge — only the proxy may reach the application — not here.
-     * The first entry is taken because proxies append, so the leftmost is the original client.</p>
+     * <p>{@code X-Forwarded-For} is deliberately NOT read here (SCRUM-483). It is client-supplied, so
+     * reading it from any caller let one client send a different "address" per request and get a
+     * fresh bucket every time, which defeats the login and activation limits. Whether a forwarded
+     * header may be believed is decided once, by the servlet container: with
+     * {@code server.forward-headers-strategy=native} (dev and prod profiles) Tomcat's remote-IP
+     * valve rewrites {@link HttpServletRequest#getRemoteAddr()} from {@code X-Forwarded-For} only when
+     * the connection comes from {@code server.tomcat.remoteip.internal-proxies}, and ignores the
+     * header from anyone else. So this method is correct for both cases: behind the trusted proxy
+     * it returns the real client, and from an untrusted caller it returns that caller's own
+     * address.</p>
      */
     private static String clientAddress(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            int comma = forwarded.indexOf(',');
-            String first = (comma > 0 ? forwarded.substring(0, comma) : forwarded).trim();
-            if (!first.isEmpty() && first.length() <= 45) {   // 45 = longest IPv6 textual form
-                return first;
-            }
-        }
         String remote = request.getRemoteAddr();
-        return remote == null ? "unknown" : remote;
+        return remote == null || remote.isBlank() ? "unknown" : remote;
     }
 }

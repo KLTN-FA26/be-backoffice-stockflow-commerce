@@ -1,0 +1,91 @@
+{
+ "containers": [
+  {
+   "code": "20DC",
+   "w": 2352,
+   "h": 2393,
+   "d": 5898,
+   "quantity": 64,
+   "payload": 1000000000.0,
+   "gusset": 0
+  }
+ ],
+ "boxes": [
+  {
+   "part": "L0",
+   "w": 1200,
+   "h": 800,
+   "d": 1000,
+   "quantity": 11,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "L1",
+   "w": 800,
+   "h": 600,
+   "d": 500,
+   "quantity": 6,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L2",
+   "w": 700,
+   "h": 500,
+   "d": 450,
+   "quantity": 9,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L3",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 3,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L4",
+   "w": 1500,
+   "h": 1000,
+   "d": 800,
+   "quantity": 8,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L5",
+   "w": 600,
+   "h": 400,
+   "d": 400,
+   "quantity": 9,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L6",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 11,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "L7",
+   "w": 300,
+   "h": 300,
+   "d": 300,
+   "quantity": 2,
+   "rotatable": true,
+   "weight": 1.0
+  }
+ ],
+ "kits": [],
+ "distribute": "first",
+ "budget": 4,
+ "ticks_per_second": 8.0
+}

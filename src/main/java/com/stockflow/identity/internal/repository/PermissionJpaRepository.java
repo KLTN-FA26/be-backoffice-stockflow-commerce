@@ -1,10 +1,14 @@
 package com.stockflow.identity.internal.repository;
 
-import com.stockflow.identity.internal.entity.PermissionJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
+import com.stockflow.identity.internal.entity.PermissionJpaEntity;
 
-/** Spring Data repository for {@link PermissionJpaEntity}. STARTER STUB. */
+import java.util.Collection;
+import java.util.List;
+
+/** Spring Data repository for {@link PermissionJpaEntity}. */
 public interface PermissionJpaRepository extends BaseJpaRepository<PermissionJpaEntity> {
 
-    // TODO: add finders the service needs.
+    /** Rows for {@code resource:ACTION} codes, as stored in {@code permission.code}. */
+    List<PermissionJpaEntity> findByCodeIn(Collection<String> codes);
 }
