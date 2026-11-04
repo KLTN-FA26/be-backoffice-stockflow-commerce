@@ -38,7 +38,7 @@
       Spring Modulith 1.4.x is the line that pairs with Boot 3.5. Mixing lines produces a context
       that starts and then fails in ways that point nowhere near the real cause, so pin it.
     -->
-    <spring-modulith.version>1.4.1</spring-modulith.version>
+    <spring-modulith.version>2.1.2</spring-modulith.version>
     <springdoc.version>2.8.6</springdoc.version>
     <mapstruct.version>1.6.3</mapstruct.version>
     <archunit.version>1.3.0</archunit.version>
