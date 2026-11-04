@@ -1,8 +1,10 @@
 package com.stockflow.common.persistence;
 
+import org.hibernate.query.criteria.HibernateCriteriaBuilder;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.util.Collection;
+import java.util.Locale;
 
 /**
  * Null-tolerant {@link Specification} building blocks for filter endpoints.
@@ -73,14 +75,28 @@ public final class Specs {
      *
      * <p>{@code attribute} may be a dotted path into an embeddable, e.g.
      * {@code "shippingAddress.recipientName"}.</p>
+     *
+     * <p><b>Every letter folded, not ASCII only.</b> The databases are created with the C locale
+     * ({@code docker-compose.yml}, {@code deploy/docker-compose.yml}), whose {@code lower()} folds ASCII
+     * letters only: {@code lower('CÔNG TY ĐẠI PHÁT')} is {@code 'cÔng ty ĐẠi phÁt'}, which no lowered
+     * term matches, so a company registered in capitals, as Vietnamese companies often are, could not
+     * be found even by its name typed as registered. The column is lowered under ICU's root collation
+     * ({@link #UNICODE_COLLATION}), which folds every letter as {@code Locale.ROOT} does for the term.</p>
      */
     public static <E> Specification<E> contains(String attribute, String term) {
         if (term == null || term.isBlank()) {
             return all();
         }
-        String pattern = "%" + escapeLike(term.trim().toLowerCase()) + "%";
-        return (root, query, cb) -> cb.like(cb.lower(path(root, attribute)), pattern, '\\');
+        String pattern = "%" + escapeLike(term.trim().toLowerCase(Locale.ROOT)) + "%";
+        return (root, query, cb) -> cb.like(cb.lower(((HibernateCriteriaBuilder) cb)
+                .collate(path(root, attribute), UNICODE_COLLATION)), pattern, '\\');
     }
+
+    /**
+     * ICU's root collation, which PostgreSQL built with ICU has ({@code postgres:16-alpine} is). Quoted:
+     * Hibernate writes a collation name as it is given, and this one has hyphens.
+     */
+    static final String UNICODE_COLLATION = "\"und-x-icu\"";
 
     private static jakarta.persistence.criteria.Path<String> path(
             jakarta.persistence.criteria.Path<?> root, String attribute) {
