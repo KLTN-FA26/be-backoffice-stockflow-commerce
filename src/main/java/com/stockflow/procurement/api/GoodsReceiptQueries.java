@@ -25,12 +25,16 @@ public interface GoodsReceiptQueries {
     /**
      * Every status, in the order a receipt moves through them ({@code ck_goods_receipts_status}, docs 03 §5.1): counted
      * (DRAFT), confirmed and at once on to QC (IN_QC) or to putaway (IN_PUTAWAY), put away (CLOSED), or abandoned before
-     * confirming (CANCELLED). No receipt stays CONFIRMED.
+     * confirming (CANCELLED). No receipt stays CONFIRMED. A count beyond a PO line's tolerance (SCRUM-477), and every
+     * receipt of goods that came without a purchase order (SCRUM-478), confirm into PENDING_APPROVAL instead: nothing is
+     * counted in until a second person decides. Approving posts the whole count; rejecting cuts a receipt against a PO
+     * back to what its order allows and posts the rest, and cancels a receipt without a PO.
      */
-    List<String> STATUSES = List.of("DRAFT", "CONFIRMED", "IN_QC", "IN_PUTAWAY", "CLOSED", "CANCELLED");
+    List<String> STATUSES = List.of("DRAFT", "PENDING_APPROVAL", "CONFIRMED", "IN_QC", "IN_PUTAWAY", "CLOSED",
+            "CANCELLED");
 
     /** The receipts still being worked on: everything but CLOSED and CANCELLED. */
-    List<String> OPEN_STATUSES = List.of("DRAFT", "CONFIRMED", "IN_QC", "IN_PUTAWAY");
+    List<String> OPEN_STATUSES = List.of("DRAFT", "PENDING_APPROVAL", "CONFIRMED", "IN_QC", "IN_PUTAWAY");
 
     /**
      * The receipts that match, the most recently received first, as the screen lists them.

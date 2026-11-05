@@ -56,11 +56,14 @@ class CustomerOrdersService implements CustomerOrders {
     private final CreditChecks creditChecks;
     private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
     private final com.stockflow.order.internal.domain.QuoteRepository quotes;
+    private final com.stockflow.catalog.api.CatalogService catalog;
 
     CustomerOrdersService(OrderSearchRepository search, OrderService orders, ProductionRecords productionRecords,
                           CreditChecks creditChecks,
                           com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
-                          com.stockflow.order.internal.domain.QuoteRepository quotes) {
+                          com.stockflow.order.internal.domain.QuoteRepository quotes,
+                          com.stockflow.catalog.api.CatalogService catalog) {
+        this.catalog = catalog;
         this.cancellationRequests = cancellationRequests;
         this.quotes = quotes;
         this.search = search;
@@ -96,10 +99,19 @@ class CustomerOrdersService implements CustomerOrders {
         Map<UUID, Integer> produced = summary.lines().stream().anyMatch(line -> line.designSnapshotId() != null)
                 ? productionRecords.producedByLine(orderId)
                 : Map.of();
+        // Where each stock SKU is on sale today, for a portal that puts the order back in a basket (SCRUM-190).
+        // Design lines are not reordered this way (a new quote asks for them), so they are not looked up.
+        var listings = catalog.listings(summary.lines().stream().filter(line -> line.designSnapshotId() == null)
+                .map(line -> line.sku()).collect(java.util.stream.Collectors.toSet()));
         List<Line> lines = summary.lines().stream()
-                .map(line -> new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
-                        line.lineTotal().amount(), line.designSnapshotId(),
-                        production(line, summary.status(), produced)))
+                .map(line -> {
+                    var listing = listings.get(line.sku());
+                    return new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
+                            line.lineTotal().amount(), line.designSnapshotId(),
+                            production(line, summary.status(), produced),
+                            listing == null ? null : listing.slug(), listing == null ? null : listing.title(),
+                            listing == null ? null : listing.imageUrl());
+                })
                 .toList();
         Optional<CreditChecks.Check> latestCheck = summary.status() == OrderStatus.ON_HOLD
                 ? creditChecks.latest(orderId)

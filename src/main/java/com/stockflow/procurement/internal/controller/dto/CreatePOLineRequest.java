@@ -16,9 +16,22 @@ import java.math.BigDecimal;
 public record CreatePOLineRequest(
         @NotBlank(message = "sku is required") @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}") String sku,
         @Size(max = 255) String description,
-        @Positive(message = "quantityOrdered must be positive") @Max(1_000_000) int quantityOrdered,
+        @Schema(description = "Base units; omit it when ordering in unitOfMeasure, or send exactly what those units hold")
+                @Positive(message = "quantityOrdered must be positive") @Max(1_000_000) Integer quantityOrdered,
         @Schema(description = "Omit to take the catalog price; required when the order's currency is not the catalog's")
                 @Positive(message = "unitPrice must be positive")
                 @Digits(integer = 16, fraction = 2)
                 BigDecimal unitPrice,
-        @DecimalMin("0") @DecimalMax("100") @Digits(integer = 3, fraction = 2) BigDecimal taxRate) {}
+        @DecimalMin("0") @DecimalMax("100") @Digits(integer = 3, fraction = 2) BigDecimal taxRate,
+        @Schema(description = "SCRUM-473: order in this unit of the item, e.g. CARTON; the base unit means base units."
+                + " Omitted on an existing draft line: the line keeps its unit")
+                @Size(max = 20) String unitOfMeasure,
+        @Schema(description = "How many unitOfMeasure; required with it")
+                @Positive(message = "unitQuantity must be positive") @Max(1_000_000) Integer unitQuantity) {
+
+    /** In base units. */
+    public CreatePOLineRequest(String sku, String description, Integer quantityOrdered, BigDecimal unitPrice,
+                               BigDecimal taxRate) {
+        this(sku, description, quantityOrdered, unitPrice, taxRate, null, null);
+    }
+}

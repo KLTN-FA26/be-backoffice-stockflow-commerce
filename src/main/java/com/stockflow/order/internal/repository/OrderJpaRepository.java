@@ -70,6 +70,16 @@ interface OrderJpaRepository extends ScopedJpaRepository<OrderJpaEntity> {
             """)
     List<OrderJpaEntity> findByCustomerIdWithLines(@Param("customerId") UUID customerId);
 
+    @Query("""
+            select distinct o from OrderJpaEntity o
+            left join fetch o.lines
+            where o.customerId = :customerId and o.placedAt >= :since
+              and o.status <> com.stockflow.order.api.OrderStatus.CANCELLED
+            order by o.placedAt desc
+            """)
+    List<OrderJpaEntity> findLiveSinceWithLines(@Param("customerId") UUID customerId,
+                                                @Param("since") java.time.Instant since);
+
     @Query("select new com.stockflow.order.api.OrderHoldState(o.id, o.status, o.holdReason, o.allowPartialShipment) "
             + "from OrderJpaEntity o where o.id in :ids")
     List<com.stockflow.order.api.OrderHoldState> holdStates(@Param("ids") java.util.Collection<UUID> ids);

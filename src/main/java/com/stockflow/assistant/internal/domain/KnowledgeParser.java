@@ -380,7 +380,9 @@ public final class KnowledgeParser {
 
     /**
      * One block as pieces that each fit a passage: the block itself when it fits; a table cut between rows with its
-     * header and separator rows repeated; anything else cut between lines.
+     * header and separator rows repeated; anything else cut between lines. A single line longer than a passage leaves
+     * for its header (a return's transition row in 03 runs to 1,500 characters) is cut after a space ({@link #cut}),
+     * so no passage is ever longer than {@value #MAX_PASSAGE}.
      */
     private static List<String> split(List<String> block) {
         String whole = String.join("\n", block).strip();
@@ -390,23 +392,70 @@ public final class KnowledgeParser {
         boolean table = block.size() > 2 && block.get(0).strip().startsWith("|")
                 && block.get(1).strip().matches("\\|[\\s:|-]+\\|?");
         List<String> header = table ? block.subList(0, 2) : List.of();
+        int headerLength = String.join("\n", header).length();
+        if (headerLength > MAX_PASSAGE / 4) {
+            // A header that long would leave its rows almost no room: the table is cut as plain lines instead.
+            header = List.of();
+            headerLength = 0;
+        }
+        int room = MAX_PASSAGE - headerLength - (header.isEmpty() ? 0 : 1);
         List<String> pieces = new ArrayList<>();
         List<String> piece = new ArrayList<>(header);
-        int length = String.join("\n", header).length();
-        for (String line : table ? block.subList(2, block.size()) : block) {
-            if (piece.size() > header.size() && length + 1 + line.length() > MAX_PASSAGE) {
-                pieces.add(String.join("\n", piece).strip());
-                piece = new ArrayList<>(header);
-                length = String.join("\n", header).length();
+        int length = headerLength;
+        for (String row : header.isEmpty() ? block : block.subList(2, block.size())) {
+            for (String line : cut(row, room)) {
+                if (piece.size() > header.size() && length + 1 + line.length() > MAX_PASSAGE) {
+                    pieces.add(String.join("\n", piece).strip());
+                    piece = new ArrayList<>(header);
+                    length = headerLength;
+                }
+                piece.add(line);
+                length += 1 + line.length();
             }
-            piece.add(line);
-            length += 1 + line.length();
         }
         if (piece.size() > header.size()) {
             pieces.add(String.join("\n", piece).strip());
         }
         return pieces;
     }
+
+    /**
+     * A line in parts of at most {@code room} characters: whole when it fits, otherwise cut after the last space of
+     * each part (hard at {@code room} when there is none in its second half, never inside a surrogate pair). Every part
+     * after the first starts with {@value #CONTINUED}, so a reader sees it carries on a line cut above. A room below
+     * {@value #MIN_ROOM} is taken as {@value #MIN_ROOM}, so every part moves the line on ({@link #split} never asks for
+     * less than three quarters of a passage).
+     */
+    static List<String> cut(String line, int asked) {
+        int room = Math.max(asked, MIN_ROOM);
+        if (line.length() <= room) {
+            return List.of(line);
+        }
+        List<String> parts = new ArrayList<>();
+        String rest = line;
+        String prefix = "";
+        while (!rest.isBlank()) {
+            if (prefix.length() + rest.length() <= room) {
+                parts.add(prefix + rest);
+                break;
+            }
+            int limit = room - prefix.length();
+            int at = rest.lastIndexOf(' ', limit);
+            if (at < limit / 2) {
+                at = Character.isHighSurrogate(rest.charAt(limit - 1)) ? limit - 1 : limit;
+            }
+            parts.add(prefix + rest.substring(0, at).stripTrailing());
+            rest = rest.substring(at).stripLeading();
+            prefix = CONTINUED;
+        }
+        return parts;
+    }
+
+    /** What a part of a cut line starts with ({@link #cut}). */
+    static final String CONTINUED = "… ";
+
+    /** The smallest part {@link #cut} makes: room for the continuation mark and a few characters of text. */
+    static final int MIN_ROOM = 16;
 
     /** The cells after the first, trimmed, the trailing empty one dropped. */
     private static List<String> cells(String rest) {

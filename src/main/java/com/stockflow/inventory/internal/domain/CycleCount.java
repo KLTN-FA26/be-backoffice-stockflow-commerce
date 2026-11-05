@@ -121,10 +121,28 @@ public final class CycleCount extends AggregateRoot {
         }
     }
 
+    /**
+     * Four eyes, counting side: on a count assigned to someone, a line another user already counted is not
+     * overwritten by a third person - not even one who may decide. That user sees the books, so replacing the
+     * assignee's figure and then approving the variance it raises would have one person set and decide the number
+     * (the approval refuses the last counter too, {@code StockAdjustment#requireNotCountedBy}; this closes the first
+     * half). The assignee corrects their own and anyone's line; an unassigned count has no owner to protect.
+     *
+     * @throws BusinessException {@code CYCLE_COUNT_LINE_COUNTED_BY_OTHER}
+     */
+    public void requireMayCount(CycleCountLine line, UUID by) {
+        if (assignedUserId != null && !assignedUserId.equals(by)
+                && line.countedBy() != null && !line.countedBy().equals(by)) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_LINE_COUNTED_BY_OTHER,
+                    "This line was counted by someone else; only the assignee may count it again");
+        }
+    }
+
     public CycleCountLine count(UUID lineId, int countedQty, int bookQty, UUID by, Instant at) {
         requireOpen();
         CycleCountLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No such line on this count"));
+        requireMayCount(line, by);
         line.count(countedQty, bookQty, by, at);
         start(at);
         return line;

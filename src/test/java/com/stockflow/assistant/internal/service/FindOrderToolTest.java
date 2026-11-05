@@ -57,7 +57,7 @@ class FindOrderToolTest {
     private static final String SHORT_BIN = "HCM-A01-1-B";
     private static final String SHORT_LOT = "LOT-LID-A";
 
-    /** As seeded: orders, pick lists and task oversight (V20261026000200 and the role matrix). */
+    /** As seeded: orders, pick lists and task oversight (V20261105000200 and the role matrix). */
     private static final CurrentUser COORDINATOR = staff(Role.ORDER_COORDINATOR, "sales-orders:READ",
             "fulfillment-pick-lists:READ", "fulfillment-task-oversight:READ");
     /** As seeded: orders, and nothing of fulfillment. */

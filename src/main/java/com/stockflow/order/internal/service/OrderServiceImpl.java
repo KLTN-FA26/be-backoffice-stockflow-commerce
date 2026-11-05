@@ -215,6 +215,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                     ? agreedPrice(
                                             line.sku().code(), line.unitPrice(), sellingPrices)
                                     : line.unitPrice(), line.designSnapshotId());
+            orderLine.withRequestedDeliveryDate(line.requestedDeliveryDate());
             if (line.designSnapshotId() != null) {
                 orderLine.recordDesignChecksum(designs.verifySnapshotForSku(line.designSnapshotId(), command.customerId(), line.sku().code()).checksum());
             }
@@ -593,6 +594,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
         CancellationReasonCode code = reasonCode == null ? CancellationReasonCode.CUSTOMER_REQUEST : reasonCode;
+        // A replacement order is changed through its return, by Sales: neither cancelled here nor queued as a request
+        // a later approval would fail on.
+        if (order.replacesReturnRequestId() != null) {
+            throw new BusinessException(ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED,
+                    "Order %s ships replacements for a return: ask Sales to change it".formatted(order.orderNumber()));
+        }
         if (order.status().customerMayCancelDirectly()) {
             Order cancelled = cancelLoaded(order, new CancelOrderCommand(code, note, null, requestedBy));
             return new CancellationOutcome(CancellationOutcome.Result.CANCELLED, null, toSummary(cancelled));
@@ -1071,6 +1078,36 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return saved(order);
     }
 
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary agreeProductionShortfall(UUID orderId, UUID orderLineId, int units, String note, UUID by) {
+        Order order = lockOrder(orderId);
+        order.agreeProductionShortfall(orderLineId, units, note, by, clock.instant());
+        // The note is what the customer said: it stays on the line, not in the log.
+        log.info("Order {}: the customer goes without at most {} unit(s) of line {}", order.orderNumber(), units,
+                orderLineId);
+        return saved(order);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Not audited here: it commits or rolls back with production's short completion, which is audited as its
+     * transition - an audit row written on return from here would outlive a rollback after it.</p>
+     */
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public OrderSummary closeProductionShortfall(UUID orderId, UUID orderLineId, int units, UUID by) {
+        Order order = lockOrder(orderId);
+        BigDecimal closed = order.closeProductionShortfall(orderLineId, units, by, clock.instant());
+        // Production completes or ends the job and settles its blanks in this transaction; why is on the line's
+        // agreement and on the production order's record.
+        log.info("Order {}: {} unit(s) of line {} not made, closed ({} {} worth)", order.orderNumber(), units,
+                orderLineId, closed, order.total().currency());
+        return saved(order);
+    }
+
     private OrderSummary saved(Order order) {
         Order saved = repository.save(order);
         closeUndecidableCancellationRequest(order);
@@ -1169,7 +1206,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                 line.quantity(),
                                 line.unitPrice(),
                                 line.lineTotal(),
-                                line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
+                                line.reservationIds(), line.designSnapshotId(), line.designChecksum(),
+                                line.requestedDeliveryDate()))
                         .toList(),
                 order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
                 order.contactName(), order.contactEmail(), order.contactPhone(),
@@ -1185,6 +1223,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 lifecycleOf(order));
     }
 
+    private static OrderSummary.ProductionShortfall productionShortfallOf(OrderLine line) {
+        OrderLine.ShortfallAgreement agreed = line.shortfallAgreement();
+        return agreed == null ? null : new OrderSummary.ProductionShortfall(agreed.quantity(), agreed.note(),
+                agreed.agreedBy(), agreed.agreedAt(), line.shortfallClosedQuantity());
+    }
+
     /** The hold, the milestones, how much of each line went out and the shipments (G3-2). */
     static OrderSummary.Lifecycle lifecycleOf(Order order) {
         List<OrderSummary.LineProgress> progress = order.lines().stream()
@@ -1194,7 +1238,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                         order.shipments().stream()
                                 .filter(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED)
                                 .mapToInt(s -> s.quantities().getOrDefault(line.id(), 0)).sum(),
-                        line.cancelledQuantity()))
+                        line.cancelledQuantity(), productionShortfallOf(line)))
                 .toList();
         List<OrderSummary.Shipment> shipments = order.shipments().stream()
                 .map(s -> new OrderSummary.Shipment(s.id(), s.status(), s.amount(), s.billedAmount(),
@@ -1208,7 +1252,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
                 order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount(),
                 order.allowPartialShipment(), order.printLinesReady(), order.deliveryMode(),
-                order.deliveryModeLocked(), order.goodsLeftAt());
+                order.deliveryModeLocked(), order.goodsLeftAt(), order.replacesReturnRequestId());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

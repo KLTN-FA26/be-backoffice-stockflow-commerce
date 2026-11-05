@@ -26,6 +26,7 @@ import shutil
 import struct
 import zlib
 from datetime import date, datetime, timedelta, timezone
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 random.seed(20261012)
@@ -107,6 +108,11 @@ NO_AUDIT = {
     "production.production_scrap", "payment.transfer_allocation", "catalog.product_listing",
     "platform.audit_log", "procurement.po_delivery_decision", "notification.po_delivery_control",
     "production.production_material_issue", "production.production_print_run",
+    "production.production_subcontract_receipt", "production.production_subcontract_hold",
+    "production.production_subcontract_recall", "procurement.subcontract_settlement",
+    # no audit columns: written by plain SQL (product history, customer changes, the inbox) or a domain without them
+    "product.product_change_log", "customer.customer_change_history", "notification.user_notification",
+    "inventory.stock_alert",
 }
 
 U = {}  # username -> user id
@@ -730,7 +736,11 @@ for v in VARIANTS:
             current_price=money(v["cost"] * 1.05 / 1000) * 1000, moq=20, pack_size=1, lead_time_days=15,
             created_at=at(date(2026, 8, 1), 11))
 
-for role, amount in (("PROCUREMENT_STAFF", 50000000), ("WAREHOUSE_MANAGER", 300000000)):
+# SYSTEM_ADMIN gets the largest whole amount NUMERIC(18,2) holds, so whatever it submits is approved on submission:
+# four eyes forbid approving one's own PENDING_APPROVAL order, and without a limit every order the admin raised would
+# wait. Not ...999.99: Money rounds VND to whole units, 10^16, which overflows limit_amount when the approval is written.
+for role, amount in (("PROCUREMENT_STAFF", 50000000), ("WAREHOUSE_MANAGER", 300000000),
+                     ("SYSTEM_ADMIN", 9999999999999999)):
     add("procurement.approval_limits", id=uid("limit:" + role), role_id=ROLE(role), currency="VND",
         max_po_amount=amount, effective_from=date(2026, 1, 1), effective_to=None, created_at=at(date(2026, 8, 1), 11))
 
@@ -906,18 +916,19 @@ MOVES = []
 # The schema allows a richer ledger than the application reads: StockMovement.MovementType and
 # ReferenceType hold only what the code writes, and a row outside them fails every ledger query with
 # "No enum constant". So rows are written the way the application writes them: a putaway is a MOVE,
-# receiving a transfer or a return is a RECEIPT, a count correction or a scrap is an ADJUSTMENT, and a
-# confirmed pick line writes one PICK row naming the line (reference PICK_LINE, SCRUM-267), as the
-# application does since V20261014001000. The ledger reconciles to stock on hand.
-APP_KIND = {"PUTAWAY": "MOVE", "COUNT_CORRECTION": "ADJUSTMENT", "SCRAP": "ADJUSTMENT", "TRANSFER_IN": "RECEIPT",
-            "RETURN_IN": "RECEIPT"}
+# receiving a transfer is a RECEIPT, a count correction or a scrap is an ADJUSTMENT, a returned parcel is
+# RETURN_IN naming its return line (SCRUM-243), and a confirmed pick line writes one PICK row naming the line
+# (reference PICK_LINE, SCRUM-267), as the application does since V20261014001000. The ledger reconciles to
+# stock on hand.
+APP_KIND = {"PUTAWAY": "MOVE", "COUNT_CORRECTION": "ADJUSTMENT", "SCRAP": "ADJUSTMENT", "TRANSFER_IN": "RECEIPT"}
 
 
 def move(kind, sku, qty, ref_type, ref_id, when, actor, frm=None, to=None, lot=None, fs=None, ts_=None, reason=None):
     kind = APP_KIND.get(kind, kind)
     MOVES.append(dict(id=uid(f"mv:{len(MOVES)}:{kind}:{ref_id}"), movement_type=kind, sku=sku, lot_number=lot,
                       from_location_code=frm, to_location_code=to, quantity=qty, from_status=fs, to_status=ts_,
-                      reference_type=ref_type, reference_id=ref_id, reason=reason, actor_id=U[actor],
+                      reference_type=ref_type, reference_id=ref_id, reason=reason,
+                      actor_id=U[actor] if actor else None,
                       occurred_at=when, created_at=when))
 
 
@@ -941,13 +952,18 @@ PO = {}
 
 def make_po(key, p, sup, d, status, lines, submitter="muahang1", approver=None, expected_days=10, note=None,
             shipping=0, confirm_status=None, close_kind=None, close_reason=None, cancel_reason=None,
-            rejected_first=False, po_type="STANDARD", production_order_id=None, source_proposal=None, number=None):
+            rejected_first=False, po_type="STANDARD", production_order_id=None, source_proposal=None, number=None,
+            times=None):
     """lines: [(sku, qty, unit price)]. Returns the PO dict with line ids."""
     pid = uid("po:" + key)
     approver = approver or ("quanly.hn" if p == "HN" else "quanly.bd")
     number = number or next_no("PO", d, 6)
     order_dt = at(d, 9, 15)
     sub_dt, app_dt, conf_dt = order_dt + timedelta(hours=1), order_dt + timedelta(hours=4), order_dt + timedelta(days=1)
+    if times:
+        # A SUBCONTRACT order is raised by the conversion that needs it (raised_with), not at the start of a
+        # purchasing day.
+        order_dt, sub_dt, app_dt, conf_dt = times
     plines, subtotal, tax = [], 0, 0
     for n, (sku, qty, price) in enumerate(lines, 1):
         ls = qty * price
@@ -1411,7 +1427,7 @@ PRODUCTION = []
 
 
 def production_order(key, typ, p, sku, snap, checksum, qty, status, start, sample_request=None, order=None,
-                     line=None, mode="IN_HOUSE", hold=None, end=None):
+                     line=None, mode="IN_HOUSE", hold=None, end=None, subcontractor="INSG"):
     """A production order as the workshop leaves it (ProductionOrder): blanks issued only up to what is still needed
     (BR-PRD-03), so an in-house order issues and prints exactly its planned quantity; a QC round only once one was
     recorded. `end`: when an ORDER completed - before its sales order became READY_TO_FULFILL - its steps are spread
@@ -1432,13 +1448,11 @@ def production_order(key, typ, p, sku, snap, checksum, qty, status, start, sampl
         times = [start + timedelta(days=k, hours=1) for k in range(len(steps))]
     when = dict(zip(steps, times))
     completed = (when["COMPLETED"] if end is not None else start + timedelta(days=len(path))) if done else None
-    if mode == "SUBCONTRACTED":
-        issued = qty + (1 if qty > 3 else 0) if "SUBCONTRACTED" in reached else 0
-        printed = qty + (1 if done and qty > 3 else 0) if (done or status == "QC") else 0
-        good = printed - (1 if printed > qty else 0)
-    else:
-        issued = qty if "MATERIAL_ISSUED" in reached else 0
-        printed = good = qty if (done or status == "QC") else 0
+    # A subcontracted order never counts issued blanks: ProductionOrder.issueBlanks refuses it, and what goes out with
+    # it is production_material_issue rows only (SubcontractJob.send). Its printed and good units are what the
+    # subcontractor delivered and QC passed - for a completed one, all of its plan.
+    issued = qty if mode == "IN_HOUSE" and "MATERIAL_ISSUED" in reached else 0
+    printed = good = qty if (done or status == "QC") else 0
     worker = "sanxuat.hn" if p == "HN" else "sanxuat.bd"
     inspector = "qc.hn" if p == "HN" else "qc.bd"
     row = add("production.production_order", id=pid, order_number=next_no("PRD", start.date()), type=typ, mode=mode,
@@ -1449,7 +1463,7 @@ def production_order(key, typ, p, sku, snap, checksum, qty, status, start, sampl
               design_checksum=checksum, due_date=start.date() + timedelta(days=10), planned_quantity=qty,
               issued_quantity=issued, printed_quantity=printed, good_quantity=good, scrap_quantity=printed - good,
               subcontract_method="SUPPLIED_BLANKS" if mode == "SUBCONTRACTED" else None,
-              subcontractor_id=SUP["INSG"] if mode == "SUBCONTRACTED" else None,
+              subcontractor_id=SUP[subcontractor] if mode == "SUBCONTRACTED" else None,
               subcontract_unit_price=120000 if mode == "SUBCONTRACTED" else None,
               subcontract_currency="VND" if mode == "SUBCONTRACTED" else None, purchase_order_id=None,
               prepress_checked_by=U["kiemduyet"] if len(reached) > 1 else None,
@@ -1553,8 +1567,313 @@ def print_shop(prod, rid, s, qn, done):
     return finished
 
 
+def converted_at(prod):
+    """When a subcontracted production order was converted whole (BR-PRD-12, SubcontractService.convert): half an hour
+    after it was created, while it waited for prepress - the warehouse manager sent the line out at once."""
+    return prod["times"]["PENDING_PREPRESS"] + timedelta(minutes=30)
+
+
+def raised_with(t):
+    """make_po's times for the SUBCONTRACT order a conversion raises in its own transaction (a DRAFT the split
+    creates): submitted by purchasing, approved by the warehouse manager, confirmed by the subcontractor - before the
+    work may go out (sendOut wants it approved, BR-PRD-13) and before anything is received (a CONFIRMED order)."""
+    return t, t + timedelta(minutes=5), t + timedelta(hours=2), t + timedelta(hours=5)
+
+
+SUB_SITE = {}   # (warehouse prefix, supplier code) -> the subcontractor's location code
+JOBS = {}       # production order id -> SubcontractJob
+
+
+def subcontractor_location(p, sup, when):
+    """SubcontractorSiteRepository.locationOf: one SUBCONTRACTOR location per sending warehouse and subcontractor,
+    <warehouse>-SUB-<supplier code>, owned by its subcontractor_site and created the first time that warehouse sends
+    the subcontractor blanks (decision Q7). Not on the map, not pickable, not a putaway target: allocate and
+    find_stock never see it (they take BIN rows only)."""
+    if (p, sup) not in SUB_SITE:
+        code = f"{p}-SUB-{sup}"
+        LOC[code] = dict(id=uid("loc:" + code), wh=p, kind="SUBCONTRACTOR", cls="NORMAL", status="ACTIVE")
+        add("warehouse.storage_location", id=LOC[code]["id"], warehouse_id=WH[p], kind="SUBCONTRACTOR",
+            location_code=code, storage_class="NORMAL", capacity_units=None, max_weight=None, is_pickable=False,
+            is_putaway_target=False, status="ACTIVE", created_at=when)
+        add("warehouse.subcontractor_site", id=uid(f"subsite:{p}:{sup}"), warehouse_id=WH[p], supplier_id=SUP[sup],
+            location_id=LOC[code]["id"], created_at=when)
+        SUB_SITE[(p, sup)] = code
+    return SUB_SITE[(p, sup)]
+
+
+def subcontract_job(prod):
+    if prod["id"] not in JOBS:
+        JOBS[prod["id"]] = SubcontractJob(prod)
+    return JOBS[prod["id"]]
+
+
+class SubcontractJob:
+    """A SUPPLIED_BLANKS production order converted whole (SCRUM-433/441, 03 §16, 04c F-PROD G1-G10), taken through
+    stock the way SubcontractService and WorkshopStock move it. production_order wrote its row and the status steps
+    of its path; this adds what happened between them. `blanks` are the production holds sent to the subcontractor,
+    in the order they were sent - the order WorkshopStock takes them back in."""
+
+    def __init__(self, prod):
+        self.prod, self.row, self.p = prod, prod["row"], prod["p"]
+        self.id, self.number, self.sku = self.row["id"], self.row["order_number"], self.row["blank_sku"]
+        self.sup = next(code for code, sid in SUP.items() if sid == self.row["subcontractor_id"])
+        self.clerk, _, self.manager, self.inspector = staff_of(self.p)
+        self.steps = {r["to_status"]: r for r in ROWS["production.production_order_status_history"]
+                      if r["production_order_id"] == self.id}
+        self.blanks = []     # dict(row: reservation, stock: where it is now, left: units it covers, frm: sent from)
+        self.received = []   # (reservation row, stock row in the QC area, units) per receipt line
+        self.receipts = []   # production_subcontract_receipt rows
+        self.recalls = []    # production_subcontract_recall rows
+        self.rounds = []     # (passed, failed) per QC round
+        self.converted = converted_at(prod)
+        assert self.converted < prod["times"]["READY"], self.number
+        self.history("convert", "PENDING_PREPRESS", "PENDING_PREPRESS", self.converted, self.manager,
+                     "Whole order converted to subcontracting (SUPPLIED_BLANKS)")
+        # The dispatch is a warehouse step (production-material-issues CREATE): the clerk who scanned the blanks out.
+        self.steps["SUBCONTRACTED"].update(changed_by=U[self.clerk], reason="Sent to the subcontractor")
+
+    def history(self, tag, frm, to, when, by, reason):
+        add("production.production_order_status_history", id=uid(f"prod:{self.prod['key']}:sub:{tag}"),
+            production_order_id=self.id, from_status=frm, to_status=to, reason=reason, changed_at=when,
+            changed_by=U[by] if by else None)
+
+    def hold(self, s, qty, when, root):
+        """InventoryService.reserveForProduction: a pinned hold of the production order itself (no order), its
+        request id derived from the call's and the stock row's (perStockItemRequestId)."""
+        s.reserved += qty
+        row = add("inventory.stock_reservation", id=uid(f"res:{root}:{s.id}"), stock_item_id=s.id, order_id=None,
+                  root_request_id=uid(root), request_id=uid(f"{root}:{s.id}"), quantity=qty, reserved_at=when,
+                  expires_at=None, status="HELD", release_reason=None, closed_at=None, production_order_id=self.id)
+        self.blanks.append(dict(row=row, stock=s, left=qty, frm=s.loc, sent=False))
+
+    def take_over(self, s, qty):
+        """One checkout hold of the line (place_order releases it, SUBCONTRACTED): SubcontractService.moveHolds held
+        its units for the production order in the same transaction - where the checkout hold was, the warehouse's
+        first free units that instant - and sendOut took them to the subcontractor with the work."""
+        self.hold(s, qty, self.converted, f"subcontract-blanks:{self.id}")
+        self.send(self.prod["times"]["SUBCONTRACTED"])
+
+    def send(self, when):
+        """G5, SubcontractService.sendOut: every hold not sent yet goes whole to the subcontractor's location for the
+        warehouse, IN_PRODUCTION - issueReserved, one MOVE naming the production order ("Hold <id>") - and gets its
+        production_material_issue row (WorkshopStock.sendToSubcontractor). The status step is the caller's."""
+        loc = subcontractor_location(self.p, self.sup, when)
+        for b in self.blanks:
+            if b["sent"]:
+                continue
+            s, qty, rid = b["stock"], b["left"], b["row"]["id"]
+            s.on_hand -= qty
+            s.reserved -= qty
+            there = Stock(s.sku, loc, qty, s.received, status="IN_PRODUCTION", lot=s.lot, expiry=s.expiry)
+            there.reserved += qty
+            move("MOVE", s.sku, qty, "PRODUCTION_ORDER", self.id, when, self.clerk, frm=s.loc, to=loc, lot=s.lot,
+                 fs="AVAILABLE", ts_="IN_PRODUCTION", reason=f"Hold {rid}")
+            ISSUES.append(dict(id=uid(f"issue:{rid}"), production_order_id=self.id,
+                               request_id=uid(f"subcontract-send:{rid}"), reservation_id=rid, sku=s.sku,
+                               lot_number=s.lot, from_location=s.loc, to_location=loc, quantity=qty,
+                               stock_movement_id=MOVES[-1]["id"], issued_at=when, issued_by=U[self.clerk]))
+            b.update(stock=there, sent=True)
+            b["row"]["stock_item_id"] = there.id
+
+    def take(self, qty, source, step):
+        """WorkshopStock.takeFromSubcontractor: `qty` blanks out of the holds at the subcontractor, in the order they
+        were sent. A hold covers what is left of it; the step that takes the rest closes it."""
+        for b in self.blanks:
+            if not qty:
+                break
+            if not b["sent"] or not b["left"]:
+                continue
+            n = min(b["left"], qty)
+            step(b, n, n == b["left"])
+            b["left"] -= n
+            qty -= n
+            if b["left"]:
+                b["row"]["quantity"] = b["left"]
+        assert not qty, (self.number, source, qty)
+
+    def account(self, spoilt, returned, source, when, decided=None):
+        """WorkshopStock.reconcile, for a receipt's reconciliation or a recall: `spoilt` blanks leave their holds and
+        their SUBCONTRACT_LOSS write-off is asked for (writeOffHeld: still on hand, IN_PRODUCTION, until approved),
+        `returned` go back free to where each was sent from (returnHeld: MOVE, "Unprinted, from hold <id>").
+        `decided`: when the warehouse manager approved the write-off - posted in the same step, an ADJUSTMENT line."""
+        loc = SUB_SITE[(self.p, self.sup)]
+
+        def write_off(b, n, whole):
+            s = b["stock"]
+            s.reserved -= n
+            if whole:
+                b["row"].update(status="RELEASED", release_reason="SCRAPPED", closed_at=when)
+            aid = uid(f"adj:subcontract:{source}:{b['row']['id']}")
+            note = f"{self.number} spoilt at the subcontractor ({source})"
+            add("inventory.stock_adjustment", id=aid, adjustment_number=next_no("ADJ", when.date()),
+                location_code=loc, sku=s.sku, lot_number=s.lot, quantity_delta=-n, reason_code="SUBCONTRACT_LOSS",
+                note=note, status="POSTED" if decided else "PENDING_APPROVAL", cycle_count_line_id=None,
+                requested_by=U[self.clerk], decided_by=U[self.manager] if decided else None, decided_at=decided,
+                rejection_reason=None, posted_at=decided, withdrawn_at=None, received_at=s.received, created_at=when)
+            if decided:
+                # StockOperationsServiceImpl.approve: decided and posted in one step (approveAndPost).
+                s.on_hand -= n
+                move("ADJUSTMENT", s.sku, n, "STOCK_ADJUSTMENT", aid, decided, self.manager, frm=loc, lot=s.lot,
+                     fs="IN_PRODUCTION", reason=f"SUBCONTRACT_LOSS: {note}")
+
+        def give_back(b, n, whole):
+            s = b["stock"]
+            s.on_hand -= n
+            s.reserved -= n
+            if whole:
+                b["row"].update(status="RELEASED", release_reason="RETURNED_FROM_PRODUCTION", closed_at=when)
+            Stock(s.sku, b["frm"], n, s.received, lot=s.lot, expiry=s.expiry)   # back onto the layer it was sent from
+            move("MOVE", s.sku, n, "PRODUCTION_ORDER", self.id, when, self.clerk, frm=loc, to=b["frm"], lot=s.lot,
+                 fs="IN_PRODUCTION", ts_="AVAILABLE", reason=f"Unprinted, from hold {b['row']['id']}")
+
+        self.take(spoilt, source, write_off)
+        self.take(returned, source, give_back)
+
+    def recall(self, tag, returned, spoilt, when, note):
+        """SubcontractService.recall: blanks brought back without a goods receipt (BR-PRD-15), each to where it was
+        sent from (no return location named)."""
+        request = uid(f"subcontract-recall:{self.id}:{tag}")
+        self.account(spoilt, returned, f"recall {request}", when)
+        self.recalls.append(add("production.production_subcontract_recall", id=uid(f"recall:{self.id}:{tag}"),
+                                production_order_id=self.id, request_id=request, returned_blanks=returned,
+                                spoilt_blanks=spoilt, return_location=None, note=note, recorded_at=when,
+                                recorded_by=U[self.clerk]))
+
+    def receive(self, po, qty, when):
+        """A goods receipt of the job's SUBCONTRACT order confirmed at `when` (GoodsReceiptServiceImpl.confirm): CLOSED
+        as it is confirmed - no receiving QC, no putaway (GoodsReceipt.confirm, handedToProduction) - its goods counted
+        in INBOUND at the receiving area (RECEIPT). In the same transaction SubcontractService.onReceipt counts it once
+        onto the job, consumes the blanks the goods were printed on at the subcontractor (CONSUMPTION, decision Q9),
+        holds the line's goods for the job (holdReceived) and takes them to the QC area as IN_PRODUCTION
+        (holdForProductionQc) to wait for the one production QC (Q8). The listener's steps name no user."""
+        p, ln = self.p, po["lines"][0]
+        rid = uid(f"gr:{po['key']}:{len(RECEIPTS)}")
+        number = next_no("GR", when.date())
+        grow = add("procurement.goods_receipts", id=rid, receipt_number=number, po_id=po["id"],
+                   po_revision_id=po["rev"], warehouse_id=WH[p], status="CLOSED",
+                   received_at=when - timedelta(minutes=30), received_by=U[self.clerk], confirmed_at=when,
+                   confirmed_by=U[self.clerk], note=None,
+                   delivery_note=f"PXK-{po['sup']}-{when.strftime('%m%d')}-{len(self.receipts) + 1}",
+                   closed_at=when, created_at=when - timedelta(minutes=30))
+        staged("procurement.goods_receipts", grow, 1, status="DRAFT", confirmed_at=None, confirmed_by=None,
+               closed_at=None)
+        RECEIPTS.append(rid)
+        lid = uid(f"gr:{rid}:line:0")
+        rcv, qca = f"{p}-RCV01", f"{p}-QCA01"
+        add("procurement.goods_receipt_lines", id=lid, receipt_id=rid, po_line_id=ln["id"],
+            inventory_item_id=ITEM[self.sku], location_id=LOC[rcv]["id"], received_qty=qty, lot_number=None,
+            expiry_date=None, note=None, qc_required=False, qc_location_id=None, moved_to_qc_at=None,
+            moved_to_qc_by=None, created_at=when - timedelta(minutes=30))
+        inbound = Stock(self.sku, rcv, qty, when, status="INBOUND")
+        move("RECEIPT", self.sku, qty, "GOODS_RECEIPT_LINE", lid, when, self.clerk, to=rcv, ts_="INBOUND")
+        # The order's progress (ReceivingPurchaseOrderAdapter.recordProgress): one event per status it moves to.
+        ln["received"] += qty
+        was = po["row"]["status"]
+        now = "RECEIVED" if ln["received"] >= ln["qty"] else "PARTIALLY_RECEIVED"
+        ln["row"]["status"] = now
+        po["row"]["status"] = now
+        if now != was:
+            add("procurement.purchase_order_events", id=uid(f"po:{po['key']}:ev:{now}"), po_id=po["id"],
+                po_revision_id=po["rev"], action=now, actor_id=U[self.clerk], from_status=was, to_status=now,
+                reason=f"Goods receipt {number}", created_at=when)
+        self.receipts.append(add("production.production_subcontract_receipt", receipt_id=rid,
+                                 production_order_id=self.id, quantity=qty, received_at=when, used_blanks=qty,
+                                 spoilt_blanks=None, returned_blanks=None, reconciled_at=None, reconciled_by=None))
+
+        def consume(b, n, whole):
+            s = b["stock"]
+            s.on_hand -= n
+            s.reserved -= n
+            if whole:
+                b["row"].update(status="CONSUMED", closed_at=when)
+            move("CONSUMPTION", s.sku, n, "PRODUCTION_ORDER", self.id, when, None, frm=s.loc, lot=s.lot,
+                 fs="IN_PRODUCTION", reason=f"Printed into receipt {number}")
+
+        self.take(qty, f"receipt {number}", consume)
+        hid = uid(f"res:subcontract-receipt-line:{lid}")
+        inbound.on_hand -= qty
+        there = Stock(self.sku, qca, qty, when, status="IN_PRODUCTION")
+        there.reserved += qty
+        move("MOVE", self.sku, qty, "PRODUCTION_ORDER", self.id, when, None, frm=rcv, to=qca, fs="INBOUND",
+             ts_="IN_PRODUCTION", reason=f"Hold {hid}")
+        row = add("inventory.stock_reservation", id=hid, stock_item_id=there.id, order_id=None,
+                  root_request_id=uid(f"subcontract-receipt-line:{lid}"),
+                  request_id=uid(f"subcontract-receipt-line:{lid}"), quantity=qty, reserved_at=when, expires_at=None,
+                  status="HELD", release_reason=None, closed_at=None, production_order_id=self.id)
+        add("production.production_subcontract_hold", reservation_id=hid, receipt_id=rid, receipt_line_id=lid,
+            production_order_id=self.id)
+        self.received.append((row, there, qty))
+        return self.receipts[-1]
+
+    def reconcile(self, receipt, spoilt, returned, when, decided=None):
+        """Decision Q9, SubcontractService.reconcile: once per receipt, before QC may decide on it (BR-PRD-16)."""
+        self.account(spoilt, returned, f"receipt {receipt['receipt_id']}", when, decided)
+        receipt.update(spoilt_blanks=spoilt, returned_blanks=returned, reconciled_at=when, reconciled_by=U[self.clerk])
+
+    def complete(self, when):
+        """ProductionCompletion.complete: every hold of the job's goods to the packing area production_order recorded
+        (finishToPacking: MOVE, IN_PRODUCTION -> AVAILABLE), handed to the sales order's line (handHoldToOrder,
+        addProductionHolds) and consumed there (consumeFinishedGoods: CONSUMPTION, G4-Q2)."""
+        packing = self.row["packing_location_code"]
+        for row, qc_row, qty in self.received:
+            qc_row.on_hand -= qty
+            qc_row.reserved -= qty
+            finished = Stock(self.sku, packing, qty, qc_row.received)
+            move("MOVE", self.sku, qty, "PRODUCTION_ORDER", self.id, when, self.inspector, frm=qc_row.loc,
+                 to=packing, fs="IN_PRODUCTION", ts_="AVAILABLE", reason=f"Hold {row['id']}")
+            finished.on_hand -= qty
+            move("CONSUMPTION", self.sku, qty, "PRODUCTION_ORDER", self.id, when, self.inspector, frm=packing,
+                 fs="AVAILABLE", reason=f"Hold {row['id']}")
+            row.update(stock_item_id=finished.id, order_id=self.row["sales_order_id"], production_order_id=None,
+                       status="CONSUMED", closed_at=when)
+            add("ordering.order_line_reservation", order_line_id=self.row["sales_order_line_id"],
+                reservation_id=row["id"])
+
+    def settle(self, po, when, approved=None):
+        """BR-PRD-17, SubcontractSettling.settle + SubcontractPurchasingImpl.settle, by whoever ended the job: QC-passed
+        units paid at the PO line's price, failed ones not; blanks lost above the subcontractor's tolerance (the floor
+        of its percentage of the blanks sent) wait for the warehouse manager. `approved`: (when, deduction per blank,
+        note) of the approveLoss that made it FINAL - the store's UPDATE moves the version."""
+        tolerance = next(r for r in ROWS["procurement.suppliers"] if r["id"] == SUP[self.sup])["loss_tolerance_percent"]
+        sent = sum(i["quantity"] for i in ISSUES if i["production_order_id"] == self.id)
+        lost = sum(r["spoilt_blanks"] or 0 for r in self.receipts) + sum(r["spoilt_blanks"] for r in self.recalls)
+        tolerated = sent * tolerance // 100
+        excess = max(0, lost - tolerated)
+        passed = sum(r[0] for r in self.rounds)
+        price = po["lines"][0]["price"]
+        row = add("procurement.subcontract_settlement", po_id=po["id"], production_order_id=self.id,
+                  status="AWAITING_APPROVAL" if excess else "FINAL", currency="VND", unit_price=price,
+                  received_quantity=sum(r["quantity"] for r in self.receipts), passed_quantity=passed,
+                  failed_quantity=sum(r[1] for r in self.rounds), payable_amount=passed * price, blanks_sent=sent,
+                  blanks_used=sum(r["used_blanks"] for r in self.receipts),
+                  blanks_returned=sum(r["returned_blanks"] or 0 for r in self.receipts)
+                  + sum(r["returned_blanks"] for r in self.recalls), blanks_lost=lost, tolerance_percent=tolerance,
+                  tolerance_blanks=tolerated, excess_loss=excess, deduction_per_blank=None, deduction_amount=0,
+                  cancellation_fee=0, cancellation_fee_reason=None, net_payable=passed * price, settled_at=when,
+                  settled_by=U[self.inspector], approved_at=None, approved_by=None, approval_note=None, version=0)
+        if excess and approved:
+            approved_at, per_blank, note = approved
+            row.update(status="FINAL", deduction_per_blank=per_blank, deduction_amount=excess * per_blank,
+                       net_payable=row["payable_amount"] - excess * per_blank, approval_note=note,
+                       approved_by=U[self.manager], approved_at=approved_at, version=1)
+        return row
+
+
+# Order statuses a delivered order passes through because of a return: still shipped and delivered.
+RETURN_STATUSES = ("RETURN_REQUESTED", "RETURNED", "REFUNDED", "PARTIALLY_REFUNDED")
+
+
+def return_times(delivered):
+    """When each step of a return happens: claimed the day of delivery, decided the same day (before the order would
+    complete), and for the one that is resolved, the parcel, QC, Sales' proposal and the accountant's approval."""
+    requested = delivered + timedelta(hours=6)
+    return dict(requested=requested, decided=requested + timedelta(hours=5), received=requested + timedelta(days=2),
+                inspected=requested + timedelta(days=3), proposed=requested + timedelta(days=3, hours=2),
+                settled=requested + timedelta(days=4))
+
+
 def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=None, hold=None, cancel=None,
-                prod_status=None, pick_partial=False, return_spec=None, cancel_request=None, sub=False):
+                prod_status=None, pick_partial=False, return_spec=None, cancel_request=None, sub=False, fixed=None):
     c = CUST[cust_code]
     # A print order ships from the warehouse that prints it: its production order works in the order's warehouse
     # (OrderProductionService) on the blanks held there at checkout (kltn-docs 19 BR-20).
@@ -1563,7 +1882,9 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     terms = c["terms"]
     term = term or (terms[0] if terms else "PREPAID")
     credit = term == "CREDIT"
-    placed = at(d, random.randint(8, 16), random.choice([0, 15, 30, 45]))
+    # fixed = (placed at, step between statuses): an order placed after the last random draw of the data set draws
+    # nothing, so everything generated before it stays exactly what it was.
+    placed = fixed[0] if fixed else at(d, random.randint(8, 16), random.choice([0, 15, 30, 45]))
     number = next_no("SO", d, 6)
     # lines
     if lines_spec is None:
@@ -1595,20 +1916,32 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     times, t = [], placed
     for s in path:
         times.append(t)
-        t = t + timedelta(days=random.choice([1, 1, 2]), hours=random.randint(1, 5))
+        t = t + (fixed[1] if fixed else timedelta(days=random.choice([1, 1, 2]), hours=random.randint(1, 5)))
     when = dict(zip(path, times))
     if "PICKING" in path and ("SHIPPED" in path or final == "PACKED") and not cancel and not hold:
         # Packed four hours after picking started, as the pack row says (packed_at = t_pick + 4h).
         path.insert(path.index("PICKING") + 1, "PACKED")
         when["PACKED"] = when["PICKING"] + timedelta(hours=4)
         times = [when[s] for s in path]
+    # A return (SCRUM-243) moves the order as ReturnRequestService does: opening it puts a DELIVERED order into
+    # RETURN_REQUESTED, which keeps it from completing (BR-ORD-005); a refusal puts it back to DELIVERED (and it
+    # completes later), money given back takes it through RETURNED to PARTIALLY_REFUNDED. The path's own steps and their
+    # random draws are kept, so the rest of the data set does not move; a resolved return only drops the COMPLETED step.
+    rt = return_times(when["DELIVERED"]) if return_spec else None
+    ret_steps = {"REQUESTED": [("RETURN_REQUESTED", "requested")],
+                 "AWAITING_RETURN": [("RETURN_REQUESTED", "requested")],
+                 "REJECTED": [("RETURN_REQUESTED", "requested"), ("DELIVERED", "decided")],
+                 "RESOLVED": [("RETURN_REQUESTED", "requested"), ("RETURNED", "settled"),
+                              ("PARTIALLY_REFUNDED", "settled")]}.get(return_spec, [])
     cur = path[-1]
     if hold:
         cur = "ON_HOLD"
     if cancel:
         cur = "CANCELLED"
-    if final == "RETURNED":
-        cur = "RETURNED"
+    if return_spec == "RESOLVED":
+        cur = "PARTIALLY_REFUNDED"
+    elif return_spec in ("REQUESTED", "AWAITING_RETURN"):
+        cur = "RETURN_REQUESTED"
     released = "READY_TO_FULFILL" in path or "IN_PRODUCTION" in path
     rel_at = when.get("IN_PRODUCTION", when.get("READY_TO_FULFILL"))
     deposit = money(total * (terms[1] if terms and terms[0] == "DEPOSIT" else 30) / 100 / 1000) * 1000 \
@@ -1638,9 +1971,11 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     row.update(hold_reason=hold[1] if hold else None,
                status_before_hold=(None if hold[1] == "CREDIT" else hold[0]) if hold else None,
                hold_note=hold[2] if hold else None,
-               shipped_at=when.get("SHIPPED") if cur in ("SHIPPED", "DELIVERED", "COMPLETED", "RETURNED") else None,
-               delivered_at=when.get("DELIVERED") if cur in ("DELIVERED", "COMPLETED", "RETURNED") else None,
+               shipped_at=when.get("SHIPPED") if cur in ("SHIPPED", "DELIVERED", "COMPLETED") + RETURN_STATUSES
+               else None,
+               delivered_at=when.get("DELIVERED") if cur in ("DELIVERED", "COMPLETED") + RETURN_STATUSES else None,
                completed_at=when.get("COMPLETED") if cur == "COMPLETED" else None,
+               refunded_at=rt["settled"] if cur == "PARTIALLY_REFUNDED" else None,
                packed_at=when.get("PACKED"), billed_amount=0, receivable_paid_amount=0,
                # Review of #150 (V20261022000400): when its fulfillment task was opened - set below with the pick,
                # as the migration backfills it from fulfillment.pick (the create-task list leaves the order out).
@@ -1658,19 +1993,26 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     if cancel:
         hist.append("CANCELLED")
         when["CANCELLED"] = times[-1] + timedelta(hours=random.randint(4, 30))
-    if final == "RETURNED":
-        hist.append("RETURNED")
-        when["RETURNED"] = when["DELIVERED"] + timedelta(days=4)
     actors = {"PENDING_PAYMENT": c["user"], "DRAFT": c["user"], "CONFIRMED": None, "IN_PRODUCTION": U["dieuphoi"],
               "READY_TO_FULFILL": U["dieuphoi"], "PICKING": U[staff_of(p)[0]], "PACKED": U[staff_of(p)[0]],
               "SHIPPED": U[staff_of(p)[0]],
-              "DELIVERED": None, "COMPLETED": None, "ON_HOLD": U["dieuphoi"], "CANCELLED": U["dieuphoi"],
-              "RETURNED": U[staff_of(p)[2]]}
-    for k, s in enumerate(hist):
+              "DELIVERED": None, "COMPLETED": None, "ON_HOLD": U["dieuphoi"], "CANCELLED": U["dieuphoi"]}
+    entries = [(s, when[s], actors.get(s), {"ON_HOLD": hold[2] if hold else None,
+                                            "CANCELLED": cancel[2] if cancel else None}.get(s)) for s in hist]
+    rma = None
+    if ret_steps:
+        # The reasons ReturnRequestService writes ("RETURN_REQUESTED RMA-..."), by whoever moved the return.
+        rma = next_no("RMA", rt["requested"].date())
+        cut = hist.index("DELIVERED") + 1
+        by = {"RETURN_REQUESTED": c["user"] or U["sales1"], "DELIVERED": U["dieuphoi"], "RETURNED": U["ketoan"],
+              "PARTIALLY_REFUNDED": U["ketoan"]}
+        why = {"RETURN_REQUESTED": "RETURN_REQUESTED", "DELIVERED": "RETURN_REJECTED", "RETURNED": "RETURN_RESOLVED"}
+        steps = [(s, rt[t], by[s], f"{why[s]} {rma}" if s in why else None) for s, t in ret_steps]
+        rest = [] if return_spec == "RESOLVED" else entries[cut:]
+        entries = entries[:cut] + steps + rest
+    for k, (s, t, actor, reason) in enumerate(entries):
         add("ordering.order_status_history", id=uid(f"order:{key}:h:{k}"), order_id=oid, from_status=prev, to_status=s,
-            reason={"ON_HOLD": hold[2] if hold else None, "CANCELLED": cancel[2] if cancel else None,
-                    "RETURNED": "Khách trả hàng lỗi"}.get(s), actor_id=actors.get(s), occurred_at=when[s],
-            created_at=when[s])
+            reason=reason, actor_id=actor, occurred_at=t, created_at=t)
         prev = s
     o = dict(id=oid, key=key, cust=cust_code, p=p, lines=lines, total=total, row=row, when=when, status=cur,
              term=term, number=number, custom=custom, deposit=deposit)
@@ -1765,7 +2107,10 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         hold_p = ("PRINTING", "MACHINE_DOWN", "Máy in flexo số 2 hỏng trục, chờ thay") if ps == "ON_HOLD" else None
         pid_ = production_order(f"order:{key}:{n}", "ORDER", p, ln["sku"], ln["design"]["snapshot"],
                                 ln["design"]["checksum"], ln["qty"], ps, when["IN_PRODUCTION"], order=oid, line=ln["id"],
-                                mode="SUBCONTRACTED" if ps == "SUBCONTRACTED" else "IN_HOUSE", hold=hold_p,
+                                # G2-3: a `sub` order's print line is printed by a subcontractor - converted
+                                # whole (BR-PRD-12) - and its balance collected on delivery.
+                                mode="SUBCONTRACTED" if ps == "SUBCONTRACTED" or sub else "IN_HOUSE",
+                                subcontractor="INHN" if sub else "INSG", hold=hold_p,
                                 end=when["READY_TO_FULFILL"] - timedelta(hours=1) if ps == "COMPLETED" else None)
         ln["production"] = pid_
         made[ln["id"]] = PRODUCTION[-1]
@@ -1783,6 +2128,9 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         stage = None
         if prod is not None and prod["row"]["mode"] == "IN_HOUSE" and "MATERIAL_ISSUED" in prod["times"]:
             stage = "DONE" if prod["done"] else "ISSUED"
+        # A subcontracted line's checkout holds gave their units to its production order when it was converted
+        # (reduceHold, SUBCONTRACTED), and those went to the subcontractor with the work (SubcontractJob.take_over).
+        sent = prod is not None and prod["row"]["mode"] == "SUBCONTRACTED" and "SUBCONTRACTED" in prod["times"]
         for k, (s, qn) in enumerate(reserve_from[ln["id"]]):
             rid = uid(f"res:{key}:{ln['id']}:{k}")
             holder = s
@@ -1793,6 +2141,8 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             elif stage == "DONE":
                 # G4-Q2: the printed goods left stock when the production order completed - never picked.
                 st, closed, reason, exp = "CONSUMED", prod["completed"], None, None
+            elif sent:
+                st, closed, reason, exp = "RELEASED", converted_at(prod), "SUBCONTRACTED", None
             elif ln["design"] is None and (consumed or (picked_state == "PICKING" and k == 0 and ln is lines[0]
                                                         and cur != "ON_HOLD")):
                 st, closed, reason, exp = "CONSUMED", when["PICKING"] + timedelta(hours=2), None, None
@@ -1801,6 +2151,8 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                 exp = placed + timedelta(days=7) if cur == "PENDING_PAYMENT" else None
             if stage:
                 holder = print_shop(prod, rid, s, qn, done=stage == "DONE")
+            if sent:
+                subcontract_job(prod).take_over(s, qn)
             res = add("inventory.stock_reservation", id=rid, stock_item_id=holder.id, order_id=oid,
                       root_request_id=uid(f"req:{key}"), request_id=uid(f"req:{key}:{ln['id']}:{k}"), quantity=qn,
                       reserved_at=placed, expires_at=exp, status=st, release_reason=reason, closed_at=closed)
@@ -1886,6 +2238,8 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                                             cod, t_ready))
                 # Shipments handed over before loads existed are whole_order_handover (V20261021000400): no manifest
                 # names them, and their order was shipped and delivered as a whole (no ordering.order_shipment).
+                # Those handed over since LOADS_LIVE leave on signed dispatch loads (section 8, before the COD
+                # remittances), and the order records them in ordering.order_shipment (DispatchService.handOver).
                 add("fulfillment.shipment", id=ship_id, pack_id=pack_id, order_id=oid, carrier=carrier,
                     carrier_id=carrier_ref(chosen) if chosen else None, whole_order_handover=shipped,
                     tracking_number=None, status=sstatus, dispatched_at=when.get("SHIPPED") if shipped else None,
@@ -1951,34 +2305,76 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                     refunded_at=when["CANCELLED"] + timedelta(days=1), order_id=oid, source="ORDER_CANCELLED",
                     created_at=when["CANCELLED"])
     if return_spec:
+        # A return request (SCRUM-243, V20261101020000) at one of the points the flow stops, from the customer's
+        # portal (or opened by Sales for a customer with no portal account): REQUESTED → AWAITING_RETURN (approved, goods to come back) → RECEIVED (counted into quarantine) →
+        # INSPECTED → SETTLEMENT_PENDING (Sales proposes) → RESOLVED (the accountant approves: four eyes), or
+        # REQUESTED → REJECTED. The resolved one is refunded in cash for the accepted units; QC sends them to scrap,
+        # an adjustment still waiting for its second person, so the units stay in quarantine meanwhile.
         rstatus = return_spec
         rr = uid(f"rma:{key}")
-        rq = when["DELIVERED"] + timedelta(days=2)
-        decided = rstatus not in ("REQUESTED", "CANCELLED")
-        received = rstatus in ("RECEIVED", "REFUNDED")
-        ref = None
         ln = lines[0]
         rqty = max(1, ln["qty"] // 5)
-        if rstatus == "REFUNDED":
-            ref = uid(f"refund:rma:{key}")
-            add("payment.refund", id=ref, **{pays[0][0]: pays[0][1]}, amount=rqty * ln["price"], currency="VND",
-                reason="Hoàn tiền hàng trả lại lỗi", status="COMPLETED", refunded_at=rq + timedelta(days=3),
-                order_id=oid, source="RETURN", created_at=rq + timedelta(days=2))
-        add("ordering.return_request", id=rr, rma_number=next_no("RMA", rq.date()), order_id=oid, customer_id=c["id"],
-            status=rstatus, reason_code="DEFECTIVE" if rstatus != "REJECTED" else "CHANGED_MIND",
-            note="Một số thùng bị móp, ly bên trong biến dạng" if rstatus != "REJECTED" else "Khách muốn đổi size",
-            requested_at=rq, decided_by=U["dieuphoi"] if decided else None, decided_at=rq + timedelta(hours=5)
-            if decided else None, rejection_reason="Hàng in logo theo yêu cầu không áp dụng đổi trả do đổi ý"
-            if rstatus == "REJECTED" else None, received_at=rq + timedelta(days=2) if received else None,
-            refund_id=ref, created_at=rq)
+        rejected = rstatus == "REJECTED"
+        approved = rstatus in ("AWAITING_RETURN", "RESOLVED")
+        resolved = rstatus == "RESOLVED"
+        qrt, receiver, inspector = f"{p}-QRT01", staff_of(p)[0], staff_of(p)[3]
+        credit = rqty * ln["price"] if resolved else 0
+        requester = c["user"] or U["sales1"]
+        add("ordering.return_request", id=rr, rma_number=rma, order_id=oid, customer_id=c["id"], order_number=number,
+            request_id=uid(f"rma:req:{key}"), channel="PORTAL" if c["user"] else "BACK_OFFICE", requested_by=requester,
+            requested_resolution={"REQUESTED": "REPLACEMENT", "AWAITING_RETURN": "CREDIT_NOTE"}.get(rstatus, "REFUND"),
+            status=rstatus, reason_code="CHANGED_MIND" if rejected else "DAMAGED_IN_TRANSIT",
+            note="Khách muốn đổi size" if rejected else "Một số thùng bị móp, ly bên trong biến dạng",
+            requested_at=rt["requested"], decided_by=U["dieuphoi"] if rstatus != "REQUESTED" else None,
+            decided_at=rt["decided"] if rstatus != "REQUESTED" else None,
+            decision_note="Ảnh khách gửi cho thấy thùng móp khi giao" if approved else None,
+            return_required=True if approved else None,
+            return_deadline=rt["decided"] + timedelta(days=14) if approved else None,
+            rejection_reason="Đổi trả chỉ áp dụng cho hàng lỗi (BR-RMA-002)" if rejected else None,
+            received_at=rt["received"] if resolved else None, received_by=U[receiver] if resolved else None,
+            receiving_location_code=qrt if resolved else None, parcel_count=1 if resolved else 0,
+            inspected_by=U[inspector] if resolved else None, inspected_at=rt["inspected"] if resolved else None,
+            inspection_note="Móp miệng ly, không bán lại được" if resolved else None,
+            money_mode="REFUND" if resolved else None, settlement_amount=credit,
+            proposed_by=U["sales1"] if resolved else None, proposed_at=rt["proposed"] if resolved else None,
+            resolution_note="Hoàn tiền phần hàng lỗi" if resolved else None,
+            settled_by=U["ketoan"] if resolved else None, settled_at=rt["settled"] if resolved else None,
+            refunded_amount=credit, vat_adjustment_required=resolved,
+            closed_at=rt["settled"] if resolved else (rt["decided"] if rejected else None), created_at=rt["requested"])
         rl = uid(f"rmal:{key}")
+        scrap = None
+        if resolved:
+            Stock(ln["sku"], qrt, rqty, rt["received"], "QUARANTINE", key=f"return:{key}")
+            move("RETURN_IN", ln["sku"], rqty, "RETURN_REQUEST_LINE", rl, rt["received"], receiver, to=qrt,
+                 ts_="QUARANTINE", reason=f"Hàng khách trả {rma}")
+            scrap = uid(f"adj:rma:{key}")
+            add("inventory.stock_adjustment", id=scrap, adjustment_number=next_no("ADJ", rt["inspected"].date()),
+                location_code=qrt, sku=ln["sku"], lot_number=None, quantity_delta=-rqty, reason_code="SCRAP",
+                note=f"{rma}: hàng trả lại hỏng, hủy", status="PENDING_APPROVAL", cycle_count_line_id=None,
+                requested_by=U[inspector], decided_by=None, decided_at=None, rejection_reason=None, posted_at=None,
+                withdrawn_at=None, created_at=rt["inspected"])
+            add("payment.refund", id=uid(f"refund:rma:{key}"), **{pays[0][0]: pays[0][1]}, amount=credit,
+                currency="VND", reason=f"Hoàn tiền hàng trả lại {rma}", status="COMPLETED",
+                refunded_at=rt["settled"] + timedelta(days=1), order_id=oid, source="RETURN", return_request_id=rr,
+                created_at=rt["settled"])
         add("ordering.return_request_line", id=rl, return_request_id=rr, order_line_id=ln["id"], quantity=rqty,
-            item_condition="DAMAGED" if received else None, disposition="QUARANTINE" if received else None,
-            created_at=rq)
-        if received:
-            Stock(ln["sku"], f"{p}-QRT01", rqty, rq + timedelta(days=2), "DAMAGED", key=f"return:{key}")
-            move("RETURN_IN", ln["sku"], rqty, "ORDER", oid, rq + timedelta(days=2), staff_of(p)[0],
-                 to=f"{p}-QRT01", ts_="DAMAGED", reason="Hàng khách trả - móp")
+            sku=ln["sku"], custom_printed=ln["design"] is not None, unit_price=ln["price"],
+            approved_quantity=rqty if approved else None, received_quantity=rqty if resolved else None,
+            accepted_quantity=rqty if resolved else None, rejected_quantity=0 if resolved else None,
+            item_condition="DEFECTIVE" if resolved else None, scrap_quantity=rqty if resolved else 0,
+            scrap_adjustment_id=scrap, credit_quantity=rqty if resolved else 0, credit_amount=credit,
+            created_at=rt["requested"])
+        flow = {"REQUESTED": [], "REJECTED": [("REJECTED", "decided", "dieuphoi")],
+                "AWAITING_RETURN": [("AWAITING_RETURN", "decided", "dieuphoi")],
+                "RESOLVED": [("AWAITING_RETURN", "decided", "dieuphoi"), ("RECEIVED", "received", receiver),
+                             ("INSPECTED", "inspected", inspector), ("SETTLEMENT_PENDING", "proposed", "sales1"),
+                             ("RESOLVED", "settled", "ketoan")]}[rstatus]
+        prev_rs = None
+        for k, (s, t, actor) in enumerate([("REQUESTED", "requested", None)] + flow):
+            add("ordering.return_request_status_history", id=uid(f"rma:{key}:h:{k}"), return_request_id=rr,
+                from_status=prev_rs, to_status=s, reason=None, actor_id=U[actor] if actor else requester,
+                occurred_at=rt[t], created_at=rt[t])
+            prev_rs = s
     add("notification.delivery_log", id=uid(f"mail:placed:{key}"), template_code="order.placed", channel="EMAIL",
         recipient=c["email"], status="SENT" if len(ORDERS) % 9 else "FAILED",
         error=None if len(ORDERS) % 9 else "550 5.1.1 Mailbox unavailable",
@@ -2040,10 +2436,11 @@ plan.append(dict(cust=PREPAID[4], d=day(30), final="CONFIRMED", cancel_request=1
                  cancel=("CONFIRMED", "CUSTOMER_REQUEST", "Khách yêu cầu hủy - lùi ngày khai trương")))
 plan.append(dict(cust=DEPOSIT[0], d=day(34), final="PENDING_PAYMENT",
                  cancel=("PENDING_PAYMENT", "DUPLICATE_ORDER", "Khách đặt trùng đơn")))
-plan.append(dict(cust=PREPAID[0], d=day(14), final="RETURNED", return_spec="REFUNDED"))
+# Returns (SCRUM-243): the resolved one's order never completes (its COMPLETED step is dropped), the refused one's does.
+plan.append(dict(cust=PREPAID[0], d=day(14), final="COMPLETED", return_spec="RESOLVED"))
 plan.append(dict(cust=PREPAID[5 % len(PREPAID)], d=day(38), final="COMPLETED", return_spec="REJECTED"))
 plan.append(dict(cust=DEPOSIT[1], d=day(41), final="DELIVERED", return_spec="REQUESTED"))
-plan.append(dict(cust=PREPAID[6 % len(PREPAID)], d=day(42), final="DELIVERED", return_spec="APPROVED"))
+plan.append(dict(cust=PREPAID[6 % len(PREPAID)], d=day(42), final="DELIVERED", return_spec="AWAITING_RETURN"))
 
 plan.sort(key=lambda x: x["d"])
 for i, spec in enumerate(plan):
@@ -2130,6 +2527,215 @@ if loading:
         shipment_id=ship_id, scan_id=uid("load:open:scan"), loaded_at=opened + timedelta(minutes=5),
         loaded_by=dispatcher, active=True, created_at=opened + timedelta(minutes=5))
 
+# G4-2a: shipments handed over through a dispatch load (DispatchService.handOver → OrderService.recordHandover). The
+# order then records the shipment it was told of - ordering.order_shipment and the units its sealed parcels carried
+# (package_line, DispatchService.linesOf) - and its outcomes go shipment by shipment (Order.recordShipmentDelivered).
+# Only a shipment the order knows as the whole order (whole_order_handover: handed over before loads existed, or
+# parcels with no recorded contents) has no such row, and its outcome is the order's own (ShipmentService.tellOrder).
+# In this data set loads went live on LOADS_LIVE: every shipment handed over since left on a signed manifest - one
+# load per shipment, opened when the carrier's vehicle arrived - and the order recorded it. Earlier ones stay
+# whole-order handovers, so the receivables, COD remittances and orders of August-September are untouched.
+LOADS_LIVE = at(date(2026, 10, 3), 0)
+# The catalogue names V20261021000400 seeds; the order copies the carrier's name with the handover (Carriage).
+CARRIER_NAME = {"GHN": "Giao Hàng Nhanh", "GHTK": "Giao Hàng Tiết Kiệm", "VTP": "Viettel Post", "JTE": "J&T Express"}
+NO_AUDIT.add("ordering.order_shipment_line")    # (shipment_id, order_line_id, quantity) and nothing else
+SHIP_ROW = {r["id"]: r for r in ROWS["fulfillment.shipment"]}
+PKG_ROWS = ROWS["fulfillment.package"]
+PKG_LINES = ROWS["fulfillment.package_line"]
+SIGNED_LOADS = []   # numbered once all exist: LD-<yyyyMMdd>-<n> in the order they were opened that day
+
+
+def history_of(o):
+    return [h for h in ROWS["ordering.order_status_history"] if h["order_id"] == o["id"]]
+
+
+def status_at(o, t):
+    """The order's status at `t`, from its history (what a history row written then records as order_status)."""
+    return max((h for h in history_of(o) if h["occurred_at"] <= t), key=lambda h: h["occurred_at"])["to_status"]
+
+
+def units_of(parcels):
+    """What the parcels carry per order line ({@code package_line}), as DispatchService.linesOf sums it."""
+    out = {}
+    for pl in PKG_LINES:
+        if pl["package_id"] in parcels:
+            out[pl["order_line_id"]] = out.get(pl["order_line_id"], 0) + pl["quantity"]
+    return out
+
+
+def dispatch(o, s, parcels, opened, by):
+    """One parcel load signed for `s` (09 §4.1 step 3): opened LOADING when the driver arrived, the shipment put on the
+    manifest and its parcels scanned on, then DISPATCHED when both sides signed - the shipment HANDED_OVER at that
+    moment. The triggers only let a manifest take a READY_TO_DISPATCH shipment and an open load take parcels, so the
+    rows go in as they were while loading and an UPDATE after the parcels moves them to the signed state."""
+    load_id = uid(f"load:{s['id']}")
+    signed = s["handed_over_at"]
+    carrier = s["carrier_id"]
+    k = len(ROWS.get("fulfillment.dispatch_load", []))
+    # The carrier's driver signs the manifest for it (carrier_representative); the code is given below, once all exist.
+    driver = ["Nguyễn Văn Hưng", "Trần Quốc Việt", "Phạm Minh Đức", "Lê Hoàng Phúc"][k % 4]
+    SIGNED_LOADS.append(add(
+        "fulfillment.dispatch_load", id=load_id, code=None, request_id=uid(f"load:{s['id']}:request"),
+        warehouse_id=s["warehouse_id"], mode="PARCEL", carrier_id=carrier, load_plan_vehicle_id=None,
+        vehicle_plate=["29C-318.42", "51D-702.15", "43C-115.08", "29H-660.91"][k % 4], driver_name=driver,
+        driver_phone=f"09{k % 10}8{k % 7}2{k % 9}45{k % 5}", status="LOADING", loading_started_at=opened,
+        loading_started_by=by, carrier_representative=driver, signature_ref=None, shipment_count=1,
+        package_count=len(parcels), cod_total=s["cod_amount"], created_at=opened))
+    POST.append(("fulfillment.dispatch_load_package",
+                 f"UPDATE fulfillment.dispatch_load SET status = 'DISPATCHED', dispatched_at = {q(signed)}, "
+                 f"dispatched_by = {q(by)} WHERE id = {q(load_id)};"))
+    add("fulfillment.dispatch_load_shipment", id=uid(f"load:{s['id']}:s"), load_id=load_id, shipment_id=s["id"],
+        active=True, added_at=opened, added_by=by, label_cod_amount=s["label_cod_amount"], cod_amount=s["cod_amount"],
+        created_at=opened)
+    for j, pk in enumerate(parcels):
+        add("fulfillment.dispatch_load_package", id=uid(f"load:{s['id']}:p:{j}"), load_id=load_id, package_id=pk,
+            shipment_id=s["id"], scan_id=uid(f"load:{s['id']}:scan:{j}"),
+            loaded_at=opened + timedelta(minutes=5 + 3 * j), loaded_by=by, active=True,
+            created_at=opened + timedelta(minutes=5 + 3 * j))
+    final = dict(status=s["status"], handed_over_at=signed, handed_over_by=by, dispatched_at=signed,
+                 outcome_at=s["outcome_at"], outcome_by=s["outcome_by"], load_id=load_id)
+    s.update(status="READY_TO_DISPATCH", handed_over_at=None, handed_over_by=None, dispatched_at=None,
+             outcome_at=None, outcome_by=None, whole_order_handover=False)
+    POST.append(("fulfillment.dispatch_load_package", f"UPDATE fulfillment.shipment SET "
+                 + ", ".join(f"{c} = {q(v)}" for c, v in final.items()) + f" WHERE id = {q(s['id'])};"))
+    return final
+
+
+def order_shipment(o, s, parcels, final, billed=0):
+    """ordering.order_shipment as Order.recordHandover writes it: the units at the order's prices, what the carrier
+    collects (only an ON_DELIVERY deposit order's balance - none here), the carriage the portal shows; the outcome
+    as recordShipmentDelivered leaves it (a credit order bills the shipment)."""
+    units = units_of(parcels)
+    price = {ln["id"]: ln["price"] for ln in o["lines"]}
+    add("ordering.order_shipment", id=s["id"], order_id=o["id"], status=final["status"],
+        amount=sum(qn * price[ln] for ln, qn in units.items()), billed_amount=billed,
+        handed_over_at=final["handed_over_at"], handed_over_by=final["handed_over_by"],
+        outcome_at=final["outcome_at"], outcome_by=final["outcome_by"], failure_reason=None, failure_note=None,
+        cod_amount=0, shipment_code=s["code"], package_count=len(parcels),
+        carrier_name=CARRIER_NAME[CARRIER_CODE[s["carrier"]]], delivery_mode=s["delivery_mode"],
+        created_at=final["handed_over_at"])
+    for ln, qn in units.items():
+        add("ordering.order_shipment_line", shipment_id=s["id"], order_line_id=ln, quantity=qn)
+    return sum(qn * price[ln] for ln, qn in units.items())
+
+
+LOADED = [o for o in ORDERS if o.get("shipment") and SHIP_ROW[o["shipment"]]["handed_over_at"] >= LOADS_LIVE]
+# 15 BR-08: none of them has its balance collected on delivery (that would bill the carrier per shipment, G2-3).
+assert all(o["row"]["balance_policy"] != "ON_DELIVERY" for o in LOADED)
+# PACK-PARTIAL (lead's decision 2026-10-21): one credit order of two parcels shipped in two parts. Sales allowed it
+# while it was picked; the packer completed the first parcel alone (a partial completion: shipment S1 with its note,
+# the order records it packed), the first vehicle took it - PICKING → PARTIALLY_FULFILLED - and the coordinator
+# recorded it delivered the next day, which bills it (one receivable per shipment). The second parcel, packed half an
+# hour later (PARTIALLY_FULFILLED → PACKED), is the shipment the order already had: it left on its own day (→ SHIPPED).
+split = next(o for o in LOADED if o["term"] == "CREDIT" and o["status"] == "SHIPPED" and len(o["lines"]) >= 2
+             and SHIP_ROW[o["shipment"]]["package_count"] == 2)
+for o in LOADED:
+    s = SHIP_ROW[o["shipment"]]
+    parcels = [pk["id"] for pk in PKG_ROWS if pk["shipment_id"] == s["id"]]
+    dispatcher = s["handed_over_by"]
+    if o is split:
+        key = o["key"]
+        t_pick = o["when"]["PICKING"]
+        first, rest = parcels[0], parcels[1:]
+        s1 = uid(f"ship:{key}:part")
+        ready1, left1 = t_pick + timedelta(hours=3, minutes=15), t_pick + timedelta(hours=3, minutes=50)
+        got1 = left1 + timedelta(days=1, hours=2)
+        note = "Khách cần gấp phần hàng đã đóng cho ngày khai trương; phần còn lại giao chuyến sau"
+        add("ordering.order_partial_shipment_decision", id=uid(f"psd:{key}"), order_id=o["id"], allowed=True,
+            order_status="PICKING", note="Khách đồng ý nhận làm 2 đợt, đợt 1 giao ngay phần đã đóng",
+            decided_by=U["sales1"], decided_at=t_pick + timedelta(hours=1), created_at=t_pick + timedelta(hours=1))
+        o["row"]["allow_partial_shipment"] = True
+        # The first completion records the order packed (Order.recordPacked keeps the earliest).
+        o["row"]["packed_at"] = ready1
+        pk1 = next(pk for pk in PKG_ROWS if pk["id"] == first)
+        pk1.update(shipment_id=s1, sealed_at=ready1 - timedelta(minutes=5))
+        # The shipment the order had becomes its second: the same row, numbered in the order it was made.
+        s.update(code=f"{o['number']}-S2", package_count=len(rest))
+        part = add("fulfillment.shipment", id=s1, pack_id=s["pack_id"], order_id=o["id"], carrier=s["carrier"],
+                   carrier_id=s["carrier_id"], whole_order_handover=False, tracking_number=None, status="DELIVERED",
+                   dispatched_at=left1, code=f"{o['number']}-S1", warehouse_id=s["warehouse_id"],
+                   delivery_mode="PARCEL", package_count=1, cod_amount=0, label_cod_amount=0, partial=True,
+                   partial_note=note, ready_at=ready1, ready_by=s["ready_by"], handed_over_at=left1,
+                   handed_over_by=dispatcher, outcome_at=got1, outcome_by=U["dieuphoi"], created_at=ready1)
+        for k, (es, et, who, nt) in enumerate([("READY_TO_DISPATCH", ready1, s["ready_by"], note),
+                                               ("HANDED_OVER", left1, dispatcher, None),
+                                               ("DELIVERED", got1, U["dieuphoi"], None)]):
+            add("fulfillment.shipment_event", id=uid(f"sev:{key}:part:{k}"), shipment_id=s1, status=es, occurred_at=et,
+                source="MANUAL", carrier_event_id=None, location_text="Kho " + o["p"], note=nt, raw_payload=None,
+                recorded_by=who, created_at=et)
+        add("notification.delivery_log", id=uid(f"mail:ship:{key}:part"), template_code="shipment.dispatched",
+            channel="EMAIL", recipient=CUST[o["cust"]]["email"], status="SENT", error=None, sent_at=left1,
+            external_reference=None, operation_reference=f"shipment:{s1}", terminal=True, delivery_generation=0,
+            attempt_number=1, created_at=left1)
+        final1 = dispatch(o, part, [first], left1 - timedelta(minutes=30), dispatcher)
+        # Credit: billed what it carried - nothing was paid ahead (Order.billNow) - one receivable for the shipment.
+        value1 = sum(pl["quantity"] * next(ln["price"] for ln in o["lines"] if ln["id"] == pl["order_line_id"])
+                     for pl in PKG_LINES if pl["package_id"] == first)
+        order_shipment(o, part, [first], final1, billed=value1)
+        o["row"]["billed_amount"] = value1
+        due1 = got1.date() + timedelta(days=CUST[o["cust"]]["terms"][2])
+        add("payment.receivable", id=uid(f"recv:{key}:part"), order_id=o["id"], customer_id=CUST[o["cust"]]["id"],
+            kind="CREDIT_ORDER", amount=value1, paid_amount=0, currency="VND", issued_at=got1, due_date=due1,
+            status="OVERDUE" if due1 < TODAY else "OPEN", settled_at=None, shipment_id=s1, order_number=o["number"],
+            created_at=got1)
+        # The order's history: PICKING → PARTIALLY_FULFILLED (S1 left) → PACKED (the rest packed) → SHIPPED.
+        hist = history_of(o)
+        packed_h = next(h for h in hist if h["to_status"] == "PACKED")
+        assert left1 < packed_h["occurred_at"] < s["handed_over_at"] and got1 <= at(TODAY, 18)
+        packed_h["from_status"] = "PARTIALLY_FULFILLED"
+        add("ordering.order_status_history", id=uid(f"order:{key}:h:part"), order_id=o["id"], from_status="PICKING",
+            to_status="PARTIALLY_FULFILLED", reason=None, actor_id=dispatcher, occurred_at=left1, created_at=left1)
+        parcels = rest
+    final = dispatch(o, s, parcels, s["handed_over_at"] - timedelta(hours=1), dispatcher)
+    order_shipment(o, s, parcels, final)
+
+# The day's next load number (platform.document_sequence), the open load above keeping the one it has.
+taken = {r["code"] for r in ROWS["fulfillment.dispatch_load"] if r["code"]}
+for r in sorted(SIGNED_LOADS, key=lambda r: r["loading_started_at"]):
+    day_ = r["loading_started_at"].strftime("%Y%m%d")
+    n = 1 + sum(1 for c in taken if c.startswith(f"LD-{day_}-"))
+    r.update(code=f"LD-{day_}-{n:04d}", signature_ref=f"BBGN-LD-{day_}-{n:04d}.pdf")
+    taken.add(r["code"])
+# Later loads take their number from next_no: it must count every code already given out that day.
+for c in taken:
+    k = ("LD", datetime.strptime(c[3:11], "%Y%m%d").date())
+    SEQ[k] = max(SEQ.get(k, 0), int(c[12:]))
+for r in ROWS["fulfillment.dispatch_load"]:
+    same_day = [x for x in ROWS["fulfillment.dispatch_load"] if x["code"][:11] == r["code"][:11]]
+    assert sorted(same_day, key=lambda x: x["loading_started_at"]) == sorted(same_day, key=lambda x: x["code"])
+
+# LP-1: how an order travels, chosen by the Order Coordinator at release or since, until packing starts
+# (OrderReleaseService.release → DeliveryModeHistory.apply, note null; PUT /orders/{id}/delivery-mode, with a note).
+# The largest order shipped through a load was released as a full truckload and turned back to parcels before it
+# was picked; the largest stock order waiting to be picked was released as one and still is.
+FTL_REVERTED = max((o for o in LOADED if o is not split), key=lambda o: o["total"])
+FTL_LIVE = max((o for o in ORDERS if o["status"] == "READY_TO_FULFILL" and not o["custom"]
+                and o["row"]["balance_policy"] != "ON_DELIVERY"), key=lambda o: o["total"])
+for o, steps in ((FTL_REVERTED, [("FULL_TRUCKLOAD", "PARCEL", 0, None),
+                                 ("PARCEL", "FULL_TRUCKLOAD", 1, "Chỉ 2 pallet, gửi kiện qua hãng rẻ hơn thuê "
+                                                                 "nguyên xe")]),
+                 (FTL_LIVE, [("FULL_TRUCKLOAD", "PARCEL", 0, None)])):
+    released = o["row"]["released_at"]
+    for k, (mode, before, day_after, note) in enumerate(steps):
+        # Released with the mode (no note); changed back on the next working morning, before packing started.
+        t = released if not day_after else at(released.date() + timedelta(days=day_after), 9, 30)
+        status_ = status_at(o, t)
+        assert t < o["when"].get("PICKING", at(TODAY, 18)) and status_ in ("IN_PRODUCTION", "READY_TO_FULFILL")
+        add("ordering.order_delivery_mode_change", id=uid(f"dmc:{o['key']}:{k}"), order_id=o["id"],
+            delivery_mode=mode, previous_mode=before, order_status=status_, note=note, changed_by=U["dieuphoi"],
+            changed_at=t, created_at=t)
+        o["row"]["delivery_mode"] = mode
+
+# PACK-PARTIAL: Sales allowed a confirmed order to ship in parts, then took it back at the customer's request - the
+# history keeps both decisions (PartialShipmentService.decide writes one row per change), the order ships whole.
+undecided = next(o for o in ORDERS if o["status"] == "CONFIRMED" and o is not pend and o["term"] == "CREDIT")
+for k, (allowed, hours, who, note) in enumerate([
+        (True, 2, "sales1", "Khách hỏi giao trước phần có sẵn"),
+        (False, 26, "sales2", "Khách muốn nhận một lần cho tiện kiểm đếm")]):
+    t = undecided["when"]["CONFIRMED"] + timedelta(hours=hours)
+    assert t <= at(TODAY, 18)
+    add("ordering.order_partial_shipment_decision", id=uid(f"psd:{undecided['key']}:{k}"), order_id=undecided["id"],
+        allowed=allowed, order_status="CONFIRMED", note=note, decided_by=U[who], decided_at=t, created_at=t)
 # COD remittances from the carriers
 for i, chunk in enumerate([SHIPMENTS_COD[:len(SHIPMENTS_COD) // 2], SHIPMENTS_COD[len(SHIPMENTS_COD) // 2:]]):
     if not chunk:
@@ -2432,14 +3038,14 @@ add("production.sample_request", id=uid("sample:cancelled"), request_number=next
     created_at=at(date(2026, 9, 5), 9))
 
 # the subcontract PO of the subcontracted production order
-sub_prod = next((x for x in PRODUCTION if x["row"]["mode"] == "SUBCONTRACTED"), None)
+sub_prod = next((x for x in PRODUCTION if x["row"]["status"] == "SUBCONTRACTED"), None)
 if sub_prod:
     pr = sub_prod["row"]
     d = pr["created_at"].date()
     spo = make_po("subcontract", "HN" if pr["warehouse_id"] == WH["HN"] else "BD", "INSG", d, "CONFIRMED",
                   [(pr["blank_sku"], pr["planned_quantity"], 120000)], submitter="muahang1", approver="quanly.hn",
                   po_type="SUBCONTRACT", production_order_id=pr["id"], number=next_no("SPO", d),
-                  note=f"Gia công in {pr['order_number']}")
+                  note=f"Gia công in {pr['order_number']}", times=raised_with(converted_at(sub_prod)))
     POST.append(("procurement.purchase_order_attachments",
                  f"UPDATE production.production_order SET purchase_order_id = {q(spo['id'])} WHERE id = {q(pr['id'])};"))
 
@@ -2573,6 +3179,1121 @@ for k in (1, 2):
 transfer("ftl", "HN", "BD", "APPROVED", date(2026, 10, 12), [(s_c.sku, 40)], reason="DEMAND",
          delivery_mode="FULL_TRUCKLOAD")
 
+# ============================================================================ 10b. subcontracted printing
+# What happened to the two subcontracted print jobs after their blanks went out (SubcontractJob, place_order). Written
+# last: none of it changes stock anything generated before reads, and it draws no random number.
+#   * The IN_PRODUCTION order's line, at Xưởng in Sài Gòn (SUBCONTRACTED; its PO is section 9's "subcontract"): two
+#     blanks brought back by a recall - one still good, back on its bin; one dented, its SUBCONTRACT_LOSS write-off
+#     waiting for the warehouse manager. Nothing received yet, so nothing settled.
+#   * The `sub` order's line, done by In Hà Nội (COMPLETED): delivered in two goods receipts - the subcontractor spoilt a
+#     blank, so the first QC round left the job one unit short and one more blank went out - each receipt reconciled,
+#     the goods held for the job in QC, handed to packing and consumed there (G4-Q2); settled, the spoilt blank above
+#     the 3 % tolerance approved with the deduction agreed with the subcontractor (BR-PRD-17).
+for job in JOBS.values():
+    if job.row["status"] == "SUBCONTRACTED":
+        job.recall("dented", 1, 1, at(date(2026, 10, 9), 10),
+                   "Xưởng in gửi trả 2 thùng phôi bị móp khi vận chuyển: 1 thùng còn dùng được nhập lại kho, "
+                   "1 thùng hỏng đề nghị hủy")
+        continue
+    t, planned, key = job.prod["times"], job.row["planned_quantity"], job.prod["key"]
+    first = t["QC"]
+    assert job.row["status"] == "COMPLETED" and first + timedelta(hours=4, minutes=30) < t["COMPLETED"], job.number
+    # The SUBCONTRACT order the conversion raised (SubcontractPurchasing.create: one line, the blank SKU, the job's
+    # quantity and price), linked from the production order once both exist, as section 9 links its own.
+    po = make_po(f"subcontract:{key}", job.p, job.sup, job.converted.date(), "CONFIRMED",
+                 [(job.sku, planned, int(job.row["subcontract_unit_price"]))], submitter="muahang1",
+                 approver=job.manager, po_type="SUBCONTRACT", production_order_id=job.id,
+                 number=next_no("SPO", job.converted.date()), note=f"Gia công in {job.number}",
+                 times=raised_with(job.converted))
+    POST.append(("procurement.purchase_order_attachments",
+                 f"UPDATE production.production_order SET purchase_order_id = {q(po['id'])} WHERE id = {q(job.id)};"))
+    # 1st delivery, one unit short: the subcontractor spoilt a blank - reconciled as written off, approved at once.
+    r1 = job.receive(po, planned - 1, first)
+    job.steps["QC"].update(changed_by=None, reason=f"Received {planned - 1} from the subcontractor")
+    job.reconcile(r1, 1, 0, first + timedelta(minutes=20), decided=first + timedelta(minutes=50))
+    # QC round 1 passes all of it and leaves the job one unit short: READY. A subcontractor's shortfall is not reprinted
+    # in house (PrintRunService.reprint) but sent again - sendBlanks holds the blank still missing (planned - good - at
+    # the subcontractor - unsent) under "subcontract-blanks:<id>:<issues so far>"; the PO has the unit open still.
+    job.rounds.append((planned - 1, 0))
+    add("production.production_qc_result", id=uid(f"prod:{key}:qc:sub:1"), production_order_id=job.id, round_no=1,
+        passed_quantity=planned - 1, failed_quantity=0, note="Đạt", inspected_at=first + timedelta(hours=1),
+        inspected_by=U[job.inspector])
+    job.history("qc1", "QC", "READY", first + timedelta(hours=1), job.inspector,
+                f"QC passed {planned - 1}, failed 0; 1 more good unit(s) needed")
+    resend = first + timedelta(hours=1, minutes=30)
+    spare = next(s for s in STOCK if s.sku == job.sku and LOC[s.loc]["wh"] == job.p and LOC[s.loc]["kind"] == "BIN"
+                 and s.status == "AVAILABLE" and s.free >= 1 and s.received <= resend and s.lot is None)
+    job.hold(spare, 1, resend, f"subcontract-blanks:{job.id}:{sum(1 for b in job.blanks if b['sent'])}")
+    job.history("resend", "READY", "SUBCONTRACTED", resend, job.clerk, "Sent to the subcontractor")
+    job.send(resend)
+    # 2nd delivery: the last unit, nothing spoilt.
+    r2 = job.receive(po, 1, first + timedelta(hours=4))
+    job.history("receipt2", "SUBCONTRACTED", "QC", first + timedelta(hours=4), None, "Received 1 from the subcontractor")
+    job.reconcile(r2, 0, 0, first + timedelta(hours=4, minutes=20))
+    # QC round 2 completes the job: production_order's QC result and COMPLETED step are this round's.
+    job.rounds.append((1, 0))
+    next(r for r in ROWS["production.production_qc_result"] if r["id"] == uid(f"prod:{key}:qc")).update(
+        round_no=2, passed_quantity=1, failed_quantity=0)
+    job.steps["COMPLETED"].update(reason=f"QC passed 1, failed 0; {planned} good")
+    job.complete(t["COMPLETED"])
+    job.settle(po, t["COMPLETED"], approved=(t["COMPLETED"] + timedelta(hours=17), 4000,
+                                             "Đã thống nhất với In Hà Nội: trừ 4.000đ/phôi hỏng vượt định mức hao hụt"))
+
+# ============================================================================ 10b. quotes
+# B2B quotes (SCRUM-448), written as QuoteService leaves them: one history row per transition, the SENT row carrying
+# the offer as sent (QuoteService.offerJson), lines replaced on a revision, the accepted quantity and price fixed on
+# each line at acceptance. Only designs the customer confirmed are quoted (DesignService.verifySnapshotForSku: a
+# snapshot of the customer's own draft, for the product the blank belongs to), and a quote is accepted only on blanks
+# with a sample the customer approved (BR-ORD-008, QuoteService.gate). No random draws: the rest of the set stays put.
+NO_AUDIT.update({"ordering.quote_line", "ordering.quote_price_tier", "ordering.quote_status_history"})
+QUOTE_TERMS = ("Đơn giá theo thùng, đã gồm VAT 8% và phí in. Sản xuất 7-10 ngày sau khi khách duyệt mẫu; "
+               "giao tận kho của khách trong nội thành.")
+
+
+def conversion_request_id(quote_id):
+    """QuoteService.conversionRequestId: UUID.nameUUIDFromBytes("quote-conversion:" + quoteId), a version-3 UUID,
+    so the order a conversion placed is found again by its request id."""
+    h = bytearray(hashlib.md5(f"quote-conversion:{quote_id}".encode()).digest())
+    h[6] = (h[6] & 0x0F) | 0x30
+    h[8] = (h[8] & 0x3F) | 0x80
+    s = h.hex()
+    return f"{s[:8]}-{s[8:12]}-{s[12:16]}-{s[16:20]}-{s[20:]}"
+
+
+def iso_instant(t):
+    """Instant.toString, as Jackson writes the validity into the SENT offer."""
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def tier_price(tiers, units):
+    """QuoteLine.priceFor: the break with the highest start not above `units`; never below the MOQ."""
+    assert units >= tiers[0][0], (units, tiers)
+    return [p for m, p in tiers if m <= units][-1]
+
+
+def quote(key, cust_code, sales, term, drafted, valid_until, lines, events=(), draft_reason=None, drafted_by=None):
+    """One quote taken through `events` the way QuoteService moves it. lines: (design key, blank SKU, quantity,
+    [(min quantity, unit price)], print spec). events: ("send", t) | ("changes", t, feedback) | ("reopen", t) |
+    ("revise", t, lines) | ("accept", t, {line no: units}) | ("convert", t, order) | ("expire", t) | ("cancel", t, why).
+    """
+    c = CUST[cust_code]
+    assert c["status"] == "ACTIVE", cust_code        # BR-ORD-007: quotes go to ACTIVE customers only
+    assert term == "PREPAID" or (c["terms"] and (term == "CREDIT" and c["profile"]["allow_credit"]
+                                                 or term == "DEPOSIT" and c["profile"]["allow_deposit"])), (key, term)
+    qid = uid("quote:" + key)
+    deposit = c["profile"]["deposit_percent"] if term == "DEPOSIT" else None   # the customer's default, copied in
+    assert valid_until > drafted
+    state = dict(status="DRAFT", revision=1, sent_at=None, sent_by=None, responded_at=None, responded_by=None,
+                 customer_feedback=None, cancellation_reason=None, converted_order_id=None, converted_at=None)
+    history = [(1, None, "DRAFT", draft_reason, None, drafted, drafted_by or U[sales])]
+
+    def build(spec, rev):
+        out, units = [], {}
+        for _, sku, qty, _, _ in spec:
+            units[sku] = units.get(sku, 0) + qty
+        for n, (dkey, sku, qty, tiers, print_spec) in enumerate(spec, 1):
+            des = DESIGNS[dkey]
+            assert des["cust"] == cust_code and dkey.split(":")[1] == VAR[sku]["product"], (key, dkey, sku)
+            assert VAR[sku]["vstatus"] == "ACTIVE" and VAR[sku]["pstatus"] == "PUBLISHED", sku
+            assert all(p > 0 and p == int(p) for _, p in tiers) and [m for m, _ in tiers] == sorted({m for m, _ in tiers})
+            assert not tiers or units[sku] >= tiers[0][0], (key, sku)          # Quote.Offer: the blank's total vs MOQ
+            out.append(dict(id=uid(f"quote:{key}:r{rev}:line:{n}"), line_no=n, sku=sku, snapshot=des["snapshot"],
+                            qty=qty, tiers=tiers, spec=print_spec, acc_qty=None, acc_price=None))
+        return out
+
+    cur = build(lines, 1)
+    edits, last = 0, drafted
+
+    def offer_json():
+        return {"revision": state["revision"], "paymentTerm": term, "depositPercent": deposit,
+                "validUntil": iso_instant(valid_until), "terms": QUOTE_TERMS,
+                "lines": [{"lineNo": ln["line_no"], "blankSku": ln["sku"], "designSnapshotId": ln["snapshot"],
+                           "printSpec": ln["spec"], "quantity": ln["qty"],
+                           "tiers": [{"minQuantity": m, "unitPrice": p} for m, p in ln["tiers"]]} for ln in cur]}
+
+    for ev in events:
+        kind, t = ev[0], ev[1]
+        assert t > last, (key, kind)
+        last = t
+        frm = state["status"]
+        reason, offer, by = None, None, U[sales]
+        if kind == "revise":                      # Quote.revise: a draft only; an edit replaces the lines (new ids)
+            assert frm == "DRAFT"
+            cur = build(ev[2], state["revision"])
+            edits += 1
+            continue
+        if kind == "send":                        # DRAFT -> SENT, every line priced, validity still ahead
+            assert frm == "DRAFT" and all(ln["tiers"] for ln in cur) and valid_until > t
+            to, offer = "SENT", offer_json()
+            state.update(sent_at=t, sent_by=U[sales])
+        elif kind == "changes":                   # SENT -> CHANGES_REQUESTED, by the customer within the validity
+            assert frm == "SENT" and t < valid_until and c["user"]
+            to, reason, by = "CHANGES_REQUESTED", ev[2], c["user"]
+            state.update(responded_at=t, responded_by=by, customer_feedback=ev[2])
+        elif kind == "reopen":                    # CHANGES_REQUESTED -> DRAFT, the next revision, answer cleared
+            assert frm == "CHANGES_REQUESTED"
+            to = "DRAFT"
+            state.update(revision=state["revision"] + 1, responded_at=None, responded_by=None, customer_feedback=None)
+        elif kind == "accept":                    # SENT -> ACCEPTED: each line at its blank's accepted total (P5)
+            assert frm == "SENT" and t < valid_until and c["user"]
+            asked = ev[2] if len(ev) > 2 else {}
+            chosen = {ln["id"]: asked.get(ln["line_no"], ln["qty"]) for ln in cur}
+            blank = {}
+            for ln in cur:
+                blank[ln["sku"]] = blank.get(ln["sku"], 0) + chosen[ln["id"]]
+            for ln in cur:
+                # BR-ORD-008: a sample this customer approved for that design on that blank, before the answer.
+                assert any(a["customer_id"] == c["id"] and a["design_snapshot_id"] == ln["snapshot"]
+                           and a["blank_sku"] == ln["sku"] and a["approved_at"] < t
+                           for a in ROWS["ordering.approved_sample"]), (key, ln["sku"])
+                ln["acc_qty"], ln["acc_price"] = chosen[ln["id"]], tier_price(ln["tiers"], blank[ln["sku"]])
+            to, by = "ACCEPTED", c["user"]
+            state.update(responded_at=t, responded_by=by)
+        elif kind == "convert":                   # ACCEPTED -> CONVERTED: the one order, at the accepted terms
+            o = ev[2]
+            assert frm == "ACCEPTED" and o["cust"] == cust_code and o["term"] == term and t == o["row"]["placed_at"]
+            assert [(ln["sku"], ln["acc_qty"], ln["acc_price"], ln["snapshot"]) for ln in cur] \
+                == [(ol["sku"], ol["qty"], ol["price"], ol["design"]["snapshot"] if ol["design"] else None)
+                    for ol in o["lines"]], key
+            # The order was placed under the request id derived from the quote, as QuotedOrders is called.
+            o["row"]["request_id"] = conversion_request_id(qid)
+            to, reason = "CONVERTED", o["number"]
+            state.update(converted_order_id=o["id"], converted_at=t)
+        elif kind == "expire":                    # SENT -> EXPIRED by QuoteExpirySweeper, after the validity, no actor
+            assert frm == "SENT" and t >= valid_until
+            to, by = "EXPIRED", None
+        elif kind == "cancel":                    # DRAFT -> CANCELLED (or ACCEPTED, only for a stopped SKU)
+            assert frm == "DRAFT"
+            to, reason = "CANCELLED", ev[2]
+            state.update(cancellation_reason=ev[2])
+        else:
+            raise ValueError(kind)
+        state["status"] = to
+        history.append((state["revision"], frm, to, reason, offer, t, by))
+
+    row = add("ordering.quote", id=qid, quote_number=next_no("QT", drafted.date()), request_id=uid(f"quote:{key}:request"),
+              customer_id=c["id"], status=state["status"], revision=state["revision"], payment_term=term,
+              deposit_percent=deposit, valid_until=valid_until, terms=QUOTE_TERMS, sent_at=state["sent_at"],
+              sent_by=state["sent_by"], responded_at=state["responded_at"], responded_by=state["responded_by"],
+              customer_feedback=state["customer_feedback"], cancellation_reason=state["cancellation_reason"],
+              converted_order_id=state["converted_order_id"], converted_at=state["converted_at"],
+              # every save after the insert moves the @Version: each transition and each draft edit
+              version=len(history) - 1 + edits, created_at=drafted,
+              last_modified_at=last if last > drafted else None, last_modified_by=BY if last > drafted else None)
+    for ln in cur:
+        add("ordering.quote_line", id=ln["id"], quote_id=qid, line_no=ln["line_no"], blank_sku=ln["sku"],
+            design_snapshot_id=ln["snapshot"], print_spec=ln["spec"], quantity=ln["qty"],
+            accepted_quantity=ln["acc_qty"], accepted_unit_price=ln["acc_price"])
+        for m, p in ln["tiers"]:
+            add("ordering.quote_price_tier", quote_line_id=ln["id"], min_quantity=m, unit_price=p)
+    for k, (rev, frm, to, reason, offer, t, by) in enumerate(history):
+        add("ordering.quote_status_history", id=uid(f"quote:{key}:h:{k}"), quote_id=qid, revision=rev,
+            from_status=frm, to_status=to, reason=reason, offer=offer, changed_at=t, changed_by=by)
+    QUOTES.append(dict(id=qid, key=key, row=row, lines=cur, status=state["status"]))
+    return QUOTES[-1]
+
+
+def link_sample(design_key, q_):
+    """A design's first sample round was requested for the quote under negotiation (SampleRequestService:
+    an open quote of that customer that quotes this design on this blank), so it names the quote."""
+    sample = next(r for r in ROWS["production.sample_request"] if r["id"] == uid("sample:" + design_key))
+    hist = ROWS["ordering.quote_status_history"]
+    opened = [h for h in hist if h["quote_id"] == q_["id"] and h["changed_at"] <= sample["created_at"]]
+    assert opened and opened[-1]["to_status"] in ("DRAFT", "SENT", "CHANGES_REQUESTED"), design_key
+    assert any((ln["snapshot"], ln["sku"]) == (sample["design_snapshot_id"], sample["blank_sku"]) for ln in q_["lines"])
+    assert sample["quote_id"] is None and sample["customer_id"] == q_["row"]["customer_id"]
+    sample["quote_id"] = q_["id"]
+
+
+def tiers3(price, lo, mid, hi):
+    """Three breaks around the price agreed at `mid` units: 4% more below it, 4% less from `hi` up."""
+    return [(lo, money(price * 1.04 / 1000) * 1000), (mid, price), (hi, money(price * 0.96 / 1000) * 1000)]
+
+
+QUOTES = []
+ORDER_BY_KEY = {o["key"]: o for o in ORDERS}
+
+# Converted: the single-line print orders whose customer can answer on the portal. A design line is placed only at a
+# quote's price (OrderServiceImpl.place, SCRUM-298), so these orders are what their accepted quotes became; each
+# design's first sample round was asked for under the quote (design_for: sample a day after the snapshot, approved
+# three days before the order), and the customer accepted the day after that.
+for qkey, okey, dkey, sales, spec, lo, hi, rounds in [
+        ("conv:tiembanhngot", "o028", "tiembanhngot:LYG-KRAFT", "sales1",
+         "In lụa 1 màu nâu, logo tiệm bánh giữa thân, cao 40 mm", 5, 30, None),
+        ("conv:pizza4u", "o037", "pizza4u:HOP-QUA", "sales2",
+         "In offset 4 màu nắp hộp, cán màng mờ; mặt trong không in", 10, 50,
+         ("Đề nghị giảm còn 2.400.000đ/thùng cho 20 thùng như đơn khai trương trước", 2600000)),
+        ("conv:caphemoc", "o047", "caphemoc:LYG-2L", "sales1",
+         "In 2 màu Pantone (nâu 4625C, kem 7500C), logo giữa thân, cao 45 mm", 10, 50, None)]:
+    o = ORDER_BY_KEY[okey]
+    assert o["custom"] and len(o["lines"]) == 1 and o["lines"][0]["design"] is DESIGNS[dkey], okey
+    ol = o["lines"][0]
+    t0 = DESIGNS[dkey]["at"]                       # snapshot confirmed: the day before its sample was requested
+    tiers = tiers3(ol["price"], lo, ol["qty"] // 10 * 10 or ol["qty"], hi)
+    first = [(dkey, ol["sku"], ol["qty"], tiers, spec)]
+    events = [("send", t0 + timedelta(hours=6))]
+    if rounds:
+        # Revision 1 was sent a break dearer; the customer asked for the agreed price, Sales revised and sent again.
+        feedback, asked_from = rounds
+        dear = [(m, p + asked_from - ol["price"]) for m, p in tiers]
+        first = [(dkey, ol["sku"], ol["qty"], dear, spec)]
+        events += [("changes", t0 + timedelta(hours=23, minutes=30), feedback),
+                   ("reopen", t0 + timedelta(days=1, hours=1)),
+                   ("revise", t0 + timedelta(days=1, hours=2), [(dkey, ol["sku"], ol["qty"], tiers, spec)]),
+                   ("send", t0 + timedelta(days=1, hours=5))]
+    events += [("accept", t0 + timedelta(days=5, hours=1)), ("convert", o["row"]["placed_at"], o)]
+    cq = quote(qkey, o["cust"], sales, o["term"], t0 + timedelta(hours=1), at(t0.date() + timedelta(days=30), 23, 59),
+               first, events)
+    link_sample(dkey, cq)
+
+# Accepted, waiting to be converted: a reprint of two approved designs; the customer took 50 of line 2 instead of the
+# 30 proposed, which reached its next break.
+quote("accepted:trasuamay", "trasuamay", "sales2", "CREDIT", at(date(2026, 10, 6), 9, 30), at(date(2026, 11, 5), 23, 59),
+      [("trasuamay:LYN-PET", "LYN-PET-22OZ", 40, [(20, 650000), (40, 624000), (80, 599000)],
+        "In 1 màu trắng, logo giữa thân, cao 50 mm"),
+       ("trasuamay:LYG-1L", "LYG-1L-12OZ", 30, [(20, 520000), (30, 499000), (50, 480000)],
+        "In 2 màu Pantone theo bộ nhận diện, logo giữa thân, cao 45 mm")],
+      [("send", at(date(2026, 10, 6), 14)), ("accept", at(date(2026, 10, 9), 16, 20), {2: 50})])
+
+# Sent and open: line 2 puts the approved design on a larger cup, whose sample is still a draft linked to the quote -
+# the customer cannot accept until that sample is approved.
+sent_q = quote("sent:khachsanbien", "khachsanbien", "sales2", "DEPOSIT", at(date(2026, 10, 8), 9, 30),
+               at(date(2026, 12, 31), 23, 59),
+               [("khachsanbien:LYG-1L", "LYG-1L-12OZ", 30, [(20, 540000), (30, 520000), (60, 499000)],
+                 "In 1 màu xanh navy, logo khách sạn giữa thân, cao 40 mm"),
+                ("khachsanbien:LYG-1L", "LYG-1L-16OZ", 20, [(20, 610000), (40, 589000)],
+                 "In 1 màu xanh navy, logo khách sạn giữa thân, cao 50 mm")],
+               [("send", at(date(2026, 10, 8), 14))])
+ks = DESIGNS["khachsanbien:LYG-1L"]
+add("production.sample_request", id=uid("sample:quote:khachsanbien:16oz"),
+    request_number=next_no("SMP", date(2026, 10, 9)), customer_id=CUST["khachsanbien"]["id"], quote_id=sent_q["id"],
+    previous_round_id=None, round_no=1, blank_sku="LYG-1L-16OZ", design_snapshot_id=ks["snapshot"], quantity=1,
+    due_date=date(2026, 10, 16), status="DRAFT", sent_at=None, responded_at=None, responded_by=None,
+    customer_feedback=None, cancellation_reason=None, created_at=at(date(2026, 10, 9), 9, 30))
+
+# The customer asked for changes; Sales has not reopened it yet.
+quote("changes:bepnhalam", "bepnhalam", "sales1", "DEPOSIT", at(date(2026, 10, 9), 9), at(date(2026, 11, 8), 23, 59),
+      [("bepnhalam:LYG-2L", "LYG-2L-12OZ", 30, [(15, 820000), (30, 790000), (60, 760000)],
+        "In 1 màu xanh lá, logo nhà hàng giữa thân, cao 40 mm"),
+       ("bepnhalam:TUI-KRAFT", "TUI-KRAFT-L-KRAFT", 20, [(10, 620000), (20, 600000)],
+        "In 1 màu trắng mặt trước, logo cao 60 mm")],
+      [("send", at(date(2026, 10, 9), 11)),
+       ("changes", at(date(2026, 10, 11), 15, 30),
+        "Đề nghị ly 2 lớp 760.000đ/thùng cho 30 thùng và giao trước ngày 25/10 để kịp sự kiện cuối tháng.")])
+
+# Drafts: one Sales is still pricing, and a reorder the customer asked for on the portal (QuoteService.reorder: the
+# converted quote's lines at their accepted quantities, priced again from today's list - the CHAIN segment price,
+# one tier from 1 unit - with the source's validity window counted from now).
+quote("draft:daily-longbien", "daily-longbien", "sales2", "DEPOSIT", at(date(2026, 10, 12), 10, 15),
+      at(date(2026, 11, 11), 23, 59),
+      [("daily-longbien:LYN-PET", "LYN-PET-12OZ", 100, [(50, 460000), (100, 442000), (200, 425000)],
+        "In 1 màu đỏ, logo đại lý giữa thân, cao 45 mm"),
+       ("daily-longbien:LYG-KRAFT", "LYG-KRAFT-16OZ", 50, [(30, 760000), (60, 735000)],
+        "In lụa 1 màu đen trên nền kraft, logo cao 40 mm")])
+src = next(x for x in QUOTES if x["key"] == "conv:caphemoc")
+src_line, src_order = src["lines"][0], ORDER_BY_KEY["o047"]
+reordered = at(date(2026, 10, 11), 20, 15)
+quote("reorder:caphemoc", "caphemoc", "sales1", "CREDIT", reordered,
+      reordered + (src["row"]["valid_until"] - src["row"]["sent_at"]),
+      [("caphemoc:LYG-2L", src_line["sku"], src_line["acc_qty"], [(1, unit_price(CUST["caphemoc"], src_line["sku"]))],
+        src_line["spec"])],
+      draft_reason="Reorder of order " + src_order["number"], drafted_by=CUST["caphemoc"]["user"])
+
+# Expired: sent, never answered; the sweeper (every 5 minutes) expired it once the validity passed.
+quote("expired:banhmisaigon", "banhmisaigon", "sales1", "PREPAID", at(date(2026, 9, 10), 9),
+      at(date(2026, 9, 25), 23, 59),
+      [("banhmisaigon:LYG-1L", "LYG-1L-22OZ", 30, [(20, 800000), (30, 780000), (60, 760000)],
+        "In 2 màu đỏ - vàng, logo bánh mì giữa thân, cao 45 mm")],
+      [("send", at(date(2026, 9, 10), 10, 30)), ("expire", at(date(2026, 9, 26), 0, 3))])
+
+# Cancelled before it was sent: the customer called off the promotion it was for.
+quote("cancelled:caphemoc", "caphemoc", "sales1", "CREDIT", at(date(2026, 10, 5), 10), at(date(2026, 11, 4), 23, 59),
+      [("caphemoc:LYN-PET", "LYN-PET-16OZ", 50, [(30, 560000), (50, unit_price(CUST["caphemoc"], "LYN-PET-16OZ"))],
+        "In 1 màu nâu, logo giữa thân, cao 50 mm")],
+      [("cancel", at(date(2026, 10, 6), 11), "Khách hoãn chương trình khuyến mãi mùa đông, chưa đặt ly 16oz")])
+
+# ============================================================================ 10b. damage, scrap, return evidence
+# Everything below runs after every other stock change, adjustment number and ledger line above, so none of those
+# moves: ledger ids are numbered by position and document numbers per day. Nothing here draws a random number.
+
+# Photos, evidence and the rows that carry no audit columns (created_at only).
+NO_AUDIT.update({"inventory.stock_damage_photo", "inventory.stock_damage_disposition",
+                 "inventory.stock_damage_supplier_shipment"})
+
+
+def evidence_file(category, file_id, stored_at):
+    """A photo as FileTransfers stores it: key <category>/<UTC yyyy/MM/dd>/<id>.png (StorageKeys.generate), size and
+    SHA-256 of the real bytes (BufferedUpload). A real PNG, since the category is checked by the file's first bytes,
+    so the files/ folder can be mirrored into the bucket with the design files."""
+    key = f"{category}/{stored_at.astimezone(timezone.utc):%Y/%m/%d}/{file_id}.png"
+    data = png_bytes(file_id, 320, 240)
+    SEEDED_FILES[key] = data
+    return dict(key=key, size=len(data), checksum=hashlib.sha256(data).hexdigest())
+
+
+def insert_sql(table, row):
+    return f"INSERT INTO {table} ({', '.join(row)}) VALUES ({', '.join(q(v) for v in row.values())});"
+
+
+def lot_of(s):
+    # tg_stock_item_lot gives every stock row a lot when it is inserted; the report snapshots the source row's.
+    return Raw(f"(SELECT lot_id FROM inventory.stock_item WHERE id = {q(s.id)})")
+
+
+DAMAGE = {}  # key -> report state, for the decisions below
+
+
+def damage_report(key, origin, s, qty, reason, note, reporter, when, photos=1, pick=None, from_pick=False):
+    """A damage report as StockDamageService writes it (SCRUM-475 / SCRUM-277): the units go, DAMAGED, to the first
+    QUARANTINE area of the warehouse by code (<wh>-QRT01) into their own receipt layer, with one ledger line naming the
+    report - MOVE AVAILABLE -> DAMAGED from the shelf, or for units a pick already took (PACKING) a PUT_BACK from
+    nowhere, since the pick deducted them. A shelf report takes free units only; a picker's takes them out of the hold
+    (`pick`: order, pick line, hold row) - the caller makes the order whole. `photos` are stored first (QC_EVIDENCE)."""
+    rid = uid("dmg:" + key)
+    p = LOC[s.loc]["wh"]
+    qrt = f"{p}-QRT01"
+    if origin == "STOCK_CHECK":
+        assert s.status == "AVAILABLE" and s.free >= qty and s.received < when, (key, s.sku, s.loc, s.free)
+    if not from_pick:
+        s.on_hand -= qty
+    damaged = Stock(s.sku, qrt, qty, s.received, "DAMAGED", lot=s.lot, expiry=s.expiry, key=f"dmg:{key}")
+    text = f"{reason}: {note}" if note else reason
+    if from_pick:
+        move("PUT_BACK", s.sku, qty, "DAMAGE_REPORT", rid, when, reporter, to=qrt, lot=s.lot, fs="DAMAGED",
+             ts_="DAMAGED", reason=text)
+    else:
+        move("MOVE", s.sku, qty, "DAMAGE_REPORT", rid, when, reporter, frm=s.loc, to=qrt, lot=s.lot, fs="AVAILABLE",
+             ts_="DAMAGED", reason=text)
+    if pick:
+        MOVES[-1]["order_id"] = pick["order"]     # forOrder: tg_stock_movement_order_number adds the number
+    number = next_no("DMG", when.date())
+    add("inventory.stock_damage_report", id=rid, report_number=number, request_id=uid("dmg:request:" + key),
+        origin=origin, warehouse_id=WH[p], sku=s.sku, lot_number=s.lot, serial_number=None, received_at=s.received,
+        lot_id=lot_of(s), source_stock_item_id=s.id, source_location_code=s.loc, source_stock_package_id=None,
+        damaged_stock_item_id=damaged.id, damage_location_code=qrt, quantity=qty, reason_code=reason, note=note,
+        order_id=pick["order"] if pick else None, pick_line_id=pick["line"] if pick else None,
+        reservation_id=pick["hold"] if pick else None, impaired_reservation_id=None, reported_by=U[reporter],
+        reported_at=when, created_at=when)
+    for n in range(1, photos + 1):
+        f = evidence_file("qc-evidence", uid(f"dmg:{key}:file:{n}"), when - timedelta(minutes=3))
+        add("inventory.stock_damage_photo", id=uid(f"dmg:{key}:photo:{n}"), damage_report_id=rid,
+            storage_key=f["key"], original_name=f"hang-loi-{number[-4:]}-{n}.png", content_type="image/png",
+            size_bytes=f["size"], checksum=f["checksum"], sort_order=n, created_at=when)
+    DAMAGE[key] = dict(key=key, id=rid, number=number, s=s, damaged=damaged, reporter=reporter, when=when, qty=qty)
+    return DAMAGE[key]
+
+
+def disposition_row(r, kind, qty, note, decider, when, **extra):
+    row = dict(id=uid(f"dmg:{r['number']}:{kind}:{when.isoformat()}"), damage_report_id=r["id"],
+               request_id=uid(f"dmg:{r['number']}:{kind}:{when.isoformat()}:request"), disposition_type=kind,
+               quantity=qty, note=note, record_number=None, stock_adjustment_id=None, restore_location_code=None,
+               restored_stock_item_id=None, supplier_id=None, supplier_name=None, decided_by=U[decider],
+               decided_at=when, created_at=when)
+    row.update(extra)
+    return row
+
+
+def write_off(r, qty, decider, when, note=None, after_shipments=False):
+    """StockDamageService.writeOff: a DAMAGED adjustment of exactly these units, asked in the reporter's name and
+    approved and posted by the decider at once (the report is the four eyes), the destruction record numbered on the
+    decision; ADJUSTMENT ledger line out of quarantine. `after_shipments`: the decision follows a supplier's refusal,
+    and the table's trigger counts refused units back as undecided only once the refusal row exists."""
+    d = r["damaged"]
+    assert d.on_hand - d.reserved >= qty
+    record = next_no("WO", when.date())
+    aid = uid(f"adj:dmg:{r['number']}:{record}")
+    add("inventory.stock_adjustment", id=aid, adjustment_number=next_no("ADJ", when.date()), location_code=d.loc,
+        sku=d.sku, lot_number=d.lot, quantity_delta=-qty, reason_code="DAMAGED",
+        note=f"Damage report {r['number']}, destruction record {record}" + (f": {note}" if note else ""),
+        status="POSTED", cycle_count_line_id=None, requested_by=U[r["reporter"]], decided_by=U[decider],
+        decided_at=when, rejection_reason=None, posted_at=when, withdrawn_at=None, received_at=d.received,
+        created_at=when)
+    d.on_hand -= qty
+    move("ADJUSTMENT", d.sku, qty, "STOCK_ADJUSTMENT", aid, when, decider, frm=d.loc, lot=d.lot, fs="DAMAGED",
+         ts_="DAMAGED", reason=f"DAMAGED: {r['number']} {record}")
+    row = disposition_row(r, "WRITE_OFF", qty, note, decider, when, record_number=record, stock_adjustment_id=aid)
+    if after_shipments:
+        POST.append(("inventory.stock_damage_supplier_shipment", insert_sql("inventory.stock_damage_disposition", row)))
+    else:
+        add("inventory.stock_damage_disposition", **row)
+
+
+def restore(r, qty, decider, when, note):
+    """StockDamageService.restore: re-inspected and fine - back onto a bin of the warehouse as AVAILABLE, into the
+    layer already there (here the bin they came from, so they join their own row); MOVE DAMAGED -> AVAILABLE."""
+    d, s = r["damaged"], r["s"]
+    d.on_hand -= qty
+    back = Stock(s.sku, s.loc, qty, s.received, "AVAILABLE", lot=s.lot, expiry=s.expiry)
+    assert back is s
+    move("MOVE", d.sku, qty, "DAMAGE_REPORT", r["id"], when, decider, frm=d.loc, to=s.loc, lot=d.lot, fs="DAMAGED",
+         ts_="AVAILABLE", reason=f"RESTORE: {note}")
+    add("inventory.stock_damage_disposition", **disposition_row(r, "RESTORE", qty, note, decider, when,
+                                                                 restore_location_code=s.loc,
+                                                                 restored_stock_item_id=s.id))
+
+
+def return_to_supplier(r, qty, decider, when, note):
+    """Intent only: the units stay DAMAGED in quarantine until handed over. The supplier is the lot's, and every seeded
+    lot is UNTRACED (tg_stock_item_lot made it), so it is not known - as the application would record it."""
+    row = disposition_row(r, "RETURN_TO_SUPPLIER", qty, note, decider, when)
+    add("inventory.stock_damage_disposition", **row)
+    return row["id"]
+
+
+def supplier_shipment(r, decision, outcome, qty, by, when, delivery_note=None, note=None):
+    """SHIPPED: off the books at once, SUPPLIER_RETURN from quarantine naming the report; REFUSED: nothing moves, the
+    units wait for a decision again."""
+    sid = uid(f"dmg:{r['number']}:ship:{outcome}:{when.isoformat()}")
+    add("inventory.stock_damage_supplier_shipment", id=sid, disposition_id=decision, damage_report_id=r["id"],
+        request_id=uid(f"dmg:{r['number']}:ship:{outcome}:{when.isoformat()}:request"), outcome=outcome,
+        quantity=qty, delivery_note=delivery_note, note=note, shipped_by=U[by], shipped_at=when, created_at=when)
+    if outcome == "SHIPPED":
+        d = r["damaged"]
+        d.on_hand -= qty
+        move("SUPPLIER_RETURN", d.sku, qty, "DAMAGE_REPORT", r["id"], when, by, frm=d.loc, lot=d.lot, fs="DAMAGED",
+             ts_="DAMAGED", reason=f"RETURN_TO_SUPPLIER (supplier not on the lot): delivery note {delivery_note}")
+
+
+CARTONED = {s.id for s in STOCK if getattr(s, "pkg", None)}
+
+
+def shelf_stock(p, min_free):
+    # Loose stock only: a carton's units are reported through its own row, and the seeded cartons wait for a transfer.
+    s = find_stock(p, min_free=min_free, skip=used | CARTONED)
+    used.add(s.id)
+    return s
+
+
+# Shelf reports (origin STOCK_CHECK), one per way a report ends.
+r = damage_report("hn:forklift", "STOCK_CHECK", shelf_stock("HN", 20), 4, "BROKEN",
+                  "Thùng rơi khi hạ tầng kệ, ly bên trong vỡ", "kho.hn1", at(date(2026, 10, 5), 9, 40), photos=2)
+write_off(r, 4, "quanly.hn", at(date(2026, 10, 5), 14, 10), note="Tiêu hủy cùng rác thải công nghiệp")
+r = damage_report("bd:leak", "STOCK_CHECK", shelf_stock("BD", 20), 6, "WET_OR_MOULDY",
+                  "Mái kho dột, 6 thùng ướt và ẩm mốc", "kho.bd2", at(date(2026, 10, 2), 10, 15), photos=2)
+decision = return_to_supplier(r, 6, "quanly.bd", at(date(2026, 10, 3), 9, 0),
+                              "Bao bì ngoài kém chống ẩm, NCC đồng ý xem xét nhận lại")
+supplier_shipment(r, decision, "SHIPPED", 4, "kho.bd1", at(date(2026, 10, 7), 15, 30), delivery_note="PXT-BD-20261007-01")
+supplier_shipment(r, decision, "REFUSED", 2, "kho.bd1", at(date(2026, 10, 7), 15, 45),
+                  note="NCC chỉ nhận 4 thùng còn nguyên tem niêm phong")
+write_off(r, 2, "quanly.bd", at(date(2026, 10, 8), 10, 0), note="NCC từ chối nhận lại", after_shipments=True)
+r = damage_report("hn:dented", "STOCK_CHECK", shelf_stock("HN", 20), 3, "DEFORMED", "3 thùng móp góc khi kiểm kê",
+                  "qc.hn", at(date(2026, 10, 8), 15, 20))
+restore(r, 2, "quanly.hn", at(date(2026, 10, 9), 8, 30), "Kiểm tra lại: chỉ móp vỏ thùng, ly bên trong nguyên vẹn")
+damage_report("dn:rodent", "STOCK_CHECK", shelf_stock("DN", 10), 2, "OTHER", "Thùng bị chuột cắn thủng, chờ quản lý xử lý",
+              "kho.dn1", at(date(2026, 10, 11), 16, 5))
+
+
+def pick_rows(o):
+    pid = uid(f"pick:{o['key']}")
+    return [x for x in ROWS["fulfillment.pick_line"] if x["pick_id"] == pid]
+
+
+def holds_by_id():
+    return {x["id"]: x for x in ROWS["inventory.stock_reservation"]}
+
+
+def replacement(o, line, hold, k, report, when):
+    """The order made whole (planReplacement): the same units allocated again FEFO on pickable stock of the warehouse -
+    the bin included - each on a new hold `allocated from` the order's original one (Reservation.allocate, HELD, no
+    deadline), keyed by the report's request id; the order line holds it next to its old hold (replaceHold), and the
+    pick list gets one OPEN line per new hold after its last stop, naming the report (PickList.replaceDamaged)."""
+    plan = allocate(o["p"], line["sku"], k)
+    assert plan, (o["number"], line["sku"], k)
+    seq = max(x["sequence_no"] for x in pick_rows(o))
+    for n, (row, qn) in enumerate(plan):
+        rid = uid(f"res:dmg:{report['number']}:{n}")
+        add("inventory.stock_reservation", id=rid, stock_item_id=row.id, order_id=o["id"],
+            root_request_id=uid("dmg:request:" + report["key"]), request_id=uid(f"dmg:replacement:{report['number']}:{row.id}"),
+            quantity=qn, reserved_at=when, expires_at=None, status="HELD", release_reason=None, closed_at=None,
+            allocated_from_id=hold["id"])
+        row.reserved += qn
+        add("ordering.order_line_reservation", order_line_id=line["order_line_id"], reservation_id=rid)
+        seq += 1
+        add("fulfillment.pick_line", id=uid(f"pickline:dmg:{report['number']}:{n}"), pick_id=line["pick_id"],
+            order_line_id=line["order_line_id"], reservation_id=rid, sku=line["sku"], location_code=row.loc,
+            lot_number=row.lot, sequence_no=seq, allocated_qty=qn, picked_qty=0, short_qty=0, status="OPEN",
+            picked_by=None, picked_at=None, consumed_at=None, damage_report_id=report["id"], created_at=when)
+
+
+# Damage found by the picker at the bin (origin PICKING, SCRUM-277): an order still being picked, one of its OPEN lines.
+# Replacement stock exists, so the order is not put ON_HOLD: the line is CANCELLED with its damaged units, the good ones
+# stay to be picked against the same (smaller) hold on a new OPEN line, the replacement gets lines of its own.
+o_pick = next(o for o in ORDERS if o["status"] == "PICKING" and o["p"] == "HN")
+line = next(x for x in pick_rows(o_pick) if x["status"] == "OPEN" and allocate("HN", x["sku"], 3))
+hold = holds_by_id()[line["reservation_id"]]
+src = next(s for s in STOCK if s.id == hold["stock_item_id"])
+t_dmg = o_pick["when"]["PICKING"] + timedelta(hours=1, minutes=10)
+src.reserved -= 3                         # giveUpDamagedHeld: out of the hold, then off the row like free units
+hold["quantity"] -= 3                     # reduceHold: the hold keeps its id over fewer units
+r = damage_report("pick:" + o_pick["key"], "PICKING", src, 3, "BROKEN", "Ly vỡ trong thùng khi lấy khỏi kệ",
+                  staff_of("HN")[0], t_dmg, pick=dict(order=o_pick["id"], line=line["id"], hold=hold["id"]))
+seq = max(x["sequence_no"] for x in pick_rows(o_pick))
+line.update(status="CANCELLED", damaged_qty=3, damage_report_id=r["id"])
+add("fulfillment.pick_line", id=uid(f"pickline:dmg:{r['number']}:kept"), pick_id=line["pick_id"],
+    order_line_id=line["order_line_id"], reservation_id=hold["id"], sku=line["sku"], location_code=line["location_code"],
+    lot_number=line["lot_number"], sequence_no=seq + 1, allocated_qty=line["allocated_qty"] - 3, picked_qty=0,
+    short_qty=0, status="OPEN", picked_by=None, picked_at=None, consumed_at=None, damage_report_id=r["id"],
+    created_at=t_dmg)
+replacement(o_pick, line, hold, 3, r, t_dmg)
+
+# Damage found in the tote after the pick (origin PACKING, R8): the other order being picked, its PICKED line. The units
+# were deducted by the pick, so they come back into quarantine from nowhere; the line keeps them as packing_damaged_qty
+# and the replacement is picked again; the task is still PICKING, so nothing reopens.
+o_pack = next(o for o in ORDERS if o["status"] == "PICKING" and o["p"] == "BD")
+line = next(x for x in pick_rows(o_pack) if x["status"] == "PICKED" and allocate("BD", x["sku"], 2))
+hold = holds_by_id()[line["reservation_id"]]
+src = next(s for s in STOCK if s.id == hold["stock_item_id"])
+t_dmg = line["picked_at"] + timedelta(minutes=35)
+r = damage_report("pack:" + o_pack["key"], "PACKING", src, 2, "BROKEN", "Khay giấy rách khi đặt vào thùng soạn hàng",
+                  staff_of("BD")[0], t_dmg, pick=dict(order=o_pack["id"], line=line["id"], hold=hold["id"]),
+                  from_pick=True)
+line["packing_damaged_qty"] = 2
+replacement(o_pack, line, hold, 2, r, t_dmg)
+write_off(r, 2, "quanly.bd", at(t_dmg.date() + timedelta(days=1), 8, 15))
+
+# Production scrap (BR-PRD-04): the in-house job waiting in QC spoilt 3 of the 30 it printed - 2 smudged, 1 on the
+# set-up sheet. recordOutput: good 27, scrap 3, still QC (27 good units await inspection; a reprint follows QC).
+# WorkshopStock.writeOff: per scrap line, the units leave the print-shop hold at once (takeFromHold - still on hand,
+# IN_PRODUCTION, not sellable) and a SCRAP adjustment is asked for in the worker's name (decision Q4: production does
+# not wait for the approval); production_scrap records the line with it. The manager approved the first one next day.
+job = next(x for x in PRODUCTION if x["row"]["status"] == "QC" and x["row"]["mode"] == "IN_HOUSE"
+           and x["row"]["type"] == "ORDER")
+jr = job["row"]
+spoilt = [("PRINT_DEFECT", 2, "Lem mực logo, lệch màu so với mẫu"), ("SETUP", 1, "Ly canh chỉnh bản in đầu ca")]
+jr["good_quantity"] -= sum(n for _, n, _ in spoilt)
+jr["scrap_quantity"] += sum(n for _, n, _ in spoilt)
+run_at = job["times"]["QC"]
+for x in ROWS["production.production_print_run"]:
+    if x["production_order_id"] == job["id"]:
+        x["scrap_quantity"] = jr["scrap_quantity"]
+for x in ROWS["production.production_order_status_history"]:
+    if x["production_order_id"] == job["id"] and x["to_status"] == "QC":
+        x["reason"] = f"Printed {jr['printed_quantity']}, scrap {jr['scrap_quantity']}"
+issued = [i for i in ISSUES if i["production_order_id"] == job["id"]]
+holds = holds_by_id()
+for n, (why, qty, note) in enumerate(spoilt):
+    issue = next(i for i in issued if holds[i["reservation_id"]]["quantity"] >= qty)
+    hold = holds[issue["reservation_id"]]
+    shop = next(s for s in STOCK if s.id == hold["stock_item_id"])
+    assert shop.status == "IN_PRODUCTION" and hold["status"] == "HELD"
+    hold["quantity"] -= qty
+    shop.reserved -= qty
+    approved = n == 0
+    aid = uid(f"adj:scrap:{job['key']}:{n}")
+    text = f"{jr['order_number']} {why}: {note}"
+    decided = run_at + timedelta(days=1, hours=1)
+    add("inventory.stock_adjustment", id=aid, adjustment_number=next_no("ADJ", run_at.date()), location_code=shop.loc,
+        sku=shop.sku, lot_number=shop.lot, quantity_delta=-qty, reason_code="SCRAP", note=text,
+        status="POSTED" if approved else "PENDING_APPROVAL", cycle_count_line_id=None, requested_by=U[job["worker"]],
+        decided_by=U["quanly." + job["p"].lower()] if approved else None, decided_at=decided if approved else None,
+        rejection_reason=None, posted_at=decided if approved else None, withdrawn_at=None, received_at=shop.received,
+        created_at=run_at)
+    if approved:
+        shop.on_hand -= qty
+        move("ADJUSTMENT", shop.sku, qty, "STOCK_ADJUSTMENT", aid, decided, "quanly." + job["p"].lower(), frm=shop.loc,
+             lot=shop.lot, fs="IN_PRODUCTION", ts_="IN_PRODUCTION", reason=f"SCRAP: {text}")
+    add("production.production_scrap", id=uid(f"prod:{job['key']}:scrap:{n}"), production_order_id=job["id"],
+        quantity=qty, reason=why, note=note, stock_adjustment_id=aid, recorded_at=run_at, recorded_by=U[job["worker"]])
+
+# Return evidence (SCRUM-243): the claim's photos - the customer's on the portal, Sales' for a claim opened in the back
+# office - taken before the decision (a claim is approved only with a photo, ReturnPolicy.evidenceRequired); the
+# warehouse's at receipt and QC's at inspection on the resolved one, while the return was at that stage
+# (ReturnRequest.requireEvidenceAllowed). FileCategory.RETURN_EVIDENCE, no checksum column.
+CLAIM_PHOTOS = {"REQUESTED": 2, "AWAITING_RETURN": 1, "RESOLVED": 2, "REJECTED": 0}
+for rr in ROWS["ordering.return_request"]:
+    shots = [("CLAIM", rr["requested_by"], rr["requested_at"] + timedelta(minutes=5 + 2 * k), f"khieu-nai-{k + 1}.png")
+             for k in range(CLAIM_PHOTOS[rr["status"]])]
+    if rr["status"] == "RESOLVED":
+        shots += [("RECEIPT", rr["received_by"], rr["received_at"] + timedelta(minutes=20), "kien-hang-tra-ve.png"),
+                  ("INSPECTION", rr["inspected_by"], rr["inspected_at"] + timedelta(minutes=10), "kiem-tra-qc.png")]
+    for k, (stage, who, when, name) in enumerate(shots):
+        f = evidence_file("return-evidence", uid(f"rma-file:{rr['rma_number']}:{k}"), when)
+        add("ordering.return_request_evidence", id=uid(f"rma-evidence:{rr['rma_number']}:{k}"),
+            return_request_id=rr["id"], stage=stage, file_key=f["key"], original_name=name, content_type="image/png",
+            size_bytes=f["size"], uploaded_by=who, uploaded_at=when, created_at=when)
+    if rr["status"] == "RESOLVED":
+        # The parcel held what was approved (no SHORT, EXCESS or WRONG_ITEM) plus something of no line: recorded at
+        # receipt, never stock (ReturnRequest.receive, UNEXPECTED_ITEM).
+        add("ordering.return_request_discrepancy", id=uid(f"rma-discrepancy:{rr['rma_number']}"),
+            return_request_id=rr["id"], return_request_line_id=None, kind="UNEXPECTED_ITEM", sku=None, quantity=1,
+            note="1 túi nắp nhựa không nhãn, không thuộc đơn hàng - giữ lại chờ Sales liên hệ khách",
+            recorded_by=rr["received_by"], recorded_at=rr["received_at"], created_at=rr["received_at"])
+
+# ============================================================================ 10b. full-truckload load planning
+# SCRUM-287 (V20261022001200 estimates, V20261022001300 plans, V20261022001400 per-vehicle dispatch): every order above
+# travels as PARCEL, and a load plan holds only sealed parcels of FULL_TRUCKLOAD shipments waiting for dispatch
+# (tg_load_plan_package_check), so seven full-truckload orders are placed here, at HN, after every random draw of the
+# data set: their timelines are fixed (place_order's `fixed`), nothing above moves. The coordinator chose the mode at
+# release (order_delivery_mode_change) after estimating the order in the release dialog (load_estimate).
+#
+#   LP A  DISPATCHED  FTL-1 + FTL-2 on one TRUCK-2T5; its load signed and gone, both shipments handed over with it
+#   LP B  CONFIRMED   FTL-3 + FTL-4 + FTL-5 on two TRUCK-1T25 (FTL-4 spans both, LP-3): vehicle 1 is being loaded,
+#                     vehicle 2 booked again after its first booking fell through
+#   LP D  CANCELLED   a DRAFT with FTL-6 alone, called off to combine it with FTL-7 (PLAN_CANCELLED)
+#   LP C  PLANNED     FTL-6 + FTL-7: calculated on TRUCK-1T25 (two vehicles), then switched to FEWEST_VEHICLES with
+#                     TRUCK-2T5 too - the first vehicles retired (active = FALSE), one TRUCK-2T5 now, not confirmed
+#   LP E  DRAFT       created this morning with its vehicle types only
+#
+# Geometry as the planner reports it (LoadPlanner, PlacementValidator): whole mm from the inner floor corner at the
+# front wall, x across, y up, z toward the door; placed sizes are the parcel's measured ones, ceil(cm x 10)
+# (LoadPlanParcels.mm), turned by Orientation. Every vehicle is checked below as PlacementValidator would check it.
+FTL_WH = "HN"
+FTL_STEP = timedelta(days=1)
+
+
+def vehicle_type_ref(code):
+    """The id V20261022000700 gives a preset vehicle type: md5('vehicle-type:<code>')::uuid."""
+    h = hashlib.md5(("vehicle-type:" + code).encode()).hexdigest()
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+
+
+# The presets as V20261022000700 seeds them (trucks: no gusset, no door limit): code -> kind, L, W, H mm, payload kg.
+VEHICLE_TYPE = {"TRUCK-1T25": ("TRUCK", 3100, 1600, 1600, 1250), "TRUCK-2T5": ("TRUCK", 4300, 1800, 1800, 2500),
+                "TRUCK-8T": ("TRUCK", 7400, 2350, 2300, 8000), "TRUCK-15T": ("TRUCK", 9300, 2350, 2400, 15000)}
+# Orientation: name -> which measured (width, height, length) lies along x, y, z; the list order is the index.
+ORIENTATION = [("LWH", (0, 1, 2)), ("HWL", (0, 2, 1)), ("LHW", (1, 0, 2)), ("WHL", (1, 2, 0)), ("HLW", (2, 0, 1)),
+               ("WLH", (2, 1, 0))]
+
+
+def extents(dims_lwh, orientation):
+    """Placed (x, y, z) sizes of a carton measured (length, width, height) lying `orientation` (Orientation.extents)."""
+    length, width, height = dims_lwh
+    measured = (width, height, length)
+    return tuple(measured[k] for k in dict(ORIENTATION)[orientation])
+
+
+def orientation_of(dims_lwh, w, h, d):
+    """The first orientation in index order with these placed sizes (Orientation.of): a cube is always LWH."""
+    return next(i for i, (name, _) in enumerate(ORIENTATION) if extents(dims_lwh, name) == (w, h, d))
+
+
+def pct(part, whole):
+    return float((Decimal(part) * 100 / Decimal(whole)).quantize(Decimal("0.01"), ROUND_HALF_UP))
+
+
+def check_vehicle(code, boxes):
+    """PlacementValidator.validate for one vehicle: inside the box, no overlap, 98 % support, payload."""
+    _, length, width, height, payload = VEHICLE_TYPE[code]
+    for i, b in enumerate(boxes):
+        assert b["x"] >= 0 and b["y"] >= 0 and b["z"] >= 0 and b["x"] + b["w"] <= width \
+            and b["y"] + b["h"] <= height and b["z"] + b["d"] <= length, (code, b)
+        assert sorted((b["w"], b["h"], b["d"])) == sorted(b["dims"]), (code, b)
+        covered = 0
+        for j, o in enumerate(boxes):
+            if i == j:
+                continue
+            assert not (b["x"] < o["x"] + o["w"] and o["x"] < b["x"] + b["w"] and b["y"] < o["y"] + o["h"]
+                        and o["y"] < b["y"] + b["h"] and b["z"] < o["z"] + o["d"] and o["z"] < b["z"] + b["d"]), (b, o)
+            if o["y"] + o["h"] == b["y"]:
+                ox = min(b["x"] + b["w"], o["x"] + o["w"]) - max(b["x"], o["x"])
+                oz = min(b["z"] + b["d"], o["z"] + o["d"]) - max(b["z"], o["z"])
+                covered += ox * oz if ox > 0 and oz > 0 else 0
+        assert b["y"] == 0 or 100 * covered >= 98 * b["w"] * b["d"], (code, b)
+    assert sum(b["kg"] for b in boxes) <= payload, code
+
+
+def load_sequence(boxes):
+    """LoadPlanner.loadSequence: a carton after every carton it rests on; then nearest the front, lowest, leftmost."""
+    n = len(boxes)
+    above, below = [[] for _ in range(n)], [0] * n
+    for i, a in enumerate(boxes):
+        for j, b in enumerate(boxes):
+            if i != j and b["y"] + b["h"] == a["y"] \
+                    and min(a["x"] + a["w"], b["x"] + b["w"]) > max(a["x"], b["x"]) \
+                    and min(a["z"] + a["d"], b["z"] + b["d"]) > max(a["z"], b["z"]):
+                above[j].append(i)
+                below[i] += 1
+    ready = sorted(i for i in range(n) if below[i] == 0)
+    seq, nxt = [0] * n, 1
+    while ready:
+        ready.sort(key=lambda i: (boxes[i]["z"], boxes[i]["y"], boxes[i]["x"], i))
+        i = ready.pop(0)
+        seq[i] = nxt
+        nxt += 1
+        for k in above[i]:
+            below[k] -= 1
+            if below[k] == 0:
+                ready.append(k)
+    return seq
+
+
+def pack(code, groups):
+    """A plan for cartons of one vehicle type, the way the block filler lays same-size cartons: each group (cartons of
+    one size) in rows across the width, stacked in whole columns (full support), one z-slab after the other; a vehicle
+    that is full hands the rest of the group to the next one. Each group takes the turn that needs the shortest slab.
+    Returns the vehicles as lists of boxes."""
+    _, length, width, height, _ = VEHICLE_TYPE[code]
+    vehicles, current, z0 = [], [], 0
+    for cartons in groups:
+        dims = cartons[0]["dims"]
+        best = None
+        for name, _ in ORIENTATION:
+            w, h, d = extents(dims, name)
+            if w <= width and h <= height and d <= length:
+                per_row = (width // w) * (height // h)
+                slab = -(-len(cartons) // per_row) * d
+                if best is None or slab < best[0]:
+                    best = (slab, name, w, h, d, width // w, height // h)
+        _, name, w, h, d, nx, ny = best
+        left = list(cartons)
+        while left:
+            if z0 + d > length:
+                vehicles.append(current)
+                current, z0 = [], 0
+            row, left = left[:nx * ny], left[nx * ny:]
+            for k, c in enumerate(row):
+                iy, ix = divmod(k, nx)
+                current.append(dict(c, x=ix * w, y=iy * h, z=z0, w=w, h=h, d=d, orientation=name))
+            z0 += d
+    vehicles.append(current)
+    for v in vehicles:
+        check_vehicle(code, v)
+    return vehicles
+
+
+def usage(code, boxes):
+    _, length, width, height, payload = VEHICLE_TYPE[code]
+    volume = sum(b["w"] * b["h"] * b["d"] for b in boxes)
+    weight = sum(Decimal(str(b["kg"])) for b in boxes)
+    return volume, float(weight), pct(volume, length * width * height), pct(weight, payload)
+
+
+# --- the orders ---------------------------------------------------------------------------------------------------
+# key, customer, placed at, final status, lines (SKU, cartons); each line fills one pallet-sized parcel (place_order
+# packs an order of more than 40 units in two). A prepaid order takes one step more (PENDING_PAYMENT) than a credit
+# one, so FTL-1 and FTL-2 reach picking - and the dispatch - together.
+FTL_ORDERS = [
+    ("ftl1", "hoatuoi", at(date(2026, 10, 2), 9), "SHIPPED", [("LYG-1L-16OZ", 24), ("LYG-1L-22OZ", 24)]),
+    ("ftl2", "trasuamay", at(date(2026, 10, 3), 9), "SHIPPED", [("LYG-1L-8OZ", 24), ("LYG-KRAFT-16OZ", 24)]),
+    ("ftl3", "bakeryhouse", at(date(2026, 10, 8), 8), "PACKED", [("TUI-QUAI-M", 24), ("TUI-QUAI-L", 24)]),
+    ("ftl4", "trasuamay", at(date(2026, 10, 8), 8), "PACKED", [("LYN-PET-22OZ", 24), ("LYN-PET-24OZ", 24)]),
+    ("ftl5", "kemtuoi", at(date(2026, 10, 7), 8), "PACKED", [("HOP-PIZZA-8IN", 24), ("HOP-PIZZA-10IN", 24)]),
+    ("ftl6", "hotelhanoi", at(date(2026, 10, 8), 8), "PACKED", [("NAP-GIAY-D90-WHITE", 24), ("NAP-GIAY-D90-BLACK", 24)]),
+    ("ftl7", "nhahangsen", at(date(2026, 10, 8), 8), "PACKED", [("OHG-BLACK", 24), ("TAYCAM-16OZ", 24)]),
+]
+NO_AUDIT.add("ordering.order_shipment_line")   # a link table without audit columns
+
+
+def row_of(table, id_):
+    return next(r for r in ROWS[table] if r["id"] == id_)
+
+
+def mm_up(cm):
+    """cm with two decimals to whole mm, rounded up (LoadPlanParcels.mm, tg_load_placement_check)."""
+    return int((Decimal(str(cm)) * 10).to_integral_value(rounding=ROUND_CEILING))
+
+
+FTL = {}
+for key, cust_code, placed_at, final, spec in FTL_ORDERS:
+    # LP-2: a full truckload carries no COD, so no deposit customer whose balance the carrier could collect.
+    assert CUST[cust_code]["wh"] == FTL_WH and (CUST[cust_code]["terms"] or ("PREPAID",))[0] != "DEPOSIT"
+    o = place_order(key, cust_code, placed_at.date(), final, lines_spec=spec, fixed=(placed_at, FTL_STEP))
+    assert o and len(o["lines"]) == len(spec), (key, "not enough free stock at " + FTL_WH)
+    ship_id = uid(f"ship:{key}")
+    ship = row_of("fulfillment.shipment", ship_id)
+    t_pick = o["when"]["PICKING"]
+    # LP-1: packing copies the order's mode onto its shipment; a full truckload gets its carrier with the vehicle's
+    # booking (DispatchLoad.book), so the shipment names none while it waits.
+    o["row"].update(delivery_mode="FULL_TRUCKLOAD", packing_started_at=t_pick + timedelta(hours=3))
+    ship.update(delivery_mode="FULL_TRUCKLOAD", carrier=None, carrier_id=None)
+    add("ordering.order_delivery_mode_change", id=uid(f"dmc:{key}"), order_id=o["id"], delivery_mode="FULL_TRUCKLOAD",
+        previous_mode="PARCEL", order_status="CONFIRMED", note="Khách nhận nguyên chuyến tại kho, không qua hãng",
+        changed_by=U["dieuphoi"], changed_at=o["when"]["READY_TO_FULFILL"],
+        created_at=o["when"]["READY_TO_FULFILL"])
+    parcels = []
+    for k in range(2):
+        p = row_of("fulfillment.package", uid(f"pkg:{key}:{k}"))
+        dims = (mm_up(p["length_cm"]), mm_up(p["width_cm"]), mm_up(p["height_cm"]))
+        parcels.append(dict(id=p["id"], ship=ship_id, dims=dims, kg=p["weight_kg"], row=p))
+    FTL[key] = dict(o=o, ship=ship, parcels=parcels, ready=ship["ready_at"])
+
+DISPATCHER, MANAGER = U[staff_of(FTL_WH)[0]], U[staff_of(FTL_WH)[2]]
+
+
+def finish_later(table, row, **final):
+    """The row goes in as it was when the plan took it and reaches `final` by an UPDATE once the plan and its loads
+    exist, as the application got there: a parcel is planned and loaded only while its shipment waits for dispatch on
+    an open load (tg_load_plan_package_check, tg_dispatch_load_shipment_check)."""
+    POST.append(("fulfillment.dispatch_load_package", f"UPDATE {table} SET "
+                 + ", ".join(f"{k} = {q(v)}" for k, v in final.items()) + f" WHERE id = {q(row['id'])};"))
+
+
+def plan_header(key, d, created, status, mode, types, note=None, **extra):
+    pid = uid(f"lp:{key}")
+    row = add("fulfillment.load_plan", id=pid, code=next_no("LP", d), request_id=uid(f"lp:{key}:request"),
+              warehouse_id=WH[FTL_WH], source_type="ORDER", selection_mode=mode, status=status, note=note,
+              calculated_at=None, calculated_by=None, solver_meta=None, unplaced_acknowledged_at=None,
+              unplaced_acknowledged_by=None, unplaced_ack_note=None, confirmed_at=None, confirmed_by=None,
+              reopened_at=None, reopened_by=None, reopen_reason=None, dispatched_at=None, cancelled_at=None,
+              cancelled_by=None, cancel_reason=None, revised_at=created, version=0, created_at=created,
+              last_modified_at=None, last_modified_by=None)
+    row.update(extra)
+    for n, code in enumerate(types):
+        add("fulfillment.load_plan_vehicle_type", id=uid(f"lp:{key}:type:{code}"), load_plan_id=pid,
+            vehicle_type_id=vehicle_type_ref(code), sort_order=n, created_at=created)
+    return row
+
+
+def solver_meta(algorithm, code, parcels, elapsed):
+    """LoadPlanService.meta: what the planner reported, trimmed. minVehicles is its volume floor for the type."""
+    _, length, width, height, _ = VEHICLE_TYPE[code]
+    volume = sum(p["dims"][0] * p["dims"][1] * p["dims"][2] for p in parcels)
+    return {"algorithm": algorithm, "minVehicles": -(-volume // (length * width * height)), "setsTotal": 0,
+            "budgetExhausted": False, "elapsedMillis": elapsed, "bestFoundMillis": elapsed // 3, "kitWarnings": []}
+
+
+def plan_members(plan, parcels, added, by, **released):
+    for p in parcels:
+        add("fulfillment.load_plan_package", id=uid(f"lpp:{plan['id']}:{p['id']}"), load_plan_id=plan["id"],
+            package_id=p["id"], shipment_id=p["ship"], transfer_order_id=None, active=not released,
+            unplaced_reason=None, added_at=added, added_by=by, released_at=released.get("at"),
+            release_reason=released.get("reason"), created_at=added,
+            last_modified_at=released.get("at"), last_modified_by=BY if released else None)
+
+
+def plan_vehicle(plan, seq, code, boxes, created, active=True, placed=True, needs_recalculation=False,
+                 changed=None):
+    """One vehicle of a plan with its type copied (LoadPlanVehicleJpaEntity) and its usage as LoadPlan.withUsage
+    computes it; `placed` writes its placements (a retired vehicle's were deleted, LoadPlanStore step 3)."""
+    kind, length, width, height, payload = VEHICLE_TYPE[code]
+    vid = uid(f"lpv:{plan['id']}:{seq}:{code}")
+    volume, weight, vpct, wpct = usage(code, boxes)
+    add("fulfillment.load_plan_vehicle", id=vid, load_plan_id=plan["id"], seq=seq, active=active,
+        vehicle_type_id=vehicle_type_ref(code), vehicle_code=code, vehicle_kind=kind, inner_length_mm=length,
+        inner_width_mm=width, inner_height_mm=height, max_payload_kg=payload, gusset_mm=0, door_width_mm=None,
+        door_height_mm=None, used_volume_mm3=volume, used_weight_kg=weight, volume_fill_pct=vpct, weight_fill_pct=wpct,
+        needs_recalculation=needs_recalculation, created_at=created, last_modified_at=changed,
+        last_modified_by=BY if changed else None)
+    if placed:
+        for b in boxes:
+            add("fulfillment.load_placement", id=uid(f"lpl:{plan['id']}:{b['id']}"), load_plan_id=plan["id"],
+                load_plan_vehicle_id=vid, package_id=b["id"], x_mm=b["x"], y_mm=b["y"], z_mm=b["z"], w_mm=b["w"],
+                h_mm=b["h"], d_mm=b["d"], orientation=orientation_of(b["dims"], b["w"], b["h"], b["d"]),
+                created_at=created)
+    return vid
+
+
+def vehicle_load(key, d, plan_vehicle_id, status, members, loaded=(), booked=None, loading=None, **extra):
+    """A PLANNED dispatch load per vehicle of a confirmed plan (LoadPlanService.openVehicleLoads), booked and loaded
+    as DispatchLoad.book / startLoading / scan leave it. members: (shipment id, added at, removed at or None);
+    loaded: (package id, shipment id, loaded at, removed at or None). The counts are the active ones."""
+    lid = uid(f"ld:{key}")
+    booked = booked or {}
+    row = add("fulfillment.dispatch_load", id=lid, code=next_no("LD", d), request_id=uid(f"ld:{key}:request"),
+              warehouse_id=WH[FTL_WH], mode="FULL_TRUCKLOAD", carrier_id=booked.get("carrier"),
+              load_plan_vehicle_id=plan_vehicle_id, vehicle_plate=booked.get("plate"),
+              driver_name=booked.get("driver"), driver_phone=booked.get("phone"), status=status,
+              booked_at=booked.get("at"), booked_by=DISPATCHER if booked else None,
+              loading_started_at=loading, loading_started_by=DISPATCHER if loading else None,
+              dispatched_at=None, dispatched_by=None, carrier_representative=None, signature_ref=None,
+              handover_note=None, shipment_count=sum(1 for m in members if m[2] is None),
+              package_count=sum(1 for p in loaded if p[3] is None), cod_total=0, cancelled_at=None,
+              cancelled_by=None, cancel_reason=None, booking_cancelled_at=None, booking_cancelled_by=None,
+              booking_cancel_reason=None, created_at=members[0][1],
+              last_modified_at=loading or booked.get("at"), last_modified_by=BY)
+    row.update(extra)
+    for ship_id, added, removed in members:
+        add("fulfillment.dispatch_load_shipment", id=uid(f"lds:{lid}:{ship_id}"), load_id=lid, shipment_id=ship_id,
+            active=removed is None, added_at=added, added_by=MANAGER, removed_at=removed, removed_by=None,
+            label_cod_amount=0, cod_amount=None, mode="FULL_TRUCKLOAD", created_at=added)
+    for pkg_id, ship_id, at_, removed in loaded:
+        add("fulfillment.dispatch_load_package", id=uid(f"ldp:{lid}:{pkg_id}"), load_id=lid, package_id=pkg_id,
+            shipment_id=ship_id, scan_id=uid(f"ldp:{lid}:{pkg_id}:scan"), loaded_at=at_, loaded_by=DISPATCHER,
+            active=removed is None, removed_at=removed, removed_by=None, created_at=at_)
+    return row
+
+
+VTP = carrier_ref("Viettel Post")
+
+
+def along(parcels, code):
+    """Pallets one behind the other on the floor, turned WLH (length across, width along z) - how the planner lays a
+    1 200 x 1 000 mm pallet in a box truck narrower than two of them."""
+    out, z = [], 0
+    for p in parcels:
+        w, h, d = extents(p["dims"], "WLH")
+        out.append(dict(p, x=0, y=0, z=z, w=w, h=h, d=d))
+        z += d
+    check_vehicle(code, out)
+    return out
+
+
+# --- LP A: DISPATCHED (FTL-1, FTL-2 on one TRUCK-2T5) ------------------------------------------------------------
+fa = FTL["ftl1"]["parcels"] + FTL["ftl2"]["parcels"]
+gone = FTL["ftl1"]["o"]["when"]["SHIPPED"]
+assert gone == FTL["ftl2"]["o"]["when"]["SHIPPED"]
+a_made = FTL["ftl2"]["ready"] + timedelta(minutes=30)
+a_calc, a_conf, a_book = a_made + timedelta(minutes=5), a_made + timedelta(minutes=40), a_made + timedelta(hours=2)
+a_load = gone - timedelta(hours=1)
+plan_a = plan_header("a", a_made.date(), a_made, "DISPATCHED", "SINGLE_TYPE", ["TRUCK-2T5", "TRUCK-5T"],
+                     note="Giao nguyên chuyến cho Hoa Tươi và Trà Sữa Mây - nội thành Hà Nội",
+                     calculated_at=a_calc, calculated_by=DISPATCHER,
+                     solver_meta=solver_meta("GRASP_KIT", "TRUCK-2T5", fa, 412), confirmed_at=a_conf,
+                     confirmed_by=MANAGER, dispatched_at=gone, revised_at=gone, version=3, last_modified_at=gone,
+                     last_modified_by=BY)
+plan_members(plan_a, fa, a_made, DISPATCHER)
+va = plan_vehicle(plan_a, 1, "TRUCK-2T5", along(fa, "TRUCK-2T5"), a_calc)
+load_a = vehicle_load("a", a_conf.date(), va, "LOADING",
+                      [(FTL["ftl1"]["ship"]["id"], a_conf, None), (FTL["ftl2"]["ship"]["id"], a_conf, None)],
+                      [(p["id"], p["ship"], a_load + timedelta(minutes=5 + 4 * k), None) for k, p in enumerate(fa)],
+                      booked=dict(carrier=VTP, plate="29H-512.34", driver="Nguyễn Văn Hùng", phone="0983456721",
+                                  at=a_book), loading=a_load)
+# 09 §4.1 step 3: both sides sign, the load leaves; its shipments are handed over with it (their last vehicle, LP-3),
+# the COD the handover fixes is nothing (a full truckload carries none, LP-2).
+finish_later("fulfillment.dispatch_load", load_a, status="DISPATCHED", dispatched_at=gone, dispatched_by=DISPATCHER,
+             carrier_representative="Nguyễn Văn Hùng", signature_ref=f"BBGN-{load_a['code']}",
+             handover_note="Đủ 4 pallet, niêm phong nguyên vẹn", last_modified_at=gone)
+for key in ("ftl1", "ftl2"):
+    f = FTL[key]
+    o, ship = f["o"], f["ship"]
+    POST.append(("fulfillment.dispatch_load_package", f"UPDATE fulfillment.dispatch_load_shipment SET cod_amount = 0 "
+                 f"WHERE load_id = {q(load_a['id'])} AND shipment_id = {q(ship['id'])};"))
+    ship.update(status="READY_TO_DISPATCH", dispatched_at=None, handed_over_at=None, handed_over_by=None,
+                whole_order_handover=False, load_id=None)
+    finish_later("fulfillment.shipment", ship, status="HANDED_OVER", dispatched_at=gone, handed_over_at=gone,
+                 handed_over_by=DISPATCHER, carrier_id=VTP, load_id=load_a["id"])
+    # The order knows the shipment from the handover on (OrderService.recordHandover): what went, at its prices.
+    o["row"]["goods_left_at"] = gone
+    add("ordering.order_shipment", id=ship["id"], order_id=o["id"], status="HANDED_OVER", amount=o["total"],
+        billed_amount=0, handed_over_at=gone, handed_over_by=DISPATCHER, outcome_at=None, outcome_by=None,
+        failure_reason=None, failure_note=None, cod_amount=0, shipment_code=ship["code"], package_count=2,
+        carrier_name="Viettel Post", delivery_mode="FULL_TRUCKLOAD", created_at=gone)
+    for ln in o["lines"]:
+        add("ordering.order_shipment_line", shipment_id=ship["id"], order_line_id=ln["id"], quantity=ln["qty"])
+
+# --- LP B: CONFIRMED, vehicle 1 being loaded, vehicle 2 booked (after a booking that fell through) -------------
+p3, p4, p5 = FTL["ftl3"]["parcels"], FTL["ftl4"]["parcels"], FTL["ftl5"]["parcels"]
+b_made = max(FTL[k]["ready"] for k in ("ftl3", "ftl4", "ftl5")) + timedelta(hours=1)
+b_calc, b_conf = b_made + timedelta(minutes=5), b_made + timedelta(minutes=40)
+b_book1, b_book2 = b_made + timedelta(hours=2), b_made + timedelta(hours=2, minutes=20)
+b_rebook, b_load = b_book2 + timedelta(hours=1, minutes=30), at(b_made.date() + timedelta(days=1), 8)
+v1_boxes, v2_boxes = along(p3 + p4[:1], "TRUCK-1T25"), along(p4[1:] + p5, "TRUCK-1T25")
+plan_b = plan_header("b", b_made.date(), b_made, "CONFIRMED", "SINGLE_TYPE", ["TRUCK-1T25"],
+                     calculated_at=b_calc, calculated_by=DISPATCHER,
+                     solver_meta=solver_meta("GRASP_KIT", "TRUCK-1T25", p3 + p4 + p5, 655), confirmed_at=b_conf,
+                     confirmed_by=MANAGER, revised_at=b_conf, version=2, last_modified_at=b_conf,
+                     last_modified_by=BY)
+plan_members(plan_b, p3 + p4 + p5, b_made, DISPATCHER)
+vb1 = plan_vehicle(plan_b, 1, "TRUCK-1T25", v1_boxes, b_calc)
+vb2 = plan_vehicle(plan_b, 2, "TRUCK-1T25", v2_boxes, b_calc)
+s3, s4, s5 = (FTL[k]["ship"]["id"] for k in ("ftl3", "ftl4", "ftl5"))
+# Vehicle 1 arrived this morning: FTL-3's two pallets are on board, FTL-4's first is still to scan.
+vehicle_load("b1", b_conf.date(), vb1, "LOADING", [(s3, b_conf, None), (s4, b_conf, None)],
+             [(b["id"], b["ship"], b_load + timedelta(minutes=5 + 4 * k), None) for k, b in enumerate(v1_boxes[:2])],
+             booked=dict(carrier=VTP, plate="29H-678.90", driver="Trần Minh Đức", phone="0912876543", at=b_book1),
+             loading=b_load)
+# Vehicle 2's first truck was called off by the haulier (DispatchLoad.cancelBooking: back to PLANNED, the reason kept)
+# and another one booked: the last cancellation stays on the row next to the new booking.
+vehicle_load("b2", b_conf.date(), vb2, "VEHICLE_BOOKED", [(s4, b_conf, None), (s5, b_conf, None)],
+             booked=dict(carrier=VTP, plate="29H-345.12", driver="Phạm Quốc Bảo", phone="0936112233", at=b_rebook),
+             booking_cancelled_at=b_book2 + timedelta(hours=1), booking_cancelled_by=DISPATCHER,
+             booking_cancel_reason="Nhà xe báo xe 29H-201.55 hỏng, đặt xe khác cùng hãng")
+
+# --- LP D: CANCELLED in DRAFT (FTL-6 alone), LP C: PLANNED (FTL-6 + FTL-7) ------------------------------------------
+p6, p7 = FTL["ftl6"]["parcels"], FTL["ftl7"]["parcels"]
+d_made = max(FTL["ftl6"]["ready"], FTL["ftl7"]["ready"]) + timedelta(hours=1)
+d_cancel = d_made + timedelta(hours=1, minutes=30)
+plan_d = plan_header("d", d_made.date(), d_made, "CANCELLED", "SINGLE_TYPE", ["TRUCK-8T"],
+                     cancelled_at=d_cancel, cancelled_by=DISPATCHER,
+                     cancel_reason="Gộp với đơn của Nhà hàng Sen cho đủ một chuyến, đổi sang xe nhỏ",
+                     revised_at=d_cancel, version=1, last_modified_at=d_cancel, last_modified_by=BY)
+plan_members(plan_d, p6, d_made, DISPATCHER, at=d_cancel, reason="PLAN_CANCELLED")
+c_made = d_cancel + timedelta(minutes=10)
+c_calc1, c_inputs, c_calc2 = c_made + timedelta(minutes=5), c_made + timedelta(minutes=20), c_made + timedelta(minutes=22)
+plan_c = plan_header("c", c_made.date(), c_made, "PLANNED", "FEWEST_VEHICLES", ["TRUCK-1T25", "TRUCK-2T5"],
+                     calculated_at=c_calc2, calculated_by=DISPATCHER,
+                     solver_meta=solver_meta("GRASP_KIT_FLEET", "TRUCK-2T5", p6 + p7, 1873), revised_at=c_calc2,
+                     version=3, last_modified_at=c_calc2, last_modified_by=BY)
+plan_members(plan_c, p6 + p7, c_made, DISPATCHER)
+# The first calculation (SINGLE_TYPE, TRUCK-1T25 only) needed two vehicles; changing the mode and the types sent the
+# plan back to DRAFT and retired them (LoadPlan.backToDraft) - their placements were deleted, the rows stay.
+plan_vehicle(plan_c, 1, "TRUCK-1T25", along(p6 + p7[:1], "TRUCK-1T25"), c_calc1, active=False, placed=False,
+             changed=c_inputs)
+plan_vehicle(plan_c, 2, "TRUCK-1T25", along(p7[1:], "TRUCK-1T25"), c_calc1, active=False, placed=False,
+             changed=c_inputs)
+plan_vehicle(plan_c, 1, "TRUCK-2T5", along(p6 + p7, "TRUCK-2T5"), c_calc2)
+
+# --- LP E: DRAFT, vehicle types chosen, no shipment yet -----------------------------------------------------------
+e_made = at(TODAY, 8, 30)
+plan_header("e", TODAY, e_made, "DRAFT", "FEWEST_VEHICLES", ["TRUCK-8T", "TRUCK-15T"],
+            note="Chuyến tuần sau cho các đại lý phía Bắc - chờ đơn đóng gói xong")
+
+# --- load estimates (release dialog) -------------------------------------------------------------------------------
+# LoadEstimateService: the packaging-spec resolver (PackagingRules) gives each order line its cartons - the default
+# shipping unit, else the largest packing unit, else the item's box - and the planner lays them in the chosen types.
+DEFAULT_PALLET = {sku: (per, (l_ * 10, w_ * 10, h_ * 10)) for sku, per, (l_, w_, h_), flag, _ in PALLET_DEMO if flag}
+assert s_c.sku not in {sku for _, _, _, _, spec in FTL_ORDERS for sku, _ in spec}  # its CTN20 unit is not modelled
+
+
+def estimate_line(ln):
+    """PackagingRules.resolve for the units this data set gives the SKUs used here: the pallet flagged as default
+    shipping unit (level 1) or the item's box (level 3: package sizes and weight, one box per unit)."""
+    v = VAR[ln["sku"]]
+    if ln["sku"] in DEFAULT_PALLET:
+        per, dims = DEFAULT_PALLET[ln["sku"]]
+        assert ln["qty"] % per == 0
+        return dict(rule="DEFAULT_SHIPPING_UNIT", uom="PALLET", factor=per, cartons=ln["qty"] // per, dims=dims,
+                    kg=round(per * v["dims"][0] + 25, 3))
+    w, l_, wd, h = v["dims"]
+    return dict(rule="ITEM_BOX", uom=v["uom"], factor=1, cartons=ln["qty"], dims=(l_ * 10, wd * 10, h * 10), kg=w)
+
+
+def estimate(key, f, n, status, mode, code, types, made, superseded=None):
+    """One stored estimate: lines, the viewer's layout (Layouts.of) and the planner's meta, as LoadEstimateService
+    writes them through the application's ObjectMapper (non_null: absent fields are left out)."""
+    o = f["o"]
+    lines, groups = [], []
+    for ln in o["lines"]:
+        r = estimate_line(ln)
+        lines.append({"orderLineId": ln["id"], "sku": ln["sku"], "inventoryItemId": ITEM[ln["sku"]],
+                      "quantity": ln["qty"], "rule": r["rule"], "uom": r["uom"], "factor": r["factor"],
+                      "cartons": r["cartons"], "dimsMm": dict(zip("lwh", r["dims"])), "weightKg": r["kg"],
+                      "rotatable": True, "kitParts": 1})
+        groups.append([dict(id=f"{ln['id']}#{k + 1}", source=ln["id"], sku=ln["sku"], dims=r["dims"], kg=r["kg"])
+                       for k in range(r["cartons"])])
+    vehicles = pack(code, groups)
+    layouts = []
+    for seq, boxes in enumerate(vehicles, 1):
+        _, length, width, height, payload = VEHICLE_TYPE[code]
+        order = load_sequence(boxes)
+        volume, weight, vpct, wpct = usage(code, boxes)
+        layouts.append({"seq": seq, "code": code, "vehicleTypeId": vehicle_type_ref(code),
+                        "innerMm": {"l": length, "w": width, "h": height}, "maxPayloadKg": float(payload),
+                        "gussets": [],
+                        "boxes": [{"xMm": b["x"], "yMm": b["y"], "zMm": b["z"], "wMm": b["w"], "hMm": b["h"],
+                                   "dMm": b["d"], "ref": b["id"], "sourceRef": b["source"], "label": b["sku"],
+                                   "partName": b["sku"], "origMm": dict(zip("lwh", b["dims"])),
+                                   "orientation": ORIENTATION[orientation_of(b["dims"], b["w"], b["h"], b["d"])][0],
+                                   "rotatable": True, "weightKg": b["kg"], "loadSequence": s}
+                                  for s, b in sorted(zip(order, boxes), key=lambda x: x[0])],
+                        "usedVolumeMm3": volume, "usedWeightKg": weight, "volumeFillPct": vpct,
+                        "weightFillPct": wpct})
+    placed = sum(len(v) for v in vehicles)
+    total = sum(b["dims"][0] * b["dims"][1] * b["dims"][2] for g in groups for b in g)
+    _, length, width, height, _ = VEHICLE_TYPE[code]
+    meta = {"seed": 0, "budgetMillis": 5000, "algorithm": "GRASP_KIT_FLEET" if mode == "FEWEST_VEHICLES" else "GRASP_KIT",
+            "setsTotal": 0, "minVehicles": -(-total // (length * width * height)), "budgetExhausted": False,
+            "elapsedMillis": 180 + 37 * placed, "bestFoundMillis": 60 + 11 * placed, "placedBoxes": placed,
+            "unplacedBoxes": 0, "kitBalance": [{} for _ in vehicles], "kitWarnings": []}
+    add("fulfillment.load_estimate", id=uid(f"est:{key}:{n}"), source_type="ORDER", source_id=o["id"],
+        warehouse_id=WH[FTL_WH], vehicle_type_ids=[vehicle_type_ref(t) for t in types], mode=mode, status=status,
+        lines=lines, layout={"vehicles": layouts, "unplaced": [], "meta": meta}, warnings=[], missing=[],
+        incomplete=False, version=1 if superseded else 0, created_at=made, last_modified_at=superseded,
+        last_modified_by=BY if superseded else None)
+
+
+for key, plans in (("ftl1", [("SINGLE_TYPE", "TRUCK-1T25", ["TRUCK-1T25", "TRUCK-2T5"])]),
+                   ("ftl4", [("SINGLE_TYPE", "TRUCK-1T25", ["TRUCK-1T25"]),
+                             ("FEWEST_VEHICLES", "TRUCK-2T5", ["TRUCK-1T25", "TRUCK-2T5"])]),
+                   ("ftl6", [("SINGLE_TYPE", "TRUCK-1T25", ["TRUCK-1T25"])])):
+    release = FTL[key]["o"]["when"]["READY_TO_FULFILL"]
+    times = [release - timedelta(minutes=15 * (len(plans) - n)) for n in range(len(plans))]
+    for n, (mode, code, types) in enumerate(plans):
+        last = n == len(plans) - 1
+        estimate(key, FTL[key], n, "CURRENT" if last else "SUPERSEDED", mode, code, types, times[n],
+                 superseded=None if last else times[n + 1])
+
+
 # ============================================================================ 11. stock rows and ledger
 for s in STOCK:
     assert 0 <= s.reserved <= s.on_hand, (s.sku, s.loc, s.on_hand, s.reserved)
@@ -2584,23 +4305,380 @@ for m in MOVES:
 for issue in ISSUES:
     add("production.production_material_issue", **issue)
 
+# ============================================================================ 12. histories, price lists, alerts, inbox
+# Rows the application writes as a side effect of the work above, derived from it here so they agree with it. Nothing
+# below draws from `random`: every choice is a fixed list or a computation, so the data generated before stays as it is.
+UTC = timezone.utc
+
+
+def instant(t):
+    """java.time.Instant.toString of a whole-second time, as the dedupe keys built from an Instant carry it."""
+    return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def reconcile_after(t):
+    """The nightly AlertReconcileJob run (01:30 business time, alert-reconcile-cron) that first sees what changed at t."""
+    run = at(t.astimezone(VN).date(), 1, 30)
+    return run if run > t else run + timedelta(days=1)
+
+
+# ---------------------------------------------------------------------------- customers' own prices (SCRUM-428)
+# CustomerPriceService.create / replace, by the E-commerce Admin (catalog-customer-prices:CREATE). The repository
+# replaces the tiers as a whole on every save, so a revised price's tiers carry the revision's time and the header's
+# version moved once. A price list is made after the customer's last order of that SKU: an order placed later would
+# have been priced from it (14 BR-03), and the seeded orders are priced from the segment / base price (unit_price).
+CUSTOMER_PRICES = [
+    # customer, sku, made at, tiers [(from qty, VND per unit)], note, revision (at, tiers) or None
+    ("daily-tanphu", "LYG-1L-12OZ", at(date(2026, 10, 5), 10), [(20, 470000), (50, 460000), (100, 448000)],
+     "Giá đại lý cấp 1 theo hợp đồng quý IV/2026",
+     (at(date(2026, 10, 9), 15), [(20, 470000), (50, 458000), (100, 445000), (200, 435000)])),
+    ("daily-tanphu", "LYG-1L-16OZ", at(date(2026, 10, 5), 10, 5), [(20, 552000), (50, 540000)],
+     "Giá đại lý cấp 1 theo hợp đồng quý IV/2026", None),
+    ("daily-tanphu", "NAP-GIAY-D90-WHITE", at(date(2026, 10, 5), 10, 10), [(20, 252000), (100, 240000)], None, None),
+    ("caphemoc", "LYN-PET-12OZ", at(date(2026, 10, 8), 14), [(10, 455000), (30, 445000)],
+     "Giá riêng chuỗi Cà phê Mộc từ tháng 10/2026", None),
+    ("caphemoc", "LYG-2L-8OZ", at(date(2026, 10, 8), 14, 5), [(10, 615000), (40, 600000)],
+     "Giá riêng chuỗi Cà phê Mộc từ tháng 10/2026", None),
+    ("pizza4u", "HOP-PIZZA-12IN", at(date(2026, 10, 11), 9), [(20, 495000), (50, 485000)], None, None),
+    ("banhmisaigon", "HOP-COM-M", at(date(2026, 10, 10), 9), [(10, 615000)], "Khách quen, giá ưu đãi hộp cơm size M",
+     None),
+]
+for cust_code, sku, made, tiers, note, revision in CUSTOMER_PRICES:
+    bought = [o["row"]["placed_at"] for o in ORDERS if o["cust"] == cust_code and o["row"]["placed_at"]
+              and any(ln["sku"] == sku for ln in o["lines"])]
+    assert not bought or max(bought) < made, (cust_code, sku, max(bought), made)
+    assert all(price < unit_price(CUST[cust_code], sku) for _, price in tiers), (cust_code, sku)
+    pid_ = uid(f"cprice:{cust_code}:{sku}")
+    final_at, final_tiers = revision or (made, tiers)
+    add("catalog.customer_price", id=pid_, customer_id=CUST[cust_code]["id"], sku=sku, currency="VND", note=note,
+        version=1 if revision else 0, created_at=made, last_modified_at=final_at if revision else None,
+        last_modified_by=BY if revision else None)
+    for qty_from, price in final_tiers:
+        add("catalog.customer_price_tier", id=uid(f"cprice:{cust_code}:{sku}:{qty_from}:{final_at.isoformat()}"),
+            customer_price_id=pid_, min_quantity=qty_from, unit_price=price, version=0, created_at=final_at)
+
+# ---------------------------------------------------------------------------- sales units (kltn-docs 01 BR-11)
+# SkuUnitService.addSalesUnit for the four SKUs that have a pallet unit (PALLET_DEMO): listing units replaces the
+# default (base unit only), so the carton - the base unit, sold at the catalog base price, hence no price of its own -
+# is listed first and the seeded carton orders stay valid; the pallet is priced per pallet, whole VND. One pallet price
+# was changed later (changeSalesUnit: version + 1, and a history entry naming the price).
+UNITS_LISTED = at(date(2026, 10, 5), 9)
+PALLET_RECUT = ("LYG-1L-12OZ", at(date(2026, 10, 9), 15, 30), 0.94)
+SALES_UNIT_LOG = []   # (sku, unit, when, changed fields) for the product history below
+for k, (sku, per_pallet, *_rest) in enumerate(PALLET_DEMO):
+    v = VAR[sku]
+    listed = UNITS_LISTED + timedelta(minutes=2 * k)
+    add("product.variant_sales_units", id=uid(f"vsu:{sku}:CTN"), variant_id=v["id"],
+        uom_conversion_id=Raw("(SELECT c.id FROM inventory.uom_conversions c JOIN inventory.inventory_items i "
+                              f"ON i.id = c.inventory_item_id WHERE i.sku = {q(sku)} AND c.is_base)"),
+        price=None, version=0, created_at=listed)
+    SALES_UNIT_LOG.append((sku, "CTN", listed, ["unit:CTN"]))
+    price = money(per_pallet * v["price"] * 0.95 / 1000) * 1000
+    row = add("product.variant_sales_units", id=uid(f"vsu:{sku}:PALLET"), variant_id=v["id"],
+              uom_conversion_id=uid("uom:" + sku + ":PALLET"), price=price, version=0,
+              created_at=listed + timedelta(minutes=1))
+    SALES_UNIT_LOG.append((sku, "PALLET", listed + timedelta(minutes=1), ["unit:PALLET"]))
+    if sku == PALLET_RECUT[0]:
+        row.update(price=money(per_pallet * v["price"] * PALLET_RECUT[2] / 1000) * 1000, version=1,
+                   last_modified_at=PALLET_RECUT[1], last_modified_by=BY)
+        SALES_UNIT_LOG.append((sku, "PALLET", PALLET_RECUT[1], ["unit:PALLET", "price"]))
+
+# ---------------------------------------------------------------------------- product history (SCRUM-461)
+# ProductChangeLogRepository.record, called in the transaction of each change; append-only. Entries for the changes
+# the catalogue rows above already show (their timestamps and reasons): the two products still in the approval flow
+# from creation on, the discontinued straw (ProductServiceImpl.discontinue: every variant to OBSOLETE first, then the
+# product, both with the product's reason), the blocked canvas-bag variant (ProductVariantService.block: no reason),
+# and the sales units. A product created with axes logs CREATED, then VARIANT_ADDED per generated variant (DRAFT);
+# the later entry gets the later second so newest-first reads in the order it happened.
+SUBJECT = {"CREATED": "PRODUCT", "UPDATED": "PRODUCT", "SUBMITTED": "PRODUCT", "DISCONTINUED": "PRODUCT",
+           "VARIANT_ADDED": "VARIANT", "VARIANT_STATUS": "VARIANT", "SALES_UNIT": "SALES_UNIT"}
+VARIANT_BLOCKED = ("TUI-VAI-M", at(date(2026, 9, 18), 10))
+
+
+def product_log(pcode, change, when, actor, subject_id=None, frm=None, to=None, reason=None, fields=()):
+    add("product.product_change_log", id=uid(f"pcl:{pcode}:{change}:{subject_id}:{when.isoformat()}:{fields}"),
+        product_id=PROD[pcode]["id"], change_type=change, subject_type=SUBJECT[change], subject_id=subject_id,
+        from_status=frm, to_status=to, reason=reason, changed_fields=tuple(fields), actor_id=U[actor],
+        occurred_at=when)
+
+
+for pcode in ("HOP-SALAD", "LYG-TET"):
+    assert PROD[pcode]["status"] in ("PENDING_APPROVAL", "DRAFT"), pcode
+    product_log(pcode, "CREATED", P_CREATED, EDITOR, to="DRAFT")
+    for v in VARIANTS:
+        if v["product"] == pcode:
+            product_log(pcode, "VARIANT_ADDED", P_CREATED + timedelta(seconds=1), EDITOR, v["id"], to="DRAFT")
+    if PROD[pcode]["status"] == "PENDING_APPROVAL":
+        # submitted_at / submitted_by of the product row; the copy was reworded before it went to review.
+        product_log(pcode, "UPDATED", at(date(2026, 8, 3), 9, 40), EDITOR,
+                    fields=("shortDescription", "description"))
+        product_log(pcode, "SUBMITTED", at(date(2026, 8, 3), 10), EDITOR, frm="DRAFT", to="PENDING_APPROVAL")
+gone = next(p for p in PRODUCTS if p[6] == "DISCONTINUED")
+gone_at, gone_why = at(date(2026, 9, 30), 17), "Ngừng sản xuất, chuyển sang ống hút giấy"   # the product row's values
+for v in VARIANTS:
+    if v["product"] == gone[0]:
+        product_log(gone[0], "VARIANT_STATUS", gone_at, EDITOR, v["id"], frm="ACTIVE", to="OBSOLETE", reason=gone_why)
+product_log(gone[0], "DISCONTINUED", gone_at + timedelta(seconds=1), EDITOR, frm="PUBLISHED", to="DISCONTINUED",
+            reason=gone_why)
+assert VAR[VARIANT_BLOCKED[0]]["vstatus"] == "BLOCKED"
+product_log(VAR[VARIANT_BLOCKED[0]]["product"], "VARIANT_STATUS", VARIANT_BLOCKED[1], EDITOR,
+            VAR[VARIANT_BLOCKED[0]]["id"], frm="ACTIVE", to="BLOCKED")
+for sku, unit, when, fields in SALES_UNIT_LOG:
+    product_log(VAR[sku]["product"], "SALES_UNIT", when, EDITOR, VAR[sku]["id"], fields=fields)
+
+# ---------------------------------------------------------------------------- customer onboarding (SCRUM-450)
+# CustomerOnboardingService.create: Sales creates the customer PENDING_ACTIVATION with a portal account for its contact
+# (PortalAccountServiceImpl.invite: username = e-mail, lower case; no password until activation; CUSTOMER role) and an
+# invitation (72 h, stockflow.identity.portal-invitation.lifetime) whose e-mail outcome is recorded after the commit.
+# Only the token's SHA-256 is stored, so the digests here open nothing. Four customers onboarded this way show the
+# invitation states the back office distinguishes: activated, pending, expired after a resend, and closed unactivated.
+# The customers seeded in section 5 were created directly (no onboarding), which writes no status history.
+INVITE_LIFETIME = timedelta(hours=72)
+
+
+def onboard(key, company, contact, phone, by, when):
+    email = f"lienhe@{key}.example"
+    U["kh." + key] = uid("user:kh." + key)
+    user_row = add("identity.app_user", id=U["kh." + key], username=email, email=email, password_hash=None,
+                   full_name=contact, status="ACTIVE", created_at=when)
+    add("identity.user_role", id=uid(f"ur:kh.{key}:CUSTOMER"), user_id=U["kh." + key], role_id=ROLE("CUSTOMER"),
+        created_at=when)
+    cust_row = add("customer.customer", id=uid("customer:" + key), full_name=company, email=email, phone=phone,
+                   segment_id=None, status="PENDING_ACTIVATION", user_id=U["kh." + key], tax_code=None,
+                   created_at=when)
+    customer_status(key, None, "PENDING_ACTIVATION", None, by, when)
+    return user_row, cust_row
+
+
+def invite(key, n, issued, by, delivery, consumed=None, revoked=None):
+    """One invitation; its version counts the saves after the insert (delivery outcome, consumption, revocation)."""
+    changes = [t for t in (issued + timedelta(seconds=2), consumed, revoked) if t]
+    add("identity.portal_invitation", id=uid(f"invite:{key}:{n}"), user_id=U["kh." + key],
+        token_digest=sha(f"invite-token:{key}:{n}"), issued_at=issued, expires_at=issued + INVITE_LIFETIME,
+        consumed_at=consumed, revoked_at=revoked, issued_by=U[by], delivery_status=delivery,
+        delivery_attempted_at=issued + timedelta(seconds=2), version=len(changes), created_at=issued,
+        last_modified_at=max(changes), last_modified_by=BY)
+
+
+def customer_status(key, frm, to, reason, by, when):
+    """CustomerStatusHistory.record: from NULL at onboarding, by the contact's own account at activation."""
+    add("customer.customer_status_history", id=uid(f"cstat:{key}:{to}:{when.isoformat()}"),
+        customer_id=uid("customer:" + key), from_status=frm, to_status=to, reason=reason, changed_by=by,
+        changed_at=when, version=0, created_at=when)
+
+
+def customer_change(key, field, old, new, by, when):
+    """CustomerServiceImpl.update: a renamed company (the contact, PUT /me) or a tax code Sales records."""
+    add("customer.customer_change_history", id=uid(f"cchg:{key}:{field}:{when.isoformat()}"),
+        customer_id=uid("customer:" + key), field=field, old_value=old, new_value=new, changed_by=by,
+        changed_at=when, created_at=when)
+
+
+def touched(row, version, when):
+    row.update(version=version, last_modified_at=when, last_modified_by=BY)
+
+
+# Activated, then the tax code recorded (a household business supplying it later, decision 2026-10-12) and the
+# company renamed by its contact.
+t0 = at(date(2026, 10, 6), 10)
+user_row, cust_row = onboard("tiemtraan", "Tiệm trà An Nhiên", "Phùng Thị An", "0912340601", U["sales1"], t0)
+activated = at(date(2026, 10, 6), 20, 15)
+invite("tiemtraan", 1, t0, "sales1", "SENT", consumed=activated)
+customer_status("tiemtraan", "PENDING_ACTIVATION", "ACTIVE", None, U["kh.tiemtraan"], activated)
+user_row.update(password_hash=PASSWORD, last_login_at=at(date(2026, 10, 11), 19, 40))
+touched(user_row, 1, activated)
+customer_change("tiemtraan", "TAX_CODE", None, "8012345678", U["sales1"], at(date(2026, 10, 7), 9))
+customer_change("tiemtraan", "FULL_NAME", "Tiệm trà An Nhiên", "Hộ kinh doanh Tiệm trà An Nhiên",
+                U["kh.tiemtraan"], at(date(2026, 10, 8), 20))
+cust_row.update(status="ACTIVE", tax_code="8012345678", full_name="Hộ kinh doanh Tiệm trà An Nhiên")
+touched(cust_row, 3, at(date(2026, 10, 8), 20))
+
+# Pending: invited the day before "today", the link still open.
+t0 = at(date(2026, 10, 11), 14)
+onboard("xuongbanhmoclan", "Công ty TNHH Xưởng bánh Mộc Lan", "Đinh Mộc Lan", "0912340602", U["sales2"], t0)
+invite("xuongbanhmoclan", 1, t0, "sales2", "SENT")
+
+# The first e-mail failed; Sales resent it (the old link revoked when the new one was issued) and that one expired
+# unused: the back office shows EXPIRED and offers another resend.
+t0 = at(date(2026, 10, 7), 9, 30)
+onboard("quancomnha", "Quán Cơm Nhà Bà Sáu", "Lê Thị Sáu", "0912340603", U["sales1"], t0)
+resent = at(date(2026, 10, 8), 8, 45)
+invite("quancomnha", 1, t0, "sales1", "FAILED", revoked=resent)
+invite("quancomnha", 2, resent, "sales1", "SENT")
+
+# Never activated; the E-commerce Admin closed it (customer-status:APPROVE). Closing suspends the portal account
+# (syncPortalAccess -> PortalAccountService.suspend: ACTIVE -> DISABLED); the expired invitation is left as it was.
+t0 = at(date(2026, 9, 22), 15)
+user_row, cust_row = onboard("taphoabinhminh", "Cửa hàng tạp hóa Bình Minh", "Trương Văn Minh", "0912340604",
+                             U["sales2"], t0)
+invite("taphoabinhminh", 1, t0, "sales2", "SENT")
+closed = at(date(2026, 10, 1), 11)
+customer_status("taphoabinhminh", "PENDING_ACTIVATION", "INACTIVE", "Khách không kích hoạt tài khoản sau 7 ngày, "
+                "đóng hồ sơ theo yêu cầu của khách", U["ecom2"], closed)
+cust_row.update(status="INACTIVE")
+touched(cust_row, 1, closed)
+user_row.update(status="DISABLED")
+touched(user_row, 1, closed)
+
+# ---------------------------------------------------------------------------- staff status changes, renames
+# CustomerServiceImpl.changeStatus by the E-commerce Admin, on customers without a portal account (nothing to suspend):
+# the blocked and the closed customer of section 5, a block lifted (a reason is required, decision 2026-10-17) and a
+# closed customer reopened (reason required, ck_customer_status_history_reopen_reason). No order falls in a time the
+# customer was blocked or closed, which it could not have placed then; one reopened may order again.
+STATUS_CHANGES = [
+    # customer, [(from, to, reason, at)]
+    ("bichan", [("ACTIVE", "BLOCKED", "Nợ quá hạn trên 60 ngày, nhiều lần không nhận hàng COD",
+                 at(date(2026, 9, 15), 16))]),
+    ("ngungban", [("ACTIVE", "INACTIVE", "Khách ngừng kinh doanh, yêu cầu đóng hồ sơ", at(date(2026, 9, 20), 10))]),
+    ("trasuanho", [("ACTIVE", "BLOCKED", "Nghi ngờ đặt đơn giả mạo, tạm khóa chờ xác minh", at(date(2026, 9, 30), 9)),
+                   ("BLOCKED", "ACTIVE", "Đã xác minh với chủ quán qua điện thoại, mở khóa", at(date(2026, 10, 2), 14))]),
+    ("kemtuoi", [("ACTIVE", "INACTIVE", "Cửa hàng tạm nghỉ hết mùa hè", at(date(2026, 9, 25), 10)),
+                 ("INACTIVE", "ACTIVE", "Khách mở lại cửa hàng, xác nhận qua điện thoại", at(date(2026, 10, 3), 9))]),
+]
+CUSTOMER_ROWS = {r["id"]: r for r in ROWS["customer.customer"]}
+for key, steps in STATUS_CHANGES:
+    assert CUST[key]["user"] is None, key
+    assert CUSTOMER_ROWS[CUST[key]["id"]]["status"] == steps[-1][1], key
+    # No order placed while the customer was blocked or closed (until a later step made it ACTIVE again).
+    placed = [o["row"]["placed_at"] for o in ORDERS if o["cust"] == key and o["row"]["placed_at"]]
+    for k, (frm, to, reason, when) in enumerate(steps):
+        if to != "ACTIVE":
+            until = steps[k + 1][3] if k + 1 < len(steps) else None
+            assert not [t for t in placed if t >= when and (until is None or t < until)], (key, to, when)
+    for frm, to, reason, when in steps:
+        customer_status(key, frm, to, reason, U["ecom2"], when)
+    touched(CUSTOMER_ROWS[CUST[key]["id"]], len(steps), steps[-1][3])
+# A chain renamed by its contact soon after its account was opened (the name before the change is kept).
+renamed_at = CUSTOMER_ROWS[CUST["comtamcali"]["id"]]["created_at"] + timedelta(days=1, hours=5)
+customer_change("comtamcali", "FULL_NAME", "Cơm tấm Cali", CUST["comtamcali"]["company"], CUST["comtamcali"]["user"],
+                renamed_at)
+touched(CUSTOMER_ROWS[CUST["comtamcali"]["id"]], 1, renamed_at)
+
+# ---------------------------------------------------------------------------- stock alerts (SCRUM-147/165)
+# What StockAlertEvaluator and the nightly AlertReconciler leave on this stock: a SKU is watched while it may be bought
+# again (ReplenishmentEligibility: ACTIVE variant of an APPROVED / PUBLISHED product); REORDER when usable on-hand
+# (AVAILABLE, not expired, reservations not subtracted) <= reorder_point, SAFETY when < safety_stock (thresholds of
+# section 4's inventory items). The first reconcile after the opening stock was put away found four SKUs that never had
+# stock: the two mooncake boxes are still low (open, two acknowledged by the planner), the straw and the canvas bag
+# closed NOT_PURCHASABLE at the reconcile after they were discontinued / blocked. No EXPIRING or EXPIRED alert: every
+# lot of the seed expires in 2027 (expiry-warning-days 30) and none ever ran out, so the sweep (ExpirySweeper) would
+# open none and close any it found.
+def thresholds_of(v):
+    return (20, 8) if "lot" in v["flags"] else (40, 15)   # reorder_point, safety_stock as set in section 4
+
+
+def usable_at(sku, t):
+    total = 0
+    for m in MOVES:
+        if m["sku"] == sku and m["occurred_at"] < t:
+            total += m["quantity"] if m["to_location_code"] and m["to_status"] == "AVAILABLE" else 0
+            total -= m["quantity"] if m["from_location_code"] and m["from_status"] == "AVAILABLE" else 0
+    return total
+
+
+def usable_now(sku):
+    return sum(s.on_hand for s in STOCK if s.sku == sku and s.status == "AVAILABLE"
+               and (s.expiry is None or s.expiry >= TODAY))
+
+
+def low(qty, v):
+    reorder, safety = thresholds_of(v)
+    return [kind for kind, crossed in (("REORDER", qty <= reorder), ("SAFETY", qty < safety)) if crossed]
+
+
+watched = [v for v in VARIANTS if v["vstatus"] == "ACTIVE" and v["pstatus"] in ("APPROVED", "PUBLISHED")]
+# When each SKU left its alert state on the opening receipts: the last of those is when the stock was in.
+first_above = []
+for v in watched:
+    for m in sorted((m for m in MOVES if m["sku"] == v["sku"]), key=lambda m: m["occurred_at"]):
+        if not low(usable_at(v["sku"], m["occurred_at"] + timedelta(seconds=1)), v):
+            first_above.append(m["occurred_at"])
+            break
+ALERTS_OPENED = reconcile_after(max(first_above))
+# Watched then, no longer purchasable now: when that changed (the product row, the variant history above).
+NOT_PURCHASABLE = {v["sku"]: gone_at for v in VARIANTS if v["product"] == gone[0]}
+NOT_PURCHASABLE[VARIANT_BLOCKED[0]] = VARIANT_BLOCKED[1]
+watched_then = watched + [VAR[sku] for sku in NOT_PURCHASABLE]
+low_then = sorted((v for v in watched_then if low(usable_at(v["sku"], ALERTS_OPENED), v)), key=lambda v: v["sku"])
+low_now = {v["sku"] for v in watched if low(usable_now(v["sku"]), v)}
+assert {v["sku"] for v in low_then} == low_now | set(NOT_PURCHASABLE), (low_then, low_now)
+assert all(not any(m["sku"] == v["sku"] for m in MOVES) for v in low_then), "an alerted SKU moved: observed qty changes"
+ACKED = {"HOP-TRUNGTHU-S": at(ALERTS_OPENED.date(), 8, 40)}   # the planner has seen these; the rest are still OPEN
+ALERT_ITEMS = {}   # kind -> [(alert id, sku)] announced together by the opening reconcile
+for v in low_then:
+    for kind in low(0, v):
+        aid = uid(f"alert:{kind}:{v['sku']}:{ALERTS_OPENED.isoformat()}")
+        ALERT_ITEMS.setdefault(kind, []).append((aid, v["sku"]))
+        ended = NOT_PURCHASABLE.get(v["sku"])
+        acked = ACKED.get(v["sku"])
+        add("inventory.stock_alert", id=aid, kind=kind, sku=v["sku"], warehouse_id=None, lot_number=None,
+            expiry_date=None, observed_qty=0, threshold_qty=thresholds_of(v)[0 if kind == "REORDER" else 1],
+            reservation_impaired=False, status="RESOLVED" if ended else "ACKNOWLEDGED" if acked else "OPEN",
+            opened_at=ALERTS_OPENED, last_observed_at=ALERTS_OPENED, acknowledged_by=U["kehoach"] if acked else None,
+            acknowledged_at=acked, ack_note="Hộp trung thu chỉ sản xuất theo đơn in, không giữ tồn; theo dõi khi có đơn"
+            if acked else None, resolved_at=reconcile_after(ended) if ended else None,
+            resolution="NOT_PURCHASABLE" if ended else None, version=(1 if ended else 0) + (1 if acked else 0))
+
+# ---------------------------------------------------------------------------- the bell (SCRUM-147, notification inbox)
+# One row per recipient, posted by the notification listeners with the vi texts of i18n/messages_vi.properties and
+# their dedupe keys. SYSTEM_ADMIN is also a recipient of stock alerts but the seed never refers to that account.
+#  - InventoryAlertMessages: one message per kind and warehouse for what the opening reconcile announced, to the
+#    INVENTORY_PLANNER (stock levels are system-wide); the planner read both that morning.
+#  - ProductionNotificationListener: the press held MACHINE_DOWN goes to the WAREHOUSE_MANAGER of its warehouse,
+#    unread ("today" is five days later).
+ALERT_TITLE = {"REORDER": "%d SKU chạm ngưỡng đặt lại hàng", "SAFETY": "%d SKU dưới mức tồn an toàn"}
+for kind, items in ALERT_ITEMS.items():
+    skus = [sku for _, sku in items]
+    body = "SKU: " + ", ".join(skus[:5]) + (f" và {len(skus) - 5} SKU khác" if len(skus) > 5 else "")
+    posted = ALERTS_OPENED + timedelta(seconds=3)
+    add("notification.user_notification", id=uid(f"inbox:{kind}:{ALERTS_OPENED.isoformat()}:kehoach"),
+        recipient_id=U["kehoach"], category="INVENTORY_ALERT", severity="WARN" if kind == "REORDER" else "CRITICAL",
+        title=ALERT_TITLE[kind] % len(items), body=body, link=f"/admin/inventory/alerts?kind={kind}",
+        source_type="STOCK_ALERT",
+        source_id=items[0][0] if len(items) == 1 else uid(f"alert-batch:{kind}:{ALERTS_OPENED.isoformat()}"),
+        dedupe_key=f"{kind}:ALL:{ALERTS_OPENED.date().isoformat()}", created_at=posted,
+        read_at=at(ALERTS_OPENED.date(), 8, 35))
+HOLD_LABEL = {"FILE_REJECTED": "file in không đạt", "BLANKS_SHORT": "thiếu phôi", "MACHINE_DOWN": "máy hỏng",
+              "WAITING_CUSTOMER": "chờ khách hàng", "SUBCONTRACTOR_LATE": "nhà gia công trễ hạn", "OTHER": "lý do khác"}
+for held in (p for p in PRODUCTION if p["row"]["status"] == "ON_HOLD"):
+    reason = held["row"]["hold_reason"]
+    assert reason != "BLANKS_SHORT", "a BLANKS_SHORT hold also says how many blanks (production.hold.blanks)"
+    audience = {"FILE_REJECTED": "SALES_STAFF", "WAITING_CUSTOMER": "SALES_STAFF",
+                "BLANKS_SHORT": "PROCUREMENT_STAFF"}.get(reason, "WAREHOUSE_MANAGER")
+    told = [name for name, _full, roles, whs, st in STAFF if audience in roles and st == "ACTIVE"
+            and (audience != "WAREHOUSE_MANAGER" or held["p"] in whs)]
+    held_at = held["times"]["ON_HOLD"]
+    for name in told:
+        add("notification.user_notification", id=uid(f"inbox:hold:{held['id']}:{name}"), recipient_id=U[name],
+            category="PRODUCTION_HOLD", severity="WARN",
+            title=f"Lệnh sản xuất {held['row']['order_number']} tạm dừng: {HOLD_LABEL[reason]}", body=None,
+            link=f"/admin/production/orders/{held['id']}", source_type="PRODUCTION_ORDER", source_id=held["id"],
+            dedupe_key=f"production-hold:{held['id']}:{reason}:{instant(held_at)}",
+            created_at=held_at + timedelta(seconds=2), read_at=None)
+
+
 # ============================================================================ emit
 ORDER = """
 identity.app_user identity.user_role
 warehouse.warehouse warehouse.zone warehouse.shelf warehouse.shelf_level warehouse.storage_location warehouse.bin
 warehouse.area warehouse.boundary warehouse.slotting_rule identity.user_warehouse identity.user_session
 notification.preference customer.segment customer.customer customer.address customer.credit_profile
+customer.customer_status_history customer.customer_change_history identity.portal_invitation
 product.brands product.categories product.attributes product.attribute_values product.category_attributes
 product.products product.product_categories product.product_attributes product.product_attribute_options
 product.product_descriptive_values product.variants product.variant_attribute_values product.media
 product.customization_templates product.print_areas
-procurement.suppliers procurement.supplier_contacts procurement.supplier_addresses procurement.supplier_items
+procurement.suppliers warehouse.subcontractor_site procurement.supplier_contacts procurement.supplier_addresses procurement.supplier_items
 procurement.supplier_item_prices procurement.approval_limits
+product.variant_sales_units product.product_change_log
 catalog.pricing_rule catalog.promotion catalog.product_listing catalog.catalog_entry
+catalog.customer_price catalog.customer_price_tier
 design.design_draft design.design_artifact design.design_decision design.design_snapshot
-production.sample_request ordering.approved_sample
 ordering.customer_order ordering.order_line ordering.order_status_history ordering.order_hold
 ordering.order_cancellation_request ordering.order_credit_check
+ordering.order_partial_shipment_decision ordering.order_delivery_mode_change
+ordering.quote ordering.quote_line ordering.quote_price_tier ordering.quote_status_history
+production.sample_request ordering.approved_sample
 production.production_order production.production_order_status_history production.production_qc_result
 procurement.replenishment_proposals
 procurement.purchase_orders procurement.purchase_order_revisions procurement.purchase_order_lines
@@ -2608,19 +4686,29 @@ procurement.purchase_order_line_revisions procurement.purchase_order_approvals p
 procurement.purchase_order_attachments procurement.replenishment_proposal_lines procurement.po_delivery_decision
 notification.po_delivery_control procurement.goods_receipts procurement.goods_receipt_lines
 procurement.qc_inspections procurement.supplier_invoices procurement.supplier_invoice_lines
-inventory.stock_item inventory.stock_reservation ordering.order_line_reservation ordering.order_line_production
+inventory.stock_item inventory.stock_reservation production.production_subcontract_receipt
+production.production_subcontract_hold production.production_subcontract_recall procurement.subcontract_settlement
+ordering.order_line_reservation ordering.order_line_production
 payment.payment ordering.order_payment payment.receivable payment.customer_transfer
-payment.transfer_allocation payment.refund
+payment.transfer_allocation
 fulfillment.wave fulfillment.pick fulfillment.pick_line fulfillment.pack fulfillment.design_verification
 fulfillment.shipment fulfillment.shipment_event fulfillment.package fulfillment.package_line fulfillment.package_scan
+ordering.order_shipment ordering.order_shipment_line
+fulfillment.load_plan fulfillment.load_plan_vehicle_type fulfillment.load_plan_package fulfillment.load_plan_vehicle
+fulfillment.load_placement fulfillment.load_estimate
 fulfillment.dispatch_load fulfillment.dispatch_load_shipment fulfillment.dispatch_load_package
 payment.cod_remittance payment.cod_remittance_line
-ordering.return_request ordering.return_request_line
-inventory.cycle_count inventory.cycle_count_line inventory.stock_adjustment production.production_scrap
+inventory.cycle_count inventory.cycle_count_line inventory.stock_adjustment
+inventory.stock_damage_report inventory.stock_damage_photo inventory.stock_damage_disposition
+inventory.stock_damage_supplier_shipment
+ordering.return_request ordering.return_request_line ordering.return_request_evidence
+ordering.return_request_discrepancy ordering.return_request_status_history payment.refund
+production.production_scrap
 inventory.transfer_order inventory.transfer_order_line
 warehouse.move_task warehouse.putaway_task inventory.stock_movement production.production_material_issue
-production.production_print_run
-chat.conversation chat.message notification.template notification.delivery_log platform.audit_log
+production.production_print_run inventory.stock_alert
+chat.conversation chat.message notification.template notification.delivery_log notification.user_notification
+platform.audit_log
 ordering.cart ordering.cart_line
 """.split()
 assert set(ORDER) >= set(ROWS), set(ROWS) - set(ORDER)
@@ -2643,8 +4731,9 @@ w(f"""-- =======================================================================
 --
 -- * One transaction: it loads completely or not at all, and refuses to run twice. A database holding an older
 --   version of this seed is reset first (deploy/README.md "Reset the database"), then migrated and loaded.
--- * The design files it names are in tools/db/seed/files/ (key = path), real files whose SHA-256 the rows carry:
---   upload them to the bucket too, or prepress, QC and packing refuse the designs as changed.
+-- * The design files and evidence photos it names are in tools/db/seed/files/ (key = path), real files whose
+--   SHA-256 the rows carry: upload them to the bucket too, or prepress, QC and packing refuse the designs as changed
+--   and the damage-report and return photos have nothing behind their links.
 --     local:  docker cp tools/db/seed/files stockflow-minio:/tmp/seed-files && docker exec stockflow-minio sh -c \\
 --               'mc alias set local http://localhost:9000 stockflow stockflow123 >/dev/null &&
 --                mc mirror --overwrite /tmp/seed-files local/stockflow && rm -rf /tmp/seed-files'
@@ -2731,25 +4820,10 @@ UPDATE catalog.catalog_entry e
                         WHERE s.sku = e.sku AND s.status = 'AVAILABLE' AND l.is_pickable), 0)
  WHERE e.created_by = 'seed';
 
--- Report read models, from the orders that were sold (not draft, not cancelled).
-INSERT INTO reporting.sales_daily_summary (id, day, orders_count, revenue, currency, created_at, created_by)
-SELECT md5('seed:report:day:' || d)::uuid, d, COUNT(*), SUM(o.total_amount), 'VND', now(), 'seed'
-  FROM (SELECT (o.placed_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS d, o.total_amount
-          FROM ordering.customer_order o
-         WHERE o.created_by = 'seed' AND o.status NOT IN ('DRAFT', 'CANCELLED')) o
- GROUP BY d
-ON CONFLICT (day) DO UPDATE SET orders_count = reporting.sales_daily_summary.orders_count + EXCLUDED.orders_count,
-                                revenue = reporting.sales_daily_summary.revenue + EXCLUDED.revenue;
-
-INSERT INTO reporting.product_sales_summary (id, sku, period, quantity_sold, revenue, created_at, created_by)
-SELECT md5('seed:report:sku:' || l.sku || ':' || p)::uuid, l.sku, p, SUM(l.quantity), SUM(l.quantity * l.unit_price),
-       now(), 'seed'
-  FROM (SELECT ol.*, to_char(o.placed_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM') AS p
-          FROM ordering.order_line ol JOIN ordering.customer_order o ON o.id = ol.order_id
-         WHERE o.created_by = 'seed' AND o.status NOT IN ('DRAFT', 'CANCELLED')) l
- GROUP BY l.sku, p
-ON CONFLICT (sku, period) DO UPDATE SET quantity_sold = reporting.product_sales_summary.quantity_sold + EXCLUDED.quantity_sold,
-                                        revenue = reporting.product_sales_summary.revenue + EXCLUDED.revenue;
+-- No report rows: since SCRUM-344 the application owns reporting.* (per-day rollups plus the processed_order_events
+-- ledger that makes them idempotent). Rows written here without the ledger would be counted twice by the first event
+-- of their day. On its next start the application rolls up every seeded order (SalesRollupBackfill: orders older than
+-- anything the ledger knows); POST /api/v1/reports/rebuild does the same by hand.
 
 -- Number sequences: the application's next number on a seeded day must not collide with a seeded one.
 INSERT INTO procurement.po_number_sequence (sequence_date, last_value)
@@ -2762,6 +4836,11 @@ SELECT to_date(split_part(order_number, '-', 2), 'YYYYMMDD'), MAX(split_part(ord
   FROM ordering.customer_order WHERE created_by = 'seed' GROUP BY 1
 ON CONFLICT (sequence_date) DO UPDATE SET last_value = GREATEST(ordering.order_number_sequence.last_value, EXCLUDED.last_value);
 
+INSERT INTO ordering.return_number_sequence (sequence_date, last_value)
+SELECT to_date(split_part(rma_number, '-', 2), 'YYYYMMDD'), MAX(split_part(rma_number, '-', 3)::bigint)
+  FROM ordering.return_request WHERE created_by = 'seed' GROUP BY 1
+ON CONFLICT (sequence_date) DO UPDATE SET last_value = GREATEST(ordering.return_number_sequence.last_value, EXCLUDED.last_value);
+
 INSERT INTO platform.document_sequence (document_type, sequence_date, last_value)
 SELECT split_part(n, '-', 1), to_date(split_part(n, '-', 2), 'YYYYMMDD'), MAX(split_part(n, '-', 3)::bigint)
   FROM (SELECT receipt_number AS n FROM procurement.goods_receipts WHERE created_by = 'seed'
@@ -2773,7 +4852,13 @@ SELECT split_part(n, '-', 1), to_date(split_part(n, '-', 2), 'YYYYMMDD'), MAX(sp
         UNION ALL SELECT rma_number FROM ordering.return_request WHERE created_by = 'seed'
         UNION ALL SELECT order_number FROM production.production_order WHERE created_by = 'seed'
         UNION ALL SELECT request_number FROM production.sample_request WHERE created_by = 'seed'
-        UNION ALL SELECT code FROM fulfillment.dispatch_load WHERE created_by = 'seed') s
+        UNION ALL SELECT quote_number FROM ordering.quote WHERE created_by = 'seed'
+        UNION ALL SELECT code FROM fulfillment.dispatch_load WHERE created_by = 'seed'
+        UNION ALL SELECT code FROM fulfillment.load_plan WHERE created_by = 'seed'
+        UNION ALL SELECT report_number FROM inventory.stock_damage_report WHERE created_by = 'seed'
+        UNION ALL SELECT d.record_number FROM inventory.stock_damage_disposition d
+                  JOIN inventory.stock_damage_report r ON r.id = d.damage_report_id
+                 WHERE r.created_by = 'seed' AND d.record_number IS NOT NULL) s
  GROUP BY 1, 2
 ON CONFLICT (document_type, sequence_date) DO UPDATE
    SET last_value = GREATEST(platform.document_sequence.last_value, EXCLUDED.last_value);

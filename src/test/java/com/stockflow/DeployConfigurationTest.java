@@ -33,6 +33,24 @@ class DeployConfigurationTest {
     }
 
     @Test
+    @DisplayName("SCRUM-352: the server gets the Resend settings; the dev server stays on SMTP until switched to Resend")
+    void theResendSettingsReachTheServer() throws Exception {
+        String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
+        String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
+        String dev = Files.readString(Path.of("src/main/resources/application-dev.yml"), StandardCharsets.UTF_8);
+
+        for (String variable : java.util.List.of("EMAIL_PROVIDER", "RESEND_API_KEY", "RESEND_FROM", "RESEND_REPLY_TO",
+                "RESEND_WEBHOOK_SECRET", "CUSTOMER_EMAIL_ENABLED")) {
+            assertThat(compose).as("compose passes %s", variable).contains(variable + ": ${" + variable + ":");
+            assertThat(application + dev).as("the application reads %s", variable).contains("${" + variable);
+        }
+        // Deployed on every push to develop: a server not yet given a Resend key must still start (on its Mailpit).
+        assertThat(dev).as("dev stays on SMTP unless told to use Resend").contains("provider: ${EMAIL_PROVIDER:smtp}")
+                .contains("from: ${RESEND_FROM:${MAIL_FROM:}}");
+        assertThat(compose).as("so does the deployed server").contains("EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}");
+    }
+
+    @Test
     @DisplayName("nginx lets an assistant answer run for its whole lease, unbuffered; every other location keeps its "
             + "timeouts")
     void theProxyDoesNotCutAnAnswer() throws Exception {

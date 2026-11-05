@@ -66,7 +66,7 @@ dữ liệu nào. Các biến thể này nằm trong bộ câu hỏi chuẩn (§
 Ai được dùng tool nào phụ thuộc vào quyền seed hiện có, không phải vào trợ lý. Danh sách đúng lúc chạy không
 được viết tay ở đâu cả: `GET /api/v1/assistant/capabilities` (§7) đọc nó từ chính khai báo của các tool, và
 ngữ cảnh của mỗi câu hỏi đưa đúng danh sách đó cho model (§3.3, §5.7). Bảng dưới chỉ là ảnh chụp theo quyền seed
-ngày 29/10/2026 (cộng `V20261029000200`), cũng là bảng mà `AssistantCapabilitiesIntegrationTest` dùng.
+ngày 29/10/2026 (cộng `V20261105000500`), cũng là bảng mà `AssistantCapabilitiesIntegrationTest` dùng.
 
 | Vai trò (data scope) | Tool dùng được | Ghi chú |
 |---|---|---|
@@ -78,10 +78,10 @@ ngày 29/10/2026 (cộng `V20261029000200`), cũng là bảng mà `AssistantCapa
 | ORDER_COORDINATOR (ALL) | findOrder, findOrders, getOrderPicking, findFulfillmentTasks, findProductionOrders, getCustomerPrice, getCustomerCredit, getSalesSummary, searchCatalog, searchKnowledge | `findOrder` kèm các dòng thiếu của task nhặt (§4.2); không có `customer-customers:READ` nên phải gõ đúng tên đầy đủ hoặc mã số thuế của khách, không được gợi ý danh sách |
 | ACCOUNTANT (ALL) | findOrder, findOrders, getCustomerCredit, getSalesSummary, searchCatalog, searchKnowledge | không tra được LSX; tên khách phải gõ đúng như điều phối |
 | QC_STAFF (WAREHOUSE) | getStockLevels, getStockLots, getOrderPicking, findFulfillmentTasks, findGoodsReceipts, findProductionOrders, searchCatalog, searchKnowledge | `getOrderPicking`: fulfillment cho người kiểm lại thiết kế thấy task của kho mình (`TaskAccess`); `findFulfillmentTasks` chỉ liệt kê task đang giữ chờ kiểm lại thiết kế; không thấy trạng thái đơn |
-| WAREHOUSE_STAFF (WAREHOUSE) | findExpiringLots, getStockLevels, getStockLots, traceLot, getOrderPicking, findFulfillmentTasks, findGoodsReceipts, findPurchaseOrders, findProductionOrders, searchCatalog, searchKnowledge | mở từ 29/10 (`V20261029000200`); `findFulfillmentTasks` chỉ có task giao cho chính mình; `getOrderPicking` thấy task của mình và task đã nhặt xong chờ đóng gói ở kho mình (`TaskAccess`); `findLowStock`, `proposeReorder` bị từ chối (số toàn công ty) |
-| PRODUCTION_STAFF (WAREHOUSE) | getStockLevels, getStockLots, findProductionOrders, searchCatalog, searchKnowledge | mở từ 29/10 (`V20261029000200`) |
+| WAREHOUSE_STAFF (WAREHOUSE) | findExpiringLots, getStockLevels, getStockLots, traceLot, getOrderPicking, findFulfillmentTasks, findGoodsReceipts, findPurchaseOrders, findProductionOrders, searchCatalog, searchKnowledge | mở từ 29/10 (`V20261105000500`); `findFulfillmentTasks` chỉ có task giao cho chính mình; `getOrderPicking` thấy task của mình và task đã nhặt xong chờ đóng gói ở kho mình (`TaskAccess`); `findLowStock`, `proposeReorder` bị từ chối (số toàn công ty) |
+| PRODUCTION_STAFF (WAREHOUSE) | getStockLevels, getStockLots, findProductionOrders, searchCatalog, searchKnowledge | mở từ 29/10 (`V20261105000500`) |
 
-Từ 29/10, WAREHOUSE_STAFF và PRODUCTION_STAFF mở được khung chat (`V20261029000200`, AQ-02). CUSTOMER không bao giờ
+Từ 29/10, WAREHOUSE_STAFF và PRODUCTION_STAFF mở được khung chat (`V20261105000500`, AQ-02). CUSTOMER không bao giờ
 có.
 
 ---
@@ -175,10 +175,10 @@ một reader giả.
 | `knowledge_source` | bản build nào đánh chỉ mục mỗi tài liệu lần cuối | để một bản build cũ khởi động sau không ghi đè quy định mới hơn (§6.2) |
 | `answer_feedback` | đánh giá của người dùng cho một câu trả lời (§7), thêm 29/10 | một dòng cho mỗi câu trả lời (`uk_answer_feedback_message`); `verdict` UP/DOWN, `reason` tối đa 500 ký tự; FK tới `message` ON DELETE CASCADE nên bị xóa cùng hội thoại; `ScopedEntity`, đọc với scope OWN; `message` vẫn chỉ ghi thêm |
 
-Migration: `V20261026000100__assistant_schema.sql`, `V20261026000200__assistant_grants.sql`,
-`V20261026000300__assistant_knowledge.sql`, và ngày 29/10 `V20261029000100__assistant_answer_feedback.sql`,
-`V20261029000200__assistant_floor_grants.sql` (cấp trợ lý cho WAREHOUSE_STAFF và PRODUCTION_STAFF, tăng
-`identity.app_role.version` của hai vai trò đó trong cùng file), `V20261029000300__assistant_knowledge_embedding.sql`.
+Migration: `V20261105000100__assistant_schema.sql`, `V20261105000200__assistant_grants.sql`,
+`V20261105000300__assistant_knowledge.sql`, và ngày 29/10 `V20261105000400__assistant_answer_feedback.sql`,
+`V20261105000500__assistant_floor_grants.sql` (cấp trợ lý cho WAREHOUSE_STAFF và PRODUCTION_STAFF, tăng
+`identity.app_role.version` của hai vai trò đó trong cùng file), `V20261105000600__assistant_knowledge_embedding.sql`.
 Chúng được viết cùng module, theo quyết định của chủ repo ngày 2026-10-24, ngoại lệ so với quy trình qua người giữ
 schema trong `docs/business-design/db-design/README.md` §1. Khi viết, ba migration đầu lớn hơn migration mới nhất của
 `develop` và của mọi PR đang mở (cao nhất lúc đó là `V20261025030200` của PR #195). Điều đó không còn đúng: ngày 28/10
@@ -190,7 +190,7 @@ migration mới nhất của `develop` là `V20261028003000`, nên cả sáu mig
 
 | Resource | Action | Cấp cho |
 |---|---|---|
-| `assistant-conversations` | `VIEW_PAGE`, `READ`, `CREATE` | WAREHOUSE_MANAGER, INVENTORY_PLANNER, PROCUREMENT_STAFF, ORDER_COORDINATOR, SALES_STAFF, QC_STAFF, ACCOUNTANT, SYSTEM_ADMIN; từ 29/10 cả WAREHOUSE_STAFF và PRODUCTION_STAFF (`V20261029000200`). **Không bao giờ** cấp cho CUSTOMER. |
+| `assistant-conversations` | `VIEW_PAGE`, `READ`, `CREATE` | WAREHOUSE_MANAGER, INVENTORY_PLANNER, PROCUREMENT_STAFF, ORDER_COORDINATOR, SALES_STAFF, QC_STAFF, ACCOUNTANT, SYSTEM_ADMIN; từ 29/10 cả WAREHOUSE_STAFF và PRODUCTION_STAFF (`V20261105000500`). **Không bao giờ** cấp cho CUSTOMER. |
 
 Có `assistant-conversations` chỉ mở được khung chat, `GET /api/v1/assistant/capabilities` và thẻ
 `GET /api/v1/assistant/today` (cả hai chỉ nói về chính người gọi; thẻ chỉ chạy các tool người gọi vốn được dùng),
@@ -929,7 +929,7 @@ hình nào của họ cho thấy trạng thái một đơn hay cho biết số �
 
 **Luồng nghiệp vụ (FEAT-9, 4/11): làm xong, mặc định tắt.** `stockflow.assistant.knowledge.flows`
 (`ASSISTANT_KNOWLEDGE_FLOWS`) bật thì 04c được đánh chỉ mục: 20 luồng `F-*`, 3 luồng ngoại lệ `X-*` và hai luồng nền
-tảng nhân viên dùng (`P-CHAT` đặt hàng hộ từ chat, `P-NOTI` gửi lại thông báo), kind `FLOW` (`V20261104000200` mở rộng
+tảng nhân viên dùng (`P-CHAT` đặt hàng hộ từ chat, `P-NOTI` gửi lại thông báo), kind `FLOW` (`V20261105000800` mở rộng
 `ck_knowledge_chunk_kind`); 197 đoạn cả kho (166 khi tắt). Bỏ `P-PERM` và `P-RPT`: chúng tả cách các service của thiết
 kế phân tán cũ đăng ký quyền và dựng read model (ADR-0005). Tắt thì đoạn luồng đã có bị xóa ở lần khởi động sau, và mô
 tả tool không nhắc tới luồng. Profile `test` bật, để bộ cắt, chỉ mục và các ca luồng của bộ câu hỏi chuẩn luôn được
@@ -1026,7 +1026,7 @@ transit" (trùng chữ "in") và vài đoạn máy trạng thái, không có BR-
   mức ngày là `ASSISTANT_QUOTA_EXHAUSTED`; 400–404 hoặc vector sai độ dài là `ASSISTANT_MISCONFIGURED`; 5xx, 429 theo
   phút, timeout là `ASSISTANT_UNAVAILABLE`.
 - **Lưu.** `assistant.knowledge_chunk` có thêm `embedding real[]`, `embedding_model`, `embedding_hash` (content hash của
-  đoạn văn khi tạo vector; `V20261029000300`). Chỉ vector đúng model, đúng số chiều, làm từ đúng nội dung hiện tại mới
+  đoạn văn khi tạo vector; `V20261105000600`). Chỉ vector đúng model, đúng số chiều, làm từ đúng nội dung hiện tại mới
   được so; đoạn đổi nội dung hay đổi model thì được embed lại. Lệnh UPDATE có điều kiện trên `content_hash`, nên vector
   của chữ cũ không bao giờ ghi lên chữ mới.
 - **Đánh chỉ mục.** Sau chỉ mục từ khóa, trên thread riêng (Spring chỉ báo sẵn sàng nhận traffic khi mọi listener khởi
@@ -1335,7 +1335,7 @@ câu trả lời HTTP có trước khi endpoint chạy.
   việc cục bộ, `@AuthenticatedUser` vẫn từ chối request không có người dùng (401), nên không profile nào để tool trả
   lời một client ẩn danh.
 - Guard: `@RequiresPermission(assistant-mcp, CREATE, OWN)` rồi `ScopeGuards.requireBackOffice`. Đây là quyền riêng của
-  MCP (P7, `V20261104000500`), **opt-in**: migration chỉ cấp cho SYSTEM_ADMIN. Doanh nghiệp chọn vai trò nào được dùng
+  MCP (P7, `V20261105001100`), **opt-in**: migration chỉ cấp cho SYSTEM_ADMIN. Doanh nghiệp chọn vai trò nào được dùng
   MCP trong ma trận quyền (AQ-17), vì một token sống tới 90 ngày và gửi những gì tool đọc tới nhà cung cấp model mà
   client của người dùng chọn. Quyền này chỉ mở endpoint, không cấp dữ liệu nào (§2, Phân quyền). Trước P7, mọi vai
   trò hỏi được khung chat đều dùng được MCP khi nó bật; nay phải cấp thêm.
@@ -1365,7 +1365,7 @@ bị từ chối ghi ở mức WARN, để một loạt lần dò quyền hiện
 
 - Không ghi tham số và kết quả: chúng có thể chứa chữ người gõ (tên nhà cung cấp, ghi chú đơn), và log đi xa hơn,
   giữ lâu hơn bản ghi của khung chat.
-- Từ 4/11 (`V20261104000100`), mỗi lần gọi qua MCP là một dòng `assistant.tool_call` với `channel = MCP`, `user_id`
+- Từ 4/11 (`V20261105000700`), mỗi lần gọi qua MCP là một dòng `assistant.tool_call` với `channel = MCP`, `user_id`
   của người gọi, tham số và kết quả, không có hội thoại; nó đi cùng job retention như hội thoại.
 
 **Token cá nhân cho MCP (P7, 05/11, ADR-0013).** Client AI được cài một lần và chạy nhiều tuần, còn token đăng nhập chỉ
@@ -1388,9 +1388,12 @@ sống 8 giờ và là cả phiên làm việc của người dùng. Token cá n
   bảo mật: sau khi dòng token bị xóa vẫn chứng minh được token đã từng có. Nhật ký ghi id của token, không bao giờ ghi
   token.
 - Thứ làm token dừng: chủ nó thu hồi, hết hạn, quản trị viên thu hồi hết token của người đó, khóa hay vô hiệu tài
-  khoản, rút `assistant-mcp:CREATE` khỏi vai trò; tất cả có hiệu lực từ lần gọi sau. **Đổi mật khẩu và "đăng xuất các
-  thiết bị khác" không làm token dừng**, giống personal access token của GitHub hay GitLab: người dùng tự thu hồi token
-  không còn tin. Khóa tài khoản vì đăng nhập sai nhiều lần cũng chặn luôn client MCP của người đó cho tới khi hết khóa.
+  khoản, rút `assistant-mcp:CREATE` khỏi vai trò; tất cả có hiệu lực từ lần gọi sau.
+  - Từ 5/11, **quản trị viên đặt lại mật khẩu**, hoặc **chủ tài khoản đổi mật khẩu kèm "đăng xuất các thiết bị khác"**,
+    thì mọi token bị thu hồi hẳn (`contracts.CredentialsReset`, ADR-0013 sửa đổi 5/11). Trong lúc chờ đổi mật khẩu bắt
+    buộc, client MCP nhận `403 PASSWORD_CHANGE_REQUIRED`.
+  - Đổi mật khẩu thường, không đăng xuất nơi khác, thì giữ token, giống personal access token của GitHub hay GitLab.
+  - Khóa tài khoản vì đăng nhập sai nhiều lần cũng chặn client MCP của người đó cho tới khi hết khóa.
 - Token là `sfmcp_` cộng 32 byte ngẫu nhiên dạng Base64 URL-safe (256 bit). Bảng `assistant.mcp_token` chỉ giữ SHA-256
   của nó, nên bản sao của bảng không mở được gì. Hash nhanh là đúng ở đây (khác mật khẩu): độ ngẫu nhiên của token đã
   làm việc mà hash chậm bù cho mật khẩu yếu.
@@ -1810,7 +1813,7 @@ quả của `findExpiringLots` thành hai phần và phần PO trễ ghép hai l
 bucket theo sức chứa của từng lần gọi, nên hai giới hạn trên một bucket sẽ cắt 10 câu hỏi một phút xuống còn một. Giao
 diện giữ thẻ cuối cùng cùng `generatedAt`; mở lại trong vòng một phút nhận 429 `RATE_LIMITED`.
 
-**Mỗi lần đọc là một dòng `assistant.tool_call`** (từ 4/11, `V20261104000100`): `channel = TODAY`, `user_id` của người
+**Mỗi lần đọc là một dòng `assistant.tool_call`** (từ 4/11, `V20261105000700`): `channel = TODAY`, `user_id` của người
 mở thẻ, tham số và kết quả, không có hội thoại. Việc ghi chạy trong transaction riêng (`ToolRunRecorder`); ghi lỗi thì
 log ERROR và thẻ vẫn trả về, vì tool đã chạy xong. Log vẫn có một dòng cho mỗi thẻ, không có dữ liệu.
 
@@ -1873,7 +1876,7 @@ người tiếp theo.
 - Mục được nhận ra bằng mã của chính nó: SKU; số đơn kèm lý do giữ (bị giữ lại vì lý do khác là một lần giữ mới); số
   PO.
 
-**Lúc nào không phải tin mới** (`assistant.watch_state`, `V20261104000400`). Ba trường hợp chỉ ghi nhận, không báo:
+**Lúc nào không phải tin mới** (`assistant.watch_state`, `V20261105001000`). Ba trường hợp chỉ ghi nhận, không báo:
 - lần nhìn đầu tiên một danh sách;
 - lần nhìn sau khi tầm nhìn của người dùng đổi (scope hay kho, ví dụ quản lý chuyển kho): tin cũ của kho mới không phải
   tin mới;
@@ -2419,7 +2422,7 @@ có quyền; báo cáo đánh giá.
 | Mã | Câu hỏi | Đề xuất |
 |---|---|---|
 | **AQ-01** | Có được gửi kết quả tool (tồn kho, đơn hàng, tên khách hàng) tới nhà cung cấp model bên ngoài không (kể cả tên và địa chỉ người dùng gõ trong ghi chú, vốn không bị che)? Nếu có, có thêm tên công ty khách vào `findOrder` và `traceLot` không (PRM-13)? Gói miễn phí của Gemini có được dùng ngoài dữ liệu demo không? Từ 29/10 còn: tên công ty khách qua `getCustomerPrice` và `getCustomerCredit`; ảnh phiếu giao hàng (§8.1); các đoạn của kho tri thức và từ khóa tìm kiếm khi bật embedding Gemini (§6.4); kết quả tool tới nhà cung cấp của client MCP (AQ-17). | Chỉ bật trong môi trường phát triển và demo cho tới khi chủ doanh nghiệp chấp nhận bằng văn bản. Với dữ liệu thật, chỉ dùng gói trả phí. Chưa trả tên khách trong `findOrder` và `traceLot` cho tới khi có câu trả lời; mô tả tool nói rõ là không có. Ảnh phiếu giao hàng cần một lần đồng ý riêng; endpoint của nó mặc định tắt. |
-| **AQ-02** | Những vai trò nào được cấp `assistant-conversations`? | Như §2. Không bao giờ CUSTOMER. **Đã cấp cho WAREHOUSE_STAFF và PRODUCTION_STAFF ngày 29/10** (`V20261029000200`, có tăng `app_role.version`; ROLE-10), chờ chủ repo xác nhận trước khi merge. Với tool hiện có, xưởng in dùng được tồn kho, lô, LSX và quy định; nhân viên kho gần như mọi tool tồn kho của kho mình, task của chính họ và phiếu nhập. `getOrderPicking` không còn khai báo `alsoRequiresAnyOf` nên dùng được cho task của người nhặt (§5.7). Trần câu hỏi (AQ-04) áp cho họ như mọi người; cân nhắc lại khi có nhiều người ở xưởng. Đọc phiếu giao hàng (§8.1) dùng quyền tạo phiếu nhập, không dùng quyền này. |
+| **AQ-02** | Những vai trò nào được cấp `assistant-conversations`? | Như §2. Không bao giờ CUSTOMER. **Đã cấp cho WAREHOUSE_STAFF và PRODUCTION_STAFF ngày 29/10** (`V20261105000500`, có tăng `app_role.version`; ROLE-10), chờ chủ repo xác nhận trước khi merge. Với tool hiện có, xưởng in dùng được tồn kho, lô, LSX và quy định; nhân viên kho gần như mọi tool tồn kho của kho mình, task của chính họ và phiếu nhập. `getOrderPicking` không còn khai báo `alsoRequiresAnyOf` nên dùng được cho task của người nhặt (§5.7). Trần câu hỏi (AQ-04) áp cho họ như mọi người; cân nhắc lại khi có nhiều người ở xưởng. Đọc phiếu giao hàng (§8.1) dùng quyền tạo phiếu nhập, không dùng quyền này. |
 | **AQ-03** | Giữ hội thoại bao lâu? | 90 ngày, cấu hình được. |
 | **AQ-04** | Ngân sách và trần cho mỗi người dùng? | 50 câu mỗi người mỗi ngày; điều chỉnh theo cột token sau hai tuần. |
 | **AQ-05** | Ai chịu trách nhiệm công thức đặt hàng lại (§8)? Khi người dùng không nói kỳ bán và số ngày phủ, dùng mặc định nào (PRM-9)? | INVENTORY_PLANNER duyệt; công thức ở `ReorderPolicy` kèm unit test. Với kỳ bán và số ngày phủ: hoặc hỏi lại, hoặc dùng mặc định do kế hoạch viên đặt (30/30 khớp ví dụ U2), và câu trả lời luôn nêu kỳ đã dùng. Câu hỏi gợi ý đề xuất nhập (§7) đã ghi sẵn 30 ngày bán, đủ dùng 30 ngày; đổi được trong `messages_vi.properties` mà không sửa code. |
@@ -2434,7 +2437,7 @@ có quyền; báo cáo đánh giá.
 | **AQ-14** | Kế hoạch viên có được thấy hàng đã đặt mua trong câu trả lời "mã nào dưới điểm đặt hàng" không (BIZ-9)? INVENTORY_PLANNER không có quyền PO, nên dễ nhờ mua hàng đặt trùng. | Nếu được: thêm `onOrder`, `awaitingApproval`, `nextExpectedDate` vào từng dòng của `findLowStock` (một lần gọi `OnOrderQueries` mỗi trang). Nếu không: mô tả tool cấm nói "cần đặt thêm", chỉ nói mã đã ở dưới điểm đặt và mua hàng nên xem PO đang mở. |
 | **AQ-15** | Thẻ "hôm nay" (§9, FEAT-7): mỗi vai trò thấy phần nào? Quản lý kho có bao giờ được thấy hàng thiếu toàn công ty hay đơn bị giữ không? Có thêm phần PO chờ duyệt cho người duyệt, PO bị nhà cung cấp từ chối, đơn giao thất bại, và ba câu tóm tắt bằng model (một request, tính vào trần) không? | Đã làm theo mặc định ngày 29/10: mỗi vai trò chỉ thấy phần mà tool của họ trả lời được, nên quản lý kho không thấy hai thứ kia, đúng như màn hình của họ. Các phần thêm chờ doanh nghiệp chọn. |
 | **AQ-16** | Có lưu đánh giá đúng/sai của người dùng cho từng câu trả lời không (FEAT-8)? Quản trị viên có được đọc câu hỏi của người khác (câu hỏi có thể nêu tên khách) không, và đánh giá có được giữ lâu hơn 90 ngày của hội thoại không? | Phần lưu đã làm ngày 29/10 (`answer_feedback`, xóa cùng hội thoại; chưa ai khác đọc được). Vẫn chờ doanh nghiệp quyết: resource riêng (`assistant-feedback`, chỉ cấp cho SYSTEM_ADMIN, có tăng `app_role.version`), bàn điều khiển, việc đọc câu hỏi của người khác, giữ đánh giá lâu hơn hội thoại, và việc biến một đánh giá thành bản nháp ca mới cho bộ câu hỏi chuẩn. |
-| **AQ-17** | Có bật MCP (§7) ở môi trường thật không? Qua MCP, kết quả tool đi tới nhà cung cấp model mà người dùng tự chọn trong client của họ (Claude Desktop với tài khoản cá nhân, một agent trong IDE), không phải nhà cung cấp doanh nghiệp đã chấp nhận ở AQ-01. Về quyền thì MCP không mở thêm gì: cùng token đó đã đọc được các API tương ứng. | Code đã làm theo đề xuất: mặc định tắt (`ASSISTANT_MCP_ENABLED=false`), chỉ profile `local` và `test` bật. Giữ tắt ở production cho tới khi AQ-01 được trả lời và doanh nghiệp chọn client và tài khoản được phép. Từ P7 (05/11) MCP có quyền riêng `assistant-mcp:CREATE`, opt-in: migration chỉ cấp cho SYSTEM_ADMIN (`V20261104000500`), doanh nghiệp chọn vai trò nào giữ nó. Client dùng token cá nhân chỉ mở endpoint MCP, thu hồi được từng cái (ADR-0013). |
+| **AQ-17** | Có bật MCP (§7) ở môi trường thật không? Qua MCP, kết quả tool đi tới nhà cung cấp model mà người dùng tự chọn trong client của họ (Claude Desktop với tài khoản cá nhân, một agent trong IDE), không phải nhà cung cấp doanh nghiệp đã chấp nhận ở AQ-01. Về quyền thì MCP không mở thêm gì: cùng token đó đã đọc được các API tương ứng. | Code đã làm theo đề xuất: mặc định tắt (`ASSISTANT_MCP_ENABLED=false`), chỉ profile `local` và `test` bật. Giữ tắt ở production cho tới khi AQ-01 được trả lời và doanh nghiệp chọn client và tài khoản được phép. Từ P7 (05/11) MCP có quyền riêng `assistant-mcp:CREATE`, opt-in: migration chỉ cấp cho SYSTEM_ADMIN (`V20261105001100`), doanh nghiệp chọn vai trò nào giữ nó. Client dùng token cá nhân chỉ mở endpoint MCP, thu hồi được từng cái (ADR-0013). |
 | **AQ-18** | Đọc ảnh phiếu giao hàng (§8.1) có cần trần riêng mỗi ngày không? Khi bật, nó chỉ bị giới hạn bởi rate limit 10 lượt một phút. | Công tắc riêng tách khỏi khung chat đã có (`ASSISTANT_RECEIPT_DRAFTS_ENABLED`, mặc định tắt), nên ảnh có thể bị từ chối dù AQ-01 chấp nhận kết quả tool. Về trần: đo token trong log hai tuần sau khi bật rồi mới đặt. |
 
 ---
@@ -2630,10 +2633,10 @@ trong lần `mvn test` đầy đủ sau khi gộp (mục "Kiểm chứng" dướ
   không kết nối được, leo thang một lần khi không ra câu trả lời dùng được; lịch sử được dựng lại cho đúng model được
   gọi (§3.1, §3.4, §11).
 - P3: bảng dưới câu trả lời (`ResultTable`), kiểm số lúc chạy (`AnswerNumbers`), câu hỏi gợi ý (`FollowUps`), lưu đánh
-  giá (`answer_feedback`, `V20261029000100`), và system prompt bảo model không chép dòng của bảng (§3.3, §7).
+  giá (`answer_feedback`, `V20261105000400`), và system prompt bảo model không chép dòng của bảng (§3.3, §7).
 - P4: bốn tool `getCustomerPrice`, `getCustomerCredit`, `findFulfillmentTasks`, `findGoodsReceipts`, `GoodsReceiptQueries`
-  trong `procurement :: api`, và trợ lý cho WAREHOUSE_STAFF, PRODUCTION_STAFF (`V20261029000200`) (§1, §4.2, §4.3).
-- P5: tìm theo nghĩa bằng embedding Gemini, lưu `real[]`, gộp RRF với tìm từ khóa (`V20261029000300`, §6.4).
+  trong `procurement :: api`, và trợ lý cho WAREHOUSE_STAFF, PRODUCTION_STAFF (`V20261105000500`) (§1, §4.2, §4.3).
+- P5: tìm theo nghĩa bằng embedding Gemini, lưu `real[]`, gộp RRF với tìm từ khóa (`V20261105000600`, §6.4).
 - P6: endpoint MCP `POST /api/v1/assistant/mcp` cho một AI client khác, dưới quyền của người đăng nhập (§7).
 - P7: thẻ "hôm nay" `GET /api/v1/assistant/today`, thay bản tin buổi sáng (§9).
 - P8: phiếu nhập nháp từ ảnh phiếu giao hàng, `POST /api/v1/assistant/receipt-drafts`, port `DocumentReader` (§8.1).
@@ -2667,9 +2670,10 @@ trong lần `mvn test` đầy đủ sau khi gộp (mục "Kiểm chứng" dướ
    `assistant.today.denied=Tài khoản của bạn không có quyền xem phần này.`).
 10. `PlaygroundSeed` tạo thêm hai tài khoản tầng xưởng, giá riêng, điều khoản tín dụng và công nợ của khách demo, và
     giao task nhặt của đơn bị giữ cho `play.nvkho.hcm` (§10.3).
-11. Ba migration của vòng này, `V20261029000100` (đánh giá), `V20261029000200` (quyền tầng xưởng, tăng
-    `identity.app_role.version`) và `V20261029000300` (embedding), cùng `V20261026000100`–`000300`, phải đổi số lên trên
-    migration mới nhất của `develop` trước khi mở PR; ngày 28/10 đó là `V20261028003000` (§2).
+11. Ba migration của vòng này: `V20261105000400` (đánh giá), `V20261105000500` (quyền tầng xưởng, tăng
+    `identity.app_role.version`) và `V20261105000600` (embedding). Ngày 5/11, khi gộp `develop`, cả 11 migration của trợ
+    lý được đổi số thành `V20261105000100`–`V20261105001100`, giữ nguyên thứ tự, vì migration mới nhất của `develop` lúc
+    đó là `V20261103000100`. Nếu `develop` có migration mới hơn trước khi PR được gộp, phải đổi số lần nữa (§2).
 12. ADR-0010 có mục sửa đổi ngày 29/10: chỉ gửi tool được dùng, tìm theo nghĩa, định tuyến model, MCP.
 
 **Rà soát nghiệp vụ sau khi gộp.** Bản gộp được rà soát thêm một lần theo nghiệp vụ thật, rồi phiên chính sửa. Những

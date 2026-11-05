@@ -78,7 +78,7 @@ class PlaygroundSeed {
             new Account("play.dieuphoi", "Điều phối đơn hàng (playground)", "ORDER_COORDINATOR", List.of()),
             new Account("play.ketoan", "Kế toán (playground)", "ACCOUNTANT", List.of()),
             new Account("play.qc", "Kiểm tra chất lượng HCM (playground)", "QC_STAFF", List.of("HCM")),
-            // The floor roles may open the assistant since V20261029000200.
+            // The floor roles may open the assistant since V20261105000500.
             new Account("play.nvkho.hcm", "Nhân viên kho HCM (playground)", "WAREHOUSE_STAFF", List.of("HCM")),
             new Account("play.xuong.hcm", "Nhân viên xưởng in HCM (playground)", "PRODUCTION_STAFF", List.of("HCM")));
 

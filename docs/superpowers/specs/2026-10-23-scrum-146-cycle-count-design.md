@@ -104,7 +104,9 @@ PLANNED ──first count entered──▶ IN_PROGRESS ──submit (every line 
 ## 5. Counting
 
 `inventory-cycle-counts:UPDATE`. On an assigned count only the assignee may count; a holder of `APPROVE` always
-may. Anyone else gets `403 CYCLE_COUNT_NOT_ASSIGNEE`.
+may. Anyone else gets `403 CYCLE_COUNT_NOT_ASSIGNEE`. On an assigned count a holder of `APPROVE` may not overwrite a
+line that another user already counted (`403 CYCLE_COUNT_LINE_COUNTED_BY_OTHER`, only the assignee corrects it):
+otherwise they would see the books, replace the assignee's figure and approve the variance it raises.
 
 | Endpoint | Body | Effect |
 |---|---|---|
@@ -132,9 +134,25 @@ Reads: `GET /{id}` is new and carries the lines. The list returns count headers 
 `countedCount` and — for whoever holds `APPROVE` — `varianceCount` (counted lines that differ from the books);
 it never carries lines, so a page stays the size of the page. On the count screen, whoever lacks `APPROVE`
 never sees `expected_qty`, the note, or the adjustments of a blind count, before or after submission — the
-delta would give the book quantity away. **Limitation:** that is the count screen only. `READ` on stock items,
-stock adjustments and the stock ledger still shows quantities; restricting those while a count is open is an
-owner decision, not part of this design.
+delta would give the book quantity away. **Blind across the system (owner decision 28/10).** The rule is not the count screen only: for a caller without
+`inventory-cycle-counts:APPROVE`, the books of a slot a count holds are hidden everywhere they can be read. A slot is
+held while its count is `PLANNED` / `IN_PROGRESS`, or `COMPLETED` with a `COUNT_VARIANCE` of the line still
+`PENDING_APPROVAL` (the same `BUSY` predicate the slot claim uses). Stock rows of the slot (`GET /stock-items?sku=`,
+`GET /warehouses/{id}/stock-items`, the balances of `GET /lots/{id}`) stay but carry no `onHand` / `reserved` /
+`available` and `hiddenDuringCount = true`; ledger lines (`GET /movements`, `GET /lots/{id}/movements`) and adjustments
+(`GET /adjustments`, `GET /adjustments/{id}` answers 404) of the slot are left out. SKU- and lot-level totals
+(`/stock-levels`, `/stock-items/atp`, the totals of a lot, alerts) stay: they are not a slot's.
+
+**Moves (owner decision MOVE-HELD, 28/10).** `POST /inventory/movements` (the manual move, `MOVE_TASK`) is refused with
+`409 STOCK_SLOT_UNDER_COUNT` (`details`: `locationCode` of the held end, `cycleCountNumber`) when the loose slot (bin, SKU,
+lot) it takes stock from, or puts it into, is held - the same `BUSY` predicate, asked through `CycleCountRepository.claim`.
+Putaway, picking, packing, receiving, transfers and adjustments are not covered.
+
+**Known limitation (owner decision BLIND-TOTALS, 28/10): accepted.** Because SKU and lot totals stay visible, a counter
+can still infer a held slot's book quantity: when the SKU sits in that one slot only, its total *is* the slot's books,
+and in general `total - sum(visible rows)` is what the held slots hold. Closing this would mean hiding the totals of
+every SKU with a held slot, which would also blind sales' available-to-promise. The team accepts the gap; the count
+screen, slot rows, ledger and adjustments stay hidden as described above.
 
 ## 6. Submission, adjustments, approval, recount (SCRUM-164)
 
@@ -173,7 +191,9 @@ A count variance is requested through a new `StockOperations.requestCountVarianc
 with the slot already chosen, so the (SKU, location, lot) ambiguity `findOne` refuses never arises.
 
 **Approval** stays where it is: the manager approves or rejects each adjustment on the existing adjustment
-screen (FE #26). No new approval endpoint. A `COUNT_VARIANCE` adjustment is never withdrawn, not even by the
+screen (FE #26). No new approval endpoint. Four eyes covers the counter as well as the requester: whoever entered a
+line's figure (`cycle_count_line.counted_by`) cannot approve or reject that line's `COUNT_VARIANCE` adjustment
+(`409 ADJUSTMENT_SELF_APPROVAL`), whoever submitted the count. A `COUNT_VARIANCE` adjustment is never withdrawn, not even by the
 submitter (`409 COUNT_VARIANCE_NOT_WITHDRAWABLE`): withdrawn, it would leave a completed count whose variance
 nobody decided. A typed-in adjustment request cannot claim `COUNT_VARIANCE` (`400 VALIDATION_FAILED`). A shortage that would cut into reserved units is refused by
 `StockItem.adjustBy` as today (`InsufficientStockException`): the manager reallocates or releases the holds first

@@ -14,8 +14,13 @@ public interface StockLedgerSearch {
     /**
      * @param location matches either side of a line — a move out of A and a move into A are both
      *                 "history of A"
+     * @param hideCountedSlots leave out the lines of slots a cycle count holds: summed, a bin's history is its book
+     *                 quantity, which a blind counter must not read (SCRUM-146)
      */
-    record Criteria(String sku, String location, StockMovement.MovementType type) {
+    record Criteria(String sku, String location, StockMovement.MovementType type, boolean hideCountedSlots) {
+        public Criteria(String sku, String location, StockMovement.MovementType type) {
+            this(sku, location, type, false);
+        }
     }
 
     Page<StockMovement> search(Criteria criteria, Pageable pageable);

@@ -30,14 +30,17 @@ public interface PrintRuns {
 
     /**
      * SCRUM-399/400. A QC round over every good unit waiting for it (BR-PRD-05: a SAMPLE against the print file,
-     * an ORDER against its approved sample, {@code approvedSampleId} on the order). Failed units are scrap.
+     * an ORDER against its approved sample, {@code approvedSampleId} on the order). The round names the sample it
+     * compared the goods with — exactly the order's approved round, still APPROVED for its design, or null when the
+     * order has none (SAMPLE, or a repeat design, BR-PRD-08) — and the sample is kept in the order's status history;
+     * otherwise {@code VALIDATION_FAILED}, or {@code CONFLICT} for a sample no longer approved. Failed units are scrap.
      * Enough good units: COMPLETED — an ORDER's goods go, still held for it, to {@code packingLocation} (or the
      * warehouse's only PACKING area) and {@code ProductionCompleted} is published; a SAMPLE's are written off as
      * SAMPLE and its round becomes READY. Short: READY, and the missing blanks are held now, or the order goes
      * ON_HOLD (BLANKS_SHORT) and purchasing is told.
      */
     ProductionOrders.Detail recordQc(CurrentUser user, UUID productionOrderId, int passed, int failed, String note,
-                                     String packingLocation);
+                                     String packingLocation, UUID approvedSampleId);
 
     /**
      * SCRUM-401. Cancel before printing (PENDING_PREPRESS, READY, MATERIAL_ISSUED, or ON_HOLD from one of them):
@@ -63,6 +66,23 @@ public interface PrintRuns {
     ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason,
                                    java.math.BigDecimal subcontractorFee, String subcontractorFeeReason,
                                    String packingLocation);
+
+    /**
+     * The job cannot reach its plan and the customer agreed with Sales to go without the rest (review 2026-10-25, S6):
+     * completed with the good units QC passed, or - with none - ended CANCELLED, its whole plan given up (a shortfall
+     * job of a subcontract the blanks never came for: its siblings made the rest). The sales order line gives up the
+     * units not made, within the agreement Sales recorded on it - the order is worth less, payment refunds what was
+     * paid above that; the goods go to packing as on any completion, the blanks not printed go back and the line's
+     * blanks never issued are let go. The Warehouse Manager's decision, saying why.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_PRODUCTION_TRANSITION} unless an order's
+     *         in-house job between rounds (READY, MATERIAL_ISSUED, or held from there; PENDING_PREPRESS with nothing
+     *         made) and fewer good units than planned, its order live; {@code VALIDATION_FAILED} without a reason;
+     *         {@code PRODUCTION_SHORTFALL_NOT_AGREED} beyond the customer's agreement; {@code ORDER_INVALID_TRANSITION}
+     *         when the order is no longer being printed for
+     */
+    ProductionOrders.Detail completeShort(CurrentUser user, UUID productionOrderId, String reason,
+                                          String packingLocation);
 
     /**
      * SCRUM-401, decision Q2. Stop once printing started (PRINTING, QC, or ON_HOLD from PRINTING): the run's

@@ -64,6 +64,7 @@ class InventoryLevelTest {
                         mock(com.stockflow.inventory.internal.domain.LocationDirectory.class),
                         mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class),
                         mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
+                        mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class),
                         java.time.Duration.ofMinutes(30));
         assertThat(tested.levelsOf(SKU).getFirst().atp()).isEqualTo(20);
         Mockito.verify(clock, Mockito.times(1)).instant();
@@ -85,6 +86,7 @@ class InventoryLevelTest {
                         mock(com.stockflow.inventory.internal.domain.LocationDirectory.class),
                         mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class),
                     mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
+                    mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class),
                         java.time.Duration.ofMinutes(30));
 
     private static StockLevelLine line(
@@ -109,6 +111,24 @@ class InventoryLevelTest {
         assertThat(levels).extracting(StockLevel::warehouseCode).containsExactly("HCM", "HN");
         assertThat(levels.get(0)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HCM", 3, 3, 1, 0, 2));
         assertThat(levels.get(1)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HN", 22, 15, 4, 0, 11));
+    }
+
+    @Test
+    @DisplayName("allocations are shown apart from the other holds of their warehouse; ATP is unchanged")
+    void allocatedIsSplitFromReserved() {
+        when(repository.findLevelLinesBySku(SKU))
+                .thenReturn(
+                        List.of(
+                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
+                                line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 2),
+                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+        when(repository.findAllocatedBySku(SKU))
+                .thenReturn(java.util.Map.of("HN-A01-2-03", 3, "HN-A01-2-04", 2));
+
+        List<StockLevel> levels = service.levelsOf(SKU);
+
+        assertThat(levels.get(0)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HCM", 3, 3, 1, 0, 2));
+        assertThat(levels.get(1)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HN", 15, 15, 1, 5, 9));
     }
 
     @Test

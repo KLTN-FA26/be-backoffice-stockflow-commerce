@@ -62,6 +62,8 @@ class IdentitySessionServiceTest {
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private final LoginAttempts loginAttempts = mock(LoginAttempts.class);
     private final UserJpaRepository userRows = mock(UserJpaRepository.class);
+    private final org.springframework.context.ApplicationEventPublisher events =
+            mock(org.springframework.context.ApplicationEventPublisher.class);
     private IdentityServiceImpl service;
 
     private final UUID userId = UUID.randomUUID();
@@ -74,12 +76,13 @@ class IdentitySessionServiceTest {
                 encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
                 () -> java.util.Optional.of("test"), userRows, mock(PrivilegeGuard.class),
                 loginAttempts, mock(UserWarehouseJpaRepository.class),
-                mock(com.stockflow.warehouse.api.WarehouseService.class), TTL);
+                mock(com.stockflow.warehouse.api.WarehouseService.class),
+                mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), events, TTL);
     }
 
     private User user(UserStatus status) {
         return new User(new UserId(userId), "jane", "jane@example.com", "{bcrypt}hash", "Jane", status,
-                null, false, 0, null, 0, NOW, "seed");
+                null, false, null, 0, null, 0, NOW, "seed");
     }
 
     @Test
@@ -232,6 +235,82 @@ class IdentitySessionServiceTest {
         assertThat(ended).isEqualTo(2);
     }
 
+    private User forcedUser(java.time.Instant temporaryPasswordSetAt) {
+        return new User(new UserId(userId), "jane", "jane@example.com", "{bcrypt}hash", "Jane", UserStatus.ACTIVE,
+                null, true, temporaryPasswordSetAt, 0, null, 0, NOW, "seed");
+    }
+
+    @Test
+    void aForcedChangeEndsEveryOtherSessionEvenWithoutTheTick() {
+        UUID current = UUID.randomUUID();
+        when(users.findById(new UserId(userId))).thenReturn(Optional.of(forcedUser(NOW.minusSeconds(3600))));
+        when(encoder.matches("Current-pw1", "{bcrypt}hash")).thenReturn(true);
+        when(sessions.revokeLive(userId, current, NOW, SessionEndReason.PASSWORD_CHANGED)).thenReturn(3);
+
+        int ended = service.changePassword(
+                new ChangePasswordCommand(userId, current, "Current-pw1", "Abcdefgh12", false));
+
+        assertThat(ended).isEqualTo(3);
+        var saved = ArgumentCaptor.forClass(User.class);
+        verify(users).save(saved.capture());
+        assertThat(saved.getValue().mustChangePassword()).isFalse();
+        assertThat(saved.getValue().temporaryPasswordSetAt()).isNull();
+        // the current session is the one passed as "keep": it is never revoked
+        verify(sessions).revokeLive(userId, current, NOW, SessionEndReason.PASSWORD_CHANGED);
+        // and the personal MCP tokens go with the other sessions (ADR-0013)
+        verify(events).publishEvent(new com.stockflow.contracts.CredentialsReset(userId,
+                com.stockflow.contracts.CredentialsReset.Cause.CHANGED_SIGNING_OUT_ELSEWHERE, NOW));
+    }
+
+    @Test
+    void aPlainChangeKeepsTheOtherSessionsAndThePersonalTokens() {
+        UUID current = UUID.randomUUID();
+        when(users.findById(new UserId(userId))).thenReturn(Optional.of(user(UserStatus.ACTIVE)));
+        when(encoder.matches("Current-pw1", "{bcrypt}hash")).thenReturn(true);
+
+        int ended = service.changePassword(
+                new ChangePasswordCommand(userId, current, "Current-pw1", "Abcdefgh12", false));
+
+        assertThat(ended).isZero();
+        verify(sessions, never()).revokeLive(any(), any(), any(), any());
+        verify(events, never()).publishEvent(any(Object.class));
+    }
+
+    @Test
+    void loginWithAnExpiredTemporaryPasswordIsRefusedAfterThePasswordWasChecked() {
+        when(users.findByUsername("jane")).thenReturn(Optional.of(forcedUser(NOW.minus(User.TEMPORARY_PASSWORD_VALIDITY))));
+        when(encoder.matches("Passw0rd!x", "{bcrypt}hash")).thenReturn(true);
+
+        assertThatThrownBy(() -> service.login(new LoginCommand("jane", "Passw0rd!x", "10.0.0.7", "Firefox")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.TEMPORARY_PASSWORD_EXPIRED));
+        verify(sessions, never()).save(any());
+    }
+
+    @Test
+    void loginWithAWrongPasswordOnAnExpiredAccountStaysTheGenericAnswer() {
+        when(users.findByUsername("jane")).thenReturn(Optional.of(forcedUser(NOW.minus(User.TEMPORARY_PASSWORD_VALIDITY))));
+        when(encoder.matches("nope", "{bcrypt}hash")).thenReturn(false);
+
+        assertThatThrownBy(() -> service.login(new LoginCommand("jane", "nope", "10.0.0.7", "Firefox")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.UNAUTHORIZED));
+    }
+
+    @Test
+    void loginOfAForcedAccountReportsTheFlagInTheTokenResponse() {
+        when(users.findByUsername("jane")).thenReturn(Optional.of(forcedUser(NOW.minusSeconds(60))));
+        when(encoder.matches("Passw0rd!x", "{bcrypt}hash")).thenReturn(true);
+        when(users.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(sessions.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(jwtEncoder.encode(any())).thenReturn(
+                Jwt.withTokenValue("signed").header("alg", "RS256").subject("x").build());
+
+        var token = service.login(new LoginCommand("jane", "Passw0rd!x", "10.0.0.7", "Firefox"));
+
+        assertThat(token.mustChangePassword()).isTrue();
+    }
+
     @Test
     void grantingARoleEndsTheUsersSessionsButRegrantingDoesNot() {
         var role = new RoleJpaEntity(UUID.randomUUID(), "SALES_STAFF", "Sales", null);
@@ -270,7 +349,8 @@ class IdentitySessionServiceTest {
                     encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
                     () -> java.util.Optional.of("test"), mock(UserJpaRepository.class), mock(PrivilegeGuard.class),
                     loginAttempts, mock(UserWarehouseJpaRepository.class),
-                    mock(com.stockflow.warehouse.api.WarehouseService.class), bad)).isInstanceOf(IllegalArgumentException.class);
+                    mock(com.stockflow.warehouse.api.WarehouseService.class),
+                    mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), events, bad)).isInstanceOf(IllegalArgumentException.class);
         }
     }
 

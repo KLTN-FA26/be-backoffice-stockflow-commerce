@@ -1,5 +1,7 @@
 package com.stockflow.common.security;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.common.i18n.Messages;
 import io.micrometer.observation.ObservationRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.ObjectProvider;
@@ -150,7 +152,9 @@ public class ResourceServerSecurityConfig {
             StockflowJwtAuthenticationConverter converter, JwtDecoder jwtDecoder,
             ObjectProvider<PersonalTokens> personalTokens, RunAs runAs,
             ObjectProvider<AuthenticationEventPublisher> events,
-            ObjectProvider<ObservationRegistry> observations) throws Exception {
+            ObjectProvider<ObservationRegistry> observations,
+            PasswordChangeRequirement passwordChange, ObjectMapper objectMapper, Messages messages)
+            throws Exception {
         return http
                 // Stateless JWT: there is no session cookie for an attacker to ride, so CSRF
                 // protection buys nothing and only breaks the API clients.
@@ -180,6 +184,9 @@ public class ResourceServerSecurityConfig {
                         // A Sales-invited contact has no password yet; the invitation token in the
                         // body is the credential (SCRUM-450). POST only: nothing else lives there.
                         .requestMatchers(HttpMethod.POST, "/api/v1/customers/portal-activation").permitAll()
+                        // The mail provider's delivery reports (SCRUM-352): it cannot hold a token, so its Svix
+                        // signature is the credential, checked by the endpoint. POST only.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/notifications/webhooks/resend").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .authenticationManagerResolver(authenticationManagers(jwtDecoder, converter,
@@ -191,6 +198,10 @@ public class ResourceServerSecurityConfig {
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
+                // After the token is read and its session checked: only a signed-in caller can be forced to
+                // change a password, and it must run before any controller does (SCRUM-474 FIRST-LOGIN).
+                .addFilterAfter(new PasswordChangeGateFilter(passwordChange, authenticationEntryPoint,
+                        objectMapper, messages), BearerTokenAuthenticationFilter.class)
                 .build();
     }
 

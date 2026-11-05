@@ -160,6 +160,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "remainder_fee_paid_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal remainderFeePaidAmount = java.math.BigDecimal.ZERO;
 
+    /** V20261102030100: the value of the units closed out of the order; what "paid in full" is measured against. */
+    @Column(name = "closed_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal closedAmount = java.math.BigDecimal.ZERO;
+
     @Column(name = "awaiting_production", nullable = false)
     private boolean awaitingProduction;
 
@@ -209,6 +213,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     /** V20261022001400 (SCRUM-392): goods first left on a load plan's vehicle (no cancellation from here). */
     @Column(name = "goods_left_at")
     private Instant goodsLeftAt;
+
+    /** V20261101020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
+    @Column(name = "replaces_return_request_id", updatable = false)
+    private UUID replacesReturnRequestId;
 
     /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
     @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
@@ -353,6 +361,11 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.remainderFeePaidAmount = paid == null ? java.math.BigDecimal.ZERO : paid;
     }
 
+    public void applyClosedAmount(java.math.BigDecimal closed) {
+        this.closedAmount = closed == null ? java.math.BigDecimal.ZERO : closed;
+    }
+
+    public java.math.BigDecimal getClosedAmount() { return closedAmount; }
     public java.math.BigDecimal getRemainderFeeAmount() { return remainderFeeAmount; }
     public java.math.BigDecimal getRemainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
     public java.math.BigDecimal getRemainderFeePaidAmount() { return remainderFeePaidAmount; }
@@ -415,6 +428,13 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public void applyGoodsLeft(Instant at) {
         this.goodsLeftAt = at;
     }
+
+    /** Written on insert only (the column is not updatable): an order replaces a return from the day it is placed. */
+    public void applyReplacement(UUID returnRequestId) {
+        this.replacesReturnRequestId = returnRequestId;
+    }
+
+    public UUID getReplacesReturnRequestId() { return replacesReturnRequestId; }
 
     public Instant getGoodsLeftAt() { return goodsLeftAt; }
 

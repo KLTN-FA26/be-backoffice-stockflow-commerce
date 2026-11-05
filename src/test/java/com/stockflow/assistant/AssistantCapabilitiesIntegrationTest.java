@@ -64,7 +64,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>{@link #GRANTED} is the matrix of the seeded grants for the tools that existed when it was last brought up to date
  * (29/10/2026: the customer price and credit tools, the pick-task and goods-receipt queues, and the two floor roles
- * V20261029000200 opened the assistant to). A tool added later is still covered by the context and the enforcement
+ * V20261105000500 opened the assistant to). A tool added later is still covered by the context and the enforcement
  * cases, which compare against the endpoint's own answer; add it to the tables when its grants are decided.</p>
  */
 @SecuredIntegrationTest
@@ -122,7 +122,7 @@ class AssistantCapabilitiesIntegrationTest {
 
     /**
      * The tools of {@link #KNOWN} each seeded persona may use (identity.role_permission, 28/10/2026, plus
-     * V20261029000200).
+     * V20261105000500).
      */
     private static final Map<Persona, Set<String>> GRANTED = granted();
 
@@ -175,7 +175,7 @@ class AssistantCapabilitiesIntegrationTest {
         granted.put(new Persona(Role.QC_STAFF, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
                 "findProductionOrders", "getOrderPicking", "getStockLevels", "getStockLots", "searchCatalog",
                 "searchKnowledge"));
-        // V20261029000200: a picker's own tasks, through fulfillment's rule.
+        // V20261105000500: a picker's own tasks, through fulfillment's rule.
         granted.put(new Persona(Role.WAREHOUSE_STAFF, true), Set.of("findExpiringLots", "findFulfillmentTasks",
                 "findGoodsReceipts", "findPendingAdjustments", "findProductionOrders", "findPurchaseOrders",
                 "findShipments", "getOrderPicking", "getStockLevels", "getStockLots", "searchCatalog",

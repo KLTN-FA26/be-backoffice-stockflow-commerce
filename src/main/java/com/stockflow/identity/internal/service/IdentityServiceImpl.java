@@ -14,6 +14,10 @@ import com.stockflow.identity.api.StaffUser;
 import com.stockflow.identity.api.UpdateRoleCommand;
 import com.stockflow.identity.api.UpdateUserCommand;
 import com.stockflow.identity.api.UserStatusChange;
+import com.stockflow.identity.api.UserStatusChangeEntry;
+import com.stockflow.identity.internal.domain.StatusChangeReason;
+import com.stockflow.identity.internal.entity.UserStatusChangeJpaEntity;
+import com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository;
 import com.stockflow.identity.internal.domain.UserStatus;
 import com.stockflow.identity.internal.entity.UserJpaEntity;
 import com.stockflow.identity.internal.repository.UserJpaRepository;
@@ -22,6 +26,7 @@ import com.stockflow.identity.internal.entity.UserWarehouseJpaEntity;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.Roles;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Sort;
 import com.stockflow.identity.api.IdentityService;
@@ -59,6 +64,7 @@ import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.RoleMatrixAssembler;
 import com.stockflow.common.security.RoleMatrixView;
 import com.stockflow.common.security.SessionValidator;
+import com.stockflow.contracts.CredentialsReset;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.AuditorAware;
 
@@ -127,6 +133,8 @@ class IdentityServiceImpl implements IdentityService {
     private final LoginAttempts loginAttempts;
     private final UserWarehouseJpaRepository userWarehouses;
     private final WarehouseService warehouses;
+    private final UserStatusChangeJpaRepository statusChanges;
+    private final ApplicationEventPublisher events;
 
     private static final SortWhitelist USER_SORT =
             SortWhitelist.of("username", "fullName", "status", "lastLoginAt", "createdAt")
@@ -152,7 +160,8 @@ class IdentityServiceImpl implements IdentityService {
                         UserSessionJpaRepository sessions, RoleAuthorizationCache authorizationCache,
                         AuditorAware<String> auditor, UserJpaRepository users, PrivilegeGuard guard,
                         LoginAttempts loginAttempts, UserWarehouseJpaRepository userWarehouses,
-                        WarehouseService warehouses,
+                        WarehouseService warehouses, UserStatusChangeJpaRepository statusChanges,
+                        ApplicationEventPublisher events,
                         @Value("${stockflow.security.token-ttl:PT8H}") Duration tokenTtl) {
         if (tokenTtl == null || tokenTtl.isZero() || tokenTtl.isNegative()
                 || tokenTtl.compareTo(MAX_TOKEN_TTL) > 0) {
@@ -176,6 +185,8 @@ class IdentityServiceImpl implements IdentityService {
         this.loginAttempts = loginAttempts;
         this.userWarehouses = userWarehouses;
         this.warehouses = warehouses;
+        this.statusChanges = statusChanges;
+        this.events = events;
         this.tokenTtl = tokenTtl;
         this.dummyPasswordHash = passwordEncoder.encode(Identifiers.newId().toString());
     }
@@ -587,15 +598,29 @@ class IdentityServiceImpl implements IdentityService {
             userWarehouses.findByUserIdIn(ids).forEach(row -> warehousesByUser
                     .computeIfAbsent(row.getUserId(), id -> new java.util.ArrayList<>()).add(row.getWarehouseId()));
         }
+        Map<UUID, UserStatusChangeEntry> latestByUser = new java.util.HashMap<>();
+        if (!ids.isEmpty()) {
+            statusChanges.findLatestOf(ids).forEach(row -> latestByUser.put(row.getUserId(), statusChangeOf(row)));
+        }
         return Pages.toResponse(page, user -> staffUserOf(user, rolesByUser.getOrDefault(user.getId(), List.of()),
-                warehousesByUser.getOrDefault(user.getId(), List.of())));
+                warehousesByUser.getOrDefault(user.getId(), List.of()), latestByUser.get(user.getId())));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<UUID> roleIdsOf(UUID userId) {
+        if (userId == null) {
+            return List.of();
+        }
+        return userRoles.findByUserId(userId).stream().map(UserRoleJpaEntity::getRoleId).toList();
     }
 
     @Override
     @Transactional(readOnly = true)
     public StaffUser user(UUID userId) {
         return staffUserOf(requireAccount(userId), codesOf(rolesOf(new UserId(userId))),
-                userWarehouses.findByUserId(userId).stream().map(UserWarehouseJpaEntity::getWarehouseId).toList());
+                userWarehouses.findByUserId(userId).stream().map(UserWarehouseJpaEntity::getWarehouseId).toList(),
+                statusChanges.findLatestOf(userId).map(IdentityServiceImpl::statusChangeOf).orElse(null));
     }
 
     @Override
@@ -640,7 +665,7 @@ class IdentityServiceImpl implements IdentityService {
             requireStrong(password);
         }
         User saved = userRepository.save(User.createStaff(Identifiers.newId(), username, email,
-                passwordEncoder.encode(password), blankToNull(command.fullName()), true));
+                passwordEncoder.encode(password), blankToNull(command.fullName()), true, clock.instant()));
         UUID userId = saved.id().value();
         userRoles.saveAll(granted.stream()
                 .map(role -> new UserRoleJpaEntity(Identifiers.newId(), userId, role.getId()))
@@ -675,10 +700,17 @@ class IdentityServiceImpl implements IdentityService {
     }
 
     @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "user", resourceId = "#userId")
-    public StaffUser changeUserStatus(UUID userId, UserStatusChange change) {
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "user", resourceId = "#userId",
+            details = "{change: #change.name(), reason: #reason}")
+    public StaffUser changeUserStatus(UUID userId, UserStatusChange change, String reason) {
+        String why = StatusChangeReason.require(reason);
         requireStaffAccount(userId);
         User user = loadUser(userId);
+        UserStatus before = user.status();
+        if (changesNothing(user, change, clock.instant())) {
+            throw new BusinessException(ErrorCode.USER_STATUS_UNCHANGED,
+                    "Account %s is already %s: %s changes nothing".formatted(userId, before, change));
+        }
         boolean takesAccess = change == UserStatusChange.LOCK || change == UserStatusChange.DISABLE;
         if (takesAccess && user.status() == com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
             refuseLastSystemAdmin(userId);
@@ -690,12 +722,43 @@ class IdentityServiceImpl implements IdentityService {
             case ENABLE -> user.enable();
         }
         userRepository.save(user);
+        Optional<com.stockflow.common.security.CurrentUser> actor = guard.actor();
+        statusChanges.save(new UserStatusChangeJpaEntity(Identifiers.newId(), userId, change.name(),
+                before.name(), user.status().name(), why, actor.map(com.stockflow.common.security.CurrentUser::userId).orElse(null),
+                actor.map(com.stockflow.common.security.CurrentUser::username).orElse("system"), clock.instant()));
         if (change == UserStatusChange.LOCK) {
             sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_LOCKED);
         } else if (change == UserStatusChange.DISABLE) {
             sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_DISABLED);
         }
         return user(userId);
+    }
+
+    /**
+     * True when the account already is where the action would put it, so the action would only add a history
+     * row that says nothing happened (SCRUM-474 LOCK-NOOP, owner decision 02/11/2026). Unlocking an active
+     * account is not "nothing" while a wrong-password lockout is running: unlock ends that lock early.
+     */
+    private static boolean changesNothing(User user, UserStatusChange change, Instant now) {
+        return switch (change) {
+            case LOCK -> user.status() == UserStatus.LOCKED;
+            case UNLOCK -> user.status() == UserStatus.ACTIVE && !user.isTemporarilyLocked(now);
+            case DISABLE -> user.status() == UserStatus.DISABLED;
+            case ENABLE -> user.status() == UserStatus.ACTIVE;
+        };
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<UserStatusChangeEntry> statusHistory(UUID userId, int page, int size) {
+        requireAccount(userId);
+        return Pages.toResponse(statusChanges.findByUserIdOrderByChangedAtDescIdDesc(userId, Pages.of(page, size)),
+                IdentityServiceImpl::statusChangeOf);
+    }
+
+    private static UserStatusChangeEntry statusChangeOf(UserStatusChangeJpaEntity row) {
+        return new UserStatusChangeEntry(row.getId(), UserStatusChange.valueOf(row.getAction()), row.getFromStatus(),
+                row.getToStatus(), row.getReason(), row.getActorId(), row.getActorUsername(), row.getChangedAt());
     }
 
     /**
@@ -758,9 +821,11 @@ class IdentityServiceImpl implements IdentityService {
             requireStrong(password);
         }
         User user = loadUser(userId);
-        user.resetPassword(passwordEncoder.encode(password));
+        user.resetPassword(passwordEncoder.encode(password), clock.instant());
         userRepository.save(user);
         int ended = sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.PASSWORD_RESET);
+        // The sessions end here; credentials held elsewhere (personal MCP tokens) end with this event (ADR-0013).
+        events.publishEvent(new CredentialsReset(userId, CredentialsReset.Cause.ADMINISTRATOR_RESET, clock.instant()));
         return new PasswordReset(temporary, ended);
     }
 
@@ -827,10 +892,11 @@ class IdentityServiceImpl implements IdentityService {
         return held.stream().map(RoleJpaEntity::getCode).sorted().toList();
     }
 
-    private static StaffUser staffUserOf(UserJpaEntity user, List<String> roleCodes, List<UUID> warehouseIds) {
+    private static StaffUser staffUserOf(UserJpaEntity user, List<String> roleCodes, List<UUID> warehouseIds,
+                                         UserStatusChangeEntry latestStatusChange) {
         return new StaffUser(user.getId(), user.getUsername(), user.getEmail(), user.getFullName(),
                 user.getStatus().name(), roleCodes, warehouseIds, user.isMustChangePassword(), user.getLockedUntil(),
-                user.getLastLoginAt(), user.getCreatedAt(), user.getCreatedBy(), user.getVersion());
+                user.getLastLoginAt(), user.getCreatedAt(), user.getCreatedBy(), latestStatusChange, user.getVersion());
     }
 
     private static String blankToNull(String value) {
@@ -870,6 +936,15 @@ class IdentityServiceImpl implements IdentityService {
         }
         return users.findStaffWithRolesFor(roleCodes, warehouseId).stream()
                 .map(user -> new StaffContact(user.getId(), user.getEmail())).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StaffContact> notificationRecipientsHolding(String permission, UUID warehouseId) {
+        if (permission == null || permission.isBlank()) {
+            return List.of();
+        }
+        return notificationRecipients(java.util.Set.copyOf(roles.findCodesGranting(permission.strip())), warehouseId);
     }
 
     @Override
@@ -934,7 +1009,7 @@ class IdentityServiceImpl implements IdentityService {
         UserSessionJpaEntity session = sessions.save(new UserSessionJpaEntity(Identifiers.newId(),
                 user.id().value(), issuedAt, issuedAt.plus(tokenTtl), clientAddress, userAgent));
         return new TokenResponse(issueToken(user, grantedRoles, session),
-                "Bearer", tokenTtl.toSeconds());
+                "Bearer", tokenTtl.toSeconds(), user.mustChangePassword());
     }
 
     @Override
@@ -991,12 +1066,19 @@ class IdentityServiceImpl implements IdentityService {
         if (passwordEncoder.matches(command.newPassword(), user.passwordHash())) {
             throw new BusinessException(ErrorCode.PASSWORD_UNCHANGED);
         }
+        // A forced change ends every other session whatever the caller asked: the old password was known to an
+        // administrator, and the sessions it opened elsewhere are the ones to close (SCRUM-474 FIRST-LOGIN).
+        boolean forced = user.mustChangePassword();
         user.changePasswordHash(passwordEncoder.encode(command.newPassword()));
         userRepository.save(user);
-        return command.logoutOtherDevices()
-                ? sessions.revokeLive(command.userId(), command.currentSessionId(), clock.instant(),
-                        SessionEndReason.PASSWORD_CHANGED)
-                : 0;
+        if (!forced && !command.logoutOtherDevices()) {
+            return 0;
+        }
+        // Signing out everywhere else covers the personal MCP tokens too (ADR-0013); a plain change keeps them.
+        events.publishEvent(new CredentialsReset(command.userId(),
+                CredentialsReset.Cause.CHANGED_SIGNING_OUT_ELSEWHERE, clock.instant()));
+        return sessions.revokeLive(command.userId(), command.currentSessionId(), clock.instant(),
+                SessionEndReason.PASSWORD_CHANGED);
     }
 
     @Override

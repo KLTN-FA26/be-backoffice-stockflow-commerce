@@ -3,8 +3,14 @@ package com.stockflow.product.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.Action;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.PermissionCode;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.OpenReferences;
 import com.stockflow.product.api.ProductChange;
 import com.stockflow.product.api.ProductDiscontinuation;
@@ -20,6 +26,7 @@ import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
+import com.stockflow.product.internal.domain.ReferenceStatus;
 import com.stockflow.product.internal.repository.ProductChangeLogRepository;
 import com.stockflow.product.internal.repository.ProductCommerceRepository;
 import com.stockflow.product.internal.repository.ProductSearchRepository;
@@ -38,6 +45,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -77,6 +85,7 @@ class ProductServiceImplTest {
     private final ProductCommerceRepository commerce = mock(ProductCommerceRepository.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final IdentityService identity = mock(IdentityService.class);
+    private final CurrentUserProvider users = mock(CurrentUserProvider.class);
     private final SkuReferenceProbe purchasing = mock(SkuReferenceProbe.class);
     private final SkuReferenceProbe selling = mock(SkuReferenceProbe.class);
     private ProductServiceImpl service;
@@ -87,15 +96,15 @@ class ProductServiceImplTest {
         when(purchasing.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         when(selling.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         service = new ProductServiceImpl(products, search, variants, media, attributes, events, history, commerce,
-                inventory, identity, List.of(purchasing, selling), Clock.fixed(NOW, ZoneOffset.UTC));
+                inventory, identity, users, List.of(purchasing, selling), Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private static Product productIn(ProductStatus status, long version) {
         boolean approvedOnce = status != ProductStatus.DRAFT && status != ProductStatus.PENDING_APPROVAL;
-        return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", null, BRAND, CATEGORY, null, null, null,
+        return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", "Paper cup", BRAND, CATEGORY, null, null, null,
                 TaxClass.STANDARD, ProductKind.STANDARD, status, version,
                 status == ProductStatus.DRAFT ? null : PEOPLE, status == ProductStatus.DRAFT ? null : NOW,
-                approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, null,
+                approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, false, null,
                 status == ProductStatus.DISCONTINUED ? NOW : null, status == ProductStatus.DISCONTINUED ? "old" : null,
                 status == ProductStatus.INACTIVE ? NOW : null, status == ProductStatus.INACTIVE ? "recall" : null);
     }
@@ -405,18 +414,90 @@ class ProductServiceImplTest {
     @DisplayName("update: the history names the fields that changed, and nothing is written when none did")
     void updateRecordsChangedFields() {
         Product product = locked(ProductStatus.DRAFT, 5, ProductStatus.DRAFT);
-        when(products.brandExists(BRAND)).thenReturn(true);
-        when(products.categoryExists(CATEGORY)).thenReturn(true);
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.ACTIVE);
 
-        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", null, BRAND, CATEGORY, null, null, null,
-                TaxClass.STANDARD, ProductKind.STANDARD));
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
+                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
 
         verify(history).record(product.id().value(), ProductChangeType.UPDATED, null, null, null, null, List.of("name"));
 
-        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", null, BRAND, CATEGORY, null, null, null,
-                TaxClass.STANDARD, ProductKind.STANDARD));
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
+                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
 
         verify(history, org.mockito.Mockito.times(1)).record(any(), eq(ProductChangeType.UPDATED), any(), any(), any(), any(), anyList());
+    }
+
+    // ------------------------------------------------------------------ the brand and category chosen (SCRUM-87)
+
+    private static CreateProductCommand create(UUID brand, UUID category) {
+        return new CreateProductCommand("CUP-NEW", "Ly mới", "New cup", brand, category, null, null, null,
+                TaxClass.STANDARD, ProductKind.STANDARD, List.of());
+    }
+
+    @Test
+    @DisplayName("create: an inactive brand is BRAND_INACTIVE on brandId, an inactive category CATEGORY_INACTIVE on categoryId")
+    void createRefusesInactiveReferences() {
+        UUID otherCategory = UUID.randomUUID();
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.INACTIVE);
+        when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.brandStatus(PEOPLE)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.categoryStatus(otherCategory)).thenReturn(ReferenceStatus.INACTIVE);
+
+        BusinessException brand = refusal(catchThrowable(() -> service.create(create(BRAND, CATEGORY))));
+        BusinessException category = refusal(catchThrowable(() -> service.create(create(PEOPLE, otherCategory))));
+
+        assertThat(brand.errorCode()).isEqualTo(ErrorCode.BRAND_INACTIVE);
+        assertThat(brand.fieldErrors()).extracting(f -> f.field()).containsExactly("brandId");
+        assertThat(category.errorCode()).isEqualTo(ErrorCode.CATEGORY_INACTIVE);
+        assertThat(category.fieldErrors()).extracting(f -> f.field()).containsExactly("categoryId");
+        verify(products, never()).save(any());
+        verifyNoInteractions(history);
+    }
+
+    @Test
+    @DisplayName("create: an unknown brand or category is still 404 BRAND_NOT_FOUND / CATEGORY_NOT_FOUND")
+    void createStillAnswersNotFound() {
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.MISSING);
+        when(products.brandStatus(PEOPLE)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.MISSING);
+
+        assertThat(refusal(catchThrowable(() -> service.create(create(BRAND, null)))).errorCode())
+                .isEqualTo(ErrorCode.BRAND_NOT_FOUND);
+        assertThat(refusal(catchThrowable(() -> service.create(create(PEOPLE, CATEGORY)))).errorCode())
+                .isEqualTo(ErrorCode.CATEGORY_NOT_FOUND);
+        verify(products, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("update: a brand deactivated after the product chose it is kept; the edit goes through")
+    void keptInactiveBrandIsAccepted() {
+        Product product = locked(ProductStatus.DRAFT, 5, ProductStatus.DRAFT);
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.INACTIVE);
+        when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.INACTIVE);
+
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
+                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
+
+        assertThat(product.name()).isEqualTo("Ly mới");
+        verify(products).save(product);
+    }
+
+    @Test
+    @DisplayName("update: moving to an inactive category is CATEGORY_INACTIVE, and nothing changes")
+    void changingToInactiveCategoryIsRefused() {
+        Product product = locked(ProductStatus.DRAFT, 5, ProductStatus.DRAFT);
+        UUID retired = UUID.randomUUID();
+        when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.ACTIVE);
+        when(products.categoryStatus(retired)).thenReturn(ReferenceStatus.INACTIVE);
+
+        BusinessException refused = refusal(catchThrowable(() -> service.update(new UpdateProductCommand(
+                product.id().value(), 5, "Ly mới", "Paper cup", BRAND, retired, null, null, null, TaxClass.STANDARD,
+                ProductKind.STANDARD))));
+
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.CATEGORY_INACTIVE);
+        assertThat(product.categoryId()).isEqualTo(CATEGORY);
+        verify(products, never()).save(any());
     }
 
     @Test
@@ -435,6 +516,37 @@ class ProductServiceImplTest {
         service.reject(other.id().value(), UUID.randomUUID(), "Missing dimensions");
         verify(history).record(other.id().value(), ProductChangeType.REJECTED, null, "PENDING_APPROVAL", "DRAFT",
                 "Missing dimensions", List.of());
+    }
+
+    @Test
+    @DisplayName("BR-PRD-003: a caller holding product-lifecycle:APPROVE approves what it submitted; without it, refused")
+    void onlyALifecycleApproverApprovesItsOwnSubmission() {
+        Product mine = locked(ProductStatus.PENDING_APPROVAL, 1, ProductStatus.APPROVED);
+        when(users.current()).thenReturn(Optional.of(caller(PEOPLE, true)));
+        service.approve(mine.id().value(), PEOPLE);
+        assertThat(mine.selfApproved()).isTrue();
+
+        Product theirs = locked(ProductStatus.PENDING_APPROVAL, 1, ProductStatus.APPROVED);
+        when(users.current()).thenReturn(Optional.of(caller(PEOPLE, false)));
+        assertSelfApprovalRefused(theirs);
+
+        // The permission counts only for the caller themselves, never for an approver id passed on someone's behalf.
+        Product onBehalf = locked(ProductStatus.PENDING_APPROVAL, 1, ProductStatus.APPROVED);
+        when(users.current()).thenReturn(Optional.of(caller(UUID.randomUUID(), true)));
+        assertSelfApprovalRefused(onBehalf);
+    }
+
+    private static CurrentUser caller(UUID id, boolean holdsLifecycleApprove) {
+        Set<PermissionCode> permissions = holdsLifecycleApprove
+                ? Set.of(PermissionCode.of(ProductPermissions.LIFECYCLE, Action.APPROVE)) : Set.of();
+        return new CurrentUser(id, "caller", Set.of(), permissions, DataScope.ALL, Set.of());
+    }
+
+    private void assertSelfApprovalRefused(Product product) {
+        Throwable refused = catchThrowable(() -> service.approve(product.id().value(), PEOPLE));
+        assertThat(refused).isInstanceOfSatisfying(BusinessException.class,
+                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED));
+        assertThat(product.status()).isEqualTo(ProductStatus.PENDING_APPROVAL);
     }
 
     // ------------------------------------------------------------------ purchasability and history

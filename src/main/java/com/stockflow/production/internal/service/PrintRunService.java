@@ -15,6 +15,7 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
 import com.stockflow.production.internal.domain.ProductionRecords;
+import com.stockflow.production.internal.domain.SampleRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -27,6 +28,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -52,13 +54,14 @@ class PrintRunService implements PrintRuns {
     private final OrderService salesOrders;
     private final ProductionCompletion completion;
     private final Subcontracting subcontracts;
+    private final ApprovedSamples approvedSamples;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
     PrintRunService(ProductionOrderRepository orders, ProductionRecords records, ProductionOrders reads,
                     WorkshopStock stock, SampleProductionProgress samples, OrderService salesOrders,
-                    ProductionCompletion completion, Subcontracting subcontracts, ApplicationEventPublisher events,
-                    Clock clock) {
+                    ProductionCompletion completion, Subcontracting subcontracts, ApprovedSamples approvedSamples,
+                    ApplicationEventPublisher events, Clock clock) {
         this.orders = orders;
         this.records = records;
         this.reads = reads;
@@ -67,6 +70,7 @@ class PrintRunService implements PrintRuns {
         this.salesOrders = salesOrders;
         this.completion = completion;
         this.subcontracts = subcontracts;
+        this.approvedSamples = approvedSamples;
         this.events = events;
         this.clock = clock;
     }
@@ -112,9 +116,11 @@ class PrintRunService implements PrintRuns {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
     public ProductionOrders.Detail recordQc(CurrentUser user, UUID productionOrderId, int passed, int failed,
-                                            String note, String packingLocation) {
+                                            String note, String packingLocation, UUID approvedSampleId) {
         String text = optionalNote(note);
         ProductionOrder order = lock(user, productionOrderId);
+        Optional<SampleRequest> reference = approvedSamples.of(order);
+        requireComparedWith(order, reference, approvedSampleId);
         if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED
                 && order.subcontract().method() == ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS
                 && records.subcontractReceiptsOf(order.id()).stream().anyMatch(receipt -> !receipt.reconciled())) {
@@ -137,7 +143,10 @@ class PrintRunService implements PrintRuns {
                     text)), user.userId(), now);
         }
         orders.save(order);
-        orders.recordTransition(order.id(), decided, now, user.userId());
+        // The order's history is where a reviewer looks for what QC compared the goods with (BR-PRD-05).
+        orders.recordTransition(order.id(), reference.map(sample -> new ProductionOrder.Transition(decided.from(),
+                decided.to(), "%s; compared with approved sample %s round %d".formatted(decided.reason(),
+                        sample.requestNumber(), sample.round()))).orElse(decided), now, user.userId());
         if (order.status() == ProductionOrder.Status.COMPLETED) {
             completion.complete(order, packingLocation, user.userId());
         } else {
@@ -146,6 +155,23 @@ class PrintRunService implements PrintRuns {
         log.info("Production order {} QC round {}: passed {}, failed {} -> {}", order.orderNumber(), round, passed,
                 failed, order.status());
         return reads.get(user, order.id());
+    }
+
+    /**
+     * BR-PRD-05: the round names what it compared the goods with. The approved sample was only shown to QC before
+     * (SCRUM-487), so nothing tied a passed order to it; naming it makes QC open the reference, and a round that names
+     * another sample, or none when there is one, is refused rather than recorded against the wrong standard.
+     */
+    private static void requireComparedWith(ProductionOrder order, Optional<SampleRequest> reference, UUID named) {
+        UUID expected = reference.map(SampleRequest::id).orElse(null);
+        if (Objects.equals(expected, named)) {
+            return;
+        }
+        throw new BusinessException(ErrorCode.VALIDATION_FAILED, reference
+                .map(sample -> "QC of production order %s compares the goods with approved sample %s (BR-PRD-05); name it in approvedSampleId"
+                        .formatted(order.orderNumber(), sample.requestNumber()))
+                .orElse("Production order %s has no approved sample; QC checks it against its design file and names none"
+                        .formatted(order.orderNumber())));
     }
 
     /**
@@ -224,6 +250,56 @@ class PrintRunService implements PrintRuns {
         sampleRoundCancelled(order);
         // The reason is typed text and stays on the order and its history (develop #99 log hygiene).
         log.info("Production order {} cancelled", order.orderNumber());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One transaction, production order first (its row lock), then the sales order's: the order line gives up the
+     * units that will not be made - refused beyond the customer's agreement, and everything here rolls back - before
+     * production announces the completion, so the order is ready to fulfil for what was made as soon as the
+     * announcement lands. Then the hand-over every completion does - unprinted blanks back, the goods to packing and
+     * out of stock - or, for a job closed with nothing made, its blanks back as for any cancellation; and the line's
+     * blanks never issued are let go.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
+    public ProductionOrders.Detail completeShort(CurrentUser user, UUID productionOrderId, String reason,
+                                                 String packingLocation) {
+        ProductionOrder order = lock(user, productionOrderId);
+        if (order.type() == ProductionOrder.Type.ORDER && salesOrderCancelled(order)) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "The order of production order %s is cancelled, or its line closed; cancel the job instead"
+                            .formatted(order.orderNumber()));
+        }
+        Instant now = now();
+        ProductionOrder.Status from = order.status();
+        int shortfall = order.completeShort(reason, now);
+        boolean delivered = order.status() == ProductionOrder.Status.COMPLETED;
+        if (!delivered) {
+            // Nothing made: the blanks go back free - unlike a cancellation of a live order's job, which keeps them for
+            // the order: the units they were for are given up.
+            if (order.unprintedBlanks() > 0) {
+                stock.returnUnprinted(order, order.unprintedBlanks(), false, user.userId());
+            }
+            stock.releaseUnissued(order);
+        }
+        orders.save(order);
+        orders.recordTransition(order.id(), new ProductionOrder.Transition(from, order.status(), delivered
+                ? "Completed short: %d of %d good, %d not made; %s".formatted(order.good(),
+                        order.work().plannedQuantity(), shortfall, order.shortCompletionReason())
+                : "%d not made; %s".formatted(shortfall, order.cancellationReason())), now, user.userId());
+        salesOrders.closeProductionShortfall(order.salesOrderId(), order.salesOrderLineId(), shortfall,
+                user.userId());
+        if (delivered) {
+            completion.complete(order, packingLocation, user.userId());
+        }
+        stock.letGoUnissuedLineHolds(order, salesOrders.findById(order.salesOrderId()).orElseThrow().lines().stream()
+                .filter(line -> line.lineId().equals(order.salesOrderLineId()))
+                .flatMap(line -> line.reservationIds().stream()).toList());
+        log.info("Production order {} closed short ({}): {} good of {} planned", order.orderNumber(), order.status(),
+                order.good(), order.work().plannedQuantity());
+        return reads.get(user, order.id());
     }
 
     @Override

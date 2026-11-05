@@ -39,26 +39,26 @@ class GoodsReceiptQueriesImplTest {
         return new GoodsReceipts.Row(UUID.randomUUID(), "GR-20261028-0001", UUID.randomUUID(), "PO-HCM-0007",
                 UUID.randomUUID(), "Xưởng gỗ Việt", UUID.randomUUID(), "HCM", "Kho Hồ Chí Minh", status, "PGH-778",
                 received, UUID.randomUUID(), "Trần Thị Nhận", received.plusSeconds(600), UUID.randomUUID(),
-                "Lê Văn Xác Nhận", null);
+                "Lê Văn Xác Nhận", null, false);
     }
 
     @Test
     @DisplayName("the statuses and the number go to the screen's list as they are, newest first, one page")
     void asksTheScreensList() {
-        when(receipts.list(anyList(), any(), any(), any(), any(), any(), anyInt(), anyInt(), any()))
+        when(receipts.list(anyList(), any(), any(), any(), any(), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(PageResponse.of(List.of(), 0, 20, 0));
 
         queries.receipts(List.of("IN_QC", "IN_PUTAWAY"), " GR-2026 ", 20);
 
         verify(receipts).list(eq(List.of(GoodsReceiptStatus.IN_QC, GoodsReceiptStatus.IN_PUTAWAY)), isNull(),
-                isNull(), eq("GR-2026"), isNull(), isNull(), eq(0), eq(20), isNull());
+                isNull(), eq("GR-2026"), isNull(), isNull(), isNull(), eq(0), eq(20), isNull());
     }
 
     @Test
     @DisplayName("a row keeps where the receipt stands and drops who received and confirmed it")
     void row() {
         GoodsReceipts.Row row = row(GoodsReceiptStatus.IN_QC);
-        when(receipts.list(anyList(), any(), any(), any(), any(), any(), anyInt(), anyInt(), any()))
+        when(receipts.list(anyList(), any(), any(), any(), any(), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(PageResponse.of(List.of(row), 0, 5, 9));
 
         PageResponse<GoodsReceiptSummary> page = queries.receipts(List.of(), null, 5);
@@ -69,6 +69,7 @@ class GoodsReceiptQueriesImplTest {
         assertThat(summary.number()).isEqualTo("GR-20261028-0001");
         assertThat(summary.purchaseOrderNumber()).isEqualTo("PO-HCM-0007");
         assertThat(summary.supplierName()).isEqualTo("Xưởng gỗ Việt");
+        assertThat(summary.withoutPurchaseOrder()).as("a receipt against a PO").isFalse();
         assertThat(summary.warehouseCode()).isEqualTo("HCM");
         assertThat(summary.status()).isEqualTo("IN_QC");
         assertThat(summary.receivedAt()).isEqualTo(row.receivedAt());

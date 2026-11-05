@@ -48,6 +48,9 @@ public interface StockItemRepository {
      */
     List<StockItem> findWithReservationsForRequest(java.util.UUID rootRequestId);
 
+    /** The same stock items, read without locking: for an answer about what a request made, not for a change. */
+    List<StockItem> findHoldingRequest(java.util.UUID rootRequestId);
+
     /**
      * Read-only projections for the allocation planner: enough to choose lots, and nothing more.
      *
@@ -70,6 +73,12 @@ public interface StockItemRepository {
     /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
     List<StockLevelLine> findLevelLinesBySku(Sku sku);
 
+    /**
+     * Units of one SKU allocated for picking, per location code: live holds made from a SKU reservation at release.
+     * They are part of the {@code reserved} of {@link #findLevelLinesBySku}; Inventory Level shows them apart.
+     */
+    Map<String, Integer> findAllocatedBySku(Sku sku);
+
     /** Sellable units ({@code onHand − reserved} of AVAILABLE stock) per SKU; absent when none. */
     Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today);
 
@@ -85,6 +94,20 @@ public interface StockItemRepository {
     List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location);
 
     /**
+     * The loose INBOUND rows of one lot, in id order, unlocked. A confirmed receipt opens its own lot per (SKU, lot
+     * number, expiry), so these are exactly one receipt line's loose goods still waiting for putaway; the caller
+     * locks the rows it takes from.
+     */
+    List<StockItem> findLooseInboundByLot(Sku sku, java.util.UUID lotId);
+
+    /**
+     * Where each lot's loose goods wait: the location code of the lowest-id loose INBOUND row with units, per lot, in
+     * one query that loads no reservations. A lot with no such row is absent. For reading only: nothing here may be
+     * taken from, because the rows are neither locked nor loaded.
+     */
+    java.util.Map<java.util.UUID, String> looseInboundLocationByLot(java.util.Collection<java.util.UUID> lotIds);
+
+    /**
      * What is left in a stock package: the sum of its rows' {@code on_hand}, as this transaction has written them
      * (pending changes are flushed first). A carton holds no quantity of its own (V20261020000100).
      */
@@ -92,6 +115,12 @@ public interface StockItemRepository {
 
     /** The ids of the stock rows of a stock package (its contents), read without locking (SCRUM-287 PR T, LP2-8). */
     List<StockItemId> findIdsInStockPackage(StockPackageId stockPackageId);
+
+    /**
+     * The ids of the rows of several stock packages, in id order - the order rows are locked in - read without
+     * locking, in one query: what moving a line's cartons together locks (SCRUM-473).
+     */
+    List<StockItemId> findIdsInStockPackages(Collection<StockPackageId> stockPackageIds);
 
     /** Every stock item holding at least one reservation that expired before {@code cutoff}. */
     List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit);
@@ -140,6 +169,13 @@ public interface StockItemRepository {
     List<HoldDetail> findHolds(Collection<java.util.UUID> reservationIds);
 
     StockItem save(StockItem stockItem);
+
+    /**
+     * {@link #save}, written to the database at once rather than at the next flush. For units leaving a row for a
+     * new one: the database checks a serial number's single live row ({@code uk_stock_item_live_serial}) statement by
+     * statement, and a flush inserts new rows before it updates old ones - the serial would briefly be on two rows.
+     */
+    StockItem saveNow(StockItem stockItem);
 
     /**
      * Save a layer that has just taken units of <b>its own receipt</b> back: from another location (a move, a

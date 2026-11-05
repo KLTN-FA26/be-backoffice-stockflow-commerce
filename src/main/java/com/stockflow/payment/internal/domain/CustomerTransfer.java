@@ -93,6 +93,19 @@ public final class CustomerTransfer extends AggregateRoot {
                 currency, receivedOn, recordedBy, now, note, TransferChannel.CARRIER_REMITTANCE, carrier, 0L);
     }
 
+    /**
+     * The credit a resolved return gives the customer (SCRUM-260): not money that arrived, but an entry of the same
+     * ledger, because accounting books it the same way - it settles what the customer owes (Nợ 5212 / Có 131). It
+     * pays the order's open receivables first; what it does not pay stays as the customer's credit, which pays their
+     * next receivable or is refunded on request like any credit. Its reference is the RMA number, so a return is
+     * credited once (15 BR-07's uniqueness covers it).
+     */
+    public static CustomerTransfer returnCredit(UUID customerId, String rmaNumber, BigDecimal amount, String currency,
+                                                LocalDate creditedOn, UUID recordedBy, Instant now, String note) {
+        return new CustomerTransfer(Identifiers.newId(), customerId, rmaNumber, amount, amount, BigDecimal.ZERO,
+                currency, creditedOn, recordedBy, now, note, TransferChannel.RETURN_CREDIT, null, 0L);
+    }
+
     /** Takes up to {@code wanted} of the money not yet allocated; returns what was taken. */
     public BigDecimal take(BigDecimal wanted) {
         BigDecimal taken = wanted.min(unallocatedAmount).max(BigDecimal.ZERO);

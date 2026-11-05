@@ -103,6 +103,9 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     private UUID approvedBy;
     @Column(name = "approved_at")
     private Instant approvedAt;
+    /** Approved at submission within the submitter's own limit; {@code ck_purchase_orders_four_eyes} stands aside for it. */
+    @Column(name = "auto_approved", nullable = false)
+    private boolean autoApproved;
     @Column(name = "confirmed_by")
     private UUID confirmedBy;
     @Column(name = "confirmed_at")
@@ -174,6 +177,7 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
         this.submittedAt = o.submittedAt();
         this.approvedBy = o.approvedBy();
         this.approvedAt = o.approvedAt();
+        this.autoApproved = o.autoApproved();
         this.confirmedBy = o.confirmedBy();
         this.confirmedAt = o.confirmedAt();
         this.closedBy = o.closedBy();
@@ -244,6 +248,7 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     public Instant getSubmittedAt() { return submittedAt; }
     public UUID getApprovedBy() { return approvedBy; }
     public Instant getApprovedAt() { return approvedAt; }
+    public boolean isAutoApproved() { return autoApproved; }
     public UUID getConfirmedBy() { return confirmedBy; }
     public Instant getConfirmedAt() { return confirmedAt; }
     public UUID getClosedBy() { return closedBy; }

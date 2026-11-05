@@ -83,7 +83,8 @@ class ProductPublicationAdapter implements ProductPublication {
      */
     @Transactional(readOnly = true)
     public Map<UUID, PublishedProductCard> cards(Set<UUID> ids) {
-        Set<UUID> published = products.published(ids);
+        Map<UUID, com.stockflow.product.api.ProductKind> kinds = products.publishedKinds(ids);
+        Set<UUID> published = kinds.keySet();
         if (published.isEmpty()) return Map.of();
         Map<UUID, List<PublishedProductCard.Sku>> skus = new HashMap<>();
         products.activeVariants(published).forEach(v ->
@@ -95,7 +96,7 @@ class ProductPublicationAdapter implements ProductPublication {
         for (UUID id : published) {
             var first = lead.get(id);
             cards.put(id, new PublishedProductCard(first == null ? null : image(first).url(),
-                    List.copyOf(skus.getOrDefault(id, List.of()))));
+                    List.copyOf(skus.getOrDefault(id, List.of())), kinds.get(id)));
         }
         return cards;
     }

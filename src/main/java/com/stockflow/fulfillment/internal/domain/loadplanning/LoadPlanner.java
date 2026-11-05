@@ -2,6 +2,7 @@ package com.stockflow.fulfillment.internal.domain.loadplanning;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -14,6 +15,7 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 
 /**
  * The 3D load planner (kltn-docs 09 §4.2, SCRUM-391): turns cartons and vehicle types into vehicles with every carton's
@@ -30,12 +32,19 @@ public final class LoadPlanner {
 
     /**
      * Candidate evaluations per budget-second ({@link WorkClock.Unit#EVALUATION}): how the original's budget
-     * proportions turn into work. A laptop under load evaluates 56-130 million a second, so a budget-second is 25-55 ms
-     * of real time: the original's minimum budgets (1.5 s a vehicle, 8 s for the tail, 4 s for a fleet) add up to more
-     * budget-seconds than the caller's budget, and this rate keeps that inside the real budget with room for a slower
-     * server. Measured 22/10 on 100-800 cartons with up to 150 sizes (LoadPlannerBenchmarkTest).
+     * proportions turn into work. The original's minimum budgets (1.5 s a vehicle, 8 s for the tail, 4 s for a fleet)
+     * add up to more budget-seconds than the caller's budget, so the rate sets how much search a plan gets.
+     *
+     * <p>3 million until SCRUM-496 (measured 22/10 to finish inside a 5 s real budget). Raised to 20 million by the
+     * owner's decision SOLVER-TICKS (29/10): more restarts per vehicle, which on 800 cartons saves a vehicle (PR for
+     * SCRUM-496 has the table), for a plan that takes about 4-10 s instead of 1-3 s. The real budget is still the hard
+     * cap: a search that needs longer is cut off and returns the best plan found so far ({@code budgetExhausted}), so
+     * the configured budget must leave it the time.</p>
+     *
+     * <p>Since SOLVER-CAP (02/11) the budget no longer is the real time cap: it is counted in work, and the real time
+     * cap is {@link LoadPlanRequest#wallLimit()} (12 s).</p>
      */
-    static final double TICKS_PER_SECOND = 3_000_000.0;
+    static final double TICKS_PER_SECOND = 20_000_000.0;
 
     /** The original's number of carton orders tried per vehicle type in the single-type drive. */
     static final int ATTEMPTS = 6;
@@ -47,14 +56,35 @@ public final class LoadPlanner {
     static final double QUICK_TICKS_PER_SECOND = 1e-9;
 
     private final double ticksPerSecond;
+    private final SpaceChoice spaceChoice;
+    /** The real time cap, when not the request's wall limit: the benchmark's, to measure a search to its end. */
+    private final Duration wallCap;
+    /** The source of real time: {@link System#nanoTime}, or the tests' own. */
+    private final LongSupplier nanoTime;
 
     public LoadPlanner() {
         this(TICKS_PER_SECOND);
     }
 
-    /** For the benchmark: the same search at another work rate. */
+    /** For the tests and the benchmark: the same search at another work rate. */
     LoadPlanner(double ticksPerSecond) {
+        this(ticksPerSecond, SpaceChoice.IMPROVED, null);
+    }
+
+    /**
+     * For the benchmark: another work rate, the original's space choice to compare with, and a real time cap other
+     * than the request's (null: the request's), so a search can run to its end on a busy machine.
+     */
+    LoadPlanner(double ticksPerSecond, SpaceChoice spaceChoice, Duration wallCap) {
+        this(ticksPerSecond, spaceChoice, wallCap, System::nanoTime);
+    }
+
+    /** For the tests: also the source of real time, so the real time cap can be passed without waiting. */
+    LoadPlanner(double ticksPerSecond, SpaceChoice spaceChoice, Duration wallCap, LongSupplier nanoTime) {
         this.ticksPerSecond = ticksPerSecond;
+        this.spaceChoice = spaceChoice;
+        this.wallCap = wallCap;
+        this.nanoTime = nanoTime;
     }
 
     /** What a carton type is keyed by: cartons equal on all of these pack alike (see {@link #plan}). */
@@ -72,16 +102,16 @@ public final class LoadPlanner {
     private record Solved(KitSolver.Outcome outcome, List<Bin> scope) { }
 
     public LoadPlanResult plan(LoadPlanRequest request) {
-        long startNanos = System.nanoTime();
+        long startNanos = nanoTime.getAsLong();
         List<CargoPackage> cartons = request.cartons();
         checkUnique(cartons, request.vehicleTypes());
-        long deadline = startNanos + request.budget().toNanos();
+        long deadline = startNanos + (wallCap != null ? wallCap : request.wallLimit()).toNanos();
         double budget = request.budget().toNanos() / 1e9;
 
         List<Bin> usable = new ArrayList<>();
         for (VehicleSpec t : request.vehicleTypes()) {
             if (t.availableCount() > 0) {
-                usable.add(new Bin(t));
+                usable.add(new Bin(t, request.ignorePayload()));
             }
         }
 
@@ -89,7 +119,7 @@ public final class LoadPlanner {
         // set part that can never load must not hold its set-mates back (they load loose instead).
         Map<String, UnplacedReason> unplaced = new LinkedHashMap<>();
         for (CargoPackage c : cartons) {
-            UnplacedReason r = classifyAlone(c, request.vehicleTypes());
+            UnplacedReason r = classifyAlone(c, request.vehicleTypes(), request.ignorePayload());
             if (r != null) {
                 unplaced.put(c.ref(), r);
             }
@@ -137,9 +167,9 @@ public final class LoadPlanner {
         // Anytime: a quick pass (one construction wherever the original would restart) gives a complete plan
         // whatever the load; the full search then has what is left of the budget to beat it. A full search that
         // finishes inside the budget is what gets returned, and is reproducible.
-        WorkClock quickClock = new WorkClock(WorkClock.Unit.EVALUATION, QUICK_TICKS_PER_SECOND, deadline);
+        WorkClock quickClock = new WorkClock(WorkClock.Unit.EVALUATION, QUICK_TICKS_PER_SECOND, deadline, nanoTime);
         Solved quick = solve(request, usable, main, fill, kits, budget, quickClock);
-        WorkClock clock = new WorkClock(WorkClock.Unit.EVALUATION, ticksPerSecond, deadline);
+        WorkClock clock = new WorkClock(WorkClock.Unit.EVALUATION, ticksPerSecond, deadline, nanoTime);
         Solved chosen = quick;
         if (!clock.expired()) {
             Solved full = solve(request, usable, main, fill, kits, budget, clock);
@@ -175,7 +205,7 @@ public final class LoadPlanner {
         Map<UUID, Integer> usedByType = new HashMap<>();
         for (BinLoad l : loads) {
             List<PlacementValidator.Item> vehicleItems = new ArrayList<>();
-            vehicles.add(vehicle(l, vehicles.size() + 1, binding, vehicleItems));
+            vehicles.add(vehicle(l, vehicles.size() + 1, binding, vehicleItems, request.ignorePayload()));
             items.add(vehicleItems);
             usedByType.merge(l.bin().spec.typeId(), 1, Integer::sum);
         }
@@ -192,7 +222,8 @@ public final class LoadPlanner {
         boolean fleet = request.mode() == SelectionMode.FEWEST_VEHICLES && usable.size() > 1;
         for (int idx : binding.left()) {
             CargoPackage c = cartons.get(idx);
-            UnplacedReason r = classifyLeftover(c, fillType.get(typeOf.get(idx)), scope, usedByType, fleet);
+            UnplacedReason r = classifyLeftover(c, fillType.get(typeOf.get(idx)), scope, usedByType, fleet,
+                    request.ignorePayload());
             // Room was left but the search ran out of time before it could use it: say so, not NO_SPACE.
             unplaced.put(c.ref(), r == UnplacedReason.NO_SPACE && cutOff ? UnplacedReason.SEARCH_CUT_OFF : r);
         }
@@ -204,14 +235,14 @@ public final class LoadPlanner {
             }
         }
 
-        LoadPlanResult result = new LoadPlanResult(vehicles, left, meta(outcome, clock, startNanos, warnings, cutOff));
+        LoadPlanResult result = new LoadPlanResult(vehicles, left, meta(outcome, clock, startNanos, nanoTime.getAsLong(), warnings, cutOff));
         checkPieces(cartons, result);
         return result;
     }
 
     private Solved solve(LoadPlanRequest request, List<Bin> usable, List<Box> main, List<Box> fill,
                          List<KitSpec> kits, double budget, WorkClock clock) {
-        KitSolver solver = new KitSolver(clock, request.seed(), true);
+        KitSolver solver = new KitSolver(clock, request.seed(), true, spaceChoice);
         if (main.isEmpty() || usable.isEmpty()) {
             return new Solved(new KitSolver.Outcome(List.of(), new ArrayList<>(main), new KitSolver.Meta("GRASP_KIT",
                     0, 0, request.targetVehicleCount(), false, request.distribution().name(), List.of(), List.of(),
@@ -549,18 +580,18 @@ public final class LoadPlanner {
         return false;
     }
 
-    private static boolean takes(CargoPackage c, VehicleSpec t) {
-        return fitsEmpty(c, t) && c.weightKg().compareTo(t.maxPayloadKg()) <= 0;
+    private static boolean takes(CargoPackage c, VehicleSpec t, boolean ignorePayload) {
+        return fitsEmpty(c, t) && (ignorePayload || c.weightKg().compareTo(t.maxPayloadKg()) <= 0);
     }
 
     /** The reason a carton can never load, whatever else is in the plan; null when some usable type takes it. */
-    private static UnplacedReason classifyAlone(CargoPackage c, List<VehicleSpec> types) {
+    private static UnplacedReason classifyAlone(CargoPackage c, List<VehicleSpec> types, boolean ignorePayload) {
         boolean fits = false;
         boolean light = false;
         for (VehicleSpec t : types) {
             if (fitsEmpty(c, t)) {
                 fits = true;
-                if (c.weightKg().compareTo(t.maxPayloadKg()) <= 0) {
+                if (ignorePayload || c.weightKg().compareTo(t.maxPayloadKg()) <= 0) {
                     light = true;
                     if (t.availableCount() > 0) {
                         return null;
@@ -574,7 +605,8 @@ public final class LoadPlanner {
 
     /** The reason a carton the solver was offered ended up out, against the types the plan could use. */
     private static UnplacedReason classifyLeftover(CargoPackage c, boolean isFill, List<Bin> scope,
-                                                   Map<UUID, Integer> usedByType, boolean fleet) {
+                                                   Map<UUID, Integer> usedByType, boolean fleet,
+                                                   boolean ignorePayload) {
         boolean fits = false;
         boolean anyFree = false;
         boolean eligible = false;
@@ -583,7 +615,7 @@ public final class LoadPlanner {
             if (fitsEmpty(c, t)) {
                 fits = true;
             }
-            if (takes(c, t)) {
+            if (takes(c, t, ignorePayload)) {
                 eligible = true;
                 int cap = Math.min(t.availableCount(), fleet ? KitSolver.MAX_PER_TYPE_IN_FLEET : KitSolver.MAX_BINS);
                 if (usedByType.getOrDefault(t.typeId(), 0) < cap) {
@@ -610,7 +642,8 @@ public final class LoadPlanner {
         return (int) r;
     }
 
-    private static PlannedVehicle vehicle(BinLoad load, int seq, Binding binding, List<PlacementValidator.Item> items) {
+    private static PlannedVehicle vehicle(BinLoad load, int seq, Binding binding, List<PlacementValidator.Item> items,
+                                          boolean ignorePayload) {
         VehicleSpec spec = load.bin().spec;
         List<Boolean> fills = new ArrayList<>();
         int[] bound = binding.bind(load.placements());
@@ -620,7 +653,7 @@ public final class LoadPlanner {
             items.add(new PlacementValidator.Item(c, mm(p.x), mm(p.y), mm(p.z), mm(p.w), mm(p.h), mm(p.d)));
             fills.add(p.fill);
         }
-        List<PlacementViolation> violations = PlacementValidator.validate(spec, items);
+        List<PlacementViolation> violations = PlacementValidator.validate(spec, items, ignorePayload);
         if (!violations.isEmpty()) {
             throw new IllegalStateException("the solver broke a loading rule in vehicle " + seq + ": " + violations);
         }
@@ -698,9 +731,9 @@ public final class LoadPlanner {
     }
 
     private static LoadPlanMeta meta(KitSolver.Outcome o, WorkClock clock, long startNanos,
-                                     List<KitWarning> plannerWarnings, boolean cutOff) {
+                                     long endNanos, List<KitWarning> plannerWarnings, boolean cutOff) {
         KitSolver.Meta m = o.meta();
-        long elapsed = (System.nanoTime() - startNanos) / 1_000_000;
+        long elapsed = (endNanos - startNanos) / 1_000_000;
         long best = clock.lastImprovementNanos() == 0 ? elapsed
                 : (clock.lastImprovementNanos() - startNanos) / 1_000_000;
         return new LoadPlanMeta(m.algorithm(), m.setsTotal(), m.minVehicles(), m.targetVehicles(),

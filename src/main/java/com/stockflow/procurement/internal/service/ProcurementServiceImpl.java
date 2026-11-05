@@ -15,6 +15,8 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.PurchaseOrderSent;
+import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
@@ -31,14 +33,15 @@ import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
 import com.stockflow.procurement.api.SendPurchaseOrderCommand;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
+import com.stockflow.procurement.internal.domain.ApprovalLimit;
 import com.stockflow.procurement.internal.domain.InvalidPurchaseOrderTransitionException;
+import com.stockflow.procurement.internal.domain.PackingUnit;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.PurchasePrices;
-import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
 import com.stockflow.procurement.internal.domain.SupplierConfirmationStatus;
 import com.stockflow.procurement.internal.domain.SupplierDetails;
 import com.stockflow.procurement.internal.domain.SupplierItem;
@@ -60,6 +63,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Currency;
@@ -67,6 +71,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Collectors;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -105,21 +110,24 @@ class ProcurementServiceImpl implements ProcurementService {
     private final ApplicationEventPublisher events;
     private final NotificationService notifications;
     private final PoDeliveryDecisionRepository deliveryDecisions;
-    private final PoCommunicationProfile communication;
+    private final PoDeliveryContent content;
     private final ProductService products;
     private final InventoryService inventory;
     private final InventoryControlService inventoryControl;
     private final WarehouseService warehouses;
     private final CurrentUserProvider users;
     private final SupplierItemRepository supplierItems;
+    private final ApprovalLimits approvalLimits;
+    private final UomConversionService units;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
                            ApplicationEventPublisher events, NotificationService notifications,
-                           PoDeliveryDecisionRepository deliveryDecisions, PoCommunicationProfile communication,
+                           PoDeliveryDecisionRepository deliveryDecisions, PoDeliveryContent content,
                            ProductService products, InventoryService inventory,
                            InventoryControlService inventoryControl, WarehouseService warehouses,
-                           CurrentUserProvider users, SupplierItemRepository supplierItems) {
+                           CurrentUserProvider users, SupplierItemRepository supplierItems,
+                           ApprovalLimits approvalLimits, UomConversionService units) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.reports = reports;
@@ -128,13 +136,15 @@ class ProcurementServiceImpl implements ProcurementService {
         this.events = events;
         this.notifications = notifications;
         this.deliveryDecisions = deliveryDecisions;
-        this.communication = communication;
+        this.content = content;
         this.products = products;
         this.inventory = inventory;
         this.inventoryControl = inventoryControl;
         this.warehouses = warehouses;
         this.users = users;
         this.supplierItems = supplierItems;
+        this.approvalLimits = approvalLimits;
+        this.units = units;
     }
 
     /**
@@ -170,7 +180,7 @@ class ProcurementServiceImpl implements ProcurementService {
         }
         CheckedLines checked = checkLines(command.lines().stream()
                 .map(c -> c == null ? null : new LineInput(c.sku(), c.description(), c.quantityOrdered(), c.unitPrice(),
-                        c.taxRate()))
+                        c.taxRate(), c.unitOfMeasure(), c.unitQuantity(), null))
                 .toList(), currency, command.supplierId(), supplier.leadTimeDays());
         List<PoLine> lines = toLines(checked.lines());
 
@@ -247,13 +257,14 @@ class ProcurementServiceImpl implements ProcurementService {
         }
         CheckedLines checked = checkLines(command.lines().stream()
                 .map(l -> l == null ? null : new LineInput(l.sku(), l.description(), l.quantityOrdered(),
-                        l.unitPrice(), l.taxRate()))
+                        l.unitPrice(), l.taxRate(), l.unitOfMeasure(), l.unitQuantity(), unitIdOf(order, l.lineId())))
                 .toList(), order.currency(), order.supplierId(), supplierLeadTimeDays(order.supplierId()));
         List<PurchaseOrder.DraftLine> wanted = new ArrayList<>();
         for (int i = 0; i < checked.lines().size(); i++) {
             CheckedLine line = checked.lines().get(i);
             wanted.add(new PurchaseOrder.DraftLine(command.lines().get(i).lineId(), line.inventoryItemId(), line.sku(),
-                    line.uom(), line.description(), line.quantity(), line.unitPrice(), line.taxRate()));
+                    line.uom(), line.description(), line.quantity(), line.unitPrice(), line.taxRate(), line.unit(),
+                    line.unitNamed()));
         }
 
         Map<String, String> before = timelineFacts(order);
@@ -266,7 +277,11 @@ class ProcurementServiceImpl implements ProcurementService {
         return summaryOf(order, possibleDuplicate);
     }
 
-    /** What the timeline says about a draft edit: the facts that changed, before and after. */
+    /**
+     * What the timeline says about a draft edit: the facts that changed, before and after. A line in a packing unit
+     * names it (SCRUM-473), so an edit that changes only the unit - 5 CARTON to 10 BOX, the same base quantity - is
+     * still a change.
+     */
     private static Map<String, String> timelineFacts(PurchaseOrder order) {
         Map<String, String> facts = new LinkedHashMap<>();
         facts.put("warehouseId", order.warehouseId().toString());
@@ -274,7 +289,10 @@ class ProcurementServiceImpl implements ProcurementService {
         facts.put("lineCount", String.valueOf(order.lines().size()));
         facts.put("totalAmount", order.totalAmount().amount().toPlainString());
         facts.put("lines", order.lines().stream()
-                .map(l -> l.sku().code() + "x" + l.quantityOrdered() + "@" + l.unitPrice().amount().toPlainString())
+                .map(l -> l.sku().code() + "x" + l.quantityOrdered()
+                        + (l.packingUnit() == null ? ""
+                                : "(" + l.packingUnit().count() + " " + l.packingUnit().unitOfMeasure() + ")")
+                        + "@" + l.unitPrice().amount().toPlainString())
                 .reduce((a, b) -> a + "," + b).orElse(""));
         return facts;
     }
@@ -317,6 +335,20 @@ class ProcurementServiceImpl implements ProcurementService {
 
     // ------------------------------------------------------------------ approval
 
+    /**
+     * kltn-docs 02 §4 step 7 (owner decisions POLIMIT2, SCRUM-124 of 21/10, PO-NOLIMIT of 28/10): an order is approved
+     * right here, as {@code AUTO_APPROVED} with the limit that allowed it, when all of these hold, and otherwise goes
+     * to PENDING_APPROVAL for someone whose limit covers it.
+     * <ol>
+     *   <li>the limit holder has a limit configured in force in the order's currency (none is no limit, never zero:
+     *       an order of someone with no limit always waits) - the holder is the submitter, or for a SUBCONTRACT order
+     *       the person who raised it by splitting the production order (rule 6);</li>
+     *   <li>the total, after tax, is within it (rule 1);</li>
+     *   <li>the order was never rejected: a rejected order is decided by a person again (rule 3);</li>
+     *   <li>with the automatic approvals of the same holder to the same supplier in the last 7 days it still is
+     *       (rule 4, against splitting one purchase into small ones).</li>
+     * </ol>
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary submit(UUID purchaseOrderId, UUID submittedBy) {
@@ -327,16 +359,43 @@ class ProcurementServiceImpl implements ProcurementService {
                     PurchaseOrderStatus.PENDING_APPROVAL);
         }
         requireLinesPurchasable(order);
+        Instant now = clock.instant();
+        UUID limitHolder = limitHolderOf(order, submittedBy);
+        Optional<ApprovalLimit> autoLimit = approvalLimits.autoApprovalLimit(order.id(), limitHolder,
+                order.supplierId(), order.totalAmount(), now);
         long revisionNo = purchaseOrders.nextRevisionNo(order.id());
         UUID revisionId = purchaseOrders.recordRevision(order, revisionNo, submittedBy,
                 revisionNo == 0 ? null : "Resubmitted after rejection");
-        order.submit(submittedBy, revisionId, revisionNo, clock.instant());
+        if (autoLimit.isPresent()) {
+            order.submitWithinLimit(submittedBy, revisionId, revisionNo, autoLimit.get().amount(), now);
+        } else {
+            order.submit(submittedBy, revisionId, revisionNo, now);
+        }
         purchaseOrders.save(order);
         purchaseOrders.recordEvent(order.id(), revisionId, "SUBMITTED", submittedBy, PurchaseOrderStatus.DRAFT,
                 PurchaseOrderStatus.PENDING_APPROVAL, null);
+        if (autoLimit.isPresent()) {
+            ApprovalLimit limit = autoLimit.get();
+            String reason = "Auto-approved within limit: total %s, limit %s".formatted(order.totalAmount(), limit.amount());
+            purchaseOrders.recordAutoApproval(revisionId, submittedBy, limitHolder, limit, now, reason);
+            purchaseOrders.recordEvent(order.id(), revisionId, "AUTO_APPROVED", submittedBy,
+                    PurchaseOrderStatus.PENDING_APPROVAL, PurchaseOrderStatus.APPROVED, reason,
+                    limit.facts(order.totalAmount(), limitHolder));
+        }
         return summaryOf(order, false);
     }
 
+    /** Whose limit decides an automatic approval: the submitter's, except for a split-generated order (rule 6). */
+    private UUID limitHolderOf(PurchaseOrder order, UUID submitter) {
+        return order.type() == PurchaseOrder.Type.SUBCONTRACT
+                ? purchaseOrders.creatorOf(order.id()).orElse(submitter) : submitter;
+    }
+
+    /**
+     * Four-eyes (BR-PO-002), and the approver's own limit must cover the total (owner decision POLIMIT2) - when they
+     * have one: an approver none of whose roles has a limit configured is bounded by the approve permission alone
+     * (owner decision PO-NOLIMIT).
+     */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId) {
@@ -344,7 +403,9 @@ class ProcurementServiceImpl implements ProcurementService {
         if (order.status() == PurchaseOrderStatus.PENDING_APPROVAL) {
             requireLinesPurchasable(order);
         }
-        order.approve(approverId, clock.instant());
+        Money limit = approvalLimits.limitOf(approverId, order.currency(), BusinessCalendar.date(clock.instant()))
+                .map(ApprovalLimit::amount).orElse(null);
+        order.approve(approverId, limit, clock.instant());
         purchaseOrders.save(order);
         purchaseOrders.recordApproval(order.activeRevisionId(), approverId, "APPROVED", null);
         purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), "APPROVED", approverId,
@@ -391,6 +452,17 @@ class ProcurementServiceImpl implements ProcurementService {
         return summaryOf(order, false);
     }
 
+    /**
+     * Whether an amendment was approved since the order was sent (SCRUM-117): the active revision then differs from
+     * the one the CONFIRMED event names, and the supplier is owed the order as it stands rather than the snapshot of
+     * the first send - by a recovery and by a cancellation notice alike. An order with no such event (legacy) answers
+     * false and keeps its snapshot.
+     */
+    private boolean amendedSince(PurchaseOrder order) {
+        return deliveryDecisions.confirmedRevisionId(order.id().value())
+                .map(revision -> !revision.equals(order.activeRevisionId())).orElse(false);
+    }
+
     @Override
     @Transactional(readOnly = true)
     public PageResponse<PurchaseOrderDeliveryDecision> deliveryDecisions(UUID id, int page, int size) {
@@ -402,39 +474,20 @@ class ProcurementServiceImpl implements ProcurementService {
 
     private void publishDelivery(PurchaseOrder saved, boolean recovery, LocalDate previousDate, String reason,
                                  boolean reconciled, boolean acknowledgePastDue) {
-        var supplier = suppliers.findById(saved.supplierId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND,
-                        "No supplier with id " + saved.supplierId()))
-                .details();
-        String recipient = supplier.communicationChannel() == SupplierCommunicationChannel.EMAIL
-                ? supplier.email() : supplier.apiEndpoint();
-        if (supplier.status() != SupplierStatus.ACTIVE || recipient == null || recipient.isBlank()) {
-            throw new BusinessException(ErrorCode.CONFLICT, "An active supplier with a delivery contact is required");
-        }
-        notifications.validateSupplierDelivery(supplier.communicationChannel().name(), recipient);
+        var target = content.target(saved.supplierId());
         int generation = notifications.prepareSupplierDelivery(saved.id().value(), recovery);
         deliveryDecisions.record(saved.id().value(), generation, previousDate, saved.expectedAt(), reason, reconciled,
-                acknowledgePastDue, supplier.communicationChannel().name(), recipient);
+                acknowledgePastDue, target.channel(), target.recipient());
         var previous = deliveryDecisions.latestSnapshot(saved.id().value());
-        var buyer = previous.map(PurchaseOrderSent::buyer).orElseGet(communication::requireBuyer);
-        var lines = previous.map(PurchaseOrderSent::lines).orElseGet(() -> saved.lines().stream()
-                .map(line -> new PurchaseOrderSent.Line(line.sku().code(), description(line), line.quantityOrdered(),
-                        line.unitPrice().amount()))
-                .toList());
+        var buyer = content.buyer(previous);
+        // The snapshot is what the supplier was sent; it is resent unless an amendment approved since changed the lines.
+        var lines = previous.isPresent() && !amendedSince(saved) ? previous.get().lines() : content.lines(saved);
         var event = new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
-                supplier.communicationChannel().name(), recipient, saved.totalAmount().amount(),
+                target.channel(), target.recipient(), saved.totalAmount().amount(),
                 saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays(), lines, generation,
                 buyer, false, null);
         deliveryDecisions.snapshot(event);
         events.publishEvent(event);
-    }
-
-    private String description(PoLine line) {
-        if (line.description() != null && !line.description().isBlank()) return line.description().trim();
-        return products.nameForSku(line.sku().code())
-                .filter(name -> !name.isBlank())
-                .orElseThrow(() -> new BusinessException(ErrorCode.PO_LINE_DESCRIPTION_REQUIRED,
-                        "Missing product description for SKU " + line.sku().code()));
     }
 
     @Override
@@ -456,17 +509,26 @@ class ProcurementServiceImpl implements ProcurementService {
 
     // ------------------------------------------------------------------ ending
 
-    /** A confirmed order was already sent: its supplier is told of the cancellation, at the address it was sent to. */
+    /**
+     * A confirmed order was already sent: its supplier is told of the cancellation, at the address it was sent to. An
+     * amendment still waiting is withdrawn first, in this transaction (SCRUM-117): there is nothing left to amend, and
+     * left pending it would hang on a cancelled order.
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary cancel(UUID purchaseOrderId, UUID userId, String reason) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
         if (purchaseOrders.hasReceiptInProgress(order.id())) {
             throw new BusinessException(ErrorCode.CONFLICT,
-                    "A goods receipt of this order is being counted; cancel or confirm it first");
+                    "A goods receipt of this order is being counted or waits for approval; cancel or confirm it first");
         }
         PurchaseOrderStatus from = order.status();
         order.requireCancellable(reason);
+        AmendmentDrops.drop(purchaseOrders, order, userId, "WITHDRAWN", "Order cancelled");
+        // Read before cancel() settles every line CANCELLED: after an approved amendment the supplier is told what
+        // was ordered last, as a recovery would resend it, not the snapshot of the first send.
+        List<PurchaseOrderSent.Line> orderedLines = from == PurchaseOrderStatus.CONFIRMED && amendedSince(order)
+                ? content.lines(order) : null;
         if (order.activeRevisionId() == null && order.pendingRevisionId() == null) {
             long revisionNo = purchaseOrders.nextRevisionNo(order.id());
             order.freeze(purchaseOrders.recordRevision(order, revisionNo, userId, revisionNo == 0 ? null : "Cancelled"),
@@ -485,24 +547,44 @@ class ProcurementServiceImpl implements ProcurementService {
                     .details();
             String channel = previous.map(PurchaseOrderSent::channel).orElse(supplier.communicationChannel().name());
             String recipient = previous.map(PurchaseOrderSent::recipient)
-                    .orElse(supplier.communicationChannel() == SupplierCommunicationChannel.EMAIL
-                            ? supplier.email() : supplier.apiEndpoint());
+                    .orElse(PoDeliveryContent.recipient(supplier));
             events.publishEvent(new PurchaseOrderSent(purchaseOrderId, order.poNumber(), order.supplierId(), channel,
                     recipient, order.totalAmount().amount(), order.currency().getCurrencyCode(), order.expectedAt(),
-                    order.paymentTermDays(), previous.map(PurchaseOrderSent::lines).orElse(List.of()), 0,
+                    order.paymentTermDays(), orderedLines != null ? orderedLines
+                            : previous.map(PurchaseOrderSent::lines).orElse(List.of()), 0,
                     previous.map(PurchaseOrderSent::buyer).orElse(null), true, reason));
         }
         return summaryOf(order, false);
     }
 
+    /**
+     * Short-close of a PARTIALLY_RECEIVED order, or the force close (kltn-docs 02 §5, {@code Confirmed → Closed}) of a
+     * CONFIRMED one that will not be received at all; the reason is mandatory in both. A force close behaves like a
+     * cancel for what is still in flight: it refuses while a goods receipt of the order is being counted, and it stops
+     * the supplier delivery from being retried (the order is closed, there is nothing left to send). The supplier is
+     * not sent a cancellation notice - the order was not cancelled. An amendment still waiting is withdrawn first, as
+     * for a cancellation (SCRUM-117).
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary closeShort(UUID purchaseOrderId, UUID userId, String reason) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        PurchaseOrderStatus from = order.status();
+        boolean force = from == PurchaseOrderStatus.CONFIRMED;
+        if (force && purchaseOrders.hasReceiptInProgress(order.id())) {
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "A goods receipt of this order is being counted or waits for approval; cancel or confirm it first");
+        }
+        // Before the status changes, so the withdrawal reads as the order's last act while open; a refused close
+        // rolls it back with the transaction.
+        AmendmentDrops.drop(purchaseOrders, order, userId, "WITHDRAWN", "Order closed");
         order.closeShort(reason, userId, clock.instant());
+        if (force) {
+            notifications.suppressSupplierDelivery(purchaseOrderId);
+        }
         purchaseOrders.save(order);
-        purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), "SHORT_CLOSED", userId,
-                PurchaseOrderStatus.PARTIALLY_RECEIVED, PurchaseOrderStatus.CLOSED, reason);
+        purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), force ? "FORCE_CLOSED" : "SHORT_CLOSED", userId,
+                from, PurchaseOrderStatus.CLOSED, reason);
         return summaryOf(order, false);
     }
 
@@ -592,7 +674,7 @@ class ProcurementServiceImpl implements ProcurementService {
         List<PoLine> lines = new ArrayList<>();
         for (CheckedLine c : checked) {
             lines.add(PurchaseOrder.line(lines.size() + 1, c.inventoryItemId(), c.sku(), c.uom(), c.description(),
-                    c.quantity(), c.unitPrice(), c.taxRate()));
+                    c.quantity(), c.unitPrice(), c.taxRate(), c.unit()));
         }
         return lines;
     }
@@ -644,8 +726,17 @@ class ProcurementServiceImpl implements ProcurementService {
         }
     }
 
-    /** One requested line, as created or as edited; {@code unitPrice} null takes the catalog price. */
-    private record LineInput(String sku, String description, int quantity, BigDecimal unitPrice, BigDecimal taxRate) {
+    /**
+     * One requested line, as created or as edited; {@code unitPrice} null takes the catalog price. {@code quantity} is
+     * in base units and may be left out when {@code unitOfMeasure} and {@code unitQuantity} say it (SCRUM-473);
+     * {@code currentUnitId} is the packing unit of the draft line being edited, null for a new line.
+     */
+    private record LineInput(String sku, String description, Integer quantity, BigDecimal unitPrice,
+                             BigDecimal taxRate, String unitOfMeasure, Integer unitQuantity, UUID currentUnitId) {
+    }
+
+    /** A requested line's base quantity, and the packing unit it was ordered in when one was named. */
+    private record SizedLine(int quantity, PackingUnit unit, boolean unitNamed) {
     }
 
     /** A requested line once its SKU is resolved to an inventory item (BR-01), before the catalog is asked. */
@@ -654,7 +745,7 @@ class ProcurementServiceImpl implements ProcurementService {
 
     /** A requested line once its SKU is resolved, its catalog terms met and its amounts checked. */
     private record CheckedLine(UUID inventoryItemId, Sku sku, String uom, String description, int quantity,
-                               Money unitPrice, BigDecimal taxRate) {
+                               Money unitPrice, BigDecimal taxRate, PackingUnit unit, boolean unitNamed) {
     }
 
     /** The lines as they will be written, and the order's lead time: the slowest line's. */
@@ -666,6 +757,8 @@ class ProcurementServiceImpl implements ProcurementService {
      * subcontract order never comes here (BR-10). In this order:
      * <ol>
      *   <li>each SKU resolves to an inventory item, once per order, with a description;</li>
+     *   <li>each line's base quantity, from the packing unit it names (SCRUM-473), every line at fault in one
+     *       {@code VALIDATION_FAILED} - see {@link #sizeLines};</li>
      *   <li>the supplier's catalog rows for all of them, in one query, {@code FOR SHARE} so a concurrent
      *       catalog delete waits for this order instead of stranding its line;</li>
      *   <li>the catalog terms (BR-PO-001), every line at fault in one 409 {@code SUPPLIER_TERMS_VIOLATED}:
@@ -712,6 +805,7 @@ class ProcurementServiceImpl implements ProcurementService {
             resolved.add(new ResolvedLine(item.inventoryItemId(), sku, uom, description, c));
         }
 
+        List<SizedLine> sized = sizeLines(resolved);
         Map<UUID, SupplierItem> listed = supplierItems.listedForShare(supplierId,
                 resolved.stream().map(ResolvedLine::inventoryItemId).toList());
         List<FieldError> errors = new ArrayList<>();
@@ -730,7 +824,7 @@ class ProcurementServiceImpl implements ProcurementService {
                 continue;
             }
             int before = errors.size();
-            int quantity = line.input().quantity();
+            int quantity = sized.get(i).quantity();
             for (var violation : item.orderQuantityViolations(quantity)) {
                 ErrorCode code = switch (violation) {
                     case BELOW_MOQ -> ErrorCode.PO_LINE_BELOW_MOQ;
@@ -767,21 +861,100 @@ class ProcurementServiceImpl implements ProcurementService {
         for (int i = 0; i < resolved.size(); i++) {
             ResolvedLine line = resolved.get(i);
             LineInput c = line.input();
+            SizedLine size = sized.get(i);
             BigDecimal price = prices.get(i);
-            if (c.quantity() <= 0 || c.quantity() > 1_000_000 || !PurchasePrices.acceptable(price, currency)
+            if (size.quantity() <= 0 || size.quantity() > 1_000_000 || !PurchasePrices.acceptable(price, currency)
                     || c.taxRate() != null && (c.taxRate().signum() < 0
                     || c.taxRate().compareTo(BigDecimal.valueOf(100)) > 0)) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                         "Invalid purchase order quantity, unit price or tax rate");
             }
-            total = total.add(price.multiply(BigDecimal.valueOf(c.quantity())));
+            total = total.add(price.multiply(BigDecimal.valueOf(size.quantity())));
             lines.add(new CheckedLine(line.inventoryItemId(), line.sku(), line.uom(), line.description(),
-                    c.quantity(), new Money(price, currency), c.taxRate()));
+                    size.quantity(), new Money(price, currency), c.taxRate(), size.unit(), size.unitNamed()));
         }
         if (total.compareTo(PurchasePrices.MAX) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Purchase order total exceeds the supported limit");
         }
         requirePurchasable(lines.stream().map(line -> line.sku().code()).toList());
         return new CheckedLines(lines, leadTimeDays);
+    }
+
+    /** The packing unit of draft line {@code lineId} of {@code order}; null for a new line or one in base units. */
+    private static UUID unitIdOf(PurchaseOrder order, UUID lineId) {
+        return lineId == null ? null : order.lines().stream().filter(line -> line.id().equals(lineId)).findFirst()
+                .map(PoLine::packingUnit).map(PackingUnit::uomConversionId).orElse(null);
+    }
+
+    /**
+     * Each line's base quantity (SCRUM-473). A line naming no unit gives {@code quantityOrdered}; one naming a unit of
+     * its item gives {@code unitQuantity} times the unit's factor - the base unit means base units and stores none -
+     * and a {@code quantityOrdered} sent as well must be exactly that. A retired unit is refused unless it is the
+     * edited line's own: a draft ordered before the unit was retired is still revised in it, as receiving allows.
+     * Every line at fault is reported at once, each refusal on its own field, before the supplier's terms are asked:
+     * MOQ and whole packs are held to the base quantity this works out.
+     */
+    private List<SizedLine> sizeLines(List<ResolvedLine> lines) {
+        Set<Sku> naming = lines.stream().filter(line -> blankToNull(line.input().unitOfMeasure()) != null)
+                .map(ResolvedLine::sku).collect(Collectors.toSet());
+        Map<String, List<UomConversion>> itemUnits = naming.isEmpty() ? Map.of() : units.conversionsOf(naming);
+        List<FieldError> errors = new ArrayList<>();
+        List<SizedLine> sized = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            ResolvedLine line = lines.get(i);
+            LineInput in = line.input();
+            String field = "lines[" + i + "].";
+            String code = blankToNull(in.unitOfMeasure());
+            if (code == null) {
+                if (in.unitQuantity() != null) {
+                    errors.add(new FieldError(field + "unitQuantity", "unitQuantity counts the unitOfMeasure; name it",
+                            ErrorCode.VALIDATION_FAILED.name()));
+                }
+                if (in.quantity() == null) {
+                    errors.add(new FieldError(field + "quantityOrdered",
+                            "Give quantityOrdered, or a unitOfMeasure and unitQuantity", ErrorCode.VALIDATION_FAILED.name()));
+                }
+                sized.add(new SizedLine(in.quantity() == null ? 0 : in.quantity(), null, false));
+                continue;
+            }
+            String wanted = code.toUpperCase(Locale.ROOT);
+            UomConversion unit = itemUnits.getOrDefault(line.sku().code(), List.of()).stream()
+                    .filter(candidate -> candidate.unitOfMeasure().equals(wanted)).findFirst().orElse(null);
+            if (unit == null) {
+                errors.add(new FieldError(field + "unitOfMeasure", "%s has no unit %s".formatted(line.sku().code(), wanted),
+                        ErrorCode.UOM_CONVERSION_NOT_FOUND.name()));
+            } else if (!unit.active() && !unit.id().equals(in.currentUnitId())) {
+                errors.add(new FieldError(field + "unitOfMeasure", "%s is retired; order in an active unit".formatted(wanted),
+                        ErrorCode.PO_LINE_UNIT_INVALID.name()));
+            } else if (in.unitQuantity() == null) {
+                errors.add(new FieldError(field + "unitQuantity", "Say how many " + wanted,
+                        ErrorCode.VALIDATION_FAILED.name()));
+            } else {
+                long quantity = (long) in.unitQuantity() * unit.factor();
+                if (quantity > 1_000_000) {
+                    errors.add(new FieldError(field + "unitQuantity", "%d %s hold %d units; a line takes at most 1,000,000"
+                            .formatted(in.unitQuantity(), wanted, quantity), ErrorCode.VALIDATION_FAILED.name()));
+                } else if (in.quantity() != null && in.quantity() != quantity) {
+                    errors.add(new FieldError(field + "quantityOrdered", "%d %s hold %d units, not %d"
+                            .formatted(in.unitQuantity(), wanted, quantity, in.quantity()), ErrorCode.VALIDATION_FAILED.name()));
+                } else {
+                    sized.add(new SizedLine((int) quantity, unit.base() ? null
+                            : new PackingUnit(unit.id(), unit.unitOfMeasure(), unit.factor(), in.unitQuantity()), true));
+                    continue;
+                }
+            }
+            sized.add(new SizedLine(0, null, true));
+        }
+        if (!errors.isEmpty()) {
+            long linesAtFault = errors.stream().map(error -> error.field().substring(0, error.field().indexOf(']')))
+                    .distinct().count();
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    linesAtFault + " line(s) name an invalid quantity or unit", errors);
+        }
+        return sized;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.strip();
     }
 }

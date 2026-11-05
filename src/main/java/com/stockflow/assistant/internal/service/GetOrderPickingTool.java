@@ -39,7 +39,7 @@ import java.util.Set;
  * <p><b>Who may see a task</b> is fulfillment's rule ({@code TaskAccess}): its assignee, a packer once it waits at the
  * packing table, and whoever oversees tasks or re-verifies designs, in their own warehouses. {@code pickingOf} applies
  * the whole rule, so nothing is declared beside the screen's permission: warehouse staff, who may open the assistant
- * since V20261029000200 and hold neither oversight nor re-verification, are served their own tasks, and a task they
+ * since V20261105000500 and hold neither oversight nor re-verification, are served their own tasks, and a task they
  * may not see gets the same note as an order without one.</p>
  */
 @Component

@@ -38,6 +38,11 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 # -----------------------------------------------------------------------------
 FROM eclipse-temurin:21-jre-alpine AS runtime
 
+# SCRUM-495: pull the Alpine security fixes published since the base image was built (Trivy flagged
+# brotli-libs 1.2.0-r1, CVE-2026-111497, fixed in 1.2.1-r0). Re-run on every image build, so the
+# runtime never ships OS packages older than the repository's.
+RUN apk upgrade --no-cache
+
 # Never root. A container escape from an application running as root is a container escape as root
 # on the host; as an unprivileged user it is far less useful to an attacker.
 #

@@ -34,7 +34,7 @@ import java.io.IOException;
  * user's grants as they stand now. Without one the answer is 401 before anything here runs, and with security switched
  * off for local work {@code @AuthenticatedUser} still refuses a request with no user, so in no profile do the tools
  * answer an anonymous client. The guard is {@code assistant-mcp:CREATE} with scope OWN and the back office first:
- * held by SYSTEM_ADMIN only until the business grants it to a role (V20261104000500, AQ-17). Like the chat's it opens
+ * held by SYSTEM_ADMIN only until the business grants it to a role (V20261105001100, AQ-17). Like the chat's it opens
  * the endpoint and grants no data: every tool still checks the caller (design §5).</p>
  *
  * <p><b>Not from a browser page.</b> A request with an {@code Origin} the shared CORS policy does not allow is 403

@@ -2,6 +2,7 @@ package com.stockflow.procurement.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
@@ -15,6 +16,9 @@ import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
 import com.stockflow.procurement.api.SubcontractSettlement;
 import com.stockflow.procurement.api.SubcontractorTerms;
+import com.stockflow.procurement.internal.domain.PurchaseOrderId;
+import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
+import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.repository.SubcontractOrderStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +32,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.Currency;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -57,22 +62,33 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
      */
     private static final String EDITABLE = "DRAFT";
 
-    /** An approved order still open to receiving gets more quantity through an amendment approved again (BR-02). */
-    private static final Set<String> AMENDABLE = Set.of("APPROVED", "CONFIRMED", "PARTIALLY_RECEIVED", "RECEIVED");
+    /**
+     * An approved order still open to receiving gets more quantity through an amendment approved again (BR-02): the
+     * statuses of {@link PurchaseOrderStatus#takesAmendments}, the same the pending amendment is read under.
+     */
+    private static final Set<String> AMENDABLE = Set.copyOf(PurchaseOrderStatus.takingAmendments());
 
     private final SubcontractOrderStore store;
     private final InventoryService inventory;
     private final InventoryControlService inventoryControl;
     private final ProcurementService procurement;
     private final Clock clock;
+    private final ApprovalLimits approvalLimits;
+    private final PurchaseOrderRepository purchaseOrders;
+    private final SupplierAmendmentNotice supplierNotice;
 
     SubcontractPurchasingImpl(SubcontractOrderStore store, InventoryService inventory,
-                              InventoryControlService inventoryControl, ProcurementService procurement, Clock clock) {
+                              InventoryControlService inventoryControl, ProcurementService procurement, Clock clock,
+                              ApprovalLimits approvalLimits, PurchaseOrderRepository purchaseOrders,
+                              SupplierAmendmentNotice supplierNotice) {
         this.store = store;
         this.inventory = inventory;
         this.inventoryControl = inventoryControl;
         this.procurement = procurement;
         this.clock = clock;
+        this.approvalLimits = approvalLimits;
+        this.purchaseOrders = purchaseOrders;
+        this.supplierNotice = supplierNotice;
     }
 
     @Override
@@ -96,6 +112,11 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         if (!supplier.printSubcontractor()) {
             throw new BusinessException(ErrorCode.SUPPLIER_NOT_SUBCONTRACTOR,
                     "%s is not flagged as a print subcontractor".formatted(supplier.code()));
+        }
+        if (!supplier.active()) {
+            // As for any new purchase order (ProcurementServiceImpl.createPurchaseOrder): 03 §16 "active subcontractor".
+            throw new BusinessException(ErrorCode.SUPPLIER_INACTIVE,
+                    "%s is not active and takes no new orders".formatted(supplier.code()));
         }
         InventoryItemPolicy item = inventory.itemPolicy(command.finishedSku()).orElseThrow(() ->
                 new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND,
@@ -157,22 +178,73 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         });
         store.requestAmendment(order, newQuantity, reason.trim(), actorId);
         log.info("Amendment of {} to {} (+{}) asked for", order.poNumber(), newQuantity, additionalQuantity);
+        autoApproveWithinLimit(order, actorId);
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
     }
 
+    /**
+     * SCRUM-124 rule 5: an amendment raises the total of an order that was approved, so it is decided again against
+     * the new total with the limit of whoever asked for it - the same rules as a submission (rules 1, 3 and 4, see
+     * {@link ApprovalLimits#autoApprovalLimit}). Within that limit the amendment is approved here, as
+     * {@code AUTO_APPROVED} on the limit that allowed it; above it, or with no limit configured for the requester, it
+     * waits for someone else (four-eyes) whose own limit covers the new total ({@link #approveAmendment}).
+     */
+    private void autoApproveWithinLimit(SubcontractOrderStore.Row order, UUID requesterId) {
+        if (requesterId == null) {
+            return;
+        }
+        SubcontractOrderStore.Amendment amendment = store.pendingAmendment(order.id()).orElseThrow();
+        Money newTotal = new Money(amendment.total(), Currency.getInstance(order.currency()));
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        approvalLimits.autoApprovalLimit(new PurchaseOrderId(order.id()), requesterId, order.supplierId(), newTotal, now)
+                .ifPresent(limit -> {
+                    String reason = "Auto-approved within limit: new total %s, limit %s".formatted(newTotal, limit.amount());
+                    approveAndNotify(order, amendment, requesterId,
+                            new SubcontractOrderStore.AutoApproval(requesterId, limit, now, reason));
+                    log.info("Amendment of {} to {} auto-approved within the requester's limit", order.poNumber(),
+                            amendment.quantity());
+                });
+    }
+
+    /**
+     * Four-eyes (an amendment is approved by someone other than who asked for it), and the approver's own limit must
+     * cover the new total (SCRUM-124 rule 5, as for a purchase order, BR-PO-002) - when they have one: an approver none
+     * of whose roles has a limit configured is bounded by the approve permission alone (owner decision PO-NOLIMIT).
+     */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public SubcontractOrder approveAmendment(UUID purchaseOrderId, UUID approverId) {
         SubcontractOrderStore.Row order = lock(purchaseOrderId);
         SubcontractOrderStore.Amendment amendment = store.pendingAmendment(purchaseOrderId).orElseThrow(() ->
-                new BusinessException(ErrorCode.CONFLICT, "%s has no amendment waiting".formatted(order.poNumber())));
+                new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                        "%s has no amendment waiting".formatted(order.poNumber())));
         if (amendment.requestedBy() != null && amendment.requestedBy().equals(approverId)) {
             throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
                     "An amendment is approved by someone other than who asked for it");
         }
-        store.approveAmendment(order, amendment, approverId);
+        Money newTotal = new Money(amendment.total(), Currency.getInstance(order.currency()));
+        approvalLimits.limitExceeded(approverId, newTotal, clock.instant()).ifPresent(limit -> {
+            throw new BusinessException(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED,
+                    "Amendment of %s makes it total %s; your approval limit is %s".formatted(order.poNumber(), newTotal,
+                            limit.amount()));
+        });
+        approveAndNotify(order, amendment, approverId, null);
         log.info("Amendment of {} to {} approved", order.poNumber(), amendment.quantity());
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
+    }
+
+    /**
+     * The amendment goes into the order, then a supplier that had the order is told (SCRUM-117 design section 8). The
+     * order row is locked by the caller, so the aggregate read here is what the approval changes: the revision that
+     * was active and the amendment waiting are taken before the store moves them, the order is reloaded after it.
+     */
+    private void approveAndNotify(SubcontractOrderStore.Row order, SubcontractOrderStore.Amendment amendment,
+                                  UUID approverId, SubcontractOrderStore.AutoApproval auto) {
+        PurchaseOrderId id = new PurchaseOrderId(order.id());
+        UUID previousActiveRevisionId = purchaseOrders.findByIdForUpdate(id).orElseThrow().activeRevisionId();
+        PurchaseOrderRepository.PendingAmendment waiting = purchaseOrders.pendingAmendment(id).orElseThrow();
+        store.approveAmendment(order, amendment, approverId, auto);
+        supplierNotice.send(purchaseOrders.findByIdForUpdate(id).orElseThrow(), previousActiveRevisionId, waiting);
     }
 
     @Override
@@ -183,7 +255,8 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         }
         SubcontractOrderStore.Row order = lock(purchaseOrderId);
         SubcontractOrderStore.Amendment amendment = store.pendingAmendment(purchaseOrderId).orElseThrow(() ->
-                new BusinessException(ErrorCode.CONFLICT, "%s has no amendment waiting".formatted(order.poNumber())));
+                new BusinessException(ErrorCode.PO_AMENDMENT_NOT_PENDING,
+                        "%s has no amendment waiting".formatted(order.poNumber())));
         store.dropAmendment(order, amendment, approverId, "REJECTED", reason.trim());
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
     }
@@ -298,7 +371,7 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
     @Transactional(readOnly = true)
     public Optional<SubcontractorTerms> subcontractorTerms(UUID supplierId) {
         return store.supplier(supplierId).map(s -> new SubcontractorTerms(s.id(), s.code(), s.name(),
-                s.printSubcontractor(), s.lossTolerancePercent()));
+                s.printSubcontractor(), s.active(), s.lossTolerancePercent()));
     }
 
     /**

@@ -13,15 +13,51 @@ import java.util.Objects;
  * @param targetVehicleCount the count wanted, or null for the fewest that fit; reported unreachable when exceeded
  * @param seed               shifts every random draw; the same input and seed give the same plan. 0 draws exactly
  *                           what the original Python solver drew
- * @param budget             the real time cap. The search stops when it has nothing left to improve or the budget is
- *                           spent, and returns the best plan it has
+ * @param budget             how much search the plan gets, in the search's own work units (seconds of work, see
+ *                           {@code WorkClock}): deterministic, the same on a slow or a fast machine. The search stops
+ *                           when it has nothing left to improve or the budget is spent, and returns the best plan it
+ *                           has
+ * @param wallLimit          the real time cap (SOLVER-CAP): when it passes, the search stops at once and returns the
+ *                           best plan found so far, so a slow machine cannot hang a request. Null: {@link
+ *                           #DEFAULT_WALL_LIMIT}
+ * @param ignorePayload      trial mode only (LP2-9): the payload of every vehicle is not a cap - a carton may be heavier
+ *                           than a type's payload and a vehicle may carry more than it. Everything else (size, door,
+ *                           support, counts) holds. False for every real estimate and load plan (BR-10)
  */
 public record LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
                               List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
-                              Integer targetVehicleCount, long seed, Duration budget) {
+                              Integer targetVehicleCount, long seed, Duration budget, Duration wallLimit,
+                              boolean ignorePayload) {
 
-    /** The default budget; see {@code stockflow.fulfillment.load-planning.solver-budget}. */
+    /** A request that honours the payload, which is every request but a trial. */
+    public LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
+                           List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
+                           Integer targetVehicleCount, long seed, Duration budget, Duration wallLimit) {
+        this(cartons, vehicleTypes, mode, kits, distribution, equalizeFill, targetVehicleCount, seed, budget, wallLimit,
+                false);
+    }
+
+    /** A trial or real request with the default real time cap. */
+    public LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
+                           List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
+                           Integer targetVehicleCount, long seed, Duration budget, boolean ignorePayload) {
+        this(cartons, vehicleTypes, mode, kits, distribution, equalizeFill, targetVehicleCount, seed, budget, null,
+                ignorePayload);
+    }
+
+    /** The default work budget; see {@code stockflow.fulfillment.load-planning.solver-budget}. */
     public static final Duration DEFAULT_BUDGET = Duration.ofSeconds(5);
+
+    /** The default real time cap; see {@code stockflow.fulfillment.load-planning.solver-wall-limit}. */
+    public static final Duration DEFAULT_WALL_LIMIT = Duration.ofSeconds(12);
+
+    /** A request with the default real time cap. */
+    public LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehicleTypes, SelectionMode mode,
+                           List<KitSpec> kits, KitDistribution distribution, boolean equalizeFill,
+                           Integer targetVehicleCount, long seed, Duration budget) {
+        this(cartons, vehicleTypes, mode, kits, distribution, equalizeFill, targetVehicleCount, seed, budget, null,
+                false);
+    }
 
     public LoadPlanRequest {
         cartons = List.copyOf(Objects.requireNonNull(cartons, "cartons"));
@@ -32,6 +68,10 @@ public record LoadPlanRequest(List<CargoPackage> cartons, List<VehicleSpec> vehi
         budget = budget == null ? DEFAULT_BUDGET : budget;
         if (budget.isNegative() || budget.isZero()) {
             throw new IllegalArgumentException("the budget must be positive");
+        }
+        wallLimit = wallLimit == null ? DEFAULT_WALL_LIMIT : wallLimit;
+        if (wallLimit.isNegative() || wallLimit.isZero()) {
+            throw new IllegalArgumentException("the wall limit must be positive");
         }
         if (targetVehicleCount != null && targetVehicleCount < 1) {
             throw new IllegalArgumentException("the target vehicle count must be positive");

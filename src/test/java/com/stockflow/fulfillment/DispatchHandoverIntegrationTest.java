@@ -205,11 +205,17 @@ class DispatchHandoverIntegrationTest {
         return request.contentType("application/json").content(content);
     }
 
+    /** SCRUM-484: terms that exist are changed against the version read; the first set carries none. */
+    private Long currentTermsVersion(UUID customerId) {
+        var terms = customers.creditTerms(customerId);
+        return terms.configured() ? terms.version() : null;
+    }
+
     /** An order of the test customer on {@code term}, its money received as that term wants, released at HCM. */
     private OrderSummary order(PaymentTerm term, DepositBalancePolicy policy, int sofas, long price) {
         customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, true,
                 CommercialTerm.valueOf(term.name()), new BigDecimal("30"), new BigDecimal("10000000000"), 30,
-                "test terms", accountant, null, policy));
+                "test terms", accountant, currentTermsVersion(customer), policy));
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, false,
                 List.of(new PlaceOrderCommand.Line(SOFA, sofas, Money.vnd(price), null)), term, null, null));
         // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).

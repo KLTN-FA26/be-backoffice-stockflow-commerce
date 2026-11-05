@@ -50,12 +50,18 @@ spring:
           jwk-set-uri: ${JWT_JWK_SET_URI}
 
 server:
-  # Behind a reverse proxy that terminates TLS. Without this, Spring sees the proxy's address as the
-  # client address and http as the scheme - so rate limiting keys every request to the proxy, and
-  # generated links come out as http.
-  forward-headers-strategy: framework
+  # Behind a reverse proxy (nginx) that terminates TLS and OVERWRITES X-Forwarded-For. NATIVE makes
+  # Tomcat apply the forwarded headers itself - and only when the connection comes from a trusted
+  # proxy (below). Without it Spring sees the proxy's address and http, so rate limiting keys every
+  # request to the proxy; with FRAMEWORK instead, the filter believes every caller (SCRUM-483).
+  forward-headers-strategy: native
   shutdown: graceful
   tomcat:
+    remoteip:
+      # Who may set the client address: connections from these addresses only. The default is the
+      # private ranges, i.e. the compose network nginx and the application share; the application
+      # publishes no port, so nothing else can connect from one. Override with TRUSTED_PROXIES.
+      internal-proxies: '${TRUSTED_PROXIES:10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|127\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0:0:0:0:0:0:0:1|::1}'
     # Bounded, so a burst queues rather than exhausting memory creating threads.
     threads:
       max: 200
@@ -72,6 +78,11 @@ management:
   endpoint:
     health:
       show-details: when-authorized
+  health:
+    mail:
+      # Mail goes through Resend's HTTP API; the SMTP probe would report on a server nobody uses (localhost:1025
+      # by default) and show the deployment DOWN. Set MAIL_HEALTH_ENABLED=true with EMAIL_PROVIDER=smtp.
+      enabled: ${MAIL_HEALTH_ENABLED:false}
   tracing:
     sampling:
       # 10% of traces. Sampling everything at production volume costs more in storage than it is
@@ -91,6 +102,17 @@ stockflow:
     # ON. This is the whole point of the profile - the local profile turns it off for convenience,
     # and that convenience must never reach a deployment.
     enabled: true
+
+  notification:
+    email:
+      # All mail through Resend (SCRUM-352). With Resend a missing RESEND_API_KEY or RESEND_FROM still stops startup -
+      # ResendEmailTransport refuses both - instead of a server that silently sends nothing. EMAIL_PROVIDER=smtp
+      # switches to the spring.mail relay, which needs MAIL_HOST and its credentials and sends as MAIL_FROM; it must
+      # not stop for a Resend key it does not use (review of #195, N6).
+      provider: ${EMAIL_PROVIDER:resend}
+      from: ${RESEND_FROM:${MAIL_FROM:}}
+      resend:
+        api-key: ${RESEND_API_KEY:}
 
   storage:
     provider: s3

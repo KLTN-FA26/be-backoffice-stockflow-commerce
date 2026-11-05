@@ -73,7 +73,7 @@ public class LoadPlanStore {
                 header.getAcknowledgedBy(), header.getAcknowledgeNote(), header.getConfirmedAt(),
                 header.getConfirmedBy(), header.getReopenedAt(), header.getReopenedBy(), header.getReopenReason(),
                 header.getDispatchedAt(), header.getCancelledAt(), header.getCancelledBy(), header.getCancelReason(),
-                header.getVersion(), typeIds, members, vs));
+                header.getVersion(), typeIds, members, vs, header.getCancelReasonCode()));
     }
 
     /** Inserts a new plan with whatever it already holds. */

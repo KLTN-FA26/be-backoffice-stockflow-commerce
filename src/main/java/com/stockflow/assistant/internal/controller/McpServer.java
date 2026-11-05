@@ -79,7 +79,7 @@ import java.util.Set;
  * the protocol says to assume 2025-03-26 then.</p>
  *
  * <p><b>Each tool call is recorded</b> in {@code assistant.tool_call} as an {@code MCP} run of its user, with its
- * arguments and result, as a chat run is (since {@code V20261104000100}; it leaves with the retention job). The log
+ * arguments and result, as a chat run is (since {@code V20261105000700}; it leaves with the retention job). The log
  * line has the tool, its outcome, its duration, the user's id and the correlation id; a denied one at WARN, where a run
  * of them shows probing. Never the arguments or the result there: they can hold what people typed (a supplier's name,
  * an order note), and an application log travels further and lives longer than the assistant's own records.</p>

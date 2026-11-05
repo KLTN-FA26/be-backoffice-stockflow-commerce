@@ -34,8 +34,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -148,11 +150,16 @@ class MaterialIssueService implements MaterialIssues {
         reads.get(user, productionOrderId);   // 404 and warehouse scope, as for the order itself
         ProductionOrder order = orders.findById(productionOrderId)
                 .orElseThrow(() -> new NotFoundException("production-order", productionOrderId));
+        // Every hold is of the order's blank, often one per carton: look each SKU's barcode up once.
+        Map<String, Optional<String>> barcodes = new HashMap<>();
         List<PendingHold> holds = order.status() != ProductionOrder.Status.READY
                 || order.mode() == ProductionOrder.Mode.SUBCONTRACTED ? List.of()
                 : waitingViews(order).stream()
                         .map(hold -> new PendingHold(hold.reservationId(), hold.sku(), hold.lotNumber(),
-                                hold.locationCode(), hold.quantity(), barcodeOf(hold.sku())))
+                                hold.locationCode(), hold.quantity(),
+                                barcodes.computeIfAbsent(hold.sku(), sku -> Optional.ofNullable(barcodeOf(sku)))
+                                        .orElse(null),
+                                hold.lpn(), hold.wholeCarton()))
                         .toList();
         int outstanding = order.outstandingBlanks();
         return new Pending(order.id(), order.orderNumber(), order.status().name(), order.work().blankSku().code(),
@@ -163,6 +170,10 @@ class MaterialIssueService implements MaterialIssues {
      * SCRUM-409 "scan confirmation": what the clerk scanned at the source must be the hold being issued - its
      * location, then its SKU or the SKU's barcode - checked before anything moves. A scan that names neither keeps
      * the SCRUM-397 contract, where the hold alone decides.
+     *
+     * <p>A hold in a carton (SCRUM-473) takes that carton's label and nothing else: the issue deducts it from that
+     * carton, so a SKU scan would let the clerk bring any carton of the SKU and leave the books disagreeing with the
+     * shelf until a count found it.</p>
      */
     private void requireScanned(ProductionOrder order, UUID chosen, Issue issue) {
         boolean location = issue.scannedLocation() != null && !issue.scannedLocation().isBlank();
@@ -177,12 +188,25 @@ class MaterialIssueService implements MaterialIssues {
             throw new BusinessException(ErrorCode.ISSUE_LOCATION_MISMATCH,
                     "This hold's blanks are at " + hold.locationCode());
         }
-        if (code && !sameCode(issue.scannedCode(), hold.sku()) && !issue.scannedCode().trim().equals(barcodeOf(hold.sku()))) {
-            throw new BusinessException(ErrorCode.ISSUE_ITEM_MISMATCH, "This hold is " + hold.sku());
+        if (code && !itemMatches(hold, issue.scannedCode())) {
+            throw new BusinessException(ErrorCode.ISSUE_ITEM_MISMATCH, hold.lpn() != null
+                    ? "This hold is in carton %s; scan its label".formatted(hold.lpn()) : "This hold is " + hold.sku());
         }
     }
 
-    /** Location codes and SKUs are stored upper case; a scanner or a keyboard may send either. */
+    /** The carton's LPN for a hold in one, else the SKU or its barcode - the rule {@code PickList} applies to a line. */
+    private boolean itemMatches(HoldView hold, String scannedCode) {
+        if (hold.lpn() != null) {
+            return sameCode(scannedCode, hold.lpn());
+        }
+        if (sameCode(scannedCode, hold.sku())) {
+            return true;
+        }
+        String barcode = barcodeOf(hold.sku());
+        return barcode != null && scannedCode.trim().equals(barcode.trim());
+    }
+
+    /** Location codes, SKUs and LPNs are stored upper case; a scanner or a keyboard may send either. */
     private static boolean sameCode(String scanned, String expected) {
         return expected != null && scanned.trim().toUpperCase(Locale.ROOT).equals(expected.toUpperCase(Locale.ROOT));
     }
@@ -284,6 +308,21 @@ class MaterialIssueService implements MaterialIssues {
         List<UUID> candidates = new ArrayList<>(salesOrderHolds(order));
         inventory.productionHolds(order.id()).stream().map(StockReservation::reservationId).forEach(candidates::add);
         candidates.removeIf(issued::contains);
+        // Review 2026-10-25 of S6: holds that are over on purpose are skipped - a split child that finished first adds
+        // its goods to the line's holds (ProductionCompletion), consumed at packing at once; a split that moved a whole
+        // checkout hold to a subcontractor released it - or the root could not be issued once its subcontractor
+        // delivered before the print shop started. Only those: a hold still waiting for payment, one that expired, or
+        // one released by the order's cancellation (before production heard of it) stays a candidate for issue to
+        // refuse, never replaced by fresh blanks.
+        List<HoldView> views = inventory.holds(candidates);
+        boolean orderLive = views.stream().anyMatch(hold -> hold.status() == HoldView.Status.RELEASED)
+                && order.salesOrderId() != null && salesOrders.findById(order.salesOrderId())
+                        .map(sales -> sales.status() != com.stockflow.order.api.OrderStatus.CANCELLED).orElse(false);
+        Set<UUID> over = views.stream()
+                .filter(hold -> hold.status() == HoldView.Status.CONSUMED
+                        || orderLive && hold.status() == HoldView.Status.RELEASED)
+                .map(HoldView::reservationId).collect(Collectors.toSet());
+        candidates.removeIf(over::contains);
         return candidates;
     }
 

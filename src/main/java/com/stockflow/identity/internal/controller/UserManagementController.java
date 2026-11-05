@@ -15,8 +15,10 @@ import com.stockflow.identity.internal.controller.dto.CreateUserRequest;
 import com.stockflow.identity.internal.controller.dto.CreatedUserResponse;
 import com.stockflow.identity.internal.controller.dto.PasswordResetRequest;
 import com.stockflow.identity.internal.controller.dto.PasswordResetResponse;
+import com.stockflow.identity.internal.controller.dto.StatusChangeRequest;
 import com.stockflow.identity.internal.controller.dto.UpdateUserRequest;
 import com.stockflow.identity.internal.controller.dto.UserResponse;
+import com.stockflow.identity.internal.controller.dto.UserStatusChangeResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -111,29 +113,33 @@ class UserManagementController {
     @PostMapping("/{userId}/lock")
     @Operation(summary = "Lock the account and sign it out everywhere")
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.UPDATE)
-    public ApiResponse<UserResponse> lock(@PathVariable UUID userId) {
-        return status(userId, UserStatusChange.LOCK);
+    public ApiResponse<UserResponse> lock(@PathVariable UUID userId,
+                                                @Valid @RequestBody StatusChangeRequest request) {
+        return status(userId, UserStatusChange.LOCK, request);
     }
 
     @PostMapping("/{userId}/unlock")
     @Operation(summary = "Unlock the account, also ending a lock after too many wrong passwords")
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.UPDATE)
-    public ApiResponse<UserResponse> unlock(@PathVariable UUID userId) {
-        return status(userId, UserStatusChange.UNLOCK);
+    public ApiResponse<UserResponse> unlock(@PathVariable UUID userId,
+                                                @Valid @RequestBody StatusChangeRequest request) {
+        return status(userId, UserStatusChange.UNLOCK, request);
     }
 
     @PostMapping("/{userId}/disable")
     @Operation(summary = "Retire the account (kept for its history) and sign it out everywhere")
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.UPDATE)
-    public ApiResponse<UserResponse> disable(@PathVariable UUID userId) {
-        return status(userId, UserStatusChange.DISABLE);
+    public ApiResponse<UserResponse> disable(@PathVariable UUID userId,
+                                                @Valid @RequestBody StatusChangeRequest request) {
+        return status(userId, UserStatusChange.DISABLE, request);
     }
 
     @PostMapping("/{userId}/enable")
     @Operation(summary = "Bring a disabled account back")
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.UPDATE)
-    public ApiResponse<UserResponse> enable(@PathVariable UUID userId) {
-        return status(userId, UserStatusChange.ENABLE);
+    public ApiResponse<UserResponse> enable(@PathVariable UUID userId,
+                                                @Valid @RequestBody StatusChangeRequest request) {
+        return status(userId, UserStatusChange.ENABLE, request);
     }
 
     @PostMapping("/{userId}/password-reset")
@@ -146,7 +152,20 @@ class UserManagementController {
                 request == null ? null : request.newPassword())));
     }
 
-    private ApiResponse<UserResponse> status(UUID userId, UserStatusChange change) {
-        return ApiResponse.ok(mapper.toResponse(identityService.changeUserStatus(userId, change)));
+    /**
+     * Every administrator lock / unlock / disable / enable of the account with its reason, newest first
+     * (SCRUM-474 LOCK-REASON). Same permission as reading the account itself.
+     */
+    @GetMapping("/{userId}/status-changes")
+    @Operation(summary = "The account's status history: who locked, unlocked, disabled or enabled it, and why")
+    @RequiresPermission(resource = IdentityResources.USERS, action = Action.READ)
+    public ApiResponse<PageResponse<UserStatusChangeResponse>> statusChanges(@PathVariable UUID userId,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size) {
+        return ApiResponse.ok(identityService.statusHistory(userId, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(mapper::toResponse));
+    }
+
+    private ApiResponse<UserResponse> status(UUID userId, UserStatusChange change, StatusChangeRequest request) {
+        return ApiResponse.ok(mapper.toResponse(identityService.changeUserStatus(userId, change, request.reason())));
     }
 }

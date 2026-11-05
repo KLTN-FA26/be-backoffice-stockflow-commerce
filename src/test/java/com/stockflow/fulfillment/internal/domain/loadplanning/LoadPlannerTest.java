@@ -319,7 +319,7 @@ class LoadPlannerTest {
         List<CargoPackage> cartons = LoadPlannerPropertyTest.randomCartons(new java.util.Random(3), 500, true);
         LoadPlanRequest req = new LoadPlanRequest(cartons, List.of(dc20(40, 150), dc40(20, 150), hc40(20, 150)),
                 SelectionMode.FEWEST_VEHICLES, LoadPlannerPropertyTest.KITS, KitDistribution.AUTO, false, null, 0L,
-                Duration.ofMillis(50));
+                Duration.ofMillis(50), Duration.ofMillis(50));
         long t0 = System.nanoTime();
         LoadPlanResult r = new LoadPlanner().plan(req);
         assertSound(req, r);
@@ -397,7 +397,8 @@ class LoadPlannerTest {
         }
         for (SelectionMode mode : SelectionMode.values()) {
             LoadPlanRequest req = new LoadPlanRequest(cartons, List.of(dc20(40, 150), dc40(20, 150), hc40(20, 150)),
-                    mode, List.of(), KitDistribution.AUTO, false, null, 0L, Duration.ofMillis(300));
+                    mode, List.of(), KitDistribution.AUTO, false, null, 0L, Duration.ofMillis(300),
+                    Duration.ofMillis(300));
             long t0 = System.nanoTime();
             LoadPlanResult r = new LoadPlanner().plan(req);
             long ms = (System.nanoTime() - t0) / 1_000_000;
@@ -535,7 +536,8 @@ class LoadPlannerTest {
                     "3", true, "SKU" + i % 300));
         }
         LoadPlanRequest req = new LoadPlanRequest(cartons, List.of(dc20(200, 150), dc40(100, 150)),
-                SelectionMode.FEWEST_VEHICLES, List.of(), KitDistribution.AUTO, false, null, 0L, Duration.ofMillis(5));
+                SelectionMode.FEWEST_VEHICLES, List.of(), KitDistribution.AUTO, false, null, 0L, Duration.ofMillis(5),
+                Duration.ofMillis(5));
         LoadPlanResult r = new LoadPlanner().plan(req);
         assertSound(req, r);
         assertThat(r.meta().budgetExhausted()).isTrue();

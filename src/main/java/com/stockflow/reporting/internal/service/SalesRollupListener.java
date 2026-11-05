@@ -2,6 +2,9 @@ package com.stockflow.reporting.internal.service;
 
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderPlaced;
+import com.stockflow.contracts.OrderRemainderClosed;
+import com.stockflow.contracts.ReturnReplacementWithdrawn;
+import com.stockflow.contracts.ReturnResolved;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
@@ -29,5 +32,26 @@ class SalesRollupListener {
     @ApplicationModuleListener
     public void on(OrderCancelled event) {
         rollups.orderCancelled(event.orderId());
+    }
+
+    /**
+     * Only a short completion lowers what an order is worth for the report (S6, owner decision SHORT-LIMITS 2026-11-02).
+     * What closing the rest of a split order does to the rollups is not decided: left as it was.
+     */
+    @ApplicationModuleListener
+    public void on(OrderRemainderClosed event) {
+        if (OrderRemainderClosed.PRODUCTION_SHORTFALL.equals(event.reasonCode())) {
+            rollups.productionShortfallClosed(event);
+        }
+    }
+
+    @ApplicationModuleListener
+    public void on(ReturnResolved event) {
+        rollups.returnResolved(event);
+    }
+
+    @ApplicationModuleListener
+    public void on(ReturnReplacementWithdrawn event) {
+        rollups.replacementWithdrawn(event);
     }
 }

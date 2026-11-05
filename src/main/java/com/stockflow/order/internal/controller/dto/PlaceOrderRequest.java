@@ -56,8 +56,19 @@ public record PlaceOrderRequest(
                 + "the error's details); ON_DELIVERY only for a customer whose terms say so. A policy the customer may "
                 + "not use is 409 BALANCE_POLICY_NOT_ALLOWED; omit for the customer's terms (G2-3). The ones a customer "
                 + "may pick are listed by GET /orders/payment-terms as allowedBalancePolicies", example = "BEFORE_DELIVERY")
-        com.stockflow.order.api.BalancePolicy balancePolicy
+        com.stockflow.order.api.BalancePolicy balancePolicy,
+
+        @Schema(description = "Place the order although the same customer placed one with the same lines recently "
+                + "(409 DUPLICATE_ORDER_SUSPECTED, with the earlier order in details). Omit or false to be asked. "
+                + "Applies to portal customers; staff placing an order for a customer are not asked",
+                example = "false")
+        Boolean confirmDuplicate
 ) {
+
+    /** True only when the caller explicitly confirmed; absent means the check applies. */
+    public boolean duplicateConfirmed() {
+        return Boolean.TRUE.equals(confirmDuplicate);
+    }
 
     @Schema(description = "One order line")
     public record Line(

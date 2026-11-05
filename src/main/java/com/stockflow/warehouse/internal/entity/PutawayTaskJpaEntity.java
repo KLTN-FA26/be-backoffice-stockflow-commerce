@@ -13,7 +13,7 @@ import java.util.UUID;
 /**
  * JPA mapping of a putaway task (table {@code warehouse.putaway_task}). Not the domain model.
  *
- * <p>STARTER ENTITY. Created when goods arrive and need moving to a storage location. A task has
+ * <p>Created when goods arrive and need moving to a storage location. A task has
  * exactly one source ({@code ck_putaway_task_source}): a goods receipt line (with its receipt), a
  * transfer order line or a return line. The receipt references are foreign keys to
  * {@code procurement.goods_receipts}/{@code goods_receipt_lines} since contract C4, the target one to
@@ -41,6 +41,10 @@ public class PutawayTaskJpaEntity extends BaseEntity {
     @Column(name = "quantity", nullable = false)
     private int quantity;
 
+    /** The carton this task puts away ({@code inventory.stock_package}); null for loose stock. */
+    @Column(name = "stock_package_id")
+    private UUID stockPackageId;
+
     /** A {@code warehouse.storage_location}: a bin or a storage area. */
     @Column(name = "target_location_id")
     private UUID targetLocationId;
@@ -52,13 +56,21 @@ public class PutawayTaskJpaEntity extends BaseEntity {
     protected PutawayTaskJpaEntity() {
     }
 
-    /** A task for one counted goods receipt line. */
+    /** A task for one counted goods receipt line, or for one carton of it. */
     public PutawayTaskJpaEntity(UUID id, UUID goodsReceiptId, UUID goodsReceiptLineId, String sku, int quantity,
-                                UUID targetLocationId, PutawayStatus status) {
+                                UUID stockPackageId, UUID targetLocationId, PutawayStatus status) {
         super(id);
         this.goodsReceiptId = goodsReceiptId;
         this.goodsReceiptLineId = goodsReceiptLineId;
         this.sku = sku;
+        this.quantity = quantity;
+        this.stockPackageId = stockPackageId;
+        this.targetLocationId = targetLocationId;
+        this.status = status;
+    }
+
+    /** The only columns a task changes after it is opened. */
+    public void apply(int quantity, UUID targetLocationId, PutawayStatus status) {
         this.quantity = quantity;
         this.targetLocationId = targetLocationId;
         this.status = status;
@@ -70,6 +82,7 @@ public class PutawayTaskJpaEntity extends BaseEntity {
     public UUID getReturnRequestLineId() { return returnRequestLineId; }
     public String getSku() { return sku; }
     public int getQuantity() { return quantity; }
+    public UUID getStockPackageId() { return stockPackageId; }
     public UUID getTargetLocationId() { return targetLocationId; }
     public PutawayStatus getStatus() { return status; }
 }

@@ -63,7 +63,7 @@ class FindPurchaseOrdersToolTest {
                 "Xưởng gỗ Việt", UUID.randomUUID(), "HCM", "Ho Chi Minh warehouse", status, "VND",
                 LocalDate.of(2026, 10, 1), expected, new BigDecimal("71000000.00"), new BigDecimal("7100000.00"),
                 new BigDecimal("78100000.00"), null, lines, Instant.now(), "buyer", Instant.now(), "buyer", false,
-                0, UUID.randomUUID(), Instant.now(), UUID.randomUUID(), Instant.now(), UUID.randomUUID(),
+                0, UUID.randomUUID(), Instant.now(), UUID.randomUUID(), Instant.now(), false, UUID.randomUUID(),
                 Instant.now(), null, null, null, null, 30, 14, Instant.now(), supplierAnswer, null, null, responseNote,
                 0, BigDecimal.ZERO);
     }
@@ -71,7 +71,7 @@ class FindPurchaseOrdersToolTest {
     private static POLineSummary line(int lineNo, String sku, int ordered, int received, String status) {
         return new POLineSummary(UUID.randomUUID(), lineNo, UUID.randomUUID(), sku, "a product", "EACH", ordered,
                 received, new BigDecimal("400.00"), new BigDecimal("10"), new BigDecimal("440.00"), status, false,
-                false, false);
+                false, false, null, null, null);
     }
 
     private List<FindPurchaseOrdersTool.Row> rows(PurchaseOrderSummary... orders) {
@@ -171,6 +171,30 @@ class FindPurchaseOrdersToolTest {
                 .containsExactly(tuple("EVAL-LID-90", 1000, 0, 1000), tuple("EVAL-CUP-12OZ", 500, 200, 300),
                         tuple("EVAL-CUP-16OZ", 100, 60, 0));
         assertThat(row.lines().getFirst().unitPriceBeforeTax()).isEqualByComparingTo("400");
+    }
+
+    @Test
+    @DisplayName("a line ordered in cartons gives its unit, the carton and the whole cartons still to receive, worked "
+            + "out here; a line in units gives none of them")
+    void packs() {
+        UUID id = UUID.randomUUID();
+        POLineSummary cartons = new POLineSummary(UUID.randomUUID(), 1, UUID.randomUUID(), "EVAL-CUP-12OZ", "cups",
+                "PCS", 5000, 1200, new BigDecimal("400.00"), new BigDecimal("10"), new BigDecimal("2000000.00"),
+                "PARTIALLY_RECEIVED", false, false, false, "CARTON", 500, 10);
+        when(procurement.list(any())).thenReturn(PageResponse.of(
+                List.of(po(id, "PO-PLAY-0002", "PARTIALLY_RECEIVED", "CONFIRMED", TODAY.plusDays(5), null, List.of())),
+                0, 50, 1));
+        when(procurement.findById(id)).thenReturn(Optional.of(po(id, "PO-PLAY-0002", "PARTIALLY_RECEIVED",
+                "CONFIRMED", TODAY.plusDays(5), null, List.of(cartons, line(2, "EVAL-LID-90", 100, 0, "OPEN")))));
+
+        List<FindPurchaseOrdersTool.Line> lines = tool.run(args("PO-PLAY-0002", "")).purchaseOrders().getFirst()
+                .lines();
+
+        assertThat(lines).extracting(FindPurchaseOrdersTool.Line::stillToReceive, FindPurchaseOrdersTool.Line::unit,
+                        FindPurchaseOrdersTool.Line::packingUnit, FindPurchaseOrdersTool.Line::unitsPerPacking,
+                        FindPurchaseOrdersTool.Line::packsStillToReceive,
+                        FindPurchaseOrdersTool.Line::looseUnitsStillToReceive)
+                .containsExactly(tuple(3800, "PCS", "CARTON", 500, 7, 300), tuple(100, "EACH", null, null, null, null));
     }
 
     @Test

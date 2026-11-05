@@ -79,7 +79,11 @@ class FindPurchaseOrdersTool implements AssistantTool {
                     + "returned: the candidates are, so ask which one or call again with its code. When total is "
                     + "above the POs returned, say how many were left out. When exactly one PO matches, or a PO "
                     + "number is given in full, that PO comes with its lines: SKU, units ordered, received and still "
-                    + "to receive, line status and unit price before VAT. Other rows carry no lines.",
+                    + "to receive, all in the line's unit, line status and unit price before VAT (per unit). A line "
+                    + "ordered in packs also has packingUnit and unitsPerPacking (a carton of 500, say), with "
+                    + "packsStillToReceive and looseUnitsStillToReceive already worked out: quote those, never divide. "
+                    + "Line status CLOSED means the rest was written off when the order was closed short; CANCELLED "
+                    + "that an amendment removed the line. Other rows carry no lines.",
             ToolSchema.object()
                     .choice("status", "Only POs in this status; ANY for every status", STATUSES)
                     .string("poNumber", "Text to match in the PO number; an empty string for no PO number filter")
@@ -219,14 +223,23 @@ class FindPurchaseOrdersTool implements AssistantTool {
      *                           closed or cancelled, while the order is not yet approved, and when the supplier refused
      *                           the order, whatever ordered minus received says
      * @param unitPriceBeforeTax the line's unit price; its VAT is added on the order
+     * @param unit               the unit every quantity of the line is in (prices too)
+     * @param packingUnit        the pack the line was ordered in (a carton, say); null for a line in units
+     * @param unitsPerPacking    units in one pack; null for a line in units
+     * @param packsStillToReceive       whole packs in {@code stillToReceive}, worked out here so the model never divides
+     * @param looseUnitsStillToReceive  the units of {@code stillToReceive} beyond those whole packs
      */
     record Line(int lineNo, String sku, int ordered, int received, int stillToReceive, String status,
-                BigDecimal unitPriceBeforeTax) {
+                BigDecimal unitPriceBeforeTax, String unit, String packingUnit, Integer unitsPerPacking,
+                Integer packsStillToReceive, Integer looseUnitsStillToReceive) {
 
         static Line of(POLineSummary line, boolean awaited) {
             boolean open = "OPEN".equals(line.status()) || "PARTIALLY_RECEIVED".equals(line.status());
-            return new Line(line.lineNo(), line.sku(), line.quantityOrdered(), line.quantityReceived(),
-                    awaited && open ? line.openQuantity() : 0, line.status(), line.unitPrice());
+            int still = awaited && open ? line.openQuantity() : 0;
+            Integer factor = line.unitFactor() != null && line.unitFactor() > 1 ? line.unitFactor() : null;
+            return new Line(line.lineNo(), line.sku(), line.quantityOrdered(), line.quantityReceived(), still,
+                    line.status(), line.unitPrice(), line.uom(), factor == null ? null : line.unitOfMeasure(), factor,
+                    factor == null ? null : still / factor, factor == null ? null : still % factor);
         }
     }
 }

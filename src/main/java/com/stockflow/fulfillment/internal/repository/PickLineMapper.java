@@ -15,13 +15,15 @@ public final class PickLineMapper {
         return new PickLine(e.getId(), e.getOrderLineId(), e.getReservationId(), e.getSku(), e.getLocationCode(),
                 e.getLotNumber(), e.getSequenceNo(), e.getAllocatedQty(), e.getPickedQty(), e.getStatus(),
                 e.getPickedBy(), e.getPickedAt(), e.getConsumedAt(), e.getScannedLocationCode(), e.getScannedCode(),
-                e.getPutBackQty(), e.getPutBackLocationCode(), e.getPutBackBy(), e.getPutBackAt(), e.getShortQty());
+                e.getPutBackQty(), e.getPutBackLocationCode(), e.getPutBackBy(), e.getPutBackAt(), e.getShortQty(),
+                e.getLpn(), e.isWholeCarton(), e.getDamagedQty(), e.getDamageReportId(), e.getPackingDamagedQty());
     }
 
     /** A row for a line the aggregate just planned. */
     public static PickLineJpaEntity toNewEntity(UUID pickId, PickLine line) {
         var entity = new PickLineJpaEntity(line.id(), pickId, line.orderLineId(), line.reservationId(), line.sku(),
-                line.locationCode(), line.lotNumber(), line.sequenceNo(), line.allocatedQty());
+                line.locationCode(), line.lotNumber(), line.sequenceNo(), line.allocatedQty(), line.lpn(),
+                line.wholeCarton());
         applyTo(line, entity);
         return entity;
     }
@@ -31,5 +33,7 @@ public final class PickLineMapper {
                 line.scannedLocationCode(), line.scannedCode(), line.putBackQty(), line.putBackLocationCode(),
                 line.putBackBy(), line.putBackAt());
         entity.recordShort(line.shortQty());
+        entity.recordDamage(line.damagedQty(), line.damageReportId());
+        entity.recordDamageAfterPick(line.packingDamagedQty());
     }
 }

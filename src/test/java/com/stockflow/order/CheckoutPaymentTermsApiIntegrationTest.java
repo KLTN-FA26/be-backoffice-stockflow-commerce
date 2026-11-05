@@ -98,9 +98,10 @@ class CheckoutPaymentTermsApiIntegrationTest {
                 "test terms", approver, null));
     }
 
+    /** These tests are about terms, not about ordering twice (SCRUM-190): every placement confirms a duplicate. */
     private ResultActions place(String extra) throws Exception {
         return http().asCustomer(user, post(ORDERS).contentType(MediaType.APPLICATION_JSON).content("""
-                {"requestId":"%s","customerId":"%s","lines":[{"sku":"SOFA-3S-GREY","quantity":1,"unitPrice":12500000}]%s}"""
+                {"requestId":"%s","customerId":"%s","confirmDuplicate":true,"lines":[{"sku":"SOFA-3S-GREY","quantity":1,"unitPrice":12500000}]%s}"""
                 .formatted(UUID.randomUUID(), customer, extra)));
     }
 
@@ -228,10 +229,16 @@ class CheckoutPaymentTermsApiIntegrationTest {
 
     // ------------------------------------------------------------------ SCRUM-193: the balance policy on the portal
 
+    /** SCRUM-484: terms that exist are changed against the version read; the first set carries none. */
+    private Long currentTermsVersion() {
+        var terms = customers.creditTerms(customer);
+        return terms.configured() ? terms.version() : null;
+    }
+
     private void depositTerms(boolean credit, String limit, com.stockflow.customer.api.DepositBalancePolicy policy) {
         customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, credit, CommercialTerm.DEPOSIT,
                 new BigDecimal("30"), credit ? new BigDecimal(limit) : null, credit ? 30 : null, "test terms", approver,
-                null, policy));
+                currentTermsVersion(), policy));
     }
 
     private ResultActions placeTwo(String extra) throws Exception {

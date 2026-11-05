@@ -213,11 +213,15 @@ public class ReceiptDraftService {
         records.put("supplier", order.supplierName());
         ArrayNode lines = records.putArray("openLines");
         for (POLineSummary line : open) {
-            lines.addObject()
+            ObjectNode entry = lines.addObject()
                     .put("lineNo", line.lineNo())
                     .put("sku", line.sku())
                     .put("product", TypedText.masked(line.description()))
                     .put("unit", line.uom());
+            // A line ordered in packs: a note that counts cartons can then be read in units (the instruction says how).
+            if (line.unitFactor() != null && line.unitFactor() > 1 && line.unitOfMeasure() != null) {
+                entry.put("packingUnit", line.unitOfMeasure()).put("unitsPerPacking", line.unitFactor());
+            }
         }
         try {
             return CONTEXT_LEAD + json.writeValueAsString(records);

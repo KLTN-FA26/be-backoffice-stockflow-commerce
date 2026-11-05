@@ -59,7 +59,10 @@ public class ProcurementFieldsValidator
                 }
                 // Field constraints report these values. Do not add unbounded exponents to a
                 // BigDecimal total before those constraints have rejected the individual price.
-                if (line.quantityOrdered() <= 0
+                // A line in a packing unit (SCRUM-473) may leave quantityOrdered out: its base quantity is
+                // known only once the unit is resolved, and the service holds the total to the same limit.
+                if (line.quantityOrdered() == null
+                        || line.quantityOrdered() <= 0
                         || line.quantityOrdered() > 1_000_000
                         || line.unitPrice().signum() < 0
                         || line.unitPrice().scale() > 2

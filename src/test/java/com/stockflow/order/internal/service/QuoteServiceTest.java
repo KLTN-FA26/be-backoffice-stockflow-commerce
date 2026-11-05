@@ -178,6 +178,65 @@ class QuoteServiceTest {
     }
 
     @Test
+    void conversionCarriesTheRequestedDeliveryDateOntoEveryLine() {
+        java.time.LocalDate asked = java.time.LocalDate.of(2026, 12, 15);
+        QuoteLine first = new QuoteLine(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), design, null, 1000,
+                List.of(PriceTier.of(1000, new BigDecimal("2000"))), 1000, Money.vnd(2000));
+        QuoteLine second = new QuoteLine(UUID.randomUUID(), 2, new Sku("CUP-PP-500"), UUID.randomUUID(), null, 500,
+                List.of(PriceTier.of(500, new BigDecimal("2100"))), 500, Money.vnd(2100));
+        Quote quote = Quote.restore(UUID.randomUUID(), "QT-1", UUID.randomUUID(), customer, QuoteStatus.ACCEPTED, 1,
+                new Quote.Offer(PaymentTerm.PREPAID, null, NOW.plusSeconds(3600), null, asked, List.of(first, second)),
+                NOW, sales.userId(), NOW, portalUser, null, null, null, null);
+        when(quotes.findByIdForUpdate(quote.id())).thenReturn(Optional.of(quote));
+        when(quotes.findById(quote.id())).thenReturn(Optional.of(quote));
+        when(quotedOrders.placeQuotedOrder(any())).thenReturn(new OrderSummary(UUID.randomUUID(), "SO-1", customer,
+                OrderStatus.PENDING_PAYMENT, Money.vnd(3_050_000), List.of(), NOW));
+
+        service.convert(sales, quote.id(), new Quotes.Conversion(7, null, null));
+
+        ArgumentCaptor<PlaceOrderCommand> placed = ArgumentCaptor.forClass(PlaceOrderCommand.class);
+        verify(quotedOrders).placeQuotedOrder(placed.capture());
+        assertThat(placed.getValue().lines()).hasSize(2)
+                .allSatisfy(line -> assertThat(line.requestedDeliveryDate()).isEqualTo(asked));
+    }
+
+    @Test
+    void aQuoteWithoutADateConvertsToLinesWithoutOne() {
+        Quote quote = stored(QuoteStatus.ACCEPTED);
+        when(quotedOrders.placeQuotedOrder(any())).thenReturn(new OrderSummary(UUID.randomUUID(), "SO-1", customer,
+                OrderStatus.PENDING_PAYMENT, Money.vnd(9_000_000), List.of(), NOW));
+
+        service.convert(sales, quote.id(), new Quotes.Conversion(7, null, null));
+
+        ArgumentCaptor<PlaceOrderCommand> placed = ArgumentCaptor.forClass(PlaceOrderCommand.class);
+        verify(quotedOrders).placeQuotedOrder(placed.capture());
+        assertThat(placed.getValue().lines()).singleElement()
+                .satisfies(line -> assertThat(line.requestedDeliveryDate()).isNull());
+    }
+
+    @Test
+    void theRequestedDeliveryDateIsStoredWithTheDraftAndNeverInThePast() {
+        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
+        when(quotes.nextNumber(any())).thenReturn("QT-9");
+        org.mockito.ArgumentCaptor<Quote> saved = org.mockito.ArgumentCaptor.forClass(Quote.class);
+        // NOW is 2026-10-14 10:00 in Ho Chi Minh City: today there is a date that can still be asked for.
+        java.time.LocalDate today = java.time.LocalDate.of(2026, 10, 14);
+        Quotes.Line line = new Quotes.Line("CUP-PP-500", design, "Logo", 1000,
+                List.of(new Quotes.Tier(1000, new BigDecimal("2000"))));
+
+        service.create(sales, new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(PaymentTerm.PREPAID, null,
+                NOW.plusSeconds(3600), null, List.of(line), today)));
+        verify(quotes).save(saved.capture());
+        assertThat(saved.getValue().offer().requestedDeliveryDate()).isEqualTo(today);
+
+        assertThatThrownBy(() -> service.create(sales, new Quotes.Create(UUID.randomUUID(), customer,
+                new Quotes.Draft(PaymentTerm.PREPAID, null, NOW.plusSeconds(3600), null, List.of(line),
+                        today.minusDays(1)))))
+                .satisfies(e -> assertThat(code(e)).isEqualTo(ErrorCode.VALIDATION_FAILED));
+        verify(quotes, org.mockito.Mockito.times(1)).save(any());
+    }
+
+    @Test
     void aConvertedQuoteIsAnsweredWithoutPlacingAgainAndOnlyStaffConvert() {
         Quote converted = stored(QuoteStatus.CONVERTED);
         service.convert(sales, converted.id(), new Quotes.Conversion(1, null, null));

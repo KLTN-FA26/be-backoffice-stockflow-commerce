@@ -114,6 +114,14 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItem> findHoldingRequest(UUID rootRequestId) {
+        return jpa.findStockItemIdsForRequest(rootRequestId).stream()
+                .map(id -> jpa.findByIdWithReservations(id).map(StockItemPersistenceMapper::toDomain))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    @Override
     public List<StockAllocator.Candidate> findAvailabilityBySku(Sku sku) {
         return jpa.findAvailabilityBySku(sku.code()).stream()
                 .map(AvailabilityRow::toCandidate)
@@ -142,6 +150,12 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public Map<String, Integer> findAllocatedBySku(Sku sku) {
+        return jpa.findAllocatedRowsBySku(sku.code()).stream()
+                .collect(java.util.stream.Collectors.toMap(AllocatedRow::locationCode, row -> (int) row.quantity()));
+    }
+
+    @Override
     public Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today) {
         if (skus.isEmpty()) {
             return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask
@@ -166,10 +180,41 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItemId> findIdsInStockPackages(
+            java.util.Collection<com.stockflow.inventory.internal.domain.StockPackageId> stockPackageIds) {
+        if (stockPackageIds.isEmpty()) {
+            return List.of();
+        }
+        return jpa.findIdsInStockPackages(stockPackageIds.stream()
+                        .map(com.stockflow.inventory.internal.domain.StockPackageId::value).distinct().toList())
+                .stream().map(StockItemId::new).toList();
+    }
+
+    @Override
     public List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location) {
         return jpa.findLooseBySkuAndLocation(sku.code(), location.code()).stream()
                 .map(StockItemPersistenceMapper::toDomain)
                 .toList();
+    }
+
+    @Override
+    public List<StockItem> findLooseInboundByLot(Sku sku, java.util.UUID lotId) {
+        return jpa.findLooseInboundByLot(sku.code(), lotId).stream()
+                .map(StockItemPersistenceMapper::toDomain)
+                .toList();
+    }
+
+    @Override
+    public Map<UUID, String> looseInboundLocationByLot(Collection<UUID> lotIds) {
+        if (lotIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, String> first = new HashMap<>();
+        // Ordered by id, so the first row met for a lot is its lowest.
+        for (Object[] row : jpa.findLooseInboundLocations(lotIds)) {
+            first.putIfAbsent((UUID) row[0], (String) row[1]);
+        }
+        return first;
     }
 
     @Override
@@ -255,6 +300,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     private void mergeMarker(String value) {
         entityManager.createNativeQuery("SELECT set_config('stockflow.same_receipt_merge', :value, true)")
                 .setParameter("value", value).getSingleResult();
+    }
+
+    @Override
+    public StockItem saveNow(StockItem stockItem) {
+        StockItem saved = save(stockItem);
+        entityManager.flush();
+        return saved;
     }
 
     @Override

@@ -19,8 +19,12 @@ import java.util.stream.Stream;
  * warehouse-bound user sees only their warehouses' receipts.
  *
  * <p><b>Where a receipt stands is its status</b>: counted but not confirmed (DRAFT), waiting for or in QC until every
- * line needing it is decided (IN_QC), waiting to be put away (IN_PUTAWAY), finished (CLOSED). OPEN asks for the first
- * three at once, the work still to do.
+ * line needing it is decided (IN_QC), waiting to be put away (IN_PUTAWAY), finished (CLOSED); and waiting for a second
+ * person's decision before any stock is counted in (PENDING_APPROVAL), for one of two reasons with two different
+ * rejections: a count beyond a PO line's tolerance (SCRUM-477: rejecting cuts the excess and posts the rest) or goods
+ * that came without a purchase order (SCRUM-478: rejecting cancels the receipt). OPEN asks for the four that are work
+ * still to do. {@code withoutPurchaseOrder} tells the two apart, so that the model never calls a receipt against a PO
+ * "without a PO", nor tells a manager that rejecting cancels it.
  * A row carries no lines, so it does not say which line still waits for QC or how many units are left to put away; the
  * description says so rather than let a receipt in QC read as "all of it in QC".</p>
  *
@@ -41,12 +45,19 @@ class FindGoodsReceiptsTool implements AssistantTool {
             GoodsReceiptQueries.STATUSES.stream().filter(status -> !"CONFIRMED".equals(status))).toList();
 
     private static final ToolSpec SPEC = new ToolSpec("findGoodsReceipts",
-            "Goods receipts (deliveries from suppliers counted in against a purchase order), most recently received "
-                    + "first: receipt number, PO number, supplier, warehouse, status, when it was received, confirmed "
-                    + "and closed. status: DRAFT counted but not confirmed yet, IN_QC waiting for or in quality "
+            "Goods receipts (deliveries from suppliers counted in, against a purchase order or, for goods that came "
+                    + "without one, against the supplier only), most recently received first: receipt number, PO "
+                    + "number, withoutPurchaseOrder (true: the goods came without a purchase order, so there is no PO "
+                    + "number), supplier, warehouse, status, when it was received, confirmed and closed. status: DRAFT "
+                    + "counted but not confirmed yet, PENDING_APPROVAL confirmed and waiting for a second person (never "
+                    + "whoever received it) to decide, with no stock counted in until then: either a line was counted "
+                    + "beyond what its purchase order allows (approving posts the whole count, rejecting cuts the "
+                    + "excess and posts the rest) or, when withoutPurchaseOrder is true, the goods came without a "
+                    + "purchase order (approving posts them, rejecting cancels the receipt); IN_QC waiting for or in "
+                    + "quality "
                     + "control (until every line that needs QC is decided), IN_PUTAWAY waiting to be put away on the "
                     + "shelves, CLOSED finished (put away, or nothing was left to put away), CANCELLED abandoned before "
-                    + "confirming. OPEN asks for DRAFT, IN_QC and IN_PUTAWAY "
+                    + "confirming or rejected. OPEN asks for DRAFT, PENDING_APPROVAL, IN_QC and IN_PUTAWAY "
                     + "together, the work still to do. A row has no lines: it does not say which line still waits for "
                     + "QC or how many units are left to put away. Only receipts of the warehouses the user may see. "
                     + "Filter by status and by text in the receipt number; there is no filter by PO, supplier or "
@@ -55,7 +66,8 @@ class FindGoodsReceiptsTool implements AssistantTool {
                     + "returned (truncated), say how many were left out. findPurchaseOrders says what is still to "
                     + "arrive on a PO.",
             ToolSchema.object()
-                    .choice("status", "Only receipts in this status; OPEN for DRAFT, IN_QC and IN_PUTAWAY; ANY for "
+                    .choice("status", "Only receipts in this status; OPEN for DRAFT, PENDING_APPROVAL, IN_QC and "
+                            + "IN_PUTAWAY; ANY for "
                             + "every status", STATUSES)
                     .string("receiptNumber", "Text in the receipt number, such as GR-20261028-0001 or part of it; an "
                             + "empty string for every receipt")
@@ -110,14 +122,14 @@ class FindGoodsReceiptsTool implements AssistantTool {
      * @param supplierName as the list shows it, cut to {@value #MAX_SUPPLIER_NAME} characters and an ellipsis: enough
      *                     to tell suppliers apart, and fifty rows of long company names still fit in one result
      */
-    record Row(String receiptNumber, String purchaseOrderNumber, String supplierName, String warehouseCode,
-               String status, Instant receivedAt, Instant confirmedAt, Instant closedAt) {
+    record Row(String receiptNumber, String purchaseOrderNumber, boolean withoutPurchaseOrder, String supplierName,
+               String warehouseCode, String status, Instant receivedAt, Instant confirmedAt, Instant closedAt) {
 
         static final int MAX_SUPPLIER_NAME = 60;
 
         static Row of(GoodsReceiptSummary receipt) {
             String supplier = receipt.supplierName();
-            return new Row(receipt.number(), receipt.purchaseOrderNumber(),
+            return new Row(receipt.number(), receipt.purchaseOrderNumber(), receipt.withoutPurchaseOrder(),
                     supplier != null && supplier.length() > MAX_SUPPLIER_NAME
                             ? supplier.substring(0, MAX_SUPPLIER_NAME) + "…" : supplier,
                     receipt.warehouseCode(), receipt.status(), receipt.receivedAt(), receipt.confirmedAt(),

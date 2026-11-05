@@ -15,7 +15,7 @@ import java.util.UUID;
 
 /**
  * {@code assistant.tool_call}. Append-only. A chat run belongs to its conversation and turn; an MCP or "today" run
- * belongs to none ({@code V20261104000100}).
+ * belongs to none ({@code V20261105000700}).
  */
 @Entity
 @Table(name = "tool_call", schema = "assistant")

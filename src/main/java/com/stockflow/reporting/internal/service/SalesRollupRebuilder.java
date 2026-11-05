@@ -99,6 +99,12 @@ class SalesRollupRebuilder {
                 }
             }
         } while (rows.hasNext());
+        // What returns credited back for the orders of this day: kept through the clear, taken off again.
+        for (OrderContribution taken : ledger.returnsOf(day)) {
+            ledger.applyReturn(taken);
+        }
+        // The units production closed short on them (S6): kept through the clear as well, taken off again.
+        rollups.reapplyClosures(day);
         return new long[] {seen, counted};
     }
 }

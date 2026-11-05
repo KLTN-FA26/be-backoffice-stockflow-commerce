@@ -74,6 +74,7 @@ class SkuReservationAllocationIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired jakarta.persistence.EntityManager entityManager;
+    @Autowired com.stockflow.inventory.internal.service.TransferOrders transfers;
 
     private String sku;
     private final Map<String, UUID> rows = new java.util.HashMap<>();
@@ -223,6 +224,9 @@ class SkuReservationAllocationIntegrationTest {
                         org.assertj.core.groups.Tuple.tuple("HCM-A02-2-A", 2));
         assertThat(allocate(order, "HCM").allocations()).as("allocating again changes nothing").isEmpty();
         assertThat(reservedEverywhere()).isEqualTo(12);
+        // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds, ATP unchanged.
+        assertThat(inventory.levelsOf(new Sku(sku)))
+                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 26, 22, 0, 12, 10));
     }
 
     @Test
@@ -430,7 +434,7 @@ class SkuReservationAllocationIntegrationTest {
                   JOIN identity.permission p ON p.id = rp.permission_id
                  WHERE ro.code = 'WAREHOUSE_STAFF' AND p.resource = 'inventory-cycle-counts'""", String.class))
                 .as("docs 04c F-CNT: the warehouse staff count").containsExactlyInAnyOrder(
-                        "inventory-cycle-counts:VIEW_PAGE", "inventory-cycle-counts:READ");
+                        "inventory-cycle-counts:VIEW_PAGE", "inventory-cycle-counts:READ", "inventory-cycle-counts:UPDATE");
 
         // The short bin's free unit is in doubt: not promised, not allocated, until the count is called off.
         assertThat(allocation.locationCode()).isEqualTo("HCM-A01-1-B");
@@ -533,5 +537,29 @@ class SkuReservationAllocationIntegrationTest {
                 new ReserveProductionStockCommand(UUID.randomUUID(), new Sku(sku), 3, productionOrder, "HCM"))))))
                 .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
         assertThat(reservedEverywhere()).isZero();
+    }
+
+    @Test
+    @DisplayName("issue 207, doc 10 step 2: a transfer is created only for what is left after checkout reservations")
+    void transfersRespectSkuReservations() {
+        UUID hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
+        UUID destination = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
+                                                 version, created_at)
+                VALUES (?, 'Transfer destination', 'ACTIVE', ?, 'Test address', 'M', 50, 50, 0, NOW())""",
+                destination, "T" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT)));
+        reserve(order(), 20);   // 22 sellable in HCM, 2 left once the promise is counted
+        java.util.function.IntFunction<com.stockflow.inventory.internal.service.TransferOrders.Transfer> transfer =
+                quantity -> transfers.create(new com.stockflow.inventory.internal.service.TransferOrders.Create(hcm,
+                        destination, com.stockflow.inventory.internal.domain.TransferReason.REBALANCING, null,
+                        List.of(new com.stockflow.inventory.internal.service.TransferOrders.NewLine(sku, null, quantity)),
+                        com.stockflow.inventory.api.TransferDeliveryMode.PARCEL));
+
+        assertThat(code(catchThrowable(() -> transfer.apply(3)))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.transfer_order_line WHERE sku = ?""", Integer.class, sku)).isZero();
+        assertThat(transfer.apply(2).status())
+                .isEqualTo(com.stockflow.inventory.internal.domain.TransferStatus.DRAFT);
     }
 }

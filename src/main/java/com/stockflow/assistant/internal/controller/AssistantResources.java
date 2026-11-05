@@ -1,7 +1,7 @@
 package com.stockflow.assistant.internal.controller;
 
 /**
- * The permission resources of the assistant's endpoints, seeded by V20261026000200 and V20261104000500, and their
+ * The permission resources of the assistant's endpoints, seeded by V20261105000200 and V20261105001100, and their
  * shared rate limit.
  */
 final class AssistantResources {

@@ -72,12 +72,15 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final StockPackageContents cartons;
     private final Clock clock;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
+    private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports;
 
     PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
                            LocationDirectory locations, InventoryPolicyRepository policies,
                            StockPackageContents cartons, Clock clock,
-                           com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts) {
+                           com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
+                           com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports) {
         this.cycleCounts = cycleCounts;
+        this.damageReports = damageReports;
         this.stockItems = stockItems;
         this.ledger = ledger;
         this.events = events;
@@ -195,6 +198,16 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         }
         Objects.requireNonNull(source, "source");
         Quantity quantity = Quantity.of(command.quantity());
+        // Units found damaged at packing are back in quarantine already (R8): only the rest of what the pick took
+        // can come back onto a bin.
+        Reservation consumed = source.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
+        int left = consumed.quantity().value() - damageReports.damagedAfterPick(command.reservationId());
+        if (consumed.status() == com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED
+                && quantity.value() > left) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The pick took %s unit(s) on allocation %s and %d "
+                    + "of them went to quarantine damaged; %s cannot be put back").formatted(consumed.quantity(),
+                    command.reservationId(), consumed.quantity().value() - left, quantity));
+        }
         if (destination == null) {
             stockItems.save(StockItem.arrivedAs(source, target, quantity, StockStatus.AVAILABLE));
         } else {

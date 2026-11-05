@@ -13,9 +13,11 @@ import java.util.Set;
  * vehicle, with the GRASP block filler of {@code solver_3d.py} doing the packing.
  *
  * <p>Each Python function has a method of the same name in camel case; the PR body maps them one to one. The
- * departures from the original are each marked where they happen and are of three kinds: the hard rules of docs 09
+ * departures from the original are each marked where they happen and are of four kinds: the hard rules of docs 09
  * (BR-10 payload and support on every packing call, BR-12 vehicle counts), the kit-bypass fix in
- * {@link #placeKitShare}, and the work clock that makes the run reproducible ({@link WorkClock}).</p>
+ * {@link SeededPacker#placeKitShare}, the work clock that makes the run reproducible ({@link WorkClock}), and where the
+ * block filler puts each block ({@link SpaceChoice}, SCRUM-496; the parity test switches it back to the original's
+ * draw).</p>
  */
 final class KitSolver {
 
@@ -25,9 +27,13 @@ final class KitSolver {
     /** Stop a search as soon as it cannot improve (see the early stops); off only to compare with the original. */
     private final boolean earlyStop;
 
-    KitSolver(WorkClock clock, long seedOffset, boolean earlyStop) {
+    /**
+     * @param spaceChoice {@link SpaceChoice#IMPROVED} in the planner; {@link SpaceChoice#PYTHON_PARITY} only to
+     *                    compare with the original
+     */
+    KitSolver(WorkClock clock, long seedOffset, boolean earlyStop, SpaceChoice spaceChoice) {
         this.clock = clock;
-        this.packer = new SeededPacker(clock, seedOffset);
+        this.packer = new SeededPacker(clock, seedOffset, spaceChoice);
         this.tails = new TailPasses(clock, packer);
         this.earlyStop = earlyStop;
     }

@@ -77,7 +77,7 @@ class AssistantMcpIntegrationTest {
     @BeforeEach
     void setUp() {
         http = new SecuredMvc(mockMvc, decoder);
-        // Opt-in (V20261104000500): the roles these cases sign in with, as an administrator would grant them.
+        // Opt-in (V20261105001100): the roles these cases sign in with, as an administrator would grant them.
         RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "SALES_STAFF", "INVENTORY_PLANNER", "WAREHOUSE_MANAGER");
         sku = "MCP-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         tx.executeWithoutResult(s -> {

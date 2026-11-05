@@ -14,6 +14,7 @@ import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ProcurementService;
 import com.stockflow.procurement.api.SupplierItemService;
+import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.Await;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -97,7 +98,7 @@ class ProductLifecycleIntegrationTest {
     @BeforeEach
     void setUp() {
         editorUser = tx.execute(s -> ReferenceRows.user(entityManager));
-        approverUser = tx.execute(s -> ReferenceRows.user(entityManager));
+        approverUser = tx.execute(s -> ApprovalLimitFixtures.approver(entityManager));
         suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         tax = ProductFixtures.taxonomy(taxonomy, suffix);
     }

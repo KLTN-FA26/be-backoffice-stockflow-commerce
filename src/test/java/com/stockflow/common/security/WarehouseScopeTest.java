@@ -5,7 +5,9 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -74,5 +76,24 @@ class WarehouseScopeTest {
         assertThat(WarehouseScope.prefixOf("HN-RCV01")).isEqualTo("HN");
         assertThat(WarehouseScope.prefixOf("HCM")).isEqualTo("HCM");
         assertThat(WarehouseScope.prefixOf(null)).isNull();
+    }
+
+    @Test
+    void aWarehousesLocationsAreItsPrefixADashAnythingWithLikeMetacharactersEscaped() {
+        assertThat(WarehouseScope.locationPattern("hcm")).isEqualTo("HCM-%");
+        assertThat(WarehouseScope.locationPattern("A_B%")).isEqualTo("A\\_B\\%-%");
+    }
+
+    @Test
+    void theSqlFilterBindsOnePatternPerWarehouseAndNoWarehouseMatchesNothing() {
+        MapSqlParameterSource params = new MapSqlParameterSource();
+
+        assertThat(WarehouseScope.locationsInSql("b.location_code", List.of("HCM", "HN"), "warehouse", params))
+                .isEqualTo("(b.location_code LIKE :warehouse0 ESCAPE '\\'"
+                        + " OR b.location_code LIKE :warehouse1 ESCAPE '\\')");
+        assertThat(params.getValue("warehouse0")).isEqualTo("HCM-%");
+        assertThat(params.getValue("warehouse1")).isEqualTo("HN-%");
+        assertThat(WarehouseScope.locationsInSql("b.location_code", List.of(), "warehouse", params))
+                .isEqualTo("FALSE");
     }
 }

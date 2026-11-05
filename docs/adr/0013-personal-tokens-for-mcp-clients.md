@@ -33,7 +33,7 @@ server, trang đồng ý, và các client chưa hỗ trợ đồng đều. Nó q
   `RunAs.authenticationFor(chủ token, "assistant-mcp")`: cùng cách dựng quyền với lớp theo dõi và với converter của
   JWT. Đổi vai trò, khóa tài khoản hay rút quyền đều có hiệu lực ở lần gọi sau, không ai phải thu hồi token.
 - **Quyền riêng `assistant-mcp:CREATE`, opt-in**, mở endpoint MCP và các endpoint token, tách khỏi khung chat.
-  Migration `V20261104000500` chỉ cấp nó cho SYSTEM_ADMIN. Doanh nghiệp cấp cho vai trò nào được dùng MCP (AQ-17): một
+  Migration `V20261105001100` chỉ cấp nó cho SYSTEM_ADMIN. Doanh nghiệp cấp cho vai trò nào được dùng MCP (AQ-17): một
   token sống tới 90 ngày và gửi dữ liệu tới nhà cung cấp model mà client của người dùng chọn, nên đó không phải mặc
   định đi kèm việc bật MCP.
 - **Chỉ tạo được ngay sau khi đăng nhập** (15 phút, theo `iat` của token đăng nhập). Script chạy trong trang back
@@ -51,6 +51,22 @@ server, trang đồng ý, và các client chưa hỗ trợ đồng đều. Nó q
   được (database, Redis) là 503, vì không biết thì không phải là từ chối.
 - Đổi mật khẩu không làm token dừng, như personal access token của GitHub hay GitLab. Thứ làm token dừng là: chủ nó
   thu hồi, hết hạn, quản trị viên thu hồi, khóa hay vô hiệu tài khoản, rút quyền khỏi vai trò.
+- **Sửa đổi ngày 5/11/2026, khi gộp `develop`.** Hai trường hợp nay **thu hồi hẳn** mọi token của tài khoản:
+  - quản trị viên **đặt lại mật khẩu**;
+  - chủ tài khoản **đổi mật khẩu kèm "đăng xuất các thiết bị khác"** (lần đổi bắt buộc sau khi bị đặt lại luôn tính là
+    có đăng xuất).
+
+  Cơ chế: identity phát `contracts.CredentialsReset` trong cùng transaction đổi mật khẩu; `PersonalTokenRevocationListener`
+  của trợ lý thu hồi sau khi commit, và được thử lại từ event publication registry nếu lỗi. Lý do: đặt lại mật khẩu nghĩa
+  là mật khẩu cũ có thể đã lộ. Token do người biết mật khẩu cũ tạo ra phải chết theo các phiên đăng nhập, không được sống
+  lại khi chủ thật đặt mật khẩu mới.
+
+  Trong khoảng ngắn trước khi listener chạy, `PasswordChangeGateFilter` vẫn chặn token bằng
+  `403 PASSWORD_CHANGE_REQUIRED`, vì cổng này xét mọi xác thực có chủ là một tài khoản. Đổi mật khẩu bình thường, không
+  đăng xuất nơi khác, vẫn giữ token như trước.
+
+  Kiểm bởi `AssistantMcpTokenIntegrationTest.aPasswordResetRevokesTheTokens` và
+  `.theForcedChangeGateRefusesATokenWhilePending`, cùng `IdentitySessionServiceTest`.
 - Rủi ro còn lại: một chuỗi đúng dạng `sfmcp_…` gửi ẩn danh tốn một lần đọc database theo hash, như endpoint đăng
   nhập. Có thể thêm checksum hay HMAC sau.
 - `ArchitectureTest.onlyTheAssistantsWatchActsForAUser` cho thêm `PersonalTokenAuthenticationProvider` (và cấu hình

@@ -91,7 +91,7 @@ class AssistantOfferedToolsIntegrationTest {
                 new Persona(Role.WAREHOUSE_MANAGER, true), new Persona(Role.SALES_STAFF, false),
                 new Persona(Role.PROCUREMENT_STAFF, false), new Persona(Role.ORDER_COORDINATOR, false),
                 new Persona(Role.ACCOUNTANT, false), new Persona(Role.QC_STAFF, true),
-                // V20261029000200: the floor roles may open the assistant too.
+                // V20261105000500: the floor roles may open the assistant too.
                 new Persona(Role.WAREHOUSE_STAFF, true), new Persona(Role.PRODUCTION_STAFF, true));
     }
 

@@ -45,10 +45,11 @@ class GoodsReceiptQueriesImpl implements GoodsReceiptQueries {
         List<GoodsReceiptStatus> wanted = statuses == null ? List.of()
                 : statuses.stream().map(GoodsReceiptQueriesImpl::status).toList();
         String text = number == null || number.isBlank() ? null : number.strip();
-        return receipts.list(wanted, null, null, text, null, null, 0, limit, null)
+        // withoutPurchaseOrder null: receipts against a PO and those without one (SCRUM-478) alike.
+        return receipts.list(wanted, null, null, text, null, null, null, 0, limit, null)
                 .map(row -> new GoodsReceiptSummary(row.id(), row.number(), row.purchaseOrderNumber(),
                         row.supplierName(), row.warehouseCode(), row.status().name(), row.receivedAt(),
-                        row.confirmedAt(), row.closedAt()));
+                        row.confirmedAt(), row.closedAt(), row.withoutPurchaseOrder()));
     }
 
     private static GoodsReceiptStatus status(String name) {

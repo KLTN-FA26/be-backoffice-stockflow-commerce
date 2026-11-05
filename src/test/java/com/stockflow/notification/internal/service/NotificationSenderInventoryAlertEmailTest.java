@@ -23,7 +23,7 @@ import static org.mockito.Mockito.verify;
 class NotificationSenderInventoryAlertEmailTest {
 
     private final JavaMailSender mail = mock(JavaMailSender.class);
-    private final NotificationSender sender = new NotificationSender(mail, mock(RestClientFactory.class), "noreply@example.com", "");
+    private final NotificationSender sender = new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "noreply@example.com", "");
 
     @Test
     void sendsOneMessageFromTheConfiguredSenderToTheRecipient() {
@@ -39,7 +39,11 @@ class NotificationSenderInventoryAlertEmailTest {
     @Test
     void aMailServerFailureIsLeftToTheCaller() {
         doThrow(new MailSendException("down")).when(mail).send(any(SimpleMailMessage.class));
-        assertThatThrownBy(() -> sender.sendInventoryAlertEmail("a@example.com", "s", "b")).isInstanceOf(MailSendException.class);
+        // The transport's own exception, saying the failure is worth retrying; the caller decides what that means.
+        assertThatThrownBy(() -> sender.sendInventoryAlertEmail("a@example.com", "s", "b"))
+                .isInstanceOfSatisfying(com.stockflow.notification.internal.domain.EmailDeliveryException.class,
+                        failure -> assertThat(failure.retryable()).isTrue())
+                .hasCauseInstanceOf(MailSendException.class);
     }
 
     @Test

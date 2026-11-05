@@ -9,6 +9,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.production.internal.controller.dto.CancelProductionRequest;
+import com.stockflow.production.internal.controller.dto.CompleteShortRequest;
 import com.stockflow.production.internal.controller.dto.HoldRequest;
 import com.stockflow.production.internal.controller.dto.OutputRequest;
 import com.stockflow.production.internal.controller.dto.ScrapLineRequest;
@@ -308,6 +309,24 @@ class ProductionOrderController {
                                                        @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(runs.cancel(user, productionOrderId, request.reason(),
                 request.subcontractorFee(), request.subcontractorFeeReason(), request.packingLocation())));
+    }
+
+    /**
+     * S6: the job cannot reach its plan and the customer agreed with Sales to go without the rest, recorded on the order
+     * line - the Warehouse Manager completes it short (APPROVE, as a stop), or, with nothing good made, ends it. The
+     * order line gives up the units not made, within that agreement; the goods go to packing.
+     */
+    @PostMapping("/{productionOrderId}/short-completion")
+    @Operation(summary = "Complete a job with fewer good units than planned, within what the customer agreed with "
+            + "Sales (S6): the order line gives up the rest, refunded if paid; the goods go to packing, unused blanks "
+            + "back to stock. With no good unit the job is cancelled instead; 409 PRODUCTION_SHORTFALL_NOT_AGREED "
+            + "beyond the agreement")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.APPROVE)
+    public ApiResponse<ProductionOrderResponse> completeShort(@PathVariable UUID productionOrderId,
+                                                              @Valid @RequestBody CompleteShortRequest request,
+                                                              @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(runs.completeShort(user, productionOrderId, request.reason(),
+                request.packingLocation())));
     }
 
     @PostMapping("/{productionOrderId}/stop")

@@ -100,6 +100,58 @@ class KnowledgeParserTest {
     }
 
     @Test
+    @DisplayName("one table row longer than a passage is cut after a space, each part under the repeated header, "
+            + "every word kept and the continuations marked")
+    void aRowLongerThanAPassage() {
+        StringBuilder guard = new StringBuilder();
+        for (int i = 0; i < 300; i++) {
+            guard.append("word").append(i).append(' ');
+        }
+        String table = "| From | To | Guard |\n|---|---|---|\n| RECEIVED | INSPECTED | " + guard + "|\n| A | B | short |\n";
+        List<KnowledgeChunk> chunks = KnowledgeParser.sections("03-state-machines",
+                "## 12. RMA — `order-service`\n\n" + table);
+
+        assertThat(chunks).hasSizeGreaterThan(1).allSatisfy(chunk -> {
+            assertThat(chunk.body().length()).isLessThanOrEqualTo(KnowledgeParser.MAX_PASSAGE);
+            assertThat(chunk.body()).startsWith("| From | To | Guard |\n|---|---|---|");
+        });
+        String all = String.join("\n", chunks.stream().map(KnowledgeChunk::body).toList());
+        assertThat(all).contains("word0 ", "word150 ", "word299 ", "| A | B | short |")
+                .contains("\n" + KnowledgeParser.CONTINUED + "word");
+    }
+
+    @Test
+    @DisplayName("a table whose header alone is long is cut as plain lines rather than repeating it: no passage too "
+            + "long, no row lost")
+    void aLongHeaderIsNotRepeated() {
+        String header = "| " + "Column with a long explanatory name ".repeat(12) + "| Other |";
+        StringBuilder table = new StringBuilder(header).append("\n|---|---|\n");
+        for (int i = 0; i < 40; i++) {
+            table.append("| ROW_").append(i).append(' ').append("text ".repeat(20)).append("| x |\n");
+        }
+        List<KnowledgeChunk> chunks = KnowledgeParser.sections("03-state-machines",
+                "## 12. RMA — `order-service`\n\n" + table);
+
+        assertThat(chunks).allSatisfy(chunk ->
+                assertThat(chunk.body().length()).isLessThanOrEqualTo(KnowledgeParser.MAX_PASSAGE));
+        assertThat(String.join("\n", chunks.stream().map(KnowledgeChunk::body).toList()))
+                .contains("ROW_0 ", "ROW_39 ");
+        assertThat(KnowledgeParser.cut("a".repeat(100), 1)).as("a tiny room still moves on")
+                .allSatisfy(part -> assertThat(part.length()).isLessThanOrEqualTo(KnowledgeParser.MIN_ROOM));
+    }
+
+    @Test
+    @DisplayName("a line is cut after its last space that fits, hard where there is none, never inside a surrogate pair")
+    void cut() {
+        assertThat(KnowledgeParser.cut("short line", 20)).containsExactly("short line");
+        assertThat(KnowledgeParser.cut("aaaa bbbb cccc dddd eeee ffff", 16))
+                .containsExactly("aaaa bbbb cccc", KnowledgeParser.CONTINUED + "dddd eeee ffff");
+        assertThat(KnowledgeParser.cut("x".repeat(40), 16)).allSatisfy(part ->
+                assertThat(part.length()).isLessThanOrEqualTo(16)).hasSize(3);
+        assertThat(KnowledgeParser.cut("abcdefghijklmno😀ij", 16)).first().isEqualTo("abcdefghijklmno");
+    }
+
+    @Test
     @DisplayName("a flow is its coded section: the code as anchor, code, name and group as title, without its diagram, "
             + "its work-breakdown line or the columns naming tables and events")
     void flows() {

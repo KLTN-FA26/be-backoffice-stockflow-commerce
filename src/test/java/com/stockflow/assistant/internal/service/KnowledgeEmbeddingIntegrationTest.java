@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
- * The vectors in PostgreSQL (design §6.4, {@code V20261029000300}): stored as {@code real[]} and read back value for
+ * The vectors in PostgreSQL (design §6.4, {@code V20261105000600}): stored as {@code real[]} and read back value for
  * value, embedded again only when a passage's text or the model changes, never stored on text that changed meanwhile,
  * refused by the database when malformed, and searched by meaning over the real corpus. The embedding model is a fake:
  * no provider, no key.

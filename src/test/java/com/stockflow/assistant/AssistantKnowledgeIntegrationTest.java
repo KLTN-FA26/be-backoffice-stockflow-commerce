@@ -75,7 +75,8 @@ class AssistantKnowledgeIntegrationTest {
     void flowsAreFound() {
         assertThat(jdbc.queryForObject("select count(distinct anchor) from assistant.knowledge_chunk where kind = "
                 + "'FLOW' and source = '04c-all-flows' and anchor not like '%(%' and anchor not like '%›%'", Long.class))
-                .isEqualTo(25);
+                // One anchor per flow code of 04c; X-DMG (damaged goods) came with develop on 5/11.
+                .isEqualTo(26);
         assertThat(knowledge.search("quy trình đơn mua hàng gửi nhà cung cấp duyệt", 5))
                 .extracting(KnowledgeChunk::anchor).contains("F-PO");
         assertThat(knowledge.search("nhat thieu hang don dung lai", 5)).extracting(KnowledgeChunk::anchor)

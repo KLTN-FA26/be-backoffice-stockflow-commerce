@@ -13,5 +13,7 @@ public enum MoveReference {
     /** A QC decision on received goods: quarantined or rejected parts leave the QC area. */
     QC_INSPECTION,
     /** Blanks issued to the PRODUCTION area, printed goods moved on to PACKING (SCRUM-397/400). */
-    PRODUCTION_ORDER
+    PRODUCTION_ORDER,
+    /** A return line (SCRUM-260): returned stock items QC passed, out of quarantine and back on sale at a bin. */
+    RETURN_REQUEST_LINE
 }

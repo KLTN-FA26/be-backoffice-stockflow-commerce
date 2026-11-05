@@ -84,6 +84,7 @@ class PermissionMatrixTest {
             Map.entry("PUT /api/v1/customers/me", "edits the caller's own profile (resolved from the token)"),
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
             Map.entry("GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token"),
+            Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/orders/payment-terms", "payment terms offered to the caller's own customer profile"),
             Map.entry("GET /api/v1/receivables/me", "the caller's own receivables, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject"),
@@ -105,6 +106,8 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/customers/portal-activation",
                     "public: a Sales-invited contact sets a password; the one-time token is the authorisation (permitAll for POST, SCRUM-450)"),
             Map.entry("GET /oauth2/jwks", "public: the signing keys the resource server validates tokens with (permitAll)"),
+            Map.entry("POST /api/v1/notifications/webhooks/resend",
+                    "public: Resend's delivery reports; the Svix signature is the authorisation (permitAll for POST, SCRUM-352)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
             Map.entry("GET /api/v1/catalog/categories",
                     "any signed-in user: the storefront category navigation, visible categories only (SCRUM-171)"),
@@ -189,6 +192,7 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/load-plans/{loadPlanId}/cancellation", "fulfillment-load-plans:UPDATE"),
             // SCRUM-287 PR EST (V20261022001200): born permission-guarded; listed so the guards cannot drift.
             Map.entry("POST /api/v1/fulfillment/load-estimates", "fulfillment-load-estimates:CREATE"),
+            Map.entry("POST /api/v1/fulfillment/load-estimates/trial", "fulfillment-load-estimates:CREATE"),
             Map.entry("GET /api/v1/fulfillment/load-estimates/{estimateId}", "fulfillment-load-estimates:READ"),
             Map.entry("GET /api/v1/fulfillment/load-estimates", "fulfillment-load-estimates:READ"),
             Map.entry("POST /api/v1/fulfillment/loads", "fulfillment-dispatch:CREATE"),
@@ -199,6 +203,15 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/handover", "fulfillment-dispatch:UPDATE"),
             Map.entry("PUT /api/v1/fulfillment/shipments/{shipmentId}/carrier", "fulfillment-dispatch:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/cancellation", "fulfillment-load-cancellations:UPDATE"),
+            // SCRUM-474 UNLOAD-DESIGN (V20261102020100): the controlled cancel after loading started, and the override.
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/controlled-cancellation",
+                    "fulfillment-controlled-cancellations:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/plan-removal",
+                    "fulfillment-controlled-cancellations:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/unload-overrides",
+                    "fulfillment-controlled-cancellations:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/load-plans/{loadPlanId}/controlled-cancellation",
+                    "fulfillment-controlled-cancellations:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome", "fulfillment-delivery-outcomes:UPDATE"),
             Map.entry("POST /api/v1/customers/{customerId}/status", "customer-status:APPROVE"),
             Map.entry("GET /api/v1/catalog/products/availability", "catalog-storefront:READ"),
@@ -245,6 +258,8 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-dispatch:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-dispatch:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-load-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // SCRUM-474 UNLOAD-DESIGN point 6: only the warehouse manager (and the admin) calls off after loading started.
+            Map.entry("fulfillment-controlled-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
@@ -257,9 +272,10 @@ class PermissionMatrixTest {
             Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
                     Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
+            // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
                     Role.INVENTORY_PLANNER, Role.PROCUREMENT_STAFF, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
-                    Role.SYSTEM_ADMIN)));
+                    Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -281,7 +297,11 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
                 Map.entry("POST /api/v1/production/sample-requests/{sampleRequestId}/change-request", "{\"feedback\":\"stolen\"}"),
-                Map.entry("POST /api/v1/orders/{orderId}/reorder", "{\"requestId\":\"" + UUID.randomUUID() + "\"}"));
+                Map.entry("POST /api/v1/orders/{orderId}/reorder", "{\"requestId\":\"" + UUID.randomUUID() + "\"}"),
+                // SCRUM-243: a well-formed claim on the victim's order, so only the owner check can refuse it.
+                Map.entry("POST /api/v1/orders/{orderId}/returns", "{\"requestId\":\"" + UUID.randomUUID()
+                        + "\",\"reasonCode\":\"PRINT_DEFECT\",\"requestedResolution\":\"REFUND\",\"lines\":[{\"orderLineId\":\""
+                        + UUID.randomUUID() + "\",\"quantity\":1}]}"));
     }
 
 
@@ -668,6 +688,28 @@ class PermissionMatrixTest {
         // Spring validates a body before the guard runs (400), so the refused writes are read from the grants.
         assertThat(roles.resolve(List.of(Role.ORDER_COORDINATOR.authority())).permissions())
                 .contains(PermissionCode.parse("warehouse-warehouses:READ"))
+                .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
+                        PermissionCode.parse("warehouse-warehouses:CREATE"),
+                        PermissionCode.parse("warehouse-warehouses:UPDATE"));
+    }
+
+    /**
+     * SCRUM-474 5b (V20261029004000): the staff user-management screen picks roles and warehouses, so every role that
+     * can read users also reads roles and warehouses - READ only.
+     */
+    @Test
+    void everyRoleThatReadsUsersAlsoReadsRolesAndWarehouses() {
+        PermissionCode users = PermissionCode.parse("identity-users:READ");
+        List<Role> holders = Arrays.stream(Role.values())
+                .filter(role -> roles.resolve(List.of(role.authority())).permissions().contains(users))
+                .toList();
+        assertThat(holders).containsExactlyInAnyOrder(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN);
+        for (Role role : holders) {
+            assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
+                    .contains(PermissionCode.parse("identity-roles:READ"),
+                            PermissionCode.parse("warehouse-warehouses:READ"));
+        }
+        assertThat(roles.resolve(List.of(Role.ECOMMERCE_ADMIN.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
                         PermissionCode.parse("warehouse-warehouses:CREATE"),
                         PermissionCode.parse("warehouse-warehouses:UPDATE"));

@@ -15,5 +15,7 @@ interface GoodsReceiptWebMapper {
 
     GoodsReceiptResponse.Inspection toResponse(GoodsReceipts.InspectionView inspection);
 
+    GoodsReceiptResponse.Package toResponse(GoodsReceipts.PackageView receiptPackage);
+
     GoodsReceiptRowResponse toResponse(GoodsReceipts.Row row);
 }

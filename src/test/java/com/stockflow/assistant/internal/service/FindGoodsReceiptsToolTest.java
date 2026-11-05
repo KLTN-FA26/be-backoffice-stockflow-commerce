@@ -49,7 +49,7 @@ class FindGoodsReceiptsToolTest {
     private static GoodsReceiptSummary receipt(String number, String status) {
         return new GoodsReceiptSummary(UUID.randomUUID(), number, "PO-HCM-0007", "Xưởng gỗ Việt", "HCM", status,
                 RECEIVED, "DRAFT".equals(status) ? null : RECEIVED.plusSeconds(600),
-                "CLOSED".equals(status) ? RECEIVED.plusSeconds(7_200) : null);
+                "CLOSED".equals(status) ? RECEIVED.plusSeconds(7_200) : null, false);
     }
 
     private void listed(long total, GoodsReceiptSummary... receipts) {
@@ -113,8 +113,8 @@ class FindGoodsReceiptsToolTest {
     @Test
     @DisplayName("CONFIRMED is not offered: no receipt stays in it; every other status of the api is")
     void offered() {
-        assertThat(FindGoodsReceiptsTool.STATUSES).containsExactly("OPEN", "ANY", "DRAFT", "IN_QC", "IN_PUTAWAY",
-                "CLOSED", "CANCELLED");
+        assertThat(FindGoodsReceiptsTool.STATUSES).containsExactly("OPEN", "ANY", "DRAFT", "PENDING_APPROVAL", "IN_QC",
+                "IN_PUTAWAY", "CLOSED", "CANCELLED");
         assertThatThrownBy(() -> tool.run(arguments("CONFIRMED", "", 5))).isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("status must be one of");
         verifyNoInteractions(queries);
@@ -127,7 +127,7 @@ class FindGoodsReceiptsToolTest {
         GoodsReceiptSummary[] rows = java.util.stream.IntStream.range(0, FindGoodsReceiptsTool.MAX_ROWS)
                 .mapToObj(i -> new GoodsReceiptSummary(UUID.randomUUID(), "GR-20261028-%04d".formatted(i),
                         "PO-HCM-20261028-%04d".formatted(i), longName, "HCM", "IN_PUTAWAY", RECEIVED,
-                        RECEIVED.plusSeconds(600), RECEIVED.plusSeconds(7_200)))
+                        RECEIVED.plusSeconds(600), RECEIVED.plusSeconds(7_200), false))
                 .toArray(GoodsReceiptSummary[]::new);
         listed(200, rows);
         AssistantTools tools = new AssistantTools(List.of(tool), JsonMapper.builder()

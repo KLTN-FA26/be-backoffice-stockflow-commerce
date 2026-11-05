@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -10,37 +11,52 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.IssueReservedStockResult;
+import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.api.StockPackageView;
+import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CountVariance;
+import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
+import com.stockflow.inventory.internal.domain.ReceivingPackagePlan;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockAdjustment;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
 import com.stockflow.inventory.internal.domain.StockItem;
+import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockLots;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
+import com.stockflow.inventory.internal.domain.StockPackage;
+import com.stockflow.inventory.internal.domain.StockPackageId;
+import com.stockflow.inventory.internal.domain.StockPackageRepository;
+import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import com.stockflow.inventory.internal.repository.SlotsUnderCount;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
+import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
@@ -52,11 +68,17 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Moves stock between locations and posts approved adjustments, writing the ledger as it goes.
@@ -79,6 +101,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private final StockItemRepository stockItems;
     private final StockAdjustmentRepository adjustments;
     private final StockAdjustmentSearch adjustmentSearch;
+    private final SlotsUnderCount underCount;
     private final StockMovementLog ledger;
     private final StockLedgerSearch ledgerSearch;
     private final LocationDirectory locations;
@@ -88,12 +111,22 @@ class StockOperationsServiceImpl implements StockOperations {
     private final InventoryEventPublisher events;
     /** Taking from a carton opens it and the last unit closes it; its lock comes between the SKU's and the rows'. */
     private final StockPackageContents cartons;
+    /** The cartons labelled while receiving (SCRUM-473); taken from through {@link #cartons}. */
+    private final StockPackageRepository stockPackages;
+    private final UomConversionRepository units;
+    private final CycleCountRepository countLines;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
                                InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
-                               InventoryEventPublisher events) {
+                               InventoryEventPublisher events, StockPackageRepository stockPackages,
+                               UomConversionRepository units, SlotsUnderCount underCount,
+                               CycleCountRepository countLines) {
+        this.underCount = underCount;
+        this.countLines = countLines;
+        this.stockPackages = stockPackages;
+        this.units = units;
         this.cartons = cartons;
         this.events = events;
         this.stockItems = stockItems;
@@ -115,7 +148,8 @@ class StockOperationsServiceImpl implements StockOperations {
         StockMovement.ReferenceType referenceType = StockMovement.ReferenceType.valueOf(command.reference().name());
         UUID referenceId = command.referenceId() != null ? command.referenceId() : command.requestId();
         return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
-                command.toLocation(), command.quantity(), null, referenceType, referenceId, command.actorId(), null);
+                command.toLocation(), command.quantity(), null, referenceType, referenceId, command.actorId(), null,
+                command.reference() == MoveReference.MOVE_TASK);
     }
 
     @Override
@@ -124,7 +158,7 @@ class StockOperationsServiceImpl implements StockOperations {
         return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
                 command.toLocation(), command.quantity(), StockStatus.valueOf(command.disposition().name()),
                 StockMovement.ReferenceType.valueOf(command.reference().name()), command.referenceId(),
-                command.actorId(), blankToNull(command.reason()));
+                command.actorId(), blankToNull(command.reason()), false);
     }
 
     /**
@@ -134,7 +168,7 @@ class StockOperationsServiceImpl implements StockOperations {
      */
     private StockMove relocate(Sku sku, String lotNumber, Instant receivedAt, String fromCode, String toCode,
                                int qty, StockStatus target, StockMovement.ReferenceType referenceType,
-                               UUID referenceId, UUID actorId, String reason) {
+                               UUID referenceId, UUID actorId, String reason, boolean refuseUnderCount) {
         // BR-SEC-002 (SCRUM-457): both ends in a warehouse the caller is assigned to. First, so a
         // replay cannot reveal a move made in someone else's warehouse.
         WarehouseScope.requireLocation(fromCode);
@@ -142,39 +176,73 @@ class StockOperationsServiceImpl implements StockOperations {
         // Match policy edits/reservations: take the SKU lock before any stock-row locks.
         policies.lock(sku.code());
 
-        // Replay first: a retried move must not move the goods again.
-        Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.MOVE, referenceType, referenceId);
+        // Replay first: a retried move must not move the goods again. Loose lines only - this moves loose stock,
+        // and a carton moved whole under the same reference is not this move's earlier attempt (SCRUM-473).
+        Optional<StockMovement> done = ledger.findLooseByReference(StockMovement.MovementType.MOVE, referenceType,
+                referenceId);
         if (done.isPresent()) {
             return toMove(done.get());
         }
 
-        LocationId from = new LocationId(fromCode);
-        LocationId to = new LocationId(toCode);
-        if (from.equals(to)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
+        if (refuseUnderCount) {
+            requireNotUnderCount(sku, lotNumber, new LocationId(fromCode), new LocationId(toCode));
         }
-        // Docs 11 BR-01: stock leaves its warehouse only on a transfer order (docs 10), which records the
-        // dispatch, the transit and the receipt. A plain move between warehouses skipped all of that.
-        if (!from.warehouseCode().equals(to.warehouseCode())) {
-            throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
-                    "%s and %s are in different warehouses; use a transfer order".formatted(fromCode, toCode));
+        return moveLayer(sku, lotNumber, receivedAt, new LocationId(fromCode), new LocationId(toCode), qty, target,
+                referenceType, referenceId, actorId, reason, null);
+    }
+
+    /**
+     * SCRUM-146 (owner decision 28/10): a move a person asks for does not take loose stock out of, or put it into, a
+     * slot a cycle count holds - the count would be of books that changed under it. The slot is the loose bin, SKU and
+     * lot ({@link CountSlot}) and held is exactly what {@code claim} calls busy (open count, or submitted with its
+     * variance still pending), so the two cannot disagree. Asked through {@code claim}, which also takes the slots'
+     * advisory locks in sorted order: a count planned at the same moment either sees this move committed or waits.
+     * Whoever asks, whatever they may do: this protects the count, it is not a visibility rule.
+     */
+    private void requireNotUnderCount(Sku sku, String lotNumber, LocationId from, LocationId to) {
+        CountSlot source = CountSlot.loose(from, sku, lotNumber);
+        CountSlot destination = CountSlot.loose(to, sku, lotNumber);
+        Map<CountSlot, String> busy = countLines.claim(List.of(source, destination));
+        for (CountSlot slot : List.of(source, destination)) {
+            String count = busy.get(slot);
+            if (count != null) {
+                throw new BusinessException(ErrorCode.STOCK_SLOT_UNDER_COUNT,
+                        "%s of %s%s is under count %s; it cannot be moved %s until the count is done".formatted(
+                                slot.location(), sku, lotSuffix(lotNumber), count,
+                                slot == source ? "out" : "in"),
+                        List.of(), Map.of("locationCode", slot.location().code(), "cycleCountNumber", count));
+            }
         }
-        // Only the destination is checked (issue #67): taking stock out of a blocked bin or a shelf in
-        // maintenance is how it gets emptied, and an adjustment at a bin blocked for counting must
-        // still post.
-        switch (locations.stateOf(to)) {
-            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
-            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
-                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(to));
-            case USABLE -> { }
-        }
+    }
+
+    /**
+     * What a move does once scope, the SKU lock and the replay lookup are behind it: one layer's units from
+     * {@code from} to {@code to}. Split out so putaway can move several rows under one reference, which the
+     * replay lookup of {@link #relocate} would take for a repeat.
+     *
+     * <p>{@code chosen} is the source row when the caller already picked it (putaway picks by lot id, which the
+     * (lot number, receipt time) lookup cannot express: two lots of one receipt can share both); null looks the
+     * layer up as a plain move does. A chosen row also fixes the destination layer to the same goods: the row at the
+     * destination with the unique key of the source ({@code uk_stock_item_sku_location_lot}: SKU, bin, lot number,
+     * serial, receipt time), whatever its status or expiry. Matching on more than that would miss a row the database
+     * will not let a second one sit beside, and the insert would fail as a 409; found, {@code canReceiveFrom} refuses
+     * what cannot merge with a business error.</p>
+     */
+    private StockMove moveLayer(Sku sku, String lotNumber, Instant receivedAt, LocationId from, LocationId to,
+                                int qty, StockStatus target, StockMovement.ReferenceType referenceType,
+                                UUID referenceId, UUID actorId, String reason, StockItem chosen) {
+        requireMovableBetween(from, to);
         Quantity quantity = Quantity.of(qty);
 
-        StockItem sourceView = findLayer(sku, from, lotNumber, receivedAt)
+        StockItem sourceView = chosen != null ? chosen : findLayer(sku, from, lotNumber, receivedAt)
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
                         "No %s%s at %s".formatted(sku, lotSuffix(lotNumber), from)));
-        Optional<StockItem> destinationView = findLayer(sku, to, lotNumber, sourceView.receivedAt())
-                .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
+        Optional<StockItem> destinationView = chosen != null
+                ? stockItems.findLooseBySkuAndLocation(sku, to).stream()
+                        .filter(item -> item.isLayer(chosen.lotNumber(), chosen.serialNumber(), chosen.receivedAt()))
+                        .findFirst()
+                : findLayer(sku, to, lotNumber, sourceView.receivedAt())
+                        .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
 
         // Lock in id order, as reserve() does: two moves crossing the same pair in opposite
         // directions would otherwise deadlock.
@@ -228,6 +296,235 @@ class StockOperationsServiceImpl implements StockOperations {
         log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
                 before, arriving);
         return toMove(line);
+    }
+
+    /**
+     * What every move of stock needs of its two ends, loose or in a carton: two different locations, in one
+     * warehouse (docs 11 BR-01: stock leaves its warehouse only on a transfer order, which records the dispatch,
+     * the transit and the receipt), and a destination that can take stock. Only the destination is checked (issue
+     * #67): taking stock out of a blocked bin or a shelf in maintenance is how it gets emptied, and an adjustment
+     * at a bin blocked for counting must still post.
+     */
+    private void requireMovableBetween(LocationId from, LocationId to) {
+        if (from.equals(to)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
+        }
+        if (!from.warehouseCode().equals(to.warehouseCode())) {
+            throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
+                    "%s and %s are in different warehouses; use a transfer order".formatted(from, to));
+        }
+        requireUsable(to);
+    }
+
+    // ------------------------------------------------------------------ putaway of loose units
+
+    /**
+     * Loose goods of one receipt line (its lot) from the receiving area to a bin, as AVAILABLE. One SKU lock first,
+     * then each source row in id order (inside {@link #moveLayer}), so two putaways of the same lot cannot cross.
+     * Deliberately no replay lookup: a task confirms its loose goods in several parts, all under its own id, and a
+     * lookup by reference would take the second part for a repeat of the first and skip it. The caller decides
+     * what is still to do by summing the ledger ({@code sumQuantityByReference}).
+     *
+     * <p>Goods somebody already moved by hand into the chosen bin are put away where they stand ({@link
+     * #putAwayInPlace}), and first: the rows of one lot at one bin are one row whatever the status, so the units
+     * arriving from the receiving area must find that row already AVAILABLE to merge into it, not INBOUND, which they
+     * cannot join.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-putaway", resourceId = "#taskId")
+    public int putAwayLoose(Sku sku, UUID lotId, String toLocationCode, int units, UUID taskId, UUID actorId) {
+        WarehouseScope.requireLocation(toLocationCode);
+        policies.lock(sku.code());
+        LocationId to = new LocationId(toLocationCode);
+
+        List<StockItem> rows = stockItems.findLooseInboundByLot(sku, lotId).stream()
+                .filter(row -> row.onHand().value() > 0)
+                .sorted(Comparator.comparing((StockItem row) -> !row.location().equals(to))
+                        .thenComparing(row -> row.id().value().toString()))
+                .toList();
+        int available = rows.stream().mapToInt(row -> row.onHand().value()).sum();
+        if (available < units) {
+            throw new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
+                    "Lot %s of %s holds %d loose units awaiting putaway, not %d".formatted(lotId, sku, available,
+                            units));
+        }
+        int left = units;
+        for (StockItem row : rows) {
+            if (left == 0) {
+                break;
+            }
+            int take = Math.min(left, row.onHand().value());
+            WarehouseScope.requireLocation(row.location().code());
+            if (row.location().equals(to)) {
+                putAwayInPlace(sku, row, take, taskId, actorId);
+            } else {
+                moveLayer(sku, row.lotNumber(), row.receivedAt(), row.location(), to, take, StockStatus.AVAILABLE,
+                        StockMovement.ReferenceType.PUTAWAY_TASK, taskId, actorId, null, row);
+            }
+            left -= take;
+        }
+        return units;
+    }
+
+    /**
+     * Loose goods that already stand in the bin they are put away into: the row turns AVAILABLE where it is. The
+     * ledger line is a {@code STATUS_CHANGE} from the bin to the bin, because a {@code MOVE} names two different
+     * places. All of the row or none: it cannot be split by status (see {@link StockItem#putAwayInPlace}), so fewer
+     * units than the row holds, or a row with units held for someone, is refused with a business error rather than
+     * left to fail on the unique key.
+     */
+    private void putAwayInPlace(Sku sku, StockItem view, int units, UUID taskId, UUID actorId) {
+        StockItem row = stockItems.findByIdForUpdate(view.id()).orElseThrow(() ->
+                new IllegalStateException("Stock item %s vanished mid-putaway".formatted(view.id())));
+        if (units != row.onHand().value() || !row.reserved().isZero()) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    ("%s already holds %d units of %s as INBOUND, %d of them held; they are put away there all at once,"
+                            + " or in another bin").formatted(row.location(), row.onHand().value(), sku,
+                            row.reserved().value()));
+        }
+        requireUsable(row.location());
+        StockStatus before = row.status();
+        row.putAwayInPlace();
+        stockItems.save(row);
+        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.STATUS_CHANGE, sku,
+                blankToNull(row.lotNumber()), row.location(), row.location(), units, before, row.status(),
+                StockMovement.ReferenceType.PUTAWAY_TASK, taskId, null, actorId, clock.instant())
+                .ofLot(row.lotId()));
+        log.info("Put away {} x {} in place at {}", units, sku, row.location());
+    }
+
+    // ------------------------------------------------------------------ a carton, whole
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.referenceId()")
+    public List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command) {
+        return relocatePackages(command.lpns(), command.toLocationCode(), null, command.reference(),
+                command.referenceId(), command.actorId(), null);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.referenceId()")
+    public List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command) {
+        return relocatePackages(command.lpns(), command.toLocationCode(),
+                StockStatus.valueOf(command.disposition().name()), command.reference(), command.referenceId(),
+                command.actorId(), blankToNull(command.reason()));
+    }
+
+    /**
+     * Cartons to {@code toCode} with their rows, {@code target} null for a plain move (the status travels) or the
+     * status QC gives them. The rows are changed in place, never split off (a carton is not opened by a decision
+     * about it), so each keeps its id and holds; one MOVE ledger line per row names its carton on both sides.
+     *
+     * <p>One pass for the whole list: a document moves a line's cartons together, and a call per carton read,
+     * locked and wrote the same things once per carton. Lock order, as for one carton: the SKUs (sorted), the
+     * cartons, then their rows, each set in id order. The cartons are read unlocked first only to learn their SKUs;
+     * everything decided about them is read again under the lock, and every carton is checked before any moves. No
+     * replay lookup: a second call finds a carton already at the destination and is refused as any move to the same
+     * place is.</p>
+     *
+     * <p>One exception: a putaway ({@code PUTAWAY_TASK}, to AVAILABLE) of a carton somebody already moved by hand into
+     * the chosen bin. It has nowhere to move to, so it is reclassified where it stands, and its ledger line is a
+     * {@code STATUS_CHANGE} from the bin to the bin ({@code MOVE} names two different places). Every other move to
+     * the place a carton is in is still refused.</p>
+     */
+    private List<StockPackageView> relocatePackages(List<String> lpns, String toCode, StockStatus target,
+                                                    MoveReference reference, UUID referenceId, UUID actorId,
+                                                    String reason) {
+        WarehouseScope.requireLocation(toCode);
+        Map<String, StockPackage> seen = stockPackages.findByLpns(lpns).stream()
+                .collect(Collectors.toMap(StockPackage::lpn, Function.identity()));
+        for (String lpn : lpns) {
+            StockPackage carton = seen.get(lpn);
+            if (carton == null) {
+                throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + lpn);
+            }
+            WarehouseScope.requireLocation(carton.location().code());
+        }
+        Map<UUID, UomConversion> unitsById = units.findAll(seen.values().stream().map(StockPackage::uomConversionId)
+                        .distinct().toList()).stream()
+                .collect(Collectors.toMap(UomConversion::id, Function.identity()));
+        seen.values().stream()
+                .map(carton -> Optional.ofNullable(unitsById.get(carton.uomConversionId())).orElseThrow(() ->
+                        new IllegalStateException("Stock package %s is in no known unit".formatted(carton.lpn()))))
+                .map(UomConversion::sku).distinct().sorted()
+                .forEach(policies::lock);
+
+        List<StockPackage> cartons = stockPackages.findAllByIdForUpdate(
+                seen.values().stream().map(StockPackage::id).toList());
+        if (cartons.size() != seen.size()) {
+            throw new IllegalStateException("A stock package vanished mid-move");
+        }
+        LocationId to = new LocationId(toCode);
+        boolean putAway = target == StockStatus.AVAILABLE && reference == MoveReference.PUTAWAY_TASK;
+        Map<StockPackageId, LocationId> from = new LinkedHashMap<>();
+        for (StockPackage carton : cartons) {
+            if (carton.status() != StockPackageStatus.IN_STOCK) {
+                throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
+                        "%s is %s; only a carton in stock is moved".formatted(carton.lpn(), carton.status()));
+            }
+            if (putAway && carton.location().equals(to)) {
+                requireUsable(to);
+            } else {
+                requireMovableBetween(carton.location(), to);
+            }
+            from.put(carton.id(), carton.location());
+        }
+
+        List<StockItem> rows = new ArrayList<>();
+        for (StockItemId id : stockItems.findIdsInStockPackages(from.keySet())) {
+            rows.add(stockItems.findByIdForUpdate(id).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-move".formatted(id))));
+        }
+        if (target != null) {
+            Map<StockPackageId, String> lpnOf = cartons.stream()
+                    .collect(Collectors.toMap(StockPackage::id, StockPackage::lpn));
+            for (StockItem row : rows) {
+                if (row.status() != StockStatus.INBOUND && row.status() != StockStatus.QUARANTINE) {
+                    throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                            "%s holds %s; only INBOUND or QUARANTINE stock takes a receiving decision"
+                                    .formatted(lpnOf.get(row.stockPackageId()), row.status()));
+                }
+                if (target == StockStatus.AVAILABLE && row.status() != StockStatus.INBOUND) {
+                    throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                            "%s holds %s; only INBOUND stock is put away as AVAILABLE"
+                                    .formatted(lpnOf.get(row.stockPackageId()), row.status()));
+                }
+            }
+        }
+
+        for (StockPackage carton : cartons) {
+            if (!carton.location().equals(to)) {
+                carton.moveTo(to);
+                stockPackages.save(carton);
+            }
+        }
+        Instant now = clock.instant();
+        Map<StockPackageId, Integer> onHand = new HashMap<>();
+        for (StockItem row : rows) {
+            StockStatus before = row.status();
+            row.followPackageTo(to);
+            if (target != null) {
+                row.reclassifyInPackage(target);
+            }
+            stockItems.save(row);
+            onHand.merge(row.stockPackageId(), row.onHand().value(), Integer::sum);
+            if (row.onHand().value() > 0) {
+                StockMovement.MovementType type = from.get(row.stockPackageId()).equals(to)
+                        ? StockMovement.MovementType.STATUS_CHANGE : StockMovement.MovementType.MOVE;
+                ledger.append(new StockMovement(Identifiers.newId(), type, row.sku(),
+                        row.lotNumber(), from.get(row.stockPackageId()), to, row.onHand().value(), before,
+                        row.status(), StockMovement.ReferenceType.valueOf(reference.name()), referenceId, reason,
+                        actorId, now)
+                        .ofLot(row.lotId()).leaving(row.stockPackageId()).arriving(row.stockPackageId()));
+            }
+        }
+        log.info("Moved {} carton(s) to {} ({} row(s){})", cartons.size(), to, rows.size(),
+                target == null ? "" : ", now " + target);
+        return cartons.stream()
+                .sorted(Comparator.comparing(StockPackage::lpn))
+                .map(carton -> view(carton, unitsById.get(carton.uomConversionId()),
+                        onHand.getOrDefault(carton.id(), 0)))
+                .toList();
     }
 
     // ------------------------------------------------------------------ issue held goods
@@ -817,8 +1114,17 @@ class StockOperationsServiceImpl implements StockOperations {
     // ------------------------------------------------------------------ receipt
 
     /**
-     * Always a new stock layer (one per receipt, V20260930001000): the receipt time tells it apart from
+     * Always new stock layers (one per receipt, V20260930001000): the receipt time tells them apart from
      * every other layer of the lot at the location, so nothing is merged into an older receipt.
+     *
+     * <p>SCRUM-473: the goods go into the line's RECEIVING cartons first - one INBOUND row per carton holding what
+     * was counted into it, the carton IN_STOCK and still unopened, which is exactly what the commit-time check of
+     * V20261020000200 wants of it - and only the remainder goes loose. The cartons are locked after the SKU, as
+     * every carton write locks them, and checked before anything is written, so a refusal leaves no lot opened.</p>
+     *
+     * <p>A replay is recognised by the line's first RECEIPT ledger row, which is the move returned the first time:
+     * the loose line is written before the cartons' and ledger ids grow with time, so the first row is the loose
+     * line when there is one, and the first carton's otherwise.</p>
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-receipt", resourceId = "#command.receiptLineId()")
@@ -831,6 +1137,225 @@ class StockOperationsServiceImpl implements StockOperations {
             return toMove(done.get());
         }
         LocationId location = new LocationId(command.locationCode());
+        requireUsable(location);
+        String lot = blankToNull(command.lotNumber());
+
+        List<StockPackage> packed = lockCartonsOf(command.receiptLineId()).stream()
+                .filter(carton -> carton.status() == StockPackageStatus.RECEIVING)
+                .toList();
+        int inCartons = packed.stream().mapToInt(carton -> Objects.requireNonNullElse(carton.receivedQty(), 0)).sum();
+        // The invariant stated twice: procurement refuses such a count first (design 3, rule 5).
+        if (inCartons > command.quantity()) {
+            throw new BusinessException(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE,
+                    "The cartons of receipt line %s hold %d; the line received %d".formatted(command.receiptLineId(),
+                            inCartons, command.quantity()));
+        }
+        for (StockPackage carton : packed) {
+            // A carton's rows sit where it is (check_stock_package_contents); counting the line moves its cartons.
+            if (!carton.location().equals(location)) {
+                throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
+                        "%s is at %s, not at %s; count the line again".formatted(carton.lpn(), carton.location(),
+                                location));
+            }
+        }
+
+        // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number, expiry) - so a lot number
+        // another receipt used before is a different lot, and the trace knows the supplier and the documents.
+        UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(), lot,
+                command.expiryDate(), command.receivedAt(), command.origin().goodsReceiptId(),
+                command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
+                command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
+                command.origin().warehouseId()));
+        Instant now = clock.instant();
+
+        StockMove first = null;
+        int loose = command.quantity() - inCartons;
+        if (loose > 0) {
+            stockItems.save(StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(),
+                    Quantity.of(loose), command.receivedAt(), lotId));
+            StockMovement line = receiptLine(command, lot, location, loose, lotId, now);
+            ledger.append(line);
+            first = toMove(line);
+        }
+        for (StockPackage carton : packed) {
+            carton.putInStock();   // refuses a carton never counted, before a row is written for it
+            int counted = carton.receivedQty();
+            stockItems.save(StockItem.receiveInboundInto(carton.id(), command.sku(), location, lot,
+                    command.expiryDate(), Quantity.of(counted), command.receivedAt(), lotId));
+            stockPackages.save(carton);
+            StockMovement line = receiptLine(command, lot, location, counted, lotId, now).arriving(carton.id());
+            ledger.append(line);
+            if (first == null) {
+                first = toMove(line);
+            }
+        }
+        log.info("Received {} x {}{} into {}: {} loose, {} carton(s)", command.quantity(), command.sku(),
+                lotSuffix(lot), location, loose, packed.size());
+        return first;
+    }
+
+    private static StockMovement receiptLine(ReceiveStockCommand command, String lot, LocationId location,
+                                             int quantity, UUID lotId, Instant now) {
+        return new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
+                command.sku(), lot, null, location, quantity, StockStatus.INBOUND,
+                StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId(), null,
+                command.actorId(), now).ofLot(lotId);
+    }
+
+    // ------------------------------------------------------------------ cartons while receiving
+
+    /**
+     * The pure part - which carton is recounted, which is new and which is voided - is {@link ReceivingPackagePlan};
+     * this applies it under the lock order of every carton write: the SKU, then the line's cartons in id order. A
+     * RECEIVING carton holds no stock row, so there is no third lock.
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "receipt-line-packages",
+            resourceId = "#command.receiptLineId()")
+    public List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command) {
+        WarehouseScope.requireLocation(command.locationCode());
+        LocationId location = new LocationId(command.locationCode());
+        requireUsable(location);
+        UomConversion unit = command.packages().isEmpty() ? null : packingUnit(command);
+        policies.lock(command.sku().code());
+
+        List<StockPackage> current = lockCartonsOf(command.receiptLineId());
+        ReceivingPackagePlan plan = ReceivingPackagePlan.of(current, command.packages().stream()
+                .map(entry -> new ReceivingPackagePlan.Wanted(entry.lpn(), entry.quantity()))
+                .toList());
+        Instant now = clock.instant();
+        if (unit == null) {
+            // No cartons asked for: an empty list names nothing to recount or label, so the plan only voids.
+            voidCartons(plan, now);
+            log.info("Receipt line {}: {} carton(s) voided", command.receiptLineId(), plan.voided().size());
+            return List.of();
+        }
+        List<StockPackage> live = new ArrayList<>();
+        for (ReceivingPackagePlan.Recount recount : plan.recounts()) {
+            StockPackage carton = recount.carton();
+            // Every carton of a line is in the line's unit (design 3, rule 7): a new unit voids the old cartons.
+            if (!carton.uomConversionId().equals(unit.id())) {
+                throw new BusinessException(ErrorCode.RECEIPT_LINE_HAS_PACKAGES,
+                        "%s was labelled in another unit; leave it out to void it".formatted(carton.lpn()));
+            }
+            carton.count(recount.quantity());
+            if (!carton.location().equals(location)) {
+                carton.moveTo(location);
+            }
+            live.add(stockPackages.save(carton));
+        }
+        if (!plan.newCounts().isEmpty()) {
+            UUID itemId = units.itemId(command.sku().code()).orElseThrow(() -> new BusinessException(
+                    ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + command.sku()));
+            // One block for the line's new cartons: each number drawn alone cost a transaction of its own.
+            List<String> lpns = stockPackages.nextLpns(BusinessCalendar.date(now), plan.newCounts().size());
+            for (int i = 0; i < plan.newCounts().size(); i++) {
+                StockPackage carton = StockPackage.receiving(new StockPackageId(Identifiers.newId()), lpns.get(i),
+                        itemId, unit.id(), unit.factor(), location, command.receiptLineId());
+                carton.count(plan.newCounts().get(i));
+                live.add(stockPackages.save(carton));
+            }
+        }
+        voidCartons(plan, now);
+        log.info("Receipt line {}: {} carton(s) recounted, {} labelled, {} voided", command.receiptLineId(),
+                plan.recounts().size(), plan.newCounts().size(), plan.voided().size());
+        return live.stream()
+                .sorted(Comparator.comparing(StockPackage::lpn))
+                .map(carton -> view(carton, unit, carton.receivedQty()))
+                .toList();
+    }
+
+    private void voidCartons(ReceivingPackagePlan plan, Instant now) {
+        for (StockPackage carton : plan.voided()) {
+            carton.cancel(now);
+            stockPackages.save(carton);
+        }
+    }
+
+    @Override
+    public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
+        List<StockPackage> found = stockPackages.findByReceiptLines(receiptLineIds).stream()
+                .filter(carton -> carton.status() != StockPackageStatus.VOID)
+                .sorted(Comparator.comparing(StockPackage::lpn))
+                .toList();
+        if (found.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, UomConversion> unitsById = units.findAll(found.stream().map(StockPackage::uomConversionId)
+                        .distinct().toList()).stream()
+                .collect(Collectors.toMap(UomConversion::id, Function.identity()));
+        // A carton being received holds no row yet: what was counted into it is its quantity.
+        Map<StockPackageId, Integer> onHand = stockPackages.onHandOf(found.stream()
+                .filter(carton -> carton.status() != StockPackageStatus.RECEIVING).map(StockPackage::id).toList());
+        return found.stream().collect(Collectors.groupingBy(StockPackage::goodsReceiptLineId, LinkedHashMap::new,
+                Collectors.mapping(carton -> view(carton, unitsById.get(carton.uomConversionId()),
+                                carton.status() == StockPackageStatus.RECEIVING
+                                        ? carton.receivedQty() : onHand.getOrDefault(carton.id(), 0)),
+                        Collectors.toList())));
+    }
+
+    /** The command's unit: required once there is a carton, a unit of the SKU's item, and not the base unit. */
+    private UomConversion packingUnit(CountReceivingPackagesCommand command) {
+        if (command.uomConversionId() == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Cartons need the packing unit they are in");
+        }
+        UomConversion unit = units.find(command.sku().code(), command.uomConversionId()).orElseThrow(() ->
+                new BusinessException(ErrorCode.UOM_CONVERSION_NOT_FOUND,
+                        "No unit %s on %s".formatted(command.uomConversionId(), command.sku())));
+        if (unit.base()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Cartons are labelled in a packing unit, not in the base unit " + unit.unitOfMeasure());
+        }
+        return unit;
+    }
+
+    /** Every carton ever labelled on the line, VOID ones included, locked in id order. Call under the SKU lock. */
+    private List<StockPackage> lockCartonsOf(UUID receiptLineId) {
+        return stockPackages.findAllByIdForUpdate(stockPackages.findByReceiptLines(List.of(receiptLineId)).stream()
+                .map(StockPackage::id).toList());
+    }
+
+    private static StockPackageView view(StockPackage carton, UomConversion unit, Integer quantity) {
+        return new StockPackageView(carton.id().value(), carton.lpn(), carton.goodsReceiptLineId(),
+                unit == null ? null : unit.sku(), carton.uomConversionId(), unit == null ? null : unit.unitOfMeasure(),
+                carton.nominalQty(), quantity, carton.receivedQty(), carton.location().code(), carton.status().name(),
+                carton.unopened());
+    }
+
+    private void requireUsable(LocationId location) {
+        switch (locations.stateOf(location)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
+            case USABLE -> { }
+        }
+    }
+
+    // ------------------------------------------------------------------ returns
+
+    /**
+     * SCRUM-260: a returned parcel's goods into quarantine (OQ-12: never straight into sellable stock). The lines of one
+     * parcel are counted at one time, and two of them may carry the same SKU and lot (two designs printed on one blank,
+     * a wrong item that is another line's SKU): they share the layer the first one opened, as the natural key
+     * (SKU, location, lot, receipt time) says they must.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-return-receipt", resourceId = "#command.returnLineId()")
+    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
+        WarehouseScope.requireLocation(command.locationCode());
+        policies.lock(command.sku().code());
+        // One ledger line per parcel of the line: a retried parcel finds the line's total already reached.
+        long booked = ledger.sumQuantityByReference(List.of(StockMovement.MovementType.RETURN_IN),
+                StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId());
+        if (booked >= command.lineTotal()) {
+            return toMove(ledger.findByReference(StockMovement.MovementType.RETURN_IN,
+                    StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId()).orElseThrow());
+        }
+        if (booked + command.quantity() != command.lineTotal()) {
+            throw new IllegalStateException("Return line %s has %d unit(s) booked; %d more do not make %d".formatted(
+                    command.returnLineId(), booked, command.quantity(), command.lineTotal()));
+        }
+        LocationId location = new LocationId(command.locationCode());
         switch (locations.stateOf(location)) {
             case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
             case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
@@ -839,22 +1364,27 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         String lot = blankToNull(command.lotNumber());
         Quantity quantity = Quantity.of(command.quantity());
-        // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number, expiry) - so a lot number
-        // another receipt used before is a different lot, and the trace knows the supplier and the documents.
-        UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(), lot,
-                command.expiryDate(), command.receivedAt(), command.origin().goodsReceiptId(),
-                command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
-                command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
-                command.origin().warehouseId()));
-        stockItems.save(StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(), quantity,
-                command.receivedAt(), lotId));
-
-        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
-                command.sku(), lot, null, location, quantity.value(), StockStatus.INBOUND,
-                StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId(), null,
-                command.actorId(), clock.instant()).ofLot(lotId);
+        Optional<StockItem> layer = findLayer(command.sku(), location, lot, command.receivedAt());
+        if (layer.isPresent()) {
+            StockItem item = stockItems.findByIdForUpdate(layer.get().id()).orElseThrow();
+            requireLoose(item);
+            if (item.status() != StockStatus.QUARANTINE) {
+                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                        "%s holds %s%s as %s; returned goods arrive in quarantine".formatted(location, command.sku(),
+                                lotSuffix(lot), item.status()));
+            }
+            item.moveIn(quantity);
+            // The same receipt, not a replenishment: the policy trigger lets a FIFO layer grow only when told so.
+            stockItems.saveMerged(item);
+        } else {
+            stockItems.save(StockItem.receive(command.sku(), location, lot, null, quantity, command.receivedAt(), null));
+        }
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RETURN_IN,
+                command.sku(), lot, null, location, quantity.value(), StockStatus.QUARANTINE,
+                StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId(), "Returned by the customer",
+                command.actorId(), clock.instant()).forOrder(command.orderId());
         ledger.append(line);
-        log.info("Received {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
+        log.info("Returned {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
         return toMove(line);
     }
 
@@ -931,6 +1461,7 @@ class StockOperationsServiceImpl implements StockOperations {
     public StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId) {
         StockAdjustment adjustment = load(adjustmentId);
         policies.lock(adjustment.sku().code());
+        requireNotCounter(adjustment, approverId);
         if (adjustment.stockPackageId() != null) {
             return approveCarton(adjustment, approverId);
         }
@@ -1006,6 +1537,17 @@ class StockOperationsServiceImpl implements StockOperations {
         return toSummary(saved);
     }
 
+    /**
+     * A count variance is decided by someone other than whoever counted its line (spec §6 four eyes, SCRUM-146): the
+     * requester check of the aggregate only sees the submitter, who is not always the one who entered the figure
+     * (an approver may count a line on an assigned count). A line's counter is fixed once the count is submitted.
+     */
+    private void requireNotCounter(StockAdjustment adjustment, UUID decider) {
+        if (adjustment.cycleCountLineId() != null) {
+            adjustment.requireNotCountedBy(decider, countLines.countedByOf(adjustment.cycleCountLineId()).orElse(null));
+        }
+    }
+
     /** The ledger's reason for a posted adjustment: its reason code, and the note when there is one. */
     private static String ledgerReason(StockAdjustment adjustment) {
         return adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note());
@@ -1015,6 +1557,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Auditable(action = AuditAction.REJECT, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary reject(UUID adjustmentId, UUID approverId, String reason) {
         StockAdjustment adjustment = load(adjustmentId);
+        requireNotCounter(adjustment, approverId);
         adjustment.reject(approverId, reason, clock.instant());
         return toSummary(adjustments.save(adjustment));
     }
@@ -1030,19 +1573,23 @@ class StockOperationsServiceImpl implements StockOperations {
 
     @Override
     @Transactional(readOnly = true)
-    public Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId) {
-        // Out of the caller's warehouses reads as not found: its existence is not theirs to know.
+    public Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId, BookVisibility visibility) {
+        // Out of the caller's warehouses reads as not found: its existence is not theirs to know. So does the
+        // adjustment of a slot under a count, for a reader blind to its books.
         return adjustments.findById(adjustmentId)
                 .filter(adjustment -> inScope(adjustment.location().code()))
+                .filter(adjustment -> !visibility.hidesCountedSlots() || !underCount.adjustmentUnderCount(adjustmentId))
                 .map(StockOperationsServiceImpl::toSummary);
     }
 
     @Override
     @Transactional(readOnly = true)
     public PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                           int page, int size, String sort) {
+                                                           int page, int size, String sort,
+                                                           BookVisibility visibility) {
         var criteria = new StockAdjustmentSearch.Criteria(
-                status == null ? null : AdjustmentStatus.valueOf(status.name()), sku, location);
+                status == null ? null : AdjustmentStatus.valueOf(status.name()), sku, location,
+                visibility.hidesCountedSlots());
         return Pages.toResponse(adjustmentSearch.search(criteria, Pages.of(page, size, ADJUSTMENT_SORT.parse(sort)))
                 .map(StockOperationsServiceImpl::toSummary));
     }
@@ -1050,9 +1597,10 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
-                                           int page, int size) {
+                                           int page, int size, BookVisibility visibility) {
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "occurredAt"));
-        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(sku, location, type), pageable)
+        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(sku, location, type,
+                        visibility.hidesCountedSlots()), pageable)
                 .map(StockOperationsServiceImpl::toLine));
     }
 

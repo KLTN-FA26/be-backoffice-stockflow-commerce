@@ -4,6 +4,7 @@ import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
+import com.stockflow.order.internal.controller.dto.AgreeProductionShortfallRequest;
 import com.stockflow.order.internal.controller.dto.CloseRemainderRequest;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationOutcome;
@@ -80,13 +81,16 @@ class OrderController {
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
     private final com.stockflow.order.internal.service.DeliveryModes deliveryModes;
+    private final com.stockflow.order.internal.service.DuplicateOrders duplicateOrders;
 
     OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
                     CustomerOrders customerOrders,
                     com.stockflow.order.internal.service.TransferInstructions transferInstructions,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
-                    com.stockflow.order.internal.service.DeliveryModes deliveryModes) {
+                    com.stockflow.order.internal.service.DeliveryModes deliveryModes,
+                    com.stockflow.order.internal.service.DuplicateOrders duplicateOrders) {
+        this.duplicateOrders = duplicateOrders;
         this.partialShipments = partialShipments;
         this.deliveryModes = deliveryModes;
         this.identities = identities;
@@ -123,6 +127,9 @@ class OrderController {
             }
         }
         var command = OrderWebMapper.toCommand(request);
+        if (!mayPlaceForAnotherCustomer && !request.duplicateConfirmed()) {
+            refuseUnconfirmedDuplicate(command);
+        }
         if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
             // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) - never the customer's own pick:
             // their configured percentage is used. How the balance is collected is different (SCRUM-193): the customer
@@ -133,6 +140,24 @@ class OrderController {
                     command.lines(), command.paymentTerm(), null, command.balancePolicy());
         }
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
+    }
+
+    /**
+     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): a customer who places what they placed a moment ago - ordering
+     * again from their history, or a second click from another device - is asked first. 409 with the earlier order
+     * in {@code details}; the portal shows it and resends with {@code confirmDuplicate: true} if the customer insists.
+     */
+    private void refuseUnconfirmedDuplicate(com.stockflow.order.api.PlaceOrderCommand command) {
+        var lines = command.lines().stream()
+                .map(line -> new com.stockflow.order.internal.service.DuplicateOrders.Line(line.sku().code(),
+                        line.quantity(), line.designSnapshotId()))
+                .toList();
+        duplicateOrders.findSuspected(command.customerId(), command.requestId(), lines).ifPresent(earlier -> {
+            throw new BusinessException(ErrorCode.DUPLICATE_ORDER_SUSPECTED,
+                    "Order " + earlier.orderNumber() + " with the same items was placed at " + earlier.placedAt(),
+                    java.util.List.of(), java.util.Map.of("orderId", earlier.orderId().toString(),
+                            "orderNumber", earlier.orderNumber(), "placedAt", earlier.placedAt().toString()));
+        });
     }
 
     /**
@@ -269,6 +294,25 @@ class OrderController {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.closeRemainder(orderId, request.reasonCode(),
                 request.note(), OrderWebMapper.toFee(request.agreedFee()), user.userId())));
+    }
+
+    /**
+     * Review 2026-10-25 of S6: production cannot finish a print line - the blanks ran out, a reprint would come too
+     * late - and the customer agreed to go without some of it. Sales or the coordinator record it, as they close a
+     * remainder ({@code sales-order-cancellations:UPDATE}): the warehouse manager then completes the line's job short
+     * within it, and the order refunds what was paid for the units not made.
+     */
+    @PostMapping("/{orderId}/lines/{lineId}/production-shortfall-agreement")
+    @Operation(summary = "Record that the customer goes without at most N units of a print line production cannot "
+            + "finish (S6); production completes it short within that")
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS,
+            action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<OrderResponse> agreeProductionShortfall(@PathVariable UUID orderId, @PathVariable UUID lineId,
+                                                               @Valid @RequestBody AgreeProductionShortfallRequest request,
+                                                               @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.agreeProductionShortfall(orderId, lineId,
+                request.quantity(), request.note(), user.userId())));
     }
 
     /**

@@ -68,7 +68,8 @@ class QuoteController {
                                              @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.create(user, new Quotes.Create(request.requestId(),
                 request.customerId(), new Quotes.Draft(request.paymentTerm(), request.depositPercent(),
-                request.validUntil(), request.terms(), QuoteWebMapper.lines(request.lines()))))));
+                request.validUntil(), request.terms(), QuoteWebMapper.lines(request.lines()),
+                request.requestedDeliveryDate())))));
     }
 
     @GetMapping
@@ -94,13 +95,13 @@ class QuoteController {
     }
 
     @PutMapping("/{quoteId}")
-    @Operation(summary = "Replace the offer of a DRAFT quote")
+    @Operation(summary = "Replace the offer of a DRAFT quote, requested delivery date included (omitted clears it)")
     @RequiresPermission(resource = OrderResources.QUOTES, action = Action.UPDATE)
     public ApiResponse<QuoteResponse> edit(@PathVariable UUID quoteId, @Valid @RequestBody QuoteRequests.Edit request,
                                            @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.edit(user, quoteId, request.version(),
                 new Quotes.Draft(request.paymentTerm(), request.depositPercent(), request.validUntil(),
-                        request.terms(), QuoteWebMapper.lines(request.lines())))));
+                        request.terms(), QuoteWebMapper.lines(request.lines()), request.requestedDeliveryDate()))));
     }
 
     @PostMapping("/{quoteId}/sending")
@@ -144,7 +145,8 @@ class QuoteController {
     }
 
     @PostMapping("/{quoteId}/cancellation")
-    @Operation(summary = "Cancel a DRAFT quote, with a reason")
+    @Operation(summary = "Cancel a DRAFT quote, or an ACCEPTED one only when a SKU on it stopped, with a reason the "
+            + "customer reads")
     @RequiresPermission(resource = OrderResources.QUOTES, action = Action.UPDATE)
     public ApiResponse<QuoteResponse> cancel(@PathVariable UUID quoteId,
                                              @Valid @RequestBody QuoteRequests.Cancellation request,

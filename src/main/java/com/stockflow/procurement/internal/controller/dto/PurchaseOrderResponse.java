@@ -49,11 +49,13 @@ public record PurchaseOrderResponse(
         Instant submittedAt,
         UUID approvedBy,
         Instant approvedAt,
+        @Schema(description = "True when the order was approved at submission because its total was within the submitter's"
+                + " own approval limit; approvedBy is then the submitter") boolean autoApproved,
         UUID confirmedBy,
         Instant confirmedAt,
         Instant closedAt,
-        @Schema(description = "NORMAL or SHORT_CLOSE once CLOSED") String closeKind,
-        @Schema(description = "Why it was closed short") String closeReason,
+        @Schema(description = "NORMAL, SHORT_CLOSE or FORCE_CLOSE once CLOSED") String closeKind,
+        @Schema(description = "Why it was closed short or force-closed") String closeReason,
         @Schema(description = "Set only once the order is CANCELLED.") String cancellationReason,
         int paymentTermDays,
         int leadTimeDays,
@@ -73,6 +75,14 @@ public record PurchaseOrderResponse(
                                 "Cancellation notice only: NOT_REQUIRED, UNKNOWN (legacy), QUEUED,"
                                     + " RETRYING, FAILED, DELIVERED")
                 String cancellationDeliveryStatus,
+        @Schema(
+                        description =
+                                "The notice of the active amendment to a supplier that had the order: DELIVERED,"
+                                    + " RETRYING or FAILED; null until that notice's first attempt is logged (an"
+                                    + " earlier amendment's state is not shown), and for an order nobody was told"
+                                    + " about")
+                String amendmentDeliveryStatus,
+        @Schema(description = "The amendment waiting for approval, or null") PendingAmendmentResponse pendingAmendment,
         @Schema(description = "Non-blocking business warnings, e.g. DELIVERY_DATE_IN_PAST (BR-06)")
                 List<String> warnings,
         @Schema(description = "Send it back when editing the draft; a changed draft answers 409 OPTIMISTIC_LOCK")

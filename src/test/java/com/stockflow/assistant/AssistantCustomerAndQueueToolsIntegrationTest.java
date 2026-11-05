@@ -46,7 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * permission aspect, real migrations and a scripted model: {@code getCustomerPrice}, {@code getCustomerCredit},
  * {@code findFulfillmentTasks} and {@code findGoodsReceipts} answer what the screen each mirrors would show the asker.
  * That screen's permission decides whether, the asker's warehouses decide which. And the two floor roles that
- * V20261029000200 opened the assistant to may ask.
+ * V20261105000500 opened the assistant to may ask.
  *
  * <p>Rows are inserted the way the flows leave them; how they got there is the owning modules' tests' business. Every
  * fixture is this test's own - two fresh warehouses, customers and receipt numbers carrying a tag - so another test's
@@ -381,7 +381,7 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
     // ------------------------------------------------------------------------------------------------- AQ-02
 
     @Test
-    @DisplayName("warehouse and production staff may open the assistant (V20261029000200); a portal customer still may "
+    @DisplayName("warehouse and production staff may open the assistant (V20261105000500); a portal customer still may "
             + "not")
     void theFloorRolesMayAsk() throws Exception {
         for (String role : List.of("WAREHOUSE_STAFF", "PRODUCTION_STAFF")) {

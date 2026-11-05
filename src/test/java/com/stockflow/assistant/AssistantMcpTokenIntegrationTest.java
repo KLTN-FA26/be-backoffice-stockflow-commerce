@@ -27,6 +27,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.nio.charset.StandardCharsets;
 import java.sql.Date;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -77,7 +79,7 @@ class AssistantMcpTokenIntegrationTest {
         http = new SecuredMvc(mockMvc, decoder);
         // As the real decoder: a personal token is not a JWT.
         when(decoder.decode(startsWith("sfmcp_"))).thenThrow(new BadJwtException("Malformed token"));
-        // Opt-in (V20261104000500): the roles these cases sign in with, as an administrator would grant them.
+        // Opt-in (V20261105001100): the roles these cases sign in with, as an administrator would grant them.
         RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "INVENTORY_PLANNER", "SALES_STAFF");
         sku = "MCPT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         tx.executeWithoutResult(s -> {
@@ -177,6 +179,44 @@ class AssistantMcpTokenIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE identity.app_user SET locked_until = now() + INTERVAL '1 hour' WHERE id = ?", user));
         withToken(token, mcp(request(4, "ping", "{}"))).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("the forced-change gate (SCRUM-474) refuses a token while the owner's password change is pending, as "
+            + "it refuses a sign-in token; the flag alone, set with no reset, revokes nothing")
+    void theForcedChangeGateRefusesATokenWhilePending() throws Exception {
+        UUID user = staff("INVENTORY_PLANNER");
+        String token = made(user, Role.INVENTORY_PLANNER, "laptop");
+
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE identity.app_user SET must_change_password = TRUE WHERE id = ?", user));
+        withToken(token, mcp(request(1, "ping", "{}")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("PASSWORD_CHANGE_REQUIRED"));
+
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE identity.app_user SET must_change_password = FALSE WHERE id = ?", user));
+        withToken(token, mcp(request(2, "ping", "{}"))).andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("an administrator's password reset revokes the owner's tokens for good (ADR-0013): a token minted by "
+            + "whoever knew the old password does not come back when the owner sets a new one")
+    void aPasswordResetRevokesTheTokens() throws Exception {
+        UUID admin = staff("SYSTEM_ADMIN");
+        UUID user = staff("INVENTORY_PLANNER");
+        String token = made(user, Role.INVENTORY_PLANNER, "laptop");
+
+        http.asRole(Role.SYSTEM_ADMIN, admin, post("/api/v1/identity/users/" + user + "/password-reset")
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk());
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(jdbc.queryForObject(
+                "SELECT revoked_at FROM assistant.mcp_token WHERE owner_user_id = ?", Timestamp.class, user))
+                .isNotNull());
+
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE identity.app_user SET must_change_password = FALSE WHERE id = ?", user));
+        withToken(token, mcp(request(1, "ping", "{}"))).andExpect(status().isUnauthorized());
     }
 
     @Test

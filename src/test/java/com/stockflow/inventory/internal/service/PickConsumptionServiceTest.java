@@ -72,6 +72,31 @@ class PickConsumptionServiceTest {
         }
 
         @Override
+        public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
+                                                            StockMovement.ReferenceType referenceType, UUID referenceId) {
+            return ledgerRows.stream().filter(row -> row.fromStockPackage() == null && row.toStockPackage() == null)
+                    .filter(row -> row.type() == type && row.referenceType() == referenceType
+                            && row.referenceId().equals(referenceId)).findFirst();
+        }
+
+        @Override
+        public java.util.Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
+                StockMovement.ReferenceType referenceType, java.util.Collection<UUID> referenceIds) {
+            java.util.Map<UUID, StockMovement> first = new java.util.HashMap<>();
+            for (UUID id : referenceIds) {
+                findLooseByReference(type, referenceType, id).ifPresent(row -> first.put(id, row));
+            }
+            return first;
+        }
+
+        @Override
+        public int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
+                                          StockMovement.ReferenceType referenceType, UUID referenceId) {
+            return ledgerRows.stream().filter(row -> types.contains(row.type()) && row.referenceType() == referenceType
+                    && row.referenceId().equals(referenceId)).mapToInt(StockMovement::quantity).sum();
+        }
+
+        @Override
         public boolean handedOverFromProduction(com.stockflow.inventory.internal.domain.ReservationId hold,
                                                 LocationId location) {
             return ledgerRows.stream().anyMatch(row -> row.type() == StockMovement.MovementType.MOVE
@@ -99,7 +124,7 @@ class PickConsumptionServiceTest {
             new InventoryEventPublisher(publisher), locations, policies,
             new StockPackageContents(mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
                     stockItems), Clock.fixed(NOW, ZoneOffset.UTC),
-            cycleCounts);
+            cycleCounts, mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class));
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
 

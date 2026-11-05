@@ -331,7 +331,7 @@ class ReceiptDraftServiceTest {
                 UUID.randomUUID(), "GIAYVIET", "Giấy Việt", warehouse, "HCM", "Kho HCM", status, "VND",
                 LocalDate.of(2026, 10, 1), LocalDate.of(2026, 10, 20), new BigDecimal("1000000"),
                 new BigDecimal("100000"), new BigDecimal("1100000"), null, lines, Instant.now(), "buyer", Instant.now(),
-                "buyer", false, 0, UUID.randomUUID(), Instant.now(), UUID.randomUUID(), Instant.now(),
+                "buyer", false, 0, UUID.randomUUID(), Instant.now(), UUID.randomUUID(), Instant.now(), false,
                 UUID.randomUUID(), Instant.now(), null, null, null, null, 30, 14, Instant.now(), supplierAnswer, null,
                 null, "REJECTED".equals(supplierAnswer) ? "Hết hàng" : null, 0, new BigDecimal("5"));
     }
@@ -340,20 +340,20 @@ class ReceiptDraftServiceTest {
     private static POLineSummary cups() {
         return new POLineSummary(UUID.randomUUID(), 1, UUID.randomUUID(), "CUP-KRAFT-12OZ",
                 "Cốc giấy kraft 12oz, gọi 0903123456 khi giao", "PCS", 5000, 0, new BigDecimal("400"),
-                new BigDecimal("8"), new BigDecimal("2000000"), "OPEN", false, false, false);
+                new BigDecimal("8"), new BigDecimal("2000000"), "OPEN", false, false, false, null, null, null);
     }
 
     /** Line 2: ink, lot and expiry tracked, 200 of 500 received. */
     private static POLineSummary ink() {
         return new POLineSummary(UUID.randomUUID(), 2, UUID.randomUUID(), "INK-FOOD-BLUE", "Mực in thực phẩm xanh",
                 "BOX", 500, 200, new BigDecimal("90000"), new BigDecimal("8"), new BigDecimal("45000000"),
-                "PARTIALLY_RECEIVED", true, true, true);
+                "PARTIALLY_RECEIVED", true, true, true, null, null, null);
     }
 
     /** Line 3: lids, received in full. */
     private static POLineSummary closedLids() {
         return new POLineSummary(UUID.randomUUID(), 3, UUID.randomUUID(), "LID-90", "Nắp ly 90mm", "PCS", 100, 100,
-                new BigDecimal("300"), new BigDecimal("8"), new BigDecimal("30000"), "RECEIVED", false, false, false);
+                new BigDecimal("300"), new BigDecimal("8"), new BigDecimal("30000"), "RECEIVED", false, false, false, null, null, null);
     }
 
     @SuppressWarnings("unchecked")

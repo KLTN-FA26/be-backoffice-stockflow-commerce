@@ -47,6 +47,7 @@ import com.stockflow.contracts.CustomerActedOnQuote;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -77,7 +78,10 @@ import static org.mockito.Mockito.verify;
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
-@TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
+// The Sales notices are checked on the mocked JavaMailSender: SMTP, not the test profile's in-memory recorder. Customer
+// order mail (HTML, a MimeMessage the mock cannot make) is not what this test is about.
+@TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false", "stockflow.notification.email.provider=smtp",
+        "stockflow.notification.email.customer.enabled=false"})
 class QuoteIntegrationTest {
 
     private static final String BLANK = ConfirmedDesigns.BLANK;
@@ -743,6 +747,104 @@ class QuoteIntegrationTest {
                 SELECT offer -> 'lines' -> 0 -> 'tiers' -> 0 ->> 'unitPrice' FROM ordering.quote_status_history
                  WHERE quote_id = ? AND to_status = 'SENT' ORDER BY revision""", String.class, sent.id()))
                 .containsExactly("3000", "2400");
+    }
+
+    @Test
+    @DisplayName("SCRUM-502: the requested delivery date is kept with the draft, moved only while a draft, "
+            + "recorded in each sent offer, and refused in the past")
+    void requestedDeliveryDate() throws Exception {
+        ConfirmedDesigns.Design design = design();
+        LocalDate today = LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
+        LocalDate asked = today.plusDays(30);
+        Instant validUntil = Instant.now().plus(Duration.ofDays(7));
+        List<Quotes.Line> lines = draft(design, PaymentTerm.PREPAID, validUntil).lines();
+
+        // Not in the past: refused on creation and on edit, and nothing is stored.
+        assertThatThrownBy(() -> quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines, today.minusDays(1)))))
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        // Today is a date that can still be asked for.
+        Quotes.QuoteView todays = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines, today)));
+        assertThat(todays.requestedDeliveryDate()).isEqualTo(today);
+
+        Quotes.QuoteView created = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines, asked)));
+        assertThat(created.requestedDeliveryDate()).isEqualTo(asked);
+        assertThat(jdbc.queryForObject("SELECT requested_delivery_date FROM ordering.quote WHERE id = ?", LocalDate.class,
+                created.id())).isEqualTo(asked);
+        assertThatThrownBy(() -> quotes.edit(sales, created.id(), created.version(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines, today.minusDays(1))))
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(quotes.get(sales, created.id()).requestedDeliveryDate()).isEqualTo(asked);
+
+        // Moved while a draft; an edit without a date clears it (the edit replaces the whole offer).
+        Quotes.QuoteView moved = quotes.edit(sales, created.id(), created.version(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines, asked.plusDays(5)));
+        assertThat(moved.requestedDeliveryDate()).isEqualTo(asked.plusDays(5));
+        Quotes.QuoteView cleared = quotes.edit(sales, created.id(), moved.version(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines));
+        assertThat(cleared.requestedDeliveryDate()).isNull();
+        Quotes.QuoteView again = quotes.edit(sales, created.id(), cleared.version(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines, asked));
+        Quotes.QuoteView sent = quotes.send(sales, created.id(), again.version());
+
+        // Sent: the offer on the history row keeps the date, and a sent quote can no longer be edited.
+        assertThat(jdbc.queryForObject("SELECT offer ->> 'requestedDeliveryDate' FROM ordering.quote_status_history "
+                + "WHERE quote_id = ? AND to_status = 'SENT'", String.class, created.id())).isEqualTo(asked.toString());
+        assertThatThrownBy(() -> quotes.edit(sales, created.id(), sent.version(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines, asked.plusDays(1))))
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+        assertThat(quotes.get(portal, created.id()).requestedDeliveryDate()).isEqualTo(asked);
+
+        // The customer asks for changes; Sales moves the date in the next revision and drops it before sending: the
+        // customer still sees the quote end with the date they were sent.
+        Quotes.QuoteView changed = quotes.requestChanges(portal, created.id(), sent.version(), "earlier please");
+        Quotes.QuoteView reopened = quotes.reopen(sales, created.id(), changed.version());
+        assertThat(reopened.requestedDeliveryDate()).as("the next revision starts from the sent offer").isEqualTo(asked);
+        Quotes.QuoteView revised = quotes.edit(sales, created.id(), reopened.version(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, validUntil, null, lines, asked.minusDays(10)));
+        quotes.cancel(sales, created.id(), revised.version(), "Khach chon noi khac");
+        assertThat(quotes.get(portal, created.id()).requestedDeliveryDate()).isEqualTo(asked);
+        assertThat(quotes.get(sales, created.id()).requestedDeliveryDate()).isEqualTo(asked.minusDays(10));
+    }
+
+    @Test
+    @DisplayName("A sent quote cannot be withdrawn; a revision reopened and dropped before it was sent ends the quote "
+            + "for the customer with the offer they were last sent, and a stale answer is told why")
+    void droppedRevision() throws Exception {
+        ConfirmedDesigns.Design design = design();
+        Quotes.QuoteView sent = sentQuote(design);
+        assertThatThrownBy(() -> quotes.cancel(sales, sent.id(), sent.version(), "Giá nhập nhầm"))
+                .as("a sent offer is answered, revised or expires - Sales does not withdraw it")
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+
+        // The customer sees the quote end with the offer they were last sent, not the draft's working terms.
+        Quotes.QuoteView third = sentQuote(design);
+        Quotes.QuoteView asked = quotes.requestChanges(portal, third.id(), third.version(), "giảm giá được không?");
+        Quotes.QuoteView reopened = quotes.reopen(sales, third.id(), asked.version());
+        Instant draftValidity = Instant.now().plus(Duration.ofDays(20)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Quotes.QuoteView edited = quotes.edit(sales, third.id(), reopened.version(),
+                draft(design, PaymentTerm.PREPAID, draftValidity));
+        quotes.cancel(sales, third.id(), edited.version(), "Không giảm được, khách chọn nơi khác");
+        Quotes.QuoteView customerView = quotes.get(portal, third.id());
+        assertThat(customerView.status()).isEqualTo(QuoteStatus.CANCELLED);
+        assertThat(customerView.cancellationReason()).contains("Không giảm");
+        assertThat(customerView.revision()).as("the revision they were sent").isEqualTo(third.revision());
+        assertThat(customerView.validUntil()).isEqualTo(third.validUntil());
+        assertThat(customerView.priced()).isEqualTo(third.priced());
+        assertThat(customerView.proposedTotal()).isEqualByComparingTo(third.proposedTotal());
+        assertThat(customerView.lines()).extracting(Quotes.LineView::lineNo, Quotes.LineView::quantity,
+                        Quotes.LineView::proposedUnitPrice)
+                .containsExactlyElementsOf(third.lines().stream().map(line -> org.assertj.core.groups.Tuple.tuple(
+                        line.lineNo(), line.quantity(), line.proposedUnitPrice())).toList());
+        Quotes.QuoteView staffView = quotes.get(sales, third.id());
+        assertThat(staffView.revision()).as("Sales sees its draft").isEqualTo(2);
+        assertThat(staffView.validUntil()).isEqualTo(draftValidity);
+        assertThatThrownBy(() -> quotes.accept(portal, third.id(), new Quotes.Acceptance(third.version(), Map.of())))
+                .as("the version the customer still has: told why, not that it changed")
+                .hasMessageContaining("withdrawn").hasMessageContaining("Không giảm")
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
     }
 
     @Test

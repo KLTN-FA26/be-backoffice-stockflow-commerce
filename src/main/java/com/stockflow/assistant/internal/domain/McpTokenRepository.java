@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Where the MCP endpoint's personal tokens are kept: by their hash, never the token (V20261104000500). */
+/** Where the MCP endpoint's personal tokens are kept: by their hash, never the token (V20261105001100). */
 public interface McpTokenRepository {
 
     /**

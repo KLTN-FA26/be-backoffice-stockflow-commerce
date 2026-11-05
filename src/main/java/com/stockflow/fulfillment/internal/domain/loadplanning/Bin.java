@@ -20,11 +20,19 @@ final class Bin {
     final double doorH;
 
     Bin(VehicleSpec spec) {
+        this(spec, false);
+    }
+
+    /**
+     * @param ignorePayload trial mode (LP2-9): no weight cap. The packers read a limit of 0 as "no limit" (the original
+     *                      solver's rule), so the payload is not handed to them at all
+     */
+    Bin(VehicleSpec spec, boolean ignorePayload) {
         this.spec = spec;
         this.w = spec.innerWidthMm();
         this.h = spec.innerHeightMm();
         this.d = spec.innerLengthMm();
-        this.payloadKg = spec.maxPayloadKg().doubleValue();
+        this.payloadKg = ignorePayload ? 0.0 : spec.maxPayloadKg().doubleValue();
         this.gussetMm = spec.gussetMm();
         this.doorW = spec.doorWidthMm() == null ? Double.POSITIVE_INFINITY : spec.doorWidthMm();
         this.doorH = spec.doorHeightMm() == null ? Double.POSITIVE_INFINITY : spec.doorHeightMm();
