@@ -105,8 +105,9 @@ public final class StorageKeys {
         String extension = keyDot < 0 ? "" : leaf.substring(keyDot).toLowerCase(Locale.ROOT);
         String base = originalName.strip();
         base = base.substring(Math.max(base.lastIndexOf('/'), base.lastIndexOf('\\')) + 1);
+        // Only what looks like an extension goes - "scan.PNG", "x.docm" - not the end of "Báo giá v1.2".
         int dot = base.lastIndexOf('.');
-        if (dot >= 0) {
+        if (dot >= 0 && base.substring(dot + 1).matches("(?=.*[A-Za-z])[A-Za-z0-9]{1,5}")) {
             base = base.substring(0, dot);
         }
         base = base.strip();

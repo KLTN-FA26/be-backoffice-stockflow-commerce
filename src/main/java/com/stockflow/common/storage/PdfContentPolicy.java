@@ -37,12 +37,15 @@ import java.util.Set;
  *   <li>any action that is not plainly navigational. An action - wherever it is: the document's open action and
  *       additional actions, every page's, annotation's, form field's and bookmark's action and additional actions, and
  *       every action chained after one of those through {@code /Next} - may only go to a place in this document
- *       ({@code GoTo}), turn a page ({@code Named}), show or hide a layer or an annotation, or follow an article.
- *       Everything else is refused, including the actions nobody has thought of yet: JavaScript, Launch, GoToR and
- *       GoToE (open another file - on Windows a UNC path hands the reader's NTLM hash to that host), SubmitForm and
- *       ImportData (send or load data), media;</li>
- *   <li>a web link ({@code URI}) that runs by itself - from the open action or an additional action. A link the reader
- *       clicks passes: an invoice may link to its e-invoice lookup page;</li>
+ *       ({@code GoTo}, {@code GoToDp}), turn a page ({@code Named} NextPage, PrevPage, FirstPage, LastPage), show or
+ *       hide a layer or an annotation, follow an article of this document, or clear a form. Everything else is
+ *       refused, including the actions nobody has thought of yet: JavaScript, Launch, GoToR and GoToE (open another
+ *       file - on Windows a UNC path hands the reader's NTLM hash to that host), SubmitForm and ImportData (send or
+ *       load data), media, the reader's own menu items. An allowed action that names a file ({@code /F}, as a
+ *       {@code Thread} may) is refused like GoToR;</li>
+ *   <li>a web link ({@code URI}) that runs by itself - from the open action or an additional action other than a
+ *       mouse press or release - and one to anything but {@code http}, {@code https} or {@code mailto}. A web link the
+ *       reader clicks passes: an invoice may link to its e-invoice lookup page;</li>
  *   <li>a chain of actions deeper than any real document builds: refused, not cut short, as what follows the cut is
  *       what would run;</li>
  *   <li>RichMedia/Screen/Movie/Sound/3D annotations, XFA forms;</li>
@@ -64,10 +67,15 @@ import java.util.Set;
 final class PdfContentPolicy {
 
     private static final Set<String> ACTIVE_ANNOTATIONS = Set.of("RichMedia", "Screen", "Movie", "Sound", "3D");
-    /** Actions that move the reader around this document and do nothing else. */
-    private static final Set<COSName> NAVIGATION = Set.of(COSName.getPDFName("GoTo"), COSName.getPDFName("Named"),
+    /** Actions that move the reader around this document, or clear its form, and do nothing else. */
+    private static final Set<COSName> NAVIGATION = Set.of(COSName.getPDFName("GoTo"), COSName.getPDFName("GoToDp"),
             COSName.getPDFName("Hide"), COSName.getPDFName("SetOCGState"), COSName.getPDFName("Thread"),
-            COSName.getPDFName("Trans"));
+            COSName.getPDFName("Trans"), COSName.getPDFName("ResetForm"));
+    private static final COSName NAMED = COSName.getPDFName("Named");
+    /** The named actions every reader knows (ISO 32000-1 §12.6.4.11); the rest are a reader's own menu items. */
+    private static final Set<String> PAGE_TURNS = Set.of("NextPage", "PrevPage", "FirstPage", "LastPage");
+    /** Additional-action triggers that are the reader pressing or releasing the mouse on an annotation. */
+    private static final Set<COSName> MOUSE = Set.of(COSName.D, COSName.getPDFName("U"));
     private static final COSName JAVASCRIPT = COSName.getPDFName("JavaScript");
     private static final COSName LAUNCH = COSName.getPDFName("Launch");
     private static final COSName URI = COSName.getPDFName("URI");
@@ -151,12 +159,16 @@ final class PdfContentPolicy {
             }
         }
 
-        /** The action of {@code owner} ({@code /A}, a click) and its additional actions ({@code /AA}, automatic). */
+        /**
+         * The action of {@code owner} ({@code /A}, a click) and its additional actions ({@code /AA}): a mouse press or
+         * release is a click, everything else - opening, closing, focus, a keystroke, a calculation - runs by itself.
+         */
         void requireInertTriggers(COSDictionary owner) {
             requireInert(owner.getDictionaryObject(COSName.A), Trigger.CLICK);
             if (owner.getDictionaryObject(COSName.AA) instanceof COSDictionary triggers) {
                 for (COSName trigger : triggers.keySet()) {
-                    requireInert(triggers.getDictionaryObject(trigger), Trigger.AUTOMATIC);
+                    requireInert(triggers.getDictionaryObject(trigger),
+                            MOUSE.contains(trigger) ? Trigger.CLICK : Trigger.AUTOMATIC);
                 }
             }
         }
@@ -218,13 +230,32 @@ final class PdfContentPolicy {
                 if (LAUNCH.equals(type)) {
                     refuse("The PDF launches another file or program");
                 }
+                if (dictionary.containsKey(COSName.F)) {
+                    refuse("The PDF carries an action that opens another file");
+                }
                 boolean allowed = type == null || NAVIGATION.contains(type)
-                        || (URI.equals(type) && trigger == Trigger.CLICK);
+                        || (NAMED.equals(type) && PAGE_TURNS.contains(dictionary.getNameAsString(COSName.N)))
+                        || (URI.equals(type) && trigger == Trigger.CLICK && isWebLink(dictionary.getString(URI)));
                 if (!allowed) {
-                    refuse("The PDF carries a " + type.getName() + " action, which may open, send or run something");
+                    refuse("The PDF carries " + describe(type) + " action, which may open, send or run something");
                 }
                 requireInert(dictionary.getDictionaryObject(NEXT), trigger, depth + 1);
             }
+        }
+
+        /** {@code http}, {@code https} or {@code mailto}: not {@code file:}, a UNC path or a script. */
+        private static boolean isWebLink(String uri) {
+            if (uri == null) {
+                return false;
+            }
+            String target = uri.strip().toLowerCase(java.util.Locale.ROOT);
+            return target.startsWith("http://") || target.startsWith("https://") || target.startsWith("mailto:");
+        }
+
+        /** The action's type for the refusal message: the file chooses the name, so only a plain one is repeated. */
+        private static String describe(COSName type) {
+            String name = type.getName();
+            return name.matches("[A-Za-z0-9]{1,32}") ? "a " + name : "an unknown";
         }
 
         private static COSBase resolve(COSBase value) {

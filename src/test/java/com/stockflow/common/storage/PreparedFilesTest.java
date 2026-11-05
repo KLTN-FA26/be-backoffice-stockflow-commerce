@@ -191,6 +191,8 @@ class PreparedFilesTest {
                 .isEqualTo("scan.final.png");
         assertThat(StorageKeys.downloadName("macro.docm", "documents/2026/11/06/x.docx")).isEqualTo("macro.docx");
         assertThat(StorageKeys.downloadName(".pdf", "documents/2026/11/06/x.pdf")).isEqualTo("file.pdf");
+        assertThat(StorageKeys.downloadName("Báo giá v1.2", "documents/2026/11/06/x.pdf"))
+                .as("a version number is not an extension").isEqualTo("Báo giá v1.2.pdf");
         assertThat(StorageKeys.downloadName(" ", jpegKey)).isNull();
         String long300 = "a".repeat(300) + ".pdf";
         assertThat(StorageKeys.downloadName(long300, "documents/2026/11/06/x.pdf"))
