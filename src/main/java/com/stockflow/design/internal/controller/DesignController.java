@@ -11,6 +11,7 @@ import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.UploadSlot;
 import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.design.internal.controller.dto.AttachArtifactUploadRequest;
+import com.stockflow.design.internal.controller.dto.DesignPreflightResponse;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.RequestBody;
 import com.stockflow.design.internal.controller.dto.ArtifactDownloadResponse;
@@ -94,6 +95,15 @@ class DesignController {
                                                          @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(artifacts.list(designId, user == null ? null : user.userId()).stream()
                 .map(mapper::toResponse).toList());
+    }
+
+    @GetMapping("/{artifactId}/preflight")
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
+    public ApiResponse<DesignPreflightResponse> preflight(@PathVariable UUID designId, @PathVariable UUID artifactId,
+                                                         @AuthenticatedUser CurrentUser user) {
+        var report = artifacts.preflight(designId, artifactId, user == null ? null : user.userId());
+        return ApiResponse.ok(new DesignPreflightResponse(report.passed(), report.findings().stream()
+                .map(f -> new DesignPreflightResponse.Finding(f.code(), f.detail(), f.blocking())).toList()));
     }
 
     @GetMapping("/{artifactId}/download-url")

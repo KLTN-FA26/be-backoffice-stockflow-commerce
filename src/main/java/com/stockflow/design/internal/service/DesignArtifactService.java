@@ -50,9 +50,11 @@ public class DesignArtifactService {
     private final FileTransfers files;
     private final StagedUploads staged;
     private final TransactionOperations tx;
+    private final DesignPreflight designPreflight;
 
     public DesignArtifactService(DesignArtifactRepository designs, FileTransfers files, StagedUploads staged,
-                                 TransactionOperations tx) {
+                                 TransactionOperations tx, DesignPreflight designPreflight) {
+        this.designPreflight = designPreflight;
         this.designs = designs;
         this.files = files;
         this.staged = staged;
@@ -123,6 +125,14 @@ public class DesignArtifactService {
         try (PreparedFiles prepared = staged.accept(FileCategory.DESIGN_RENDER, userId, List.of(uploadId))) {
             return attach(designId, userId, role, key, prepared, UnaryOperator.identity());
         }
+    }
+
+    /** BR-DSG-001's machine checks of one revision, for the reviewer and the designer (see {@link DesignPreflight}). */
+    @Transactional(readOnly = true)
+    public DesignPreflight.Report preflight(UUID designId, UUID artifactId, UUID userId) {
+        var artifact = list(designId, userId).stream().filter(file -> file.id().equals(artifactId))
+                .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        return designPreflight.inspect(artifact.file().key(), artifact.file().contentType());
     }
 
     @Transactional(readOnly = true)

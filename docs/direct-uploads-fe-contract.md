@@ -73,6 +73,16 @@ picks which one runs. Each slot endpoint needs the same permission as its attach
 Accepted types and sizes are the category's: design PNG/JPEG/WebP/PDF up to 50 MB; return photos
 JPEG/PNG/WebP up to 15 MB; damage photos JPEG/PNG up to 20 MB; invoice scans PDF/JPEG/PNG up to 15 MB.
 
+## Design preflight (BR-DSG-001)
+
+`GET /api/v1/designs/{designId}/artifacts/{artifactId}/preflight` answers `{passed, findings: [{code,
+detail, blocking}]}` for one revision - show it to the designer after an upload and to the reviewer.
+Blocking: `FONT_NOT_EMBEDDED`, `LOW_RESOLUTION` (an image below 150 dpi at its printed size),
+`PDF_UNREADABLE`, `IMAGE_UNREADABLE`. Warnings: `RGB_COLOUR`, `NO_BLEED`, `RASTER_ARTWORK` (pixel size of
+a JPEG/PNG/WebP, whose print size only the reviewer can judge). Passing a technical review
+(`POST /designs/{id}/technical-reviews` with `passed: true`) is refused with 409 while a blocking
+finding remains; rejecting is always allowed.
+
 ## Viewing and downloading
 
 - Download links (`.../download-url`) now name the file: the browser saves `HD-0012.pdf`, not the
@@ -80,5 +90,12 @@ JPEG/PNG/WebP up to 15 MB; damage photos JPEG/PNG up to 20 MB; invoice scans PDF
 - Image links (renditions, return and damage photos) are `inline` and may be cached by the browser
   for as long as the link lives (`expiresAt`); reuse a link instead of asking for a new one while it
   is valid.
-- Downloading a design file, the print file, an invoice scan, a product original or a return photo is
-  recorded in the audit log.
+- Return and damage photos are shown as display copies: upright, re-encoded, without the phone's
+  metadata (GPS). Their detail views carry `thumbnailUrl` per photo (256 px); if a thumbnail fails to
+  load (a photo stored before copies existed), fall back to the photo's `download-url`. Add
+  `?original=true` to a photo's `download-url` to save it exactly as uploaded.
+- The product media list carries `url` per rendition; no per-image link request is needed.
+- Downloading a design file, the print file, an invoice scan, a product original or an original
+  evidence photo is recorded in the audit log.
+- A PDF with JavaScript, a Launch action, embedded media, an XFA form or a password is refused at
+  upload (`400 VALIDATION_FAILED`); a design PDF also with attached files or encryption.

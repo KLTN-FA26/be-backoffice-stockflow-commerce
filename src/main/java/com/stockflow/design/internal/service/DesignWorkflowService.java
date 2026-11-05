@@ -43,18 +43,20 @@ public class DesignWorkflowService {
     private final IdentityService identities;
     private final CustomerService customers;
     private final com.stockflow.common.storage.FileTransfers files;
+    private final DesignPreflight preflight;
 
     public DesignWorkflowService(DesignDraftJpaRepository drafts, DesignArtifactJpaRepository artifacts,
             DesignSnapshotJpaRepository snapshots, ProductService products, Clock clock,
             DesignDecisionJpaRepository decisions,
             DesignService designs, IdentityService identities, CustomerService customers,
-            com.stockflow.common.storage.FileTransfers files) {
+            com.stockflow.common.storage.FileTransfers files, DesignPreflight preflight) {
         this.drafts = drafts; this.artifacts = artifacts; this.snapshots = snapshots;
         this.products = products; this.clock = clock;
         this.decisions = decisions; this.designs = designs;
         this.identities = identities;
         this.customers = customers;
         this.files = files;
+        this.preflight = preflight;
     }
 
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId,
@@ -129,6 +131,18 @@ public class DesignWorkflowService {
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DraftView review(UUID id, UUID actor, long version, UUID artifactId, boolean passed, String notes) {
+        if (passed) {
+            // BR-DSG-001: a file the machine already refuses does not get a person's approval. Checked before the
+            // draft is locked: reading a 50 MB print file must not hold the lock every other writer of the draft waits on.
+            access(id, actor, false);
+            var artifact = artifacts.findById(artifactId).filter(found -> found.getDraftId().equals(id))
+                    .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+            var file = artifact.storedFile();
+            var report = preflight.inspect(file.key(), file.contentType());
+            if (!report.passed()) {
+                conflict("Preflight failed: " + report.blockingSummary());
+            }
+        }
         var draft = access(id, actor, true);
         DesignWorkflow.requireVersion(draft.getVersion(), version);
         var decision = new DesignReview(artifactId, actor, passed, notes);

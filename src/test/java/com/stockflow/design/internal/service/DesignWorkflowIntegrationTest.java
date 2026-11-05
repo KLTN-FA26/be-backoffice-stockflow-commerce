@@ -34,7 +34,8 @@ import static org.mockito.Mockito.when;
 
 @DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class, PostgresContainer.class})
+@Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class, DesignPreflight.class,
+        PostgresContainer.class})
 @Testcontainers(disabledWithoutDocker = true)
 class DesignWorkflowIntegrationTest {
     @Autowired DesignWorkflowService workflow;
@@ -73,7 +74,7 @@ class DesignWorkflowIntegrationTest {
         when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
         var draft = workflow.create(customer, product, owner, editor, reviewer,
                 "Custom cabinet", "Width 1800 mm, white", editor);
-        byte[] bytes = "confirmed bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] bytes = com.stockflow.support.TestPdfs.blank();
         var checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
         var artifact = artifacts.saveAndFlush(new DesignArtifactJpaEntity(Identifiers.newId(), draft.id(),
                 new StoredFile("design-renders/test.pdf", "test.pdf", "application/pdf", bytes.length, Instant.EPOCH), checksum));
@@ -86,6 +87,19 @@ class DesignWorkflowIntegrationTest {
         when(storage.stat("design-renders/test.pdf")).thenReturn(
                 new com.stockflow.common.storage.ObjectStat(bytes.length, "application/pdf", null));
         return workflow.get(draft.id(), owner);
+    }
+
+    @Test void aFileThePreflightRefusesCannotPassTheTechnicalReview() throws Exception {
+        var draft = draftWithArtifact();
+        when(storage.download("design-renders/test.pdf")).thenAnswer(call -> new ByteArrayInputStream(
+                "not a PDF at all".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        assertThatThrownBy(() -> workflow.review(draft.id(), reviewer, draft.version(), draft.currentArtifactId(), true,
+                "Looks fine")).isInstanceOfSatisfying(BusinessException.class,
+                e -> assertThat(e.getMessage()).contains("PDF_UNREADABLE"));
+        // Rejecting needs no preflight: a reviewer may always send a file back.
+        assertThat(workflow.review(draft.id(), reviewer, draft.version(), draft.currentArtifactId(), false,
+                "Unreadable file").technicalReviewPassed()).isFalse();
     }
 
     /** The owner's own customer profile, as the customer module answers it. */
@@ -192,6 +206,7 @@ class DesignWorkflowIntegrationTest {
         var sent = workflow.submit(draft.id(), editor, reviewed.version());
         when(storage.stat("design-renders/test.pdf")).thenReturn(new com.stockflow.common.storage.ObjectStat(3,
                 "application/pdf", com.stockflow.common.storage.Checksums.sha256Hex(new byte[]{1, 2, 3})));
+        org.mockito.Mockito.clearInvocations(storage);   // the review's preflight read the file; the confirmation must not
 
         assertThatThrownBy(() -> workflow.confirm(draft.id(), owner, sent.version(), sent.currentArtifactId()))
                 .isInstanceOf(BusinessException.class);
