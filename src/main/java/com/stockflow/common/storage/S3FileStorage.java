@@ -33,6 +33,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -188,6 +189,21 @@ class S3FileStorage implements FileStorage {
             throw new StorageException("No stored file with key " + key, absent);
         } catch (SdkException ex) {
             throw new StorageException("Object store could not lock " + key, ex);
+        }
+    }
+
+    @Override
+    public List<StoredObject> list(String prefix, String startAfter, int max) {
+        try {
+            var request = software.amazon.awssdk.services.s3.model.ListObjectsV2Request.builder()
+                    .bucket(properties.bucket()).prefix(prefix).maxKeys(max);
+            if (startAfter != null) {
+                request.startAfter(startAfter);
+            }
+            return s3.listObjectsV2(request.build()).contents().stream()
+                    .map(object -> new StoredObject(object.key(), object.lastModified())).toList();
+        } catch (SdkException ex) {
+            throw new StorageException("Object store could not list " + prefix, ex);
         }
     }
 

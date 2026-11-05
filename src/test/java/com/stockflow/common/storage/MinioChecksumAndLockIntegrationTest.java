@@ -170,6 +170,22 @@ class MinioChecksumAndLockIntegrationTest {
     }
 
     @Test
+    void aPrefixIsListedInPagesInKeyOrder() {
+        var storage = storage("checksums", ObjectLockProperties.disabled());
+        for (int i = 0; i < 3; i++) {
+            byte[] bytes = pdf("export " + i);
+            storage.store(FileCategory.DOCUMENT, "d.pdf", "application/pdf", bytes.length, new ByteArrayInputStream(bytes));
+        }
+        var first = storage.list("documents/", null, 2);
+        var rest = storage.list("documents/", first.get(1).key(), 2);
+
+        assertThat(first).hasSize(2);
+        assertThat(rest).hasSize(1);
+        assertThat(rest.get(0).key()).isGreaterThan(first.get(1).key());
+        assertThat(first).allSatisfy(object -> assertThat(object.lastModified()).isNotNull());
+    }
+
+    @Test
     void retainOnABucketWithoutObjectLockIsAStorageError() {
         var storage = storage("checksums", ObjectLockProperties.disabled());
         byte[] bytes = pdf("no lock here");

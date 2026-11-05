@@ -450,6 +450,13 @@ stockflow:
       url-ttl: PT15M            # the signed PUT; S3 checks it when the upload starts, not when it ends
       session-ttl: PT1H         # how long an upload may wait to be attached; incoming/ expires after a day
       per-user-per-hour: 120    # slots one user may take in an hour
+    # Files no record names any more (OrphanedFileSweeper): nightly, report-only until delete is turned on.
+    # Supplier invoices, published product images, exports and the quarantine prefix are never swept.
+    orphan-sweep:
+      cron: "0 30 3 * * *"
+      delete: false
+      grace: P7D                # older than any transaction; a file still being attached is never touched
+      batch: 500
 
   # ClamAV (docker-compose.media.yml). Off only in the local profile and on the VPS (deploy/), whose
   # 4 GB cannot hold it; an upload is refused when the scanner is on and unreachable.

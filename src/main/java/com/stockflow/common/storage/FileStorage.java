@@ -2,6 +2,7 @@ package com.stockflow.common.storage;
 
 import java.io.InputStream;
 import java.time.Duration;
+import java.util.List;
 
 /**
  * Where uploaded and generated files live.
@@ -80,6 +81,12 @@ public interface FileStorage {
      * key {@link #store} chooses.
      */
     void storeDerived(String key, String contentType, byte[] bytes);
+
+    /**
+     * Up to {@code max} objects under {@code prefix} whose keys sort after {@code startAfter} (null for the first
+     * page), in key order. For the orphaned-file sweep; never for a request path.
+     */
+    List<StoredObject> list(String prefix, String startAfter, int max);
 
     /**
      * A signed PUT a browser uses to write exactly the declared file to {@code incomingKey}: its length, type and

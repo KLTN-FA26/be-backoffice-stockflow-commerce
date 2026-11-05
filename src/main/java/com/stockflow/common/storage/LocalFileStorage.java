@@ -121,6 +121,29 @@ class LocalFileStorage implements FileStorage {
     }
 
     @Override
+    public java.util.List<StoredObject> list(String prefix, String startAfter, int max) {
+        Path base = root.resolve(prefix).normalize();
+        if (!base.startsWith(root) || !Files.isDirectory(base)) {
+            return java.util.List.of();
+        }
+        try (var files = Files.walk(base)) {
+            return files.filter(Files::isRegularFile)
+                    .map(path -> root.relativize(path).toString().replace('\\', '/'))
+                    .filter(key -> startAfter == null || key.compareTo(startAfter) > 0)
+                    .sorted().limit(max)
+                    .map(key -> {
+                        try {
+                            return new StoredObject(key, Files.getLastModifiedTime(root.resolve(key)).toInstant());
+                        } catch (IOException ex) {
+                            throw new StorageException("Cannot read " + key, ex);
+                        }
+                    }).toList();
+        } catch (IOException ex) {
+            throw new StorageException("Cannot list " + prefix, ex);
+        }
+    }
+
+    @Override
     public void storeDerived(String key, String contentType, byte[] bytes) {
         if (StorageKeys.categoryOf(key) != FileCategory.EVIDENCE_COPY) {
             throw new IllegalArgumentException("Only derived copies are written at a given key");
