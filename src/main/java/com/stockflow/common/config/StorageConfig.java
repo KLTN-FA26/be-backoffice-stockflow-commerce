@@ -26,10 +26,13 @@ import java.net.URI;
  * {@code stockflow.localhost} and fails with a DNS error that looks like a network problem rather
  * than a configuration one. It is on by default here because MinIO is the local default.</p>
  *
- * <p><b>Credentials.</b> Static keys are used only when an endpoint override is set — that is, when
- * talking to MinIO. Against real S3 the default provider chain is used instead, so the deployment
- * gets its credentials from the instance role rather than from configuration. Long-lived access
- * keys in a properties file are the most common way cloud credentials leak.</p>
+ * <p><b>Credentials.</b> Static keys are used whenever both {@code access-key} and {@code secret-key}
+ * are set, whatever the endpoint: MinIO needs them, and so does real S3 from a machine that has no
+ * AWS role (the VPS deployment, a developer laptop). Leave both blank on AWS compute and the default
+ * provider chain picks up the instance or task role instead. When keys are used against real S3 they
+ * belong to an IAM user holding only {@code infra/aws}'s application policy, are passed in through
+ * the environment, and never appear in a properties file — long-lived access keys in configuration
+ * are the most common way cloud credentials leak.</p>
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(prefix = "stockflow.storage", name = "provider",

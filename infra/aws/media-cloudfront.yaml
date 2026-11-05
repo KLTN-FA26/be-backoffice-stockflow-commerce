@@ -1,10 +1,28 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Private StockFlow media bucket with a product-image-only CloudFront distribution.
 
+# Two ways to use this template:
+#   - UseExistingBucket=false (default): the stack creates the bucket with every setting below.
+#   - UseExistingBucket=true: the bucket was created by hand (console). The stack then adds only the
+#     bucket policy, CloudFront and the application's IAM policy; run configure-existing-bucket.sh first
+#     for the bucket's own settings (versioning, Object Lock, lifecycle, CORS, encryption, public access
+#     block), which CloudFormation cannot change on a bucket it does not own.
+# Deploy the stack in the bucket's region: the CloudFront origin is the bucket's regional endpoint.
+# The bucket settings here and in configure-existing-bucket.sh must stay the same; change both.
+
 Parameters:
   BucketName:
     Type: String
     Description: Globally unique S3 bucket name used by stockflow.storage.bucket.
+  UseExistingBucket:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: true when BucketName already exists and was configured by configure-existing-bucket.sh.
+  CorsAllowedOrigins:
+    Type: CommaDelimitedList
+    Default: 'http://localhost:5173'
+    Description: Frontend origins allowed to PUT uploads straight to the bucket and fetch from it (created bucket only).
   MediaDomainName:
     Type: String
     Default: ''
@@ -16,6 +34,7 @@ Parameters:
 
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref MediaDomainName, '']]
+  CreateBucket: !Equals [!Ref UseExistingBucket, 'false']
 
 Rules:
   CustomDomainRequiresCertificate:
@@ -27,12 +46,17 @@ Rules:
 Resources:
   MediaBucket:
     Type: AWS::S3::Bucket
+    Condition: CreateBucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Ref BucketName
       VersioningConfiguration:
         Status: Enabled
+      # Object Lock with NO default retention: the application locks individual objects (a confirmed
+      # design, a supplier invoice scan) after the business transaction commits. A bucket-wide default
+      # would also lock incoming uploads and make rollback cleanup impossible.
+      ObjectLockEnabled: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -45,6 +69,13 @@ Resources:
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Ref CorsAllowedOrigins
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedHeaders: ['*']
+            ExposedHeaders: [ETag]
+            MaxAge: 3000
       LifecycleConfiguration:
         Rules:
           - Id: AbortIncompleteMultipartUploads
@@ -55,6 +86,16 @@ Resources:
             Status: Enabled
             NoncurrentVersionExpiration:
               NoncurrentDays: 90
+          # Browser uploads land here before they are scanned; one that is never attached to a record
+          # simply expires. Nothing is served from this prefix (see the bucket policy).
+          - Id: ExpireUnclaimedUploads
+            Status: Enabled
+            Prefix: incoming/
+            ExpirationInDays: 1
+          - Id: ExpireGeneratedExports
+            Status: Enabled
+            Prefix: exports/
+            ExpirationInDays: 7
 
   ProductPathGuard:
     Type: AWS::CloudFront::Function
@@ -105,7 +146,10 @@ Resources:
           - CloudFrontDefaultCertificate: true
         Origins:
           - Id: private-media-s3
-            DomainName: !GetAtt MediaBucket.RegionalDomainName
+            DomainName: !If
+              - CreateBucket
+              - !GetAtt MediaBucket.RegionalDomainName
+              - !Sub '${BucketName}.s3.${AWS::Region}.amazonaws.com'
             OriginAccessControlId: !GetAtt MediaOriginAccessControl.Id
             S3OriginConfig:
               OriginAccessIdentity: ''
@@ -121,10 +165,12 @@ Resources:
             - EventType: viewer-request
               FunctionARN: !GetAtt ProductPathGuard.FunctionARN
 
+  # Guards that hold even if application code is wrong. A presigned URL is "REST-QUERY-STRING"
+  # authentication; the backend's own SDK calls are "REST-HEADER".
   MediaBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref MediaBucket
+      Bucket: !If [CreateBucket, !Ref MediaBucket, !Ref BucketName]
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -133,30 +179,69 @@ Resources:
             Principal:
               Service: cloudfront.amazonaws.com
             Action: s3:GetObject
-            Resource: !Sub '${MediaBucket.Arn}/product-images/*'
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/product-images/*'
             Condition:
               StringEquals:
                 AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ProductMediaDistribution}'
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::${BucketName}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          # An upload that has not been scanned is never handed to a browser, whatever the code signs.
+          - Sid: DenyPresignedReadOfUnscannedUploads
+            Effect: Deny
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/incoming/*'
+            Condition:
+              StringEquals:
+                s3:authType: REST-QUERY-STRING
+          # A browser can write only into the quarantine prefix; everything else is written by the backend.
+          - Sid: DenyPresignedWritesOutsideIncoming
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            NotResource: !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/incoming/*'
+            Condition:
+              StringEquals:
+                s3:authType: REST-QUERY-STRING
+          # stockflow.storage.presigned-url-ttl is capped at one hour; this is the same cap, enforced by S3.
+          - Sid: DenySignaturesOlderThanOneHour
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/*'
+            Condition:
+              NumericGreaterThan:
+                s3:signatureAge: '3600000'
 
   ApplicationMediaPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      Description: Least-privilege media access for the StockFlow backend runtime role.
+      Description: Least-privilege media access for the StockFlow backend (role on AWS, or the VPS's IAM user).
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # ListBucket is not used to list: without it S3 answers HEAD on a missing key with 403 instead
+          # of 404, and the health check and image publishing both read "missing" from that 404.
           - Sid: ListConfiguredBucket
             Effect: Allow
             Action: [s3:ListBucket, s3:GetBucketLocation]
-            Resource: !GetAtt MediaBucket.Arn
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketName}'
           - Sid: ManageStockFlowMediaObjects
             Effect: Allow
-            Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
-            Resource: !Sub '${MediaBucket.Arn}/*'
+            Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:PutObjectRetention, s3:GetObjectRetention]
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/*'
 
 Outputs:
   BucketName:
-    Value: !Ref MediaBucket
+    Value: !Ref BucketName
     Description: Set S3_BUCKET to this value.
   CloudFrontDistributionId:
     Value: !Ref ProductMediaDistribution
@@ -170,4 +255,4 @@ Outputs:
       - !Sub 'https://${ProductMediaDistribution.DomainName}'
   ApplicationMediaPolicyArn:
     Value: !Ref ApplicationMediaPolicy
-    Description: Attach this managed policy to the backend ECS/EC2/Lambda IAM role.
+    Description: Attach to the backend's IAM role on AWS, or to the IAM user whose keys the VPS uses.

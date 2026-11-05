@@ -287,6 +287,40 @@ curl -sI --resolve api.<domain>:443:<vps-ip> https://api.<domain>/oauth2/jwks   
 curl -sk --resolve jaeger.<domain>:443:<vps-ip> https://jaeger.<domain>/   # "Empty reply": origin lock works
 ```
 
+## 4a. Object storage on AWS S3 (instead of MinIO)
+
+The application talks S3 either way; switching is configuration only. Done once, from a machine with
+the AWS CLI signed in as an account administrator:
+
+1. **The bucket's own settings** (public access block, versioning, Object Lock with no default
+   retention, lifecycle, CORS, encryption). Enabling Object Lock is irreversible.
+   ```bash
+   infra/aws/configure-existing-bucket.sh <bucket> <region> "https://<frontend-origin>"
+   ```
+   A bucket created by the stack below instead (`UseExistingBucket=false`) gets the same settings and
+   needs no script.
+2. **Bucket policy, CloudFront, the application's IAM policy**: deploy `infra/aws/media-cloudfront.yaml`
+   **in the bucket's region** with `BucketName=<bucket>` and `UseExistingBucket=true`. The bucket policy
+   refuses plain HTTP, any presigned read of `incoming/` (unscanned uploads), any presigned write
+   outside it, and signatures older than an hour.
+3. **Credentials for the VPS**: an IAM user (e.g. `stockflow-vps`) with only the stack's
+   `ApplicationMediaPolicyArn` attached, and one access key. Never root keys. The policy includes
+   `s3:ListBucket` on purpose: without it S3 answers `HEAD` on a missing key with 403, and the health
+   check and image publishing both break.
+4. **`.env`**: the "object storage on AWS S3" block of `.env.example` - `S3_BUCKET`, the user's keys,
+   `S3_ENDPOINT=` (present and empty), `S3_PATH_STYLE=false`, `AWS_REGION=<bucket region>`,
+   `PRODUCT_MEDIA_CDN_BASE_URL=https://<CloudFrontDomainName>`, and `S3_OBJECT_LOCK_ENABLED=true`.
+   `AWS_REGION` must be the bucket's region: the default is `ap-southeast-1`, and a wrong region makes
+   every call and every presigned link fail with a redirect.
+5. **Existing files**: copy MinIO's bucket across with the keys unchanged (the database stores keys,
+   not URLs), e.g. `mc mirror local/<minio-bucket> aws/<bucket>`. Copied objects carry no SHA-256
+   checksum; design verification falls back to hashing them until they are backfilled.
+6. Deploy, then check `/actuator/health` (`objectStorage` UP with `endpoint: aws`) and that an image
+   upload, its `download-url` and the public gallery work.
+
+MinIO and `minio-init` keep running untouched and can be removed from the compose file once
+nothing points at them.
+
 ## 5. Operating it
 
 All from `/opt/stockflow`.
