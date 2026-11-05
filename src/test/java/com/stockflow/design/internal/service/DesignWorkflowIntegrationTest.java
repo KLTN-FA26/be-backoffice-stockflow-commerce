@@ -82,6 +82,9 @@ class DesignWorkflowIntegrationTest {
         row.editedBy(editor);
         drafts.saveAndFlush(row);
         when(storage.download("design-renders/test.pdf")).thenAnswer(call -> new ByteArrayInputStream(bytes));
+        // Written before the store recorded SHA-256: every check falls back to hashing the bytes above.
+        when(storage.stat("design-renders/test.pdf")).thenReturn(
+                new com.stockflow.common.storage.ObjectStat(bytes.length, "application/pdf", null));
         return workflow.get(draft.id(), owner);
     }
 
@@ -119,6 +122,9 @@ class DesignWorkflowIntegrationTest {
         var confirmed = workflow.confirm(draft.id(), owner, sent.version(), sent.currentArtifactId());
         var replay = workflow.confirm(draft.id(), owner, sent.version(), sent.currentArtifactId());
         assertThat(replay).isEqualTo(confirmed);
+        // The confirmed file is locked once, by the confirmation that made the snapshot, not by its replay.
+        org.mockito.Mockito.verify(files).retainAfterCommit("design-renders/test.pdf",
+                com.stockflow.common.storage.RecordRetention.CONFIRMED_DESIGN);
         assertThat(confirmed.spec()).isEqualTo("Width 1800 mm, white");
         assertThat(confirmed.confirmedBy()).isEqualTo(owner);
         assertThat(workflow.get(draft.id(), owner).status()).isEqualTo("APPROVED");
@@ -161,12 +167,35 @@ class DesignWorkflowIntegrationTest {
                 .isInstanceOf(BusinessException.class);
     }
 
-    @Test void orderVerificationRejectsTamperedStorageBytes() throws Exception {
+    /**
+     * Tampered bytes are caught where the file is used - packing, prepress - not at checkout, which reads the
+     * database only and so never waits on the object store (BR-DSG-003, BR-PRD-02).
+     */
+    @Test void tamperedStorageBytesAreRejectedWhereTheFileIsUsed() throws Exception {
         var draft = draftWithArtifact();
         var snapshot = confirm(draft);
         when(storage.download("design-renders/test.pdf")).thenReturn(new ByteArrayInputStream(new byte[]{1, 2, 3}));
-        assertThatThrownBy(() -> designs.verifySnapshot(snapshot.id(), draft.customerId()))
+        org.mockito.Mockito.clearInvocations(storage);
+
+        assertThat(designs.verifySnapshot(snapshot.id(), draft.customerId()).checksum()).isEqualTo(snapshot.checksum());
+        org.mockito.Mockito.verifyNoInteractions(storage);
+
+        assertThat(designs.verifyForFulfillment(snapshot.id(), snapshot.checksum()).matching()).isFalse();
+        when(storage.download("design-renders/test.pdf")).thenReturn(new ByteArrayInputStream(new byte[]{1, 2, 3}));
+        assertThat(designs.verifyForPrinting(snapshot.id(), snapshot.checksum()).matching()).isFalse();
+    }
+
+    /** A file whose stored digest no longer matches is refused at confirmation: no snapshot is made of it. */
+    @Test void confirmationRefusesAFileThatChangedInStorage() throws Exception {
+        var draft = draftWithArtifact();
+        var reviewed = workflow.review(draft.id(), reviewer, draft.version(), draft.currentArtifactId(), true, "Technical checks passed");
+        var sent = workflow.submit(draft.id(), editor, reviewed.version());
+        when(storage.stat("design-renders/test.pdf")).thenReturn(new com.stockflow.common.storage.ObjectStat(3,
+                "application/pdf", com.stockflow.common.storage.Checksums.sha256Hex(new byte[]{1, 2, 3})));
+
+        assertThatThrownBy(() -> workflow.confirm(draft.id(), owner, sent.version(), sent.currentArtifactId()))
                 .isInstanceOf(BusinessException.class);
+        org.mockito.Mockito.verify(storage, org.mockito.Mockito.never()).download(any());
     }
 
     @Test void databaseRejectsSnapshotMutation() throws Exception {

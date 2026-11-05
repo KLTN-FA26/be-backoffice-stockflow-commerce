@@ -88,7 +88,7 @@ class StockDamagePhotoFailureIntegrationTest {
             StoredFile file = (StoredFile) invocation.callRealMethod();
             stored.add(file.key());
             return file;
-        }).when(storage).store(any(), any(), any(), anyLong(), any());
+        }).when(storage).store(any(), any(), any(), anyLong(), any(), any());
         try {
             Throwable failure = catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () ->
                     damages.report(new StockDamages.ReportDamageCommand(UUID.randomUUID(), row, 2,

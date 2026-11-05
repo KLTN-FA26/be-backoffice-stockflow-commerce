@@ -64,7 +64,7 @@ class DamageEvidence {
                 }
                 try (InputStream content = new BufferedInputStream(buffered.open())) {
                     StoredFile file = files.store(FileCategory.QC_EVIDENCE, new FileUpload(upload.originalName(),
-                            upload.contentType(), upload.sizeBytes(), content));
+                            upload.contentType(), upload.sizeBytes(), content, buffered.checksum()));
                     stored.add(new StockDamageReport.Photo(Identifiers.newId(), file.key(), file.originalName(),
                             normalised(upload.contentType()), file.sizeBytes(), buffered.checksum()));
                 }

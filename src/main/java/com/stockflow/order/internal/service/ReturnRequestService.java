@@ -291,7 +291,7 @@ public class ReturnRequestService {
             }
             try (InputStream content = new BufferedInputStream(buffered.open())) {
                 file = files.store(FileCategory.RETURN_EVIDENCE, new FileUpload(upload.originalName(),
-                        upload.contentType(), upload.sizeBytes(), content));
+                        upload.contentType(), upload.sizeBytes(), content, buffered.checksum()));
             }
         } catch (IOException unreadable) {
             throw new StorageException("Could not read the uploaded photo", unreadable);

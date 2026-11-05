@@ -72,7 +72,8 @@ public class DesignArtifactService {
             try (var content = buffered.open()) { inspection.requireClean(content); }
             try (var content = new BufferedInputStream(buffered.open())) {
                 var file = files.store(FileCategory.DESIGN_RENDER,
-                        new FileUpload(upload.originalName(), upload.contentType(), upload.sizeBytes(), content));
+                        new FileUpload(upload.originalName(), upload.contentType(), upload.sizeBytes(), content,
+                                buffered.checksum()));
                 var artifact = new DesignArtifact(Identifiers.newId(), designId, role, file, buffered.checksum(), key);
                 designs.attach(artifact);
                 designs.recordEditor(designId, userId);

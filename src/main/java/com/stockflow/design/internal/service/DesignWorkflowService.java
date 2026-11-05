@@ -42,16 +42,19 @@ public class DesignWorkflowService {
     private final DesignService designs;
     private final IdentityService identities;
     private final CustomerService customers;
+    private final com.stockflow.common.storage.FileTransfers files;
 
     public DesignWorkflowService(DesignDraftJpaRepository drafts, DesignArtifactJpaRepository artifacts,
             DesignSnapshotJpaRepository snapshots, ProductService products, Clock clock,
             DesignDecisionJpaRepository decisions,
-            DesignService designs, IdentityService identities, CustomerService customers) {
+            DesignService designs, IdentityService identities, CustomerService customers,
+            com.stockflow.common.storage.FileTransfers files) {
         this.drafts = drafts; this.artifacts = artifacts; this.snapshots = snapshots;
         this.products = products; this.clock = clock;
         this.decisions = decisions; this.designs = designs;
         this.identities = identities;
         this.customers = customers;
+        this.files = files;
     }
 
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId,
@@ -178,7 +181,15 @@ public class DesignWorkflowService {
             conflict("The current design bundle is incomplete");
         }
         var snapshot = snapshots.saveAndFlush(new DesignSnapshotJpaEntity(Identifiers.newId(), draft, manifest, actor, clock.instant()));
-        designs.verifySnapshot(snapshot.getId(), draft.getCustomerId());
+        // What the customer approves must be what is stored: every file of the bundle, by the digest the
+        // store recorded, before the snapshot can be referenced by an order.
+        if (!designs.verifyForFulfillment(snapshot.getId(), snapshot.getChecksum()).matching()) {
+            conflict("Stored artifact differs from the confirmed snapshot");
+        }
+        // From here what was approved is what is printed: once this commits, no file of the bundle can be
+        // deleted or overwritten for the confirmed-design retention period (S3 Object Lock).
+        snapshot.getArtifactManifest().forEach(item -> files.retainAfterCommit(item.storageKey(),
+                com.stockflow.common.storage.RecordRetention.CONFIRMED_DESIGN));
         decision(draft, actor, "CUSTOMER_CONFIRMED", snapshot.getId().toString());
         draft.transition(DesignStatus.APPROVED);
         drafts.saveAndFlush(draft);

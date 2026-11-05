@@ -488,7 +488,8 @@ public class ProductMediaService {
 
     private StoredFile store(FileCategory category, String name, String contentType, byte[] bytes,
                              List<String> written) {
-        StoredFile file = storage.store(category, name, contentType, bytes.length, new ByteArrayInputStream(bytes));
+        StoredFile file = storage.store(category, name, contentType, bytes.length, new ByteArrayInputStream(bytes),
+                sha256(bytes));
         written.add(file.key());
         return file;
     }

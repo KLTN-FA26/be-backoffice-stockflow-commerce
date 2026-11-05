@@ -209,7 +209,7 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
             }
             try (InputStream content = new BufferedInputStream(buffered.open())) {
                 StoredFile file = files.store(FileCategory.SUPPLIER_INVOICE, new FileUpload(upload.originalName(),
-                        upload.contentType(), upload.sizeBytes(), content));
+                        upload.contentType(), upload.sizeBytes(), content, buffered.checksum()));
                 invoice.attach(new SupplierInvoice.Document(file.key(), file.originalName(), file.contentType()));
             }
         } catch (IOException ex) {

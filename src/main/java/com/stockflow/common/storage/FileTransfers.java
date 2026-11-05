@@ -15,11 +15,20 @@ public class FileTransfers {
     private final FileStorage storage;
     private final StorageProperties properties;
     private final Clock clock;
+    private final ObjectLockProperties objectLock;
 
+    /** Without Object Lock: the shape the storage tests construct. */
     public FileTransfers(FileStorage storage, StorageProperties properties, Clock clock) {
+        this(storage, properties, clock, ObjectLockProperties.disabled());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public FileTransfers(FileStorage storage, StorageProperties properties, Clock clock,
+                         ObjectLockProperties objectLock) {
         this.storage = storage;
         this.properties = properties;
         this.clock = clock;
+        this.objectLock = objectLock;
     }
 
     public StoredFile store(FileCategory category, FileUpload upload) {
@@ -28,7 +37,7 @@ public class FileTransfers {
             throw new IllegalStateException("File attachment requires an active database transaction");
         }
         StoredFile file = storage.store(category, upload.originalName(), upload.contentType(),
-                upload.sizeBytes(), upload.content());
+                upload.sizeBytes(), upload.content(), upload.sha256());
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCompletion(int status) {
@@ -75,6 +84,38 @@ public class FileTransfers {
             }
         });
         return publicKey;
+    }
+
+    /**
+     * Locks {@code key} with S3 Object Lock for the period of {@code record} once the current
+     * transaction commits - never before, because an object locked by a transaction that then rolls
+     * back could be neither deleted nor ever referenced. Does nothing while
+     * {@code stockflow.storage.object-lock.enabled} is off.
+     *
+     * <p>A lock that fails after the commit cannot undo it: the record stands, protected by
+     * versioning alone, and the failure is logged at ERROR naming the key so it can be locked by hand.
+     * Failing the request instead would report as failed a business action that has happened.</p>
+     */
+    public void retainAfterCommit(String key, RecordRetention record) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("Retention requires an active database transaction");
+        }
+        StorageKeys.requireValid(key);
+        if (!objectLock.enabled()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    storage.retain(key, clock.instant().plus(objectLock.periodOf(record)));
+                } catch (RuntimeException lockFailure) {
+                    log.error("Object Lock was not applied; {} record {} is protected by versioning only",
+                            record, key, lockFailure);
+                }
+            }
+        });
     }
 
     /** Call only after resolving the attachment through its owning business record. */

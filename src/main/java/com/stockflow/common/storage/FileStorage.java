@@ -30,8 +30,49 @@ public interface FileStorage {
      *
      * @throws StorageException if the store is unreachable or refuses the write
      */
+    default StoredFile store(FileCategory category, String originalName, String contentType,
+                             long sizeBytes, InputStream content) {
+        return store(category, originalName, contentType, sizeBytes, content, null);
+    }
+
+    /**
+     * {@link #store(FileCategory, String, String, long, InputStream)}, with the SHA-256 the caller
+     * already computed over the same bytes.
+     *
+     * <p>Every object is written with a store-computed SHA-256, so {@link #stat} can answer for it
+     * later without a read. Passing {@code sha256} as well makes the store <i>check</i> the bytes it
+     * received against it and refuse the write on a difference: the digest the database records is
+     * then provably the digest of the object, end to end.</p>
+     *
+     * @param sha256 lower-case hex, or null when the caller has none
+     * @throws StorageException if the store is unreachable, refuses the write, or the bytes it
+     *         received do not hash to {@code sha256}
+     */
     StoredFile store(FileCategory category, String originalName, String contentType,
-                     long sizeBytes, InputStream content);
+                     long sizeBytes, InputStream content, String sha256);
+
+    /**
+     * What the store knows about an object, from its metadata alone (one HEAD request; no bytes).
+     *
+     * <p>This is how integrity is checked where a file is used: the store recorded the object's
+     * SHA-256 when it was written and recomputes it on any later write, so comparing
+     * {@link ObjectStat#sha256()} with the digest recorded at upload proves the object unchanged
+     * without downloading it. A null digest proves nothing; the caller hashes the bytes.</p>
+     *
+     * @throws StorageException if the key does not exist or the store cannot be reached
+     */
+    ObjectStat stat(String key);
+
+    /**
+     * Locks the current version of an object until {@code until} (S3 Object Lock, in the mode
+     * {@link ObjectLockProperties} configures): it cannot be deleted or overwritten in place until
+     * then. Only for business records ({@link RecordRetention}); call it through
+     * {@link FileTransfers#retainAfterCommit}, never on an object a transaction may still roll back.
+     *
+     * @throws StorageException if the bucket has no Object Lock, or the store refuses (a lock can be
+     *         extended but never shortened)
+     */
+    void retain(String key, java.time.Instant until);
 
     /**
      * Open a stored file for server-side processing.

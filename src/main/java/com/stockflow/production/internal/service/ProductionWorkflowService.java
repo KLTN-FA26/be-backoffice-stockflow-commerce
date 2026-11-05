@@ -85,7 +85,7 @@ class ProductionWorkflowService implements ProductionWorkflow {
             }
             return held(user, order, order.hold(ProductionOrder.HoldReason.FILE_REJECTED, note, now), now);
         }
-        boolean matching = designs.verifyForFulfillment(order.work().designSnapshotId(), order.work().designChecksum())
+        boolean matching = designs.verifyForPrinting(order.work().designSnapshotId(), order.work().designChecksum())
                 .matching();
         if (!matching) {
             throw new BusinessException(ErrorCode.PRINT_FILE_MISMATCH,
