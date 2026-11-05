@@ -70,7 +70,8 @@ class PickListServiceTest {
     private final OrderReservations orderReservations = mock(OrderReservations.class);
     private final PickListService service = new PickListService(picks, pickLines, orders, inventory, itemControls,
             consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations,
-            mock(com.stockflow.inventory.consumption.PickDamageReporting.class));
+            mock(com.stockflow.inventory.consumption.PickDamageReporting.class),
+            org.springframework.transaction.support.TransactionOperations.withoutTransaction());
 
     private final UUID picker = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(picker, "picker",

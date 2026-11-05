@@ -120,7 +120,7 @@ class PackingServiceTest {
     private final PackingService service = new PackingService(picks, pickLines, packs, packages, shipments,
             verifications, store, scans, orders, inventory, itemControls, designs, identities, warehouses, timeline,
             loadMembers, loads, loadStore, Clock.fixed(NOW, ZoneOffset.UTC), 6000, audit, loadPlans, planVehicles,
-            mock(PickListService.class));
+            mock(PickListService.class), org.springframework.transaction.support.TransactionOperations.withoutTransaction());
 
     private final UUID packer = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(packer, "packer", Set.of(Role.WAREHOUSE_STAFF), Set.of(),

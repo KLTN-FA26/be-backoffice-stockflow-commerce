@@ -235,9 +235,14 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     // ================================================================== a pick report (SCRUM-277)
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public PreparedFiles preparePhotos(IncomingFiles photos) {
+        return evidence.prepare(photos);
+    }
+
+    @Override
     @Transactional(propagation = Propagation.MANDATORY)
-    public List<DamagePhoto> storePhotos(IncomingFiles photos) {
-        PreparedFiles prepared = evidence.prepare(photos);
+    public List<DamagePhoto> adoptPhotos(PreparedFiles prepared) {
         prepared.adopt();
         return evidence.photos(prepared).stream().map(photo -> new DamagePhoto(photo.storageKey(),
                 photo.originalName(), photo.contentType(), photo.sizeBytes(), photo.checksum())).toList();

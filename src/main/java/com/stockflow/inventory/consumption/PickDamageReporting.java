@@ -1,6 +1,7 @@
 package com.stockflow.inventory.consumption;
 
 import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.common.storage.UploadSlot;
 import com.stockflow.common.storage.UploadSlotRequest;
 
@@ -15,16 +16,19 @@ import java.util.UUID;
  * consumes, and only fulfillment is entitled to say what a picker found at a bin. Inventory's own damage report
  * (a shelf check, free units only) is inventory's endpoint and needs no cross-module door.</p>
  *
- * <p>Two steps, because they want different locks. {@link #storePhotos} writes to object storage and takes no lock -
- * call it before locking the pick, so nobody waits on an upload. {@link #report} locks the stock rows; call it after
- * the pick (pick, then order, then stock rows - the order every caller keeps). Both join the caller's transaction:
- * if anything after them fails, the photos are deleted and the stock is untouched.</p>
+ * <p>Three steps, because they want different things. {@link #preparePhotos} checks, scans and stores the photos with
+ * no transaction at all - call it before locking the pick, so nobody waits on an upload and no pooled connection is
+ * held while one is read. {@link #adoptPhotos} hands them to the caller's transaction, and {@link #report} locks the
+ * stock rows; call both after the pick (pick, then order, then stock rows - the order every caller keeps). If anything
+ * after the adoption fails, the photos are deleted and the stock is untouched; photos never adopted are deleted when
+ * the caller closes what {@link #preparePhotos} returned.</p>
  */
 public interface PickDamageReporting {
 
     /**
      * Checks each photo (an image by its first bytes, at most {@code 5}, size limits of the evidence category),
-     * scans it and stores it. Requires a transaction: a rollback deletes what was stored.
+     * scans it and stores it, outside any transaction. The caller closes the result, which deletes the photos unless a
+     * transaction adopted them ({@link #adoptPhotos}).
      *
      * @throws com.stockflow.common.error.BusinessException {@code DAMAGE_PHOTO_REQUIRED} for none,
      *         {@code VALIDATION_FAILED} for too many, {@code UNSUPPORTED_MEDIA_TYPE}, {@code PAYLOAD_TOO_LARGE};
@@ -32,7 +36,13 @@ public interface PickDamageReporting {
      *         through {@link #beginPhotoUpload}, {@code CONFLICT} for one being attached and {@code NOT_FOUND} for one
      *         that is not the caller's
      */
-    List<DamagePhoto> storePhotos(IncomingFiles photos);
+    PreparedFiles preparePhotos(IncomingFiles photos);
+
+    /**
+     * The photos {@link #preparePhotos} stored, handed to the caller's transaction: kept if it commits, deleted if it
+     * rolls back. Requires a transaction.
+     */
+    List<DamagePhoto> adoptPhotos(PreparedFiles prepared);
 
     /** A slot for one damage photo uploaded straight to the object store by {@code ownerId}. */
     UploadSlot beginPhotoUpload(UUID ownerId, UploadSlotRequest request);

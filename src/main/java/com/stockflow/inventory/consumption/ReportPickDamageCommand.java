@@ -11,7 +11,7 @@ import java.util.UUID;
  * @param reservationId      the allocation behind the pick line
  * @param pickLineId         the pick line, named on the report
  * @param orderId            the order the allocation belongs to; a hold of another order is refused
- * @param photos             at least one, from {@link PickDamageReporting#storePhotos} in this transaction
+ * @param photos             at least one, from {@link PickDamageReporting#adoptPhotos} in this transaction
  * @param damageLocationCode the quarantine area the picker takes the units to; null lets inventory choose one of the
  *                           warehouse's (the first usable one, by code, that can take these goods)
  */
