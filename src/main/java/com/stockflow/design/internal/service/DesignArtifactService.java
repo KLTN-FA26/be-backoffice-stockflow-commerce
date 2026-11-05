@@ -102,7 +102,9 @@ public class DesignArtifactService {
      */
     @Transactional(readOnly = true)
     public UploadSlot beginUpload(UUID designId, UUID userId, UploadSlotRequest request) {
-        requireChangeable(requireDraft(designId, userId, false), designId);
+        var draft = requireDraft(designId, userId, false);
+        draft.requireEditor(userId);
+        requireChangeable(draft, designId);
         return staged.begin(FileCategory.DESIGN_RENDER, userId, request);
     }
 
@@ -127,12 +129,16 @@ public class DesignArtifactService {
         }
     }
 
-    /** BR-DSG-001's machine checks of one revision, for the reviewer and the designer (see {@link DesignPreflight}). */
-    @Transactional(readOnly = true)
+    /**
+     * BR-DSG-001's machine checks of one revision, for the reviewer and the designer (see {@link DesignPreflight}). Not
+     * transactional itself: the artifact is resolved through its draft in a short read, and the file - up to 50 MB - is
+     * read with no connection held.
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public DesignPreflight.Report preflight(UUID designId, UUID artifactId, UUID userId) {
-        var artifact = list(designId, userId).stream().filter(file -> file.id().equals(artifactId))
-                .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        return designPreflight.inspect(artifact.file().key(), artifact.file().contentType());
+        var file = tx.execute(status -> list(designId, userId).stream().filter(found -> found.id().equals(artifactId))
+                .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND)).file());
+        return designPreflight.inspect(file.key(), file.contentType());
     }
 
     @Transactional(readOnly = true)
@@ -155,6 +161,7 @@ public class DesignArtifactService {
     private Optional<DesignArtifact> changeableOrReplay(UUID designId, UUID userId, String key) {
         return tx.execute(status -> {
             var draft = requireDraft(designId, userId, false);
+            draft.requireEditor(userId);
             Optional<DesignArtifact> replay = artifactOf(designId, key);
             if (replay.isEmpty()) {
                 requireChangeable(draft, designId);

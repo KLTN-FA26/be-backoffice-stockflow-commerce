@@ -11,6 +11,8 @@ import com.stockflow.design.api.DesignService;
 import com.stockflow.design.internal.domain.DesignReview;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.domain.DesignWorkflow;
+import com.stockflow.common.storage.StoredFile;
+import com.stockflow.design.internal.entity.DesignArtifactJpaEntity;
 import com.stockflow.design.internal.entity.DesignDecisionJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
 import com.stockflow.design.internal.entity.DesignSnapshotJpaEntity;
@@ -21,12 +23,15 @@ import com.stockflow.design.internal.repository.DesignSnapshotJpaRepository;
 import com.stockflow.product.api.ProductService;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.common.security.Role;
 /** Coordinates row locks shared with artifact upload; reviewers supply explicit technical evidence. */
@@ -44,12 +49,13 @@ public class DesignWorkflowService {
     private final CustomerService customers;
     private final com.stockflow.common.storage.FileTransfers files;
     private final DesignPreflight preflight;
+    private final TransactionOperations tx;
 
     public DesignWorkflowService(DesignDraftJpaRepository drafts, DesignArtifactJpaRepository artifacts,
             DesignSnapshotJpaRepository snapshots, ProductService products, Clock clock,
             DesignDecisionJpaRepository decisions,
             DesignService designs, IdentityService identities, CustomerService customers,
-            com.stockflow.common.storage.FileTransfers files, DesignPreflight preflight) {
+            com.stockflow.common.storage.FileTransfers files, DesignPreflight preflight, TransactionOperations tx) {
         this.drafts = drafts; this.artifacts = artifacts; this.snapshots = snapshots;
         this.products = products; this.clock = clock;
         this.decisions = decisions; this.designs = designs;
@@ -57,6 +63,7 @@ public class DesignWorkflowService {
         this.customers = customers;
         this.files = files;
         this.preflight = preflight;
+        this.tx = tx;
     }
 
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId,
@@ -129,28 +136,57 @@ public class DesignWorkflowService {
         return view(drafts.saveAndFlush(draft));
     }
 
+    /**
+     * The independent reviewer's technical decision on the current bundle. Passing it (BR-DSG-001) first needs every
+     * file of the bundle to pass the machine preflight - the preview being reviewed and the PRINT_READY file the print
+     * shop is sent alike: a file the machine already refuses does not get a person's approval.
+     *
+     * <p>Not transactional itself. The cheap checks - version, reviewer, status, current file - run first in a short
+     * read, so nobody else makes the server read a print file; the files are then read with no transaction held (a
+     * 50 MB print file must hold neither a pooled connection nor the draft's lock); the decision is recorded in a short
+     * transaction that locks the draft and checks again. A file uploaded meanwhile voids the review and bumps the
+     * version, which that second check refuses.</p>
+     */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public DraftView review(UUID id, UUID actor, long version, UUID artifactId, boolean passed, String notes) {
-        if (passed) {
-            // BR-DSG-001: a file the machine already refuses does not get a person's approval. Checked before the
-            // draft is locked: reading a 50 MB print file must not hold the lock every other writer of the draft waits on.
-            access(id, actor, false);
-            var artifact = artifacts.findById(artifactId).filter(found -> found.getDraftId().equals(id))
-                    .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-            var file = artifact.storedFile();
-            var report = preflight.inspect(file.key(), file.contentType());
-            if (!report.passed()) {
-                conflict("Preflight failed: " + report.blockingSummary());
+        var decision = new DesignReview(artifactId, actor, passed, notes);
+        if (decision.passed()) {
+            List<StoredFile> bundle = tx.execute(status -> {
+                var draft = access(id, actor, false);
+                requireReviewable(draft, version, artifactId, actor);
+                return bundleFiles(draft);
+            });
+            for (StoredFile file : bundle) {
+                var report = preflight.inspect(file.key(), file.contentType());
+                if (!report.passed()) {
+                    conflict("Preflight failed for " + file.originalName() + ": " + report.blockingSummary());
+                }
             }
         }
-        var draft = access(id, actor, true);
+        return tx.execute(status -> {
+            var draft = access(id, actor, true);
+            requireReviewable(draft, version, artifactId, actor);
+            draft.review(actor, decision.passed(), decision.notes());
+            decision(draft, actor, decision.passed() ? "TECHNICAL_ACCEPTED" : "TECHNICAL_REJECTED", notes);
+            return view(drafts.saveAndFlush(draft));
+        });
+    }
+
+    private static void requireReviewable(DesignDraftJpaEntity draft, long version, UUID artifactId, UUID actor) {
         DesignWorkflow.requireVersion(draft.getVersion(), version);
-        var decision = new DesignReview(artifactId, actor, passed, notes);
         DesignWorkflow.requireReview(draft.getStatus(), draft.getCurrentArtifactId(), artifactId,
                 actor, draft.getOwnerUserId(), draft.getLastEditorUserId(), draft.getReviewerUserId());
-        draft.review(actor, decision.passed(), decision.notes());
-        decision(draft, actor, passed ? "TECHNICAL_ACCEPTED" : "TECHNICAL_REJECTED", notes);
-        return view(drafts.saveAndFlush(draft));
+    }
+
+    /** Every file of the draft's current bundle, one per role: what a confirmation would freeze and prepress print. */
+    private List<StoredFile> bundleFiles(DesignDraftJpaEntity draft) {
+        var ids = new java.util.HashSet<>(draft.getCurrentArtifacts().values());
+        var bundle = artifacts.findAllById(ids).stream().filter(file -> file.getDraftId().equals(draft.getId())).toList();
+        if (bundle.size() != ids.size()) {
+            conflict("The current design bundle is incomplete");
+        }
+        return bundle.stream().map(DesignArtifactJpaEntity::storedFile).toList();
     }
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")

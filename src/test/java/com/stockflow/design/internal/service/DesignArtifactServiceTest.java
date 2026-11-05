@@ -62,6 +62,20 @@ class DesignArtifactServiceTest {
     }
 
     @Test
+    void theReviewerIsRefusedBeforeTheirFileIsRead() {
+        UUID reviewer = UUID.randomUUID();
+        when(designs.findDraft(id, reviewer, false)).thenReturn(Optional.of(
+                new DesignDraft(id, owner, null, DesignStatus.DRAFT, UUID.randomUUID(), reviewer)));
+
+        assertThatThrownBy(() -> service.upload(id, reviewer, upload()))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+        assertThatThrownBy(() -> service.beginUpload(id, reviewer, new com.stockflow.common.storage.UploadSlotRequest(
+                "design.pdf", "application/pdf", bytes.length, Checksums.sha256Hex(bytes))))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+        verifyNoInteractions(files, staged);
+    }
+
+    @Test
     void preparesTheFileBeforeLockingTheDraftAndAttachesItUnderTheLock() {
         when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
         when(designs.findDraft(id, owner, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
