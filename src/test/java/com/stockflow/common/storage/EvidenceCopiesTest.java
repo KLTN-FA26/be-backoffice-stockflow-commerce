@@ -159,7 +159,7 @@ class EvidenceCopiesTest {
                 directory.toString(), Duration.ofMinutes(10));
         storage = new LocalFileStorage(properties, Clock.systemUTC());
         var busy = org.mockito.Mockito.mock(ImageRenditions.class);
-        org.mockito.Mockito.when(busy.render(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyBoolean(),
+        org.mockito.Mockito.when(busy.render(org.mockito.ArgumentMatchers.any(java.nio.file.Path.class), org.mockito.ArgumentMatchers.anyBoolean(),
                 org.mockito.ArgumentMatchers.any(int[].class))).thenThrow(new BusinessException(ErrorCode.RATE_LIMITED));
         transfers = new FileTransfers(storage, properties, Clock.systemUTC(), ObjectLockProperties.disabled(),
                 new UploadInspection("localhost", 1, false), busy);

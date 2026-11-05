@@ -7,11 +7,17 @@ import org.springframework.stereotype.Component;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
+import javax.imageio.stream.FileImageInputStream;
+import javax.imageio.stream.ImageInputStream;
 import javax.imageio.stream.MemoryCacheImageInputStream;
 import java.awt.Color;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
+import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.time.Duration;
@@ -58,12 +64,54 @@ public class ImageRenditions {
      *         above {@link #MAX_PIXELS}, {@code RATE_LIMITED} when no decoder frees up in time
      */
     public List<Rendition> render(byte[] bytes, boolean flatten, int... edges) {
+        return render(new Source() {
+            @Override
+            public ImageInputStream open() {
+                return new MemoryCacheImageInputStream(new ByteArrayInputStream(bytes));
+            }
+
+            @Override
+            public int orientation() throws IOException {
+                return ImageRenditions.orientation(new ByteArrayInputStream(bytes));
+            }
+        }, flatten, edges);
+    }
+
+    /**
+     * {@link #render(byte[], boolean, int...)} of an image on disk - an upload already spooled to a temporary file. Read
+     * from the file once a decoder is free, so photos waiting for one hold nothing on the heap: twenty 20 MB evidence
+     * photos queued behind two decoders would otherwise be 400 MB of arrays before the first pixel is decoded.
+     */
+    public List<Rendition> render(Path file, boolean flatten, int... edges) {
+        return render(new Source() {
+            @Override
+            public ImageInputStream open() throws IOException {
+                return new FileImageInputStream(file.toFile());
+            }
+
+            @Override
+            public int orientation() throws IOException {
+                try (InputStream content = new BufferedInputStream(Files.newInputStream(file))) {
+                    return ImageRenditions.orientation(content);
+                }
+            }
+        }, flatten, edges);
+    }
+
+    /** Where an image is read from: opened only once a decoder slot is held. */
+    private interface Source {
+        ImageInputStream open() throws IOException;
+
+        int orientation() throws IOException;
+    }
+
+    private List<Rendition> render(Source image, boolean flatten, int... edges) {
         int largest = 0;
         for (int edge : edges) {
             largest = Math.max(largest, edge);
         }
         acquire();
-        try (var input = new MemoryCacheImageInputStream(new ByteArrayInputStream(bytes))) {
+        try (var input = image.open()) {
             var readers = ImageIO.getImageReaders(input);
             if (!readers.hasNext()) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image cannot be decoded");
@@ -81,7 +129,7 @@ public class ImageRenditions {
                 if (step > 1) {
                     param.setSourceSubsampling(step, step, 0, 0);
                 }
-                BufferedImage source = orient(reader.read(0, param), orientation(bytes));
+                BufferedImage source = orient(reader.read(0, param), image.orientation());
                 List<Rendition> results = new ArrayList<>();
                 for (int edge : edges) {
                     results.add(resize(source, edge, flatten));
@@ -155,9 +203,9 @@ public class ImageRenditions {
         return new Rendition(edge, width, height, "image/" + format, bytes.toByteArray());
     }
 
-    private static int orientation(byte[] bytes) throws IOException {
+    private static int orientation(InputStream content) throws IOException {
         try {
-            var metadata = com.drew.imaging.ImageMetadataReader.readMetadata(new ByteArrayInputStream(bytes));
+            var metadata = com.drew.imaging.ImageMetadataReader.readMetadata(content);
             var exif = metadata.getFirstDirectoryOfType(com.drew.metadata.exif.ExifIFD0Directory.class);
             Integer orientation = exif == null ? null
                     : exif.getInteger(com.drew.metadata.exif.ExifIFD0Directory.TAG_ORIENTATION);

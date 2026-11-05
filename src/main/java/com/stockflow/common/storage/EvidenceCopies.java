@@ -29,13 +29,13 @@ final class EvidenceCopies {
 
     /** The keys of the copies written for {@code originalKey}; none for a category without display copies. */
     static List<String> store(FileStorage storage, ImageRenditions images, FileCategory category, String originalKey,
-                              byte[] bytes) {
+                              java.nio.file.Path photo) {
         if (!StorageKeys.hasDisplayCopies(category)) {
             return List.of();
         }
         List<ImageRenditions.Rendition> rendered;
         try {
-            rendered = images.render(bytes, true, THUMBNAIL, DISPLAY);
+            rendered = images.render(photo, true, THUMBNAIL, DISPLAY);
         } catch (BusinessException unrenderable) {
             if (unrenderable.errorCode() == ErrorCode.RATE_LIMITED) {
                 log.warn("No display copies for {}: every image decoder was busy; it is shown as uploaded", originalKey);

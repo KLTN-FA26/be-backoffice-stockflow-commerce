@@ -275,10 +275,11 @@ public class StagedUploads {
             }
             PdfContentPolicy.check(category, type, buffered.path());
             storage.copy(incoming, key);
-            try (InputStream content = buffered.open()) {
+            try {
+                // From the spooled file, read once a decoder is free: a photo waiting for one holds no heap.
                 copies = StorageKeys.hasDisplayCopies(category)
-                        ? EvidenceCopies.store(storage, images, category, key, content.readAllBytes()) : List.of();
-            } catch (IOException | RuntimeException failure) {
+                        ? EvidenceCopies.store(storage, images, category, key, buffered.path()) : List.of();
+            } catch (RuntimeException failure) {
                 storage.delete(key);
                 throw failure;
             }

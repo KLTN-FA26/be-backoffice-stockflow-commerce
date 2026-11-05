@@ -54,6 +54,7 @@ public final class PreparedFiles implements AutoCloseable {
     private final Runnable afterwards;
     private final AtomicBoolean adopted = new AtomicBoolean();
     private final AtomicBoolean finished = new AtomicBoolean();
+    private final AtomicBoolean discarded = new AtomicBoolean();
 
     PreparedFiles(FileStorage storage, List<PreparedFile> files) {
         this(storage, files, () -> { }, () -> { });
@@ -84,15 +85,20 @@ public final class PreparedFiles implements AutoCloseable {
     }
 
     /**
-     * Hands every file to the current transaction. Idempotent: adopting twice (a retried callback)
-     * registers the cleanup once.
+     * Hands every file to the current transaction. Idempotent within it: adopting twice (a retried callback) registers
+     * the cleanup once. Once a transaction that adopted the files rolled back they are gone, so a later transaction
+     * cannot adopt them - it would commit rows naming deleted keys; prepare the files again instead.
      *
-     * @throws IllegalStateException outside a transaction
+     * @throws IllegalStateException outside a transaction, or after the adopting transaction rolled back
      */
     public void adopt() {
         if (!TransactionSynchronizationManager.isActualTransactionActive()
                 || !TransactionSynchronizationManager.isSynchronizationActive()) {
             throw new IllegalStateException("Prepared files are adopted by an active database transaction");
+        }
+        if (discarded.get()) {
+            throw new IllegalStateException("These prepared files were deleted when the transaction that adopted them"
+                    + " rolled back; prepare them again");
         }
         if (!adopted.compareAndSet(false, true)) {
             return;
@@ -137,6 +143,7 @@ public final class PreparedFiles implements AutoCloseable {
     }
 
     private void discard(String why) {
+        discarded.set(true);
         for (PreparedFile prepared : files) {
             List<String> keys = new java.util.ArrayList<>(prepared.derivedKeys());
             keys.add(prepared.file().key());

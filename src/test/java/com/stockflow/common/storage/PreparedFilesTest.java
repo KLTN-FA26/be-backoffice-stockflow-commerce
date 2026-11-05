@@ -102,6 +102,11 @@ class PreparedFilesTest {
             prepared.adopt();   // a retried callback registers the cleanup once
             assertThat(TransactionSynchronizationManager.getSynchronizations()).hasSize(1);
             complete(TransactionSynchronization.STATUS_ROLLED_BACK);
+            // A caller retrying its transaction with the same files would commit rows naming deleted keys.
+            inTransaction();
+            assertThatThrownBy(prepared::adopt).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("prepare them again");
+            TransactionSynchronizationManager.clear();
         }
         assertThat(storage.exists(key)).isFalse();
     }
@@ -174,6 +179,22 @@ class PreparedFilesTest {
                 .doesNotContain("\u0007");
         assertThat(disposition.cacheControl()).isEqualTo("private, no-store");
         assertThat(DownloadDisposition.attachment(" ").contentDisposition()).isEqualTo("attachment");
+    }
+
+    @Test
+    void aDownloadKeepsTheUploadersWordsButTheStoredTypesExtension() {
+        String jpegKey = "supplier-invoices/2026/11/06/0192f4c1-8e3a-7b21-9c44-3f2a1b8d5e60.jpg";
+        assertThat(StorageKeys.downloadName("invoice.pdf", jpegKey))
+                .as("a JPEG that also parses as a PDF opens as the JPEG it was checked as").isEqualTo("invoice.jpg");
+        assertThat(StorageKeys.downloadName("Hoá đơn tháng 11", "documents/2026/11/06/x.pdf")).isEqualTo("Hoá đơn tháng 11.pdf");
+        assertThat(StorageKeys.downloadName("C:\\Users\\kt\\scan.final.PNG", "documents/2026/11/06/x.png"))
+                .isEqualTo("scan.final.png");
+        assertThat(StorageKeys.downloadName("macro.docm", "documents/2026/11/06/x.docx")).isEqualTo("macro.docx");
+        assertThat(StorageKeys.downloadName(".pdf", "documents/2026/11/06/x.pdf")).isEqualTo("file.pdf");
+        assertThat(StorageKeys.downloadName(" ", jpegKey)).isNull();
+        String long300 = "a".repeat(300) + ".pdf";
+        assertThat(StorageKeys.downloadName(long300, "documents/2026/11/06/x.pdf"))
+                .as("cut before the extension, never through it").hasSize(200).endsWith("a.pdf");
     }
 
     @Test

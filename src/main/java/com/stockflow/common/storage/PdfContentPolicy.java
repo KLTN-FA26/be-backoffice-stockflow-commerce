@@ -7,6 +7,7 @@ import org.apache.pdfbox.cos.COSArray;
 import org.apache.pdfbox.cos.COSBase;
 import org.apache.pdfbox.cos.COSDictionary;
 import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSNull;
 import org.apache.pdfbox.cos.COSObject;
 import org.apache.pdfbox.io.IOUtils;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -17,8 +18,12 @@ import org.apache.pdfbox.pdmodel.interactive.form.PDField;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.EnumMap;
 import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -29,32 +34,54 @@ import java.util.Set;
  * <h2>What is refused</h2>
  *
  * <ul>
- *   <li>JavaScript anywhere an action can be: the document's named scripts, its open action and additional actions,
- *       every page's, annotation's and form field's action and additional actions (keystroke, format, validate and
- *       calculate scripts included), and every action chained after one of those through {@code /Next};</li>
- *   <li>a Launch action (open a file or a program), RichMedia/Screen/Movie/3D annotations, XFA forms;</li>
+ *   <li>any action that is not plainly navigational. An action - wherever it is: the document's open action and
+ *       additional actions, every page's, annotation's, form field's and bookmark's action and additional actions, and
+ *       every action chained after one of those through {@code /Next} - may only go to a place in this document
+ *       ({@code GoTo}), turn a page ({@code Named}), show or hide a layer or an annotation, or follow an article.
+ *       Everything else is refused, including the actions nobody has thought of yet: JavaScript, Launch, GoToR and
+ *       GoToE (open another file - on Windows a UNC path hands the reader's NTLM hash to that host), SubmitForm and
+ *       ImportData (send or load data), media;</li>
+ *   <li>a web link ({@code URI}) that runs by itself - from the open action or an additional action. A link the reader
+ *       clicks passes: an invoice may link to its e-invoice lookup page;</li>
+ *   <li>a chain of actions deeper than any real document builds: refused, not cut short, as what follows the cut is
+ *       what would run;</li>
+ *   <li>RichMedia/Screen/Movie/Sound/3D annotations, XFA forms;</li>
  *   <li>a PDF that needs a password to open: it cannot be inspected, and a print shop cannot print it;</li>
  *   <li>for design files only, attached files - in the names tree or as file-attachment annotations - and any
  *       encryption at all: a print file carries the artwork and nothing else. An invoice may legitimately attach its
- *       e-invoice XML and come permission-protected, so those pass.</li>
+ *       e-invoice XML and come permission-protected, so those pass; no allowed action can open them.</li>
  * </ul>
  *
  * <p>Actions are read at the level of the PDF's own dictionaries ({@code /S /JavaScript}), not through PDFBox's typed
- * wrappers, so a trigger the wrappers do not name is still seen. Chains are followed with a visited set: a PDF whose
- * {@code /Next} points back at itself is read, not looped over.</p>
+ * wrappers, so a trigger the wrappers do not name is still seen. Chains are followed with a visited set per kind of
+ * trigger: a PDF whose {@code /Next} points back at itself is read, not looped over, and an action reached first from a
+ * click is still checked when an automatic trigger reaches it too. A PDF PDFBox cannot make sense of is refused as
+ * unreadable rather than failing the request.</p>
  *
  * <p>The PDF is not rewritten: rasterising it would cost a print file its vectors and its colour. It is read from disk
  * with temp-file caching, so a large or hostile file does not land in the heap.</p>
  */
 final class PdfContentPolicy {
 
-    private static final Set<String> ACTIVE_ANNOTATIONS = Set.of("RichMedia", "Screen", "Movie", "3D");
+    private static final Set<String> ACTIVE_ANNOTATIONS = Set.of("RichMedia", "Screen", "Movie", "Sound", "3D");
+    /** Actions that move the reader around this document and do nothing else. */
+    private static final Set<COSName> NAVIGATION = Set.of(COSName.getPDFName("GoTo"), COSName.getPDFName("Named"),
+            COSName.getPDFName("Hide"), COSName.getPDFName("SetOCGState"), COSName.getPDFName("Thread"),
+            COSName.getPDFName("Trans"));
     private static final COSName JAVASCRIPT = COSName.getPDFName("JavaScript");
     private static final COSName LAUNCH = COSName.getPDFName("Launch");
+    private static final COSName URI = COSName.getPDFName("URI");
     private static final COSName NEXT = COSName.getPDFName("Next");
     private static final COSName OPEN_ACTION = COSName.getPDFName("OpenAction");
-    /** Deeper than any chain a real document builds; a hostile one is cut here rather than walked for ever. */
+    private static final COSName OUTLINES = COSName.getPDFName("Outlines");
+    private static final COSName FIRST = COSName.getPDFName("First");
+    /** Deeper than any chain a real document builds; a deeper one is refused. */
     private static final int MAX_CHAIN = 64;
+    /** More bookmarks than any real document has; past this the outline is refused rather than walked for ever. */
+    private static final int MAX_BOOKMARKS = 50_000;
+
+    /** How an action runs: by itself, or when the reader clicks. Only a click may follow a web link. */
+    private enum Trigger { AUTOMATIC, CLICK }
 
     private PdfContentPolicy() {
     }
@@ -77,69 +104,131 @@ final class PdfContentPolicy {
             if (printFile && names != null && names.getEmbeddedFiles() != null) {
                 refuse("A print file must not carry attached files");
             }
-            Set<COSBase> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+            Actions actions = new Actions();
             COSDictionary root = catalog.getCOSObject();
-            requireInert(root.getDictionaryObject(OPEN_ACTION), seen, 0);
-            requireInertTriggers(root, seen);
+            actions.requireInert(root.getDictionaryObject(OPEN_ACTION), Trigger.AUTOMATIC);
+            actions.requireInertTriggers(root);
+            actions.requireInertBookmarks(root.getDictionaryObject(OUTLINES));
             if (catalog.getAcroForm() != null) {
                 if (catalog.getAcroForm().hasXFA()) {
                     refuse("The PDF is an XFA form");
                 }
                 for (PDField field : catalog.getAcroForm().getFieldTree()) {
-                    requireInertTriggers(field.getCOSObject(), seen);
+                    actions.requireInertTriggers(field.getCOSObject());
                 }
             }
             for (PDPage page : document.getPages()) {
-                requireInertTriggers(page.getCOSObject(), seen);
+                actions.requireInertTriggers(page.getCOSObject());
                 for (PDAnnotation annotation : page.getAnnotations()) {
                     String subtype = annotation.getSubtype();
-                    if (ACTIVE_ANNOTATIONS.contains(subtype)) {
+                    if (subtype != null && ACTIVE_ANNOTATIONS.contains(subtype)) {
                         refuse("The PDF carries embedded media");
                     }
                     if (printFile && "FileAttachment".equals(subtype)) {
                         refuse("A print file must not carry attached files");
                     }
-                    requireInertTriggers(annotation.getCOSObject(), seen);
+                    actions.requireInertTriggers(annotation.getCOSObject());
                 }
             }
+        } catch (BusinessException refused) {
+            throw refused;
         } catch (InvalidPasswordException locked) {
             refuse("The PDF needs a password to open and cannot be inspected");
-        } catch (IOException unreadable) {
+        } catch (IOException | RuntimeException | StackOverflowError unreadable) {
+            // A malformed file is the client's problem, not a server fault: whatever PDFBox makes of it, it is refused.
             refuse("The PDF cannot be read");
         }
     }
 
-    /** The action of {@code owner} ({@code /A}) and every action of its additional-actions dictionary ({@code /AA}). */
-    private static void requireInertTriggers(COSDictionary owner, Set<COSBase> seen) {
-        requireInert(owner.getDictionaryObject(COSName.A), seen, 0);
-        if (owner.getDictionaryObject(COSName.AA) instanceof COSDictionary triggers) {
-            for (COSName trigger : triggers.keySet()) {
-                requireInert(triggers.getDictionaryObject(trigger), seen, 0);
-            }
-        }
-    }
+    /** One walk over a document's actions, remembering what each kind of trigger has already reached. */
+    private static final class Actions {
 
-    /** An action dictionary - or an array of them - and everything chained after it through {@code /Next}. */
-    private static void requireInert(COSBase action, Set<COSBase> seen, int depth) {
-        COSBase value = action instanceof COSObject indirect ? indirect.getObject() : action;
-        if (value == null || depth > MAX_CHAIN || !seen.add(value)) {
-            return;
+        private final Map<Trigger, Set<COSBase>> seen = new EnumMap<>(Trigger.class);
+
+        Actions() {
+            for (Trigger trigger : Trigger.values()) {
+                seen.put(trigger, Collections.newSetFromMap(new IdentityHashMap<>()));
+            }
         }
-        if (value instanceof COSArray actions) {
-            for (int i = 0; i < actions.size(); i++) {
-                requireInert(actions.getObject(i), seen, depth + 1);
+
+        /** The action of {@code owner} ({@code /A}, a click) and its additional actions ({@code /AA}, automatic). */
+        void requireInertTriggers(COSDictionary owner) {
+            requireInert(owner.getDictionaryObject(COSName.A), Trigger.CLICK);
+            if (owner.getDictionaryObject(COSName.AA) instanceof COSDictionary triggers) {
+                for (COSName trigger : triggers.keySet()) {
+                    requireInert(triggers.getDictionaryObject(trigger), Trigger.AUTOMATIC);
+                }
             }
-            return;
         }
-        if (value instanceof COSDictionary dictionary) {
-            COSName type = dictionary.getCOSName(COSName.S);
-            if (JAVASCRIPT.equals(type) || dictionary.containsKey(COSName.JS)) {
-                refuse("The PDF carries JavaScript");
+
+        /** Every bookmark's action: the outline is a tree of {@code /First} children and {@code /Next} siblings. */
+        void requireInertBookmarks(COSBase outlines) {
+            Set<COSBase> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+            Deque<COSBase> pending = new ArrayDeque<>();
+            if (outlines != null) {
+                pending.push(outlines);
             }
-            if (LAUNCH.equals(type)) {
-                refuse("The PDF launches another file or program");
+            while (!pending.isEmpty()) {
+                COSBase value = resolve(pending.pop());
+                if (!(value instanceof COSDictionary item) || !visited.add(item)) {
+                    continue;
+                }
+                if (visited.size() > MAX_BOOKMARKS) {
+                    refuse("The PDF's bookmarks cannot be read");
+                }
+                requireInert(item.getDictionaryObject(COSName.A), Trigger.CLICK);
+                COSBase child = item.getItem(FIRST);
+                COSBase sibling = item.getItem(NEXT);
+                if (child != null) {
+                    pending.push(child);
+                }
+                if (sibling != null) {
+                    pending.push(sibling);
+                }
             }
-            requireInert(dictionary.getDictionaryObject(NEXT), seen, depth + 1);
+        }
+
+        /** An action dictionary - or an array of them - and everything chained after it through {@code /Next}. */
+        void requireInert(COSBase action, Trigger trigger) {
+            requireInert(action, trigger, 0);
+        }
+
+        private void requireInert(COSBase action, Trigger trigger, int depth) {
+            COSBase value = resolve(action);
+            if (value == null || value instanceof COSNull) {
+                return;
+            }
+            if (depth > MAX_CHAIN) {
+                refuse("The PDF chains more actions than a document has");
+            }
+            if (!seen.get(trigger).add(value)) {
+                return;
+            }
+            if (value instanceof COSArray actions) {
+                for (int i = 0; i < actions.size(); i++) {
+                    requireInert(actions.get(i), trigger, depth + 1);
+                }
+                return;
+            }
+            if (value instanceof COSDictionary dictionary) {
+                COSName type = dictionary.getCOSName(COSName.S);
+                if (JAVASCRIPT.equals(type) || dictionary.containsKey(COSName.JS)) {
+                    refuse("The PDF carries JavaScript");
+                }
+                if (LAUNCH.equals(type)) {
+                    refuse("The PDF launches another file or program");
+                }
+                boolean allowed = type == null || NAVIGATION.contains(type)
+                        || (URI.equals(type) && trigger == Trigger.CLICK);
+                if (!allowed) {
+                    refuse("The PDF carries a " + type.getName() + " action, which may open, send or run something");
+                }
+                requireInert(dictionary.getDictionaryObject(NEXT), trigger, depth + 1);
+            }
+        }
+
+        private static COSBase resolve(COSBase value) {
+            return value instanceof COSObject indirect ? indirect.getObject() : value;
         }
     }
 

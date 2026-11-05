@@ -117,5 +117,11 @@ finding remains; rejecting is always allowed.
 - The product media list carries `url` per rendition; no per-image link request is needed.
 - Downloading a design file, the print file, an invoice scan, a product original or an original
   evidence photo is recorded in the audit log.
-- A PDF with JavaScript, a Launch action, embedded media, an XFA form or a password is refused at
-  upload (`400 VALIDATION_FAILED`); a design PDF also with attached files or encryption.
+- A PDF that can act when opened is refused at upload (`400 VALIDATION_FAILED`): any action other
+  than moving around the document (JavaScript, Launch, opening another file, submitting or importing
+  data), a web link that opens by itself (a link the reader clicks is fine), embedded media, an XFA
+  form, a password; a design PDF also with attached files or encryption.
+- A download is saved under the uploader's name with the extension of what was stored: `invoice.pdf`
+  uploaded as a JPEG downloads as `invoice.jpg`.
+- Goods receipt photos taken of a line stay with the receipt if that line is later dropped from the
+  count (a corrected lot, rejected excess): they come back without `receiptLineId`.

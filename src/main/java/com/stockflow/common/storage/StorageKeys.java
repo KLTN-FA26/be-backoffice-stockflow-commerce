@@ -90,6 +90,37 @@ public final class StorageKeys {
                 extensionFor(contentType));
     }
 
+    /**
+     * The name a download is saved under: the uploader's name without its extension, plus the extension of what was
+     * stored - which the key carries ({@link #extensionFor} of the type the bytes were checked against). The uploader
+     * chooses the name, not what opens it: a JPEG named {@code invoice.pdf} whose bytes also parse as a PDF would
+     * otherwise reach the accountant's PDF reader without ever having been checked as a PDF. Null for a blank name.
+     */
+    static String downloadName(String originalName, String key) {
+        if (originalName == null || originalName.isBlank()) {
+            return null;
+        }
+        String leaf = key.substring(key.lastIndexOf('/') + 1);
+        int keyDot = leaf.lastIndexOf('.');
+        String extension = keyDot < 0 ? "" : leaf.substring(keyDot).toLowerCase(Locale.ROOT);
+        String base = originalName.strip();
+        base = base.substring(Math.max(base.lastIndexOf('/'), base.lastIndexOf('\\')) + 1);
+        int dot = base.lastIndexOf('.');
+        if (dot >= 0) {
+            base = base.substring(0, dot);
+        }
+        base = base.strip();
+        if (base.isEmpty() || base.equals(".")) {
+            base = "file";
+        }
+        // Short enough that the header's own limit never cuts the extension off; by code point, never mid-pair.
+        int room = 200 - extension.length();
+        if (base.codePointCount(0, base.length()) > room) {
+            base = base.substring(0, base.offsetByCodePoints(0, room));
+        }
+        return base + extension;
+    }
+
     /** Extension including the dot, or empty when the type has no obvious one. */
     static String extensionFor(String contentType) {
         return switch (ContentTypePolicy.normalise(contentType)) {

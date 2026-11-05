@@ -123,10 +123,11 @@ public class FileTransfers {
             if (!StorageKeys.hasDisplayCopies(category)) {
                 return new PreparedFiles.PreparedFile(file, buffered.checksum());
             }
-            try (InputStream content = buffered.open()) {
-                List<String> copies = EvidenceCopies.store(storage, images, category, file.key(), content.readAllBytes());
+            try {
+                // From the spooled file, read once a decoder is free: a photo waiting for one holds no heap.
+                List<String> copies = EvidenceCopies.store(storage, images, category, file.key(), buffered.path());
                 return new PreparedFiles.PreparedFile(file, buffered.checksum(), copies);
-            } catch (IOException | RuntimeException failure) {
+            } catch (RuntimeException failure) {
                 storage.delete(file.key());
                 throw failure;
             }
@@ -225,7 +226,8 @@ public class FileTransfers {
     /**
      * A link that downloads the file under {@code fileName} ({@code Content-Disposition: attachment}),
      * for a document someone saves: a print file, an invoice scan. Checks first that the object is
-     * there, so a missing file is an error here rather than a broken link in the browser.
+     * there, so a missing file is an error here rather than a broken link in the browser. The name keeps the uploader's
+     * words but takes its extension from what was stored ({@link StorageKeys#downloadName}).
      *
      * <p>Call only after resolving the attachment through its owning business record.</p>
      */
@@ -233,7 +235,8 @@ public class FileTransfers {
         if (!storage.exists(key)) {
             throw new StorageException("Attached object is missing");
         }
-        return sign(key, properties.presignedUrlTtl(), DownloadDisposition.attachment(fileName));
+        return sign(key, properties.presignedUrlTtl(),
+                DownloadDisposition.attachment(StorageKeys.downloadName(fileName, key)));
     }
 
     /**
