@@ -310,6 +310,8 @@ public enum ErrorCode {
     QC_REASON_REQUIRED("Quarantined or rejected goods need a reason (BR-08)", 400),
     QC_TARGET_LOCATION_REQUIRED("Quarantined or rejected goods need the quarantine area they go to", 400),
     RECEIPT_LINE_NOT_FOUND("This receipt has no such line", 404),
+    /** Photos of a delivery or of one line it inspects: a bounded set per step, not an album. */
+    GOODS_RECEIPT_PHOTO_LIMIT_REACHED("This receipt has as many photos here as it may hold", 409),
     /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
     SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
     /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */

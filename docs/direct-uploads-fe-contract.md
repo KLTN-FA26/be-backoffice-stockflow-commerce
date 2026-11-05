@@ -67,17 +67,31 @@ canvas `toBlob`): a 5 MB photo becomes a few hundred KB, and the SHA-256 is of t
 | Damage at packing | `POST /api/v1/fulfillment/tasks/{taskId}/packing-damage-photo-uploads` | `POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/damage-after-pick` body of `report` + `photoUploadIds` |
 | Supplier invoice scan | `POST /api/v1/supplier-invoices/{invoiceId}/scan/uploads` | `POST /api/v1/supplier-invoices/{invoiceId}/scan` `{uploadId}` |
 | Purchase order document (new) | `POST /api/v1/purchase-orders/{purchaseOrderId}/attachments/uploads` | `POST /api/v1/purchase-orders/{purchaseOrderId}/attachments` `{uploadId, category}` |
+| Receiving photo (new) | `POST /api/v1/goods-receipts/{receiptId}/photos/uploads[?receiptLineId=]` | `POST /api/v1/goods-receipts/{receiptId}/photos` `{uploadId, receiptLineId?}` |
+| Inbound QC photo (new) | `POST /api/v1/goods-receipts/{receiptId}/lines/{lineId}/qc-photos/uploads` | `POST /api/v1/goods-receipts/{receiptId}/lines/{lineId}/qc-photos` `{uploadId}` |
 
 Purchase order documents are new: `category` is `QUOTATION`, `CONTRACT`, `SUPPLIER_CONFIRMATION`,
 `DELIVERY_NOTE` or `OTHER`; multipart is `file` + `?category=`; `GET .../attachments` lists them and
 `GET .../attachments/{attachmentId}/download-url` saves one under its name (audited). PDF, Word, Excel,
 or a JPEG/PNG photo of a paper document, at most 25 MB.
 
+Goods receipt photos are new (04b F-RCV steps 05 and 07):
+
+- **Receiving** (warehouse, `procurement-goods-receipts:UPDATE`): while the receipt is `DRAFT` or
+  `PENDING_APPROVAL`; of the delivery as a whole (no `receiptLineId`) or of one line. Multipart is
+  `file` + `?receiptLineId=`.
+- **QC** (`procurement-qc-tasks:APPROVE`): while the receipt is `IN_QC`, of a line that goes through QC.
+- At most 10 photos per subject (the delivery, a line at receiving, a line at QC): the eleventh is
+  `409 GOODS_RECEIPT_PHOTO_LIMIT_REACHED`. A step that is closed is `409 INVALID_RECEIPT_TRANSITION`.
+- `GET .../photos` lists every photo, oldest first, with `stage`, `receiptLineId` and `thumbnailUrl`;
+  `GET .../photos/{photoId}/download-url` shows one (`?original=true` saves it as taken, audited).
+  JPEG/PNG up to 20 MB. Photos are evidence: there is no delete.
+
 The attach endpoints share their path with the multipart ones; the `Content-Type` of the request
 picks which one runs. Each slot endpoint needs the same permission as its attach endpoint.
 
 Accepted types and sizes are the category's: design PNG/JPEG/WebP/PDF up to 50 MB; return photos
-JPEG/PNG/WebP up to 15 MB; damage photos JPEG/PNG up to 20 MB; invoice scans PDF/JPEG/PNG up to 15 MB.
+JPEG/PNG/WebP up to 15 MB; damage and goods receipt photos JPEG/PNG up to 20 MB; invoice scans PDF/JPEG/PNG up to 15 MB.
 
 ## Design preflight (BR-DSG-001)
 
@@ -96,7 +110,7 @@ finding remains; rejecting is always allowed.
 - Image links (renditions, return and damage photos) are `inline` and may be cached by the browser
   for as long as the link lives (`expiresAt`); reuse a link instead of asking for a new one while it
   is valid.
-- Return and damage photos are shown as display copies: upright, re-encoded, without the phone's
+- Return, damage and goods receipt photos are shown as display copies: upright, re-encoded, without the phone's
   metadata (GPS). Their detail views carry `thumbnailUrl` per photo (256 px); if a thumbnail fails to
   load (a photo stored before copies existed), fall back to the photo's `download-url`. Add
   `?original=true` to a photo's `download-url` to save it exactly as uploaded.
