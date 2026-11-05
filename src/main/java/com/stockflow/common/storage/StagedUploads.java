@@ -149,6 +149,21 @@ public class StagedUploads {
     }
 
     /**
+     * The key {@code uploadId} is attached under, or would be: it is the upload's own, so a record naming it was made
+     * from this upload. A module looks for such a record before attaching - the one replay check that also holds when
+     * the first attach committed but its caller never learned it (the session's "attached" mark is written only after
+     * a commit Spring saw). Empty for an upload that is not the caller's, or has expired.
+     */
+    public Optional<String> keyOf(FileCategory category, UUID ownerId, UUID uploadId) {
+        Map<String, String> session = read(uploadId);
+        if (session.isEmpty() || !owns(session, category, ownerId)) {
+            return Optional.empty();
+        }
+        return Optional.of(StorageKeys.forUpload(category, session.get("type"), uploadId,
+                Instant.parse(session.get("created"))));
+    }
+
+    /**
      * Checks, scans and moves the named uploads into {@code category}, for a transaction to adopt. All or nothing;
      * several are checked side by side. Call it outside any transaction: it reads every byte of every file.
      *
@@ -230,6 +245,14 @@ public class StagedUploads {
         String type = session.get("type");
         long size = Long.parseLong(session.get("size"));
         String sha256 = session.get("sha256");
+        String key = StorageKeys.forUpload(category, type, uploadId, Instant.parse(session.get("created")));
+        // The key is the upload's own, so an object already there was put by an attach of this upload. Proceeding would
+        // copy over it and, if this attach then rolled back, delete a file a committed record names - the session's
+        // "attached" mark is written after commit and may have failed. Refuse instead; a new slot is always possible.
+        // Checked before the quarantined copy, which that same commit may already have removed.
+        if (storage.exists(key)) {
+            throw new BusinessException(ErrorCode.CONFLICT, "Upload " + uploadId + " is already attached");
+        }
         if (!storage.exists(incoming)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Upload " + uploadId + " has not been received");
         }
@@ -240,7 +263,6 @@ public class StagedUploads {
         }
         // Spooled once to a temporary file, as a multipart upload is: its first bytes, size and digest checked on the
         // way, then scanned, then - a PDF - inspected for active content, an evidence photo rendered.
-        String key = StorageKeys.forUpload(category, type, uploadId, Instant.parse(session.get("created")));
         List<String> copies;
         try (InputStream raw = storage.download(incoming);
              BufferedUpload buffered = BufferedUpload.read(category, new FileUpload(session.get("name"), type, size, raw))) {
@@ -271,9 +293,11 @@ public class StagedUploads {
     private void attached(Accepted accepted) {
         try {
             redis.opsForHash().put(SESSION + accepted.uploadId(), "attached", accepted.file().file().key());
+            // A session that expired meanwhile was just re-created by the write: give it a lifetime again.
+            redis.expire(SESSION + accepted.uploadId(), properties.sessionTtl());
         } catch (RuntimeException failure) {
-            log.warn("Could not mark upload {} attached; a retry will be refused as a conflict", accepted.uploadId(),
-                    failure);
+            log.warn("Could not mark upload {} attached; a retry is answered from the record its key names",
+                    accepted.uploadId(), failure);
         }
         try {
             storage.delete(accepted.incoming());

@@ -44,6 +44,6 @@ public record PickDamageRequest(
         @Schema(description = "With application/json only: the uploadIds of one to five photos uploaded straight to "
                 + "storage through the photo-uploads slot endpoint. Ignored with multipart, whose photos are parts")
         @Size(max = 5, message = "at most 5 photos")
-        java.util.List<java.util.UUID> photoUploadIds
+        java.util.List<@NotNull UUID> photoUploadIds
 ) {
 }

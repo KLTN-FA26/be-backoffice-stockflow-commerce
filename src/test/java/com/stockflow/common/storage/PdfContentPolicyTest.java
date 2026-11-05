@@ -85,6 +85,64 @@ class PdfContentPolicyTest {
     }
 
     @Test
+    void javaScriptChainedAfterAnInnocentActionIsRefused() throws Exception {
+        refused(FileCategory.SUPPLIER_INVOICE, pdf("chained.pdf", document -> {
+            var go = new org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo();
+            var destination = new org.apache.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitDestination();
+            destination.setPage(document.getPage(0));
+            go.setDestination(destination);
+            var script = new PDActionJavaScript("app.alert('chained')");
+            go.setNext(java.util.List.of(script));
+            document.getDocumentCatalog().setOpenAction(go);
+        }), "JavaScript");
+    }
+
+    @Test
+    void aSelfReferencingChainIsReadNotLoopedOver() throws Exception {
+        Path loop = pdf("loop.pdf", document -> {
+            var go = new org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo();
+            var destination = new org.apache.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitDestination();
+            destination.setPage(document.getPage(0));
+            go.setDestination(destination);
+            go.getCOSObject().setItem(org.apache.pdfbox.cos.COSName.getPDFName("Next"), go.getCOSObject());
+            document.getDocumentCatalog().setOpenAction(go);
+        });
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", loop))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void aFormFieldsCalculateScriptIsRefused() throws Exception {
+        refused(FileCategory.SUPPLIER_INVOICE, pdf("field.pdf", document -> {
+            var form = new org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm(document);
+            document.getDocumentCatalog().setAcroForm(form);
+            var field = new org.apache.pdfbox.pdmodel.interactive.form.PDTextField(form);
+            field.setPartialName("total");
+            var triggers = new org.apache.pdfbox.cos.COSDictionary();
+            triggers.setItem(org.apache.pdfbox.cos.COSName.getPDFName("C"),
+                    new PDActionJavaScript("event.value = 1").getCOSObject());
+            field.getCOSObject().setItem(org.apache.pdfbox.cos.COSName.AA, triggers);
+            form.getFields().add(field);
+        }), "JavaScript");
+    }
+
+    @Test
+    void aFileAttachmentAnnotationIsRefusedInAPrintFile() throws Exception {
+        Path attachment = pdf("annotation.pdf", document -> {
+            var annotation = new org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationFileAttachment();
+            annotation.setRectangle(new PDRectangle(10, 10, 20, 20));
+            try {
+                document.getPage(0).getAnnotations().add(annotation);
+            } catch (java.io.IOException ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+        refused(FileCategory.DESIGN_RENDER, attachment, "attached files");
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", attachment))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
     void aLaunchActionIsRefused() throws Exception {
         refused(FileCategory.DOCUMENT, pdf("launch.pdf", document -> {
             var launch = new PDActionLaunch();

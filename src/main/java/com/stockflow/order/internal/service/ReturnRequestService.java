@@ -311,17 +311,14 @@ public class ReturnRequestService {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "uploadId is required");
         }
         ReturnEvidence.Stage taken = stageOf(ownCustomerId, stage);
-        Optional<String> kept = staged.attachedKey(FileCategory.RETURN_EVIDENCE, by, uploadId);
-        if (kept.isPresent()) {
-            return tx.execute(status -> {
-                ReturnRequest request = returns.findById(returnId)
-                        .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
-                        .orElseThrow(() -> notFound(returnId));
-                if (request.evidence().stream().noneMatch(photo -> photo.fileKey().equals(kept.get()))) {
-                    throw new BusinessException(ErrorCode.CONFLICT, "Upload " + uploadId + " is kept with another record");
-                }
-                return request;
-            });
+        // The same upload again - also after a commit whose outcome the first request never learned - answers with the
+        // return it was kept on: the key is the upload's own, so a photo naming it is that upload.
+        Optional<String> key = staged.keyOf(FileCategory.RETURN_EVIDENCE, by, uploadId);
+        Optional<ReturnRequest> earlier = key.flatMap(k -> tx.execute(status -> returns.findById(returnId)
+                .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
+                .filter(found -> found.evidence().stream().anyMatch(photo -> photo.fileKey().equals(k)))));
+        if (earlier.isPresent()) {
+            return earlier.get();
         }
         tx.executeWithoutResult(status -> evidenceTarget(returnId, ownCustomerId, taken, false));
         try (PreparedFiles prepared = staged.accept(FileCategory.RETURN_EVIDENCE, by, List.of(uploadId))) {

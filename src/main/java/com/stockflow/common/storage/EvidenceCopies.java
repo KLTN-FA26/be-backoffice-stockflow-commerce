@@ -14,8 +14,8 @@ import java.util.List;
  * ({@link ImageRenditions}). The original stays private and is downloaded only on purpose.
  *
  * <p>A photo that cannot be rendered (above the decode limit - a 108 MP phone photo - or in a form the decoders do not
- * read) is still kept: the copies are an improvement for viewers, never a gate on evidence. It is then shown as
- * uploaded.</p>
+ * read), or not now (every decoder busy past its wait), is still kept: the copies are an improvement for viewers, never
+ * a gate on evidence. It is then shown as uploaded.</p>
  */
 final class EvidenceCopies {
 
@@ -38,9 +38,10 @@ final class EvidenceCopies {
             rendered = images.render(bytes, true, THUMBNAIL, DISPLAY);
         } catch (BusinessException unrenderable) {
             if (unrenderable.errorCode() == ErrorCode.RATE_LIMITED) {
-                throw unrenderable;
+                log.warn("No display copies for {}: every image decoder was busy; it is shown as uploaded", originalKey);
+            } else {
+                log.info("No display copies for {} ({}); it is shown as uploaded", originalKey, unrenderable.getMessage());
             }
-            log.info("No display copies for {} ({}); it is shown as uploaded", originalKey, unrenderable.getMessage());
             return List.of();
         }
         List<String> keys = new ArrayList<>();

@@ -195,13 +195,23 @@ class S3FileStorage implements FileStorage {
     @Override
     public List<StoredObject> list(String prefix, String startAfter, int max) {
         try {
-            var request = software.amazon.awssdk.services.s3.model.ListObjectsV2Request.builder()
-                    .bucket(properties.bucket()).prefix(prefix).maxKeys(max);
-            if (startAfter != null) {
-                request.startAfter(startAfter);
-            }
-            return s3.listObjectsV2(request.build()).contents().stream()
-                    .map(object -> new StoredObject(object.key(), object.lastModified())).toList();
+            // S3 may answer a page shorter than asked and still say more follow (IsTruncated): keep reading until the
+            // page is full or the listing is really over, so "a short page" keeps meaning "the end" for the caller.
+            List<StoredObject> found = new java.util.ArrayList<>();
+            String token = null;
+            do {
+                var request = software.amazon.awssdk.services.s3.model.ListObjectsV2Request.builder()
+                        .bucket(properties.bucket()).prefix(prefix).maxKeys(max - found.size());
+                if (token != null) {
+                    request.continuationToken(token);
+                } else if (startAfter != null) {
+                    request.startAfter(startAfter);
+                }
+                var response = s3.listObjectsV2(request.build());
+                response.contents().forEach(object -> found.add(new StoredObject(object.key(), object.lastModified())));
+                token = Boolean.TRUE.equals(response.isTruncated()) ? response.nextContinuationToken() : null;
+            } while (token != null && found.size() < max);
+            return List.copyOf(found);
         } catch (SdkException ex) {
             throw new StorageException("Object store could not list " + prefix, ex);
         }

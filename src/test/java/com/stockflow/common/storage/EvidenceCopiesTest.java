@@ -154,6 +154,25 @@ class EvidenceCopiesTest {
     }
 
     @Test
+    void busyDecodersDoNotTurnAwayEvidence() throws Exception {
+        var properties = new StorageProperties("stockflow", "http://localhost:9000", "ap-southeast-1", true,
+                directory.toString(), Duration.ofMinutes(10));
+        storage = new LocalFileStorage(properties, Clock.systemUTC());
+        var busy = org.mockito.Mockito.mock(ImageRenditions.class);
+        org.mockito.Mockito.when(busy.render(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.any(int[].class))).thenThrow(new BusinessException(ErrorCode.RATE_LIMITED));
+        transfers = new FileTransfers(storage, properties, Clock.systemUTC(), ObjectLockProperties.disabled(),
+                new UploadInspection("localhost", 1, false), busy);
+        byte[] photo = jpegWithMetadata(300, 200);
+
+        try (var prepared = transfers.prepare(FileCategory.QC_EVIDENCE,
+                new FileUpload("busy.jpg", "image/jpeg", photo.length, new ByteArrayInputStream(photo)))) {
+            assertThat(prepared.single().derivedKeys()).isEmpty();
+            assertThat(storage.exists(prepared.single().file().key())).isTrue();
+        }
+    }
+
+    @Test
     void otherCategoriesGetNoCopies() throws Exception {
         setUp();
         byte[] photo = jpegWithMetadata(300, 200);

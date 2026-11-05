@@ -46,6 +46,10 @@ public sealed interface IncomingFiles {
     record Uploaded(UUID ownerId, List<UUID> uploadIds) implements IncomingFiles {
         public Uploaded {
             Objects.requireNonNull(ownerId, "ownerId");
+            if (uploadIds.stream().anyMatch(Objects::isNull)) {
+                throw new com.stockflow.common.error.BusinessException(
+                        com.stockflow.common.error.ErrorCode.VALIDATION_FAILED, "An upload id is missing");
+            }
             uploadIds = List.copyOf(uploadIds);
         }
 

@@ -236,15 +236,16 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
         if (uploadId == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "uploadId is required");
         }
-        java.util.Optional<String> kept = staged.attachedKey(FileCategory.SUPPLIER_INVOICE, by, uploadId);
-        if (kept.isPresent()) {
-            return tx.execute(status -> {
-                SupplierInvoice invoice = found(invoiceId);
-                if (invoice.document() == null || !kept.get().equals(invoice.document().key())) {
-                    throw new BusinessException(ErrorCode.CONFLICT, "Upload " + uploadId + " is kept with another record");
-                }
-                return view(invoice);
-            });
+        // The same upload again - also after a commit whose outcome the first request never learned - answers with the
+        // invoice it was attached to: the key is the upload's own.
+        java.util.Optional<String> key = staged.keyOf(FileCategory.SUPPLIER_INVOICE, by, uploadId);
+        java.util.Optional<InvoiceView> earlier = key.flatMap(k -> tx.execute(status -> {
+            SupplierInvoice invoice = found(invoiceId);
+            return invoice.document() != null && k.equals(invoice.document().key())
+                    ? java.util.Optional.of(view(invoice)) : java.util.Optional.<InvoiceView>empty();
+        }));
+        if (earlier.isPresent()) {
+            return earlier.get();
         }
         tx.executeWithoutResult(status -> found(invoiceId).requireScannable());
         try (PreparedFiles prepared = staged.accept(FileCategory.SUPPLIER_INVOICE, by, List.of(uploadId))) {

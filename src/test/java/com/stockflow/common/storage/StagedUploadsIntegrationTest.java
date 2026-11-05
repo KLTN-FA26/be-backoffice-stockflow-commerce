@@ -75,6 +75,7 @@ class StagedUploadsIntegrationTest {
     private S3FileStorage storage;
     private StagedUploads staged;
     private final UUID owner = UUID.randomUUID();
+    private volatile boolean redisDown;
 
     @BeforeAll
     static void connect() {
@@ -124,6 +125,9 @@ class StagedUploadsIntegrationTest {
             return null;
         }).when(hash).putAll(anyString(), anyMap());
         doAnswer(call -> {
+            if (redisDown) {
+                throw new IllegalStateException("Redis is unreachable");
+            }
             hashes.computeIfAbsent(call.getArgument(0), key -> new ConcurrentHashMap<>())
                     .put(call.getArgument(1), call.getArgument(2));
             return null;
@@ -192,6 +196,34 @@ class StagedUploadsIntegrationTest {
         assertThat(held).as("the claim is released").isEmpty();
         assertThatThrownBy(() -> staged.accept(FileCategory.QC_EVIDENCE, owner, List.of(slot.uploadId())))
                 .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.CONFLICT));
+    }
+
+    /**
+     * The session's "attached" mark is written after commit; if Redis fails then, a retry must still not attach the
+     * upload again - a second attach that rolled back would delete the file the first one's record names.
+     */
+    @Test
+    void anUploadAttachedWhileRedisWasDownIsNotAttachedAgain() throws Exception {
+        UploadSlot slot = slot("crack.png", "image/png", PNG);
+        put(slot, PNG);
+        String key;
+        try (PreparedFiles prepared = staged.accept(FileCategory.QC_EVIDENCE, owner, List.of(slot.uploadId()))) {
+            key = prepared.single().file().key();
+            inTransaction();
+            prepared.adopt();
+            redisDown = true;
+            commit();
+            redisDown = false;
+        }
+        assertThat(staged.attachedKey(FileCategory.QC_EVIDENCE, owner, slot.uploadId())).as("the mark was lost").isEmpty();
+        assertThat(staged.keyOf(FileCategory.QC_EVIDENCE, owner, slot.uploadId()))
+                .as("the key a module finds its record by is known regardless").contains(key);
+        assertThat(staged.keyOf(FileCategory.QC_EVIDENCE, UUID.randomUUID(), slot.uploadId())).isEmpty();
+
+        assertThatThrownBy(() -> staged.accept(FileCategory.QC_EVIDENCE, owner, List.of(slot.uploadId())))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.CONFLICT));
+        assertThat(storage.exists(key)).as("the committed file is untouched").isTrue();
+        assertThat(held).isEmpty();
     }
 
     @Test

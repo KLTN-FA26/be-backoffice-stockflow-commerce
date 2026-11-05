@@ -19,8 +19,9 @@ public interface PurchaseOrderAttachmentJpaRepository extends BaseJpaRepository<
 
     Optional<PurchaseOrderAttachmentJpaEntity> findByStorageKey(String storageKey);
 
-    @Query(value = "SELECT EXISTS (SELECT 1 FROM procurement.purchase_orders WHERE id = :id)", nativeQuery = true)
-    boolean purchaseOrderExists(@Param("id") UUID purchaseOrderId);
+    /** The warehouse of a purchase order, or empty when there is no such order. */
+    @Query(value = "SELECT warehouse_id FROM procurement.purchase_orders WHERE id = :id", nativeQuery = true)
+    Optional<UUID> warehouseOf(@Param("id") UUID purchaseOrderId);
 
     @Query("SELECT a.storageKey FROM PurchaseOrderAttachmentJpaEntity a WHERE a.storageKey IN :keys")
     List<String> storageKeysIn(@Param("keys") Collection<String> keys);

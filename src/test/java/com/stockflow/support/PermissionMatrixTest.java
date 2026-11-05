@@ -282,6 +282,9 @@ class PermissionMatrixTest {
         String address = """
                 {"type":"SHIPPING","recipientName":"Mallory","phone":"0901234567","line1":"1 Evil St","wardCode":"26734",
                  "wardName":"Ward","provinceCode":"79","provinceName":"Province","countryCode":"VN","defaultAddress":false,"version":0}""";
+        String uploadSlot = """
+                {"fileName":"a.png","contentType":"image/png","sizeBytes":1,
+                 "sha256":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}""";
         return Map.ofEntries(
                 Map.entry("POST /api/v1/customers/{customerId}/addresses", address),
                 Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
@@ -301,7 +304,13 @@ class PermissionMatrixTest {
                 // SCRUM-243: a well-formed claim on the victim's order, so only the owner check can refuse it.
                 Map.entry("POST /api/v1/orders/{orderId}/returns", "{\"requestId\":\"" + UUID.randomUUID()
                         + "\",\"reasonCode\":\"PRINT_DEFECT\",\"requestedResolution\":\"REFUND\",\"lines\":[{\"orderLineId\":\""
-                        + UUID.randomUUID() + "\",\"quantity\":1}]}"));
+                        + UUID.randomUUID() + "\",\"quantity\":1}]}"),
+                // Direct uploads: a well-formed slot request and attach, so only the owner check can refuse the victim's
+                // design and return. The JSON attach shares its key with the multipart upload, which takes no body.
+                Map.entry("POST /api/v1/designs/{designId}/artifacts/uploads", uploadSlot),
+                Map.entry("POST /api/v1/designs/{designId}/artifacts", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
+                Map.entry("POST /api/v1/returns/{returnId}/evidence/uploads", uploadSlot),
+                Map.entry("POST /api/v1/returns/{returnId}/evidence", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"));
     }
 
 

@@ -125,6 +125,25 @@ class PurchaseOrderAttachmentIntegrationTest {
                 .isEqualTo(ErrorCode.NOT_FOUND.ordinal());
     }
 
+    @Test
+    @DisplayName("staff limited to another warehouse neither read nor add the order's documents (BR-SEC-002)")
+    void anotherWarehousesStaffAreKeptOut() {
+        var kept = attachments.attach(order, PurchaseOrderAttachmentCategory.CONTRACT,
+                IncomingFiles.sent(List.of(pdf("hop-dong.pdf", TestPdfs.blank()))), buyer);
+        var elsewhere = com.stockflow.support.TestUsers.warehouseStaff("HN");
+        clearInvocations(storage);
+
+        com.stockflow.support.WithCurrentUser.run(elsewhere, () -> {
+            assertThat(code(() -> attachments.list(order))).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE.ordinal());
+            assertThat(code(() -> attachments.downloadLink(order, kept.id())))
+                    .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE.ordinal());
+            assertThat(code(() -> attachments.attach(order, PurchaseOrderAttachmentCategory.OTHER,
+                    IncomingFiles.sent(List.of(pdf("x.pdf", TestPdfs.blank()))), buyer)))
+                    .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE.ordinal());
+        });
+        verify(storage, never()).store(any(), any(), any(), anyLong(), any(), any());
+    }
+
     private static byte[] scriptedPdf() {
         try (var document = new org.apache.pdfbox.pdmodel.PDDocument(); var out = new ByteArrayOutputStream()) {
             document.addPage(new org.apache.pdfbox.pdmodel.PDPage());

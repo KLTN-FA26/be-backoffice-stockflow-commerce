@@ -29,8 +29,9 @@ import java.util.Set;
  *   <li>Anything younger than {@link OrphanSweepProperties#grace()}: a file whose transaction is still running.</li>
  * </ul>
  *
- * <p>Report-only by default ({@code delete=false}): the log says what would go. With versioning on, a delete is a
- * delete marker, recoverable; an object under Object Lock is refused by the store and the refusal is logged.</p>
+ * <p>Report-only by default ({@code delete=false}): the log says what would go. With versioning on (infra/aws) a
+ * delete only puts a delete marker on top: the object stays recoverable for the noncurrent-version period, and a version
+ * under Object Lock stays for its whole retention - the lock forbids removing a version, not hiding it.</p>
  */
 @Component
 public class OrphanedFileSweeper {

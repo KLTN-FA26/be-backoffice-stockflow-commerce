@@ -134,7 +134,9 @@ public class DesignPreflight {
             if (!bleed) {
                 findings.add(new Finding("NO_BLEED", "a page has no bleed beyond its trim", false));
             }
-        } catch (IOException | RuntimeException unreadable) {
+        } catch (IOException | RuntimeException | StackOverflowError unreadable) {
+            // StackOverflowError too: the uploader controls the file, and a structure nested past any guard must end
+            // as a finding, not as a 500 in the middle of a review.
             findings.add(new Finding("PDF_UNREADABLE", "the PDF cannot be opened", true));
         }
         return Report.of(findings);
@@ -184,12 +186,18 @@ public class DesignPreflight {
         return bleed.getWidth() > trim.getWidth() + 0.5f && bleed.getHeight() > trim.getHeight() + 0.5f;
     }
 
-    /** Walks a page's content tracking the transformation, to know each image's size where it is drawn. */
+    /**
+     * Walks a page's content tracking the transformation, to know each image's size where it is drawn. A form is drawn
+     * by this class itself, so the guard PDFBox's own drawing operator keeps is kept here: a form already being drawn
+     * is not drawn again inside itself, and nesting stops at {@link #MAX_FORM_DEPTH}.
+     */
     private static final class ImageScale extends PDFStreamEngine {
         int page;
         String lowest;
         double lowestDpi = Double.MAX_VALUE;
         boolean rgb;
+        private final java.util.Set<COSBase> drawing =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
         ImageScale() {
             addOperator(new Concatenate(this));
@@ -220,7 +228,14 @@ public class DesignPreflight {
                     return;
                 }
                 if (object instanceof PDFormXObject form) {
-                    showForm(form);
+                    COSBase identity = form.getCOSObject();
+                    if (drawing.size() < MAX_FORM_DEPTH && drawing.add(identity)) {
+                        try {
+                            showForm(form);
+                        } finally {
+                            drawing.remove(identity);
+                        }
+                    }
                     return;
                 }
             }

@@ -117,6 +117,37 @@ class DesignPreflightTest {
     }
 
     @Test
+    void aFormDrawnInsideItselfIsReadNotRecursedForEver() throws Exception {
+        byte[] bytes = pdf(document -> {
+            try {
+                var page = new PDPage(PDRectangle.A4);
+                document.addPage(page);
+                var form = new org.apache.pdfbox.pdmodel.graphics.form.PDFormXObject(document);
+                form.setBBox(new PDRectangle(100, 100));
+                var formResources = new org.apache.pdfbox.pdmodel.PDResources();
+                var name = org.apache.pdfbox.cos.COSName.getPDFName("Fm0");
+                formResources.put(name, form);
+                form.setResources(formResources);
+                try (var out = form.getContentStream().createOutputStream()) {
+                    out.write("/Fm0 Do".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                }
+                var pageResources = new org.apache.pdfbox.pdmodel.PDResources();
+                pageResources.put(name, form);
+                page.setResources(pageResources);
+                try (var content = new PDPageContentStream(document, page)) {
+                    content.drawForm(form);
+                }
+            } catch (java.io.IOException ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+
+        var report = inspect(bytes, "application/pdf");
+
+        assertThat(report.passed()).isTrue();
+    }
+
+    @Test
     void aFileThatDoesNotOpenBlocks() {
         var report = inspect("%PDF-1.7 broken".getBytes(), "application/pdf");
 

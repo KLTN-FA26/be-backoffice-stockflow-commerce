@@ -5,6 +5,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileTransfers;
@@ -84,11 +85,16 @@ public class PurchaseOrderAttachmentService {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Attach exactly one document");
         }
         if (file instanceof IncomingFiles.Uploaded uploaded) {
-            Optional<String> kept = staged.attachedKey(FileCategory.DOCUMENT, by, uploaded.uploadIds().get(0));
-            if (kept.isPresent()) {
-                return tx.execute(status -> attachments.findByStorageKey(kept.get())
-                        .filter(found -> found.getPurchaseOrderId().equals(purchaseOrderId)).map(PurchaseOrderAttachmentService::view)
-                        .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "The upload is kept with another record")));
+            // The same upload again - also after a commit whose outcome the first request never learned - answers with
+            // the document it made: the key is the upload's own, so a row naming it is that document.
+            Optional<String> key = staged.keyOf(FileCategory.DOCUMENT, by, uploaded.uploadIds().get(0));
+            Optional<AttachmentView> earlier = key.flatMap(k -> tx.execute(status -> {
+                requireOrder(purchaseOrderId);
+                return attachments.findByStorageKey(k).filter(found -> found.getPurchaseOrderId().equals(purchaseOrderId))
+                        .map(PurchaseOrderAttachmentService::view);
+            }));
+            if (earlier.isPresent()) {
+                return earlier.get();
             }
         }
         tx.executeWithoutResult(status -> requireOrder(purchaseOrderId));
@@ -117,15 +123,19 @@ public class PurchaseOrderAttachmentService {
     @Auditable(action = AuditAction.EXPORT, resourceType = "purchase-order-attachment", resourceId = "#attachmentId",
             details = "{purchaseOrderId: #purchaseOrderId}")
     public DownloadLink downloadLink(UUID purchaseOrderId, UUID attachmentId) {
+        requireOrder(purchaseOrderId);
         var attachment = attachments.findByIdAndPurchaseOrderId(attachmentId, purchaseOrderId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No attachment " + attachmentId));
         return files.downloadLink(attachment.getStorageKey(), attachment.getFileName());
     }
 
+    /** The order exists and is of a warehouse the caller may act in (BR-SEC-002), as for every other PO read or write. */
     private void requireOrder(UUID purchaseOrderId) {
-        if (purchaseOrderId == null || !attachments.purchaseOrderExists(purchaseOrderId)) {
+        UUID warehouse = purchaseOrderId == null ? null : attachments.warehouseOf(purchaseOrderId).orElse(null);
+        if (warehouse == null) {
             throw new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No purchase order " + purchaseOrderId);
         }
+        WarehouseScope.requireWarehouse(warehouse);
     }
 
     /** {@code pdf}, {@code docx}, ...: the extension the storage key was given from the accepted type. */
