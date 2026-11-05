@@ -66,6 +66,12 @@ canvas `toBlob`): a 5 MB photo becomes a few hundred KB, and the SHA-256 is of t
 | Damage while picking | `POST /api/v1/fulfillment/tasks/{taskId}/damage-photo-uploads` | `POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/damage` body of `report` + `photoUploadIds` |
 | Damage at packing | `POST /api/v1/fulfillment/tasks/{taskId}/packing-damage-photo-uploads` | `POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/damage-after-pick` body of `report` + `photoUploadIds` |
 | Supplier invoice scan | `POST /api/v1/supplier-invoices/{invoiceId}/scan/uploads` | `POST /api/v1/supplier-invoices/{invoiceId}/scan` `{uploadId}` |
+| Purchase order document (new) | `POST /api/v1/purchase-orders/{purchaseOrderId}/attachments/uploads` | `POST /api/v1/purchase-orders/{purchaseOrderId}/attachments` `{uploadId, category}` |
+
+Purchase order documents are new: `category` is `QUOTATION`, `CONTRACT`, `SUPPLIER_CONFIRMATION`,
+`DELIVERY_NOTE` or `OTHER`; multipart is `file` + `?category=`; `GET .../attachments` lists them and
+`GET .../attachments/{attachmentId}/download-url` saves one under its name (audited). PDF, Word, Excel,
+or a JPEG/PNG photo of a paper document, at most 25 MB.
 
 The attach endpoints share their path with the multipart ones; the `Content-Type` of the request
 picks which one runs. Each slot endpoint needs the same permission as its attach endpoint.

@@ -38,11 +38,15 @@ public enum FileCategory {
     DESIGN_RENDER("design-renders", 50 * 1024 * 1024,
             Set.of("image/jpeg", "image/png", "image/webp", "application/pdf")),
 
-    /** Supplier documents, contracts, certificates of conformity. */
+    /**
+     * Supplier documents kept with a purchase order: quotations, contracts, confirmations, delivery notes,
+     * certificates of conformity. A photo of a paper document too: a delivery note is signed on paper.
+     */
     DOCUMENT("documents", 25 * 1024 * 1024,
             Set.of("application/pdf",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "image/jpeg", "image/png")),
 
     /**
      * A supplier's invoice as received (SCRUM-308): the PDF it came as, or a photo or scan of the paper. A financial
