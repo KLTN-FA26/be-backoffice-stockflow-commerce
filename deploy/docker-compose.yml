@@ -17,8 +17,10 @@
 #     the same L2 segment reach loopback-published ports.
 #   - Every service has a memory limit, and they add up to ~3.4 GB. Without limits the JVM sizes its
 #     heap from the HOST's 4 GB and the kernel's OOM killer picks a victim - usually Postgres.
-#   - No ClamAV (~1.2 GB, a third of the machine). Upload scanning is switched OFF instead, which
-#     the application logs as a warning at startup. Acceptable while only the team uploads files.
+#   - ClamAV (~1.2 GB, a third of the machine) only with the `scan` profile. By default upload
+#     scanning is switched OFF instead, which the application logs as a warning at startup.
+#     Acceptable while only the team uploads files; on a machine with the memory for it, set
+#     COMPOSE_PROFILES=scan and UPLOAD_INSPECTION_ENABLED=true in .env (README, "Upload scanning").
 #   - No Elasticsearch: no Java code uses it.
 #   - Mailpit instead of a real SMTP server: every email the application sends is caught and shown
 #     at mail.<domain>, and nothing can reach a real inbox. Supplier PO and cancellation
@@ -314,7 +316,43 @@ services:
         mc admin policy create local stockflow-app /tmp/app-policy.json
         mc admin user add local "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
         mc admin policy attach local stockflow-app --user "$$S3_ACCESS_KEY" || true
+        # As on AWS (infra/aws/configure-existing-bucket.sh): a direct upload nobody attached is
+        # gone after a day, a generated export after a week. Imported whole, so a re-run replaces
+        # the rules rather than adding them again.
+        cat > /tmp/lifecycle.json <<EOF
+        { "Rules": [
+            { "ID": "ExpireUnclaimedUploads", "Status": "Enabled", "Filter": { "Prefix": "incoming/" },
+              "Expiration": { "Days": 1 } },
+            { "ID": "ExpireGeneratedExports", "Status": "Enabled", "Filter": { "Prefix": "exports/" },
+              "Expiration": { "Days": 7 } } ] }
+        EOF
+        mc ilm import "local/$$S3_BUCKET" < /tmp/lifecycle.json
         echo "minio-init: bucket $$S3_BUCKET ready"
+
+  # Upload scanning, only with the `scan` profile (COMPOSE_PROFILES=scan in .env) and with
+  # UPLOAD_INSPECTION_ENABLED=true, which points the application at this host. ~1.2 GB: not on the
+  # 4 GB machine. INSTREAM is capped by StreamMaxLength, but a stream over MaxFileSize is silently
+  # NOT scanned and reported OK unless AlertExceedsMax is on; design renders may be 50 MiB, so the
+  # three limits are raised together and exceeding them is a detection (fail closed). Same settings
+  # as docker-compose.media.yml at the repository root.
+  clamav:
+    image: clamav/clamav:stable
+    <<: [*restart, *logging]
+    profiles: ["scan"]
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+    environment:
+      CLAMD_CONF_StreamMaxLength: 52M
+      CLAMD_CONF_MaxFileSize: 52M
+      CLAMD_CONF_MaxScanSize: 104M
+      CLAMD_CONF_AlertExceedsMax: "yes"
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
 
   # Traces from the dev profile's 100% sampling. In-memory storage, capped, so it cannot grow past
   # its limit; traces are lost on restart, which is fine for "why was that request slow just now".
@@ -379,4 +417,5 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  clamav-signatures:
   mailpit-data:

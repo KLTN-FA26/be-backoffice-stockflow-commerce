@@ -55,8 +55,13 @@ browser ─┬─ api, s3, media ─────── DNS-only, straight to the
 | dozzle | 64 MB | stores nothing; reads the rotated json-file logs through the Docker socket |
 | **total** | **~3.4 GB** | leaves ~400 MB for the OS - **add the 2 GB swap below** |
 
-Not here, on purpose: **ClamAV** (~1.2 GB; upload scanning is off and the application logs a
-warning saying so) and **Elasticsearch** (unused by the code).
+Not here, on purpose: **ClamAV** by default (~1.2 GB; upload scanning is off and the application
+logs a warning saying so) and **Elasticsearch** (unused by the code).
+
+**Upload scanning.** On a machine with the memory for it (8 GB), set `COMPOSE_PROFILES=scan` and
+`UPLOAD_INSPECTION_ENABLED=true` in `.env`: the first starts the `clamav` service, the second
+points the application at it. One without the other fails: scanning on with no scanner refuses
+every upload. The first start downloads the signatures (a few minutes) before ClamAV is healthy.
 
 Requests run on **virtual threads** (`spring.threads.virtual.enabled` in `application.yml`, so the
 dev profile inherits it): there is no 200-thread Tomcat pool to size, and a request blocked on
