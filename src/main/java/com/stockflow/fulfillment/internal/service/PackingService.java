@@ -662,13 +662,25 @@ class PackingService implements Packing {
     public PickLists.PickDamageView reportDamageAfterPick(UUID taskId, UUID lineId, PackDamage damage,
                                                           com.stockflow.common.storage.IncomingFiles photos,
                                                           CurrentUser actor) {
-        Optional<PickLists.PickDamageView> answered = tx.execute(status -> damageAfterPickChecked(
-                picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
-                        "No fulfilment task " + taskId)), lineId, damage, actor));
+        java.util.function.Supplier<Optional<PickLists.PickDamageView>> unlocked = () -> tx.execute(status ->
+                damageAfterPickChecked(picks.findById(taskId).orElseThrow(() -> new BusinessException(
+                        ErrorCode.NOT_FOUND, "No fulfilment task " + taskId)), lineId, damage, actor));
+        Optional<PickLists.PickDamageView> answered = unlocked.get();
         if (answered.isPresent()) {
             return answered.get();
         }
-        try (PreparedFiles prepared = pickLists.prepareDamagePhotos(photos)) {
+        PreparedFiles prepared;
+        try {
+            prepared = pickLists.prepareDamagePhotos(photos);
+        } catch (BusinessException refused) {
+            // The same report sent again while the first was attaching these browser uploads: they are its, so the
+            // answer is what it made - or, still in progress, the 409 to try again.
+            if (refused.errorCode() != ErrorCode.CONFLICT) {
+                throw refused;
+            }
+            return unlocked.get().orElseThrow(() -> refused);
+        }
+        try (prepared) {
             return tx.execute(status -> {
                 PickJpaEntity pick = lockPick(taskId);
                 // Made meanwhile by the same request: answered with it, and these photos go when they are closed.

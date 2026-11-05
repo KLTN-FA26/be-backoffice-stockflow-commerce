@@ -364,25 +364,42 @@ class PickListService implements PickLists {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public PickDamageView reportDamage(UUID taskId, UUID lineId, PickDamage damage, IncomingFiles photos,
                                        CurrentUser actor) {
-        Optional<PickDamageView> answered = tx.execute(status -> {
-            PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
-                    "No pick task " + taskId));
-            WarehouseScope.requireWarehouse(pick.getWarehouseId());
-            pick.requireAssigned(actor.userId());
-            PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));
-            if (list.alreadyReportedDamaged(lineId, damage.locationCode(), damage.damagedQuantity())) {
-                return Optional.of(damageView(taskId, list, list.line(lineId).orElseThrow()));
-            }
-            TaskAccess.orderInFulfilment(orders, pick);
-            list.requireDamageable(lineId, damage.locationCode(), damage.damagedQuantity());
-            return Optional.<PickDamageView>empty();
-        });
+        Optional<PickDamageView> answered = tx.execute(status -> damageAnswered(taskId, lineId, damage, actor));
         if (answered.isPresent()) {
             return answered.get();
         }
-        try (PreparedFiles prepared = damages.preparePhotos(photos)) {
+        PreparedFiles prepared;
+        try {
+            prepared = damages.preparePhotos(photos);
+        } catch (BusinessException refused) {
+            // The same report sent again while the first was attaching these browser uploads: they are its, so the
+            // answer is what it made - or, still in progress, the 409 to try again.
+            if (refused.errorCode() != ErrorCode.CONFLICT) {
+                throw refused;
+            }
+            return tx.execute(status -> damageAnswered(taskId, lineId, damage, actor)).orElseThrow(() -> refused);
+        }
+        try (prepared) {
             return tx.execute(status -> reportDamageLocked(taskId, lineId, damage, prepared, actor));
         }
+    }
+
+    /**
+     * The checks of a damage report that need no lock - scope, assignee, whether the line can be reported - or the
+     * answer to the same report sent again. Run before any photo is read; all of it is checked again under the lock.
+     */
+    private Optional<PickDamageView> damageAnswered(UUID taskId, UUID lineId, PickDamage damage, CurrentUser actor) {
+        PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                "No pick task " + taskId));
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        pick.requireAssigned(actor.userId());
+        PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));
+        if (list.alreadyReportedDamaged(lineId, damage.locationCode(), damage.damagedQuantity())) {
+            return Optional.of(damageView(taskId, list, list.line(lineId).orElseThrow()));
+        }
+        TaskAccess.orderInFulfilment(orders, pick);
+        list.requireDamageable(lineId, damage.locationCode(), damage.damagedQuantity());
+        return Optional.empty();
     }
 
     private PickDamageView reportDamageLocked(UUID taskId, UUID lineId, PickDamage damage, PreparedFiles prepared,
@@ -477,8 +494,12 @@ class PickListService implements PickLists {
         return damages.beginPhotoUpload(ownerId, request);
     }
 
-    /** Damage photos checked, scanned and stored with no transaction; packing asks through here before it locks. */
-    PreparedFiles prepareDamagePhotos(IncomingFiles photos) {
+    /**
+     * Damage photos checked, scanned and stored with no transaction; packing asks through here before it locks. Public,
+     * so the proxy applies its own propagation: not in the class-level transaction.
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public PreparedFiles prepareDamagePhotos(IncomingFiles photos) {
         return damages.preparePhotos(photos);
     }
 
