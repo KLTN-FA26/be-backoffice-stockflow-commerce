@@ -23,6 +23,12 @@ import java.time.Duration;
  *                    purchase order SENT), which the assistant would state as fact, and its Vietnamese words crowd the
  *                    English rules out of a keyword search (design §6.1). On once the document matches
  *                    {@code 03-state-machines.md} and {@code RetrievalEval} shows the rules still found
+ * @param minMatchedWords how many of a search's words a passage must hold to be found by its words, 1 to 4
+ *                    ({@link com.stockflow.assistant.internal.domain.KnowledgeRepository#search}). One let a single
+ *                    shared word bring back passages about something else: "calendar" found five on returns for a
+ *                    question about the Tet holiday. Two, on RetrievalEval's keyword-only numbers of 5/11/2026: with
+ *                    the flows off, recall@5 0.211 → 0.224, MRR 0.158 → 0.175, no-rule searches returning anything
+ *                    0.33 → 0.17; with them on, recall 0.789 → 0.803. Three found less (0.197 off, 0.776 on)
  */
 @ConfigurationProperties(prefix = "stockflow.assistant.knowledge")
 public record KnowledgeProperties(
@@ -30,11 +36,12 @@ public record KnowledgeProperties(
         @DefaultValue("10") int fusionDepth,
         @DefaultValue("false") boolean multiQuery,
         @DefaultValue Reranker reranker,
-        @DefaultValue("false") boolean flows) {
+        @DefaultValue("false") boolean flows,
+        @DefaultValue("2") int minMatchedWords) {
 
     /** What the search did before these could be set. */
     static final KnowledgeProperties DEFAULTS = new KnowledgeProperties(KnowledgeSearch.STANDOUT,
-            KnowledgeService.FUSION_DEPTH, false, new Reranker("", Duration.ofSeconds(5), 20), false);
+            KnowledgeService.FUSION_DEPTH, false, new Reranker("", Duration.ofSeconds(5), 20), false, 1);
 
     public KnowledgeProperties {
         if (!(standout >= 0.5 && standout <= 10)) {
@@ -42,6 +49,10 @@ public record KnowledgeProperties(
         }
         if (fusionDepth < 5 || fusionDepth > 50) {
             throw new IllegalArgumentException("stockflow.assistant.knowledge.fusion-depth must be between 5 and 50");
+        }
+        if (minMatchedWords < 1 || minMatchedWords > 4) {
+            throw new IllegalArgumentException("stockflow.assistant.knowledge.min-matched-words must be between 1 "
+                    + "and 4");
         }
         reranker = reranker == null ? DEFAULTS.reranker() : reranker;
     }

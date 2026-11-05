@@ -163,10 +163,18 @@ public class KnowledgeService {
     /**
      * How one search ranks: {@link KnowledgeProperties} for the assistant, a grid of them for the retrieval eval.
      *
-     * @param meaning search by meaning too, when the texts can be embedded; false for words alone
-     * @param rerank  ask the reranker, when there is one
+     * @param meaning          search by meaning too, when the texts can be embedded; false for words alone
+     * @param rerank           ask the reranker, when there is one
+     * @param minMatchedWords  how many of the query's words a passage found by its words must hold
+     *                         ({@link KnowledgeRepository#search})
      */
-    public record Settings(boolean meaning, double standout, int fusionDepth, boolean multiQuery, boolean rerank) {
+    public record Settings(boolean meaning, double standout, int fusionDepth, boolean multiQuery, boolean rerank,
+                           int minMatchedWords) {
+
+        /** A passage found by any one of the query's words: the search before the threshold. */
+        public Settings(boolean meaning, double standout, int fusionDepth, boolean multiQuery, boolean rerank) {
+            this(meaning, standout, fusionDepth, multiQuery, rerank, 1);
+        }
     }
 
     private final AssistantTelemetry telemetry;
@@ -382,7 +390,7 @@ public class KnowledgeService {
     /** {@link #find(String, String, int, Settings)} as the assistant is configured. */
     public List<KnowledgeSearch.Hit> find(String query, String question, int limit) {
         return find(query, question, limit, new Settings(true, properties.standout(), properties.fusionDepth(),
-                properties.multiQuery(), reranker.available()));
+                properties.multiQuery(), reranker.available(), properties.minMatchedWords()));
     }
 
     /**
@@ -418,7 +426,7 @@ public class KnowledgeService {
         boolean meaning = byTerms != null || byQuestion != null;
         // Each ranking as deep as the passages kept: a reranker choosing among twenty gets twenty of each.
         int depth = meaning ? Math.max(kept, settings.fusionDepth()) : kept;
-        List<KnowledgeChunk> byWords = knowledge.search(query, depth);
+        List<KnowledgeChunk> byWords = knowledge.search(query, depth, settings.minMatchedWords());
         telemetry.retrievalFound("words", byWords.size());
         List<List<KnowledgeChunk>> byMeaning = new ArrayList<>();
         if (meaning) {

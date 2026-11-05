@@ -69,8 +69,8 @@ class FindGoodsReceiptsTool implements AssistantTool {
                     .choice("status", "Only receipts in this status; OPEN for DRAFT, PENDING_APPROVAL, IN_QC and "
                             + "IN_PUTAWAY; ANY for "
                             + "every status", STATUSES)
-                    .string("receiptNumber", "Text in the receipt number, such as GR-20261028-0001 or part of it; an "
-                            + "empty string for every receipt")
+                    .string("receiptNumber", "Text in the receipt number, in the form GR-yyyyMMdd-nnnn, or part "
+                            + "of it; an empty string for every receipt")
                     .integer("limit", "How many receipts to return, 1 to " + MAX_ROWS)
                     .build());
 

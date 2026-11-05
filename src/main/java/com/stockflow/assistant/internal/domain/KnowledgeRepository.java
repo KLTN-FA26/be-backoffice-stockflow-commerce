@@ -23,10 +23,14 @@ public interface KnowledgeRepository {
     }
 
     /**
-     * The keyword ranking: the best {@code limit} chunks for {@code query} by any of its words in the text (accents and
-     * case ignored), title similarity for typos, and a rule the query names first ({@link KnowledgeSearch}).
+     * The keyword ranking: the best {@code limit} chunks for {@code query} by its words in the text (accents and case
+     * ignored), title similarity for typos, and a rule the query names first ({@link KnowledgeSearch}).
+     *
+     * @param minMatched how many of the query's words a chunk's text must hold to be found by its words, at most as
+     *                   many as the query has: one lets a single shared word ("calendar") bring back a passage about
+     *                   something else. A rule the query names, and a title close to it, are found regardless.
      */
-    List<KnowledgeChunk> search(String query, int limit);
+    List<KnowledgeChunk> search(String query, int limit, int minMatched);
 
     /**
      * The chunks to embed for {@code model}: no vector yet, a vector of another model or of another length, or one

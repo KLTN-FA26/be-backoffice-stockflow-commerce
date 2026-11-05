@@ -103,15 +103,19 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
     }
 
     @Override
-    public List<KnowledgeChunk> search(String query, int limit) {
+    public List<KnowledgeChunk> search(String query, int limit, int minMatched) {
         Set<String> words = KnowledgeSearch.words(query);
         List<String> anchors = KnowledgeSearch.namedRules(query);
         if (words.isEmpty() && anchors.isEmpty()) {
             return List.of();
         }
+        // Counted as the database compares them: "đơn" and "don" are one word, and must not make two matches.
+        String[] each = words.stream().map(KnowledgeSearch::unmarked).distinct().toArray(String[]::new);
         MapSqlParameterSource parameters = new MapSqlParameterSource()
                 .addValue("words", words.isEmpty() ? "" : String.join(" | ", words))
                 .addValue("text", String.join(" ", words))
+                .addValue("each", each.length == 0 ? new String[] {""} : each)
+                .addValue("needed", Math.max(1, Math.min(minMatched, each.length)))
                 .addValue("anchors", anchors.isEmpty() ? new String[] {""} : anchors.toArray(String[]::new))
                 .addValue("limit", limit)
                 .addValue("kinds", KINDS);
@@ -119,6 +123,8 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
                 WITH q AS (
                     SELECT CASE WHEN :words = '' THEN NULL
                                 ELSE to_tsquery('simple', assistant.immutable_unaccent(:words)) END AS terms,
+                           ARRAY(SELECT to_tsquery('simple', assistant.immutable_unaccent(w.word))
+                                 FROM unnest(CAST(:each AS text[])) AS w(word) WHERE w.word <> '') AS each_term,
                            assistant.immutable_unaccent(:text) AS text)
                 SELECT c.source, c.anchor, c.kind, c.title, c.body,
                        coalesce(ts_rank_cd(c.search_document, q.terms), 0)
@@ -126,7 +132,9 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
                        + CASE WHEN upper(c.anchor) = ANY(:anchors) THEN 10 ELSE 0 END AS score
                 FROM assistant.knowledge_chunk c, q
                 WHERE c.kind = ANY(:kinds)
-                  AND ((q.terms IS NOT NULL AND c.search_document @@ q.terms)
+                  AND ((q.terms IS NOT NULL AND c.search_document @@ q.terms
+                        AND (SELECT count(*) FROM unnest(q.each_term) AS t(term) WHERE c.search_document @@ t.term)
+                            >= :needed)
                    OR upper(c.anchor) = ANY(:anchors)
                    OR public.similarity(assistant.immutable_unaccent(lower(c.title)), q.text) > 0.3)
                 ORDER BY score DESC, c.source, c.anchor

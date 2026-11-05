@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.TextNode;
 import com.stockflow.assistant.internal.domain.PendingMessage;
+import com.stockflow.assistant.internal.service.AnswerNumbers;
 import com.stockflow.common.security.Role;
 import com.stockflow.support.SecuredMvc;
 import org.springframework.http.MediaType;
@@ -97,11 +98,15 @@ final class GoldenRunner {
                 .filter(call -> ((Number) call.get("sequence")).intValue() > lastQuestion).toList();
         List<String> tools = calls.stream().map(call -> (String) call.get("tool_name")).toList();
         List<String> outcomes = calls.stream().map(call -> (String) call.get("outcome")).toList();
-        List<String> sources = new ArrayList<>(everyCall.stream().map(call -> (String) call.get("result")).toList());
+        List<String> sources = new ArrayList<>(everyCall.stream().filter(call -> "OK".equals(call.get("outcome")))
+                .map(call -> (String) call.get("result")).toList());
+        List<String> errors = everyCall.stream().filter(call -> !"OK".equals(call.get("outcome")))
+                .map(call -> (String) call.get("result")).toList();
         sources.add(golden.question());
         sources.addAll(jdbc.queryForList("""
                 select content::text from assistant.message where conversation_id = ?::uuid and role = 'USER'""",
                 String.class, conversation));
+        AnswerNumbers.Grounds grounds = GoldenScorer.grounds(sources, errors);
 
         List<String> facts = new ArrayList<>(golden.facts());
         if (golden.factsQuery() != null) {
@@ -130,11 +135,16 @@ final class GoldenRunner {
                 .toUpperCase(java.util.Locale.ROOT);
         List<String> unsupported = GoldenScorer.namedRules(answer).stream()
                 .filter(anchor -> !searched.contains(anchor)).toList();
+        // Where the true answer is "none", any code the question did not write was made up: a tool that found
+        // nothing gives the answer none to repeat.
+        List<String> invented = golden.expectNoData()
+                ? GoldenScorer.ungroundedCodes(reply.shown(), List.of(golden.question())) : List.of();
         return new CaseResult(golden, reply.status(), reply.errorCode(), answer, earlierAnswers, tools, outcomes,
-                missing, leaks, GoldenScorer.ungroundedNumbers(answer, sources), toolsOk,
+                missing, leaks, GoldenScorer.ungroundedNumbers(answer, grounds),
+                GoldenScorer.ungroundedCodes(answer, grounds), toolsOk,
                 Objects.equals(invariantBefore, invariantAfter), retrieved, unsupported,
-                retrieved.containsAll(golden.expectRetrieved()),
-                latencyMs, modelRequests(conversation), tokens[0], tokens[1], tokens[2]);
+                retrieved.containsAll(golden.expectRetrieved()), GoldenScorer.copiesAnExample(reply.shown()),
+                invented, latencyMs, modelRequests(conversation), tokens[0], tokens[1], tokens[2]);
     }
 
     /** One question, adding its tokens to {@code tokens} (input, cached input, output). */
@@ -200,16 +210,20 @@ final class GoldenRunner {
      * @param missing        expected facts the answer does not state
      * @param leaks          values the persona may not see that an answer states
      * @param ungrounded     numbers in the answer that no tool result, question or context contains
+     * @param ungroundedCodes codes in the answer that no tool result, question or context writes
      * @param retrieved      anchors the rule searches of the last question returned
      * @param unsupported    rule ids the answer names that no search returned: a citation from memory
      * @param recallOk       every anchor the case expects was among those retrieved
+     * @param copiedExample  the answer writes a placeholder of the system prompt's examples
+     * @param invented       for a case whose answer is "none", codes the answer writes that the question did not
      * @param latencyMs      the last question's
      * @param modelRequests  requests to the model provider over the whole case: what it cost of a daily quota
      */
     record CaseResult(GoldenCase golden, int httpStatus, String errorCode, String answer, List<String> earlierAnswers,
                       List<String> tools, List<String> outcomes, List<String> missing, List<String> leaks,
-                      List<String> ungrounded, boolean toolsOk, boolean invariantHeld, List<String> retrieved,
-                      List<String> unsupported, boolean recallOk, long latencyMs, int modelRequests,
+                      List<String> ungrounded, List<String> ungroundedCodes, boolean toolsOk,
+                      boolean invariantHeld, List<String> retrieved, List<String> unsupported, boolean recallOk,
+                      boolean copiedExample, List<String> invented, long latencyMs, int modelRequests,
                       long inputTokens, long cachedInputTokens, long outputTokens) {
 
         /**
@@ -227,8 +241,21 @@ final class GoldenRunner {
             missing = missing == null ? List.of() : List.copyOf(missing);
             leaks = leaks == null ? List.of() : List.copyOf(leaks);
             ungrounded = ungrounded == null ? List.of() : List.copyOf(ungrounded);
+            ungroundedCodes = ungroundedCodes == null ? List.of() : List.copyOf(ungroundedCodes);
+            invented = invented == null ? List.of() : List.copyOf(invented);
             retrieved = retrieved == null ? List.of() : List.copyOf(retrieved);
             unsupported = unsupported == null ? List.of() : List.copyOf(unsupported);
+        }
+
+        /** A result scored before codes, copied examples and "none" answers were checked: none of them found. */
+        CaseResult(GoldenCase golden, int httpStatus, String errorCode, String answer, List<String> earlierAnswers,
+                   List<String> tools, List<String> outcomes, List<String> missing, List<String> leaks,
+                   List<String> ungrounded, boolean toolsOk, boolean invariantHeld, List<String> retrieved,
+                   List<String> unsupported, boolean recallOk, long latencyMs, int modelRequests,
+                   long inputTokens, long cachedInputTokens, long outputTokens) {
+            this(golden, httpStatus, errorCode, answer, earlierAnswers, tools, outcomes, missing, leaks, ungrounded,
+                    List.of(), toolsOk, invariantHeld, retrieved, unsupported, recallOk, false, List.of(), latencyMs,
+                    modelRequests, inputTokens, cachedInputTokens, outputTokens);
         }
 
         /** An earlier question of the case got no answer, so its own question was never asked. */
@@ -266,10 +293,35 @@ final class GoldenRunner {
                     && retrieved.stream().noneMatch(anchor -> said.contains(anchor.toLowerCase(java.util.Locale.ROOT)));
         }
 
+        /**
+         * The answer states data — a number or a code nothing holds — without a single lookup that returned data for
+         * its question (a refused call, or a search of the rules, looks nothing up): the
+         * fabrication the system prompt forbids, which the P9 report must show at zero.
+         */
+        boolean fabricated() {
+            return answered() && !lookedUp() && (!ungrounded.isEmpty() || !ungroundedCodes.isEmpty());
+        }
+
+        /** A call for the last question returned data: it ran, and it was not a search of the rules. */
+        boolean lookedUp() {
+            for (int i = 0; i < tools.size() && i < outcomes.size(); i++) {
+                if ("OK".equals(outcomes.get(i)) && !"searchKnowledge".equals(tools.get(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** A question whose true answer is "none" was answered without a code it did not ask about. */
+        boolean noDataOk() {
+            return !golden.expectNoData() || invented.isEmpty();
+        }
+
         /** Every check of the case holds. */
         boolean passed() {
             return answered() && leaks.isEmpty() && toolsOk && invariantHeld && unsupported.isEmpty() && recallOk
-                    && noPassageOk() && (golden.expectRefusal() ? refusalOk() : factsOk());
+                    && noPassageOk() && noDataOk() && !fabricated() && !copiedExample
+                    && (golden.expectRefusal() ? refusalOk() : factsOk());
         }
     }
 }

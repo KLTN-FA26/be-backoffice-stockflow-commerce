@@ -70,6 +70,8 @@ class RetrievalEval {
     static final int RESULTS = 5;
     static final double[] STANDOUTS = {2.0, 2.5, 3.0, 3.5};
     static final int[] DEPTHS = {10, 20};
+    /** How many of a query's words a passage must hold to be found by its words: one, two or three. */
+    static final int[] MIN_MATCHED = {1, 2, 3};
 
     @Autowired KnowledgeService knowledge;
     @Autowired KnowledgeRepository repository;
@@ -129,16 +131,24 @@ class RetrievalEval {
         assertThat(cases).as("the golden set's rule and flow cases").isNotEmpty();
 
         List<Score> scores = new ArrayList<>();
-        scores.add(score("words alone", new KnowledgeService.Settings(false, 3.0, 10, false, false), cases));
+        for (int matched : MIN_MATCHED) {
+            scores.add(score("words alone, " + matched + " word" + (matched == 1 ? "" : "s") + " to match",
+                    new KnowledgeService.Settings(false, 3.0, 10, false, false, matched), cases));
+        }
         if (embeddings.available() && embedded > 0) {
             for (double standout : STANDOUTS) {
                 for (int depth : DEPTHS) {
                     for (boolean multi : new boolean[] {false, true}) {
-                        scores.add(score(name(standout, depth, multi, false),
-                                new KnowledgeService.Settings(true, standout, depth, multi, false), cases));
+                        for (int matched : MIN_MATCHED) {
+                            scores.add(score(name(standout, depth, multi, false) + ", " + matched + " to match",
+                                    new KnowledgeService.Settings(true, standout, depth, multi, false, matched),
+                                    cases));
+                        }
                         if (reranker.available() && (standout == 2.5 || standout == 3.0)) {
-                            scores.add(score(name(standout, depth, multi, true),
-                                    new KnowledgeService.Settings(true, standout, depth, multi, true), cases));
+                            // With the threshold the deployment runs (min-matched-words 2), so the rows
+                            // compare with the ones without a reranker at that threshold.
+                            scores.add(score(name(standout, depth, multi, true) + ", 2 to match",
+                                    new KnowledgeService.Settings(true, standout, depth, multi, true, 2), cases));
                         }
                     }
                 }

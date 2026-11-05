@@ -205,12 +205,15 @@ class AssistantServiceTest {
     @DisplayName("a rewrite that states as many unheld numbers, asks for a tool or says nothing leaves the answer as it "
             + "was, flagged; the rewrite is kept for its tokens and never shown")
     void unusableCorrectionsAreSetAside() {
+        lookUp(model);
         model.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua là 12.500.000 ₫.");
         model.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua khoảng 12,5 triệu ₫.");
-        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lookUp(model);
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 50 cái.");
         model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_9", "getStockLevels",
                 "{\"sku\":\"CUP-12OZ\"}"));
-        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lookUp(model);
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 50 cái.");
         model.then(LanguageModel.StopReason.MAX_TOKENS, "Còn");
         AssistantService service = service();
 
@@ -220,25 +223,28 @@ class AssistantServiceTest {
 
         assertThat(same.text()).isEqualTo("Doanh thu hôm qua là 12.500.000 ₫.");
         assertThat(same.unverifiedNumbers()).containsExactly("12.500.000");
-        assertThat(tool.text()).isEqualTo("Còn 40 cái.");
-        assertThat(toolRuns).as("no lookup runs while an answer is corrected").hasValue(0);
-        assertThat(cut.text()).isEqualTo("Còn 40 cái.");
+        assertThat(tool.text()).isEqualTo("Còn 50 cái.");
+        assertThat(toolRuns).as("no lookup runs while an answer is corrected: only the three asked for").hasValue(3);
+        assertThat(cut.text()).isEqualTo("Còn 50 cái.");
         assertThat(cut.cutShort()).as("the answer shown was complete; the rewrite set aside was cut").isFalse();
-        assertThat(stored).extracting(PendingMessage::text).containsExactly("Doanh thu hôm qua là 12.500.000 ₫.", null,
-                "Còn 40 cái.", null, "Còn 40 cái.", null);
-        assertThat(List.of(stored.get(1), stored.get(3), stored.get(5))).as("set aside: no text, no tool call")
+        assertThat(stored).extracting(PendingMessage::text).containsExactly(
+                null, null, "Doanh thu hôm qua là 12.500.000 ₫.", null,
+                null, null, "Còn 50 cái.", null,
+                null, null, "Còn 50 cái.", null);
+        assertThat(List.of(stored.get(3), stored.get(7), stored.get(11))).as("set aside: no text, no tool call")
                 .allSatisfy(audit -> assertThat((Turn.ModelTurn) audit.turn()).satisfies(turn -> {
                     assertThat(turn.text()).isNull();
                     assertThat(turn.toolCalls()).isEmpty();
                     assertThat(turn.providerContent()).as("kept for the audit").contains("\"reply\"");
                 }));
-        assertThat(stored).extracting(PendingMessage::usage).allSatisfy(usage ->
-                assertThat(usage.inputTokens()).isEqualTo(100));
+        assertThat(stored).filteredOn(message -> message.role() == MessageRole.ASSISTANT)
+                .extracting(PendingMessage::usage).allSatisfy(usage -> assertThat(usage.inputTokens()).isEqualTo(100));
     }
 
     @Test
     @DisplayName("a rewrite set aside is never sent back: the next question is sent the answer the user saw")
     void aRewriteSetAsideIsNotSentBack() {
+        lookUp(model);
         model.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua là 12.500.000 ₫.");
         model.then(LanguageModel.StopReason.END_TURN, "Doanh thu hôm qua là 99.999.999 ₫, gồm đơn SO-1-777.");
         model.then(LanguageModel.StopReason.END_TURN, "Xin chào.");
@@ -297,13 +303,14 @@ class AssistantServiceTest {
     @Test
     @DisplayName("a rewrite call failing with anything, not only a provider error, leaves the answer as it was")
     void anyFailureOfTheRewriteKeepsTheAnswer() {
-        model.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lookUp(model);
+        model.then(LanguageModel.StopReason.END_TURN, "Còn 50 cái.");
         model.fail(new IllegalStateException("malformed reply"));
 
         AssistantService.Answer answer = service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER);
 
-        assertThat(answer.text()).isEqualTo("Còn 40 cái.");
-        assertThat(stored).extracting(PendingMessage::text).containsExactly("Còn 40 cái.");
+        assertThat(answer.text()).isEqualTo("Còn 50 cái.");
+        assertThat(stored).extracting(PendingMessage::text).containsExactly(null, null, "Còn 50 cái.");
     }
 
     @Test
@@ -316,9 +323,10 @@ class AssistantServiceTest {
         AssistantService service = service();
         assertThatThrownBy(() -> service.ask(CONVERSATION, "Chào", MANAGER)).isInstanceOf(BusinessException.class);
 
-        lite.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lookUp(lite);
+        lite.then(LanguageModel.StopReason.END_TURN, "Còn 50 cái.");
         lite.fail(quota());
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 50 cái.");
 
         lite.fail(quota());
         flash.then(LanguageModel.StopReason.END_TURN, "Xin chào.");
@@ -330,15 +338,166 @@ class AssistantServiceTest {
             + "aside for the next question")
     void failedCorrectionKeepsTheAnswer() {
         route = List.of(lite, flash);
-        lite.then(LanguageModel.StopReason.END_TURN, "Còn 40 cái.");
+        lookUp(lite);
+        lite.then(LanguageModel.StopReason.END_TURN, "Còn 50 cái.");
         lite.fail(quota());
         flash.then(LanguageModel.StopReason.END_TURN, "Xin chào.");
         AssistantService service = service();
 
-        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 40 cái.");
-        assertThat(stored).extracting(PendingMessage::text).containsExactly("Còn 40 cái.");
+        assertThat(service.ask(CONVERSATION, "Còn bao nhiêu?", MANAGER).text()).isEqualTo("Còn 50 cái.");
+        assertThat(stored).extracting(PendingMessage::text).containsExactly(null, null, "Còn 50 cái.");
         assertThat(service.ask(CONVERSATION, "Chào", MANAGER).text()).isEqualTo("Xin chào.");
-        assertThat(lite.requests).as("set aside after the failed correction").hasSize(2);
+        assertThat(lite.requests).as("set aside after the failed correction").hasSize(3);
+    }
+
+    @Test
+    @DisplayName("an answer stating data with no lookup is set aside unseen, and the model is asked once, with the "
+            + "tools, to look it up: what it then answers from the results is the answer")
+    void anAnswerWithoutALookupIsLookedUp() {
+        model.then(LanguageModel.StopReason.END_TURN, "Có 2 mã dưới điểm đặt hàng: CUP-A và LID-B.");
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "CUP-12OZ còn 40 cái.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Mã nào sắp hết?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("CUP-12OZ còn 40 cái.");
+        assertThat(answer.unverifiedCodes()).isEmpty();
+        LanguageModel.Request asked = model.requests.get(1);
+        assertThat(asked.toolsAllowed()).as("the lookup is the point: the tools are offered").isTrue();
+        assertThat(asked.note()).startsWith("Note from the system").contains("2 mã", "CUP-A", "LID-B")
+                .contains("call the ones that give it");
+        assertThat(asked.history().getLast()).as("the withdrawn answer is not sent back for the model to defend")
+                .isInstanceOf(Turn.Question.class);
+        assertThat(stored).extracting(PendingMessage::text).containsExactly(null, null, null, "CUP-12OZ còn 40 cái.");
+        assertThat((Turn.ModelTurn) stored.getFirst().turn()).as("set aside: kept for the audit, never shown")
+                .satisfies(turn -> {
+                    assertThat(turn.text()).isNull();
+                    assertThat(turn.providerContent()).contains("\"reply\"");
+                });
+        assertThat(answer.usage().inputTokens()).as("every call is paid for").isEqualTo(300);
+    }
+
+    @Test
+    @DisplayName("asked to look the data up, a model that answers again without a lookup is shown flagged when no "
+            + "stronger model is left, and its question moves to the stronger one when there is")
+    void anAnswerStillWithoutALookupIsEscalated() {
+        model.then(LanguageModel.StopReason.END_TURN, "Có 2 mã: CUP-A và LID-B.");
+        model.then(LanguageModel.StopReason.END_TURN, "Có 2 mã: CUP-A và LID-B, đã kiểm tra.");
+
+        AssistantService.Answer alone = service().ask(CONVERSATION, "Mã nào sắp hết?", MANAGER);
+
+        assertThat(alone.text()).isEqualTo("Có 2 mã: CUP-A và LID-B, đã kiểm tra.");
+        assertThat(alone.unverifiedCodes()).containsExactly("CUP-A", "LID-B");
+        assertThat(alone.unverifiedNumbers()).containsExactly("2 mã");
+
+        stored.clear();
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.END_TURN, "Có 2 mã: CUP-A và LID-B.");
+        lite.then(LanguageModel.StopReason.END_TURN, "Có 2 mã: CUP-A và LID-B.");
+        flash.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("call_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        flash.then(LanguageModel.StopReason.END_TURN, "CUP-12OZ còn 40 cái.");
+
+        AssistantService.Answer escalated = service().ask(CONVERSATION, "Mã nào sắp hết?", MANAGER);
+
+        assertThat(escalated.text()).isEqualTo("CUP-12OZ còn 40 cái.");
+        assertThat(flash.requests.getFirst().history().getLast()).as("the stronger model starts from the question")
+                .isInstanceOf(Turn.Question.class);
+    }
+
+    @Test
+    @DisplayName("a lookup call that fails leaves the answer set aside standing, flagged, as it would have without "
+            + "the call")
+    void aFailedLookupKeepsTheAnswer() {
+        model.then(LanguageModel.StopReason.END_TURN, "Có 2 mã: CUP-A và LID-B.");
+        model.fail(new IllegalStateException("malformed reply"));
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Mã nào sắp hết?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Có 2 mã: CUP-A và LID-B.");
+        assertThat(answer.unverifiedCodes()).containsExactly("CUP-A", "LID-B");
+        assertThat(stored).extracting(PendingMessage::text).containsExactly(null, "Có 2 mã: CUP-A và LID-B.");
+        assertThat(answer.usage().inputTokens()).as("the answer's call is counted once").isEqualTo(100);
+    }
+
+    @Test
+    @DisplayName("an answer with no lookup that states only what the question holds, or nothing to check, is the answer")
+    void anAnswerWithoutALookupThatHoldsIsKept() {
+        model.then(LanguageModel.StopReason.END_TURN, "Mã CUP-12OZ: bạn muốn xem tồn kho hay lô?");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "CUP-12OZ", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Mã CUP-12OZ: bạn muốn xem tồn kho hay lô?");
+        assertThat(model.requests).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("an answer that copies the prompt's example, placeholders and all, is asked to look the data up")
+    void aCopiedExampleIsLookedUp() {
+        model.then(LanguageModel.StopReason.END_TURN, "Có «n» mã dưới điểm đặt hàng: «SKU 1» và «SKU 2».");
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "CUP-12OZ còn 40 cái.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Mã nào sắp hết?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("CUP-12OZ còn 40 cái.");
+        assertThat(model.requests.get(1).note()).contains("«SKU 1»");
+    }
+
+    @Test
+    @DisplayName("a refused call looked nothing up: data stated after it is still to be looked up")
+    void aRefusedCallIsNoLookup() {
+        stockAnswer = sku -> {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Missing permission: inventory-stock-items:READ");
+        };
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-A\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "Có 2 mã: CUP-A và LID-B.");
+        model.then(LanguageModel.StopReason.END_TURN, "Chưa xem được tồn kho: tài khoản thiếu quyền.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Mã nào sắp hết?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Chưa xem được tồn kho: tài khoản thiếu quyền.");
+        assertThat(model.requests.get(2).note()).as("the refused call's line grounds no code")
+                .contains("CUP-A", "LID-B").contains("call the ones that give it");
+        assertThat(model.requests.get(2).toolsAllowed()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a lookup call that fails shows the answer set aside and lets the stronger model try")
+    void aFailedLookupIsEscalated() {
+        route = List.of(lite, flash);
+        lite.then(LanguageModel.StopReason.END_TURN, "Có 2 mã: CUP-A và LID-B.");
+        lite.fail(quota());
+        flash.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("call_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        flash.then(LanguageModel.StopReason.END_TURN, "CUP-12OZ còn 40 cái.");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Mã nào sắp hết?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("CUP-12OZ còn 40 cái.");
+        assertThat(stored).extracting(PendingMessage::text).contains("Có 2 mã: CUP-A và LID-B.");
+    }
+
+    @Test
+    @DisplayName("a reply to the lookup that is cut off leaves the complete answer set aside standing, flagged")
+    void aCutLookupKeepsTheAnswer() {
+        model.then(LanguageModel.StopReason.END_TURN, "Có 2 mã: CUP-A và LID-B.");
+        model.then(LanguageModel.StopReason.MAX_TOKENS, "Có");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Mã nào sắp hết?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Có 2 mã: CUP-A và LID-B.");
+        assertThat(answer.cutShort()).isFalse();
+        assertThat(answer.unverifiedCodes()).containsExactly("CUP-A", "LID-B");
+    }
+
+    /** A first step that looks something up, so the answer after it is a looked-up one ({@code repairNote}). */
+    private static void lookUp(ScriptedModel scripted) {
+        scripted.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_" + scripted.script.size(),
+                "getStockLevels", "{\"sku\":\"CUP-12OZ\"}"));
     }
 
     @Test
@@ -1003,11 +1162,11 @@ class AssistantServiceTest {
                 "Còn 40 cái.", List.of()));
         lite.then(LanguageModel.StopReason.OTHER, null);
         lite.then(LanguageModel.StopReason.END_TURN, " ");
-        flash.then(LanguageModel.StopReason.END_TURN, "Lô L-07 sắp hết hạn.");
+        flash.then(LanguageModel.StopReason.END_TURN, "Chưa có lô nào sắp hết hạn.");
 
         AssistantService.Answer answer = service().ask(CONVERSATION, "Lô nào sắp hết hạn?", MANAGER);
 
-        assertThat(answer.text()).isEqualTo("Lô L-07 sắp hết hạn.");
+        assertThat(answer.text()).isEqualTo("Chưa có lô nào sắp hết hạn.");
         assertThat(lite.requests).hasSize(2);
         assertThat(lite.requests.getFirst().history().get(1)).isInstanceOfSatisfying(Turn.ModelTurn.class,
                 turn -> assertThat(turn.providerContent()).isEqualTo(lite.closing.providerContent()));

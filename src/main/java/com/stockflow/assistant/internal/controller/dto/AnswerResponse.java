@@ -30,6 +30,10 @@ public record AnswerResponse(
                 + "conversation holds: show them as not found in the looked-up data. Advisory; the answer is "
                 + "unchanged", example = "[\"128,4 triệu\"]")
         List<String> unverifiedNumbers,
+        @Schema(description = "Codes the answer writes (a SKU, an order, lot, bin or carton code), as written, that no "
+                + "lookup, question or context of the conversation holds: show them as not found in the looked-up "
+                + "data. Advisory; the answer is unchanged", example = "[\"CUP-A\"]")
+        List<String> unverifiedCodes,
         @Schema(description = "The trace of this answer, for opening it in Jaeger; only where "
                 + "stockflow.assistant.expose-trace-id is on (a developer's machine), null elsewhere",
                 example = "4bf92f3577b34da6a3ce929d0e0e4736")

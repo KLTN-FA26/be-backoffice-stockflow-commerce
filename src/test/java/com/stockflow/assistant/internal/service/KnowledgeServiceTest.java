@@ -248,7 +248,7 @@ class KnowledgeServiceTest {
         assertThat(repository.chunks(KnowledgeService.FLOWS)).as("off by default").isEmpty();
         KnowledgeService flowsOn = new KnowledgeService(repository, embeddings,
                 new TransactionTemplate(mock(PlatformTransactionManager.class)), build, clock, AssistantTelemetry.NONE,
-                new KnowledgeProperties(3.0, 10, false, KnowledgeProperties.DEFAULTS.reranker(), true),
+                new KnowledgeProperties(3.0, 10, false, KnowledgeProperties.DEFAULTS.reranker(), true, 1),
                 com.stockflow.assistant.internal.domain.Reranker.NONE);
         flowsOn.index();
         assertThat(repository.chunks(KnowledgeService.FLOWS)).extracting(KnowledgeChunk::anchor).contains("F-PO",

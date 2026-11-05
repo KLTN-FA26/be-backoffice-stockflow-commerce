@@ -56,11 +56,18 @@ import java.util.stream.Collectors;
  * loop runs where it is called; the calls of one step run at once on workers that are handed both
  * ({@link ParallelTools}), one call alone on the loop's own thread (design §5.2).</p>
  *
- * <p><b>Numbers it cannot point to are corrected once.</b> An answer stating a number that no tool result, question or
- * context of the conversation holds ({@link AnswerNumbers}) is sent back once, without tools, with those numbers named,
- * to be written again with only numbers it can point to. The rewrite is the answer only when it is complete and
- * states fewer such numbers; otherwise the first stands, flagged as before. Both are stored and paid for; a rewrite
- * that fails or would outlast the lease leaves the first answer as it is.</p>
+ * <p><b>Data stated without a lookup is looked up.</b> An answer written without a single successful lookup for its
+ * question (a search of the rules does not count) that states a code or number nothing the model was given holds
+ * ({@link AnswerCodes}, {@link AnswerNumbers}) is set aside unseen, and the model is asked once, with the tools and
+ * those items named, to look the data up. If it answers again without a lookup, still stating such data, the question
+ * goes to a stronger model as an unusable answer does (below), or with none left is shown flagged. A lookup call that
+ * fails shows the answer set aside, flagged, and still lets a stronger model try.</p>
+ *
+ * <p><b>Numbers and codes it cannot point to are corrected once.</b> An answer that did look things up but states a
+ * number or code that no tool result, question or context of the conversation holds is sent back once, without tools,
+ * with those named, to be written again with only what it can point to. The rewrite is the answer only when it is
+ * complete and states fewer such items; otherwise the first stands, flagged as before. Both are stored and paid for; a
+ * rewrite that fails or would outlast the lease leaves the first answer as it is.</p>
  *
  * <p><b>What was looked up is not thrown away.</b> The answer's last call — the tool rounds are spent, or the lease
  * has room for this one call only — offers the model no tool and says why: it answers from the results it already
@@ -93,7 +100,8 @@ import java.util.stream.Collectors;
  * not be reached, the question goes to the next model. Once a model has replied, the question stays on it and fails
  * with it: the turns it wrote carry thought signatures and thinking blocks that only that model accepts back. A
  * question the model replied to without a usable answer — empty or malformed twice, nothing left once its markup was
- * removed, or still asking for lookups when they ran out — is answered once more, from the start, on the next model;
+ * removed, or still asking for lookups when they ran out — or that stated data without looking anything up even when
+ * asked to, is answered once more, from the start, on the next model;
  * what the first one did, tools included, is stored as well, and the answer is the second one's. Every attempt is sent
  * the history rebuilt for its own model ({@link History}), never a turn another model wrote.
  * {@code ASSISTANT_QUOTA_EXHAUSTED} reaches the user only when every model is spent.</p>
@@ -359,7 +367,15 @@ public class AssistantService {
                     log.warn("Assistant model {} failed rewriting an answer; the answer stands as written",
                             route.name(), failed.cause);
                 }
-                telemetry.repair("failed");
+                if (!failed.lookingUp) {
+                    telemetry.repair("failed");
+                    return;
+                }
+                telemetry.unlookedAnswer("failed");
+                // The answer shown states data nothing holds: a stronger model, if one is free, may still look it up.
+                if (fits(clock.instant(), 2, leaseEnds) && route.escalate()) {
+                    continue;
+                }
                 return;
             } catch (BusinessException failed) {
                 if (produced.size() > before) {
@@ -377,7 +393,8 @@ public class AssistantService {
                 throw route.failure();
             }
             route.replied();
-            if (outcome == Outcome.NO_ANSWER && fits(clock.instant(), 2, leaseEnds) && route.escalate()) {
+            if ((outcome == Outcome.NO_ANSWER || outcome == Outcome.UNGROUNDED) && fits(clock.instant(), 2, leaseEnds)
+                    && route.escalate()) {
                 continue;
             }
             return;
@@ -431,12 +448,16 @@ public class AssistantService {
         boolean askingAgain = false;
         // Set once the answer stated numbers nothing holds: the next call is the one chance to correct them.
         String repairing = null;
+        // Set once an answer written without a single lookup stated data nothing holds: the next call, with the tools,
+        // is its one chance to look it up (#lookupNote). The answer set aside is kept to be shown if that call fails.
+        String lookingUp = null;
+        LanguageModel.Reply setAside = null;
         // What this attempt's tools returned, for what the answer cites (a rewrite must keep it).
         List<ToolExecution> ranInAttempt = new ArrayList<>();
         for (int call = 0; ; call++) {
             Instant now = clock.instant();
-            // A rewrite was decided with the lease checked already: the answer is in, and must not be closed after.
-            if (call > 0 && repairing == null && !fits(now, 1, leaseEnds)) {
+            // A rewrite or a lookup was decided with the lease checked already: the call it needs is not cut.
+            if (call > 0 && repairing == null && lookingUp == null && !fits(now, 1, leaseEnds)) {
                 // The last step's results are in; another call could outlast the claim. Close, and say so.
                 record.accept(closing(model, outOfTime()));
                 return Outcome.OUT_OF_TIME;
@@ -444,19 +465,33 @@ public class AssistantService {
             // The last call offers no tool: the rounds are spent, or the lease has room for this call only. Not the
             // first call, whatever the lease: the start-up check leaves room for two, a few milliseconds aside.
             boolean roundsSpent = rounds >= properties.maxToolRounds();
-            boolean last = roundsSpent || repairing != null || call > 0 && !fits(now, 2, leaseEnds);
+            // A lookup is asked for with room for two calls checked: it offers the tools it asks the model to use.
+            boolean last = roundsSpent || repairing != null
+                    || lookingUp == null && call > 0 && !fits(now, 2, leaseEnds);
+            boolean answeringLookup = lookingUp != null;
             // Only the user's own tools, worked out once per question (ToolAvailability.specsFor): the same bytes on
             // every call, the last one included. A call to any other tool still runs, and its guard refuses it.
             LanguageModel.Reply reply;
-            if (repairing == null) {
+            if (repairing == null && lookingUp == null) {
                 reply = model.next(new LanguageModel.Request(prompt.text(), offered, history, !last,
                         note(last, askingAgain)));
+            } else if (lookingUp != null) {
+                try {
+                    reply = model.next(new LanguageModel.Request(prompt.text(), offered, history, !last, lookingUp));
+                } catch (RuntimeException failed) {
+                    // Optional, this call: the answer set aside stands, flagged, as it would have without it. Its
+                    // tokens were counted when it was set aside.
+                    record.accept(new PendingMessage(setAside.turn(), displayText(setAside), setAside.model(),
+                            setAside.stopReason(), LanguageModel.Usage.NONE, List.of()));
+                    throw new RepairFailed(failed, true);
+                }
+                lookingUp = null;
             } else {
                 try {
                     reply = model.next(new LanguageModel.Request(prompt.text(), offered, history, false, repairing));
                 } catch (RuntimeException failed) {
                     // Optional, this call: nothing it fails with may replace the answer already written.
-                    throw new RepairFailed(failed);
+                    throw new RepairFailed(failed, false);
                 }
                 return repaired(reply, record, sink, history, earlier, ranInAttempt);
             }
@@ -513,10 +548,45 @@ public class AssistantService {
                 return Outcome.NO_ANSWER;
             }
             if (calls.isEmpty()) {
+                if (answeringLookup && (reply.stopReason() == LanguageModel.StopReason.MAX_TOKENS
+                        || reply.stopReason() == LanguageModel.StopReason.REFUSAL)) {
+                    // Cut off or declined, the reply to the lookup is no answer: the complete one set aside stands,
+                    // flagged, and a stronger model may try. The reply is kept after it, for its tokens: stored
+                    // before, its cut would mark the answer shown as cut.
+                    record.accept(new PendingMessage(setAside.turn(), displayText(setAside), setAside.model(),
+                            setAside.stopReason(), LanguageModel.Usage.NONE, List.of()));
+                    sink.accept(new PendingMessage(new Turn.ModelTurn(reply.turn().providerContent(), null,
+                            List.of()), null, reply.model(), reply.stopReason(), reply.usage(), List.of()));
+                    telemetry.unlookedAnswer("unusable");
+                    return Outcome.UNGROUNDED;
+                }
+                // Nothing looked up for this question, and the answer states data nothing holds: the fabrication the
+                // system prompt forbids and a weak model still commits (AnswerCodes). It is set aside unseen — not
+                // in the history, so the model does not argue for it — and the model is asked once, with the tools,
+                // to look the data up. A refused call, or a search of the rules, looked nothing up.
+                boolean unlooked = ranInAttempt.stream().noneMatch(AssistantService::lookedUp);
+                Unheld unheld = unlooked && !wroteNothing(reply) ? unheld(reply, history, earlier) : null;
+                if (unheld != null && setAside == null && !offered.isEmpty()) {
+                    if (rounds < properties.maxToolRounds() && fits(clock.instant(), 2, leaseEnds)) {
+                        sink.accept(new PendingMessage(new Turn.ModelTurn(reply.turn().providerContent(), null,
+                                List.of()), null, reply.model(), reply.stopReason(), reply.usage(), List.of()));
+                        setAside = reply;
+                        lookingUp = lookupNote(unheld);
+                        continue;
+                    }
+                    telemetry.unlookedAnswer("no_time");
+                }
                 record.accept(new PendingMessage(reply.turn(), displayText(reply), reply.model(), reply.stopReason(),
                         reply.usage(), List.of()));
                 if (wroteNothing(reply)) {
                     return Outcome.NO_ANSWER;
+                }
+                if (setAside != null) {
+                    telemetry.unlookedAnswer(!unlooked ? "looked_up" : unheld == null ? "withdrew" : "still_unlooked");
+                }
+                if (unheld != null) {
+                    // Still nothing looked up: a stronger model may do better; with none, it stands, flagged.
+                    return Outcome.UNGROUNDED;
                 }
                 String note = repairNote(reply, history, earlier);
                 if (note != null) {
@@ -551,8 +621,9 @@ public class AssistantService {
     }
 
     /**
-     * How one model's attempt ended. Only {@link #NO_ANSWER} is worth another model: a cut-off answer would be cut off
-     * again, a declined one is not to be asked around, and an answer out of time has no time left for another.
+     * How one model's attempt ended. Only {@link #NO_ANSWER} and {@link #UNGROUNDED} are worth another model: a cut-off
+     * answer would be cut off again, a declined one is not to be asked around, and an answer out of time has no time
+     * left for another.
      */
     private enum Outcome {
         /** The model had its say: an answer, one cut off at the output limit, or a refusal. */
@@ -563,7 +634,12 @@ public class AssistantService {
          */
         NO_ANSWER,
         /** The lease ran short before the model could finish. */
-        OUT_OF_TIME
+        OUT_OF_TIME,
+        /**
+         * The model answered without looking anything up, stating data nothing it was given holds, and did so again
+         * when asked to look it up: worth a stronger model, as {@link #NO_ANSWER} is.
+         */
+        UNGROUNDED
     }
 
     /**
@@ -590,17 +666,13 @@ public class AssistantService {
      * 2401" for {@code EVAL-LOT-2401}) is named as such, so the model writes the code whole instead of dropping it.
      */
     private static String repairNote(LanguageModel.Reply reply, List<Turn> history, AnswerNumbers.Grounds earlier) {
-        if (reply.stopReason() != LanguageModel.StopReason.END_TURN) {
+        Unheld unheld = unheld(reply, history, earlier);
+        if (unheld == null) {
             return null;
         }
-        List<AnswerNumbers.Checked> unheld = check(AnswerText.plain(reply.turn().text()), history, earlier).stream()
-                .filter(checked -> !checked.grounded()).toList();
-        if (unheld.isEmpty()) {
-            return null;
-        }
-        List<String> nowhere = unheld.stream().filter(checked -> !checked.onlyInACode())
+        List<String> nowhere = unheld.numbers().stream().filter(checked -> !checked.onlyInACode())
                 .map(AnswerNumbers.Checked::written).distinct().toList();
-        List<String> inCodes = unheld.stream().filter(AnswerNumbers.Checked::onlyInACode)
+        List<String> inCodes = unheld.numbers().stream().filter(AnswerNumbers.Checked::onlyInACode)
                 .map(AnswerNumbers.Checked::written).distinct().toList();
         StringBuilder note = new StringBuilder(NOTE);
         if (!nowhere.isEmpty()) {
@@ -612,14 +684,70 @@ public class AssistantService {
                     + "their own: ").append(String.join("; ", inCodes))
                     .append(". Write such a code whole, as the result does, or leave the number out.");
         }
+        if (!unheld.codes().isEmpty()) {
+            note.append(" These codes in your answer appear in no tool result, nor in the question or its context: ")
+                    .append(String.join("; ", unheld.codes()))
+                    .append(". Write a code exactly as a result gives it, or leave it out.");
+        }
         return note.append(" Write the answer again, in the user's language: keep every figure, code and rule you can "
                 + "point to above, and where a figure was not looked up, say so instead of giving one. No more lookups "
                 + "can be made.").toString();
     }
 
-    /** The checked numbers of {@code text} against what the model was shown ({@link #repairNote}). */
+    /**
+     * The checked numbers and codes of {@code text} against what the model was shown ({@link #repairNote}); a code
+     * is one more fact, its written form kept apart from any number's.
+     */
     private static List<AnswerNumbers.Checked> check(String text, List<Turn> history, AnswerNumbers.Grounds earlier) {
-        return AnswerNumbers.check(text, earlier.and(AnswerSources.groundsOf(history)));
+        AnswerNumbers.Grounds grounds = earlier.and(AnswerSources.groundsOf(history));
+        List<AnswerNumbers.Checked> facts = new ArrayList<>(AnswerNumbers.check(text, grounds));
+        AnswerCodes.check(text, grounds).forEach(code ->
+                facts.add(new AnswerNumbers.Checked("code " + code.written(), code.grounded(), false)));
+        return facts;
+    }
+
+    /**
+     * What a finished answer states that nothing the model was shown holds, numbers and codes apart; null when
+     * everything is held, or the reply is not a finished answer.
+     */
+    private static Unheld unheld(LanguageModel.Reply reply, List<Turn> history, AnswerNumbers.Grounds earlier) {
+        if (reply.stopReason() != LanguageModel.StopReason.END_TURN) {
+            return null;
+        }
+        String text = AnswerText.plain(reply.turn().text());
+        AnswerNumbers.Grounds grounds = earlier.and(AnswerSources.groundsOf(history));
+        List<AnswerNumbers.Checked> numbers = AnswerNumbers.check(text, grounds).stream()
+                .filter(checked -> !checked.grounded()).toList();
+        List<String> codes = AnswerCodes.unverified(text, grounds);
+        return numbers.isEmpty() && codes.isEmpty() ? null : new Unheld(numbers, codes);
+    }
+
+    /** The numbers and codes of an answer that nothing the model was shown holds. */
+    private record Unheld(List<AnswerNumbers.Checked> numbers, List<String> codes) {
+
+        List<String> written() {
+            List<String> all = new ArrayList<>();
+            numbers.forEach(number -> all.add(number.written()));
+            all.addAll(codes);
+            return all.stream().distinct().toList();
+        }
+    }
+
+    /** A call that returned data: it ran, and it was not a search of the rules. */
+    private static boolean lookedUp(ToolExecution execution) {
+        return execution.outcome() == ToolOutcome.OK && !AnswerSources.KNOWLEDGE_TOOL.equals(execution.call().name());
+    }
+
+    /**
+     * The note that asks the model, once, to look up what an answer written without a single lookup stated: the data
+     * it names, and that it must come from the tools or not be given. The tools are offered with it, unlike the
+     * repair's ({@link #repairNote}), which corrects an answer that did look things up.
+     */
+    private static String lookupNote(Unheld unheld) {
+        return NOTE + " your previous answer, now withdrawn, stated " + String.join("; ", unheld.written())
+                + " without looking anything up for this question, and nothing in this conversation holds that. Data "
+                + "comes only from the tools: call the ones that give it and answer from their results. If no tool "
+                + "you may use gives it, say that you do not have it, without a figure or a code.";
     }
 
     /**
@@ -682,9 +810,13 @@ public class AssistantService {
 
         private final RuntimeException cause;
 
-        RepairFailed(RuntimeException cause) {
+        /** The call asked for a lookup ({@link #lookupNote}) rather than a rewrite: counted apart. */
+        private final boolean lookingUp;
+
+        RepairFailed(RuntimeException cause, boolean lookingUp) {
             super(cause.getMessage(), cause, false, false);
             this.cause = cause;
+            this.lookingUp = lookingUp;
         }
     }
 
@@ -846,12 +978,14 @@ public class AssistantService {
      * @param proposals         purchase orders the panel may open pre-filled (design §8)
      * @param tables            the rows its lookups returned, as the panel shows them under it (design §7)
      * @param unverifiedNumbers numbers it states that nothing the model was given for it holds, as written (design §7)
+     * @param unverifiedCodes   codes it writes that nothing the model was given for it holds ({@link AnswerCodes})
      * @param followUps         the questions its lookups lead to, before the asker's permissions are applied
      */
     public record Answer(UUID messageId, String text, List<ConversationService.ToolCallView> toolCalls,
                          boolean cutShort, LanguageModel.Usage usage, List<String> citations,
                          List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
-                         List<String> unverifiedNumbers, List<FollowUps.FollowUp> followUps,
+                         List<String> unverifiedNumbers, List<String> unverifiedCodes,
+                         List<FollowUps.FollowUp> followUps,
                          java.util.Map<String, AssistantActions.ActionView> actions) {
 
         public Answer {
@@ -861,7 +995,7 @@ public class AssistantService {
         /** With the suggestions its proposals became (ADR-0011), by proposal key. */
         Answer withActions(java.util.Map<String, AssistantActions.ActionView> made) {
             return new Answer(messageId, text, toolCalls, cutShort, usage, citations, proposals, tables,
-                    unverifiedNumbers, followUps, made);
+                    unverifiedNumbers, unverifiedCodes, followUps, made);
         }
 
         /**
@@ -888,8 +1022,8 @@ public class AssistantService {
             }
             return new Answer(answer.messageId(), answer.text(), answer.toolCalls(), answer.cutShort(),
                     new LanguageModel.Usage(input, output, cacheRead, cacheWrite), answer.citations(),
-                    answer.proposals(), answer.tables(), answer.unverifiedNumbers(), answer.followUps(),
-                    java.util.Map.of());
+                    answer.proposals(), answer.tables(), answer.unverifiedNumbers(), answer.unverifiedCodes(),
+                    answer.followUps(), java.util.Map.of());
         }
     }
 }

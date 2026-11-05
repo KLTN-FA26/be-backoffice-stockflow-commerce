@@ -83,7 +83,7 @@ class FindProductionOrdersTool implements AssistantTool {
                     + "in them. It gives no finishing date but the due date. A user limited to particular warehouses "
                     + "sees only the LSX of their warehouses.",
             ToolSchema.object()
-                    .string("productionOrderNumber", "An LSX number exactly as printed, such as LSX-20261028-0001, "
+                    .string("productionOrderNumber", "An LSX number exactly as printed (LSX-yyyyMMdd-nnnn), "
                             + "for that one LSX with its details; an empty string otherwise. When it is given the "
                             + "other filters are ignored")
                     .string("salesOrderNumber", "A customer order number exactly as shown on screen, for every LSX "

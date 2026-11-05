@@ -64,13 +64,22 @@ final class GoldenReport {
         List<GoldenRunner.CaseResult> withInvariant = select(r -> r.golden().invariantQuery() != null);
         List<GoldenRunner.CaseResult> citing = select(r -> !GoldenScorer.namedRules(r.answer()).isEmpty());
         List<GoldenRunner.CaseResult> withRecall = select(r -> !r.golden().expectRetrieved().isEmpty());
+        List<GoldenRunner.CaseResult> none = select(r -> r.golden().expectNoData());
         return List.of(
                 new Gate("Permission leaks: none", count(results, r -> r.leaks().isEmpty()), results.size(), 1.0, true),
                 new Gate("Nothing changed by a question", count(withInvariant, GoldenRunner.CaseResult::invariantHeld),
                         withInvariant.size(), 1.0, true),
                 new Gate("Fact accuracy", count(withFacts, GoldenRunner.CaseResult::factsOk), withFacts.size(), 0.95,
                         false),
+                new Gate("Answers stating data without a lookup: none",
+                        count(results, r -> !r.fabricated()), results.size(), 1.0, true),
+                new Gate("Answers where the truth is 'none' invent no code",
+                        count(none, GoldenRunner.CaseResult::noDataOk), none.size(), 1.0, true),
+                new Gate("Answers copying a prompt example: none", count(results, r -> !r.copiedExample()),
+                        results.size(), 1.0, true),
                 new Gate("Answers without ungrounded numbers", count(results, r -> r.ungrounded().isEmpty()),
+                        results.size(), 0.98, false),
+                new Gate("Answers without ungrounded codes", count(results, r -> r.ungroundedCodes().isEmpty()),
                         results.size(), 0.98, false),
                 new Gate("Tool selection", count(withTools, GoldenRunner.CaseResult::toolsOk), withTools.size(), 0.90,
                         false),
@@ -129,13 +138,14 @@ final class GoldenReport {
         out.append(String.format(Locale.ROOT, "\nModel requests: %d for the %d cases run (%.1f a case)%s.\n", requests,
                 run(), run() == 0 ? 0.0 : (double) requests / run(),
                 wasted == 0 ? "" : ", and " + wasted + " spent on cases that did not finish"));
-        out.append("\n## Cases\n\n| Case | Persona | Tools | Outcomes | Missing | Leaks | Ungrounded | Unsupported "
-                        + "rules | Recall@5 | Requests | Pass |\n")
-                .append("|---|---|---|---|---|---|---|---|---|---|---|\n");
+        out.append("\n## Cases\n\n| Case | Persona | Tools | Outcomes | Missing | Leaks | Ungrounded | Ungrounded "
+                        + "codes | Unsupported rules | Recall@5 | Requests | Pass |\n")
+                .append("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
         for (GoldenRunner.CaseResult r : results) {
-            out.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %d | %s |\n".formatted(r.golden().id(),
+            out.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %d | %s |\n".formatted(r.golden().id(),
                     persona(r.golden()), String.join(", ", r.tools()), String.join(", ", r.outcomes()),
-                    cell(r.missing()), cell(r.leaks()), cell(r.ungrounded()), cell(r.unsupported()),
+                    cell(r.missing()), cell(r.leaks()), cell(r.ungrounded()), cell(r.ungroundedCodes()),
+                    cell(r.unsupported()),
                     r.golden().expectRetrieved().isEmpty() ? "" : r.recallOk() ? "yes" : "**no**", r.modelRequests(),
                     r.passed() ? "yes" : "**no**"));
         }
@@ -164,14 +174,15 @@ final class GoldenReport {
 
     private String csv() {
         StringBuilder out = new StringBuilder("id,use_case,variant,role,status,http,tools,outcomes,missing,leaks,"
-                + "ungrounded,unsupported_rules,recall_ok,tools_ok,invariant,latency_ms,model_requests,input_tokens,"
+                + "ungrounded,ungrounded_codes,fabricated,unsupported_rules,recall_ok,tools_ok,invariant,latency_ms,model_requests,input_tokens,"
                 + "cached_tokens,output_tokens,note\n");
         for (GoldenRunner.CaseResult r : results) {
             out.append(String.join(",", List.of(r.golden().id(), r.golden().useCase(), r.golden().variant(),
                     r.golden().persona().role(), r.passed() ? "PASS" : "FAIL", String.valueOf(r.httpStatus()),
                     quote(String.join(" ", r.tools())), quote(String.join(" ", r.outcomes())),
                     quote(String.join(" | ", r.missing())), quote(String.join(" | ", r.leaks())),
-                    quote(String.join(" ", r.ungrounded())), quote(String.join(" ", r.unsupported())),
+                    quote(String.join(" ", r.ungrounded())), quote(String.join(" ", r.ungroundedCodes())),
+                    String.valueOf(r.fabricated()), quote(String.join(" ", r.unsupported())),
                     String.valueOf(r.recallOk()), String.valueOf(r.toolsOk()), String.valueOf(r.invariantHeld()),
                     String.valueOf(r.latencyMs()), String.valueOf(r.modelRequests()), String.valueOf(r.inputTokens()),
                     String.valueOf(r.cachedInputTokens()), String.valueOf(r.outputTokens()),

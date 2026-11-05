@@ -102,7 +102,12 @@ class OpenAiCompatibleLanguageModel implements LanguageModel {
         return Math.min(properties.maxOutputTokens(), properties.openaiCompatible().maxOutputTokens());
     }
 
-    /** @param note a line from the application, sent as a last user message, after a model turn too; null for none */
+    /**
+     * @param note a line from the application, sent as a last user message, after a model turn too; null for none.
+     *             After a user message (the question, when a withdrawn answer is to be looked up) it is added to that
+     *             message: a chat template that requires roles to alternate (Gemma, Mistral on llama.cpp or vLLM)
+     *             refuses two user messages in a row
+     */
     ArrayNode messages(List<Turn> history, String note) {
         ArrayNode messages = JsonNodeFactory.instance.arrayNode();
         for (Turn turn : history) {
@@ -114,7 +119,13 @@ class OpenAiCompatibleLanguageModel implements LanguageModel {
             }
         }
         if (note != null) {
-            messages.addObject().put("role", "user").put("content", note);
+            JsonNode previous = messages.isEmpty() ? null : messages.get(messages.size() - 1);
+            if (previous instanceof ObjectNode user && "user".equals(user.path("role").asText())
+                    && user.path("content").isTextual()) {
+                user.put("content", user.path("content").asText() + "\n\n" + note);
+            } else {
+                messages.addObject().put("role", "user").put("content", note);
+            }
         }
         return messages;
     }

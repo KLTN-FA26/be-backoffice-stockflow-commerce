@@ -111,11 +111,20 @@ final class GoldenResults {
     }
 
     /**
-     * What identifies a case's content: its JSON without the oracle's calls and the smoke mark. Placeholders stay
+     * What a stored result was scored with. Raised when a result records something new, so results scored by the old
+     * checks are asked again instead of passing the new gates with empty fields: 2 on 5/11/2026, codes, copied
+     * examples and "none" answers.
+     */
+    static final int SCORING = 2;
+
+    /**
+     * What identifies a case's content: its JSON without the oracle's calls and the smoke mark, and the scoring
+     * version ({@link #SCORING}). Placeholders stay
      * unfilled, so a case's fingerprint does not change with the date its expiry facts are computed from.
      */
     static String fingerprint(GoldenCase golden) {
         ObjectNode tree = JSON.valueToTree(golden);
+        tree.put("scoring", SCORING);
         tree.remove(List.of("oracle", "smoke"));
         tree.path("earlier").forEach(turn -> ((ObjectNode) turn).remove("oracle"));
         try {

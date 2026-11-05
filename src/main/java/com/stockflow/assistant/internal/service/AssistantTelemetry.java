@@ -122,6 +122,18 @@ public class AssistantTelemetry {
     }
 
     /**
+     * An answer stated data nothing it was given holds, written without a single lookup (the fabrication the P9
+     * report counts): {@code looked_up} (asked to look it up, it did), {@code withdrew} (it answered again without a
+     * lookup and without the data), {@code still_unlooked} (it answered again without looking anything up, still
+     * stating the data; the question moves to a stronger model when the route has one), {@code unusable} (the reply
+     * was cut off or declined; the answer set aside stands), {@code no_time} (the lease had no room to ask),
+     * {@code failed} (the call asking it failed; the answer set aside stands, flagged).
+     */
+    void unlookedAnswer(String outcome) {
+        meters.counter("assistant.answer.unlooked", "outcome", outcome).increment();
+    }
+
+    /**
      * What became of a suggestion (ADR-0011): {@code suggested}, {@code confirmed} (with {@code edited}: whether its
      * owner changed it first), {@code refused} (the document's module refused it; it stays open), {@code dismissed}.
      * The acceptance rate is confirmed over suggested.

@@ -64,16 +64,23 @@ public final class AnswerSources {
      * @param exchange a question and the turns produced for it; a list not opening with a question is read the same
      */
     static AnswerNumbers.Grounds groundsOf(List<Turn> exchange) {
-        List<String> sources = new ArrayList<>();
+        AnswerNumbers.Grounds.Builder grounds = AnswerNumbers.Grounds.builder();
         for (Turn turn : exchange) {
             if (turn instanceof Turn.Question question) {
-                sources.add(question.text());
-                sources.add(question.context());
+                grounds.source(question.text()).context(question.context());
             } else if (turn instanceof Turn.ToolResults results) {
-                results.results().forEach(result -> sources.add(result.content()));
+                // A refused or failed call grounds the numbers its line names, never a code: "NOT_FOUND: CUP-A" for a
+                // code the model made up does not make it one that was looked up (AnswerNumbers.Grounds).
+                results.results().forEach(result -> {
+                    if (result.error()) {
+                        grounds.error(result.content());
+                    } else {
+                        grounds.source(result.content());
+                    }
+                });
             }
         }
-        return AnswerNumbers.Grounds.of(sources);
+        return grounds.build();
     }
 
     /** {@code turns} cut at every question: each exchange opens with its question. Turns before the first are left out. */

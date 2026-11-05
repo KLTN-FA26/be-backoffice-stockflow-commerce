@@ -339,6 +339,8 @@ public class ConversationService {
      * @param tables            the rows its lookups returned, as the panel shows them under it ({@link ResultTable})
      * @param unverifiedNumbers numbers the answer states that nothing the model was given for it holds, as written
      *                          ({@link AnswerNumbers}); advisory
+     * @param unverifiedCodes   codes the answer writes that nothing the model was given for it holds
+     *                          ({@link AnswerCodes}); advisory
      * @param followUps         the questions its lookups lead to, before any reader's permissions are applied
      *                          ({@link FollowUps})
      * @param feedback          the verdict its owner gave it; null for none, and for a question
@@ -346,8 +348,9 @@ public class ConversationService {
     public record TranscriptEntry(UUID messageId, int sequence, MessageRole role, String text, Instant at,
                                   List<ToolCallView> toolCalls, boolean cutShort, List<String> citations,
                                   List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
-                                  List<String> unverifiedNumbers, List<FollowUps.FollowUp> followUps,
-                                  FeedbackVerdict feedback, Map<String, AssistantActions.ActionView> actions) {
+                                  List<String> unverifiedNumbers, List<String> unverifiedCodes,
+                                  List<FollowUps.FollowUp> followUps, FeedbackVerdict feedback,
+                                  Map<String, AssistantActions.ActionView> actions) {
 
         public TranscriptEntry {
             actions = actions == null ? Map.of() : Map.copyOf(actions);
@@ -355,8 +358,8 @@ public class ConversationService {
 
         static TranscriptEntry question(Message message) {
             return new TranscriptEntry(message.id(), message.sequence(), MessageRole.USER, message.text(),
-                    message.createdAt(), List.of(), false, List.of(), List.of(), List.of(), List.of(), List.of(), null,
-                    Map.of());
+                    message.createdAt(), List.of(), false, List.of(), List.of(), List.of(), List.of(), List.of(),
+                    List.of(), null, Map.of());
         }
 
         /**
@@ -410,7 +413,8 @@ public class ConversationService {
                     last.createdAt(), executions.stream().map(ToolCallView::of).toList(), cutShort,
                     AnswerSources.citations(last.text(), executions, json),
                     AnswerSources.proposals(executions, json), ResultTable.of(executions, json),
-                    AnswerNumbers.unverified(last.text(), grounds), FollowUps.leads(executions, json), null, Map.of()));
+                    AnswerNumbers.unverified(last.text(), grounds), AnswerCodes.unverified(last.text(), grounds),
+                    FollowUps.leads(executions, json), null, Map.of()));
         }
 
         /** The question, if any, then the turns of the messages produced for it. */
@@ -425,13 +429,13 @@ public class ConversationService {
 
         TranscriptEntry withFeedback(FeedbackVerdict verdict) {
             return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations, proposals,
-                    tables, unverifiedNumbers, followUps, verdict, actions);
+                    tables, unverifiedNumbers, unverifiedCodes, followUps, verdict, actions);
         }
 
         /** With the suggestions of its proposals, by proposal key ({@link AnswerSources.Proposal#key}). */
         TranscriptEntry withActions(Map<String, AssistantActions.ActionView> made) {
             return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations, proposals,
-                    tables, unverifiedNumbers, followUps, feedback, made);
+                    tables, unverifiedNumbers, unverifiedCodes, followUps, feedback, made);
         }
     }
 

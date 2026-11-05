@@ -64,7 +64,7 @@ final class InMemoryKnowledgeRepository implements KnowledgeRepository {
     }
 
     @Override
-    public List<KnowledgeChunk> search(String query, int limit) {
+    public List<KnowledgeChunk> search(String query, int limit, int minMatched) {
         searchLimits.add(limit);
         return rankings.getOrDefault(query, List.of()).stream().limit(limit).toList();
     }

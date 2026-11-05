@@ -59,7 +59,8 @@ class AssistantWebMapper {
                 entry.at(), calls(entry.toolCalls()), entry.cutShort(), entry.citations(),
                 proposals(entry.proposals(), entry.actions()), tables(entry.tables()),
                 followUps.suggestions(entry.followUps(), granted),
-                entry.unverifiedNumbers(), entry.feedback() == null ? null : entry.feedback().name());
+                entry.unverifiedNumbers(), entry.unverifiedCodes(),
+                entry.feedback() == null ? null : entry.feedback().name());
     }
 
     AnswerResponse toResponse(AssistantService.Answer answer, CurrentUser reader) {
@@ -68,7 +69,7 @@ class AssistantWebMapper {
                         answer.usage().outputTokens()),
                 answer.citations(), proposals(answer.proposals(), answer.actions()), tables(answer.tables()),
                 followUps.suggestionsFor(answer.followUps(), reader), answer.unverifiedNumbers(),
-                exposeTraceId ? MDC.get(TRACE_ID) : null);
+                answer.unverifiedCodes(), exposeTraceId ? MDC.get(TRACE_ID) : null);
     }
 
     ToolCallResponse toResponse(ConversationService.ToolCallView call) {

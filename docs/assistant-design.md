@@ -255,7 +255,18 @@ AssistantService.ask(conversationId, text, user)
          một câu nghe như "không tìm thấy"
        không có tool call → xong; chữ hiển thị đã qua AnswerText.plain (§5.6); MAX_TOKENS không có chữ → câu
          "quá dài" (assistant.cutShort)
-       câu trả lời xong (END_TURN) mà còn số không căn cứ (AnswerNumbers, §7) và lease còn đủ một lần gọi → TỰ
+       câu trả lời xong (END_TURN) mà CHƯA TRA ĐƯỢC GÌ cho câu hỏi này (không có lần gọi tool nào trả dữ liệu; gọi bị từ
+         chối hay chỉ tìm quy định không tính) và có mã hay số không căn cứ (AnswerCodes,
+         AnswerNumbers, §7), người dùng có tool và lease còn đủ hai lần gọi → TRA LẠI, đúng một lần (từ 05/11): câu
+         đó bị gác lại không hiện (lưu không chữ để kiểm toán, không gửi lại cho model để nó khỏi bênh câu của
+         mình), model được gọi lại CÓ tool, kèm ghi chú nêu đúng các mã và số đó, bảo tra bằng tool rồi trả lời từ
+         kết quả, không có tool nào cho thì nói không có. Sau lượt đó vẫn chưa tra mà vẫn còn dữ kiện không căn cứ
+         → Outcome.UNGROUNDED: leo thang sang model mạnh hơn như NO_ANSWER khi route còn model, hết model thì câu
+         đó hiện kèm cờ. Lời gọi tra lại luôn được mời dùng tool, kể cả khi lease chỉ còn vừa đủ. Lời gọi tra lại
+         mà lỗi, hay trả lời bị cắt hoặc bị từ chối, thì câu đã gác lại được hiện, kèm cờ, và model mạnh hơn (nếu
+         còn) được thử. Với server OpenAI-compatible, ghi chú được nối vào tin nhắn của câu hỏi, vì template chat
+         chặt (Gemma, Mistral) từ chối hai tin nhắn user liền nhau. Đếm bằng metric assistant.answer.unlooked (§11)
+       câu trả lời xong (END_TURN) mà còn số hay mã không căn cứ (AnswerNumbers, AnswerCodes, §7) và lease còn đủ một lần gọi → TỰ
          SỬA, đúng một lần (từ 04/11): gọi lại model đó, cấm tool, kèm ghi chú liệt kê các số ấy, bảo viết lại chỉ
          với số chỉ ra được ở trên, chỗ nào chưa tra thì nói chưa tra. Căn cứ là những gì model đã thấy: câu hỏi,
          ngữ cảnh, kết quả tool của lần thử này, cộng câu hỏi và kết quả tool của các câu trước. Số chỉ có trong
@@ -985,7 +996,14 @@ Sau chỉ mục từ khóa, các đoạn được embed ở nền (§6.4).
 ### 6.3 Tìm kiếm
 
 `KnowledgeRepositoryAdapter.search`: câu truy vấn được cắt thành từ (`KnowledgeSearch.words`: chỉ chữ và số, tối đa
-16 từ) rồi nối bằng **OR** cho `to_tsquery('simple', …)`, vì câu hỏi thường có những từ mà quy định không dùng. Điểm =
+16 từ) rồi nối bằng **OR** cho `to_tsquery('simple', …)`, vì câu hỏi thường có những từ mà quy định không dùng. Từ
+5/11 một đoạn phải chứa ít nhất **2 từ** của câu tìm (câu tìm một từ thì cần một) mới được tìm thấy theo từ khóa
+(`stockflow.assistant.knowledge.min-matched-words`); đoạn có mã được nêu, hay tiêu đề giống trên 0,3, vẫn được tìm như
+cũ. Lý do: với OR thuần, câu "Tet holiday calendar" ra 5 đoạn về đổi trả chỉ vì chữ "calendar". Số đo chỉ từ khóa
+(`RetrievalEval`, 5/11): tắt luồng nghiệp vụ (như production) recall@5 0,211 → 0,224, MRR 0,158 → 0,175, câu "không
+có quy định" còn ra đoạn văn 0,33 → 0,17; bật luồng recall 0,789 → 0,803. Ngưỡng 3 tìm được ít hơn (0,197 và 0,776).
+Câu hỏi tiếng Việt dài vẫn khớp đủ 2 âm tiết phổ biến với các luồng tiếng Việt khi bật luồng (độ nhiễu 0,50 không đổi):
+đó là lý do luồng vẫn tắt, và việc tìm theo cụm âm tiết vẫn còn để sau. Điểm =
 `ts_rank_cd` + 0,5 × độ tương đồng trigram của tiêu đề + 10 nếu câu hỏi nêu đúng anchor (mã quy định `BR-*` hay, từ
 4/11, mã luồng `F-*`/`X-*`). Lấy 5 kết quả.
 
@@ -1141,6 +1159,24 @@ tính lại mỗi lần đọc theo quyền của người xem lúc đó, và c�
 i18n cố định (`assistant.followUp.*`, chính câu hỏi của bộ câu hỏi chuẩn U2-01, U3-05, S-06, S-01), chỉ điền mã đúng
 định dạng SKU hay số đơn lấy từ trường có cấu trúc; câu đề xuất nhập ghi sẵn 30 ngày bán, đủ dùng 30 ngày (AQ-05).
 Bấm vào vẫn là một câu hỏi mới: tiết kiệm công gõ, không tiết kiệm hạn mức.
+
+**Mã chưa kiểm được (`unverifiedCodes`, 5/11).** `AnswerCodes` kiểm mọi mã câu trả lời viết: từ 2 phần nối bằng
+gạch ngang trở lên, mỗi phần là chữ in hoa và số, có ít nhất một chữ cái (`SO-20991231-900101`, `EVAL-CUP-12OZ`,
+`HCM-A01-1-B`, `L-7`). Mã phải có nguyên vẹn, không phân biệt hoa thường, trong cùng các nguồn với số; phần đầu của
+một mã nguồn (từ 2 phần) cũng được (`HCM-A01` là dãy kệ của ô `HCM-A01-1-B`). Không kiểm: chữ thường (tên quyền), trạng
+thái nối gạch dưới, ngày toàn số, giờ ISO, và mã quy định hay luồng (`BR-…`, `F-…`, `X-…`) vì mô tả tool có nêu chúng
+và phép kiểm trích dẫn đã lo. Lý do: model trả lời mà không tra viết mã dễ như viết số. "Có 2 mã dưới điểm đặt hàng:
+CUP-A và LID-B" là nguyên câu trả lời của một model nhỏ, chép từ ví dụ cũ của prompt, và không con số nào trong đó đủ
+lớn để `AnswerNumbers` xét. Chữ số nằm trong một mã viết hoa do `AnswerCodes` xét nguyên mã, `AnswerNumbers` không báo
+lần nữa. Dòng lỗi của một lần gọi bị từ chối hay không tìm thấy không làm căn cứ cho mã nào: "NOT_FOUND: CUP-A" cho
+một mã model tự bịa không biến mã đó thành mã đã tra. Gạch ngang kiểu khác (en dash, gạch nối Unicode) được đọc như
+gạch ngang thường. Câu trả lời chép chỗ trống của ví dụ trong prompt («SKU 1», «số đơn») luôn bị gắn cờ; prompt dùng
+dấu «» vì `AnswerText` xóa mọi thứ trông như thẻ HTML, nên `<SKU 1>` sẽ biến mất trước khi được kiểm. Cũng từ 5/11
+`AnswerNumbers` xét số đếm nhỏ hơn 10 đứng trước một danh từ đếm ("2 mã", "3 đơn", "1 lô", "3 SKUs"): căn cứ là số
+dòng của một danh sách, số dòng cùng một giá trị ở một trường ("2 đơn đang bị giữ" trong 10 đơn), số giá trị khác nhau
+của một trường ("của 3 khách"), một tổng hay số đếm kết quả tool ghi (`total`, `packageCount`), số người dùng gõ trong
+câu hỏi, hoặc số mã một đoạn văn nêu. Không bao giờ là lịch và giờ trong ngữ cảnh, vì ngày nào chúng cũng chứa hầu hết
+các số nhỏ. Số nhỏ khác (ngày còn lại, số lượng có đơn vị) vẫn không xét, vì chúng thường được tính từ ngày tháng.
 
 **Số chưa kiểm được (`unverifiedNumbers`).** Đây là phép kiểm "số không căn cứ" của §10.2 (`AnswerNumbers`), chạy trên
 mọi câu trả lời. Nguồn là kết quả tool, câu hỏi và ngữ cảnh của lượt này và của 10 lượt trước mà `History` gửi lại;
@@ -2060,6 +2096,10 @@ SO-20991231-900001 ở HCM trong `GoldenFixtures`.
 | Độ chính xác trích dẫn | mọi mã `BR-…`, `F-…`, `X-…` câu trả lời nêu đều có trong kết quả tìm kiếm của nó | ≥ 95% |
 | Recall@5 | anchor kỳ vọng nằm trong 5 kết quả tìm kiếm | ≥ 85%; tìm theo nghĩa (§6.4) đã làm từ 29/10 mà không đợi số đo này, và số đo này dùng để chỉnh nó |
 | Không bịa quy định | ca `expectNoPassage`: câu trả lời không nêu mã nào | trong "mọi kiểm tra của ca" |
+| Không trả lời có dữ liệu mà chưa tra (5/11) | câu trả lời có số hay mã không căn cứ trong một câu hỏi không có lần gọi tool nào trả dữ liệu (gọi bị từ chối hay chỉ tìm quy định không tính; `CaseResult.fabricated`) | **0, cứng** |
+| Đáp án "không có" không bịa mã (5/11) | ca `expectNoData` (T-01…T-04): chữ và bảng không có mã nào câu hỏi không viết | **100%, cứng** |
+| Không chép câu mẫu của prompt (5/11) | câu trả lời không có chỗ trống `«SKU 1»`, `«số đơn»`… | **0, cứng** |
+| Không có mã không căn cứ (5/11) | `AnswerCodes`, như trên | ≥ 98% câu trả lời |
 
 **Đo riêng phần tìm (`RetrievalEval`, 4/11).** Không gọi model chat, nên chỉ tốn embedding (bằng 0 khi embedding chạy
 bằng Ollama). Chạy trên Testcontainers với `-Dtest=RetrievalEval -Dassistant.eval=true`; javadoc của lớp có lệnh cho
@@ -2070,6 +2110,13 @@ chạy hỏng. Giá trị mặc định của `stockflow.assistant.knowledge` ch
 | Số request model | lượt ASSISTANT của ca, trừ lượt đóng do ứng dụng tự viết | đo và báo cáo, không đặt ngưỡng |
 
 Mọi kiểm tra đều cơ học; không có điểm do model chấm (`GoldenScorer`, có test riêng).
+
+**Các chỉ số chống bịa có bị đo thật không (5/11).** Với model giả trả lời đúng kết quả tool, các cổng này xanh mặc nhiên.
+`AssistantFabricationHarnessTest` chạy các ca bẫy với một model nói dối (luôn trả lời "Có 2 mã dưới điểm đặt hàng:
+CUP-A và LID-B" mà không tra): mọi ca phải bị tính là bịa, hai cổng cứng phải đỏ, và mỗi câu phải tốn đúng hai request
+(câu trả lời, rồi một lần được yêu cầu tra lại). Năm ca bẫy T-01…T-05: phiếu điều chỉnh của một mã không có phiếu nào,
+lô giao giao không thành công khi không có lô nào, tổng lương (không có tool nào), người thiếu quyền hỏi danh sách mã sắp
+hết, và câu hỏi nối "còn mã nào khác không".
 
 Ca không chạy (NOT_RUN) không vào chỉ số nào. Một ca là NOT_RUN khi không được chọn, khi hết hạn mức, hoặc khi nhà
 cung cấp lỗi. Báo cáo ghi "x of N run" và liệt kê các ca không chạy kèm lý do. Một ngày hết hạn mức vì thế không bị
@@ -2308,7 +2355,9 @@ Span **không** chứa câu hỏi, prompt, tham số hay kết quả tool: chún
 và giữ lâu hơn bản ghi của trợ lý. Cùng các observation sinh metric: `assistant.answer`, `gen_ai.client.operation`,
 `assistant.tool` (có histogram, nên p50/p95 lấy từ Prometheus cho báo cáo §10), `gen_ai.client.token.usage` theo model
 và loại token, `assistant.route.events` cho mỗi lần chuyển model hay leo thang, `assistant.answer.repairs` cho mỗi
-câu trả lời có số không căn cứ (tag `outcome`: `corrected`, `still_unverified`, `kept`, `failed`, `no_time`; §3.1). Các tool của
+câu trả lời có số không căn cứ (tag `outcome`: `corrected`, `still_unverified`, `kept`, `failed`, `no_time`; §3.1),
+`assistant.answer.unlooked` cho mỗi câu trả lời nêu dữ liệu mà chưa tra gì (tag `outcome`: `looked_up`, `withdrew`,
+`still_unlooked`, `unusable`, `no_time`, `failed`; §3.1). Các tool của
 một bước chạy song song là các span `execute_tool` anh em dưới cùng một `assistant answer`. Profile local lấy mẫu mọi trace và trả
 `traceId` kèm câu trả lời (`expose-trace-id`), để playground mở thẳng trace. Câu trả lời dạng luồng chạy trên một
 virtual thread, nhận người dùng, locale, MDC và trace qua `ThreadContext`, nên span của nó vẫn là con của request.
@@ -2446,7 +2495,7 @@ có quyền; báo cáo đánh giá.
 
 | Rủi ro | Cách giảm thiểu |
 |---|---|
-| Một con số sai được trình bày như sự thật | con số chỉ lấy từ tool (prompt); kiểm tra số không căn cứ trong bộ câu hỏi chuẩn và, từ 29/10, trên mọi câu trả lời lúc chạy (`AnswerNumbers`); từ 4/11 model tự sửa một lần khi còn số không căn cứ, số còn lại sau đó được báo, không chặn; bảng lấy thẳng từ kết quả tool, không qua model; tool đã gọi hiện kèm câu trả lời |
+| Một con số hay một mã sai được trình bày như sự thật | con số chỉ lấy từ tool (prompt); kiểm tra số không căn cứ trong bộ câu hỏi chuẩn và, từ 29/10, trên mọi câu trả lời lúc chạy (`AnswerNumbers`); từ 4/11 model tự sửa một lần khi còn số không căn cứ, số còn lại sau đó được báo, không chặn; từ 5/11 mã và số đếm nhỏ cũng được kiểm (`AnswerCodes`), câu trả lời chưa tra gì mà nêu dữ liệu bị gác lại để model tra một lần, vẫn không tra thì leo thang hoặc hiện kèm cờ; bộ chấm có cổng cứng "trả lời có dữ liệu mà chưa tra = 0"; ví dụ trong prompt chỉ còn chỗ trống; bảng lấy thẳng từ kết quả tool, không qua model; tool đã gọi hiện kèm câu trả lời |
 | Một con số đúng bị đọc sai: giờ UTC, danh sách bị cắt, SKU gõ sai, số của lần quét đêm | giờ Việt Nam kèm độ lệch trong mọi kết quả tool (§3.2); `total` và `truncated` trên mọi danh sách; SKU lạ là `NOT_FOUND`; trường nói rõ số đó là gì (`quantityAtLastCheck`, `totalIncludingTax`) |
 | Dữ liệu bị hiển thị cho người không được xem | aspect trên mọi tool; guard bổ sung; `everyToolMirrorsItsScreen`; trạng thái và số đơn chỉ cho người có `sales-orders:READ` (§5.8); khối `picking` của `findOrder` chỉ cho người mở được task trên màn dòng nhặt; ngưỡng cứng không lộ dữ liệu; model chỉ được gửi định nghĩa tool của người hỏi (§5.7) |
 | Một tool và endpoint của nó lệch nhau về quyền | `everyToolMirrorsItsScreen`; `verify.py` so theo mã resource |

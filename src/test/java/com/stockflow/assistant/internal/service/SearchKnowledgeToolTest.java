@@ -31,7 +31,7 @@ class SearchKnowledgeToolTest {
                 new TransactionTemplate(mock(PlatformTransactionManager.class)), mock(ObjectProvider.class),
                 Clock.systemUTC());
         return new SearchKnowledgeTool(knowledge, new KnowledgeProperties(3.0, 10, multiQuery,
-                new KnowledgeProperties.Reranker("", Duration.ofSeconds(5), 20), multiQuery));
+                new KnowledgeProperties.Reranker("", Duration.ofSeconds(5), 20), multiQuery, 1));
     }
 
     @SuppressWarnings("unchecked")

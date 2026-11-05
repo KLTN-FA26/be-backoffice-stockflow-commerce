@@ -112,7 +112,7 @@ public final class KnowledgeSearch {
     }
 
     /** A word without its Vietnamese marks, đ read as d: how the database compares it ({@code immutable_unaccent}). */
-    private static String unmarked(String word) {
+    public static String unmarked(String word) {
         return Normalizer.normalize(word.replace('đ', 'd'), Normalizer.Form.NFD).replaceAll("\\p{M}", "");
     }
 

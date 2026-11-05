@@ -567,6 +567,9 @@ stockflow:
       # The process flows (04c-all-flows.md). Off: the document names statuses the system does not have, and its
       # Vietnamese words crowd the English rules out of a keyword search (design §6.1). Off, their passages are removed.
       flows: ${ASSISTANT_KNOWLEDGE_FLOWS:false}
+      # How many of a search's words a passage must hold to be found by its words (a rule it names, or a title close
+      # to it, is found regardless). Chosen on RetrievalEval's numbers; see design §6.
+      min-matched-words: ${ASSISTANT_KNOWLEDGE_MIN_MATCHED_WORDS:2}
     # POST /api/v1/assistant/mcp (design §7): the tools for another AI client, whose answers go to whichever model
     # provider that client uses. Off unless asked for until the business decides AQ-17; the local profile turns it on.
     mcp:

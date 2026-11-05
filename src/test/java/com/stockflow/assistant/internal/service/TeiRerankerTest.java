@@ -76,6 +76,6 @@ class TeiRerankerTest {
 
     private static KnowledgeProperties withReranker(String baseUrl) {
         return new KnowledgeProperties(3.0, 10, false,
-                new KnowledgeProperties.Reranker(baseUrl, Duration.ofSeconds(5), 20), false);
+                new KnowledgeProperties.Reranker(baseUrl, Duration.ofSeconds(5), 20), false, 1);
     }
 }

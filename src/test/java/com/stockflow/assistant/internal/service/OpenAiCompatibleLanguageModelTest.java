@@ -89,7 +89,9 @@ class OpenAiCompatibleLanguageModelTest {
         assertThat(last.path("tool_choice").asText()).isEqualTo("none");
         JsonNode note = last.path("messages").get(last.path("messages").size() - 1);
         assertThat(note.path("role").asText()).isEqualTo("user");
-        assertThat(note.path("content").asText()).startsWith("Note from the system");
+        assertThat(note.path("content").asText()).as("after the question, the note joins its message")
+                .startsWith("Role: SALES_STAFF").endsWith("Note from the system, not written by the user: answer "
+                        + "from what you found.");
 
         assertThat(offline().body(new LanguageModel.Request("p", List.of(), request.history())).has("tools"))
                 .isFalse();
@@ -118,6 +120,21 @@ class OpenAiCompatibleLanguageModelTest {
         assertThat(messages.get(2).path("role").asText()).isEqualTo("tool");
         assertThat(messages.get(2).path("tool_call_id").asText()).isEqualTo("call_1");
         assertThat(messages.get(2).path("content").asText()).isEqualTo("{\"onHand\":40}");
+    }
+
+    @Test
+    @DisplayName("a note after the question goes into the question's message, so the roles alternate as strict chat "
+            + "templates require; after a tool's result it is a user message of its own")
+    void aNoteAfterTheQuestionJoinsIt() {
+        JsonNode afterQuestion = offline().messages(List.of(new Turn.Question("q", "ctx")), "look it up");
+        assertThat(afterQuestion).hasSize(1);
+        assertThat(afterQuestion.get(0).path("content").asText()).isEqualTo("ctx\n\nq\n\nlook it up");
+
+        JsonNode afterResult = offline().messages(List.of(new Turn.Question("q", "ctx"),
+                new Turn.ToolResults(List.of(new ToolResult("call_1", "{}", false)))), "answer now");
+        assertThat(afterResult).hasSize(3);
+        assertThat(afterResult.get(2).path("role").asText()).isEqualTo("user");
+        assertThat(afterResult.get(2).path("content").asText()).isEqualTo("answer now");
     }
 
     @Test

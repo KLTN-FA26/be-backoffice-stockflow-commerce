@@ -26,6 +26,8 @@ public record TranscriptEntryResponse(
         List<String> suggestions,
         @Schema(description = "Numbers the answer states that nothing it was given holds, as written")
         List<String> unverifiedNumbers,
+        @Schema(description = "Codes the answer writes that nothing it was given holds, as written")
+        List<String> unverifiedCodes,
         @JsonInclude(JsonInclude.Include.ALWAYS)
         @Schema(description = "The verdict the caller gave this answer; null for none, and for a question",
                 allowableValues = {"UP", "DOWN"}, nullable = true)

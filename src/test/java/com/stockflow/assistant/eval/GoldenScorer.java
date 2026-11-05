@@ -1,5 +1,6 @@
 package com.stockflow.assistant.eval;
 
+import com.stockflow.assistant.internal.service.AnswerCodes;
 import com.stockflow.assistant.internal.service.AnswerNumbers;
 
 import java.math.BigDecimal;
@@ -63,6 +64,49 @@ public final class GoldenScorer {
      */
     public static List<String> ungroundedNumbers(String answer, List<String> sources) {
         return AnswerNumbers.unverified(answer, sources);
+    }
+
+    /**
+     * Codes in {@code answer} that no source writes: a SKU, order, lot or bin nobody looked up. The panel's definition
+     * again ({@link AnswerCodes}), for the same reason as the numbers'.
+     */
+    public static List<String> ungroundedCodes(String answer, List<String> sources) {
+        return ungroundedCodes(answer, AnswerNumbers.Grounds.of(sources));
+    }
+
+    /** {@link #ungroundedCodes(String, List)} against grounds read by what each source is ({@link #grounds}). */
+    public static List<String> ungroundedCodes(String answer, AnswerNumbers.Grounds grounds) {
+        return AnswerCodes.unverified(answer, grounds);
+    }
+
+    /** {@link #ungroundedNumbers(String, List)} against grounds read by what each source is ({@link #grounds}). */
+    public static List<String> ungroundedNumbers(String answer, AnswerNumbers.Grounds grounds) {
+        return AnswerNumbers.unverified(answer, grounds);
+    }
+
+    /**
+     * What a case's answer may rest on, read as the assistant reads it: a refused or failed call's line grounds its
+     * numbers but no code, so "NOT_FOUND: CUP-A" does not make a made-up code a looked-up one.
+     *
+     * @param sources the results of calls that returned data, the question and the stored questions with their context
+     * @param errors  the lines of calls that were refused or failed
+     */
+    public static AnswerNumbers.Grounds grounds(List<String> sources, List<String> errors) {
+        AnswerNumbers.Grounds.Builder grounds = AnswerNumbers.Grounds.builder();
+        sources.forEach(grounds::source);
+        errors.forEach(grounds::error);
+        return grounds.build();
+    }
+
+    /**
+     * A placeholder of the system prompt's examples ({@code «SKU 1»}, {@code «số đơn»}) written into an answer. The
+     * prompt marks them with guillemets because the panel's text keeps them; angle brackets are removed as tags.
+     */
+    private static final Pattern PLACEHOLDER = Pattern.compile("«[^«»\\n]{1,24}»");
+
+    /** The model gave the system prompt's example as its answer, placeholder and all. */
+    public static boolean copiesAnExample(String answer) {
+        return answer != null && PLACEHOLDER.matcher(answer).find();
     }
 
     private static final Pattern RULE = Pattern.compile("BR-[A-Z]+-\\d+[a-z]?|(?<![\\p{L}\\p{N}-])[FX]-[A-Z]{2,8}"

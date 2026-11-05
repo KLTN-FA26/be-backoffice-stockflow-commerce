@@ -74,7 +74,7 @@ class FindShipmentsTool implements AssistantTool {
             ToolSchema.object()
                     .choice("status", "Only shipments in this status; ANY for every status", STATUSES)
                     .string("search", "Text to match in the shipment code, such as an order number "
-                            + "(SO-20261028-000123); an empty string for no text filter")
+                            + "(SO-yyyyMMdd-nnnnnn); an empty string for no text filter")
                     .integer("limit", "How many shipments to return, 1 to " + MAX_ROWS)
                     .build());
 

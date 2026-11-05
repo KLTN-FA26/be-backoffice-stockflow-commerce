@@ -126,6 +126,19 @@ class AssistantKnowledgeIntegrationTest {
     }
 
     @Test
+    @DisplayName("a passage sharing only one word of a longer search is not found by its words; one word alone, a "
+            + "rule named, or both words of two still are")
+    void oneSharedWordIsNotEnough() {
+        assertThat(repository.search("Tet holiday calendar", 5, 1)).as("before the threshold: 'calendar' alone")
+                .isNotEmpty();
+        assertThat(repository.search("Tet holiday calendar", 5, 2)).isEmpty();
+        assertThat(knowledge.search("Tet holiday calendar", 5)).as("as the assistant is configured").isEmpty();
+        assertThat(repository.search("defective", 5, 2)).as("a one-word search needs its one word").isNotEmpty();
+        assertThat(repository.search("BR-RMA-002 calendar", 5, 2)).extracting(KnowledgeChunk::anchor)
+                .first().isEqualTo("BR-RMA-002");
+    }
+
+    @Test
     @DisplayName("an answer cites what it names and the search returned; a rule it names but never retrieved is not")
     void citations() throws Exception {
         SecuredMvc http = new SecuredMvc(mockMvc, decoder);

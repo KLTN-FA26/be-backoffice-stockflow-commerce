@@ -192,10 +192,10 @@ class AssistantController {
      * message, never the figures themselves, which are business data.
      */
     private AnswerResponse answered(AssistantService.Answer answer, CurrentUser user) {
-        if (!answer.unverifiedNumbers().isEmpty()) {
-            log.warn("Assistant answer {} states {} number(s) that no lookup, question or context holds "
-                            + "(correlation id {})", answer.messageId(), answer.unverifiedNumbers().size(),
-                    MDC.get(CorrelationIdFilter.MDC_KEY));
+        if (!answer.unverifiedNumbers().isEmpty() || !answer.unverifiedCodes().isEmpty()) {
+            log.warn("Assistant answer {} states {} number(s) and {} code(s) that no lookup, question or context "
+                            + "holds (correlation id {})", answer.messageId(), answer.unverifiedNumbers().size(),
+                    answer.unverifiedCodes().size(), MDC.get(CorrelationIdFilter.MDC_KEY));
         }
         return mapper.toResponse(answer, user);
     }

@@ -31,6 +31,8 @@ import java.util.Map;
  * @param expectRetrieved anchors the rule search must return among its five results: recall@5 (design §10.2)
  * @param expectNoPassage no rule or flow answers the question: the answer must cite none, and the search should find
  *                       nothing by meaning ({@code RetrievalEval})
+ * @param expectNoData   the true answer is "none" (no such record, no tool for it, not allowed): the answer and its
+ *                       tables may write no code the question did not, which is where a weak model invents one
  * @param earlier        questions asked before this one in the same conversation, oldest first
  * @param oracle         what the scripted oracle model calls in the harness for the last question, one step each:
  *                       an object for one step, an array for a chain; empty when it calls nothing. A step's
@@ -41,7 +43,8 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
                          List<String> expectTools, List<String> forbiddenTools, boolean expectNoTools,
                          List<String> facts, String factsQuery, List<String> forbidden, String forbiddenQuery,
                          boolean expectRefusal, String invariantQuery, List<String> expectRetrieved,
-                         boolean expectNoPassage, List<Earlier> earlier, List<Oracle> oracle, boolean smoke) {
+                         boolean expectNoPassage, boolean expectNoData, List<Earlier> earlier, List<Oracle> oracle,
+                         boolean smoke) {
 
     public GoldenCase {
         expectTools = expectTools == null ? List.of() : List.copyOf(expectTools);
@@ -51,6 +54,17 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
         expectRetrieved = expectRetrieved == null ? List.of() : List.copyOf(expectRetrieved);
         earlier = earlier == null ? List.of() : List.copyOf(earlier);
         oracle = oracle == null ? List.of() : List.copyOf(oracle);
+    }
+
+    /** A case whose answer is "none" is the rare one; every case written before the field was not. */
+    public GoldenCase(String id, String useCase, String variant, Persona persona, String question,
+                      List<String> expectTools, List<String> forbiddenTools, boolean expectNoTools,
+                      List<String> facts, String factsQuery, List<String> forbidden, String forbiddenQuery,
+                      boolean expectRefusal, String invariantQuery, List<String> expectRetrieved,
+                      boolean expectNoPassage, List<Earlier> earlier, List<Oracle> oracle, boolean smoke) {
+        this(id, useCase, variant, persona, question, expectTools, forbiddenTools, expectNoTools, facts, factsQuery,
+                forbidden, forbiddenQuery, expectRefusal, invariantQuery, expectRetrieved, expectNoPassage, false,
+                earlier, oracle, smoke);
     }
 
     /** A case no rule or flow answers is the rare one; every case written before the field was not. */
@@ -102,7 +116,7 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
                 fill(question, values), expectTools, forbiddenTools, expectNoTools,
                 facts.stream().map(f -> fill(f, values)).toList(), fill(factsQuery, values),
                 forbidden.stream().map(f -> fill(f, values)).toList(), fill(forbiddenQuery, values),
-                expectRefusal, fill(invariantQuery, values), expectRetrieved, expectNoPassage,
+                expectRefusal, fill(invariantQuery, values), expectRetrieved, expectNoPassage, expectNoData,
                 earlier.stream().map(turn -> new Earlier(fill(turn.question(), values), fill(turn.oracle(), values)))
                         .toList(),
                 fill(oracle, values), smoke);

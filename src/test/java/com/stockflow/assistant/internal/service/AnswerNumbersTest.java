@@ -106,7 +106,13 @@ class AnswerNumbersTest {
 
         assertThat(AnswerNumbers.unverified("Đơn SO-20991231-900001 đặt lúc 23:59 ngày 28/10, mã EVAL-CUP-12OZ, lô "
                 + "EVAL-LOT-2401.", sources)).isEmpty();
-        assertThat(AnswerNumbers.unverified("Đơn SO-20991231-900077 đã giao.", sources)).containsExactly("900077");
+        assertThat(AnswerNumbers.unverified("Đơn SO-20991231-900077 đã giao.", sources))
+                .as("a code in capitals is checked whole, by AnswerCodes, not digit by digit here").isEmpty();
+        assertThat(AnswerCodes.unverified("Đơn SO-20991231-900077 đã giao.", AnswerNumbers.Grounds.of(sources)))
+                .containsExactly("SO-20991231-900077");
+        assertThat(AnswerNumbers.unverified("Đơn so-20991231-900077 đã giao.", sources))
+                .as("one in lower case is not AnswerCodes', so its digits are still checked here")
+                .containsExactly("900077");
         assertThat(AnswerNumbers.unverified("Mã CUP-12K còn hàng.", List.of("{\"sku\":\"CUP-12K\"}")))
                 .as("digits in a code are never thousands").isEmpty();
     }
@@ -122,7 +128,45 @@ class AnswerNumbersTest {
                 .containsExactly("900101");
         assertThat(AnswerNumbers.unverified("Đặt lúc 23:59 ngày 28/10, 480 cái.", sources))
                 .as("an ISO time's parts stand alone").isEmpty();
-        assertThat(AnswerNumbers.unverified("Đơn SO-20991231-900077.", sources)).containsExactly("900077");
+        assertThat(AnswerCodes.unverified("Đơn SO-20991231-900077.", AnswerNumbers.Grounds.of(sources)))
+                .containsExactly("SO-20991231-900077");
+    }
+
+    @Test
+    @DisplayName("a small count of things a list holds is checked: the rows of a list, or the rows sharing one value of "
+            + "a field, ground it; a count nothing holds, or one stated with no list at all, does not")
+    void smallCounts() {
+        List<String> sources = List.of("{\"orders\":[{\"orderNumber\":\"SO-1\",\"status\":\"ON_HOLD\","
+                + "\"hold\":{\"reason\":\"CREDIT\"},\"customer\":\"A\"},{\"orderNumber\":\"SO-2\","
+                + "\"status\":\"ON_HOLD\",\"hold\":{\"reason\":\"PAYMENT\"},\"customer\":\"A\"},"
+                + "{\"orderNumber\":\"SO-3\",\"status\":\"CONFIRMED\",\"customer\":\"B\"}]}");
+
+        assertThat(AnswerNumbers.unverified("Có 3 đơn, 2 đơn đang bị giữ, của 2 khách; 1 đơn giữ vì công nợ.", sources))
+                .isEmpty();
+        assertThat(AnswerNumbers.unverified("Có 4 đơn, 5 dòng.", sources)).containsExactly("4 đơn", "5 dòng");
+        assertThat(AnswerNumbers.unverified("Có 2 mã dưới điểm đặt hàng.", List.of("Mã nào sắp hết?")))
+                .as("a count with nothing looked up").containsExactly("2 mã");
+        assertThat(AnswerNumbers.unverified("Has 2 orders and 3 SKUs.", List.of("{\"rows\":[1,2]}")))
+                .containsExactly("3 SKUs");
+        assertThat(AnswerNumbers.unverified("Còn 3 ngày nữa hết hạn, giao 5 cái, mục 2.", List.of()))
+                .as("days, quantities with a unit and other small numbers are not counts").isEmpty();
+    }
+
+    @Test
+    @DisplayName("a count rests on a list, a total, the question or the codes a text names, never on the context's "
+            + "calendar and clock, which hold most small numbers on any day")
+    void countsAndTheContext() {
+        AnswerNumbers.Grounds calendar = AnswerNumbers.Grounds.builder().source("Mã nào sắp hết?")
+                .context("today 2026-11-05, now 09:02; yesterday 2026-11-04; this week 2026-11-02 to 2026-11-05")
+                .build();
+        assertThat(AnswerNumbers.check("Có 2 mã dưới điểm đặt hàng.", calendar))
+                .extracting(AnswerNumbers.Checked::grounded).containsExactly(false);
+        AnswerNumbers.Grounds total = AnswerNumbers.Grounds.of(List.of("{\"rows\":[{\"sku\":\"A-1\"}],\"total\":7}"));
+        assertThat(AnswerNumbers.unverified("Có 7 mã, đang hiện 1 mã.", total)).isEmpty();
+        AnswerNumbers.Grounds watch = AnswerNumbers.Grounds.of(List.of(
+                "Các đơn mới bị giữ: SO-20991231-900001, SO-20991231-900002, SO-20991231-900003."));
+        assertThat(AnswerNumbers.unverified("Có 3 đơn mới bị giữ.", watch)).isEmpty();
+        assertThat(AnswerNumbers.unverified("Top 5 mã bán chạy.", List.of("5 mã bán chạy nhất tuần này?"))).isEmpty();
     }
 
     @Test

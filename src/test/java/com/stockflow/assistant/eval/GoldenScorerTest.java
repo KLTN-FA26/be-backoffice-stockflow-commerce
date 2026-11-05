@@ -11,6 +11,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GoldenScorerTest {
 
     @Test
+    @DisplayName("an answer that writes a placeholder of the prompt's examples copied an example")
+    void copiedExamples() {
+        assertThat(GoldenScorer.copiesAnExample("Có «n» mã: «SKU 1» và «SKU 2».")).isTrue();
+        assertThat(GoldenScorer.copiesAnExample("Có 2 mã: EVAL-CUP-12OZ và EVAL-LID-90.")).isFalse();
+        assertThat(GoldenScorer.copiesAnExample(null)).isFalse();
+    }
+
+    @Test
     @DisplayName("codes and names match without regard to case")
     void text() {
         assertThat(GoldenScorer.states("Mã eval-cup-12oz đang thiếu.", "EVAL-CUP-12OZ")).isTrue();
