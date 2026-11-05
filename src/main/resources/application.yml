@@ -12,6 +12,9 @@ spring:
       # Category policy still enforces 10 MiB product / 50 MiB design limits.
       max-file-size: 50MB
       max-request-size: 51MB
+      # Uploads up to 2 MB stay in memory instead of a temp file (Spring's default threshold is 0): a spoken question
+      # (ADR-0015, at most 2 MB) is then never written to disk, not even while the speech model is called.
+      file-size-threshold: 2MB
   application:
     name: stockflow-monolith
 
@@ -588,6 +591,15 @@ stockflow:
       # Blank: the chat's model. Otherwise a model named as in routing.models, e.g. openai/qwen2.5vl:3b for a vision
       # model on the local server: a text model cannot see. Its vendor's own key only; the data policy applies.
       model: ${ASSISTANT_RECEIPT_DRAFTS_MODEL:}
+    # POST /api/v1/assistant/transcriptions (ADR-0015): a spoken question, written down for the speaker to correct and
+    # send. The recording goes to the speech model and is kept nowhere. Off unless asked for, as photos are.
+    voice:
+      enabled: ${ASSISTANT_VOICE_ENABLED:false}
+      # Blank: the chat's model, which only Gemini's can be. Otherwise a model named as in routing.models, e.g.
+      # openai/whisper-small for a Whisper server inside the company (the one choice data-policy LOCAL_ONLY leaves).
+      model: ${ASSISTANT_VOICE_MODEL:}
+      # Recordings one user may have written down a day, beside the 10 a minute questions share.
+      daily-limit: ${ASSISTANT_VOICE_DAILY_LIMIT:100}
     # The watch (design §9.1, ADR-0012): every few minutes it reads, AS EACH back-office USER (their roles, scope and
     # warehouses now), the lists below that are theirs to act on, and posts what is new to their inbox. Off unless asked
     # for; never with security off. post: lists whose news is posted (lowStock, heldOrders, overduePurchaseOrders); by

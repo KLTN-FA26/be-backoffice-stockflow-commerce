@@ -1846,6 +1846,36 @@ CREATE SUCCESS" cho một phiếu không tồn tại.
 - Đề xuất PO chưa tách theo kho nhận (AQ-10): người dùng chọn một kho cho cả đề xuất.
 - Frontend thật chưa có thẻ xác nhận; playground có.
 
+### 8.3 Câu hỏi bằng giọng nói (đợt 4, 06/11, ADR-0015)
+
+**Bài toán.** Nhân viên kho đang bê hàng hay đeo găng không gõ được câu hỏi.
+
+**Luồng.** Giữ nút, nói, thả ra. Trình duyệt đổi bản ghi sang WAV 16 kHz mono và gửi
+`POST /api/v1/assistant/transcriptions`. Backend kiểm file (`WavAudio`: WAV 16-bit PCM, tối đa 60 giây và 2 MB, độ dài
+đọc từ header), gửi một lần cho model chép lời (`SpeechTranscriber`), rồi trả `text`, `codes` và `numbers` (từ có chữ
+số, hoặc số đọc bằng chữ). Chữ đổ vào
+ô câu hỏi; mã và số được tô vàng kèm lời nhắc "kiểm lại hoặc quét". Người nói sửa rồi tự bấm gửi.
+
+**Vì sao không trả lời luôn.** Một chữ số nghe nhầm là một mã khác có thật, và câu trả lời về mã sai vẫn rất tự tin.
+Bước đọc lại là chỗ duy nhất bắt được lỗi đó; mã thì nên quét (`lookupScan`) thay vì đọc.
+
+| | |
+|---|---|
+| Model | `stockflow.assistant.voice.model`, đọc như model định tuyến; để trống là các model Gemini trong tuyến của chat. Gemini nhận `inline_data` `audio/wav` trong `generateContent`; server kiểu OpenAI (Whisper nội bộ) nhận multipart `/audio/transcriptions` với `language=vi` và gợi ý từ vựng |
+| Ranh giới dữ liệu | `DataBoundary` (ADR-0014) quyết định; ở `LOCAL_ONLY` chỉ còn Whisper nội bộ |
+| Bật/tắt | `stockflow.assistant.voice.enabled`, mặc định tắt; profile `local` bật |
+| Quyền | `assistant-conversations:CREATE`, `requireBackOffice`; chung giới hạn 10 lần một phút với câu hỏi, cộng hạn mức riêng `voice.daily-limit` (100 mỗi người mỗi ngày) |
+| Lưu | không lưu gì: không âm thanh, không chữ; upload tới 2 MB nằm trong bộ nhớ, không ra file tạm; log chỉ độ dài, model, kết quả; metric `assistant.voice.transcriptions{outcome}` |
+| Gửi | một lần, không thử lại; bản chép bị cắt vì hết token là lỗi, không phải câu hỏi ngắn hơn; trống `voice.model` thì đi theo tuyến model Gemini của chat, sang model sau khi hết quota |
+| Chi phí | Gemini tính 32 token mỗi giây âm thanh: một phút dưới 2.000 token đầu vào |
+| Đọc to | tùy chọn trên playground, đọc câu đầu bằng giọng có sẵn trên máy (`speechSynthesis`), không gửi gì đi |
+
+**Giới hạn đã biết.**
+
+- Độ chính xác tiếng Việt và mã kho mới thử bằng tay trên playground; bộ câu hỏi chuẩn chưa có câu nói vì cần bản ghi
+  thật.
+- Frontend thật chưa có giao diện trợ lý.
+
 ---
 
 ## 9. Thẻ "hôm nay" (thay cho bản tin buổi sáng; làm ngày 29/10)

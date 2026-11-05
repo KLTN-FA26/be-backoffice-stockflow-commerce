@@ -72,3 +72,6 @@ stockflow:
     receipt-drafts:
       # The same: off by default elsewhere (application.yml, AQ-01).
       enabled: ${ASSISTANT_RECEIPT_DRAFTS_ENABLED:true}
+    voice:
+      # The same: off by default elsewhere (application.yml, ADR-0015).
+      enabled: ${ASSISTANT_VOICE_ENABLED:true}

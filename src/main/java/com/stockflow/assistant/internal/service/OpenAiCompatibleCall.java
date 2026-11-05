@@ -8,6 +8,7 @@ import com.stockflow.common.error.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
@@ -19,9 +20,10 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * One POST to a server speaking OpenAI's API ({@code /chat/completions}, {@code /embeddings}), tried again when that
- * can help, and mapped to the assistant's error codes the way {@link GeminiCall} maps Google's: the chat, the
- * embeddings and the delivery-note reader on such a server all go through it.
+ * One POST to a server speaking OpenAI's API ({@code /chat/completions}, {@code /embeddings},
+ * {@code /audio/transcriptions}), tried again when that can help, and mapped to the assistant's error codes the way
+ * {@link GeminiCall} maps Google's: the chat, the embeddings, the delivery-note reader and the voice transcriber on such
+ * a server all go through it.
  *
  * <p><b>A failure says what to do next.</b></p>
  * <ul>
@@ -62,7 +64,7 @@ final class OpenAiCompatibleCall {
     /**
      * @param http    based at the API's root ({@code stockflow.assistant.openai-compatible.base-url})
      * @param apiKey  blank for a server that needs none
-     * @param subject what the calls are for, in the log: "", " (embeddings)", " (document)"
+     * @param subject what the calls are for, in the log: "", " (embeddings)", " (document)", " (speech)"
      */
     OpenAiCompatibleCall(RestClient http, String apiKey, Sleeper sleeper, String subject) {
         this.http = http;
@@ -74,12 +76,24 @@ final class OpenAiCompatibleCall {
     private record Raw(int status, String body, String retryAfter) {
     }
 
-    /** POSTs {@code body} to {@code path}; the response's JSON on a 200. */
+    /** POSTs {@code body}, JSON, to {@code path}; the response's JSON on a 200. */
     JsonNode post(String path, String body, boolean patient) {
+        return send(path, MediaType.APPLICATION_JSON, body, patient);
+    }
+
+    /**
+     * POSTs {@code parts} as {@code multipart/form-data} to {@code path}, as {@code /audio/transcriptions} takes a
+     * recording; the response's JSON on a 200. A part is a value, or an {@code HttpEntity} carrying its own headers.
+     */
+    JsonNode postMultipart(String path, MultiValueMap<String, Object> parts, boolean patient) {
+        return send(path, MediaType.MULTIPART_FORM_DATA, parts, patient);
+    }
+
+    private JsonNode send(String path, MediaType type, Object body, boolean patient) {
         for (int attempt = 0; ; attempt++) {
             Raw response;
             try {
-                RestClient.RequestBodySpec request = http.post().uri(path).contentType(MediaType.APPLICATION_JSON);
+                RestClient.RequestBodySpec request = http.post().uri(path).contentType(type);
                 if (!apiKey.isEmpty()) {
                     request.header("Authorization", "Bearer " + apiKey);
                 }

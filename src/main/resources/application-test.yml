@@ -83,6 +83,9 @@ stockflow:
       enabled: true
     receipt-drafts:
       enabled: true
+    # The transcription endpoint's tests need it; the speech model itself is a test double there.
+    voice:
+      enabled: true
 
 logging:
   level:
