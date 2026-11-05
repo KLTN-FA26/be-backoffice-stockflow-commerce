@@ -84,6 +84,9 @@ public interface StockDamages {
     /** A short-lived link to one photo, for the browser to fetch from object storage directly. */
     DownloadLink photoLink(UUID reportId, UUID photoId);
 
+    /** The photo exactly as uploaded, saved under its own name; audited. */
+    DownloadLink photoOriginalLink(UUID reportId, UUID photoId);
+
     /** The usable quarantine areas of a warehouse, by code: where the screen lets the reporter take damaged goods. */
     List<String> damageAreas(UUID warehouseId);
 
@@ -121,7 +124,7 @@ public interface StockDamages {
     }
 
     /** A photo of a report; its bytes are fetched through {@link #photoLink}. */
-    record PhotoView(UUID id, String originalName, String contentType, long sizeBytes) {
+    record PhotoView(UUID id, String originalName, String contentType, long sizeBytes, String thumbnailUrl) {
     }
 
     /** One decision of a report. */

@@ -75,6 +75,13 @@ public interface FileStorage {
     void retain(String key, java.time.Instant until);
 
     /**
+     * Writes a copy the platform derived from a stored file (an evidence photo's display copy) at its derived key,
+     * with its SHA-256 declared. Only for {@link FileCategory#EVIDENCE_COPY} keys: everything else is stored under a
+     * key {@link #store} chooses.
+     */
+    void storeDerived(String key, String contentType, byte[] bytes);
+
+    /**
      * A signed PUT a browser uses to write exactly the declared file to {@code incomingKey}: its length, type and
      * SHA-256 are part of the signature, so the store refuses anything else. Only for keys under
      * {@link StorageKeys#incoming}; {@link StagedUploads} is the one caller.

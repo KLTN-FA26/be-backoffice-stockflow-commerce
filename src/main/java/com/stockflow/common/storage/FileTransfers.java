@@ -26,6 +26,7 @@ public class FileTransfers {
     private final Clock clock;
     private final ObjectLockProperties objectLock;
     private final UploadInspection inspection;
+    private final ImageRenditions images;
 
     /** Without Object Lock or scanning: the shape the storage tests construct. */
     public FileTransfers(FileStorage storage, StorageProperties properties, Clock clock) {
@@ -38,9 +39,15 @@ public class FileTransfers {
         this(storage, properties, clock, objectLock, new UploadInspection("localhost", 3310, false));
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public FileTransfers(FileStorage storage, StorageProperties properties, Clock clock,
                          ObjectLockProperties objectLock, UploadInspection inspection) {
+        this(storage, properties, clock, objectLock, inspection, new ImageRenditions());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public FileTransfers(FileStorage storage, StorageProperties properties, Clock clock,
+                         ObjectLockProperties objectLock, UploadInspection inspection, ImageRenditions images) {
+        this.images = images;
         this.storage = storage;
         this.properties = properties;
         this.clock = clock;
@@ -107,10 +114,20 @@ public class FileTransfers {
             try (InputStream content = buffered.open()) {
                 inspection.requireClean(content);
             }
+            StoredFile file;
             try (InputStream content = new BufferedInputStream(buffered.open())) {
-                StoredFile file = storage.store(category, upload.originalName(), upload.contentType(),
+                file = storage.store(category, upload.originalName(), upload.contentType(),
                         upload.sizeBytes(), content, buffered.checksum());
+            }
+            if (!StorageKeys.hasDisplayCopies(category)) {
                 return new PreparedFiles.PreparedFile(file, buffered.checksum());
+            }
+            try (InputStream content = buffered.open()) {
+                List<String> copies = EvidenceCopies.store(storage, images, category, file.key(), content.readAllBytes());
+                return new PreparedFiles.PreparedFile(file, buffered.checksum(), copies);
+            } catch (IOException | RuntimeException failure) {
+                storage.delete(file.key());
+                throw failure;
             }
         } catch (IOException unreadable) {
             throw new StorageException("Could not read the buffered upload", unreadable);
@@ -245,6 +262,39 @@ public class FileTransfers {
     public DownloadLink viewLink(String key, Duration validFor) {
         Duration ttl = validFor.compareTo(properties.presignedUrlTtl()) > 0 ? properties.presignedUrlTtl() : validFor;
         return sign(key, ttl, DownloadDisposition.inline(ttl));
+    }
+
+    /**
+     * A link showing an evidence photo: its large display copy - no metadata, upright, a fraction of the size - or,
+     * for a photo stored before copies were made or one that could not be rendered, the photo as uploaded. One HEAD
+     * request to choose; for lists use {@link #evidenceThumbnailLink}.
+     */
+    public DownloadLink evidenceViewLink(String originalKey) {
+        return evidenceViewLink(originalKey, properties.presignedUrlTtl());
+    }
+
+    /** {@link #evidenceViewLink(String)} valid for {@code validFor}, never longer than the configured lifetime. */
+    public DownloadLink evidenceViewLink(String originalKey, Duration validFor) {
+        String copy = StorageKeys.evidenceCopyOf(originalKey, EvidenceCopies.DISPLAY);
+        return viewLink(storage.exists(copy) ? copy : originalKey, validFor);
+    }
+
+    /**
+     * The thumbnail of an evidence photo, for a list, or empty when this storage provider signs no browser links (the
+     * filesystem one). Signed without asking the store whether it exists: a photo stored before thumbnails were made
+     * shows as a broken image, and the client falls back to {@link #evidenceViewLink} through the photo's own link.
+     */
+    public java.util.Optional<DownloadLink> evidenceThumbnailLink(String originalKey) {
+        return tryViewLink(StorageKeys.evidenceCopyOf(originalKey, EvidenceCopies.THUMBNAIL));
+    }
+
+    /** {@link #viewLink(String)}, or empty when this storage provider signs no browser links. */
+    public java.util.Optional<DownloadLink> tryViewLink(String key) {
+        try {
+            return java.util.Optional.of(viewLink(key));
+        } catch (StorageException unsignable) {
+            return java.util.Optional.empty();
+        }
     }
 
     private DownloadLink sign(String key, Duration validFor, DownloadDisposition disposition) {

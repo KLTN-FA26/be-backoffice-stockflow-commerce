@@ -169,13 +169,16 @@ class DamageReportController {
     }
 
     @GetMapping("/{reportId}/photos/{photoId}/download-url")
-    @Operation(summary = "A short-lived link to one photo of a damage report")
+    @Operation(summary = "A short-lived link to one photo of a damage report: its display copy (no metadata); "
+            + "original=true saves the photo exactly as uploaded, and is audited")
     @RequiresPermission(resource = InventoryResources.DAMAGE_REPORTS, action = Action.READ,
             scope = DataScope.WAREHOUSE)
     public ResponseEntity<ApiResponse<DamagePhotoLinkResponse>> photo(@PathVariable UUID reportId,
-                                                                      @PathVariable UUID photoId) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(ApiResponse.ok(mapper.toResponse(damages.photoLink(reportId, photoId))));
+                                                                      @PathVariable UUID photoId,
+                                                                      @RequestParam(defaultValue = "false")
+                                                                      boolean original) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(mapper.toResponse(
+                original ? damages.photoOriginalLink(reportId, photoId) : damages.photoLink(reportId, photoId))));
     }
 
     @PostMapping("/{reportId}/dispositions")

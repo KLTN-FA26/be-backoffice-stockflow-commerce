@@ -120,6 +120,20 @@ class LocalFileStorage implements FileStorage {
         log.debug("Local storage cannot lock {}; retention until {} ignored", key, until);
     }
 
+    @Override
+    public void storeDerived(String key, String contentType, byte[] bytes) {
+        if (StorageKeys.categoryOf(key) != FileCategory.EVIDENCE_COPY) {
+            throw new IllegalArgumentException("Only derived copies are written at a given key");
+        }
+        Path target = resolve(key);
+        try {
+            Files.createDirectories(target.getParent());
+            Files.write(target, bytes);
+        } catch (IOException ex) {
+            throw new StorageException("Failed to write a derived copy to local storage", ex);
+        }
+    }
+
     /** A filesystem has no URL a browser could write to - honest, like the download link. */
     @Override
     public PresignedUpload presignedUploadUrl(String incomingKey, String contentType, long sizeBytes, String sha256,

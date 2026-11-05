@@ -822,11 +822,23 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     @Override
     @Transactional(readOnly = true)
     public DownloadLink photoLink(UUID reportId, UUID photoId) {
+        return evidence.link(photo(reportId, photoId).storageKey());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    @Auditable(action = AuditAction.EXPORT, resourceType = "stock-damage-report", resourceId = "#reportId",
+            details = "{photoId: #photoId, file: 'original'}")
+    public DownloadLink photoOriginalLink(UUID reportId, UUID photoId) {
+        StockDamageReport.Photo photo = photo(reportId, photoId);
+        return evidence.originalLink(photo.storageKey(), photo.originalName());
+    }
+
+    private StockDamageReport.Photo photo(UUID reportId, UUID photoId) {
         StockDamageReport report = inScope(reportId);
-        StockDamageReport.Photo photo = report.photos().stream().filter(p -> p.id().equals(photoId)).findFirst()
+        return report.photos().stream().filter(p -> p.id().equals(photoId)).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
                         "Damage report %s has no photo %s".formatted(report.number(), photoId)));
-        return evidence.link(photo.storageKey());
     }
 
     @Override
@@ -1003,7 +1015,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         return lot == null || lot.isBlank() ? "" : " lot " + lot;
     }
 
-    private static DamageReportView view(StockDamageReport report) {
+    private DamageReportView view(StockDamageReport report) {
         StockDamageReport.DamagedGoods goods = report.goods();
         StockDamageReport.PickContext pick = report.pick();
         return new DamageReportView(report.id(), report.number(), report.origin().name(),
@@ -1017,7 +1029,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                 pick == null ? null : pick.reservationId(), pick == null ? null : pick.impairedReservationId(),
                 report.reportedBy(), report.reportedAt(),
                 report.photos().stream().map(p -> new PhotoView(p.id(), p.originalName(), p.contentType(),
-                        p.sizeBytes())).toList(),
+                        p.sizeBytes(), evidence.thumbnail(p.storageKey()))).toList(),
                 report.dispositions().stream().sorted(Comparator.comparing(StockDamageReport.Disposition::decidedAt))
                         .map(d -> new DispositionView(d.id(), d.type().name(), d.quantity().value(), d.note(),
                                 d.recordNumber(), d.adjustmentId(),

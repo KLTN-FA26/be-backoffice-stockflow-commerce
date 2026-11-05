@@ -75,9 +75,19 @@ public class StagedUploads {
     private final DistributedLock locks;
     private final RateLimiter limiter;
     private final Clock clock;
+    private final ImageRenditions images;
 
+    /** With its own image renderer: the shape the tests construct. */
     public StagedUploads(FileStorage storage, StagedUploadProperties properties, UploadInspection inspection,
                          StringRedisTemplate redis, DistributedLock locks, RateLimiter limiter, Clock clock) {
+        this(storage, properties, inspection, redis, locks, limiter, clock, new ImageRenditions());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public StagedUploads(FileStorage storage, StagedUploadProperties properties, UploadInspection inspection,
+                         StringRedisTemplate redis, DistributedLock locks, RateLimiter limiter, Clock clock,
+                         ImageRenditions images) {
+        this.images = images;
         this.storage = storage;
         this.properties = properties;
         this.inspection = inspection;
@@ -232,8 +242,11 @@ public class StagedUploads {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Upload " + uploadId + " differs from the file that was declared");
         }
+        // An evidence photo (at most 20 MB) is read whole: its display copies are rendered from the same bytes.
+        byte[] whole = null;
         try (InputStream raw = storage.download(incoming);
-             var digesting = new DigestInputStream(raw, Checksums.sha256());
+             var digesting = new DigestInputStream(StorageKeys.hasDisplayCopies(category)
+                     ? new java.io.ByteArrayInputStream(whole = raw.readAllBytes()) : raw, Checksums.sha256());
              var content = new BufferedInputStream(digesting)) {
             content.mark(16);
             byte[] head = content.readNBytes(16);
@@ -250,8 +263,15 @@ public class StagedUploads {
         }
         String key = StorageKeys.forUpload(category, type, uploadId, Instant.parse(session.get("created")));
         storage.copy(incoming, key);
+        List<String> copies;
+        try {
+            copies = whole == null ? List.of() : EvidenceCopies.store(storage, images, category, key, whole);
+        } catch (RuntimeException failure) {
+            storage.delete(key);
+            throw failure;
+        }
         var file = new StoredFile(key, session.get("name"), type, size, clock.instant());
-        return new Accepted(uploadId, incoming, new PreparedFiles.PreparedFile(file, sha256));
+        return new Accepted(uploadId, incoming, new PreparedFiles.PreparedFile(file, sha256, copies));
     }
 
     /** After the attaching transaction committed: the session remembers the key; the quarantined copy goes. */

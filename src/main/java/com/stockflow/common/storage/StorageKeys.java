@@ -62,6 +62,26 @@ public final class StorageKeys {
         return "%s/%s/%s%s".formatted(category.prefix(), DATE_PATH.format(created), uploadId, extensionFor(contentType));
     }
 
+    /** Whether photos of {@code category} get display copies ({@link #evidenceCopyOf}). */
+    public static boolean hasDisplayCopies(FileCategory category) {
+        return category == FileCategory.RETURN_EVIDENCE || category == FileCategory.QC_EVIDENCE;
+    }
+
+    /**
+     * Where the display copy of an evidence photo at longest edge {@code edge} lives: the original's date and id under
+     * {@code evidence-copies/<its category>/}, always JPEG - so finding it needs no column.
+     */
+    public static String evidenceCopyOf(String originalKey, int edge) {
+        FileCategory category = categoryOf(originalKey);
+        if (!hasDisplayCopies(category)) {
+            throw new StorageException("Not an evidence photo key: " + originalKey);
+        }
+        String tail = originalKey.substring(category.prefix().length() + 1);
+        int dot = tail.lastIndexOf('.');
+        String stem = dot < 0 ? tail : tail.substring(0, dot);
+        return "%s/%s/%s-%d.jpg".formatted(FileCategory.EVIDENCE_COPY.prefix(), category.prefix(), stem, edge);
+    }
+
     public static String generate(FileCategory category, String contentType, Instant now) {
         return "%s/%s/%s%s".formatted(
                 category.prefix(),

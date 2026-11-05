@@ -105,10 +105,14 @@ public class ProductMediaService {
         this.clock = clock;
     }
 
+    /** @param renditionUrls edge to a short-lived link showing that rendition; filled by {@link #list} only */
     public record MediaView(UUID id, UUID variantId, String kind, String url, StoredFile original,
                             List<ImageRendition> renditions, String altText, int sortOrder, boolean primary,
                             boolean published, Instant publishedAt, UUID publishedBy, String uploadedBy,
-                            Instant uploadedAt, long version) {
+                            Instant uploadedAt, long version, java.util.Map<Integer, String> renditionUrls) {
+        public MediaView {
+            renditionUrls = renditionUrls == null ? java.util.Map.of() : java.util.Map.copyOf(renditionUrls);
+        }
     }
 
     public record PublicRendition(int edge, int width, int height, String contentType, String url) {
@@ -257,7 +261,13 @@ public class ProductMediaService {
     @Transactional(readOnly = true)
     public List<MediaView> list(UUID productId, UUID variantId) {
         variants.requireVariant(productId, variantId);
-        return media.findByVariantIdOrderBySortOrderAscIdAsc(variantId).stream().map(ProductMediaService::view).toList();
+        // Each rendition with its own link, signed locally: the gallery shows twenty thumbnails from one answer.
+        return media.findByVariantIdOrderBySortOrderAscIdAsc(variantId).stream().map(image -> {
+            java.util.Map<Integer, String> urls = new java.util.HashMap<>();
+            image.getRenditions().forEach(r -> files.tryViewLink(r.file().key())
+                    .ifPresent(link -> urls.put(r.edge(), link.url())));
+            return view(image, urls);
+        }).toList();
     }
 
     @Transactional(readOnly = true)
@@ -519,9 +529,13 @@ public class ProductMediaService {
     }
 
     static MediaView view(MediaJpaEntity m) {
+        return view(m, java.util.Map.of());
+    }
+
+    static MediaView view(MediaJpaEntity m, java.util.Map<Integer, String> renditionUrls) {
         return new MediaView(m.getId(), m.getVariantId(), m.getKind(), m.getUrl(), m.storedFile(), m.getRenditions(),
                 m.getAltText(), m.getSortOrder(), m.isPrimary(), m.isPublished(), m.getPublishedAt(),
-                m.getPublishedBy(), m.getCreatedBy(), m.getCreatedAt(), m.getVersion());
+                m.getPublishedBy(), m.getCreatedBy(), m.getCreatedAt(), m.getVersion(), renditionUrls);
     }
 
     /** Carries a failure that happened while committing, where the outcome is unknown. */

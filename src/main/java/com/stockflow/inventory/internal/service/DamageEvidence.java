@@ -74,7 +74,17 @@ class DamageEvidence {
      * caller's scope.
      */
     DownloadLink link(String storageKey) {
-        return files.viewLink(storageKey);
+        return files.evidenceViewLink(storageKey);
+    }
+
+    /** The photo exactly as uploaded, saved under its own name. */
+    DownloadLink originalLink(String storageKey, String originalName) {
+        return files.downloadLink(storageKey, originalName);
+    }
+
+    /** A thumbnail link for a list, or null when this storage provider signs no browser links. */
+    String thumbnail(String storageKey) {
+        return files.evidenceThumbnailLink(storageKey).map(DownloadLink::url).orElse(null);
     }
 
     /** {@code image/JPEG; charset=...} as the category accepted it: the table lists the bare lower-case type. */

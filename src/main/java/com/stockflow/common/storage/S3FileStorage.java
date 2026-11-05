@@ -192,6 +192,25 @@ class S3FileStorage implements FileStorage {
     }
 
     @Override
+    public void storeDerived(String key, String contentType, byte[] bytes) {
+        if (StorageKeys.categoryOf(key) != FileCategory.EVIDENCE_COPY) {
+            throw new IllegalArgumentException("Only derived copies are written at a given key");
+        }
+        try {
+            s3.putObject(PutObjectRequest.builder()
+                            .bucket(properties.bucket())
+                            .key(key)
+                            .contentType(contentType)
+                            .contentLength((long) bytes.length)
+                            .checksumSHA256(Checksums.hexToBase64(Checksums.sha256Hex(bytes)))
+                            .build(),
+                    RequestBody.fromBytes(bytes));
+        } catch (SdkException ex) {
+            throw new StorageException("Object store rejected a derived copy", ex);
+        }
+    }
+
+    @Override
     public PresignedUpload presignedUploadUrl(String incomingKey, String contentType, long sizeBytes, String sha256,
                                               Duration validFor) {
         if (!StorageKeys.isIncoming(incomingKey)) {

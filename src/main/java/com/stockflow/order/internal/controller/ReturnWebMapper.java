@@ -75,6 +75,12 @@ final class ReturnWebMapper {
     // ---- responses -----------------------------------------------------------------------------------------------------
 
     static ReturnRequestResponse toResponse(ReturnRequest r, List<ReturnTransition> history) {
+        return toResponse(r, history, key -> null);
+    }
+
+    /** With a thumbnail link per photo ({@code thumbnails} maps a photo's storage key to it, or to null). */
+    static ReturnRequestResponse toResponse(ReturnRequest r, List<ReturnTransition> history,
+                                            java.util.function.Function<String, String> thumbnails) {
         return new ReturnRequestResponse(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(), r.customerId(),
                 r.status().name(), r.reason().name(), r.description(), r.requestedResolution().name(),
                 r.channel().name(), r.requestedBy(), r.requestedAt(), r.windowOverride(), r.currency(),
@@ -94,7 +100,7 @@ final class ReturnWebMapper {
                         r.withdrawalMoney().creditTransferId()),
                 r.cancelledBy(), r.cancellationReason(), r.closedAt(),
                 r.lines().stream().map(ReturnWebMapper::toLine).toList(),
-                r.evidence().stream().map(ReturnWebMapper::toEvidence).toList(),
+                r.evidence().stream().map(e -> toEvidence(e, thumbnails)).toList(),
                 r.discrepancies().stream().map(ReturnWebMapper::toDiscrepancy).toList(),
                 history.stream().map(step -> new ReturnRequestResponse.HistoryEntry(
                         step.from() == null ? null : step.from().name(), step.to() == null ? null : step.to().name(),
@@ -103,6 +109,12 @@ final class ReturnWebMapper {
     }
 
     static CustomerReturnResponse toCustomerResponse(ReturnRequest r, List<ReturnTransition> history) {
+        return toCustomerResponse(r, history, key -> null);
+    }
+
+    /** With a thumbnail link per photo of the claim. */
+    static CustomerReturnResponse toCustomerResponse(ReturnRequest r, List<ReturnTransition> history,
+                                                     java.util.function.Function<String, String> thumbnails) {
         return new CustomerReturnResponse(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(), r.status().name(),
                 r.reason().name(), r.description(), r.requestedResolution().name(), r.requestedAt(),
                 r.returnRequired(), r.returnDeadline(), r.rejectionReason(), r.receivedAt(), r.closedAt(),
@@ -118,7 +130,7 @@ final class ReturnWebMapper {
                         d.quantity())).toList(),
                 r.evidence().stream().filter(e -> e.stage() == ReturnEvidence.Stage.CLAIM)
                         .map(e -> new CustomerReturnResponse.Evidence(e.id(), e.stage().name(), e.originalName(),
-                                e.uploadedAt())).toList(),
+                                e.uploadedAt(), thumbnails.apply(e.fileKey()))).toList(),
                 history.stream().filter(step -> step.to() != null)
                         .map(step -> new CustomerReturnResponse.Step(step.to().name(), step.at())).toList(),
                 r.version());
@@ -155,9 +167,10 @@ final class ReturnWebMapper {
                 l.disposalConsent());
     }
 
-    private static ReturnRequestResponse.Evidence toEvidence(ReturnEvidence e) {
+    private static ReturnRequestResponse.Evidence toEvidence(ReturnEvidence e,
+                                                             java.util.function.Function<String, String> thumbnails) {
         return new ReturnRequestResponse.Evidence(e.id(), e.stage().name(), e.originalName(), e.contentType(),
-                e.sizeBytes(), e.uploadedBy(), e.uploadedAt());
+                e.sizeBytes(), e.uploadedBy(), e.uploadedAt(), thumbnails.apply(e.fileKey()));
     }
 
     private static ReturnRequestResponse.Discrepancy toDiscrepancy(ReturnDiscrepancy d) {

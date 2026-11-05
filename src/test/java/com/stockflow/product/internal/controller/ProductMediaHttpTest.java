@@ -124,7 +124,7 @@ class ProductMediaHttpTest {
         var file = new StoredFile("product-images/private-key.png", "x.png", "image/png", 12, Instant.EPOCH);
         when(media.upload(any(), any(), any(), any(), any())).thenReturn(new ProductMediaService.MediaView(id,
                 UUID.randomUUID(), "IMAGE", null, file, List.of(), null, 0, true, false, null, null, "staff",
-                Instant.EPOCH, 0));
+                Instant.EPOCH, 0, java.util.Map.of()));
         var response = upload(12);
         assertThat(response.statusCode()).isEqualTo(201);
         assertThat(response.body()).contains(id.toString(), "image/png", "sizeBytes")

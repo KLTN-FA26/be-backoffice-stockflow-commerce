@@ -229,12 +229,16 @@ class ReturnRequestController {
     }
 
     @GetMapping("/returns/{returnId}/evidence/{evidenceId}/download-url")
-    @Operation(summary = "A link to one photo, valid for five minutes, served by the object store")
+    @Operation(summary = "A link to one photo, valid for five minutes, served by the object store: its display copy "
+            + "(no location metadata); original=true saves the photo exactly as uploaded, and is audited")
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.READ, scope = DataScope.OWN)
-    public ApiResponse<EvidenceLinkResponse> evidenceLink(@PathVariable UUID returnId, @PathVariable UUID evidenceId,
-                                                          @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(new EvidenceLinkResponse(queries.evidenceLink(returnId, evidenceId,
-                ownCustomerIdOrNull(user))));
+    public ResponseEntity<ApiResponse<EvidenceLinkResponse>> evidenceLink(@PathVariable UUID returnId,
+            @PathVariable UUID evidenceId, @RequestParam(defaultValue = "false") boolean original,
+            @AuthenticatedUser CurrentUser user) {
+        UUID own = ownCustomerIdOrNull(user);
+        String url = original ? queries.evidenceOriginalLink(returnId, evidenceId, own)
+                : queries.evidenceLink(returnId, evidenceId, own);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(new EvidenceLinkResponse(url)));
     }
 
     @PostMapping("/returns/{returnId}/cancellation")
@@ -275,7 +279,7 @@ class ReturnRequestController {
     public ApiResponse<CustomerReturnResponse> myReturn(@PathVariable UUID returnId,
                                                         @AuthenticatedUser CurrentUser user) {
         ReturnRequestQueries.Detail detail = queries.detail(returnId, ownCustomerId(user));
-        return ApiResponse.ok(ReturnWebMapper.toCustomerResponse(detail.request(), detail.history()));
+        return ApiResponse.ok(ReturnWebMapper.toCustomerResponse(detail.request(), detail.history(), queries::thumbnail));
     }
 
     // ---- the back office -----------------------------------------------------------------------------------------------
@@ -306,7 +310,7 @@ class ReturnRequestController {
     public ApiResponse<ReturnRequestResponse> one(@PathVariable UUID returnId, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         ReturnRequestQueries.Detail detail = queries.detail(returnId, null);
-        return ApiResponse.ok(ReturnWebMapper.toResponse(detail.request(), detail.history()));
+        return ApiResponse.ok(ReturnWebMapper.toResponse(detail.request(), detail.history(), queries::thumbnail));
     }
 
     @PostMapping("/returns/{returnId}/approval")

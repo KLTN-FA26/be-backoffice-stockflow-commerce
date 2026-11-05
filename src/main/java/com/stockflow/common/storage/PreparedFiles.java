@@ -34,8 +34,18 @@ public final class PreparedFiles implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(PreparedFiles.class);
 
-    /** One stored upload and the SHA-256 of its bytes, lower-case hex. */
-    public record PreparedFile(StoredFile file, String sha256) {
+    /**
+     * One stored upload, the SHA-256 of its bytes (lower-case hex), and the keys of the copies derived from it (an
+     * evidence photo's display copies), which go wherever the file goes.
+     */
+    public record PreparedFile(StoredFile file, String sha256, List<String> derivedKeys) {
+        public PreparedFile {
+            derivedKeys = derivedKeys == null ? List.of() : List.copyOf(derivedKeys);
+        }
+
+        public PreparedFile(StoredFile file, String sha256) {
+            this(file, sha256, List.of());
+        }
     }
 
     private final FileStorage storage;
@@ -128,10 +138,14 @@ public final class PreparedFiles implements AutoCloseable {
 
     private void discard(String why) {
         for (PreparedFile prepared : files) {
-            try {
-                storage.delete(prepared.file().key());
-            } catch (RuntimeException cleanupFailure) {
-                log.error("Orphaned upload requires cleanup ({}): {}", why, prepared.file().key(), cleanupFailure);
+            List<String> keys = new java.util.ArrayList<>(prepared.derivedKeys());
+            keys.add(prepared.file().key());
+            for (String key : keys) {
+                try {
+                    storage.delete(key);
+                } catch (RuntimeException cleanupFailure) {
+                    log.error("Orphaned upload requires cleanup ({}): {}", why, key, cleanupFailure);
+                }
             }
         }
     }

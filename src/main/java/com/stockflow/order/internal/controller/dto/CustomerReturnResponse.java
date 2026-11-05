@@ -54,7 +54,8 @@ public record CustomerReturnResponse(
     public record Discrepancy(String kind, String sku, int quantity) {
     }
 
-    public record Evidence(UUID id, String stage, String originalName, Instant uploadedAt) {
+    /** A photo of the claim; {@code thumbnailUrl} as on the back-office detail. */
+    public record Evidence(UUID id, String stage, String originalName, Instant uploadedAt, String thumbnailUrl) {
     }
 
     public record Step(String status, Instant occurredAt) {

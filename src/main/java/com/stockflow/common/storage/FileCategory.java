@@ -63,6 +63,13 @@ public enum FileCategory {
     RETURN_EVIDENCE("return-evidence", 15 * 1024 * 1024,
             Set.of("image/jpeg", "image/png", "image/webp")),
 
+    /**
+     * Display copies of evidence photos (return and damage photos): re-encoded without metadata at
+     * {@link StorageKeys#evidenceCopyOf}, written next to the original by the platform, never uploaded. Private like the
+     * originals; what a reviewer is shown.
+     */
+    EVIDENCE_COPY("evidence-copies", 10 * 1024 * 1024, Set.of("image/jpeg")),
+
     /** Generated reports awaiting download. Short-lived; the retention job clears them. */
     EXPORT("exports", 100 * 1024 * 1024,
             Set.of("text/csv",

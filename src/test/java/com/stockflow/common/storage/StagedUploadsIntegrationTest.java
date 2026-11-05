@@ -195,6 +195,27 @@ class StagedUploadsIntegrationTest {
     }
 
     @Test
+    void anUploadedEvidencePhotoGetsItsDisplayCopiesWhichGoWithIt() throws Exception {
+        var image = new java.awt.image.BufferedImage(1200, 900, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var encoded = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, "jpeg", encoded);
+        byte[] jpeg = encoded.toByteArray();
+        UploadSlot slot = slot("parcel.jpg", "image/jpeg", jpeg);
+        assertThat(put(slot, jpeg)).isEqualTo(200);
+
+        List<String> copies;
+        try (PreparedFiles prepared = staged.accept(FileCategory.QC_EVIDENCE, owner, List.of(slot.uploadId()))) {
+            copies = prepared.single().derivedKeys();
+            assertThat(copies).hasSize(2).allSatisfy(key -> {
+                assertThat(key).startsWith("evidence-copies/qc-evidence/");
+                assertThat(storage.exists(key)).isTrue();
+            });
+        }
+        assertThat(copies).as("deleted with the file nobody attached")
+                .allSatisfy(key -> assertThat(storage.exists(key)).isFalse());
+    }
+
+    @Test
     void aFileNoTransactionAttachedIsRemovedFromItsCategoryAndCanBeAttachedAgain() throws Exception {
         UploadSlot slot = slot("crack.png", "image/png", PNG);
         put(slot, PNG);
