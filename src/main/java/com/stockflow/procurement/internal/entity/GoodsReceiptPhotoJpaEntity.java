@@ -13,7 +13,9 @@ import java.util.UUID;
 
 /**
  * {@code procurement.goods_receipt_photos} (V20261106000100): a photo taken while goods were received or inspected.
- * Append-only ({@code tg_goods_receipt_photos_append_only}): every column is written once.
+ * Append-only: every column is written once, except that a receiving photo's line is cleared by the database when the
+ * line is dropped from a count still open - a corrected lot, rejected excess - and the photo stays as one of the
+ * delivery ({@code fk_goods_receipt_photos_line ON DELETE SET NULL}, {@code tg_goods_receipt_photos_update}).
  */
 @Entity
 @Table(name = "goods_receipt_photos", schema = "procurement")

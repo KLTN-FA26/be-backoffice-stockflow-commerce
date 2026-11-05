@@ -85,6 +85,7 @@ class GoodsReceiptPhotoIntegrationTest {
 
     private UUID clerk;
     private UUID inspector;
+    private UUID po;
     private UUID receipt;
     private UUID sofaLine;
     private UUID tableLine;
@@ -95,7 +96,7 @@ class GoodsReceiptPhotoIntegrationTest {
                 .presignedDownloadUrl(anyString(), any(), any());
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         inspector = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID po = order();
+        po = order();
         receipt = receipts.create(new GoodsReceipts.Create(po, "DN-PHOTO", null), clerk).id();
         String lot = "PH-" + UUID.randomUUID().toString().substring(0, 8);
         var counted = receipts.replaceLines(receipt, List.of(
@@ -276,6 +277,26 @@ class GoodsReceiptPhotoIntegrationTest {
     }
 
     @Test
+    @DisplayName("a photographed line can still be recounted: the photo stays with the receipt, as one of the delivery")
+    void aPhotographedLineDoesNotBlockTheRecount() {
+        PhotoView ofTheLine = photos.add(receipt, tableLine, GoodsReceiptPhotoStage.RECEIPT, photo("lo.jpg"), clerk);
+
+        // Correcting the lot makes the line a new one: the old line is dropped from the count.
+        var recounted = receipts.replaceLines(receipt, List.of(
+                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "HCM-RCV01", null),
+                new GoodsReceipts.NewLine(poLine(po, TABLE), 6, "PH-FIXED-" + UUID.randomUUID().toString().substring(0, 6),
+                        LocalDate.now().plusYears(1), "HCM-RCV01", null)));
+
+        assertThat(lineOf(recounted, po, TABLE)).isNotEqualTo(tableLine);
+        assertThat(photos.list(receipt)).singleElement().satisfies(photo -> {
+            assertThat(photo.id()).isEqualTo(ofTheLine.id());
+            assertThat(photo.receiptLineId()).as("its line is gone, the photo is not").isNull();
+            assertThat(photo.stage()).isEqualTo(GoodsReceiptPhotoStage.RECEIPT);
+        });
+        assertThat(storage.exists(keyOf(ofTheLine.id()))).isTrue();
+    }
+
+    @Test
     @DisplayName("the database keeps photos append-only, a QC photo on a QC line, and the sweep sees them as kept")
     void theSchemaStatesTheRulesAgain() {
         UUID kept = photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("kept.jpg"), clerk).id();
@@ -283,6 +304,8 @@ class GoodsReceiptPhotoIntegrationTest {
 
         assertThatThrownBy(() -> jdbc.update("UPDATE procurement.goods_receipt_photos SET original_name = 'x' WHERE id = ?",
                 kept)).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE procurement.goods_receipt_photos SET receipt_line_id = ? WHERE id = ?",
+                sofaLine, kept)).as("a photo is never moved onto a line").isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("DELETE FROM procurement.goods_receipt_photos WHERE id = ?", kept))
                 .isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("""

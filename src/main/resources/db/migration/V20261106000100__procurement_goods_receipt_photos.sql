@@ -24,8 +24,10 @@ CREATE TABLE procurement.goods_receipt_photos
     CONSTRAINT pk_goods_receipt_photos PRIMARY KEY (id),
     CONSTRAINT fk_goods_receipt_photos_receipt FOREIGN KEY (receipt_id)
         REFERENCES procurement.goods_receipts (id) ON DELETE RESTRICT,
+    -- A line dropped from a count that is still open (a corrected lot, excess rejected) takes its photos' link with it,
+    -- not the photos: they stay with the receipt as photos of the delivery (tg_goods_receipt_photos_update).
     CONSTRAINT fk_goods_receipt_photos_line FOREIGN KEY (receipt_line_id)
-        REFERENCES procurement.goods_receipt_lines (id) ON DELETE RESTRICT,
+        REFERENCES procurement.goods_receipt_lines (id) ON DELETE SET NULL,
     CONSTRAINT fk_goods_receipt_photos_taken_by FOREIGN KEY (taken_by)
         REFERENCES identity.app_user (id),
     CONSTRAINT uk_goods_receipt_photos_key UNIQUE (storage_key),
@@ -45,8 +47,26 @@ CREATE INDEX ix_goods_receipt_photos_line ON procurement.goods_receipt_photos (r
     WHERE receipt_line_id IS NOT NULL;
 
 -- Evidence is never edited or removed.
-CREATE TRIGGER tg_goods_receipt_photos_append_only BEFORE UPDATE OR DELETE ON procurement.goods_receipt_photos
+CREATE TRIGGER tg_goods_receipt_photos_append_only BEFORE DELETE ON procurement.goods_receipt_photos
     FOR EACH ROW EXECUTE FUNCTION platform.append_only();
+
+-- The one change a photo takes: a receiving photo's line is dropped from the count (fk_goods_receipt_photos_line SET
+-- NULL) and the photo becomes one of the delivery. Every other column, and a QC photo's line, stay as written.
+CREATE FUNCTION procurement.goods_receipt_photo_unlink_only()
+    RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+BEGIN
+    IF OLD.receipt_line_id IS NOT NULL AND NEW.receipt_line_id IS NULL AND OLD.stage = 'RECEIPT'
+       AND (to_jsonb(NEW) - 'receipt_line_id') = (to_jsonb(OLD) - 'receipt_line_id') THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION '%.% is append-only', TG_TABLE_SCHEMA, TG_TABLE_NAME USING ERRCODE = 'check_violation';
+END
+$$;
+
+CREATE TRIGGER tg_goods_receipt_photos_update BEFORE UPDATE ON procurement.goods_receipt_photos
+    FOR EACH ROW EXECUTE FUNCTION procurement.goods_receipt_photo_unlink_only();
 
 -- The line named is a line of the receipt named, and a QC photo's line is one that goes through QC: stated a second
 -- time after the service.
