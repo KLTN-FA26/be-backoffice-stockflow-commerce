@@ -306,6 +306,9 @@ class GoodsReceiptPhotoIntegrationTest {
                 kept)).isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("UPDATE procurement.goods_receipt_photos SET receipt_line_id = ? WHERE id = ?",
                 sofaLine, kept)).as("a photo is never moved onto a line").isInstanceOf(DataAccessException.class);
+        UUID ofTheLine = photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.RECEIPT, photo("line.jpg"), clerk).id();
+        assertThatThrownBy(() -> jdbc.update("UPDATE procurement.goods_receipt_photos SET receipt_line_id = NULL WHERE id = ?",
+                ofTheLine)).as("only dropping the line unlinks its photo").isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("DELETE FROM procurement.goods_receipt_photos WHERE id = ?", kept))
                 .isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("""

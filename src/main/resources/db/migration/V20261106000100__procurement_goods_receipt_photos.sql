@@ -57,8 +57,11 @@ CREATE FUNCTION procurement.goods_receipt_photo_unlink_only()
     LANGUAGE plpgsql AS
 $$
 BEGIN
+    -- Only the cascade: the line is already gone when its ON DELETE SET NULL runs; a hand-written UPDATE of a photo
+    -- whose line still exists is refused.
     IF OLD.receipt_line_id IS NOT NULL AND NEW.receipt_line_id IS NULL AND OLD.stage = 'RECEIPT'
-       AND (to_jsonb(NEW) - 'receipt_line_id') = (to_jsonb(OLD) - 'receipt_line_id') THEN
+       AND (to_jsonb(NEW) - 'receipt_line_id') = (to_jsonb(OLD) - 'receipt_line_id')
+       AND NOT EXISTS (SELECT 1 FROM procurement.goods_receipt_lines WHERE id = OLD.receipt_line_id) THEN
         RETURN NEW;
     END IF;
     RAISE EXCEPTION '%.% is append-only', TG_TABLE_SCHEMA, TG_TABLE_NAME USING ERRCODE = 'check_violation';
