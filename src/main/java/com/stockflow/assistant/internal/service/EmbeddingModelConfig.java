@@ -80,9 +80,10 @@ class EmbeddingModelConfig {
     private static EmbeddingModel openAiCompatible(EmbeddingProperties embeddings, AssistantProperties assistant,
                                                    RestClientFactory http, EmbeddingModel keywordsOnly) {
         String base = assistant.openaiCompatible().baseUrl();
-        if (!assistant.dataPolicy().allows(ModelProvider.OPENAI, base)) {
-            log.warn("The assistant searches its knowledge by keyword only: the data policy {} forbids the embedding "
-                    + "server at {}", assistant.dataPolicy(), AssistantProperties.loggable(base));
+        java.util.Optional<String> outside = assistant.boundary().refusal(ModelProvider.OPENAI, base);
+        if (outside.isPresent()) {
+            log.warn("The assistant searches its knowledge by keyword only: the embedding server at {} cannot be "
+                    + "used, {}", AssistantProperties.loggable(base), outside.get());
             return keywordsOnly;
         }
         if (!DataPolicy.isLocal(base) && assistant.providerKind() != ModelProvider.OPENAI) {

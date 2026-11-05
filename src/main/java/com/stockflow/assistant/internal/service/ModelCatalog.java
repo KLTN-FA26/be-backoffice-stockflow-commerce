@@ -110,9 +110,9 @@ final class ModelCatalog {
      * Why {@code spec} cannot be used, for the start-up log; empty when it can. Never the key itself.
      */
     static Optional<String> refusal(AssistantProperties properties, ModelSpec spec) {
-        if (!properties.dataPolicy().allows(spec.provider(), spec.endpoint())) {
-            return Optional.of("the data policy " + properties.dataPolicy() + " forbids " + spec.provider().id()
-                    + " at " + AssistantProperties.loggable(spec.endpoint()));
+        Optional<String> outside = properties.boundary().refusal(spec.provider(), spec.endpoint());
+        if (outside.isPresent()) {
+            return outside;
         }
         if (spec.provider().needsKey() && spec.apiKey().isEmpty()) {
             return Optional.of("no key is set for " + spec.provider().id() + " (" + spec.provider().keyVariable()
@@ -136,6 +136,6 @@ final class ModelCatalog {
                 properties.retentionDays(), properties.requestTimeout(), properties.answerLease(),
                 properties.refusalFallback(), own ? properties.baseUrl() : "", spec.provider().id(),
                 properties.anthropicApiKey(), properties.geminiApiKey(), properties.openaiCompatible(),
-                properties.dataPolicy());
+                properties.dataPolicy(), properties.allowedProviders(), properties.allowedHosts());
     }
 }

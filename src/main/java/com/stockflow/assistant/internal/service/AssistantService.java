@@ -143,6 +143,7 @@ public class AssistantService {
     private final ToolAvailability availability;
     private final AssistantTelemetry telemetry;
     private final ParallelTools parallel;
+    private final CustomerPseudonyms pseudonyms;
 
     AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
                      SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
@@ -156,20 +157,22 @@ public class AssistantService {
                      ObjectMapper json, ToolAvailability availability, AssistantTelemetry telemetry,
                      ParallelTools parallel) {
         this(conversations, models, tools, prompt, properties, messages, clock, json, availability, telemetry,
-                parallel, new BackgroundModels(models, false));
+                parallel, new BackgroundModels(models, false), CustomerPseudonyms.OFF);
     }
 
     /**
      * @param telemetry  where each answer's span, the parent of its model calls and tools, is recorded
      * @param parallel   runs a step's calls at once, in the order the model asked for them
      * @param background the models the watch's questions go to
+     * @param pseudonyms the customer aliases the model provider is sent instead of names (ADR-0014)
      */
     @Autowired
     AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
                      SystemPrompt prompt, AssistantProperties properties, Messages messages, Clock clock,
                      ObjectMapper json, ToolAvailability availability, AssistantTelemetry telemetry,
-                     ParallelTools parallel, BackgroundModels background) {
+                     ParallelTools parallel, BackgroundModels background, CustomerPseudonyms pseudonyms) {
         this.parallel = parallel;
+        this.pseudonyms = pseudonyms;
         this.conversations = conversations;
         this.models = models;
         this.background = background.router();
@@ -258,14 +261,15 @@ public class AssistantService {
      * without running: NOT_OFFERED, which the model reads like any refusal.
      */
     private List<ToolExecution> runWave(List<ToolCall> wave, ToolChannel channel, Set<String> allowed,
-                                        Progress progress) {
+                                        Progress progress, Pseudonyms aliases) {
         java.util.function.Consumer<ToolExecution> told =
                 finished -> progress.toolRan(ConversationService.ToolCallView.of(forTheRecord(finished)));
         if (allowed == null) {
-            return parallel.run(wave, channel, told);
+            return parallel.run(wave, channel, aliases, told);
         }
         java.util.Iterator<ToolExecution> ran = parallel.run(
-                wave.stream().filter(call -> allowed.contains(call.name())).toList(), channel, told).iterator();
+                wave.stream().filter(call -> allowed.contains(call.name())).toList(), channel, aliases, told)
+                .iterator();
         List<ToolExecution> all = new ArrayList<>();
         for (ToolCall call : wave) {
             all.add(allowed.contains(call.name()) ? ran.next() : new ToolExecution(call, ToolOutcome.DENIED,
@@ -273,6 +277,21 @@ public class AssistantService {
                     0));
         }
         return all;
+    }
+
+    /**
+     * The answer with its customers' names back (ADR-0014). It is stored already: a failure to read the names shows the
+     * aliases rather than an error, and the transcript reads them again when it is reopened.
+     */
+    private Answer revealed(UUID conversationId, Pseudonyms aliases, Answer answer) {
+        try {
+            return answer.revealed(aliases == null ? pseudonyms.revealer(conversationId)
+                    : pseudonyms.revealer(aliases));
+        } catch (RuntimeException failure) {
+            log.warn("Assistant answer {} is shown with customer aliases: their names could not be read",
+                    answer.messageId(), failure);
+            return answer;
+        }
     }
 
     /** @return the question, trimmed */
@@ -308,7 +327,11 @@ public class AssistantService {
         if (channel == ToolChannel.CHAT) {
             conversations.requireAskable(conversationId);
         }
-        Turn.Question turn = new Turn.Question(question, context(user, now));
+        // A customer the conversation already calls KH#n is sent by that alias when the user names it (ADR-0014): the
+        // question is stored so, and read back with the name.
+        Pseudonyms aliases = pseudonyms.forQuestion(conversationId);
+        Turn.Question turn = new Turn.Question(aliases == null ? question : aliases.hideNames(question),
+                context(user, now));
         Instant claimedAt = now.truncatedTo(ChronoUnit.MICROS);
         ModelRouter.Route route = router.route();
         List<Turn> stored = conversations.claimAndAsk(conversationId, PendingMessage.question(turn), claimedAt,
@@ -318,15 +341,16 @@ public class AssistantService {
             answerOnRoute(route, stored, produced, progress, claimedAt.plus(properties.answerLease()),
                     only == null ? availability.specsFor(user)
                             : availability.specsFor(user).stream().filter(spec -> only.contains(spec.name())).toList(),
-                    channel);
+                    channel, aliases);
         } catch (RuntimeException failure) {
             // The transcript says what became of the question: the turns so far, tools that ran included, then the
             // error's message. Right after the question, that closing turn also keeps it out of the daily cap.
             whileFailing(failure, () -> produced.add(closing(route.model(), failureText(failure))));
-            whileFailing(failure, () -> store(conversationId, user.userId(), claimedAt, produced, channel));
+            whileFailing(failure, () -> store(conversationId, user.userId(), claimedAt, produced, channel, aliases));
             throw failure;
         }
-        Answer answer = Answer.of(stored, store(conversationId, user.userId(), claimedAt, produced, channel), json);
+        Answer answer = revealed(conversationId, aliases,
+                Answer.of(stored, store(conversationId, user.userId(), claimedAt, produced, channel, aliases), json));
         return answer.proposals().isEmpty() ? answer
                 : answer.withActions(conversations.actionsOf(answer.messageId(), user.userId()));
     }
@@ -347,7 +371,8 @@ public class AssistantService {
      * @param offered  the tools the user may use, worked out once for the question: every attempt is offered the same
      */
     private void answerOnRoute(ModelRouter.Route route, List<Turn> stored, List<PendingMessage> produced,
-                               Progress progress, Instant leaseEnds, List<ToolSpec> offered, ToolChannel channel) {
+                               Progress progress, Instant leaseEnds, List<ToolSpec> offered, ToolChannel channel,
+                               Pseudonyms aliases) {
         // What the earlier exchanges let an answer repeat, as the transcript reads it (AnswerSources.earlierGrounds).
         AnswerNumbers.Grounds earlier = AnswerSources.earlierGrounds(stored);
         while (true) {
@@ -356,7 +381,7 @@ public class AssistantService {
             Outcome outcome;
             try {
                 outcome = answer(model, new ArrayList<>(History.forModel(stored, model::closingTurn)), produced::add,
-                        progress, leaseEnds, offered, earlier, channel);
+                        progress, leaseEnds, offered, earlier, channel, aliases);
             } catch (RepairFailed failed) {
                 // The answer stands as the model first wrote it. The model replied, so the route is told so first;
                 // a spent quota then still sets it aside, even on a route made of models all set aside.
@@ -408,9 +433,9 @@ public class AssistantService {
      * would drop exactly the audit rows this class promises to keep.
      */
     private List<Message> store(UUID conversationId, UUID owner, Instant claimedAt, List<PendingMessage> produced,
-                                ToolChannel channel) {
+                                ToolChannel channel, Pseudonyms aliases) {
         try {
-            return conversations.appendAndRelease(conversationId, owner, claimedAt, produced, channel);
+            return conversations.appendAndRelease(conversationId, owner, claimedAt, produced, channel, aliases);
         } catch (RuntimeException failed) {
             whileFailing(failed, () -> conversations.release(conversationId, claimedAt));
             throw failed;
@@ -437,7 +462,7 @@ public class AssistantService {
      */
     private Outcome answer(LanguageModel model, List<Turn> history, Consumer<PendingMessage> sink, Progress progress,
                            Instant leaseEnds, List<ToolSpec> offered, AnswerNumbers.Grounds earlier,
-                           ToolChannel channel) {
+                           ToolChannel channel, Pseudonyms aliases) {
         Consumer<PendingMessage> record = message -> {
             history.add(message.turn());
             sink.accept(message);
@@ -512,7 +537,8 @@ public class AssistantService {
                     // past the budget than one result, as when the calls ran one by one. Every call either ran and
                     // its result was sent, or did not run: what the model received is what the record keeps.
                     int wave = Math.min(admitted.size() - ran, Math.max(1, budget / ToolExecution.MAX_RESULT_LENGTH));
-                    for (ToolExecution done : runWave(admitted.subList(ran, ran + wave), channel, allowed, progress)) {
+                    for (ToolExecution done : runWave(admitted.subList(ran, ran + wave), channel, allowed, progress,
+                            aliases)) {
                         ToolExecution execution = forTheRecord(done);
                         budget -= execution.result().length();
                         executions.add(execution);
@@ -979,12 +1005,13 @@ public class AssistantService {
      * @param tables            the rows its lookups returned, as the panel shows them under it (design §7)
      * @param unverifiedNumbers numbers it states that nothing the model was given for it holds, as written (design §7)
      * @param unverifiedCodes   codes it writes that nothing the model was given for it holds ({@link AnswerCodes})
+     * @param instructionLike   tools whose results held typed text that reads like an instruction to the assistant
      * @param followUps         the questions its lookups lead to, before the asker's permissions are applied
      */
     public record Answer(UUID messageId, String text, List<ConversationService.ToolCallView> toolCalls,
                          boolean cutShort, LanguageModel.Usage usage, List<String> citations,
                          List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
-                         List<String> unverifiedNumbers, List<String> unverifiedCodes,
+                         List<String> unverifiedNumbers, List<String> unverifiedCodes, List<String> instructionLike,
                          List<FollowUps.FollowUp> followUps,
                          java.util.Map<String, AssistantActions.ActionView> actions) {
 
@@ -992,10 +1019,17 @@ public class AssistantService {
             actions = actions == null ? java.util.Map.of() : java.util.Map.copyOf(actions);
         }
 
+        /** With the customers' names put back where the model was given aliases (ADR-0014). */
+        Answer revealed(java.util.function.UnaryOperator<String> reveal) {
+            return new Answer(messageId, reveal.apply(text), toolCalls, cutShort, usage, citations, proposals,
+                    tables.stream().map(table -> table.revealed(reveal)).toList(), unverifiedNumbers, unverifiedCodes,
+                    instructionLike, followUps, actions);
+        }
+
         /** With the suggestions its proposals became (ADR-0011), by proposal key. */
         Answer withActions(java.util.Map<String, AssistantActions.ActionView> made) {
             return new Answer(messageId, text, toolCalls, cutShort, usage, citations, proposals, tables,
-                    unverifiedNumbers, unverifiedCodes, followUps, made);
+                    unverifiedNumbers, unverifiedCodes, instructionLike, followUps, made);
         }
 
         /**
@@ -1023,7 +1057,7 @@ public class AssistantService {
             return new Answer(answer.messageId(), answer.text(), answer.toolCalls(), answer.cutShort(),
                     new LanguageModel.Usage(input, output, cacheRead, cacheWrite), answer.citations(),
                     answer.proposals(), answer.tables(), answer.unverifiedNumbers(), answer.unverifiedCodes(),
-                    answer.followUps(), java.util.Map.of());
+                    answer.instructionLike(), answer.followUps(), java.util.Map.of());
         }
     }
 }

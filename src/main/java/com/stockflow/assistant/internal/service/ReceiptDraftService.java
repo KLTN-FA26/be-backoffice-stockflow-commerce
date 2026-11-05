@@ -216,7 +216,7 @@ public class ReceiptDraftService {
             ObjectNode entry = lines.addObject()
                     .put("lineNo", line.lineNo())
                     .put("sku", line.sku())
-                    .put("product", TypedText.masked(line.description()))
+                    .put("product", TypedText.maskedContacts(line.description()))
                     .put("unit", line.uom());
             // A line ordered in packs: a note that counts cartons can then be read in units (the instruction says how).
             if (line.unitFactor() != null && line.unitFactor() > 1 && line.unitOfMeasure() != null) {

@@ -138,23 +138,45 @@ public class AssistantTools {
 
     /** Runs a tool for {@code channel}: the same tool, guard and result whichever channel asks. */
     public ToolExecution execute(ToolCall call, ToolChannel channel) {
-        // A name the model made up is one tag value, never its own series, and its text stays out of the span name.
-        String traced = byName.containsKey(call.name()) ? call.name() : UNKNOWN_TOOL;
-        return telemetry.tool(channel, traced, () -> run(call));
+        return execute(call, channel, null);
     }
 
-    private ToolExecution run(ToolCall call) {
+    /**
+     * Runs a tool for a question of a conversation whose customers go to the model by alias ({@link CustomerName}):
+     * the result names each customer {@code KH#n}, and a customer argument may be one.
+     *
+     * @param pseudonyms the question's aliases; null to write names (MCP, the "today" card)
+     */
+    ToolExecution execute(ToolCall call, ToolChannel channel, Pseudonyms pseudonyms) {
+        // A name the model made up is one tag value, never its own series, and its text stays out of the span name.
+        String traced = byName.containsKey(call.name()) ? call.name() : UNKNOWN_TOOL;
+        return telemetry.tool(channel, traced, () -> run(call, channel, pseudonyms));
+    }
+
+    private ToolExecution run(ToolCall call, ToolChannel channel, Pseudonyms pseudonyms) {
         long started = System.nanoTime();
         AssistantTool tool = byName.get(call.name());
         if (tool == null) {
             return done(call, ToolOutcome.INVALID, "UNKNOWN_TOOL: there is no tool named " + call.name(), started);
         }
         try {
-            Object answer = tool.run(ToolArguments.parse(json, call.arguments()));
-            String result = results.writeValueAsString(answer);
+            Object answer = tool.run(ToolArguments.parse(json, call.arguments()).withPseudonyms(pseudonyms));
+            // With aliases, a customer field is written as its alias, and a known customer's name in a note too.
+            String result = pseudonyms == null ? results.writeValueAsString(answer)
+                    : pseudonyms.hideNames(results.writer().withAttribute(Pseudonyms.class, pseudonyms)
+                    .writeValueAsString(answer));
             if (result.length() > ToolExecution.MAX_RESULT_LENGTH) {
                 return done(call, ToolOutcome.INVALID, "RESULT_TOO_LARGE: the answer is too long to return; ask "
                         + "again more narrowly (fewer rows, one SKU, one warehouse)", started);
+            }
+            boolean readByOurModel = channel == ToolChannel.CHAT || channel == ToolChannel.PROACTIVE;
+            if (result.contains(TypedText.MARKER) && readByOurModel) {
+                // Which tool, never the text: it is business data, and a customer may have written it. Counted where
+                // a model of the application reads it, not for the "today" card or an MCP client.
+                log.warn("Assistant tool {} returned text a person typed that reads like an instruction to the "
+                        + "assistant; it went to the model marked as data (correlation id {})", call.name(),
+                        MDC.get(CorrelationIdFilter.MDC_KEY));
+                telemetry.instructionLike(call.name(), channel);
             }
             return done(call, ToolOutcome.OK, result, started);
         } catch (BusinessException refused) {

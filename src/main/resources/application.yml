@@ -510,6 +510,13 @@ stockflow:
     # CLOUD_ALLOWED, or LOCAL_ONLY: no model, embedding or document reader outside the company's network is ever built
     # (loopback, private addresses, single-label and .local/.internal names). The technical half of AQ-01.
     data-policy: ${ASSISTANT_DATA_POLICY:CLOUD_ALLOWED}
+    # What the business approved the assistant's data to reach, beside the policy (design §5.5): provider ids
+    # (anthropic, gemini, openai) and hosts outside the company's network, comma-separated; empty for any. A model,
+    # embedding server or reader outside them is refused when the application starts, and the log says why.
+    allowed-providers: ${ASSISTANT_ALLOWED_PROVIDERS:}
+    allowed-hosts: ${ASSISTANT_ALLOWED_HOSTS:}
+    # Customers go to the model provider as KH#1, KH#2 instead of their names; the panel shows the names (ADR-0014).
+    pseudonymise-customers: ${ASSISTANT_PSEUDONYMISE_CUSTOMERS:true}
     model: ${ASSISTANT_MODEL:claude-opus-5-5}
     daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
     # Model routing (docs/assistant-design.md §11). Unset, `model` alone answers, as before. Otherwise a question

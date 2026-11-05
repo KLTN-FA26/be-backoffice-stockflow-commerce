@@ -28,6 +28,8 @@ public record TranscriptEntryResponse(
         List<String> unverifiedNumbers,
         @Schema(description = "Codes the answer writes that nothing it was given holds, as written")
         List<String> unverifiedCodes,
+        @Schema(description = "Lookups whose data held typed text that reads like an instruction to the assistant")
+        List<String> instructionLike,
         @JsonInclude(JsonInclude.Include.ALWAYS)
         @Schema(description = "The verdict the caller gave this answer; null for none, and for a question",
                 allowableValues = {"UP", "DOWN"}, nullable = true)

@@ -105,7 +105,7 @@ class GetCustomerPriceTool implements AssistantTool {
         String sku = new Sku(arguments.text("sku", Sku.MAX_LENGTH)).code();
         int quantity = arguments.integer("quantity", 0, MAX_QUANTITY);
         CustomerMatch customer = CustomerMatch.find(customers, customerText,
-                user.can(ToolPermissions.CUSTOMERS, Action.READ));
+                user.can(ToolPermissions.CUSTOMERS, Action.READ), arguments.pseudonyms());
         if (!customer.found()) {
             return Answer.noCustomer(sku, customer);
         }
@@ -129,7 +129,7 @@ class GetCustomerPriceTool implements AssistantTool {
      * @param candidates      the customers the text matched, when it named none exactly
      * @param note            why there is no price, when there is none
      */
-    record Answer(String customerName, String customerStatus, String sku, String source, Integer moq,
+    record Answer(CustomerName customerName, String customerStatus, String sku, String source, Integer moq,
                   String currency, List<Tier> tiers, Integer quantity, Tier tierForQuantity, Boolean belowMoq,
                   List<CustomerMatch.Candidate> candidates, String note) {
 
@@ -141,7 +141,7 @@ class GetCustomerPriceTool implements AssistantTool {
                     .max(Comparator.comparingInt(Tier::minQuantity));
             String currency = schedule.tiers().isEmpty() ? null
                     : schedule.tiers().getFirst().unitPrice().currency().getCurrencyCode();
-            return new Answer(customer.name(), customer.status(), schedule.sku(), schedule.source().name(),
+            return new Answer(customer.customerName(), customer.status(), schedule.sku(), schedule.source().name(),
                     schedule.moq(), currency, tiers, quantity, applies.orElse(null),
                     quantity == null ? null : applies.isEmpty(), List.of(), null);
         }
@@ -152,7 +152,8 @@ class GetCustomerPriceTool implements AssistantTool {
         }
 
         static Answer noPrice(CustomerMatch customer, String sku) {
-            return new Answer(customer.name(), customer.status(), sku, null, null, null, List.of(), null, null, null,
+            return new Answer(customer.customerName(), customer.status(), sku, null, null, null, List.of(), null, null,
+                    null,
                     List.of(), "No price is set for " + sku + ": not for this customer, not for its customer group "
                     + "and not on the list price. The SKU may be mistyped, or it is not priced for sale; say so and "
                     + "suggest checking the code, never a price.");

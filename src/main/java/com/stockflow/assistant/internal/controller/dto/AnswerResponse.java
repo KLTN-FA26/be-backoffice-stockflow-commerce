@@ -34,6 +34,10 @@ public record AnswerResponse(
                 + "lookup, question or context of the conversation holds: show them as not found in the looked-up "
                 + "data. Advisory; the answer is unchanged", example = "[\"CUP-A\"]")
         List<String> unverifiedCodes,
+        @Schema(description = "Lookups whose data held text a person typed (a note, a reason) that reads like an "
+                + "instruction to the assistant. It was given to the model as data only; show that the answer may "
+                + "lean on it and that the note is worth reading on its own screen", example = "[\"findOrder\"]")
+        List<String> instructionLike,
         @Schema(description = "The trace of this answer, for opening it in Jaeger; only where "
                 + "stockflow.assistant.expose-trace-id is on (a developer's machine), null elsewhere",
                 example = "4bf92f3577b34da6a3ce929d0e0e4736")

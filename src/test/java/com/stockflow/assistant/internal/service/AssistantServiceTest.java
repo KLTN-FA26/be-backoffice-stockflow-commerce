@@ -92,7 +92,7 @@ class AssistantServiceTest {
             history.add(((PendingMessage) call.getArgument(1)).turn());
             return history;
         });
-        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any())).thenAnswer(call -> {
+        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any(), any())).thenAnswer(call -> {
             List<PendingMessage> produced = call.getArgument(3);
             stored.addAll(produced);
             List<Message> messages = new ArrayList<>();
@@ -792,7 +792,7 @@ class AssistantServiceTest {
             + "left busy for the whole lease")
     void storeFailureReleasesTheClaim() {
         model.then(LanguageModel.StopReason.END_TURN, "ok");
-        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any()))
+        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any(), any()))
                 .thenThrow(new IllegalStateException("the database is gone"));
 
         assertThatThrownBy(() -> service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER))
@@ -805,7 +805,7 @@ class AssistantServiceTest {
             + "errors")
     void failureAndStoreFailure() {
         model.failNext();
-        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any()))
+        when(conversations.appendAndRelease(eq(CONVERSATION), any(), any(), anyList(), any(), any()))
                 .thenThrow(new IllegalStateException("the database is gone"));
 
         assertThatThrownBy(() -> service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER))

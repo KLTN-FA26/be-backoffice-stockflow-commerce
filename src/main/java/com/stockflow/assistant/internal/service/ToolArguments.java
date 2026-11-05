@@ -18,9 +18,25 @@ import java.util.List;
 public final class ToolArguments {
 
     private final JsonNode node;
+    private final Pseudonyms pseudonyms;
+
+    private ToolArguments(JsonNode node, Pseudonyms pseudonyms) {
+        this.node = node;
+        this.pseudonyms = pseudonyms;
+    }
 
     private ToolArguments(JsonNode node) {
-        this.node = node;
+        this(node, null);
+    }
+
+    /** The same arguments, read in a conversation whose customers have aliases ({@link CustomerName}). */
+    ToolArguments withPseudonyms(Pseudonyms aliases) {
+        return aliases == null ? this : new ToolArguments(node, aliases);
+    }
+
+    /** The question's customer aliases, so a tool taking a customer accepts "KH#3"; null where there are none. */
+    Pseudonyms pseudonyms() {
+        return pseudonyms;
     }
 
     static ToolArguments parse(ObjectMapper json, String arguments) {

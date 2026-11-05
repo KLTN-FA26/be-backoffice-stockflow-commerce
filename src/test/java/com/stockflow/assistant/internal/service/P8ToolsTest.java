@@ -331,7 +331,7 @@ class P8ToolsTest {
                 assertThat(total.amount()).isEqualByComparingTo("72000000");
             });
             FindOverdueCustomersTool.Row row = answer.customers().getFirst();
-            assertThat(row.customerName()).isEqualTo("Công ty In Ly ABC");
+            assertThat(row.customerName().name()).isEqualTo("Công ty In Ly ABC");
             assertThat(row.orderNumbers()).isEqualTo("SO-1, SO-2, SO-3 (+2)");
             assertThat(row.overdueAmount()).isEqualByComparingTo("15000000");
             assertThat(row.oldestDueDate()).isEqualTo(LocalDate.of(2026, 10, 14));

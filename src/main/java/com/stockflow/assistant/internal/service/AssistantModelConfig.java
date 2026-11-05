@@ -51,11 +51,12 @@ class AssistantModelConfig {
             log.info("The assistant is switched off (stockflow.assistant.enabled=false)");
             return new Unavailable();
         }
-        if (!properties.allowedByPolicy()) {
-            log.warn("The data policy {} forbids provider {} at {}: the assistant answers 503 ASSISTANT_DISABLED "
-                    + "until it runs on a model inside the company's network (provider openai, a local "
-                    + "openai-compatible.base-url)", properties.dataPolicy(), properties.provider(),
-                    AssistantProperties.loggable(properties.endpoint()));
+        log.info("The assistant's data may reach: {}", properties.boundary().describe());
+        Optional<String> outside = properties.boundaryRefusal();
+        if (outside.isPresent()) {
+            log.warn("The assistant cannot use provider {} at {}: {}. It answers 503 ASSISTANT_DISABLED until it runs "
+                    + "on a model the data policy and stockflow.assistant.allowed-providers / allowed-hosts allow",
+                    properties.provider(), AssistantProperties.loggable(properties.endpoint()), outside.get());
             return new Unavailable();
         }
         if (properties.apiKey().isEmpty() && properties.providerKind().needsKey()) {

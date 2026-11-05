@@ -15,11 +15,13 @@ import java.util.Objects;
  * <p><b>A record of its own.</b> Routing is optional, and {@link AssistantProperties} is built by hand in many tests:
  * unset, these settings change nothing, and nothing that builds the assistant's other settings has to know them.</p>
  *
- * <p><b>One provider, one key.</b> Every model of the list is called on {@code stockflow.assistant.provider} with its
- * key and its other settings (effort, timeouts, output tokens). A list that mixed vendors would need a key per vendor,
- * and choosing that key per model is exactly where one vendor's credential ends up sent to the other.</p>
+ * <p><b>Each vendor its own key.</b> An entry is {@code provider/model} ({@code gemini/gemini-3.5-flash},
+ * {@code openai/qwen3:8b}) or a bare model id of {@code stockflow.assistant.provider}. {@link ModelCatalog} gives each
+ * entry its own vendor's key only, never the assistant's key of another vendor, and drops one the data policy or the
+ * allow-lists refuse ({@link DataBoundary}); the other settings (effort, timeouts, output tokens) are the assistant's.</p>
  *
- * @param models            the provider's model ids, cheapest first ({@code ASSISTANT_MODELS}, a comma list). Empty:
+ * @param models            the models, cheapest first ({@code ASSISTANT_MODELS}, a comma list), each
+ *                          {@code provider/model} or a model of the assistant's provider. Empty:
  *                          {@code stockflow.assistant.model} alone, as before
  * @param escalateOnFailure a question the model could not answer — an empty or malformed reply twice, or still asking
  *                          for lookups when they ran out — is answered once more, from the start, on the next model

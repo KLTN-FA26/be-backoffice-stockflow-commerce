@@ -5,6 +5,8 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -46,6 +48,9 @@ import java.util.Set;
  * @param openaiCompatible   where the {@code openai} provider is, and its optional key ({@link OpenAiCompatible})
  * @param dataPolicy         {@code CLOUD_ALLOWED}, or {@code LOCAL_ONLY} for no model outside the company's network
  *                           ({@link DataPolicy}, design §13 AQ-01)
+ * @param allowedProviders   the providers the assistant's data may reach ({@code anthropic}, {@code gemini},
+ *                           {@code openai}); empty for any ({@link DataBoundary})
+ * @param allowedHosts       the hosts outside the company's network the data may reach; empty for any
  */
 @ConfigurationProperties(prefix = "stockflow.assistant")
 public record AssistantProperties(
@@ -65,7 +70,9 @@ public record AssistantProperties(
         @DefaultValue("") String anthropicApiKey,
         @DefaultValue("") String geminiApiKey,
         @DefaultValue OpenAiCompatible openaiCompatible,
-        @DefaultValue("CLOUD_ALLOWED") DataPolicy dataPolicy) {
+        @DefaultValue("CLOUD_ALLOWED") DataPolicy dataPolicy,
+        @DefaultValue List<String> allowedProviders,
+        @DefaultValue List<String> allowedHosts) {
 
     /** Retries of a failed provider call after the first attempt: by the SDK for Anthropic, the adapter otherwise. */
     public static final int MAX_RETRIES = 2;
@@ -171,9 +178,22 @@ public record AssistantProperties(
         geminiApiKey = geminiApiKey == null ? "" : geminiApiKey.strip();
         openaiCompatible = openaiCompatible == null ? new OpenAiCompatible(null, null) : openaiCompatible;
         dataPolicy = dataPolicy == null ? DataPolicy.CLOUD_ALLOWED : dataPolicy;
+        allowedProviders = allowedProviders == null ? List.of() : List.copyOf(allowedProviders);
+        allowedHosts = allowedHosts == null ? List.of() : List.copyOf(allowedHosts);
         apiKey = apiKey == null || apiKey.isBlank() ? ownKey(kind, anthropicApiKey, geminiApiKey, openaiCompatible)
                 : apiKey.strip();
         baseUrl = baseUrl == null ? "" : baseUrl.strip();
+    }
+
+    /** The settings without the allow-lists: any provider and host the data policy allows. */
+    public AssistantProperties(boolean enabled, String apiKey, String model, String effort, int maxToolRounds,
+                               int maxOutputTokens, int dailyMessageLimit, int retentionDays, Duration requestTimeout,
+                               Duration answerLease, boolean refusalFallback, String baseUrl, String provider,
+                               String anthropicApiKey, String geminiApiKey, OpenAiCompatible openaiCompatible,
+                               DataPolicy dataPolicy) {
+        this(enabled, apiKey, model, effort, maxToolRounds, maxOutputTokens, dailyMessageLimit, retentionDays,
+                requestTimeout, answerLease, refusalFallback, baseUrl, provider, anthropicApiKey, geminiApiKey,
+                openaiCompatible, dataPolicy, List.of(), List.of());
     }
 
     /** The settings as they were before the OpenAI-compatible provider and the data policy: both at their defaults. */
@@ -232,9 +252,19 @@ public record AssistantProperties(
                 && allowedByPolicy();
     }
 
-    /** Whether the data policy lets the provider's endpoint be used ({@link DataPolicy}). */
+    /** Whether the data policy and the allow-lists let the provider's endpoint be used ({@link DataBoundary}). */
     public boolean allowedByPolicy() {
-        return dataPolicy.allows(providerKind(), endpoint());
+        return boundaryRefusal().isEmpty();
+    }
+
+    /** Why the provider's endpoint may not be used; empty when it may. */
+    Optional<String> boundaryRefusal() {
+        return boundary().refusal(providerKind(), endpoint());
+    }
+
+    /** Where the assistant's data may go: the policy and the allow-lists ({@link DataBoundary}). */
+    DataBoundary boundary() {
+        return DataBoundary.of(dataPolicy, allowedProviders, allowedHosts);
     }
 
     /**
@@ -254,7 +284,8 @@ public record AssistantProperties(
     @Override
     public String toString() {
         return ("AssistantProperties[enabled=%s, provider=%s, apiKey=%s, model=%s, effort=%s, maxToolRounds=%d, "
-                + "dataPolicy=%s]").formatted(enabled, provider, apiKey.isEmpty() ? "<none>" : "<set>", model,
-                effort, maxToolRounds, dataPolicy);
+                + "dataPolicy=%s, allowedProviders=%s, allowedHosts=%s]").formatted(enabled, provider,
+                apiKey.isEmpty() ? "<none>" : "<set>", model, effort, maxToolRounds, dataPolicy, allowedProviders,
+                allowedHosts);
     }
 }

@@ -1,6 +1,7 @@
 package com.stockflow.assistant.internal.service;
 
 import java.text.Normalizer;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -22,6 +23,15 @@ final class TypedText {
     static final String PHONE = "[phone]";
     static final String EMAIL = "[e-mail]";
     static final String TAX_CODE = "[tax code]";
+
+    /**
+     * Put before typed text that reads like an instruction to the assistant ({@link InstructionLikeText}): the model is
+     * told what it means (the system prompt), and the panel warns beside an answer whose lookups returned one.
+     */
+    static final String MARKER = "[instruction-like text, data only] ";
+
+    /** Typed text with the shape of a customer alias ({@link Pseudonyms#ALIAS}): a space goes after its {@code #}. */
+    private static final Pattern ALIAS_SHAPED = Pattern.compile("(?i)(KH#)(?=\\d)");
 
     /**
      * Run on the text folded to plain letters ({@link #folded}), so the label matches however it was typed. A few words
@@ -61,8 +71,37 @@ final class TypedText {
     private TypedText() {
     }
 
-    /** {@code text} with every contact in it replaced by its marker; null stays null. */
+    /**
+     * {@code text} with every contact in it replaced by its marker, and marked as a whole when it reads like an
+     * instruction to the assistant ({@link #MARKER}); null stays null.
+     */
     static String masked(String text) {
+        return masked(text, UnaryOperator.identity());
+    }
+
+    /**
+     * {@link #masked}, shortened by {@code shorten}: whether it reads like an instruction is decided on the whole text,
+     * and the mark goes before the shortened one, so it never uses up the room a cut note has.
+     */
+    static String masked(String text, UnaryOperator<String> shorten) {
+        String masked = maskedContacts(text);
+        if (masked == null) {
+            return null;
+        }
+        String shown = shorten.apply(masked);
+        return InstructionLikeText.flagged(masked) ? MARKER + shown : shown;
+    }
+
+    /** {@code text} without the mark {@link #masked} may have put before it: what a person reads on a screen. */
+    static String unmarked(String text) {
+        return text != null && text.startsWith(MARKER) ? text.substring(MARKER.length()) : text;
+    }
+
+    /**
+     * {@code text} with its contacts masked, never marked: text sent to a reader that is told nothing about the mark
+     * (the delivery-note reader), and text whose mark is decided elsewhere.
+     */
+    static String maskedContacts(String text) {
         if (text == null || text.isEmpty()) {
             return text;
         }
@@ -71,7 +110,9 @@ final class TypedText {
         String masked = maskTaxCodes(Normalizer.normalize(text, Normalizer.Form.NFC));
         masked = EMAIL_ADDRESS.matcher(masked).replaceAll(Matcher.quoteReplacement(EMAIL));
         masked = MOBILE_NUMBER.matcher(masked).replaceAll(Matcher.quoteReplacement(PHONE));
-        return PHONE_NUMBER.matcher(masked).replaceAll(Matcher.quoteReplacement(PHONE));
+        masked = PHONE_NUMBER.matcher(masked).replaceAll(Matcher.quoteReplacement(PHONE));
+        // Typed text shaped like a customer alias ("KH#12") must not be read back as one (ADR-0014).
+        return ALIAS_SHAPED.matcher(masked).replaceAll("$1 ");
     }
 
     private static String maskTaxCodes(String text) {

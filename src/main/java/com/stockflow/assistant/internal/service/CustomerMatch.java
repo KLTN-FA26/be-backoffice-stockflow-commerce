@@ -51,6 +51,26 @@ record CustomerMatch(UUID customerId, String name, String status, List<Candidate
      *                which customers partly match
      */
     static CustomerMatch find(CustomerService customers, String typed, boolean mayList) {
+        return find(customers, typed, mayList, null);
+    }
+
+    /**
+     * {@link #find(CustomerService, String, boolean)}, where the text may also be one of the conversation's customer
+     * aliases ({@code KH#3}, ADR-0014): the model knows a customer it was shown only by that. An alias stands only for a
+     * customer a lookup of this conversation named, so it lists no one the caller was not already shown.
+     *
+     * @param pseudonyms the question's aliases; null where there are none
+     */
+    static CustomerMatch find(CustomerService customers, String typed, boolean mayList, Pseudonyms pseudonyms) {
+        if (pseudonyms != null && Pseudonyms.looksLikeAlias(typed)) {
+            java.util.Optional<UUID> aliased = pseudonyms.customerOf(typed);
+            if (aliased.isEmpty()) {
+                return none(List.of(), "'" + typed.strip() + "' stands for no customer of this conversation: an alias "
+                        + "is given only to a customer a lookup here named. Ask which customer is meant.");
+            }
+            return customers.findById(aliased.get()).map(CustomerMatch::chosen).orElseGet(() -> none(List.of(),
+                    "The customer " + typed.strip() + " stood for is no longer registered."));
+        }
         // Searched as it is compared: "Công ty  ABC", typed with two blanks or a pasted no-break space, is the
         // customer "Công ty ABC".
         String text = plain(typed);
@@ -85,14 +105,13 @@ record CustomerMatch(UUID customerId, String name, String status, List<Candidate
                 return chosen(only);
             }
             // The customer search also looks at e-mail, phone and tax code: matched there, it is a guess to confirm.
-            return none(List.of(new Candidate(only.fullName(), only.status())), "One customer matches '" + text
+            return none(List.of(Candidate.of(only)), "One customer matches '" + text
                     + "', but not by its name; ask whether it is the one meant, or call again with its full name.");
         }
         if (found.items().isEmpty()) {
             return none(List.of(), "No customer matches '" + text + "'.");
         }
-        return none(found.items().stream().limit(MAX_CANDIDATES)
-                        .map(customer -> new Candidate(customer.fullName(), customer.status())).toList(),
+        return none(found.items().stream().limit(MAX_CANDIDATES).map(Candidate::of).toList(),
                 "Several customers match '" + text + "' (" + found.totalElements() + " in all"
                         + (found.totalElements() > MAX_CANDIDATES ? ", the first " + MAX_CANDIDATES + " by name "
                         + "listed" : "") + "); ask which one is meant, or call again with its full name or tax code.");
@@ -100,6 +119,11 @@ record CustomerMatch(UUID customerId, String name, String status, List<Candidate
 
     boolean found() {
         return customerId != null;
+    }
+
+    /** The chosen customer's name, as a result writes it: an alias for the model provider ({@link CustomerName}). */
+    CustomerName customerName() {
+        return customerId == null ? null : new CustomerName(customerId, name);
     }
 
     private static PageResponse<CustomerSummary> search(CustomerService customers, String text) {
@@ -150,7 +174,14 @@ record CustomerMatch(UUID customerId, String name, String status, List<Candidate
         return compact.matches("\\d{10}(-\\d{3})?|\\d{12}") ? compact : null;
     }
 
-    /** @param status the account's status: ACTIVE, or BLOCKED, INACTIVE, PENDING_ACTIVATION */
-    record Candidate(String customerName, String status) {
+    /**
+     * @param customerName the name, written as an alias for the model provider ({@link CustomerName})
+     * @param status       the account's status: ACTIVE, or BLOCKED, INACTIVE, PENDING_ACTIVATION
+     */
+    record Candidate(CustomerName customerName, String status) {
+
+        static Candidate of(CustomerSummary customer) {
+            return new Candidate(new CustomerName(customer.customerId(), customer.fullName()), customer.status());
+        }
     }
 }

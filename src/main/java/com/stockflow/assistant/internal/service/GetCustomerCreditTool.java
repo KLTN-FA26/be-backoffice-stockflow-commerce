@@ -122,11 +122,12 @@ class GetCustomerCreditTool implements AssistantTool {
         ScopeGuards.requireBackOffice(user);
         alsoRequires().forEach(permission -> user.require(permission.resource(), permission.action()));
         CustomerMatch customer = CustomerMatch.find(customers, arguments.text("customer", 200),
-                user.can(ToolPermissions.CUSTOMERS, Action.READ));
+                user.can(ToolPermissions.CUSTOMERS, Action.READ), arguments.pseudonyms());
         if (!customer.found()) {
             return new Answer(null, null, null, null, null, customer.candidates(), customer.note());
         }
-        return new Answer(customer.name(), customer.status(), Terms.of(customers.creditTerms(customer.customerId())),
+        return new Answer(customer.customerName(), customer.status(),
+                Terms.of(customers.creditTerms(customer.customerId())),
                 Receivables.of(payments.creditPosition(customer.customerId())),
                 Credit.of(credit.creditOf(customer.customerId())), List.of(), null);
     }
@@ -138,7 +139,8 @@ class GetCustomerCreditTool implements AssistantTool {
      * @param candidates  the customers the text matched, when it named none exactly
      * @param note        why no customer was chosen
      */
-    record Answer(String customerName, String customerStatus, Terms terms, Receivables receivables, Credit credit,
+    record Answer(CustomerName customerName, String customerStatus, Terms terms, Receivables receivables,
+                  Credit credit,
                   List<CustomerMatch.Candidate> candidates, String note) {
     }
 

@@ -126,7 +126,7 @@ class CustomerMatchTest {
         CustomerMatch match = CustomerMatch.find(customers, "ABC", true);
 
         assertThat(match.found()).isFalse();
-        assertThat(match.candidates()).extracting(CustomerMatch.Candidate::customerName)
+        assertThat(match.candidates()).extracting(candidate -> candidate.customerName().name())
                 .containsExactly("Công ty ABC Hà Nội", "Công ty ABC Sài Gòn");
         assertThat(match.note()).contains("Several customers match 'ABC'", "2 in all", "ask which one");
         String sent = JSON.writeValueAsString(match.candidates()) + match.note();

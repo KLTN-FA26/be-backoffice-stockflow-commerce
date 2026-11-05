@@ -51,16 +51,27 @@ public class ConversationService {
     private final AnswerFeedbackRepository verdicts;
     private final Clock clock;
     private final ObjectMapper json;
+    private final CustomerPseudonyms pseudonyms;
 
     ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
                         ObjectMapper json) {
         this(conversations, verdicts, clock, json, null);
     }
 
-    /** @param actions the suggestions answers make (ADR-0011); null in tests of the transcript alone */
-    @org.springframework.beans.factory.annotation.Autowired
     ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
                         ObjectMapper json, AssistantActions actions) {
+        this(conversations, verdicts, clock, json, actions, CustomerPseudonyms.OFF);
+    }
+
+    /**
+     * @param actions    the suggestions answers make (ADR-0011); null in tests of the transcript alone
+     * @param pseudonyms the customer aliases answers were written with, stored with them and read back as names
+     *                   (ADR-0014)
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
+                        ObjectMapper json, AssistantActions actions, CustomerPseudonyms pseudonyms) {
+        this.pseudonyms = pseudonyms;
         this.actions = actions;
         this.conversations = conversations;
         this.verdicts = verdicts;
@@ -165,7 +176,10 @@ public class ConversationService {
             entries.add(TranscriptEntry.question(message));
         }
         answer(asked, exchange, earlier, entries);
-        return withActions(withVerdicts(entries), conversationId);
+        // Checked as stored, with the aliases the model saw; shown with the names (ADR-0014).
+        java.util.function.UnaryOperator<String> reveal = pseudonyms.revealer(conversationId);
+        return withActions(withVerdicts(entries.stream().map(entry -> entry.revealed(reveal)).toList()),
+                conversationId);
     }
 
     /** Each answer with the suggestions its proposals became, and what their owner decided. */
@@ -258,8 +272,18 @@ public class ConversationService {
     /** @param channel CHAT for the user's own question, PROACTIVE for the watch's: where its tool runs are recorded */
     public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
                                           List<PendingMessage> produced, ToolChannel channel) {
+        return appendAndRelease(conversationId, ownerUserId, claimedAt, produced, channel, null);
+    }
+
+    /**
+     * @param aliases the customer aliases the question's tools gave out, stored in this transaction: an answer stored
+     *                with "KH#3" always has the customer it stands for (ADR-0014); null for none
+     */
+    public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
+                                          List<PendingMessage> produced, ToolChannel channel, Pseudonyms aliases) {
         List<Message> stored = conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt,
                 channel);
+        pseudonyms.save(conversationId, aliases);
         if (actions != null) {
             suggest(conversationId, ownerUserId, stored);
         }
@@ -341,6 +365,8 @@ public class ConversationService {
      *                          ({@link AnswerNumbers}); advisory
      * @param unverifiedCodes   codes the answer writes that nothing the model was given for it holds
      *                          ({@link AnswerCodes}); advisory
+     * @param instructionLike   the tools whose results held text a person typed that reads like an instruction to the
+     *                          assistant ({@link InstructionLikeText}); the panel warns that the answer may lean on it
      * @param followUps         the questions its lookups lead to, before any reader's permissions are applied
      *                          ({@link FollowUps})
      * @param feedback          the verdict its owner gave it; null for none, and for a question
@@ -349,8 +375,8 @@ public class ConversationService {
                                   List<ToolCallView> toolCalls, boolean cutShort, List<String> citations,
                                   List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
                                   List<String> unverifiedNumbers, List<String> unverifiedCodes,
-                                  List<FollowUps.FollowUp> followUps, FeedbackVerdict feedback,
-                                  Map<String, AssistantActions.ActionView> actions) {
+                                  List<String> instructionLike, List<FollowUps.FollowUp> followUps,
+                                  FeedbackVerdict feedback, Map<String, AssistantActions.ActionView> actions) {
 
         public TranscriptEntry {
             actions = actions == null ? Map.of() : Map.copyOf(actions);
@@ -359,7 +385,7 @@ public class ConversationService {
         static TranscriptEntry question(Message message) {
             return new TranscriptEntry(message.id(), message.sequence(), MessageRole.USER, message.text(),
                     message.createdAt(), List.of(), false, List.of(), List.of(), List.of(), List.of(), List.of(),
-                    List.of(), null, Map.of());
+                    List.of(), List.of(), null, Map.of());
         }
 
         /**
@@ -414,7 +440,14 @@ public class ConversationService {
                     AnswerSources.citations(last.text(), executions, json),
                     AnswerSources.proposals(executions, json), ResultTable.of(executions, json),
                     AnswerNumbers.unverified(last.text(), grounds), AnswerCodes.unverified(last.text(), grounds),
-                    FollowUps.leads(executions, json), null, Map.of()));
+                    instructionLike(executions), FollowUps.leads(executions, json), null, Map.of()));
+        }
+
+        /** The tools whose results carried typed text marked as instruction-like ({@link TypedText#MARKER}). */
+        static List<String> instructionLike(List<ToolExecution> executions) {
+            return executions.stream().filter(execution -> execution.outcome() == ToolOutcome.OK
+                            && execution.result().contains(TypedText.MARKER))
+                    .map(execution -> execution.call().name()).distinct().toList();
         }
 
         /** The question, if any, then the turns of the messages produced for it. */
@@ -427,15 +460,22 @@ public class ConversationService {
             return turns;
         }
 
+        /** With the customers' names put back where the model was given aliases (ADR-0014). */
+        TranscriptEntry revealed(java.util.function.UnaryOperator<String> reveal) {
+            return new TranscriptEntry(messageId, sequence, role, reveal.apply(text), at, toolCalls, cutShort,
+                    citations, proposals, tables.stream().map(table -> table.revealed(reveal)).toList(),
+                    unverifiedNumbers, unverifiedCodes, instructionLike, followUps, feedback, actions);
+        }
+
         TranscriptEntry withFeedback(FeedbackVerdict verdict) {
             return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations, proposals,
-                    tables, unverifiedNumbers, unverifiedCodes, followUps, verdict, actions);
+                    tables, unverifiedNumbers, unverifiedCodes, instructionLike, followUps, verdict, actions);
         }
 
         /** With the suggestions of its proposals, by proposal key ({@link AnswerSources.Proposal#key}). */
         TranscriptEntry withActions(Map<String, AssistantActions.ActionView> made) {
             return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations, proposals,
-                    tables, unverifiedNumbers, unverifiedCodes, followUps, feedback, made);
+                    tables, unverifiedNumbers, unverifiedCodes, instructionLike, followUps, feedback, made);
         }
     }
 

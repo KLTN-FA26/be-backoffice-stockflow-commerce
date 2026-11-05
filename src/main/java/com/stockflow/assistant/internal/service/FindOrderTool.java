@@ -340,7 +340,7 @@ class FindOrderTool implements AssistantTool {
             BigDecimal fee = cancel == null ? null : cancel.feeAmount();
             return new Cancellation(cancel == null || cancel.reasonCode() == null ? null : cancel.reasonCode().name(),
                     cancel == null ? null : TypedText.masked(cancel.reason()), kept,
-                    cancel == null ? null : cancel.feeReason(), fee,
+                    cancel == null ? null : TypedText.masked(cancel.feeReason()), fee,
                     paid.subtract(kept).max(BigDecimal.ZERO),
                     fee == null ? null : fee.subtract(kept).max(BigDecimal.ZERO));
         }

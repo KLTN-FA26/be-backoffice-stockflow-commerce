@@ -75,12 +75,19 @@ class ParallelTools {
      * @return one execution per call, in the order of {@code calls}; never throws but an {@link Error}
      */
     List<ToolExecution> run(List<ToolCall> calls, ToolChannel channel, Consumer<ToolExecution> finished) {
+        return run(calls, channel, null, finished);
+    }
+
+    /** @param pseudonyms the question's customer aliases ({@link AssistantTools#execute(ToolCall, ToolChannel,
+     *                   Pseudonyms)}); null for none */
+    List<ToolExecution> run(List<ToolCall> calls, ToolChannel channel, Pseudonyms pseudonyms,
+                            Consumer<ToolExecution> finished) {
         if (calls.isEmpty()) {
             return List.of();
         }
         ToolExecution[] executions = new ToolExecution[calls.size()];
         if (calls.size() == 1) {
-            executions[0] = guarded(calls.getFirst(), channel);
+            executions[0] = guarded(calls.getFirst(), channel, pseudonyms);
             finished.accept(executions[0]);
             return List.of(executions);
         }
@@ -96,14 +103,14 @@ class ParallelTools {
                 running.add(done.submit(ThreadContext.carryWithScope(() -> {
                     batch.acquire();
                     try {
-                        return new Done(index, guarded(calls.get(index), channel));
+                        return new Done(index, guarded(calls.get(index), channel, pseudonyms));
                     } finally {
                         batch.release();
                     }
                 })));
                 submitted++;
             } catch (RejectedExecutionException shuttingDown) {
-                executions[index] = guarded(calls.get(index), channel);
+                executions[index] = guarded(calls.get(index), channel, pseudonyms);
                 finished.accept(executions[index]);
             }
         }
@@ -130,7 +137,7 @@ class ParallelTools {
      * One call, once one of the instance's places is free. Whatever it throws but an {@link Error} is its
      * {@code FAILED}: the call is answered, and the others of its batch are not lost with it.
      */
-    private ToolExecution guarded(ToolCall call, ToolChannel channel) {
+    private ToolExecution guarded(ToolCall call, ToolChannel channel, Pseudonyms pseudonyms) {
         try {
             places.acquire();
         } catch (InterruptedException interrupted) {
@@ -138,7 +145,7 @@ class ParallelTools {
             return stopped(call);
         }
         try {
-            return tools.execute(call, channel);
+            return pseudonyms == null ? tools.execute(call, channel) : tools.execute(call, channel, pseudonyms);
         } catch (RuntimeException failed) {
             log.error("Assistant tool {} failed outside its own handling", call.name(), failed);
             return new ToolExecution(call, ToolOutcome.FAILED, "FAILED: the lookup could not be completed", 0);

@@ -284,6 +284,9 @@ class ResultTableTest {
         if (raw == Instant.class) {
             return Instant.parse("2026-10-28T03:00:00Z");
         }
+        if (raw == java.util.UUID.class) {
+            return java.util.UUID.fromString("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b");
+        }
         if (raw == List.class || raw == Set.class) {
             Object element = sample(((ParameterizedType) type).getActualTypeArguments()[0]);
             return raw == List.class ? List.of(element) : Set.of(element);

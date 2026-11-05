@@ -102,15 +102,35 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
         UUID seller = staff("SALES_STAFF");
         script(toolUse(call("toolu_exact", "getCustomerPrice", price(customers.abcName(), "sofa-3s-grey", 120)),
                         call("toolu_fragment", "getCustomerPrice", price("In Ly " + tag, SKU, 0))),
-                answer("Giá riêng của khách: từ 100 cái 4.800.000 ₫."));
+                answer("Giá riêng của KH#1: từ 100 cái 4.800.000 ₫."), answer("KH#1 không có giá nào khác."));
         String conversation = start(Role.SALES_STAFF, seller);
 
-        http.asRole(Role.SALES_STAFF, seller, ask(conversation, "Khách " + customers.abcName()
-                + " lấy 120 bộ sofa thì giá bao nhiêu?")).andExpect(status().isOk());
+        String shown = http.asRole(Role.SALES_STAFF, seller, ask(conversation, "Khách " + customers.abcName()
+                + " lấy 120 bộ sofa thì giá bao nhiêu?")).andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
 
         String exact = result(conversation, "toolu_exact");
         assertThat(outcome(conversation, "toolu_exact")).isEqualTo("OK");
-        assertThat(JsonPath.<String>read(exact, "$.customerName")).isEqualTo(customers.abcName());
+        assertThat(named(conversation, JsonPath.read(exact, "$.customerName"))).isEqualTo(customers.abcName());
+        assertThat(exact).as("the model provider is sent the alias, never the name").doesNotContain(
+                customers.abcName());
+        assertThat(JsonPath.<String>read(shown, "$.data.answer")).as("the panel shows the name")
+                .isEqualTo("Giá riêng của " + customers.abcName() + ": từ 100 cái 4.800.000 ₫.");
+        String reopened = http.asRole(Role.SALES_STAFF, seller, get(BASE + "/" + conversation + "/messages")).andReturn()
+                .getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(reopened).as("and so does the conversation reopened").contains(customers.abcName())
+                .doesNotContain("KH#1");
+
+        // Asked again by the name the panel showed: the question goes to the provider with the alias.
+        http.asRole(Role.SALES_STAFF, seller, ask(conversation, "Khách " + customers.abcName()
+                + " còn giá nào khác không?")).andExpect(status().isOk());
+        String asked = jdbc.queryForObject("""
+                select content::text from assistant.message where conversation_id = ?::uuid and role = 'USER'
+                order by sequence desc limit 1""", String.class, conversation);
+        assertThat(asked).contains("KH#1").doesNotContain(customers.abcName());
+        assertThat(http.asRole(Role.SALES_STAFF, seller, get(BASE + "/" + conversation + "/messages")).andReturn()
+                .getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8))
+                .contains("Khách " + customers.abcName() + " còn giá nào khác không?").doesNotContain("KH#1");
         assertThat(JsonPath.<String>read(exact, "$.sku")).as("normalised as the screen does").isEqualTo(SKU);
         assertThat(JsonPath.<String>read(exact, "$.source")).isEqualTo("CUSTOMER");
         assertThat(JsonPath.<Integer>read(exact, "$.moq")).isEqualTo(50);
@@ -122,8 +142,11 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
                 customers.abc().toString());
 
         String fragment = result(conversation, "toolu_fragment");
-        assertThat(JsonPath.<List<String>>read(fragment, "$.candidates[*].customerName"))
+        assertThat(JsonPath.<List<String>>read(fragment, "$.candidates[*].customerName").stream()
+                .map(alias -> named(conversation, alias)).toList())
                 .containsExactlyInAnyOrder(customers.abcName(), customers.branchName());
+        assertThat(JsonPath.<List<String>>read(fragment, "$.candidates[*].customerName"))
+                .as("one customer keeps one alias in the conversation").contains("KH#1");
         assertThat(JsonPath.<List<Object>>read(fragment, "$.tiers")).isEmpty();
         assertThat(fragment).doesNotContain(customers.taxCode(), "0903123456", "@example.vn");
     }
@@ -154,7 +177,7 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
         assertThat(fragment).doesNotContain(customers.abcName(), customers.branchName());
 
         String byTaxCode = result(conversation, "toolu_tax");
-        assertThat(JsonPath.<String>read(byTaxCode, "$.customerName")).isEqualTo(customers.abcName());
+        assertThat(named(conversation, JsonPath.read(byTaxCode, "$.customerName"))).isEqualTo(customers.abcName());
         assertThat(JsonPath.<Boolean>read(byTaxCode, "$.belowMoq")).as("30 is under the minimum of 50").isTrue();
         assertThat(byTaxCode).doesNotContain(customers.taxCode());
     }
@@ -188,7 +211,7 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
 
         String owed = result(conversation, "toolu_owed");
         assertThat(outcome(conversation, "toolu_owed")).isEqualTo("OK");
-        assertThat(JsonPath.<String>read(owed, "$.customerName")).isEqualTo(customers.abcName());
+        assertThat(named(conversation, JsonPath.read(owed, "$.customerName"))).isEqualTo(customers.abcName());
         assertThat(JsonPath.<List<String>>read(owed, "$.terms.allowedTerms")).containsExactly("PREPAID", "CREDIT");
         assertThat(JsonPath.<String>read(owed, "$.terms.defaultTerm")).isEqualTo("CREDIT");
         assertThat(JsonPath.<Number>read(owed, "$.terms.creditLimit").doubleValue()).isEqualTo(100_000_000d);
@@ -227,7 +250,7 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
                 .andExpect(status().isOk());
 
         assertThat(outcome(conversation, "toolu_capitals")).isEqualTo("OK");
-        assertThat(JsonPath.<String>read(result(conversation, "toolu_capitals"), "$.customerName"))
+        assertThat(named(conversation, JsonPath.read(result(conversation, "toolu_capitals"), "$.customerName")))
                 .as("found by the exact name, the only way an accountant may name a customer").isEqualTo(registered);
         assertThat(jdbc.queryForObject("SELECT lower('ĐẠI PHÁT' COLLATE \"C\") <> 'đại phát'", Boolean.class))
                 .as("what the C locale's lower() does to Vietnamese capitals, and why the search may not rely on it")
@@ -247,7 +270,8 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
                 .andExpect(status().isOk());
 
         String fragment = result(conversation, "toolu_fragment");
-        assertThat(JsonPath.<List<String>>read(fragment, "$.candidates[*].customerName"))
+        assertThat(JsonPath.<List<String>>read(fragment, "$.candidates[*].customerName").stream()
+                .map(alias -> named(conversation, alias)).toList())
                 .containsExactlyInAnyOrder(customers.abcName(), customers.branchName());
         assertThat(JsonPath.<Map<String, Object>>read(fragment, "$").get("receivables")).isNull();
     }
@@ -563,6 +587,18 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
     private String result(String conversation, String callId) {
         return jdbc.queryForObject("select result from assistant.tool_call where conversation_id = ?::uuid "
                 + "and call_id = ?", String.class, conversation, callId);
+    }
+
+    /**
+     * The customer an alias of the conversation stands for, by its name (ADR-0014): what a tool result sends the model
+     * provider instead.
+     */
+    private String named(String conversation, String alias) {
+        assertThat(alias).as("the model provider is sent an alias, not a name").matches("KH#\\d+");
+        return jdbc.queryForObject("""
+                select c.full_name from assistant.customer_alias a join customer.customer c on c.id = a.customer_id
+                where a.conversation_id = ?::uuid and a.alias_number = ?""", String.class, conversation,
+                Integer.parseInt(alias.substring(3)));
     }
 
     private String outcome(String conversation, String callId) {

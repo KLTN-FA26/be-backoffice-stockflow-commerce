@@ -90,7 +90,7 @@ class GetCustomerPriceToolTest {
         assertThat(between.belowMoq()).isFalse();
         assertThat(atTheStep.tierForQuantity().unitPrice()).isEqualTo(BigDecimal.valueOf(1_650));
         assertThat(above.tierForQuantity().minQuantity()).isEqualTo(10_000);
-        assertThat(between.customerName()).isEqualTo("Công ty In Ly ABC");
+        assertThat(between.customerName().name()).isEqualTo("Công ty In Ly ABC");
         assertThat(between.customerStatus()).isEqualTo("ACTIVE");
     }
 
@@ -156,7 +156,7 @@ class GetCustomerPriceToolTest {
         assertThat(answer.tiers()).isEmpty();
         assertThat(answer.source()).isNull();
         assertThat(answer.note()).contains("No price is set for EVAL-NOPE", "checking the code");
-        assertThat(answer.customerName()).isEqualTo("Công ty In Ly ABC");
+        assertThat(answer.customerName().name()).isEqualTo("Công ty In Ly ABC");
         assertThatThrownBy(() -> tool.run(arguments("ABC", "EVAL-GONE", 100)))
                 .isInstanceOfSatisfying(BusinessException.class,
                         refused -> assertThat(refused.errorCode()).isEqualTo(ErrorCode.CUSTOMER_NOT_FOUND));
@@ -174,7 +174,7 @@ class GetCustomerPriceToolTest {
         verifyNoInteractions(catalog);
         assertThat(answer.tiers()).isEmpty();
         assertThat(answer.customerName()).isNull();
-        assertThat(answer.candidates()).extracting(CustomerMatch.Candidate::customerName,
+        assertThat(answer.candidates()).extracting(candidate -> candidate.customerName().name(),
                 CustomerMatch.Candidate::status).containsExactly(tuple("Công ty In Ly ABC", "ACTIVE"),
                 tuple("Công ty ABC Sài Gòn", "BLOCKED"));
         assertThat(answer.note()).contains("ask which one");

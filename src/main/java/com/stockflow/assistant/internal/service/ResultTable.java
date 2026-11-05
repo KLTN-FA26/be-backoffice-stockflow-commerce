@@ -140,6 +140,20 @@ public final class ResultTable {
             columns = List.copyOf(columns);
             rows = List.copyOf(rows);
         }
+
+        /**
+         * With every text cell passed through {@code reveal}: the customers' names put back where the model was given
+         * aliases (ADR-0014). Rows keep their columns' order.
+         */
+        Table revealed(java.util.function.UnaryOperator<String> reveal) {
+            List<Map<String, Object>> shown = rows.stream().map(row -> {
+                Map<String, Object> cells = new java.util.LinkedHashMap<>();
+                row.forEach((column, value) -> cells.put(column, value instanceof String text ? reveal.apply(text)
+                        : value));
+                return java.util.Collections.unmodifiableMap(cells);
+            }).toList();
+            return new Table(key, tool, columns, shown, total, truncated);
+        }
     }
 
     /** The tools whose results the panel shows as tables, sorted: what the system prompt names. */
@@ -262,7 +276,9 @@ public final class ResultTable {
                 return null;
             }
             if (value.isTextual()) {
-                return value.textValue();
+                // The panel warns beside the answer instead (TranscriptEntry.instructionLike): a person reads the
+                // note as it was typed.
+                return TypedText.unmarked(value.textValue());
             }
             if (value.isBoolean()) {
                 return value.booleanValue();

@@ -106,7 +106,7 @@ class FindOverdueCustomersTool implements AssistantTool {
         Map<java.util.UUID, String> names = named ? customers.fullNames(overdue.customers().stream()
                 .map(OverdueCustomer::customerId).distinct().toList()) : Map.of();
         LocalDate today = BusinessDate.of(clock.instant());
-        List<Row> rows = overdue.customers().stream().map(customer -> new Row(names.get(customer.customerId()),
+        List<Row> rows = overdue.customers().stream().map(customer -> new Row(name(customer.customerId(), names),
                 customer.overdueAmount(), customer.currency(), customer.oldestDueDate(),
                 customer.oldestDueDate() == null ? null
                         : Math.max(0, ChronoUnit.DAYS.between(customer.oldestDueDate(), today)),
@@ -132,8 +132,14 @@ class FindOverdueCustomersTool implements AssistantTool {
      * @param orderNumbers the first {@value FindOverdueCustomersTool#ORDER_NUMBERS} orders the overdue receivables are
      *                     for, earliest due first, comma-separated: one text, so the panel's table shows it too
      */
-    record Row(String customerName, BigDecimal overdueAmount, String currency, LocalDate oldestDueDate,
+    record Row(CustomerName customerName, BigDecimal overdueAmount, String currency, LocalDate oldestDueDate,
                Long daysOverdue, int overdueReceivables, String orderNumbers) {
+    }
+
+    /** A customer's name as the result writes it ({@link CustomerName}); null when it is not to be given or is gone. */
+    private static CustomerName name(java.util.UUID customerId, Map<java.util.UUID, String> names) {
+        String name = names.get(customerId);
+        return name == null ? null : new CustomerName(customerId, name);
     }
 
     /** The first orders, and how many more there are. */

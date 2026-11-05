@@ -335,7 +335,11 @@ public class TodayCard {
             for (String field : column.split("\\.")) {
                 value = value.path(field);
             }
-            cells.put(column, value.isMissingNode() ? NullNode.getInstance() : value);
+            // A note marked as instruction-like is marked for a model; the card is read by a person, no model.
+            cells.put(column, value.isMissingNode() ? NullNode.getInstance()
+                    : value.isTextual() && value.textValue().startsWith(TypedText.MARKER)
+                    ? com.fasterxml.jackson.databind.node.TextNode.valueOf(TypedText.unmarked(value.textValue()))
+                    : value);
         }
         return Collections.unmodifiableMap(cells);
     }

@@ -205,7 +205,7 @@ class FindOrdersTool implements AssistantTool {
         static Hold of(OrderSummary.Lifecycle life) {
             // Masked before it is cut: the first half of a phone number cut in two no longer looks like one, and would
             // reach the provider as typed.
-            return new Hold(life.holdReason().name(), cut(TypedText.masked(life.holdNote())),
+            return new Hold(life.holdReason().name(), TypedText.masked(life.holdNote(), Hold::cut),
                     life.statusBeforeHold() == null ? null : life.statusBeforeHold().name());
         }
 

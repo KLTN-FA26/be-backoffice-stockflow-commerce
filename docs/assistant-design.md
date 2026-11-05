@@ -798,6 +798,24 @@ quyết định của AQ-01.
 
 Key của nhà cung cấp này không bao giờ được gửi tới nhà cung cấp kia (§11).
 
+**Bí danh khách hàng (5/11, ADR-0014).** Từ 5/11 tên khách trong kết quả tool không còn tới nhà cung cấp model:
+`getCustomerPrice`, `getCustomerCredit`, `findOverdueCustomers` và danh sách ứng viên của `CustomerMatch` ghi `KH#1`,
+`KH#2`... (kiểu `CustomerName`). Bảng đối chiếu `assistant.customer_alias` nằm trong database của công ty, cố định suốt
+một hội thoại, được lưu cùng transaction với câu trả lời và bị xóa theo hội thoại. Câu trả lời, bảng dưới nó và
+transcript mở lại hiện tên hiện tại của khách; việc kiểm số và kiểm mã chạy trên bản có bí danh như model đã thấy.
+Tham số `customer` của tool nhận cả bí danh. Khi hội thoại đã cho một khách bí danh, tên đăng ký của khách đó gõ nguyên
+vẹn trong câu hỏi hay nằm trong ghi chú của kết quả tool cũng được thay bằng bí danh. Bí danh là `KH#n` chứ không phải
+`KH-n` để không trùng mã khách kiểu MISA (`KH-012`); chữ người gõ có dạng `KH#12` được chèn dấu cách. Vẫn tới nhà cung
+cấp: tên một khách khi người dùng gõ lần đầu, tên ngắn dưới 6 ký tự, tên nhà cung cấp, tên sản phẩm. MCP và thẻ "hôm nay" vẫn nhận tên thật (không qua model của ứng dụng). Tắt bằng
+`stockflow.assistant.pseudonymise-customers=false`.
+
+**Danh sách nơi nhận dữ liệu (5/11, ADR-0014).** `stockflow.assistant.allowed-providers` (`anthropic`, `gemini`,
+`openai`) và `allowed-hosts` (host ngoài mạng công ty), trống là không giới hạn. `DataBoundary` là phép kiểm chung của
+chat, model định tuyến, embedding và đọc ảnh: thứ tự là `data-policy`, rồi endpoint trong mạng công ty (luôn được
+phép), rồi nhà cung cấp, rồi host. Liệt kê nhà cung cấp mà không ghi host thì chỉ host API chính thức của các hãng đó
+được phép. Gõ sai danh sách chỉ tắt trợ lý, không làm dừng ứng dụng. Cấu hình ngoài danh sách bị từ chối lúc khởi động, log ghi lý do và một dòng liệt kê nơi dữ
+liệu được phép tới. Playground đặt `gemini,openai` và `generativelanguage.googleapis.com`.
+
 **`LOCAL_ONLY`** (4/11, §11): không gì ở trên rời mạng công ty. Khung chat, embedding và đọc ảnh chỉ chạy trên một máy
 chủ chuẩn OpenAI ở địa chỉ nội bộ, ví dụ Ollama trên máy của doanh nghiệp; cấu hình nào khác thì trợ lý không bật.
 
@@ -854,6 +872,13 @@ chấp nhận việc gửi dữ liệu trước khi bật ngoài môi trường 
 - `History` gửi lại câu trả lời cũ đã qua `AnswerText.plain`, đúng như người dùng đã thấy: ảnh mà một kết quả tool
   dụ model viết không được đưa lại cho model như lời của chính nó. Lượt đóng (`PendingMessage.closing`) cũng qua
   `AnswerText.plain`, vì nó có thể bắt đầu bằng chữ model đã viết.
+- **Ghi chú có dạng mệnh lệnh được đánh dấu (5/11, ADR-0014).** `InstructionLikeText` nhận ra chữ do người gõ có
+  dạng ra lệnh cho trợ lý (tiếng Việt có dấu, không dấu, tiếng Anh: "bỏ qua hướng dẫn", "ignore previous instructions",
+  dòng mở đầu `system:`, "hãy trả lời rằng", đòi gọi tool hay in prompt). `TypedText.masked` gắn
+  `[instruction-like text, data only]` vào đầu chữ đó, vẫn gửi, không chặn; system prompt dặn model coi đó là dữ liệu.
+  Câu trả lời có `instructionLike` (tên các tool đã trả về chữ đó) để màn hình cảnh báo; log WARN và metric
+  `assistant.tool.instruction_like` ghi tên tool, không ghi nội dung. Ghi chú bình thường ("theo hướng dẫn của kế
+  toán", "bỏ qua bước in thử") không bị bắt; có test cho cả hai. Lý do phí hủy đơn (`feeReason`) cũng qua `TypedText`.
 - Mô tả tool đánh dấu lý do và ghi chú là văn bản do người gõ, chỉ được trích như dữ liệu. Ghi chú của hệ thống
   gửi kèm lần gọi cuối bắt đầu bằng "Note from the system, not written by the user:", và prompt nói cùng chữ đó
   nằm trong kết quả tool vẫn chỉ là dữ liệu.

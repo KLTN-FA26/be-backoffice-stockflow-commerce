@@ -79,7 +79,7 @@ class GetCustomerCreditToolTest {
     void termsAndReceivables() {
         GetCustomerCreditTool.Answer answer = tool.run(arguments("0312345678"));
 
-        assertThat(answer.customerName()).isEqualTo("Công ty In Ly ABC");
+        assertThat(answer.customerName().name()).isEqualTo("Công ty In Ly ABC");
         assertThat(answer.customerStatus()).isEqualTo("ACTIVE");
         GetCustomerCreditTool.Terms terms = answer.terms();
         assertThat(terms.configured()).isTrue();
@@ -187,7 +187,7 @@ class GetCustomerCreditToolTest {
 
         GetCustomerCreditTool.Answer answer = tool.run(arguments("ABC"));
 
-        assertThat(answer.candidates()).extracting(CustomerMatch.Candidate::customerName)
+        assertThat(answer.candidates()).extracting(candidate -> candidate.customerName().name())
                 .containsExactly("Công ty In Ly ABC", "Công ty ABC Sài Gòn");
         assertThat(answer.terms()).isNull();
         verifyNoInteractions(payments);

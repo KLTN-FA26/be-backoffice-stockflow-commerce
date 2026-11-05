@@ -146,7 +146,7 @@ class FindPendingAdjustmentsTool implements AssistantTool {
                     adjustment.locationCode(), adjustment.sku(), adjustment.lotNumber(), adjustment.quantityDelta(),
                     adjustment.reason() == null ? null : adjustment.reason().name(), adjustment.requestedAt(),
                     waiting, me != null && me.equals(adjustment.requestedBy()), adjustment.stockPackageId() != null,
-                    FindOrdersTool.Hold.cut(TypedText.masked(adjustment.note())));
+                    TypedText.masked(adjustment.note(), FindOrdersTool.Hold::cut));
         }
     }
 }
