@@ -339,8 +339,11 @@ public final class AnswerNumbers {
         }
     }
 
-    /** A field whose number is a count of things: {@code total}, {@code packageCount}, {@code totalLots}. */
-    private static final Pattern COUNT_FIELD = Pattern.compile("(?i).*(?:total|count).*");
+    /**
+     * A field whose number is a count of things: {@code total}, {@code packageCount}, {@code totalLots},
+     * {@code packingCount}, {@code wholeCartons}.
+     */
+    private static final Pattern COUNT_FIELD = Pattern.compile("(?i).*(?:total|count|cartons).*");
 
     /** A JSON object or array is read as values; anything else, the question or an error line, as text. */
     private static void read(String source, Sets sets, Kind kind) {

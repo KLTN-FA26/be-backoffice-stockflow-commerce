@@ -155,8 +155,8 @@ public class TodayCard {
 
     /** The orders in {@code status}, newest first, whatever the hold reason or the day they were placed. */
     static String ordersIn(String status) {
-        return """
-                {"status":"%s","holdReason":"ANY","placedFrom":"","placedTo":"","limit":%d}""".formatted(status, ROWS);
+        return ("{\"status\":\"%s\",\"holdReason\":\"ANY\",\"placedFrom\":\"\",\"placedTo\":\"\",\"customer\":\"\","
+                + "\"limit\":%d}").formatted(status, ROWS);
     }
 
     /** The most recently changed purchase orders in {@code status}, from every supplier. */

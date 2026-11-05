@@ -60,6 +60,13 @@ public interface WarehouseService {
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
 
     /**
+     * Whether a warehouse has this prefix, in either case: what a location code starts with (docs 06 BR-13). Lets a
+     * reader tell a location code of another warehouse from a code that is no location at all ({@code EVAL-CUP-12OZ}),
+     * before refusing the first as out of scope.
+     */
+    boolean isWarehousePrefix(String prefix);
+
+    /**
      * The own codes of the shelves in a zone ({@code A01}, not {@code HCM-A01}), sorted. A cycle count planned by
      * zone (SCRUM-162) counts the bins of these shelves: a zone is a group of shelves this module owns, while a
      * shelf code is part of every bin's location code ({@code <prefix>-<shelf>-<level>-<bin>}), so the count can

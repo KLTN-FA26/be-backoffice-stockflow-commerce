@@ -134,7 +134,7 @@ public class AssistantWatch {
                     "/admin/inventory/alerts?kind=REORDER"),
             HELD_ORDERS, new Watched(HELD_ORDERS, "findOrders",
                     List.of("{\"status\":\"ON_HOLD\",\"holdReason\":\"ANY\",\"placedFrom\":\"\",\"placedTo\":\"\","
-                            + "\"limit\":%d}".formatted(FindOrdersTool.MAX_ROWS)),
+                            + "\"customer\":\"\",\"limit\":%d}".formatted(FindOrdersTool.MAX_ROWS)),
                     Set.of("findOrders", "findOrder", "getCustomerCredit"),
                     "/admin/orders"),
             OVERDUE_PURCHASE_ORDERS, new Watched(OVERDUE_PURCHASE_ORDERS, "findPurchaseOrders",

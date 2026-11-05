@@ -48,7 +48,10 @@ class ResultTableTest {
             Map.entry("findGoodsReceipts", FindGoodsReceiptsTool.Answer.class),
             Map.entry("findPendingAdjustments", FindPendingAdjustmentsTool.Answer.class),
             Map.entry("findShipments", FindShipmentsTool.Answer.class),
-            Map.entry("findOverdueCustomers", FindOverdueCustomersTool.Answer.class));
+            Map.entry("findOverdueCustomers", FindOverdueCustomersTool.Answer.class),
+            Map.entry("lookupScan", LookupScanTool.Answer.class),
+            Map.entry("findTransferOrders", FindTransferOrdersTool.Answer.class),
+            Map.entry("findReturns", FindReturnsTool.Answer.class));
 
     /** What Spring Boot builds from {@code application.yml}: java.time as ISO text, null fields left out. */
     private final ObjectMapper json = JsonMapper.builder()
@@ -95,7 +98,8 @@ class ResultTableTest {
 
         assertThat(table.key()).isEqualTo("findLowStock.skus");
         assertThat(table.columns()).containsExactly("sku", "usableOnHand", "availableToPromise", "reorderPoint",
-                "safetyStock", "atOrBelowReorderPoint", "belowSafetyStock");
+                "safetyStock", "atOrBelowReorderPoint", "belowSafetyStock", "unit", "packingUnit", "unitsPerPacking",
+                "availableToPromisePacked.packingCount", "availableToPromisePacked.looseUnits");
         assertThat(table.rows()).hasSize(2);
         assertThat(table.rows().getFirst()).containsEntry("sku", "EVAL-CUP-12OZ").containsEntry("usableOnHand", 40L)
                 .containsEntry("belowSafetyStock", true);

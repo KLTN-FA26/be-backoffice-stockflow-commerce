@@ -48,6 +48,9 @@ import java.util.UUID;
  *   <li>P8: adjustments ADJ-EVAL-HCM (2 EVAL-BOX-A4 found at HCM) and ADJ-EVAL-EVN (1 at EVN) waiting for approval;
  *       shipment SO-20991231-900002-S1 of the shipped order, with the carrier; and customer
  *       {@value #OVERDUE_CUSTOMER} owing 987,654,321 VND ten days past due, the largest overdue debt there is.</li>
+ *   <li>C10: transfers TO-EVAL-LATE (HCM to EVN, on the road two days late) and TO-EVAL-WAIT (waiting for approval);
+ *       returns RMA-EVAL-DUE (approved, due back tomorrow) and RMA-EVAL-NEW (waiting for review) of the shipped order,
+ *       and RMA-EVAL-EVN of SO-20991231-900005, an order EVN ships.</li>
  * </ul>
  *
  * <p>EVN is a second warehouse of its own, so a user limited to HCM has something not to see.</p>
@@ -100,6 +103,12 @@ final class GoldenFixtures {
                 + "'ADJ-EVAL-HCM'", Long.class) == 0) {
             p8();
         }
+        // Added with C10, under a check of its own, as P8's.
+        if (jdbc.queryForObject("select count(*) from inventory.transfer_order where transfer_number = "
+                + "'TO-EVAL-LATE'", Long.class) == 0) {
+            transfersAndReturns();
+        }
+        shippedFrom();
         // The calendar periods the R cases name, as the question context's calendar gives them (weeks from Monday).
         LocalDate monday = today.with(DayOfWeek.MONDAY);
         LocalDate firstOfMonth = today.withDayOfMonth(1);
@@ -167,6 +176,77 @@ final class GoldenFixtures {
                             NOW() - INTERVAL '40 days', CURRENT_DATE - 10, 'OVERDUE', 'CUSTOMER', NOW())""",
                     Identifiers.newId(), order, owing);
         });
+    }
+
+    /**
+     * C10: two transfers from HCM to EVN, one on the road two days past its expected date and one waiting for an
+     * approver; two returns of the shipped HCM order's customer, one approved and due back tomorrow, one waiting for
+     * review; and one return of an order EVN ships, which a user limited to HCM must not see. Rows, not the services:
+     * a real return needs a delivered order, and only the lists are under test here.
+     */
+    private void transfersAndReturns() {
+        UUID staff = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
+        tx.executeWithoutResult(s -> {
+            UUID evn = jdbc.queryForObject("select id from warehouse.warehouse where prefix = ?", UUID.class,
+                    OTHER_WAREHOUSE);
+            jdbc.update("""
+                    INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id,
+                        status, reason, expected_date, submitted_by, submitted_at, approved_by, approved_at,
+                        dispatched_by, dispatched_at, delivery_mode, version, created_at)
+                    VALUES (?, 'TO-EVAL-LATE', ?, ?, 'IN_TRANSIT', 'REBALANCING', CURRENT_DATE - 2, ?,
+                        NOW() - INTERVAL '5 days', ?, NOW() - INTERVAL '5 days', ?, NOW() - INTERVAL '4 days', 'PARCEL',
+                        0, NOW() - INTERVAL '6 days')""",
+                    Identifiers.newId(), DemoData.WAREHOUSE_HCM, evn, staff, approver, staff);
+            jdbc.update("""
+                    INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id,
+                        status, reason, expected_date, submitted_by, submitted_at, delivery_mode, version, created_at)
+                    VALUES (?, 'TO-EVAL-WAIT', ?, ?, 'PENDING_APPROVAL', 'DEMAND', CURRENT_DATE + 5, ?, NOW(),
+                        'FULL_TRUCKLOAD', 0, NOW())""",
+                    Identifiers.newId(), DemoData.WAREHOUSE_HCM, evn, staff);
+            UUID shipped = jdbc.queryForObject("select id from ordering.customer_order where order_number = "
+                    + "'SO-20991231-900002'", UUID.class);
+            UUID atEvn = ReferenceRows.orderWithLine(entityManager, "EVAL-CUP-16OZ", "SHIPPED", DemoData.CUSTOMER_ID,
+                    staff, evn);
+            entityManager.flush();
+            jdbc.update("update ordering.customer_order set order_number = 'SO-20991231-900005' where id = ?", atEvn);
+            returnRequest("RMA-EVAL-DUE", shipped, "SO-20991231-900002", "AWAITING_RETURN", "PRINT_DEFECT",
+                    "REPLACEMENT", staff, approver, "NOW() + INTERVAL '1 day'");
+            returnRequest("RMA-EVAL-NEW", shipped, "SO-20991231-900002", "REQUESTED", "DAMAGED_IN_TRANSIT",
+                    "REFUND", staff, null, null);
+            returnRequest("RMA-EVAL-EVN", atEvn, "SO-20991231-900005", "REQUESTED", "WRONG_ITEM", "REPLACEMENT",
+                    staff, null, null);
+        });
+    }
+
+    /**
+     * ReferenceRows names a warehouse only on an order being worked on, and a return is scoped by the warehouse that
+     * shipped its order: the two shipped orders with returns say which one did. Every time, as a database filled before
+     * this was added would otherwise keep orders shipped from nowhere.
+     */
+    private void shippedFrom() {
+        tx.executeWithoutResult(s -> {
+            jdbc.update("update ordering.customer_order set warehouse_id = ? where order_number = 'SO-20991231-900002' "
+                    + "and warehouse_id is null", DemoData.WAREHOUSE_HCM);
+            jdbc.update("""
+                    update ordering.customer_order
+                    set warehouse_id = (select id from warehouse.warehouse where prefix = ?)
+                    where order_number = 'SO-20991231-900005' and warehouse_id is null""", OTHER_WAREHOUSE);
+        });
+    }
+
+    /** A return opened on the portal; {@code deadline}, SQL, is set with the approval that requires the goods back. */
+    private void returnRequest(String rma, UUID order, String orderNumber, String status, String reason,
+                               String resolution, UUID requestedBy, UUID approvedBy, String deadline) {
+        jdbc.update("""
+                INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, status,
+                    reason_code, requested_at, request_id, channel, requested_by, requested_resolution, currency,
+                    decided_by, decided_at, return_required, return_deadline, version, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NOW() - INTERVAL '2 days', ?, 'PORTAL', ?, ?, 'VND', ?, %s, %s, %s, 0,
+                    NOW())""".formatted(approvedBy == null ? "NULL" : "NOW() - INTERVAL '1 day'",
+                        approvedBy == null ? "NULL" : "TRUE", deadline == null ? "NULL" : deadline),
+                Identifiers.newId(), rma, order, orderNumber, DemoData.CUSTOMER_ID, status, reason, Identifiers.newId(),
+                requestedBy, resolution, approvedBy);
     }
 
     private UUID otherWarehouse() {

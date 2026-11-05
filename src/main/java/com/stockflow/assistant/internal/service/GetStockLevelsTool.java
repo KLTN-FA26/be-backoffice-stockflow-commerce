@@ -5,6 +5,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.StockLevel;
 import org.springframework.stereotype.Component;
@@ -38,15 +39,22 @@ class GetStockLevelsTool implements AssistantTool {
                     + "still sell' use companyAvailableToPromise. Use it for 'how many X do we have' and 'in which "
                     + "warehouse'; for lots or locations use getStockLots. An unknown SKU comes back as NOT_FOUND: say "
                     + "the code was not found and should be checked (searchCatalog finds a product by name), never "
-                    + "that it is out of stock.",
+                    + "that it is out of stock." + Packing.DESCRIPTION,
             ToolSchema.object()
                     .string("sku", KnownSkus.PARAMETER)
                     .build());
 
     private final InventoryService inventory;
+    private final UomConversionService units;
 
     GetStockLevelsTool(InventoryService inventory) {
+        this(inventory, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    GetStockLevelsTool(InventoryService inventory, UomConversionService units) {
         this.inventory = inventory;
+        this.units = units;
     }
 
     @Override
@@ -68,10 +76,12 @@ class GetStockLevelsTool implements AssistantTool {
     @RequiresPermission(resource = ToolPermissions.INVENTORY_STOCK_ITEMS, action = Action.READ)
     public Answer run(ToolArguments arguments) {
         Sku sku = KnownSkus.require(inventory, new Sku(arguments.text("sku", Sku.MAX_LENGTH)));
-        List<Row> warehouses = inventory.levelsOf(sku).stream().map(Row::of).toList();
+        Packing packing = Packing.of(units, List.of(sku.code())).getOrDefault(sku.code(), Packing.NONE);
+        List<Row> warehouses = inventory.levelsOf(sku).stream().map(level -> Row.of(level, packing)).toList();
         // A user limited to particular warehouses does not see the company figure on any screen.
         Integer company = WarehouseScope.restriction().isPresent() ? null : inventory.availableToPromise(sku);
-        return new Answer(sku.code(), company, warehouses);
+        return new Answer(sku.code(), packing.unit(), packing.packingUnit(), packing.unitsPerPacking(), company,
+                company == null ? null : packing.packed(company), warehouses);
     }
 
     /**
@@ -80,7 +90,13 @@ class GetStockLevelsTool implements AssistantTool {
      * @param warehouses                empty when no warehouse the user may see holds or expects the SKU; never
      *                                  because the SKU is unknown, which is NOT_FOUND
      */
-    record Answer(String sku, Integer companyAvailableToPromise, List<Row> warehouses) {
+    record Answer(String sku, String unit, String packingUnit, Integer unitsPerPacking,
+                  Integer companyAvailableToPromise, Packing.Packed companyAvailableToPromisePacked,
+                  List<Row> warehouses) {
+
+        Answer(String sku, Integer companyAvailableToPromise, List<Row> warehouses) {
+            this(sku, null, null, null, companyAvailableToPromise, null, warehouses);
+        }
     }
 
     /**
@@ -89,10 +105,20 @@ class GetStockLevelsTool implements AssistantTool {
      *                           held for a transfer
      * @param availableToPromise this warehouse's unheld units, capped at the company figure
      */
-    record Row(String warehouseCode, int onHand, int inAvailableStatus, int heldOnStock, int availableToPromise) {
+    record Row(String warehouseCode, int onHand, int inAvailableStatus, int heldOnStock, int availableToPromise,
+               Packing.Packed onHandPacked, Packing.Packed availableToPromisePacked) {
+
+        Row(String warehouseCode, int onHand, int inAvailableStatus, int heldOnStock, int availableToPromise) {
+            this(warehouseCode, onHand, inAvailableStatus, heldOnStock, availableToPromise, null, null);
+        }
 
         static Row of(StockLevel level) {
-            return new Row(level.warehouseCode(), level.onHand(), level.available(), level.reserved(), level.atp());
+            return of(level, Packing.NONE);
+        }
+
+        static Row of(StockLevel level, Packing packing) {
+            return new Row(level.warehouseCode(), level.onHand(), level.available(), level.reserved(), level.atp(),
+                    packing.packed(level.onHand()), packing.packed(level.atp()));
         }
     }
 }

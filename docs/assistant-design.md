@@ -572,8 +572,8 @@ tool, phân quyền và lịch sử lưu trữ không đổi một dòng.
 
 ### 4.2 Các tool
 
-Có 22 tool; bốn dòng cuối bảng thêm ngày 29/10 và ba dòng sau đó thêm ở P8 (05/11), cùng lúc `getCustomerCredit` có
-thêm hạn mức còn lại. Cột cuối ghi cả `scopeLimit()` của tool (§4.1); tool không ghi là `NONE`.
+Có 25 tool; bốn dòng cuối bảng thêm ngày 29/10, ba dòng sau đó thêm ở P8 (05/11), cùng lúc `getCustomerCredit` có
+thêm hạn mức còn lại, và ba dòng cuối thêm ở đợt 3 (05/11, C9–C10). Cột cuối ghi cả `scopeLimit()` của tool (§4.1); tool không ghi là `NONE`.
 
 | Tool | Gọi | Soi chiếu | `@RequiresPermission` | Guard bổ sung |
 |---|---|---|---|---|
@@ -599,6 +599,9 @@ thêm hạn mức còn lại. Cột cuối ghi cả `scopeLimit()` của tool (�
 | `findPendingAdjustments` (P8) | `KnownSkus` khi lọc theo SKU, rồi `StockAdjustmentQueries.adjustments` (mới), PENDING_APPROVAL, cũ nhất trước | `GET /api/v1/inventory/adjustments` | `inventory-stock-adjustments` READ | `PARTIAL` (bin của kho mình). Hàng đợi của người duyệt: số phiếu, kho, bin, SKU, lô, `quantityDelta`, lý do, lúc yêu cầu, `daysWaiting` theo ngày Việt Nam, `carton`. Không có tên người yêu cầu (màn hình chỉ có id); `requestedByMe` vì người yêu cầu không được tự duyệt (bốn mắt, SCRUM-145); `callerMayApprove` đọc quyền `inventory-stock-adjustments:APPROVE` chỉ để nói ai phải duyệt, không duyệt gì. Mô tả tool nói phiếu chờ duyệt chưa đổi tồn. SKU không tồn tại → `NOT_FOUND`, không phải hàng đợi rỗng. Ghi chú được che (`TypedText`) và cắt ở 80 ký tự; tối đa 30 dòng (30 dòng dài nhất vẫn dưới 20.000 ký tự, có test), có `total`, `truncated` |
 | `findShipments` (P8) | `ShipmentQueries.shipments` (mới) + `WarehouseService.findWarehouse` (mỗi kho một lần) | `GET /api/v1/fulfillment/shipments` | `fulfillment-shipments` READ | `PARTIAL`. Mã chuyến giao (số đơn + `-S` + số), số đơn, kho, trạng thái, cách giao, `packageCount` (số kiện), hãng (cắt ở 40 ký tự), chuyến xe, `partial`, `codAmount` (chỉ khi hãng thu hộ), các mốc sẵn sàng, bàn giao, kết quả, `failureReason`. Lọc READY_TO_DISPATCH, HANDED_OVER hay DELIVERY_FAILED thì chuyến chờ lâu nhất đứng trước (hàng đợi làm từ đầu), lọc khác thì mới sẵn sàng trước như màn hình. Trạng thái là trạng thái hiện tại, không có lọc theo ngày, mô tả tool nói rõ. `failureReason` là lý do của lần giao thất bại gần nhất: trên chuyến đã DELIVERED hay RETURNED nó là của lần trước, mô tả tool nói rõ. Không có mã vận đơn vì không nối hệ thống hãng nào, và mô tả tool cấm bịa. Ghi chú giao thất bại của nhân viên nằm ở màn chi tiết, không ở đây; tối đa 30 dòng (có test cho 30 dòng dài nhất), có `total`, `truncated` |
 | `findOverdueCustomers` (P8) | `OverdueReceivables.overdueCustomers` (mới) + `CustomerService.fullNames` khi được nêu tên | `GET /api/v1/receivables` | `payment-receivables` READ, ALL | `requireBackOffice`, như handler của màn công nợ (khách cổng giữ cùng quyền READ cho công nợ của chính mình). Mỗi khách đang nợ quá hạn: số quá hạn còn chưa trả, ngày đến hạn sớm nhất, `daysOverdue`, số khoản, `orderNumbers` (ba đơn đầu của các khoản đó, như màn công nợ hiện); tên khách chỉ cho người có `customer-customers:READ` (Sales), vì kế toán và điều phối không được liệt kê khách (`CustomerMatch`); muốn kế toán thấy tên thì cấp quyền đó, không cần sửa code; `totalCustomers` và tổng quá hạn theo tiền tệ; dòng và tổng đọc trong một snapshot (REPEATABLE READ). Quá hạn là trạng thái OVERDUE mà job ban đêm đặt từ ngày sau ngày đến hạn, đúng những dòng `getCustomerCredit` cộng, nên khách có ở đây là khách mà đơn công nợ tiếp theo bị giữ (BR-PAY-008). Không tính phần hãng vận chuyển thu hộ. Xếp số tiền lớn trước hoặc quá hạn lâu nhất trước; tối đa 50 khách |
+| `lookupScan` (C9) | `ScannedCodeQueries.carton` / `atLocation` / `skusWithBarcode` (mới) | `GET /api/v1/inventory/stock-packages/location-summary` | `inventory-stock-packages` READ | `PARTIAL`. Một nhãn quét hay gõ: mã `LPN-` là thùng (SKU, lô, hạn, còn bao nhiêu, đang giữ bao nhiêu, còn niêm phong không, ở đâu, và từng dòng tồn trong thùng với trạng thái tồn riêng: thùng IN_STOCK chỉ nói thùng nằm trong kho, hàng trong đó có thể còn INBOUND chờ QC); mã có tiền tố là mã một kho có thật là vị trí, mỗi dòng một SKU, lô và trạng thái tồn với thùng nguyên, thùng đã mở, hàng lẻ, tổng, tối đa 50 dòng kèm `locationTotal`; mã khác thử là nhãn thùng rồi mới là mã vạch, khớp đúng (không qua ô tìm chuỗi con của danh sách hàng), và chỉ khi người hỏi có `inventory-inventory-items:READ`. Vị trí của kho khác bị từ chối dù có hay không, như màn hình; một SKU có gạch (`EVAL-CUP-12OZ`) không bị coi là vị trí của kho "EVAL" nên không bị báo "ngoài kho". Thùng thì như `GET /stock-packages/{lpn}`: tìm trước rồi mới từ chối (404 hay 403), không lộ hơn màn hình. Số thùng ở đây là thùng thật, khác số quy đổi `...Packed` của các tool tồn |
+| `findTransferOrders` (C10) | `TransferOrderQueries.transfers` (mới) | `GET /api/v1/inventory/transfer-orders` | `inventory-transfer-orders` READ | `PARTIAL`: chỉ phiếu đi hoặc đến kho của mình. Số phiếu, kho đi, kho đến, trạng thái, ngày dự kiến đến, `late` và `daysLate` tính trong tool theo ngày Việt Nam khi hàng còn chờ ở kho đến (kể cả PARTIALLY_RECEIVED, phần còn lại chưa về); phiếu trễ mà chưa IN_TRANSIT là chưa rời kho đi, mô tả tool bắt nói đúng như vậy. OPEN là mọi trạng thái trước COMPLETED, CLOSED, CANCELLED. `order` EXPECTED_FIRST xếp ngày dự kiến sớm nhất trước (qua chính truy vấn của màn hình, giữ quy tắc kho), nên phiếu trễ không rơi khỏi 50 dòng; `lateRows` đếm trong code và `allLateListed` nói có thể còn phiếu trễ ngoài danh sách hay không. Không lọc theo kho được, vì `warehouse :: api` không đổi mã kho ra id; mỗi dòng đã ghi hai mã kho. Dòng không có SKU và số lượng; tối đa 50, có `total`, `truncated` |
+| `findReturns` (C10) | `ReturnQueries.returns` (mới) + `CustomerMatch` + `CustomerService.fullNames` khi được nêu tên | `GET /api/v1/returns` | `sales-rmas` READ, ALL | `requireBackOffice`, như màn đổi trả (khách cổng giữ cùng quyền cho yêu cầu của chính mình). `PARTIAL`: người bị giới hạn kho chỉ thấy yêu cầu của đơn do kho mình giao, quy tắc nằm sẵn trong truy vấn của màn hình. Lọc theo trạng thái (OPEN là năm trạng thái còn xử lý), số RMA hay số đơn, và khách (tên, mã số thuế, bí danh `KH#n`) chỉ cho người có `customer-customers:READ`; kho, QC, kế toán không có màn khách nên chỉ lọc được bằng bí danh đã thấy, để không dò được tên công ty sau một mã số thuế. Khách không tìm được thì không có `total`, để model không đọc thành "không có yêu cầu nào". Xếp mới nhất trước hoặc hạn gần nhất trước. Hạn lưu là 00:00 của ngày đầu tiên đã trễ (`ReturnPolicy.endOfDays`), nên tool trả `lastDayToReturn` là ngày trước đó và `daysToDeadline` tính tới ngày ấy, chỉ ở AWAITING_RETURN. Không có mô tả khách gõ hay ảnh; tên khách chỉ cho người có `customer-customers:READ`; tối đa 50 |
 
 **Một lần tra cho câu hỏi hay gặp nhất.** Trước 29/10, "Đơn X vì sao bị giữ, thiếu ở đâu" tốn hai vòng tool:
 `findOrder` (lý do giữ) rồi `getOrderPicking` (dòng thiếu). Giờ với người xem được task, `findOrder` kèm khối
@@ -620,7 +623,9 @@ câu hỏi về sự kiện ("tuần này đơn nào giao thất bại") phải 
 nói đó là các đơn đang ở trạng thái đó bây giờ. Một chuyến giao thất bại của đơn còn giao dở không hiện là
 DELIVERY_FAILED (`findOrder` mới thấy). Mô tả tool nói "đơn chờ khách trả tiền" là đơn PENDING_PAYMENT cộng đơn
 ON_HOLD vì PAYMENT, và đơn đã đóng gói còn phải trả trước khi giao thì không thấy trong danh sách, vì dòng không có
-số tiền còn nợ. Chưa lọc được theo khách hàng hay theo trạng thái thanh toán (§16, còn mở).
+số tiền còn nợ. Từ đợt 3 (C7) lọc được theo khách: tham số `customer` nhận tên, mã số thuế hay bí danh và đi qua `CustomerMatch` như
+`getCustomerPrice`; tên khớp nhiều khách thì trả ứng viên, không trả đơn. Mỗi dòng ghi tên khách chỉ cho người được
+liệt kê khách. Chưa lọc được theo trạng thái thanh toán (§16, còn mở).
 
 **Tiền của một đơn đã hủy.** Số "còn phải trả" của đơn không tính tới việc hủy (hủy không đóng dòng nào), nên một
 đơn đã hủy sẽ đọc như còn nợ cả tổng tiền. Vì vậy với đơn CANCELLED, `findOrder` để trống ba số đó và trả khối
@@ -637,6 +642,21 @@ kiểm file và Sales phải lấy file sửa từ khách; `BLANKS_SHORT` nghĩa
 đã biết: dòng danh sách chưa có ngày xong và số phôi đã cấp/đã in (chỉ có khi tra một LSX); chưa lọc được theo lý do
 giữ hay theo mã kho; yêu cầu mẫu (F-SAMPLE, `production-sample-requests`) chưa có tool.
 
+**Đơn vị và quy cách (C8).** "Còn 1.276" không nói là cái hay thùng. `getStockLevels`, `getStockLots` và
+`findLowStock` giờ trả `unit` (đơn vị gốc), `packingUnit` và `unitsPerPacking` (quy cách mặc định khi xuất; không có
+nếu quy cách xuất là đơn vị gốc, tức hàng giao lẻ; không có quy cách xuất thì quy cách mua; không có nữa thì quy cách
+nhỏ nhất còn dùng, thùng chứ không phải pallet), và cạnh mỗi số chính một trường `...Packed` gồm `packingCount` và
+`looseUnits`. Phép chia do `Packing` làm, đọc `UomConversionService.conversionsOf` một lần cho cả danh sách; đọc lỗi
+thì câu trả lời vẫn có số, chỉ thiếu quy cách. Đây là quy đổi, không phải số thùng có thật trên kệ: số đó là của
+`lookupScan`, và prompt cấm model tự chia hay gọi số quy đổi là số thùng trên kệ. Quy cách là dữ liệu của màn đơn vị
+quy đổi (`product-products:READ`), không phải của quyền tồn kho đang guard các tool này: một ngoại lệ có chủ ý với quy
+tắc "soi chiếu màn hình", vì kích thước thùng chỉ là cách đếm một con số người hỏi đã được xem.
+
+**Mã quét và hai hàng đợi mới (C9, C10).** Nhân viên kho làm việc theo nhãn; trước đây trợ lý không hỏi được gì về
+một nhãn. `lookupScan` cũng là nền cho giọng nói: mã lấy từ máy quét, không đọc bằng miệng, vì một chữ số nghe nhầm
+là một thùng khác có thật. `findTransferOrders` và `findReturns` trả lời "hàng nào đang chuyển tới kho mình" và "hàng
+trả nào sắp quá hạn gửi về", hai câu mà kho, điều phối và QC hỏi hằng ngày.
+
 ### 4.3 Các method đã thêm vào `api` của module khác
 
 | Module | Thêm | Ghi chú |
@@ -651,6 +671,9 @@ giữ hay theo mã kho; yêu cầu mẫu (F-SAMPLE, `production-sample-requests`
 | `inventory` (P8) | `StockAdjustmentQueries` | bọc `StockOperations.adjustments`, chính list của màn điều chỉnh tồn (lọc, sắp xếp, quy tắc kho); dùng lại `StockAdjustmentSummary` đã có trong api |
 | `fulfillment` (P8) | `ShipmentQueries` + `ShipmentSummary` | bọc `Shipments.list`, chính list của màn chuyến giao; dòng được chép từng trường sang record của api, nên trường mới của màn hình không tự lọt sang module khác |
 | `order` (P8) | `CustomerCreditQueries` + `CustomerCredit` | bọc `CreditHoldService.position`: hạn mức, `exposure` và hạn mức còn lại đúng như màn credit-position và bước kiểm tín dụng của checkout |
+| `inventory` (đợt 3) | `ScannedCodeQueries`; `TransferOrderQueries` + `TransferOrderSummary`; `InventoryItemSearch.skusWithBarcode` (port nội bộ) | cái đầu bọc `StockPackageLookup.byLpn` / `atLocation` (chính đọc của màn tra thùng, giữ kiểm kho), từ chối trước mã có tiền tố không phải kho nào, và đọc mã vạch khớp đúng; cái sau bọc `TransferOrders.list`, chính list của màn chuyển kho, hoặc `TransferOrderSearch` của màn đó khi xếp theo ngày dự kiến, và đổi id kho ra mã qua `WarehouseDirectory` mỗi kho một lần. `STATUSES` được so với enum lúc khởi động |
+| `warehouse` (đợt 3) | `WarehouseService.isWarehousePrefix` | trên `WarehouseRepository.existsByPrefix` đã có; để phân biệt mã vị trí của kho khác với mã không phải vị trí. Cần báo người phụ trách warehouse |
+| `order` (đợt 3) | `ReturnQueries` + `ReturnSummary` | bọc `ReturnRequestQueries.list`, chính list back-office của màn đổi trả (quy tắc kho nằm sẵn trong truy vấn), và tự kiểm `requireBackOffice` để không caller nào quên; `STATUSES` và `OPEN_STATUSES` được so với `ReturnStatus` và `isOpen` lúc khởi động. Cần báo người phụ trách inventory và order |
 | `payment` (P8) | `OverdueReceivables` + `OverdueCustomer`; `ReceivableBook.overdueCustomers` / `overdueTotals` | một truy vấn gộp theo khách trên đúng những dòng `overdue(customer)` đã đọc (collector CUSTOMER, status OVERDUE), cộng tổng theo tiền tệ, trong một transaction chỉ đọc |
 
 Mọi thứ ở P8 đều là interface hay record mới, cùng hai method mới trên port nội bộ `ReceivableBook`; không method
@@ -2652,10 +2675,10 @@ lỗi ngay; lần chờ 131 giây trong database là của một phiên bản ad
   xuất nhập (BIZ-8, §8); kiểm số của câu trả lời lúc chạy (FEAT-2), kể cả việc `GoldenScorer` chưa đọc "35 triệu"
   (§10.2; cả hai **làm 29/10**, `AnswerNumbers`); dữ liệu dạng bảng và doanh số từng ngày (FEAT-4; bảng **làm 29/10**,
   còn doanh số từng ngày); câu hỏi tiếp theo gợi ý sẵn (FEAT-5; **làm 29/10**, `FollowUps`); đánh chỉ mục tài liệu
-  luồng `04c-all-flows.md` (FEAT-9); đơn vị tính trong câu trả lời tồn kho (PRM-10, phần 3); đếm đơn theo từng trạng
+  luồng `04c-all-flows.md` (FEAT-9); đơn vị tính trong câu trả lời tồn kho (PRM-10, phần 3; **làm 05/11**, C8); đếm đơn theo từng trạng
   thái (PRM-11, cần một tool trên `ReportingService.orderStatusCounts`).
 - **Phần còn lại của các gói việc:**
-  - `findOrders` chưa lọc theo khách (cần `customer :: api` và quyền đọc khách) hay theo trạng thái thanh toán; dòng
+  - `findOrders` lọc theo khách từ 05/11 (C7); chưa lọc theo trạng thái thanh toán; dòng
     không có số tiền còn nợ, nên đơn đã đóng gói còn phải trả trước khi giao không thấy trong danh sách.
   - `findPurchaseOrders` chưa có bộ lọc "chỉ PO trễ". Từ 29/10, lọc CONFIRMED hoặc PARTIALLY_RECEIVED thì PO có ngày
     dự kiến sớm nhất đứng trước, nên PO trễ nhất không còn rơi khỏi trang đầu; với ANY hay trạng thái khác, danh sách

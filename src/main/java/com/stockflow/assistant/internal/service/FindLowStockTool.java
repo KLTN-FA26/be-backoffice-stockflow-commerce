@@ -5,6 +5,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.LowStockItem;
 import com.stockflow.inventory.api.ReplenishmentEligibility;
@@ -51,7 +52,8 @@ class FindLowStockTool implements AssistantTool {
                     + "warehouse. Discontinued or suspended SKUs are left out, as on the stock alerts screen. A user "
                     + "limited to particular warehouses gets no rows. Returns SKUs in SKU order. total counts every "
                     + "low SKU: when truncated is true more are low than were listed, so say how many are low in all "
-                    + "and that only some are listed; a count you give is total, never the rows you were given.",
+                    + "and that only some are listed; a count you give is total, never the rows you were given."
+                    + Packing.DESCRIPTION,
             ToolSchema.object()
                     .integer("limit", "How many SKUs to return, 1 to " + MAX_ROWS + "; use " + MAX_ROWS
                             + " unless the user asks for fewer")
@@ -59,10 +61,18 @@ class FindLowStockTool implements AssistantTool {
 
     private final InventoryService inventory;
     private final ObjectProvider<ReplenishmentEligibility> eligibility;
+    private final UomConversionService units;
 
     FindLowStockTool(InventoryService inventory, ObjectProvider<ReplenishmentEligibility> eligibility) {
+        this(inventory, eligibility, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    FindLowStockTool(InventoryService inventory, ObjectProvider<ReplenishmentEligibility> eligibility,
+                     UomConversionService units) {
         this.inventory = inventory;
         this.eligibility = eligibility;
+        this.units = units;
     }
 
     @Override
@@ -110,8 +120,10 @@ class FindLowStockTool implements AssistantTool {
         } while (page.size() == PAGE);
         Map<Sku, Integer> promisable = inventory.availableToPromise(
                 shown.stream().map(item -> new Sku(item.sku())).toList());
+        Map<String, Packing> packings = Packing.of(units, shown.stream().map(LowStockItem::sku).toList());
         return new Answer(total, total > shown.size(),
-                shown.stream().map(item -> Row.of(item, promisable.getOrDefault(new Sku(item.sku()), 0))).toList(),
+                shown.stream().map(item -> Row.of(item, promisable.getOrDefault(new Sku(item.sku()), 0),
+                        packings.getOrDefault(item.sku(), Packing.NONE))).toList(),
                 null);
     }
 
@@ -131,11 +143,19 @@ class FindLowStockTool implements AssistantTool {
     }
 
     record Row(String sku, long usableOnHand, int availableToPromise, Integer reorderPoint, Integer safetyStock,
-               boolean atOrBelowReorderPoint, boolean belowSafetyStock) {
+               boolean atOrBelowReorderPoint, boolean belowSafetyStock, String unit, String packingUnit,
+               Integer unitsPerPacking, Packing.Packed availableToPromisePacked) {
 
-        static Row of(LowStockItem item, int availableToPromise) {
+        Row(String sku, long usableOnHand, int availableToPromise, Integer reorderPoint, Integer safetyStock,
+            boolean atOrBelowReorderPoint, boolean belowSafetyStock) {
+            this(sku, usableOnHand, availableToPromise, reorderPoint, safetyStock, atOrBelowReorderPoint,
+                    belowSafetyStock, null, null, null, null);
+        }
+
+        static Row of(LowStockItem item, int availableToPromise, Packing packing) {
             return new Row(item.sku(), item.usableOnHand(), availableToPromise, item.reorderPoint(),
-                    item.safetyStock(), item.reorderRequired(), item.belowSafetyStock());
+                    item.safetyStock(), item.reorderRequired(), item.belowSafetyStock(), packing.unit(),
+                    packing.packingUnit(), packing.unitsPerPacking(), packing.packed(availableToPromise));
         }
     }
 }

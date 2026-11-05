@@ -68,6 +68,13 @@ class InventoryItemSearchAdapter implements InventoryItemSearch {
         });
     }
 
+    @Override
+    public List<String> skusWithBarcode(String barcode) {
+        return jdbc.queryForList(
+                "SELECT sku FROM inventory.inventory_items WHERE upper(barcode) = upper(?) ORDER BY sku", String.class,
+                barcode);
+    }
+
     /** Backslash first, or the escapes added for the other two would themselves be escaped. */
     private static String escapeLike(String value) {
         return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");

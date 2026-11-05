@@ -13,6 +13,14 @@ final class ToolPermissions {
     static final String INVENTORY_ALERTS = "inventory-alerts";
     /** {@code InventoryResources.STOCK_ITEMS}. */
     static final String INVENTORY_STOCK_ITEMS = "inventory-stock-items";
+    /** {@code InventoryResources.STOCK_PACKAGES}: the carton lookup ({@link LookupScanTool}). */
+    static final String STOCK_PACKAGES = "inventory-stock-packages";
+    /** {@code InventoryResources.INVENTORY_ITEMS}: the item list, read for a product barcode. */
+    static final String INVENTORY_ITEMS = "inventory-inventory-items";
+    /** {@code InventoryResources.TRANSFER_ORDERS}. */
+    static final String TRANSFER_ORDERS = "inventory-transfer-orders";
+    /** {@code OrderResources.RMAS}: the returns list. */
+    static final String RMAS = "sales-rmas";
     /** {@code InventoryResources.STOCK_MOVEMENTS}. */
     static final String INVENTORY_STOCK_MOVEMENTS = "inventory-stock-movements";
     /**

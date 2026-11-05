@@ -5,6 +5,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.StockAvailability;
 import org.springframework.stereotype.Component;
@@ -48,15 +49,22 @@ class GetStockLotsTool implements AssistantTool {
                     + " are listed, and when truncated is true say that only the first " + MAX_ROWS + " of total are "
                     + "shown, never that they are all the stock. An unknown SKU comes back as NOT_FOUND: say the code "
                     + "was not found and should be checked (searchCatalog finds a product by name), never that it is "
-                    + "out of stock.",
+                    + "out of stock." + Packing.DESCRIPTION,
             ToolSchema.object()
                     .string("sku", KnownSkus.PARAMETER)
                     .build());
 
     private final InventoryService inventory;
+    private final UomConversionService units;
 
     GetStockLotsTool(InventoryService inventory) {
+        this(inventory, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    GetStockLotsTool(InventoryService inventory, UomConversionService units) {
         this.inventory = inventory;
+        this.units = units;
     }
 
     @Override
@@ -82,8 +90,10 @@ class GetStockLotsTool implements AssistantTool {
         List<StockAvailability> stocked = inventory.availabilityOf(sku).stream()
                 .filter(row -> row.onHand() > 0)
                 .toList();
-        return new Answer(sku.code(), stocked.size(), stocked.size() > MAX_ROWS,
-                stocked.stream().limit(MAX_ROWS).map(Row::of).toList());
+        Packing packing = Packing.of(units, List.of(sku.code())).getOrDefault(sku.code(), Packing.NONE);
+        return new Answer(sku.code(), packing.unit(), packing.packingUnit(), packing.unitsPerPacking(),
+                stocked.size(), stocked.size() > MAX_ROWS,
+                stocked.stream().limit(MAX_ROWS).map(row -> Row.of(row, packing)).toList());
     }
 
     /**
@@ -91,14 +101,24 @@ class GetStockLotsTool implements AssistantTool {
      * @param truncated more than {@value #MAX_ROWS} rows: {@code locations} holds the first ones in picking order
      * @param locations empty when none of those warehouses holds sellable stock of the SKU
      */
-    record Answer(String sku, int total, boolean truncated, List<Row> locations) {
+    record Answer(String sku, String unit, String packingUnit, Integer unitsPerPacking, int total, boolean truncated,
+                  List<Row> locations) {
+
+        Answer(String sku, int total, boolean truncated, List<Row> locations) {
+            this(sku, null, null, null, total, truncated, locations);
+        }
     }
 
-    record Row(String locationCode, String lotNumber, LocalDate expiryDate, int onHand, int held, int unheld) {
+    record Row(String locationCode, String lotNumber, LocalDate expiryDate, int onHand, int held, int unheld,
+               Packing.Packed onHandPacked) {
 
         static Row of(StockAvailability row) {
+            return of(row, Packing.NONE);
+        }
+
+        static Row of(StockAvailability row, Packing packing) {
             return new Row(row.locationCode(), row.lotNumber(), row.expiryDate(), row.onHand(), row.reserved(),
-                    row.available());
+                    row.available(), packing.packed(row.onHand()));
         }
     }
 }

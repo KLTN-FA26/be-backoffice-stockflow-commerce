@@ -50,24 +50,30 @@ public final class ResultTable {
             Map.entry("findLowStock", List.of(
                     Shape.of("findLowStock.skus", "skus", "total", "truncated", List.of(),
                             "sku", "usableOnHand", "availableToPromise", "reorderPoint", "safetyStock",
-                            "atOrBelowReorderPoint", "belowSafetyStock"))),
+                            "atOrBelowReorderPoint", "belowSafetyStock", "unit", "packingUnit", "unitsPerPacking",
+                            "availableToPromisePacked.packingCount", "availableToPromisePacked.looseUnits"))),
             Map.entry("findExpiringLots", List.of(
                     Shape.of("findExpiringLots.expiring", "expiring", "expiringTotal", "expiringTruncated",
                             List.of(), LOT_COLUMNS.toArray(String[]::new)),
                     Shape.of("findExpiringLots.expired", "expired", "expiredTotal", "expiredTruncated",
                             List.of(), LOT_COLUMNS.toArray(String[]::new)))),
             Map.entry("getStockLevels", List.of(
-                    Shape.of("getStockLevels.warehouses", "warehouses", null, null, List.of("sku"),
+                    Shape.of("getStockLevels.warehouses", "warehouses", null, null,
+                            List.of("sku", "unit", "packingUnit", "unitsPerPacking"),
                             "sku", "warehouseCode", "onHand", "inAvailableStatus", "heldOnStock",
-                            "availableToPromise"))),
+                            "availableToPromise", "unit", "packingUnit", "unitsPerPacking",
+                            "availableToPromisePacked.packingCount", "availableToPromisePacked.looseUnits"))),
             Map.entry("getStockLots", List.of(
-                    Shape.of("getStockLots.locations", "locations", "total", "truncated", List.of("sku"),
-                            "sku", "locationCode", "lotNumber", "expiryDate", "onHand", "held", "unheld"))),
+                    Shape.of("getStockLots.locations", "locations", "total", "truncated",
+                            List.of("sku", "unit", "packingUnit", "unitsPerPacking"),
+                            "sku", "locationCode", "lotNumber", "expiryDate", "onHand", "held", "unheld", "unit",
+                            "packingUnit", "unitsPerPacking", "onHandPacked.packingCount",
+                            "onHandPacked.looseUnits"))),
             Map.entry("findOrders", List.of(
                     Shape.of("findOrders.orders", "orders", "total", "truncated", List.of(),
                             "orderNumber", "status", "placedAt", "total", "currency", "paymentTerm",
                             "paymentStatus", "paidAmount", "depositRequired", "hold.reason", "hold.note",
-                            "deliveryFailureReason", "cancellationReasonCode"))),
+                            "deliveryFailureReason", "cancellationReasonCode", "customer"))),
             Map.entry("findPurchaseOrders", List.of(
                     Shape.of("findPurchaseOrders.purchaseOrders", "purchaseOrders", "total", "truncated", List.of(),
                             "poNumber", "type", "supplierCode", "supplierName", "warehouseCode", "status",
@@ -109,6 +115,19 @@ public final class ResultTable {
                             "shipmentCode", "orderNumber", "warehouseCode", "status", "deliveryMode", "packageCount",
                             "carrierName", "loadCode", "partial", "codAmount", "currency", "readyAt",
                             "handedOverAt", "outcomeAt", "failureReason"))),
+            Map.entry("findTransferOrders", List.of(
+                    Shape.of("findTransferOrders.transfers", "transfers", "total", "truncated", List.of(),
+                            "transferNumber", "fromWarehouseCode", "toWarehouseCode", "status", "expectedDate",
+                            "late", "daysLate", "createdAt", "packedAt", "dispatchedAt", "deliveryMode"))),
+            Map.entry("findReturns", List.of(
+                    Shape.of("findReturns.returns", "returns", "total", "truncated", List.of(),
+                            "rmaNumber", "orderNumber", "customer", "status", "reason", "requestedResolution",
+                            "requestedAt", "lastDayToReturn", "daysToDeadline", "settlementAmount", "currency",
+                            "closedAt"))),
+            Map.entry("lookupScan", List.of(
+                    Shape.of("lookupScan.location", "location", "locationTotal", "locationTruncated", List.of(),
+                            "sku", "lotNumber", "expiryDate", "status", "wholeCartons", "wholeCartonUnits",
+                            "openedCartons", "openedCartonUnits", "looseUnits", "totalUnits"))),
             Map.entry("findOverdueCustomers", List.of(
                     Shape.of("findOverdueCustomers.customers", "customers", "totalCustomers", "truncated",
                             List.of(), "customerName", "orderNumbers", "overdueAmount", "currency", "oldestDueDate",

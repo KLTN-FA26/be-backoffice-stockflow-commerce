@@ -50,7 +50,9 @@ class FindOrdersToolTest {
 
     private final OrderService orders = mock(OrderService.class);
     private final CurrentUserProvider users = mock(CurrentUserProvider.class);
-    private final FindOrdersTool tool = new FindOrdersTool(orders, users);
+    private final com.stockflow.customer.api.CustomerService customers =
+            mock(com.stockflow.customer.api.CustomerService.class);
+    private final FindOrdersTool tool = new FindOrdersTool(orders, users, customers);
 
     private FindOrdersTool.Answer ask(String arguments) {
         return tool.run(ToolArguments.parse(new ObjectMapper(), arguments));
@@ -179,6 +181,61 @@ class FindOrdersToolTest {
                         refused -> assertThat(refused.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
         verify(orders, never()).list(any());
         verify(users, atLeastOnce()).current();
+    }
+
+    @Test
+    @DisplayName("a customer named exactly filters the list by it, and rows name their customer for Sales, who may "
+            + "list customers; one the text does not name exactly returns candidates and no orders")
+    void byCustomer() {
+        UUID abc = UUID.randomUUID();
+        when(users.current()).thenReturn(Optional.of(new CurrentUser(UUID.randomUUID(), "sales",
+                Set.of(Role.SALES_STAFF), Set.of(com.stockflow.common.security.PermissionCode.of(
+                ToolPermissions.CUSTOMERS, com.stockflow.common.security.Action.READ)), DataScope.ALL, Set.of())));
+        when(customers.list(any())).thenReturn(PageResponse.of(List.of(summary(abc, "Công ty ABC")), 0, 50, 1));
+        OrderSummary order = row("SO-20261027-000001", OrderStatus.CONFIRMED, null, null);
+        when(orders.list(any())).thenReturn(PageResponse.of(List.of(order), 0, 5, 1));
+        when(customers.fullNames(any())).thenReturn(java.util.Map.of(order.customerId(), "Công ty ABC"));
+
+        FindOrdersTool.Answer answer = ask("{\"status\":\"ANY\",\"holdReason\":\"ANY\",\"placedFrom\":\"\","
+                + "\"placedTo\":\"\",\"customer\":\"công ty abc\",\"limit\":5}");
+
+        org.mockito.ArgumentCaptor<ListOrdersQuery> query = org.mockito.ArgumentCaptor.forClass(ListOrdersQuery.class);
+        verify(orders).list(query.capture());
+        assertThat(query.getValue().customerId()).isEqualTo(abc);
+        assertThat(answer.customer().name()).isEqualTo("Công ty ABC");
+        assertThat(answer.orders()).singleElement()
+                .satisfies(found -> assertThat(found.customer().name()).isEqualTo("Công ty ABC"));
+
+        when(customers.list(any())).thenReturn(PageResponse.of(List.of(summary(UUID.randomUUID(), "Công ty ABC Hà Nội"),
+                summary(UUID.randomUUID(), "Công ty ABC Sài Gòn")), 0, 50, 2));
+        FindOrdersTool.Answer vague = ask("{\"status\":\"ANY\",\"holdReason\":\"ANY\",\"placedFrom\":\"\","
+                + "\"placedTo\":\"\",\"customer\":\"ABC\",\"limit\":5}");
+        assertThat(vague.orders()).isEmpty();
+        assertThat(vague.candidates()).hasSize(2);
+        assertThat(vague.note()).contains("ask which one");
+        assertThat(vague.total()).as("nothing was counted, so no 0 to read as none").isNull();
+        assertThat(vague.truncated()).isNull();
+        verify(orders).list(any());
+    }
+
+    @Test
+    @DisplayName("rows carry no customer for a caller who may not list customers, and the names are never read")
+    void noNamesWithoutTheCustomerList() {
+        when(users.current()).thenReturn(Optional.of(new CurrentUser(UUID.randomUUID(), "coordinator",
+                Set.of(Role.ORDER_COORDINATOR), Set.of(), DataScope.ALL, Set.of())));
+        when(orders.list(any())).thenReturn(PageResponse.of(List.of(row("SO-20261027-000002", OrderStatus.CONFIRMED,
+                null, null)), 0, 5, 1));
+
+        FindOrdersTool.Answer answer = ask("{\"status\":\"ANY\",\"holdReason\":\"ANY\",\"placedFrom\":\"\","
+                + "\"placedTo\":\"\",\"customer\":\"\",\"limit\":5}");
+
+        assertThat(answer.orders()).singleElement().satisfies(found -> assertThat(found.customer()).isNull());
+        verify(customers, never()).fullNames(any());
+    }
+
+    private static com.stockflow.customer.api.CustomerSummary summary(UUID id, String name) {
+        return new com.stockflow.customer.api.CustomerSummary(id, null, name, null, null, null, null, "ACTIVE", 0,
+                Instant.now());
     }
 
     /** A list row as the order module builds it: contact block and address included, no lines. */

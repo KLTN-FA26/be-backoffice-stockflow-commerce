@@ -64,7 +64,7 @@ class AssistantOfferedToolsIntegrationTest {
 
     /** The tools that read stock figures: none is offered to a persona without a stock permission. */
     private static final Set<String> STOCK_TOOLS = Set.of("findExpiringLots", "findLowStock", "getStockLevels",
-            "getStockLots", "proposeReorder", "traceLot");
+            "getStockLots", "lookupScan", "proposeReorder", "traceLot");
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;

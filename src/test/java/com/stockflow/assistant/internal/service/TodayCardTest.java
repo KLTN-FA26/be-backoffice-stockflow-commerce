@@ -129,7 +129,7 @@ class TodayCardTest {
         verify(tools, times(7)).execute(calls.capture(), eq(ToolChannel.TODAY));
         Map<String, ToolSpec> specs = new HashMap<>();
         Stream.of(new FindLowStockTool(null, null), new FindExpiringLotsTool(null, null),
-                        new FindOrdersTool(null, null), new FindPurchaseOrdersTool(null, null, null),
+                        new FindOrdersTool(null, null, null), new FindPurchaseOrdersTool(null, null, null),
                         new FindProductionOrdersTool(null, null, null))
                 .forEach(tool -> specs.put(tool.spec().name(), tool.spec()));
         Map<String, Integer> maxRows = Map.of("findLowStock", FindLowStockTool.MAX_ROWS,
