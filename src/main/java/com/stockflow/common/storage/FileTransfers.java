@@ -114,6 +114,7 @@ public class FileTransfers {
             try (InputStream content = buffered.open()) {
                 inspection.requireClean(content);
             }
+            PdfContentPolicy.check(category, upload.contentType(), buffered.path());
             StoredFile file;
             try (InputStream content = new BufferedInputStream(buffered.open())) {
                 file = storage.store(category, upload.originalName(), upload.contentType(),

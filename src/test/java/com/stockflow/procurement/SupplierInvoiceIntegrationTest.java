@@ -27,7 +27,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
@@ -320,7 +319,7 @@ class SupplierInvoiceIntegrationTest {
     void cancelAndScan() {
         UUID po = order("CONFIRMED", "0", SOFA, 1);
         SupplierInvoices.InvoiceView invoice = enter(po, number(), billed(poLine(po, SOFA), 1, "1000", "0"));
-        byte[] pdf = "%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF".getBytes(StandardCharsets.US_ASCII);
+        byte[] pdf = com.stockflow.support.TestPdfs.blank();
         SupplierInvoices.InvoiceView scanned = invoices.attachScan(invoice.id(), new FileUpload("hd.pdf",
                 "application/pdf", pdf.length, new ByteArrayInputStream(pdf)));
         assertThat(scanned.scanName()).isEqualTo("hd.pdf");
@@ -338,7 +337,7 @@ class SupplierInvoiceIntegrationTest {
     void scanIsStoredOutsideTheTransaction() {
         UUID po = order("CONFIRMED", "0", SOFA, 1);
         SupplierInvoices.InvoiceView invoice = enter(po, number(), billed(poLine(po, SOFA), 1, "1000", "0"));
-        byte[] pdf = "%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF".getBytes(StandardCharsets.US_ASCII);
+        byte[] pdf = com.stockflow.support.TestPdfs.blank();
         java.util.List<Boolean> inTransaction = new java.util.concurrent.CopyOnWriteArrayList<>();
         doAnswer(call -> {
             inTransaction.add(org.springframework.transaction.support.TransactionSynchronizationManager

@@ -10,18 +10,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
-import java.security.DigestInputStream;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -242,33 +238,30 @@ public class StagedUploads {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Upload " + uploadId + " differs from the file that was declared");
         }
-        // An evidence photo (at most 20 MB) is read whole: its display copies are rendered from the same bytes.
-        byte[] whole = null;
+        // Spooled once to a temporary file, as a multipart upload is: its first bytes, size and digest checked on the
+        // way, then scanned, then - a PDF - inspected for active content, an evidence photo rendered.
+        String key = StorageKeys.forUpload(category, type, uploadId, Instant.parse(session.get("created")));
+        List<String> copies;
         try (InputStream raw = storage.download(incoming);
-             var digesting = new DigestInputStream(StorageKeys.hasDisplayCopies(category)
-                     ? new java.io.ByteArrayInputStream(whole = raw.readAllBytes()) : raw, Checksums.sha256());
-             var content = new BufferedInputStream(digesting)) {
-            content.mark(16);
-            byte[] head = content.readNBytes(16);
-            content.reset();
-            ContentTypePolicy.check(category, type, size, head);
-            inspection.requireClean(content);
-            content.transferTo(OutputStream.nullOutputStream());   // a scanner that is switched off reads nothing
-            if (!sha256.equals(HexFormat.of().formatHex(digesting.getMessageDigest().digest()))) {
+             BufferedUpload buffered = BufferedUpload.read(category, new FileUpload(session.get("name"), type, size, raw))) {
+            if (!sha256.equals(buffered.checksum())) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                         "Upload " + uploadId + " differs from the file that was declared");
             }
+            try (InputStream content = buffered.open()) {
+                inspection.requireClean(content);
+            }
+            PdfContentPolicy.check(category, type, buffered.path());
+            storage.copy(incoming, key);
+            try (InputStream content = buffered.open()) {
+                copies = StorageKeys.hasDisplayCopies(category)
+                        ? EvidenceCopies.store(storage, images, category, key, content.readAllBytes()) : List.of();
+            } catch (IOException | RuntimeException failure) {
+                storage.delete(key);
+                throw failure;
+            }
         } catch (IOException unreadable) {
             throw new StorageException("Could not read upload " + uploadId, unreadable);
-        }
-        String key = StorageKeys.forUpload(category, type, uploadId, Instant.parse(session.get("created")));
-        storage.copy(incoming, key);
-        List<String> copies;
-        try {
-            copies = whole == null ? List.of() : EvidenceCopies.store(storage, images, category, key, whole);
-        } catch (RuntimeException failure) {
-            storage.delete(key);
-            throw failure;
         }
         var file = new StoredFile(key, session.get("name"), type, size, clock.instant());
         return new Accepted(uploadId, incoming, new PreparedFiles.PreparedFile(file, sha256, copies));
