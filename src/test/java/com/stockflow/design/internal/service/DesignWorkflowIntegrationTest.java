@@ -136,6 +136,27 @@ class DesignWorkflowIntegrationTest {
                 e -> assertThat(e.getMessage()).contains("print.pdf").contains("PDF_UNREADABLE"));
     }
 
+    /** A production instruction is a document about the job, not artwork: its fonts do not hold the review up. */
+    @Test void aProductionInstructionIsNotHeldToTheArtworksPreflight() throws Exception {
+        var draft = draftWithArtifact();
+        String noteKey = "design-renders/" + UUID.randomUUID() + ".pdf";
+        byte[] unreadable = "not a PDF at all".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var note = artifacts.saveAndFlush(new DesignArtifactJpaEntity(Identifiers.newId(), draft.id(),
+                com.stockflow.design.api.DesignArtifactRole.PRODUCTION_INSTRUCTION,
+                new StoredFile(noteKey, "huong-dan.pdf", "application/pdf", unreadable.length, Instant.EPOCH),
+                com.stockflow.common.storage.Checksums.sha256Hex(unreadable)));
+        tx.executeWithoutResult(status -> {
+            var row = drafts.findById(draft.id()).orElseThrow();
+            row.attachArtifact(com.stockflow.design.api.DesignArtifactRole.PRODUCTION_INSTRUCTION, note.getId());
+            drafts.saveAndFlush(row);
+        });
+        when(storage.download(noteKey)).thenAnswer(call -> new ByteArrayInputStream(unreadable));
+        var current = workflow.get(draft.id(), owner);
+
+        assertThat(workflow.review(draft.id(), reviewer, current.version(), current.currentArtifactId(), true,
+                "Artwork checked").technicalReviewPassed()).isTrue();
+    }
+
     /** Only the assigned reviewer makes the server read the bundle: anyone else is refused before a byte is read. */
     @Test void aReviewNobodyMayMakeReadsNoFile() throws Exception {
         var draft = draftWithArtifact();

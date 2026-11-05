@@ -137,9 +137,11 @@ public class DesignWorkflowService {
     }
 
     /**
-     * The independent reviewer's technical decision on the current bundle. Passing it (BR-DSG-001) first needs every
-     * file of the bundle to pass the machine preflight - the preview being reviewed and the PRINT_READY file the print
-     * shop is sent alike: a file the machine already refuses does not get a person's approval.
+     * The independent reviewer's technical decision on the current bundle. Passing it (BR-DSG-001) first needs the
+     * bundle's artwork to pass the machine preflight - the preview being reviewed and the PRINT_READY file the print
+     * shop is sent alike: a file the machine already refuses does not get a person's approval. A technical spec or a
+     * production instruction is a document about the job, not artwork: its fonts and photos are not printed on the
+     * cup, so it is not held to them.
      *
      * <p>Not transactional itself. The cheap checks - version, reviewer, status, current file - run first in a short
      * read, so nobody else makes the server read a print file; the files are then read with no transaction held (a
@@ -179,15 +181,20 @@ public class DesignWorkflowService {
                 actor, draft.getOwnerUserId(), draft.getLastEditorUserId(), draft.getReviewerUserId());
     }
 
-    /** Every file of the draft's current bundle, one per role: what a confirmation would freeze and prepress print. */
+    /** The artwork of the draft's current bundle - what is printed: the customer preview and the print-ready file. */
     private List<StoredFile> bundleFiles(DesignDraftJpaEntity draft) {
         var ids = new java.util.HashSet<>(draft.getCurrentArtifacts().values());
         var bundle = artifacts.findAllById(ids).stream().filter(file -> file.getDraftId().equals(draft.getId())).toList();
         if (bundle.size() != ids.size()) {
             conflict("The current design bundle is incomplete");
         }
-        return bundle.stream().map(DesignArtifactJpaEntity::storedFile).toList();
+        return bundle.stream().filter(file -> ARTWORK.contains(file.getRole()))
+                .map(DesignArtifactJpaEntity::storedFile).toList();
     }
+
+    private static final java.util.Set<com.stockflow.design.api.DesignArtifactRole> ARTWORK = java.util.EnumSet.of(
+            com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW,
+            com.stockflow.design.api.DesignArtifactRole.PRINT_READY);
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DraftView submit(UUID id, UUID actor, long version) {
