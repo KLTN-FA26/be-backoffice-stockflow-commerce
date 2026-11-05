@@ -133,7 +133,9 @@ final class Pseudonyms {
 
     /**
      * Text with every alias of {@code aliases} replaced by the customer's name; an alias nobody was given, or one whose
-     * customer has no name any more, stays as written.
+     * customer has no name any more, stays as written. A name the model wrote beside its own alias - "Công ty ABC
+     * (KH#1)", the name taken from the question and the alias from a tool, or the other way round - becomes the name
+     * once, rather than "Công ty ABC (Công ty ABC)".
      *
      * @param names the customers' current names, asked once for all of them
      */
@@ -153,6 +155,14 @@ final class Pseudonyms {
         return text -> {
             if (text == null || byNumber.isEmpty() || !text.toUpperCase(Locale.ROOT).contains("KH#")) {
                 return text;
+            }
+            for (Map.Entry<Integer, String> customer : byNumber.entrySet()) {
+                String name = Pattern.quote(customer.getValue());
+                String code = "KH#" + customer.getKey() + "(?![\\p{L}\\p{N}])";
+                text = Pattern.compile("(" + name + ")\\s*\\(\\s*" + code + "\\s*\\)|" + code + "\\s*\\(\\s*(" + name
+                                + ")\\s*\\)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE).matcher(text)
+                        .replaceAll(pair -> Matcher.quoteReplacement(pair.group(1) != null ? pair.group(1)
+                                : pair.group(2)));
             }
             Matcher alias = ALIAS.matcher(text);
             StringBuilder out = new StringBuilder(text.length() + 32);

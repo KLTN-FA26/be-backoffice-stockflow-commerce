@@ -56,6 +56,8 @@ class PseudonymsTest {
 
         assertThat(reveal.apply("KH#1 nợ quá hạn; KH#2 và KH#3 thì không; KH#1A, SKH#1, KH#01, KH-1 giữ nguyên."))
                 .isEqualTo("Công ty ABC nợ quá hạn; KH#2 và KH#3 thì không; KH#1A, SKH#1, KH#01, KH-1 giữ nguyên.");
+        assertThat(reveal.apply("Công ty ABC (KH#1) có 5 đơn; KH#1 (công ty abc) đã trả."))
+                .as("a name beside its own alias is written once").isEqualTo("Công ty ABC có 5 đơn; công ty abc đã trả.");
         assertThat(reveal.apply(null)).isNull();
         assertThat(Pseudonyms.revealer(Map.of(), ids -> {
             throw new AssertionError("no lookup without aliases");
