@@ -6,7 +6,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.common.storage.FileStorage;
+import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -56,14 +56,14 @@ public class ReturnRequestQueries {
 
     private final ReturnRequestRepository returns;
     private final ReturnRequestSearch search;
-    private final FileStorage storage;
+    private final FileTransfers files;
     private final OrderRepository orders;
 
-    ReturnRequestQueries(ReturnRequestRepository returns, ReturnRequestSearch search, FileStorage storage,
+    ReturnRequestQueries(ReturnRequestRepository returns, ReturnRequestSearch search, FileTransfers files,
                          OrderRepository orders) {
         this.returns = returns;
         this.search = search;
-        this.storage = storage;
+        this.files = files;
         this.orders = orders;
     }
 
@@ -93,7 +93,12 @@ public class ReturnRequestQueries {
         return new Detail(request, returns.history(returnId));
     }
 
-    /** A short presigned link to one photo of the return, for the owner or the back office. */
+    /**
+     * A short presigned link showing one photo of the return, for the owner or the back office. Audited: the photos are
+     * the customer's and the warehouse's evidence in a dispute.
+     */
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.EXPORT,
+            resourceType = "return-evidence", resourceId = "#evidenceId", details = "{returnId: #returnId}")
     public String evidenceLink(UUID returnId, UUID evidenceId, UUID ownCustomerId) {
         ReturnRequest request = returns.findById(returnId)
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
@@ -103,7 +108,7 @@ public class ReturnRequestQueries {
         ReturnEvidence photo = request.evidence().stream().filter(e -> e.id().equals(evidenceId))
                 .filter(e -> ownCustomerId == null || e.stage() == ReturnEvidence.Stage.CLAIM).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No photo " + evidenceId));
-        return storage.presignedDownloadUrl(photo.fileKey(), LINK_LIFETIME);
+        return files.viewLink(photo.fileKey(), LINK_LIFETIME).url();
     }
 
     /**

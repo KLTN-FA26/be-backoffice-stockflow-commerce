@@ -8,14 +8,13 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
-import com.stockflow.common.storage.BufferedUpload;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.FileUpload;
-import com.stockflow.common.storage.StorageException;
+import com.stockflow.common.storage.PreparedFiles;
+import com.stockflow.common.storage.RecordRetention;
 import com.stockflow.common.storage.StoredFile;
-import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.procurement.api.SubcontractPurchasing;
 import com.stockflow.procurement.api.SubcontractSettlement;
 import com.stockflow.procurement.internal.domain.InvoiceMatchFacts;
@@ -29,11 +28,10 @@ import com.stockflow.procurement.internal.repository.SupplierInvoiceSearch;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
-import java.io.BufferedInputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -84,7 +82,7 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
     private final SupplierRepository suppliers;
     private final SubcontractPurchasing subcontracts;
     private final FileTransfers files;
-    private final UploadInspection inspection;
+    private final TransactionOperations tx;
     private final Clock clock;
     private final BigDecimal priceTolerancePercent;
 
@@ -94,7 +92,7 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
      */
     SupplierInvoiceServiceImpl(SupplierInvoiceRepository invoices, SupplierInvoiceSearch search,
                                InvoiceMatchFacts facts, SupplierRepository suppliers,
-                               SubcontractPurchasing subcontracts, FileTransfers files, UploadInspection inspection,
+                               SubcontractPurchasing subcontracts, FileTransfers files, TransactionOperations tx,
                                Clock clock,
                                @Value("${stockflow.procurement.invoice-match.price-tolerance-percent:2}")
                                BigDecimal priceTolerancePercent) {
@@ -108,7 +106,7 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
         this.suppliers = suppliers;
         this.subcontracts = subcontracts;
         this.files = files;
-        this.inspection = inspection;
+        this.tx = tx;
         this.clock = clock;
         this.priceTolerancePercent = priceTolerancePercent.setScale(2, java.math.RoundingMode.HALF_UP);
     }
@@ -196,37 +194,44 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
     }
 
     /**
-     * The scan is read whole first (size, type by its bytes) and inspected before it is stored; storing it is undone
-     * if the transaction is ({@link FileTransfers}).
+     * The scan is checked (size, type by its bytes), scanned and stored with no transaction and no lock held
+     * ({@link FileTransfers#prepare}): the invoice is not locked for the seconds that takes. A short transaction then
+     * locks it, checks again that it still takes a scan, and attaches the file - or leaves it to be deleted.
+     *
+     * <p>Once attached the scan is an accounting record: when the transaction commits it is locked against deletion
+     * and overwriting for the supplier-invoice retention period (S3 Object Lock, {@link RecordRetention}). A scan it
+     * replaces stays in storage, locked as it was.</p>
      */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "supplier-invoice", resourceId = "#invoiceId")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public InvoiceView attachScan(UUID invoiceId, FileUpload upload) {
-        SupplierInvoice invoice = locked(invoiceId);
-        try (BufferedUpload buffered = BufferedUpload.read(FileCategory.SUPPLIER_INVOICE, upload)) {
-            try (InputStream content = buffered.open()) {
-                inspection.requireClean(content);
-            }
-            try (InputStream content = new BufferedInputStream(buffered.open())) {
-                StoredFile file = files.store(FileCategory.SUPPLIER_INVOICE, new FileUpload(upload.originalName(),
-                        upload.contentType(), upload.sizeBytes(), content, buffered.checksum()));
+        tx.executeWithoutResult(status -> found(invoiceId).requireScannable());
+        try (PreparedFiles prepared = files.prepare(FileCategory.SUPPLIER_INVOICE, upload)) {
+            StoredFile file = prepared.single().file();
+            return tx.execute(status -> {
+                SupplierInvoice invoice = locked(invoiceId);
                 invoice.attach(new SupplierInvoice.Document(file.key(), file.originalName(), file.contentType()));
-            }
-        } catch (IOException ex) {
-            throw new StorageException("Could not read the buffered invoice scan", ex);
+                InvoiceView view = view(invoices.save(invoice));
+                prepared.adopt();
+                files.retainAfterCommit(file.key(), RecordRetention.SUPPLIER_INVOICE);
+                return view;
+            });
         }
-        return view(invoices.save(invoice));
     }
 
+    /** A link that saves the scan under its original name; audited, as a financial record leaves the system. */
     @Override
     @Transactional(readOnly = true)
+    @Auditable(action = AuditAction.EXPORT, resourceType = "supplier-invoice", resourceId = "#invoiceId",
+            details = "{file: 'scan'}")
     public DownloadLink scanLink(UUID invoiceId) {
         SupplierInvoice invoice = found(invoiceId);
         if (invoice.document() == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND,
                     "Invoice %s has no scan attached".formatted(invoice.invoiceNumber()));
         }
-        return files.downloadLink(invoice.document().key());
+        return files.downloadLink(invoice.document().key(), invoice.document().name());
     }
 
     @Override

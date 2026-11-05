@@ -6,7 +6,16 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.io.BufferedInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /** Coordinates existing storage with database transactions; does not implement storage policy. */
 @Component
@@ -16,19 +25,96 @@ public class FileTransfers {
     private final StorageProperties properties;
     private final Clock clock;
     private final ObjectLockProperties objectLock;
+    private final UploadInspection inspection;
 
-    /** Without Object Lock: the shape the storage tests construct. */
+    /** Without Object Lock or scanning: the shape the storage tests construct. */
     public FileTransfers(FileStorage storage, StorageProperties properties, Clock clock) {
         this(storage, properties, clock, ObjectLockProperties.disabled());
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
+    /** Without scanning. */
     public FileTransfers(FileStorage storage, StorageProperties properties, Clock clock,
                          ObjectLockProperties objectLock) {
+        this(storage, properties, clock, objectLock, new UploadInspection("localhost", 3310, false));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public FileTransfers(FileStorage storage, StorageProperties properties, Clock clock,
+                         ObjectLockProperties objectLock, UploadInspection inspection) {
         this.storage = storage;
         this.properties = properties;
         this.clock = clock;
         this.objectLock = objectLock;
+        this.inspection = inspection;
+    }
+
+    /**
+     * Checks, scans and stores {@code uploads} with no transaction and no lock held, for a short
+     * transaction to attach afterwards ({@link PreparedFiles}). Each upload is checked against the
+     * category (type by its first bytes, size), scanned, and written with its SHA-256 declared, so the
+     * store refuses bytes that changed on the way.
+     *
+     * <p>Several uploads are prepared side by side, so five photos take about as long as the slowest
+     * rather than the five added up; the scanner's own limit still bounds how many are scanned at
+     * once. All or nothing: when one fails, those already stored are deleted again and the first
+     * failure, in upload order, is thrown.</p>
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code UNSUPPORTED_MEDIA_TYPE},
+     *         {@code PAYLOAD_TOO_LARGE}, {@code VALIDATION_FAILED} (also a detection), {@code RATE_LIMITED}
+     * @throws StorageException when the scanner or the store cannot be reached
+     */
+    public PreparedFiles prepare(FileCategory category, List<FileUpload> uploads) {
+        if (uploads.size() <= 1) {
+            return new PreparedFiles(storage, uploads.stream().map(upload -> prepareOne(category, upload)).toList());
+        }
+        List<Future<PreparedFiles.PreparedFile>> pending = new ArrayList<>();
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (FileUpload upload : uploads) {
+                pending.add(executor.submit(() -> prepareOne(category, upload)));
+            }
+        }
+        List<PreparedFiles.PreparedFile> prepared = new ArrayList<>();
+        RuntimeException failure = null;
+        for (Future<PreparedFiles.PreparedFile> result : pending) {
+            try {
+                prepared.add(result.get());
+            } catch (ExecutionException ex) {
+                if (failure == null) {
+                    failure = ex.getCause() instanceof RuntimeException runtime ? runtime
+                            : new StorageException("Could not prepare an upload", ex.getCause());
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                if (failure == null) {
+                    failure = new StorageException("Interrupted while preparing uploads", interrupted);
+                }
+            }
+        }
+        if (failure != null) {
+            new PreparedFiles(storage, prepared).close();
+            throw failure;
+        }
+        return new PreparedFiles(storage, prepared);
+    }
+
+    /** {@link #prepare(FileCategory, List)} of one upload. */
+    public PreparedFiles prepare(FileCategory category, FileUpload upload) {
+        return prepare(category, List.of(upload));
+    }
+
+    private PreparedFiles.PreparedFile prepareOne(FileCategory category, FileUpload upload) {
+        try (BufferedUpload buffered = BufferedUpload.read(category, upload)) {
+            try (InputStream content = buffered.open()) {
+                inspection.requireClean(content);
+            }
+            try (InputStream content = new BufferedInputStream(buffered.open())) {
+                StoredFile file = storage.store(category, upload.originalName(), upload.contentType(),
+                        upload.sizeBytes(), content, buffered.checksum());
+                return new PreparedFiles.PreparedFile(file, buffered.checksum());
+            }
+        } catch (IOException unreadable) {
+            throw new StorageException("Could not read the buffered upload", unreadable);
+        }
     }
 
     public StoredFile store(FileCategory category, FileUpload upload) {
@@ -118,13 +204,52 @@ public class FileTransfers {
         });
     }
 
-    /** Call only after resolving the attachment through its owning business record. */
+    /**
+     * A link that downloads the file under {@code fileName} ({@code Content-Disposition: attachment}),
+     * for a document someone saves: a print file, an invoice scan. Checks first that the object is
+     * there, so a missing file is an error here rather than a broken link in the browser.
+     *
+     * <p>Call only after resolving the attachment through its owning business record.</p>
+     */
+    public DownloadLink downloadLink(String key, String fileName) {
+        if (!storage.exists(key)) {
+            throw new StorageException("Attached object is missing");
+        }
+        return sign(key, properties.presignedUrlTtl(), DownloadDisposition.attachment(fileName));
+    }
+
+    /**
+     * {@link #downloadLink(String, String)} without a file name: the browser decides from the
+     * response how to handle it.
+     */
     public DownloadLink downloadLink(String key) {
         if (!storage.exists(key)) {
             throw new StorageException("Attached object is missing");
         }
-        var expiresAt = clock.instant().plus(properties.presignedUrlTtl());
-        String url = storage.presignedDownloadUrl(key, properties.presignedUrlTtl());
+        return sign(key, properties.presignedUrlTtl(), null);
+    }
+
+    /**
+     * A link to show the file in the page ({@code inline}): an image in a gallery, a photo in a list.
+     * No existence check - signing is a local computation and a list of twenty photos must not cost
+     * twenty round trips to the store; a file that is gone shows as a broken image. The browser may
+     * cache the response for as long as the link is valid.
+     *
+     * <p>Call only after resolving the attachment through its owning business record.</p>
+     */
+    public DownloadLink viewLink(String key) {
+        return viewLink(key, properties.presignedUrlTtl());
+    }
+
+    /** {@link #viewLink(String)} valid for {@code validFor}, never longer than the configured link lifetime. */
+    public DownloadLink viewLink(String key, Duration validFor) {
+        Duration ttl = validFor.compareTo(properties.presignedUrlTtl()) > 0 ? properties.presignedUrlTtl() : validFor;
+        return sign(key, ttl, DownloadDisposition.inline(ttl));
+    }
+
+    private DownloadLink sign(String key, Duration validFor, DownloadDisposition disposition) {
+        var expiresAt = clock.instant().plus(validFor);
+        String url = storage.presignedDownloadUrl(key, validFor, disposition);
         if (!url.startsWith("https://") && !url.startsWith("http://")) {
             throw new StorageException("Browser downloads require the S3/MinIO storage provider");
         }

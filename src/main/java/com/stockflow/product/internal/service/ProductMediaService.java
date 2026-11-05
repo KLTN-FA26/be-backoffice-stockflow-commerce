@@ -265,22 +265,28 @@ public class ProductMediaService {
         return view(requireMedia(productId, variantId, mediaId));
     }
 
-    /** A short-lived link to the private original. Only for a stored file: a URL image has its URL. */
+    /**
+     * A short-lived link saving the private original under its uploaded name. Only for a stored file: a URL image has
+     * its URL. Audited: the original is the photograph exactly as taken, location metadata included.
+     */
     @Transactional(readOnly = true)
+    @Auditable(action = AuditAction.EXPORT, resourceType = "product-media", resourceId = "#mediaId",
+            details = "{file: 'original'}")
     public DownloadLink downloadLink(UUID productId, UUID variantId, UUID mediaId) {
         var image = requireMedia(productId, variantId, mediaId);
         if (image.storedFile() == null) {
             throw new BusinessException(ErrorCode.CONFLICT, "This image is an external URL, not a stored file");
         }
-        return files.downloadLink(image.getStorageKey());
+        return files.downloadLink(image.getStorageKey(), image.storedFile().originalName());
     }
 
+    /** A link showing a display rendition in the page: no round trip to the store, cacheable while it lives. */
     @Transactional(readOnly = true)
     public DownloadLink renditionLink(UUID productId, UUID variantId, UUID mediaId, int edge) {
         var rendition = requireMedia(productId, variantId, mediaId).getRenditions().stream()
                 .filter(r -> r.edge() == edge).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No rendition of edge " + edge));
-        return files.downloadLink(rendition.file().key());
+        return files.viewLink(rendition.file().key());
     }
 
     // ------------------------------------------------------------------ edits

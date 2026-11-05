@@ -90,7 +90,18 @@ public interface FileStorage {
      * it — from a chat message, a proxy log, a browser history — can fetch the file until it
      * expires. Minutes, not days.</p>
      */
-    String presignedDownloadUrl(String key, Duration validFor);
+    default String presignedDownloadUrl(String key, Duration validFor) {
+        return presignedDownloadUrl(key, validFor, null);
+    }
+
+    /**
+     * {@link #presignedDownloadUrl(String, Duration)}, telling the browser how to treat the response: save it under
+     * its original name, or show it in the page and cache it while the link lives ({@link DownloadDisposition}).
+     * The overrides are part of the signature, so a holder of the link cannot change them.
+     *
+     * @param disposition null to serve the object's own headers
+     */
+    String presignedDownloadUrl(String key, Duration validFor, DownloadDisposition disposition);
 
     /**
      * Delete a stored file.

@@ -14,6 +14,7 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.consumption.DamagePhoto;
 import com.stockflow.inventory.consumption.PickDamageReporting;
@@ -49,7 +50,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -115,6 +116,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     private final InventoryControlService controls;
     private final StockLots lots;
     private final DamageEvidence evidence;
+    private final TransactionOperations tx;
     private final Clock clock;
     private final PickableStock pickable;
 
@@ -123,7 +125,8 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                        StockDamageReportSearch search, StockAdjustmentRepository adjustments, StockMovementLog ledger,
                        LocationDirectory locations, InventoryPolicyRepository policies, StockPackageContents cartons,
                        InventoryEventPublisher events, SkuReservationRepository skuReservations, CycleCountRepository cycleCounts,
-                       InventoryControlService controls, StockLots lots, DamageEvidence evidence, Clock clock) {
+                       InventoryControlService controls, StockLots lots, DamageEvidence evidence, Clock clock,
+                       TransactionOperations tx) {
         this.stockItems = stockItems;
         this.reports = reports;
         this.search = search;
@@ -138,62 +141,88 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         this.controls = controls;
         this.lots = lots;
         this.evidence = evidence;
+        this.tx = tx;
         this.clock = clock;
         this.pickable = new PickableStock(stockItems, locations, cycleCounts);
     }
 
     // ================================================================== a shelf report (SCRUM-475)
 
+    /**
+     * Not transactional itself: the photos are checked, scanned and stored first, side by side and with no transaction
+     * ({@link DamageEvidence#prepare}), so no pooled connection waits on the scanner. A replay and a report this caller
+     * may not make are answered before anything is uploaded. The report's own transaction then takes the locks, checks
+     * again, moves the stock and adopts the photos; anything that fails leaves no photo behind.
+     */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-damage-report", resourceId = "#result?.id()")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public DamageReportView report(ReportDamageCommand command, List<FileUpload> uploads) {
-        Optional<StockDamageReport> done = reports.findByRequestId(command.requestId());
-        if (done.isPresent()) {
-            WarehouseScope.requireWarehouse(done.get().goods().warehouseId());
-            return view(done.get());
+        DamageReportView earlier = tx.execute(status -> {
+            Optional<StockDamageReport> done = reports.findByRequestId(command.requestId());
+            if (done.isPresent()) {
+                WarehouseScope.requireWarehouse(done.get().goods().warehouseId());
+                return view(done.get());
+            }
+            reportable(command);
+            return null;
+        });
+        if (earlier != null) {
+            return earlier;
         }
+        try (PreparedFiles prepared = evidence.prepare(uploads)) {
+            return tx.execute(status -> {
+                StockItem view = reportable(command);
+                policies.lock(view.sku().code());
+                Optional<StockDamageReport> raced = reports.findByRequestId(command.requestId());
+                if (raced.isPresent()) {
+                    // The same request committed while this one stored its photos: answer with it; ours are never
+                    // adopted, so closing them deletes them.
+                    status.setRollbackOnly();
+                    return view(raced.get());
+                }
+                List<StockDamageReport.Photo> photos = evidence.photos(prepared);
+                UUID warehouseId = warehouseOf(view.location());
+                Destination destination = destination(view, warehouseId, command.damageLocationCode());
+                StockPackageContents.LockedCartons lockedCartons = cartons.lockFor(List.of(view));
+                TreeMap<String, StockItem> locked = lock(view.id(), destination.existing(), List.of());
+                StockItem source = locked.get(view.id().value().toString());
+                Instant now = clock.instant();
+                Quantity quantity = Quantity.of(command.quantity());
+
+                lockedCartons.tookFrom(source);
+                source.giveUpDamaged(quantity, now);
+                StockItem damaged = destination.existing() == null
+                        ? StockItem.emptyLayerOf(source, destination.location(), StockStatus.DAMAGED)
+                        : locked.get(destination.existing().value().toString());
+                damaged.takeUpDamaged(source, quantity, null, null, now);
+                saveMoved(source, damaged, destination.existing() != null);
+                cartons.settle(lockedCartons, now);
+
+                StockDamageReport report = StockDamageReport.report(reports.nextReportNumber(BusinessCalendar.date(now)),
+                        command.requestId(), StockDamageReport.DamagedGoods.of(source, warehouseId), damaged.id(),
+                        damaged.location(), quantity, command.reason(), command.note(), photos, null, command.reportedBy(),
+                        now, shortfall(source.sku(), now));
+                StockDamageReport saved = reports.save(report);
+                events.publishEventsOf(report);
+                ledger.append(movedToQuarantine(report, source, damaged, now));
+                log.info("Damage report {}: {} x {}{} at {} moved to {} as DAMAGED ({})", report.number(), quantity,
+                        source.sku(), lotSuffix(source.lotNumber()), source.location(), damaged.location(), command.reason());
+                prepared.adopt();
+                return view(saved);
+            });
+        }
+    }
+
+    /** The stock row a shelf report names, if this caller may report it, with the reason explained. */
+    private StockItem reportable(ReportDamageCommand command) {
         StockItem view = stockItems.findById(new StockItemId(command.stockItemId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
                         "No stock item " + command.stockItemId()));
         // BR-SEC-002 first: another warehouse's stock is not this caller's to report, nor to learn about.
         WarehouseScope.requireLocation(view.location().code());
         StockDamageReport.requireExplained(command.reason(), command.note());
-        List<StockDamageReport.Photo> photos = evidence.store(uploads);
-
-        policies.lock(view.sku().code());
-        Optional<StockDamageReport> raced = reports.findByRequestId(command.requestId());
-        if (raced.isPresent()) {
-            // The same request committed while this one stored its photos: answer with it, keep nothing of ours.
-            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
-            return view(raced.get());
-        }
-        UUID warehouseId = warehouseOf(view.location());
-        Destination destination = destination(view, warehouseId, command.damageLocationCode());
-        StockPackageContents.LockedCartons lockedCartons = cartons.lockFor(List.of(view));
-        TreeMap<String, StockItem> locked = lock(view.id(), destination.existing(), List.of());
-        StockItem source = locked.get(view.id().value().toString());
-        Instant now = clock.instant();
-        Quantity quantity = Quantity.of(command.quantity());
-
-        lockedCartons.tookFrom(source);
-        source.giveUpDamaged(quantity, now);
-        StockItem damaged = destination.existing() == null
-                ? StockItem.emptyLayerOf(source, destination.location(), StockStatus.DAMAGED)
-                : locked.get(destination.existing().value().toString());
-        damaged.takeUpDamaged(source, quantity, null, null, now);
-        saveMoved(source, damaged, destination.existing() != null);
-        cartons.settle(lockedCartons, now);
-
-        StockDamageReport report = StockDamageReport.report(reports.nextReportNumber(BusinessCalendar.date(now)),
-                command.requestId(), StockDamageReport.DamagedGoods.of(source, warehouseId), damaged.id(),
-                damaged.location(), quantity, command.reason(), command.note(), photos, null, command.reportedBy(),
-                now, shortfall(source.sku(), now));
-        StockDamageReport saved = reports.save(report);
-        events.publishEventsOf(report);
-        ledger.append(movedToQuarantine(report, source, damaged, now));
-        log.info("Damage report {}: {} x {}{} at {} moved to {} as DAMAGED ({})", report.number(), quantity,
-                source.sku(), lotSuffix(source.lotNumber()), source.location(), damaged.location(), command.reason());
-        return view(saved);
+        return view;
     }
 
     // ================================================================== a pick report (SCRUM-277)
@@ -201,8 +230,10 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     @Override
     @Transactional(propagation = Propagation.MANDATORY)
     public List<DamagePhoto> storePhotos(List<FileUpload> photos) {
-        return evidence.store(photos).stream().map(photo -> new DamagePhoto(photo.storageKey(), photo.originalName(),
-                photo.contentType(), photo.sizeBytes(), photo.checksum())).toList();
+        PreparedFiles prepared = evidence.prepare(photos);
+        prepared.adopt();
+        return evidence.photos(prepared).stream().map(photo -> new DamagePhoto(photo.storageKey(),
+                photo.originalName(), photo.contentType(), photo.sizeBytes(), photo.checksum())).toList();
     }
 
     @Override

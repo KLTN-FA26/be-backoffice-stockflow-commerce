@@ -239,10 +239,20 @@ public final class SupplierInvoice extends AggregateRoot {
      * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION} when CANCELLED or PAID
      */
     public void attach(Document scan) {
+        requireScannable();
+        this.document = Objects.requireNonNull(scan, "scan");
+    }
+
+    /**
+     * Whether a scan may be attached now. The service asks before the file is uploaded, so a scan for a cancelled or
+     * paid invoice is refused without storing anything.
+     *
+     * @throws BusinessException {@code SUPPLIER_INVOICE_INVALID_TRANSITION} when CANCELLED or PAID
+     */
+    public void requireScannable() {
         if (status == SupplierInvoiceStatus.CANCELLED || status == SupplierInvoiceStatus.PAID) {
             throw transition("given a scan");
         }
-        this.document = Objects.requireNonNull(scan, "scan");
     }
 
     private void write(Header header, List<NewLine> newLines, LocalDate today, java.util.function.Supplier<UUID> ids) {

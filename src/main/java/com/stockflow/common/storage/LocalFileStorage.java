@@ -121,7 +121,7 @@ class LocalFileStorage implements FileStorage {
     }
 
     @Override
-    public String presignedDownloadUrl(String key, Duration validFor) {
+    public String presignedDownloadUrl(String key, Duration validFor, DownloadDisposition disposition) {
         // Deliberately not a usable HTTP URL - see the class javadoc.
         return resolve(key).toUri().toString();
     }

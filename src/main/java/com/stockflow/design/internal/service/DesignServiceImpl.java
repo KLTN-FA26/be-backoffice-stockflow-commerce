@@ -138,7 +138,9 @@ class DesignServiceImpl implements DesignService {
                 || !item.checksum().equals(storedDigest(item.storageKey(), false))) {
             throw new BusinessException(ErrorCode.CONFLICT, "Design integrity verification failed");
         }
-        var link = files.downloadLink(item.storageKey());
+        // The preview is looked at in the page; every other file is saved under the name it was uploaded with.
+        var link = item.role() == DesignArtifactRole.CUSTOMER_PREVIEW ? files.viewLink(item.storageKey())
+                : files.downloadLink(item.storageKey(), item.originalName());
         return new FulfillmentArtifact(item.artifactId(), item.role(), item.originalName(), item.contentType(),
                 item.sizeBytes(), item.checksum(), link.url(), link.expiresAt());
     }

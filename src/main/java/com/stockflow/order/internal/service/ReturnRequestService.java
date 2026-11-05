@@ -7,13 +7,11 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.common.storage.BufferedUpload;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.FileUpload;
-import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.StoredFile;
-import com.stockflow.common.storage.UploadInspection;
+import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.inventory.api.InventoryService;
@@ -47,11 +45,10 @@ import com.stockflow.warehouse.api.WarehouseService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
-import java.io.BufferedInputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -148,16 +145,16 @@ public class ReturnRequestService {
     private final ReplacementOrders replacements;
     private final OrderServiceImpl orderService;
     private final FileTransfers files;
-    private final UploadInspection inspection;
+    private final TransactionOperations tx;
     private final ReturnPolicy policy;
     private final Clock clock;
 
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          InventoryService inventory, WarehouseService warehouses, ReturnSettlement settlement,
                          PaymentService payments, CustomerService customers, ReplacementOrders replacements,
-                         OrderServiceImpl orderService, FileTransfers files, UploadInspection inspection,
+                         OrderServiceImpl orderService, FileTransfers files, TransactionOperations tx,
                          ReturnPolicy policy, Clock clock) {
-        this.inspection = inspection;
+        this.tx = tx;
         this.returns = returns;
         this.orders = orders;
         this.events = events;
@@ -266,39 +263,47 @@ public class ReturnRequestService {
 
     /**
      * Keep a photo with the return. The customer's go with the claim (stage CLAIM) on their own return only; staff may
-     * add receipt and inspection photos. The return's state is checked before anything is read; the file's declared
-     * type must match its bytes (an image, never a document or a script) and it is scanned like every user upload
-     * (design, product media) before it is stored - and deleted again when the transaction rolls back
-     * ({@link FileTransfers}).
+     * add receipt and inspection photos. The file's declared type must match its bytes (an image, never a document or
+     * a script) and it is scanned like every user upload before it is stored.
+     *
+     * <p>Not transactional itself: checking, scanning and storing a 15 MB photo takes seconds, and the return used to
+     * stay locked for all of them - every other action on it (approval, receipt, the warehouse's own photo) waited. The
+     * return is read without a lock first, so a closed stage or a full one is refused before anything is uploaded;
+     * the photo is prepared with no transaction ({@link FileTransfers#prepare}); then a short transaction locks the
+     * return, checks again what may have changed meanwhile, and keeps the photo - or leaves it to be deleted.</p>
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "return-request", resourceId = "#returnId")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public ReturnRequest addEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage stage, FileUpload upload,
                                      UUID by) {
-        ReturnRequest request = returns.findByIdForUpdate(returnId)
+        ReturnEvidence.Stage taken = ownCustomerId != null || stage == null ? ReturnEvidence.Stage.CLAIM : stage;
+        tx.executeWithoutResult(status -> evidenceTarget(returnId, ownCustomerId, taken, false));
+        try (PreparedFiles prepared = files.prepare(FileCategory.RETURN_EVIDENCE, upload)) {
+            StoredFile file = prepared.single().file();
+            return tx.execute(status -> {
+                ReturnRequest request = evidenceTarget(returnId, ownCustomerId, taken, true);
+                request.addEvidence(new ReturnEvidence(Identifiers.newId(), taken, file.key(), file.originalName(),
+                        file.contentType(), file.sizeBytes(), by, now()), policy);
+                ReturnRequest saved = returns.save(request);
+                prepared.adopt();
+                return saved;
+            });
+        }
+    }
+
+    /** The return a photo of {@code stage} goes to, if it takes one now; locked when {@code forUpdate}. */
+    private ReturnRequest evidenceTarget(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage taken,
+                                         boolean forUpdate) {
+        ReturnRequest request = (forUpdate ? returns.findByIdForUpdate(returnId) : returns.findById(returnId))
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
-        ReturnEvidence.Stage taken = ownCustomerId != null || stage == null ? ReturnEvidence.Stage.CLAIM : stage;
         if (taken != ReturnEvidence.Stage.CLAIM) {
             // The warehouse's and QC's photos: of a return their warehouse handles (BR-SEC-002, review of #195 N10).
             WarehouseScope.requireWarehouse(orders.findById(new OrderId(request.orderId())).map(Order::warehouseId)
                     .orElse(null));
         }
         request.requireEvidenceAllowed(taken, policy);
-        StoredFile file;
-        try (BufferedUpload buffered = BufferedUpload.read(FileCategory.RETURN_EVIDENCE, upload)) {
-            try (InputStream content = buffered.open()) {
-                inspection.requireClean(content);
-            }
-            try (InputStream content = new BufferedInputStream(buffered.open())) {
-                file = files.store(FileCategory.RETURN_EVIDENCE, new FileUpload(upload.originalName(),
-                        upload.contentType(), upload.sizeBytes(), content, buffered.checksum()));
-            }
-        } catch (IOException unreadable) {
-            throw new StorageException("Could not read the uploaded photo", unreadable);
-        }
-        request.addEvidence(new ReturnEvidence(Identifiers.newId(), taken, file.key(), file.originalName(),
-                file.contentType(), file.sizeBytes(), by, now()), policy);
-        return returns.save(request);
+        return request;
     }
 
     // ================================================================================================= withdrawal

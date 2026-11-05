@@ -125,7 +125,8 @@ class PrintRunIntegrationTest {
     @BeforeEach
     void setUp() {
         org.mockito.Mockito.doAnswer(call -> "http://objects.test/" + call.getArgument(0)).when(storage)
-                .presignedDownloadUrl(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+                .presignedDownloadUrl(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
         fixtures = new ProductionFixtures(storage, jdbc, tx, entityManager, progress);
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         ConfirmedDesigns.stockBlanks(jdbc, tx, 80);

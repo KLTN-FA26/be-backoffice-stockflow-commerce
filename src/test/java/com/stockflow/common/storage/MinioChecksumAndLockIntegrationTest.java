@@ -146,6 +146,30 @@ class MinioChecksumAndLockIntegrationTest {
     }
 
     @Test
+    void aSignedLinkServesTheDispositionItWasSignedWith() throws Exception {
+        var storage = storage("checksums", ObjectLockProperties.disabled());
+        byte[] bytes = pdf("an invoice");
+        var file = storage.store(FileCategory.SUPPLIER_INVOICE, "x.pdf", "application/pdf", bytes.length,
+                new ByteArrayInputStream(bytes));
+
+        try (var browser = java.net.http.HttpClient.newHttpClient()) {
+            var saved = browser.send(java.net.http.HttpRequest.newBuilder(URI.create(storage.presignedDownloadUrl(
+                    file.key(), Duration.ofMinutes(1), DownloadDisposition.attachment("Hoá đơn.pdf")))).GET().build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertThat(saved.statusCode()).isEqualTo(200);
+            assertThat(saved.body()).isEqualTo(bytes);
+            assertThat(saved.headers().firstValue("Content-Disposition")).get().asString()
+                    .contains("filename*=UTF-8''Ho%C3%A1%20%C4%91%C6%A1n.pdf");
+
+            var shown = browser.send(java.net.http.HttpRequest.newBuilder(URI.create(storage.presignedDownloadUrl(
+                    file.key(), Duration.ofMinutes(1), DownloadDisposition.inline(Duration.ofMinutes(1))))).GET().build(),
+                    java.net.http.HttpResponse.BodyHandlers.discarding());
+            assertThat(shown.headers().firstValue("Content-Disposition")).contains("inline");
+            assertThat(shown.headers().firstValue("Cache-Control")).contains("private, max-age=60");
+        }
+    }
+
+    @Test
     void retainOnABucketWithoutObjectLockIsAStorageError() {
         var storage = storage("checksums", ObjectLockProperties.disabled());
         byte[] bytes = pdf("no lock here");

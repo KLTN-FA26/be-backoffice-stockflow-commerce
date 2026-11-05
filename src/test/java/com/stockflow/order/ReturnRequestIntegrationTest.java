@@ -965,7 +965,10 @@ class ReturnRequestIntegrationTest {
             assertThat(photo.stage()).isEqualTo(ReturnEvidence.Stage.CLAIM);
             assertThat(photo.contentType()).isEqualTo("image/png");
         });
-        assertThat(queries.evidenceLink(request.id(), withOne.evidence().getFirst().id(), customer)).isNotBlank();
+        // The owner gets as far as signing: the test profile's filesystem storage signs no browser link (503), as for
+        // every other download; MinioChecksumAndLockIntegrationTest signs real ones.
+        assertThat(code(catchThrowable(() -> queries.evidenceLink(request.id(), withOne.evidence().getFirst().id(),
+                customer)))).isEqualTo(ErrorCode.STORAGE_ERROR);
         assertThat(code(catchThrowable(() -> queries.evidenceLink(request.id(), withOne.evidence().getFirst().id(),
                 UUID.randomUUID())))).isEqualTo(ErrorCode.RETURN_REQUEST_NOT_FOUND);
     }

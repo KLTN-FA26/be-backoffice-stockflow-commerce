@@ -58,6 +58,8 @@ class ProductionWorkflowService implements ProductionWorkflow {
 
     @Override
     @Transactional(readOnly = true)
+    @Auditable(action = AuditAction.EXPORT, resourceType = "production-order", resourceId = "#productionOrderId",
+            details = "{file: 'print-ready'}")
     public PrintFile printFile(CurrentUser user, UUID productionOrderId) {
         ScopeGuards.requireBackOffice(user);
         ProductionOrder order = orders.findById(Objects.requireNonNull(productionOrderId, "productionOrderId"))

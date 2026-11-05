@@ -190,16 +190,22 @@ class S3FileStorage implements FileStorage {
 
     /** Credentials and addressing match the upload client; the bucket remains private. */
     @Override
-    public String presignedDownloadUrl(String key, Duration validFor) {
+    public String presignedDownloadUrl(String key, Duration validFor, DownloadDisposition disposition) {
         if (validFor == null || validFor.isNegative() || validFor.isZero()
                 || validFor.compareTo(Duration.ofHours(1)) > 0) {
             throw new IllegalArgumentException("Download URL duration must be positive and at most one hour");
         }
+        var get = GetObjectRequest.builder().bucket(properties.bucket()).key(StorageKeys.requireValid(key));
+        if (disposition != null) {
+            get.responseContentDisposition(disposition.contentDisposition());
+            if (disposition.cacheControl() != null) {
+                get.responseCacheControl(disposition.cacheControl());
+            }
+        }
         try {
             return presigner.presignGetObject(GetObjectPresignRequest.builder()
                     .signatureDuration(validFor)
-                    .getObjectRequest(GetObjectRequest.builder().bucket(properties.bucket())
-                            .key(StorageKeys.requireValid(key)).build())
+                    .getObjectRequest(get.build())
                     .build()).url().toExternalForm();
         } catch (SdkException ex) {
             throw new StorageException("Could not sign download URL", ex);

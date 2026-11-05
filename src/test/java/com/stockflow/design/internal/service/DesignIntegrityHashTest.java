@@ -176,7 +176,7 @@ class DesignIntegrityHashTest {
     void aDownloadChecksOnlyTheFileHandedOut() {
         var snapshot = bundle();
         recorded(PREVIEW_KEY, PREVIEW);
-        when(files.downloadLink(PREVIEW_KEY)).thenReturn(new DownloadLink("https://s3/preview", Instant.now()));
+        when(files.viewLink(PREVIEW_KEY)).thenReturn(new DownloadLink("https://s3/preview", Instant.now()));
 
         var file = service.fulfillmentDownload(snapshot.getId(), snapshot.getChecksum(), DesignArtifactRole.CUSTOMER_PREVIEW);
 
