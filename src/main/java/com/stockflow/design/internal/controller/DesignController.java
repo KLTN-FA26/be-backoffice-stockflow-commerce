@@ -8,6 +8,11 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.StorageException;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
+import com.stockflow.design.internal.controller.dto.AttachArtifactUploadRequest;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.RequestBody;
 import com.stockflow.design.internal.controller.dto.ArtifactDownloadResponse;
 import com.stockflow.design.internal.controller.dto.DesignArtifactResponse;
 import com.stockflow.design.internal.service.DesignArtifactService;
@@ -59,6 +64,28 @@ class DesignController {
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
         }
+    }
+
+    /**
+     * Step one of an upload that goes straight to the object store: a signed PUT for exactly the declared file. The
+     * response carries a credential, so it is never cached.
+     */
+    @PostMapping(path = "/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginUpload(@PathVariable UUID designId,
+            @AuthenticatedUser CurrentUser user, @Valid @RequestBody UploadSlotRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(ApiResponse.ok(
+                artifacts.beginUpload(designId, user == null ? null : user.userId(), request)));
+    }
+
+    /** Step two: attach the uploaded file as a revision. Retrying with the same upload answers with the same revision. */
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    public ApiResponse<DesignArtifactResponse> attachUpload(@PathVariable UUID designId,
+            @AuthenticatedUser CurrentUser user, @Valid @RequestBody AttachArtifactUploadRequest request) {
+        return ApiResponse.ok(mapper.toResponse(artifacts.attachUpload(designId, user == null ? null : user.userId(),
+                request.roleOrDefault(), request.uploadId())));
     }
 
     @GetMapping

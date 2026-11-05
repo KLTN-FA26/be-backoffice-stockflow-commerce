@@ -80,7 +80,7 @@ class StockDamagePhotoFailureIntegrationTest {
         try {
             Throwable failure = catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () ->
                     damages.report(new StockDamages.ReportDamageCommand(UUID.randomUUID(), row, 2,
-                            DamageReason.BROKEN, null, null, reporter), List.of(photo("a.jpg"), photo("b.jpg")))));
+                            DamageReason.BROKEN, null, null, reporter), com.stockflow.common.storage.IncomingFiles.sent(List.of(photo("a.jpg"), photo("b.jpg"))))));
 
             assertThat(failure).isInstanceOf(BusinessException.class);
             assertThat(((BusinessException) failure).errorCode()).isEqualTo(ErrorCode.STORAGE_ERROR);
@@ -113,7 +113,7 @@ class StockDamagePhotoFailureIntegrationTest {
         try {
             WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> damages.report(
                     new StockDamages.ReportDamageCommand(UUID.randomUUID(), row, 1, DamageReason.BROKEN, null, null,
-                            reporter), List.of(photo("a.jpg"))));
+                            reporter), com.stockflow.common.storage.IncomingFiles.sent(List.of(photo("a.jpg")))));
         } finally {
             reset(storage);
         }

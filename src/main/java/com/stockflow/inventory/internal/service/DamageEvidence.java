@@ -6,13 +6,17 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileTransfers;
-import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.common.storage.PreparedFiles;
+import com.stockflow.common.storage.StagedUploads;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.inventory.internal.domain.StockDamageReport;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 
 /**
  * The photos of damaged stock (BR-STK-003), through the platform's storage and nothing of its own.
@@ -27,9 +31,11 @@ import java.util.Locale;
 class DamageEvidence {
 
     private final FileTransfers files;
+    private final StagedUploads staged;
 
-    DamageEvidence(FileTransfers files) {
+    DamageEvidence(FileTransfers files, StagedUploads staged) {
         this.files = files;
+        this.staged = staged;
     }
 
     /**
@@ -39,16 +45,21 @@ class DamageEvidence {
      * @throws BusinessException {@code DAMAGE_PHOTO_REQUIRED} for none; {@code VALIDATION_FAILED} for more than
      *         {@value StockDamageReport#MAX_PHOTOS}; {@code UNSUPPORTED_MEDIA_TYPE}, {@code PAYLOAD_TOO_LARGE}
      */
-    PreparedFiles prepare(List<FileUpload> uploads) {
-        if (uploads == null || uploads.isEmpty()) {
+    PreparedFiles prepare(IncomingFiles uploads) {
+        if (uploads == null || uploads.count() == 0) {
             throw new BusinessException(ErrorCode.DAMAGE_PHOTO_REQUIRED,
                     "Damaged stock is reported with at least one photo (BR-STK-003)");
         }
-        if (uploads.size() > StockDamageReport.MAX_PHOTOS) {
+        if (uploads.count() > StockDamageReport.MAX_PHOTOS) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "A damage report takes at most %d photos".formatted(StockDamageReport.MAX_PHOTOS));
         }
-        return files.prepare(FileCategory.QC_EVIDENCE, uploads);
+        return uploads.prepare(FileCategory.QC_EVIDENCE, files, staged);
+    }
+
+    /** A slot for one photo uploaded straight to the object store ({@link StagedUploads}). */
+    UploadSlot beginUpload(UUID ownerId, UploadSlotRequest request) {
+        return staged.begin(FileCategory.QC_EVIDENCE, ownerId, request);
     }
 
     /** The report's photos, in the order they were sent. */

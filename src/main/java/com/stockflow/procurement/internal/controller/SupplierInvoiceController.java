@@ -9,7 +9,12 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.storage.DownloadLink;
+import com.stockflow.common.storage.AttachUploadRequest;
 import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
 import com.stockflow.procurement.internal.controller.dto.SupplierInvoiceRequests;
 import com.stockflow.procurement.internal.controller.dto.SupplierInvoiceResponses;
 import com.stockflow.procurement.internal.domain.SupplierInvoiceStatus;
@@ -163,6 +168,25 @@ class SupplierInvoiceController {
                     : file.getOriginalFilename(), file.getContentType(), file.getSize(), content);
             return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(invoices.attachScan(invoiceId, upload)));
         }
+    }
+
+    @PostMapping(value = "/{invoiceId}/scan/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Step one of a scan uploaded straight to storage: a signed PUT for exactly the declared file "
+            + "(PDF, JPEG or PNG, at most 15 MB). Then name its uploadId in POST /{invoiceId}/scan")
+    @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.UPDATE)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginScanUpload(@PathVariable UUID invoiceId,
+            @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser user) {
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
+                .body(ApiResponse.ok(invoices.beginScanUpload(invoiceId, request, user.userId())));
+    }
+
+    @PostMapping(value = "/{invoiceId}/scan", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Attach a scan uploaded through /scan/uploads; replaces an earlier scan")
+    @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.UPDATE)
+    public ApiResponse<SupplierInvoiceResponses.Invoice> attachUploadedScan(@PathVariable UUID invoiceId,
+            @Valid @RequestBody AttachUploadRequest body, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(
+                invoices.attachUploadedScan(invoiceId, body.uploadId(), user.userId())));
     }
 
     @GetMapping("/{invoiceId}/scan/download-url")

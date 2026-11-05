@@ -13,7 +13,9 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.storage.DownloadLink;
-import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.consumption.DamagePhoto;
@@ -157,7 +159,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-damage-report", resourceId = "#result?.id()")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public DamageReportView report(ReportDamageCommand command, List<FileUpload> uploads) {
+    public DamageReportView report(ReportDamageCommand command, IncomingFiles uploads) {
         DamageReportView earlier = tx.execute(status -> {
             Optional<StockDamageReport> done = reports.findByRequestId(command.requestId());
             if (done.isPresent()) {
@@ -225,11 +227,16 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         return view;
     }
 
+    @Override
+    public UploadSlot beginPhotoUpload(UUID ownerId, UploadSlotRequest request) {
+        return evidence.beginUpload(ownerId, request);
+    }
+
     // ================================================================== a pick report (SCRUM-277)
 
     @Override
     @Transactional(propagation = Propagation.MANDATORY)
-    public List<DamagePhoto> storePhotos(List<FileUpload> photos) {
+    public List<DamagePhoto> storePhotos(IncomingFiles photos) {
         PreparedFiles prepared = evidence.prepare(photos);
         prepared.adopt();
         return evidence.photos(prepared).stream().map(photo -> new DamagePhoto(photo.storageKey(),

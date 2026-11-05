@@ -75,6 +75,16 @@ public interface FileStorage {
     void retain(String key, java.time.Instant until);
 
     /**
+     * A signed PUT a browser uses to write exactly the declared file to {@code incomingKey}: its length, type and
+     * SHA-256 are part of the signature, so the store refuses anything else. Only for keys under
+     * {@link StorageKeys#incoming}; {@link StagedUploads} is the one caller.
+     *
+     * @throws StorageException when the provider cannot sign browser uploads (the local filesystem)
+     */
+    PresignedUpload presignedUploadUrl(String incomingKey, String contentType, long sizeBytes, String sha256,
+                                       Duration validFor);
+
+    /**
      * Open a stored file for server-side processing.
      *
      * <p>The caller must close the stream. Not for serving to a browser — see the class javadoc.</p>

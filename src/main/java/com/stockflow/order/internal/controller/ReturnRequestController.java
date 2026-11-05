@@ -12,7 +12,12 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
+import com.stockflow.common.storage.AttachUploadRequest;
 import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.internal.controller.dto.CustomerReturnResponse;
 import com.stockflow.order.internal.controller.dto.EvidenceLinkResponse;
@@ -138,6 +143,78 @@ class ReturnRequestController {
                                                          @AuthenticatedUser CurrentUser user) throws IOException {
         ScopeGuards.requireBackOffice(user);
         return upload(returnId, file, ReturnEvidence.Stage.INSPECTION, user);
+    }
+
+    // -------------------------------------------------------------- uploads straight to the object store (preferred)
+
+    @PostMapping(value = "/returns/{returnId}/evidence/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Step one of a claim photo uploaded straight to storage: a signed PUT for exactly the declared "
+            + "file (JPEG, PNG, WebP, at most 15 MB). Then name its uploadId in POST /returns/{id}/evidence")
+    @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.OWN)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginEvidenceUpload(@PathVariable UUID returnId,
+            @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser user) {
+        return slot(returns.beginEvidenceUpload(returnId, ownCustomerIdOrNull(user), ReturnEvidence.Stage.CLAIM,
+                request, user.userId()));
+    }
+
+    @PostMapping(value = "/returns/{returnId}/receipt-evidence/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Step one of the warehouse's photo of the parcel, uploaded straight to storage")
+    @RequiresPermission(resource = OrderResources.RMA_RECEIPTS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginReceiptEvidenceUpload(@PathVariable UUID returnId,
+            @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return slot(returns.beginEvidenceUpload(returnId, null, ReturnEvidence.Stage.RECEIPT, request, user.userId()));
+    }
+
+    @PostMapping(value = "/returns/{returnId}/inspection-evidence/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Step one of QC's photo of what it found, uploaded straight to storage")
+    @RequiresPermission(resource = OrderResources.RMA_INSPECTIONS, action = Action.UPDATE,
+            scope = DataScope.WAREHOUSE)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginInspectionEvidenceUpload(@PathVariable UUID returnId,
+            @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return slot(returns.beginEvidenceUpload(returnId, null, ReturnEvidence.Stage.INSPECTION, request,
+                user.userId()));
+    }
+
+    @PostMapping(value = "/returns/{returnId}/evidence", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Keep a claim photo uploaded through /evidence/uploads; the same uploadId again is answered "
+            + "with the return it was kept on")
+    @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.OWN)
+    public ApiResponse<ReturnView> addUploadedEvidence(@PathVariable UUID returnId,
+            @Valid @RequestBody AttachUploadRequest body, @AuthenticatedUser CurrentUser user) {
+        UUID own = ownCustomerIdOrNull(user);
+        return ApiResponse.ok(view(returns.addUploadedEvidence(returnId, own, ReturnEvidence.Stage.CLAIM,
+                body.uploadId(), user.userId()), own == null));
+    }
+
+    @PostMapping(value = "/returns/{returnId}/receipt-evidence", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Keep the warehouse's photo uploaded through /receipt-evidence/uploads")
+    @RequiresPermission(resource = OrderResources.RMA_RECEIPTS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
+    public ApiResponse<ReturnView> addUploadedReceiptEvidence(@PathVariable UUID returnId,
+            @Valid @RequestBody AttachUploadRequest body, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(view(returns.addUploadedEvidence(returnId, null, ReturnEvidence.Stage.RECEIPT,
+                body.uploadId(), user.userId()), true));
+    }
+
+    @PostMapping(value = "/returns/{returnId}/inspection-evidence", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Keep QC's photo uploaded through /inspection-evidence/uploads")
+    @RequiresPermission(resource = OrderResources.RMA_INSPECTIONS, action = Action.UPDATE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<ReturnView> addUploadedInspectionEvidence(@PathVariable UUID returnId,
+            @Valid @RequestBody AttachUploadRequest body, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(view(returns.addUploadedEvidence(returnId, null, ReturnEvidence.Stage.INSPECTION,
+                body.uploadId(), user.userId()), true));
+    }
+
+    /** A slot carries a signed URL: a credential, never cached. */
+    private static ResponseEntity<ApiResponse<UploadSlot>> slot(UploadSlot slot) {
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(ApiResponse.ok(slot));
     }
 
     private ApiResponse<ReturnView> upload(UUID returnId, MultipartFile file, ReturnEvidence.Stage stage,

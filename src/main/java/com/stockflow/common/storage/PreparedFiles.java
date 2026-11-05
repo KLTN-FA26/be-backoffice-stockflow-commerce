@@ -40,11 +40,25 @@ public final class PreparedFiles implements AutoCloseable {
 
     private final FileStorage storage;
     private final List<PreparedFile> files;
+    private final Runnable afterCommit;
+    private final Runnable afterwards;
     private final AtomicBoolean adopted = new AtomicBoolean();
+    private final AtomicBoolean finished = new AtomicBoolean();
 
     PreparedFiles(FileStorage storage, List<PreparedFile> files) {
+        this(storage, files, () -> { }, () -> { });
+    }
+
+    /**
+     * @param afterCommit run once the adopting transaction commits (best effort: logged, never thrown)
+     * @param afterwards  run exactly once when the files are settled: after the adopting transaction completes,
+     *                    or on {@link #close} when none adopted them
+     */
+    PreparedFiles(FileStorage storage, List<PreparedFile> files, Runnable afterCommit, Runnable afterwards) {
         this.storage = storage;
         this.files = List.copyOf(files);
+        this.afterCommit = afterCommit;
+        this.afterwards = afterwards;
     }
 
     public List<PreparedFile> files() {
@@ -75,10 +89,20 @@ public final class PreparedFiles implements AutoCloseable {
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
+            public void afterCommit() {
+                try {
+                    afterCommit.run();
+                } catch (RuntimeException failure) {
+                    log.warn("Follow-up of committed uploads failed", failure);
+                }
+            }
+
+            @Override
             public void afterCompletion(int status) {
                 if (status == STATUS_ROLLED_BACK) {
                     discard("rolled back");
                 }
+                finish();
             }
         });
     }
@@ -88,6 +112,17 @@ public final class PreparedFiles implements AutoCloseable {
     public void close() {
         if (!adopted.get()) {
             discard("never attached");
+            finish();
+        }
+    }
+
+    private void finish() {
+        if (finished.compareAndSet(false, true)) {
+            try {
+                afterwards.run();
+            } catch (RuntimeException failure) {
+                log.warn("Releasing prepared uploads failed", failure);
+            }
         }
     }
 

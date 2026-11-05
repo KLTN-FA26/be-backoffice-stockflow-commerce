@@ -20,7 +20,9 @@ import com.stockflow.fulfillment.internal.repository.PickLineMapper;
 import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.inventory.consumption.DamagePhoto;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.inventory.consumption.PickDamageReporting;
@@ -350,7 +352,7 @@ class PickListService implements PickLists {
      * units at that bin) before anything is stored, and answered whatever happened to the task since.</p>
      */
     @Override
-    public PickDamageView reportDamage(UUID taskId, UUID lineId, PickDamage damage, List<FileUpload> photos,
+    public PickDamageView reportDamage(UUID taskId, UUID lineId, PickDamage damage, IncomingFiles photos,
                                        CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
@@ -427,6 +429,21 @@ class PickListService implements PickLists {
                         .toList()));
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public UploadSlot beginDamagePhotoUpload(UUID taskId, UploadSlotRequest request, CurrentUser actor) {
+        PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                "No pick task " + taskId));
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        pick.requireAssigned(actor.userId());
+        return damagePhotoSlot(actor.userId(), request);
+    }
+
+    /** A damage photo slot for {@code ownerId}; packing asks through here, having checked its own scope. */
+    UploadSlot damagePhotoSlot(UUID ownerId, UploadSlotRequest request) {
+        return damages.beginPhotoUpload(ownerId, request);
+    }
+
     /** R8: the line can be reported damaged at packing, as far as the pick list knows. The caller holds the pick. */
     void requireDamageableAfterPick(PickJpaEntity pick, UUID lineId, int damaged) {
         toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()))
@@ -442,7 +459,7 @@ class PickListService implements PickLists {
      * units that reached packing. With nothing to replace them, the order goes ON_HOLD (INVENTORY) as at picking.
      */
     PickDamageView damageAfterPick(PickJpaEntity pick, UUID lineId, Packing.PackDamage damage,
-                                   List<FileUpload> photos, CurrentUser actor) {
+                                   IncomingFiles photos, CurrentUser actor) {
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
         list.requireDamageableAfterPick(lineId, damage.damagedQuantity());

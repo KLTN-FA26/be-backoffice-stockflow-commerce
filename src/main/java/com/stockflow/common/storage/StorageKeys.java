@@ -39,6 +39,29 @@ public final class StorageKeys {
     private StorageKeys() {
     }
 
+    /** The quarantine prefix browser uploads land in. Never served, never a category. */
+    static final String INCOMING = "incoming";
+
+    /**
+     * Where a browser writes the file of {@code uploadId} before it is checked: {@code incoming/<category>/<date>/<id>},
+     * no extension - nothing about the bytes is trusted yet.
+     */
+    public static String incoming(FileCategory category, java.util.UUID uploadId, Instant now) {
+        return "%s/%s/%s/%s".formatted(INCOMING, category.prefix(), DATE_PATH.format(now), uploadId);
+    }
+
+    public static boolean isIncoming(String key) {
+        return key != null && key.startsWith(INCOMING + "/");
+    }
+
+    /**
+     * The key an accepted upload is copied to: the layout of {@link #generate}, with the upload's own id, so
+     * attaching the same upload twice lands on the same object.
+     */
+    public static String forUpload(FileCategory category, String contentType, java.util.UUID uploadId, Instant created) {
+        return "%s/%s/%s%s".formatted(category.prefix(), DATE_PATH.format(created), uploadId, extensionFor(contentType));
+    }
+
     public static String generate(FileCategory category, String contentType, Instant now) {
         return "%s/%s/%s%s".formatted(
                 category.prefix(),
@@ -78,6 +101,17 @@ public final class StorageKeys {
             throw new StorageException("Malformed storage key: " + key);
         }
         String prefix = key.substring(0, Math.max(0, key.indexOf('/')));
+        if (INCOMING.equals(prefix)) {
+            // incoming/<category>/...: the second segment must be a category, so a quarantined key is ours too.
+            String rest = key.substring(prefix.length() + 1);
+            String category = rest.substring(0, Math.max(0, rest.indexOf('/')));
+            for (FileCategory candidate : FileCategory.values()) {
+                if (candidate.prefix().equals(category)) {
+                    return key;
+                }
+            }
+            throw new StorageException("Storage key is not in a known category: " + key);
+        }
         boolean known = false;
         for (FileCategory category : FileCategory.values()) {
             if (category.prefix().equals(prefix)) {

@@ -2,7 +2,9 @@ package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.storage.DownloadLink;
-import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.inventory.internal.domain.DamageDisposition;
 import com.stockflow.inventory.internal.domain.DamageReason;
 
@@ -31,7 +33,10 @@ public interface StockDamages {
      *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code LOCATION_AREA_MISMATCH} for the
      *         quarantine area; {@code VALIDATION_FAILED} (OTHER without a note, a serial unit counted twice)
      */
-    DamageReportView report(ReportDamageCommand command, List<FileUpload> photos);
+    DamageReportView report(ReportDamageCommand command, IncomingFiles photos);
+
+    /** A slot for one damage photo uploaded straight to the object store by {@code ownerId}. */
+    UploadSlot beginPhotoUpload(UUID ownerId, UploadSlotRequest request);
 
     /**
      * A warehouse manager decides some of a report's units: written off (a DAMAGED stock adjustment posted at once,

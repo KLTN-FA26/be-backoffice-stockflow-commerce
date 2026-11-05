@@ -81,6 +81,26 @@ class SupplierInvoiceHttpTest {
         }
     }
 
+    @Test
+    @DisplayName("a scan uploaded straight to storage: the accountant asks for a slot and attaches by upload id; the "
+            + "warehouse may not")
+    void scanUploads() throws Exception {
+        UUID unknown = UUID.randomUUID();
+        String declaration = """
+                {"fileName":"hd.pdf","contentType":"application/pdf","sizeBytes":2048,"sha256":"%s"}""".formatted("b".repeat(64));
+        http.asRole(Role.ACCOUNTANT, staff, post("/api/v1/supplier-invoices/" + unknown + "/scan/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content(declaration))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("SUPPLIER_INVOICE_NOT_FOUND"));
+        http.asRole(Role.ACCOUNTANT, staff, post("/api/v1/supplier-invoices/" + unknown + "/scan")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"uploadId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("SUPPLIER_INVOICE_NOT_FOUND"));
+        http.asRole(Role.WAREHOUSE_STAFF, staff, post("/api/v1/supplier-invoices/" + unknown + "/scan/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content(declaration))
+                .andExpect(status().isForbidden());
+    }
+
     private static String validBody() {
         return """
                 {"supplierId":"%s","invoiceNumber":"HD-1","invoiceDate":"2026-01-02",

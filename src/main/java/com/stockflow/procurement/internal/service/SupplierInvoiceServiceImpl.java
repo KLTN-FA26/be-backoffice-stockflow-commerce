@@ -14,6 +14,9 @@ import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.common.storage.RecordRetention;
+import com.stockflow.common.storage.StagedUploads;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.procurement.api.SubcontractPurchasing;
 import com.stockflow.procurement.api.SubcontractSettlement;
@@ -83,6 +86,7 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
     private final SubcontractPurchasing subcontracts;
     private final FileTransfers files;
     private final TransactionOperations tx;
+    private final StagedUploads staged;
     private final Clock clock;
     private final BigDecimal priceTolerancePercent;
 
@@ -92,7 +96,8 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
      */
     SupplierInvoiceServiceImpl(SupplierInvoiceRepository invoices, SupplierInvoiceSearch search,
                                InvoiceMatchFacts facts, SupplierRepository suppliers,
-                               SubcontractPurchasing subcontracts, FileTransfers files, TransactionOperations tx,
+                               SubcontractPurchasing subcontracts, FileTransfers files, StagedUploads staged,
+                               TransactionOperations tx,
                                Clock clock,
                                @Value("${stockflow.procurement.invoice-match.price-tolerance-percent:2}")
                                BigDecimal priceTolerancePercent) {
@@ -107,6 +112,7 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
         this.subcontracts = subcontracts;
         this.files = files;
         this.tx = tx;
+        this.staged = staged;
         this.clock = clock;
         this.priceTolerancePercent = priceTolerancePercent.setScale(2, java.math.RoundingMode.HALF_UP);
     }
@@ -208,16 +214,55 @@ class SupplierInvoiceServiceImpl implements SupplierInvoices {
     public InvoiceView attachScan(UUID invoiceId, FileUpload upload) {
         tx.executeWithoutResult(status -> found(invoiceId).requireScannable());
         try (PreparedFiles prepared = files.prepare(FileCategory.SUPPLIER_INVOICE, upload)) {
-            StoredFile file = prepared.single().file();
+            return keepScan(invoiceId, prepared);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public UploadSlot beginScanUpload(UUID invoiceId, UploadSlotRequest request, UUID by) {
+        found(invoiceId).requireScannable();
+        return staged.begin(FileCategory.SUPPLIER_INVOICE, by, request);
+    }
+
+    /**
+     * Not transactional itself: the upload is checked, scanned and moved into place first ({@link StagedUploads}),
+     * then attached as {@link #attachScan} attaches one.
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "supplier-invoice", resourceId = "#invoiceId")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public InvoiceView attachUploadedScan(UUID invoiceId, UUID uploadId, UUID by) {
+        if (uploadId == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "uploadId is required");
+        }
+        java.util.Optional<String> kept = staged.attachedKey(FileCategory.SUPPLIER_INVOICE, by, uploadId);
+        if (kept.isPresent()) {
             return tx.execute(status -> {
-                SupplierInvoice invoice = locked(invoiceId);
-                invoice.attach(new SupplierInvoice.Document(file.key(), file.originalName(), file.contentType()));
-                InvoiceView view = view(invoices.save(invoice));
-                prepared.adopt();
-                files.retainAfterCommit(file.key(), RecordRetention.SUPPLIER_INVOICE);
-                return view;
+                SupplierInvoice invoice = found(invoiceId);
+                if (invoice.document() == null || !kept.get().equals(invoice.document().key())) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "Upload " + uploadId + " is kept with another record");
+                }
+                return view(invoice);
             });
         }
+        tx.executeWithoutResult(status -> found(invoiceId).requireScannable());
+        try (PreparedFiles prepared = staged.accept(FileCategory.SUPPLIER_INVOICE, by, List.of(uploadId))) {
+            return keepScan(invoiceId, prepared);
+        }
+    }
+
+    /** The short transaction: lock the invoice, check again, attach and lock the prepared scan. */
+    private InvoiceView keepScan(UUID invoiceId, PreparedFiles prepared) {
+        StoredFile file = prepared.single().file();
+        return tx.execute(status -> {
+            SupplierInvoice invoice = locked(invoiceId);
+            invoice.attach(new SupplierInvoice.Document(file.key(), file.originalName(), file.contentType()));
+            InvoiceView view = view(invoices.save(invoice));
+            prepared.adopt();
+            files.retainAfterCommit(file.key(), RecordRetention.SUPPLIER_INVOICE);
+            return view;
+        });
     }
 
     /** A link that saves the scan under its original name; audited, as a financial record leaves the system. */

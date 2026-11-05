@@ -120,6 +120,13 @@ class LocalFileStorage implements FileStorage {
         log.debug("Local storage cannot lock {}; retention until {} ignored", key, until);
     }
 
+    /** A filesystem has no URL a browser could write to - honest, like the download link. */
+    @Override
+    public PresignedUpload presignedUploadUrl(String incomingKey, String contentType, long sizeBytes, String sha256,
+                                              Duration validFor) {
+        throw new StorageException("Browser uploads require the S3/MinIO storage provider");
+    }
+
     @Override
     public String presignedDownloadUrl(String key, Duration validFor, DownloadDisposition disposition) {
         // Deliberately not a usable HTTP URL - see the class javadoc.

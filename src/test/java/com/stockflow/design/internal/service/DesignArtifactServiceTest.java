@@ -38,7 +38,8 @@ import static org.mockito.Mockito.when;
 class DesignArtifactServiceTest {
     private final DesignArtifactRepository designs = mock(DesignArtifactRepository.class);
     private final FileTransfers files = mock(FileTransfers.class);
-    private final DesignArtifactService service = new DesignArtifactService(designs, files,
+    private final com.stockflow.common.storage.StagedUploads staged = mock(com.stockflow.common.storage.StagedUploads.class);
+    private final DesignArtifactService service = new DesignArtifactService(designs, files, staged,
             TransactionOperations.withoutTransaction());
     private final UUID id = UUID.randomUUID();
     private final UUID owner = UUID.randomUUID();
@@ -125,6 +126,53 @@ class DesignArtifactServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.IDEMPOTENCY_KEY_REUSED));
         verifyNoInteractions(files);
+    }
+
+    @Test void anUploadedFileIsAcceptedOutsideTheLockAndAttachedUnderIt() {
+        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, owner, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        UUID uploadId = UUID.randomUUID();
+        var prepared = mock(PreparedFiles.class);
+        when(prepared.single()).thenReturn(new PreparedFiles.PreparedFile(new StoredFile("design-renders/" + uploadId
+                + ".pdf", "design.pdf", "application/pdf", bytes.length, Instant.EPOCH), Checksums.sha256Hex(bytes)));
+        when(staged.accept(FileCategory.DESIGN_RENDER, owner, java.util.List.of(uploadId))).thenReturn(prepared);
+
+        var result = service.attachUpload(id, owner, com.stockflow.design.api.DesignArtifactRole.PRINT_READY, uploadId);
+
+        assertThat(result.role()).isEqualTo(com.stockflow.design.api.DesignArtifactRole.PRINT_READY);
+        assertThat(result.uploadKey()).isEqualTo(owner + ":PRINT_READY:upload:" + uploadId);
+        InOrder order = inOrder(designs, staged, prepared);
+        order.verify(designs).findDraft(id, owner, false);
+        order.verify(staged).accept(FileCategory.DESIGN_RENDER, owner, java.util.List.of(uploadId));
+        order.verify(designs).findDraft(id, owner, true);
+        order.verify(designs).attach(result);
+        order.verify(prepared).adopt();
+        verifyNoInteractions(files);
+    }
+
+    @Test void theSameUploadAttachedAgainIsAnsweredWithItsArtifactWithoutAcceptingItTwice() {
+        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
+        UUID uploadId = UUID.randomUUID();
+        var earlier = new com.stockflow.design.internal.domain.DesignArtifact(UUID.randomUUID(), id,
+                new StoredFile("design-renders/" + uploadId + ".pdf", "design.pdf", "application/pdf", bytes.length,
+                        Instant.EPOCH), Checksums.sha256Hex(bytes), owner + ":CUSTOMER_PREVIEW:upload:" + uploadId);
+        when(designs.findArtifacts(id)).thenReturn(java.util.List.of(earlier));
+
+        assertThat(service.attachUpload(id, owner, com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW,
+                uploadId)).isSameAs(earlier);
+        verifyNoInteractions(staged, files);
+    }
+
+    @Test void aSlotIsGivenOnlyForADraftThatStillTakesFiles() {
+        var request = new com.stockflow.common.storage.UploadSlotRequest("d.pdf", "application/pdf", 10,
+                Checksums.sha256Hex(bytes));
+        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
+        assertThatThrownBy(() -> service.beginUpload(id, owner, request)).isInstanceOf(BusinessException.class);
+        verifyNoInteractions(staged);
+
+        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        service.beginUpload(id, owner, request);
+        verify(staged).begin(FileCategory.DESIGN_RENDER, owner, request);
     }
 
     @Test void theSameRequestCommittedWhileThisOneWasScanningIsAnsweredWithItsArtifact() {

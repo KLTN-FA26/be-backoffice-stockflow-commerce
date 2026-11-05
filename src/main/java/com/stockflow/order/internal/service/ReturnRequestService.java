@@ -12,6 +12,9 @@ import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.common.storage.PreparedFiles;
+import com.stockflow.common.storage.StagedUploads;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.inventory.api.InventoryService;
@@ -146,14 +149,16 @@ public class ReturnRequestService {
     private final OrderServiceImpl orderService;
     private final FileTransfers files;
     private final TransactionOperations tx;
+    private final StagedUploads staged;
     private final ReturnPolicy policy;
     private final Clock clock;
 
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          InventoryService inventory, WarehouseService warehouses, ReturnSettlement settlement,
                          PaymentService payments, CustomerService customers, ReplacementOrders replacements,
-                         OrderServiceImpl orderService, FileTransfers files, TransactionOperations tx,
-                         ReturnPolicy policy, Clock clock) {
+                         OrderServiceImpl orderService, FileTransfers files, StagedUploads staged,
+                         TransactionOperations tx, ReturnPolicy policy, Clock clock) {
+        this.staged = staged;
         this.tx = tx;
         this.returns = returns;
         this.orders = orders;
@@ -276,19 +281,70 @@ public class ReturnRequestService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public ReturnRequest addEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage stage, FileUpload upload,
                                      UUID by) {
-        ReturnEvidence.Stage taken = ownCustomerId != null || stage == null ? ReturnEvidence.Stage.CLAIM : stage;
+        ReturnEvidence.Stage taken = stageOf(ownCustomerId, stage);
         tx.executeWithoutResult(status -> evidenceTarget(returnId, ownCustomerId, taken, false));
         try (PreparedFiles prepared = files.prepare(FileCategory.RETURN_EVIDENCE, upload)) {
-            StoredFile file = prepared.single().file();
+            return keepEvidence(returnId, ownCustomerId, taken, prepared, by);
+        }
+    }
+
+    /**
+     * A slot to upload a photo of {@code stage} straight to the object store ({@link StagedUploads}), for a return that
+     * takes one now - the same checks as the upload itself, so nobody uploads a photo that could not be kept.
+     */
+    @Transactional(readOnly = true)
+    public UploadSlot beginEvidenceUpload(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage stage,
+                                          UploadSlotRequest request, UUID by) {
+        evidenceTarget(returnId, ownCustomerId, stageOf(ownCustomerId, stage), false);
+        return staged.begin(FileCategory.RETURN_EVIDENCE, by, request);
+    }
+
+    /**
+     * Keeps a photo the caller uploaded through {@link #beginEvidenceUpload}. Not transactional itself: the upload is
+     * checked, scanned and moved into place first. The same upload sent again answers with the return it was kept on.
+     */
+    @Auditable(action = AuditAction.CREATE, resourceType = "return-request", resourceId = "#returnId")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public ReturnRequest addUploadedEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage stage,
+                                             UUID uploadId, UUID by) {
+        if (uploadId == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "uploadId is required");
+        }
+        ReturnEvidence.Stage taken = stageOf(ownCustomerId, stage);
+        Optional<String> kept = staged.attachedKey(FileCategory.RETURN_EVIDENCE, by, uploadId);
+        if (kept.isPresent()) {
             return tx.execute(status -> {
-                ReturnRequest request = evidenceTarget(returnId, ownCustomerId, taken, true);
-                request.addEvidence(new ReturnEvidence(Identifiers.newId(), taken, file.key(), file.originalName(),
-                        file.contentType(), file.sizeBytes(), by, now()), policy);
-                ReturnRequest saved = returns.save(request);
-                prepared.adopt();
-                return saved;
+                ReturnRequest request = returns.findById(returnId)
+                        .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
+                        .orElseThrow(() -> notFound(returnId));
+                if (request.evidence().stream().noneMatch(photo -> photo.fileKey().equals(kept.get()))) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "Upload " + uploadId + " is kept with another record");
+                }
+                return request;
             });
         }
+        tx.executeWithoutResult(status -> evidenceTarget(returnId, ownCustomerId, taken, false));
+        try (PreparedFiles prepared = staged.accept(FileCategory.RETURN_EVIDENCE, by, List.of(uploadId))) {
+            return keepEvidence(returnId, ownCustomerId, taken, prepared, by);
+        }
+    }
+
+    private static ReturnEvidence.Stage stageOf(UUID ownCustomerId, ReturnEvidence.Stage stage) {
+        return ownCustomerId != null || stage == null ? ReturnEvidence.Stage.CLAIM : stage;
+    }
+
+    /** The short transaction: lock the return, check again, keep the prepared photo. */
+    private ReturnRequest keepEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage taken,
+                                       PreparedFiles prepared, UUID by) {
+        StoredFile file = prepared.single().file();
+        return tx.execute(status -> {
+            ReturnRequest request = evidenceTarget(returnId, ownCustomerId, taken, true);
+            request.addEvidence(new ReturnEvidence(Identifiers.newId(), taken, file.key(), file.originalName(),
+                    file.contentType(), file.sizeBytes(), by, now()), policy);
+            ReturnRequest saved = returns.save(request);
+            prepared.adopt();
+            return saved;
+        });
     }
 
     /** The return a photo of {@code stage} goes to, if it takes one now; locked when {@code forUpdate}. */

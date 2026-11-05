@@ -23,6 +23,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRetentionRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
@@ -31,6 +32,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * {@link FileStorage} on S3, or on MinIO through the same API.
@@ -185,6 +188,39 @@ class S3FileStorage implements FileStorage {
             throw new StorageException("No stored file with key " + key, absent);
         } catch (SdkException ex) {
             throw new StorageException("Object store could not lock " + key, ex);
+        }
+    }
+
+    @Override
+    public PresignedUpload presignedUploadUrl(String incomingKey, String contentType, long sizeBytes, String sha256,
+                                              Duration validFor) {
+        if (!StorageKeys.isIncoming(incomingKey)) {
+            throw new IllegalArgumentException("Browsers upload only into the quarantine prefix");
+        }
+        if (validFor == null || validFor.isNegative() || validFor.isZero()
+                || validFor.compareTo(Duration.ofHours(1)) > 0) {
+            throw new IllegalArgumentException("Upload URL duration must be positive and at most one hour");
+        }
+        try {
+            var signed = presigner.presignPutObject(PutObjectPresignRequest.builder()
+                    .signatureDuration(validFor)
+                    .putObjectRequest(PutObjectRequest.builder()
+                            .bucket(properties.bucket())
+                            .key(StorageKeys.requireValid(incomingKey))
+                            .contentType(contentType)
+                            .contentLength(sizeBytes)
+                            .checksumSHA256(Checksums.hexToBase64(sha256))
+                            .build())
+                    .build());
+            Map<String, String> headers = new LinkedHashMap<>();
+            signed.signedHeaders().forEach((name, values) -> {
+                if (!"host".equalsIgnoreCase(name)) {
+                    headers.put(name, String.join(",", values));
+                }
+            });
+            return new PresignedUpload(signed.url().toExternalForm(), headers);
+        } catch (SdkException ex) {
+            throw new StorageException("Could not sign upload URL", ex);
         }
     }
 

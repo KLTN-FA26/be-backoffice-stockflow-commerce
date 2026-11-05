@@ -1,8 +1,11 @@
 package com.stockflow.inventory.consumption;
 
-import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Damage found while picking (SCRUM-277; docs 03 §5, 04c X-SHORT): the units an order's allocation holds at a bin are
@@ -25,9 +28,14 @@ public interface PickDamageReporting {
      *
      * @throws com.stockflow.common.error.BusinessException {@code DAMAGE_PHOTO_REQUIRED} for none,
      *         {@code VALIDATION_FAILED} for too many, {@code UNSUPPORTED_MEDIA_TYPE}, {@code PAYLOAD_TOO_LARGE};
-     *         {@code STORAGE_ERROR} when the store fails
+     *         {@code STORAGE_ERROR} when the store fails; for uploads the browser wrote straight to the object store
+     *         through {@link #beginPhotoUpload}, {@code CONFLICT} for one being attached and {@code NOT_FOUND} for one
+     *         that is not the caller's
      */
-    List<DamagePhoto> storePhotos(List<FileUpload> photos);
+    List<DamagePhoto> storePhotos(IncomingFiles photos);
+
+    /** A slot for one damage photo uploaded straight to the object store by {@code ownerId}. */
+    UploadSlot beginPhotoUpload(UUID ownerId, UploadSlotRequest request);
 
     /**
      * The damaged units leave the allocation and the bin for a quarantine area, DAMAGED (one MOVE ledger line,

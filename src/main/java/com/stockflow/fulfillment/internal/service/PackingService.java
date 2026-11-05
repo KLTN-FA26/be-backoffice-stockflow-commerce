@@ -10,7 +10,6 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.common.storage.FileUpload;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.domain.DeliveryMode;
@@ -651,7 +650,8 @@ class PackingService implements Packing {
      */
     @Override
     public PickLists.PickDamageView reportDamageAfterPick(UUID taskId, UUID lineId, PackDamage damage,
-                                                          List<FileUpload> photos, CurrentUser actor) {
+                                                          com.stockflow.common.storage.IncomingFiles photos,
+                                                          CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         Optional<PickLists.PickDamageView> replay = pickLists.damageAfterPickReplay(pick, lineId,
@@ -681,6 +681,16 @@ class PackingService implements Packing {
             session.requireUnpacked(line.getOrderLineId(), line.getLotNumber(), serial, damage.damagedQuantity());
         }
         return pickLists.damageAfterPick(pick, lineId, damage, photos, actor);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.stockflow.common.storage.UploadSlot beginDamagePhotoUpload(UUID taskId,
+            com.stockflow.common.storage.UploadSlotRequest request, CurrentUser actor) {
+        PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                "No fulfilment task " + taskId));
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        return pickLists.damagePhotoSlot(actor.userId(), request);
     }
 
     // ------------------------------------------------------------------ internals

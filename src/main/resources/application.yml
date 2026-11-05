@@ -445,6 +445,11 @@ stockflow:
       mode: GOVERNANCE
       confirmed-design: P1095D
       supplier-invoice: P3650D
+    # Browser uploads straight to the object store (StagedUploads, docs/direct-uploads-fe-contract.md).
+    staged-upload:
+      url-ttl: PT15M            # the signed PUT; S3 checks it when the upload starts, not when it ends
+      session-ttl: PT1H         # how long an upload may wait to be attached; incoming/ expires after a day
+      per-user-per-hour: 120    # slots one user may take in an hour
 
   # ClamAV (docker-compose.media.yml). Off only in the local profile and on the VPS (deploy/), whose
   # 4 GB cannot hold it; an upload is refused when the scanner is on and unreachable.
