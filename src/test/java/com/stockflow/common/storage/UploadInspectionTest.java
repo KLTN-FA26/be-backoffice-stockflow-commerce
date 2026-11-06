@@ -97,8 +97,7 @@ class UploadInspectionTest {
                 boolean hold = firstConnection;
                 firstConnection = false;
                 CompletableFuture.runAsync(() -> {
-                    try (socket) {
-                        var input = new DataInputStream(socket.getInputStream());
+                    try (socket; var input = new DataInputStream(socket.getInputStream())) {
                         input.readNBytes(10);
                         for (int size; (size = input.readInt()) != 0;) { input.readNBytes(size); }
                         if (hold) { release.await(5, TimeUnit.SECONDS); }
@@ -111,8 +110,7 @@ class UploadInspectionTest {
     private void run(String response, boolean failure) throws Exception {
         try (var server = new ServerSocket(0)) {
             var peer = CompletableFuture.runAsync(() -> {
-                try (var socket = server.accept()) {
-                    var input = new DataInputStream(socket.getInputStream());
+                try (var socket = server.accept(); var input = new DataInputStream(socket.getInputStream())) {
                     assertThat(new String(input.readNBytes(10), StandardCharsets.US_ASCII)).isEqualTo("zINSTREAM\0");
                     int size = input.readInt();
                     assertThat(new String(input.readNBytes(size), StandardCharsets.UTF_8)).isEqualTo("sample");

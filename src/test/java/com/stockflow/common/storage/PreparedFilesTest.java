@@ -152,8 +152,8 @@ class PreparedFilesTest {
     void aFileTheScannerRefusesIsNeverStored() throws Exception {
         try (var server = new java.net.ServerSocket(0)) {
             var peer = java.util.concurrent.CompletableFuture.runAsync(() -> {
-                try (var socket = server.accept()) {
-                    var input = new java.io.DataInputStream(socket.getInputStream());
+                try (var socket = server.accept();
+                     var input = new java.io.DataInputStream(socket.getInputStream())) {
                     input.readNBytes(10);
                     for (int size; (size = input.readInt()) != 0;) { input.readNBytes(size); }
                     socket.getOutputStream().write("stream: Eicar-Signature FOUND\0".getBytes());
