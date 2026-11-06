@@ -84,6 +84,85 @@ class FileStorageIntegrationTest {
     }
 
     @Test
+    void localStatReportsTheDigestAndADeclaredDigestIsChecked() {
+        var storage = new LocalFileStorage(properties(), Clock.systemUTC());
+        var file = storage.store(FileCategory.PRODUCT_IMAGE, "x.png", "image/png", PNG.length,
+                new ByteArrayInputStream(PNG), Checksums.sha256Hex(PNG));
+
+        var stat = storage.stat(file.key());
+
+        assertThat(stat.sha256()).isEqualTo(Checksums.sha256Hex(PNG));
+        assertThat(stat.sizeBytes()).isEqualTo(PNG.length);
+        assertThat(stat.contentType()).isEqualTo("image/png");
+        assertThatThrownBy(() -> storage.store(FileCategory.PRODUCT_IMAGE, "y.png", "image/png", PNG.length,
+                new ByteArrayInputStream(PNG), Checksums.sha256Hex(new byte[] {1})))
+                .isInstanceOf(StorageException.class);
+        assertThatThrownBy(() -> storage.stat("product-images/2026/01/01/00000000-0000-7000-8000-000000000000.png"))
+                .isInstanceOf(StorageException.class);
+    }
+
+    @Test
+    void retentionIsAppliedOnlyAfterCommitAndOnlyWhenEnabled() {
+        var storage = mock(FileStorage.class);
+        var enabled = new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(3),
+                Duration.ofDays(10));
+        String key = "design-renders/2026/01/01/00000000-0000-7000-8000-000000000001.pdf";
+        for (boolean lockOn : new boolean[]{true, false}) {
+            var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
+                    lockOn ? enabled : ObjectLockProperties.disabled());
+            for (boolean commit : new boolean[]{true, false}) {
+                org.mockito.Mockito.clearInvocations(storage);
+                TransactionSynchronizationManager.setActualTransactionActive(true);
+                TransactionSynchronizationManager.initSynchronization();
+                try {
+                    transfers.retainAfterCommit(key, RecordRetention.CONFIRMED_DESIGN);
+                    org.mockito.Mockito.verifyNoInteractions(storage);
+                    TransactionSynchronizationManager.getSynchronizations().forEach(callback -> {
+                        if (commit) { callback.afterCommit(); }
+                        callback.afterCompletion(commit ? TransactionSynchronization.STATUS_COMMITTED
+                                : TransactionSynchronization.STATUS_ROLLED_BACK);
+                    });
+                    if (lockOn && commit) {
+                        org.mockito.Mockito.verify(storage).retain(org.mockito.ArgumentMatchers.eq(key),
+                                org.mockito.ArgumentMatchers.argThat(until -> until.isAfter(
+                                        java.time.Instant.now().plus(Duration.ofDays(3)).minusSeconds(60))));
+                    } else {
+                        org.mockito.Mockito.verifyNoInteractions(storage);
+                    }
+                } finally {
+                    TransactionSynchronizationManager.clear();
+                }
+            }
+        }
+    }
+
+    @Test
+    void aFailedLockAfterCommitIsLoggedNotThrown() {
+        var storage = mock(FileStorage.class);
+        org.mockito.Mockito.doThrow(new StorageException("no Object Lock on this bucket"))
+                .when(storage).retain(any(), any());
+        var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
+                new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1), Duration.ofDays(1)));
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            transfers.retainAfterCommit("supplier-invoices/2026/01/01/00000000-0000-7000-8000-000000000002.pdf",
+                    RecordRetention.SUPPLIER_INVOICE);
+            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    @Test
+    void retentionOutsideATransactionIsRefused() {
+        var transfers = new FileTransfers(mock(FileStorage.class), properties(), Clock.systemUTC());
+        assertThatThrownBy(() -> transfers.retainAfterCommit(
+                "design-renders/2026/01/01/00000000-0000-7000-8000-000000000003.pdf", RecordRetention.CONFIRMED_DESIGN))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
     void publishCopiesARenditionToTheCdnPrefixAndRollbackTakesItBack() {
         var storage = new LocalFileStorage(properties(), Clock.systemUTC());
         var transfers = new FileTransfers(storage, properties(), Clock.systemUTC());

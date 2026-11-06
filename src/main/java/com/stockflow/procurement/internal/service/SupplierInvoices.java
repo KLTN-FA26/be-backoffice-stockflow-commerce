@@ -3,6 +3,8 @@ package com.stockflow.procurement.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.procurement.internal.domain.InvoiceVarianceKind;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.SupplierInvoiceStatus;
@@ -92,6 +94,12 @@ public interface SupplierInvoices {
     InvoiceView cancel(UUID invoiceId, String reason, UUID by);
 
     InvoiceView attachScan(UUID invoiceId, FileUpload upload);
+
+    /** A slot to upload the scan straight to the object store, for an invoice that still takes one. */
+    UploadSlot beginScanUpload(UUID invoiceId, UploadSlotRequest request, UUID by);
+
+    /** Attaches a scan {@code by} uploaded through {@link #beginScanUpload}; the same upload again answers the same. */
+    InvoiceView attachUploadedScan(UUID invoiceId, UUID uploadId, UUID by);
 
     DownloadLink scanLink(UUID invoiceId);
 

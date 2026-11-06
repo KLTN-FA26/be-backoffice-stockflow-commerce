@@ -34,8 +34,13 @@ import static org.mockito.Mockito.when;
 
 @DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class, PostgresContainer.class})
+@Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class, DesignPreflight.class,
+        PostgresContainer.class})
 @Testcontainers(disabledWithoutDocker = true)
+// No test transaction: the technical review runs its preflight outside any transaction and records the decision in a
+// transaction of its own, so it must see what the test committed - as a request does.
+@org.springframework.transaction.annotation.Transactional(
+        propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
 class DesignWorkflowIntegrationTest {
     @Autowired DesignWorkflowService workflow;
     @Autowired DesignDraftJpaRepository drafts;
@@ -43,6 +48,7 @@ class DesignWorkflowIntegrationTest {
     @Autowired com.stockflow.design.api.DesignService designs;
     @Autowired jakarta.persistence.EntityManager entityManager;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Autowired org.springframework.transaction.support.TransactionTemplate tx;
     @MockitoBean CurrentUserProvider users;
     @MockitoBean ProductService products;
     @MockitoBean FileStorage storage;
@@ -53,13 +59,18 @@ class DesignWorkflowIntegrationTest {
     @MockitoBean com.stockflow.customer.api.CustomerService customers;
     /** Real rows: the draft's customer, every actor and (since C1) its product are foreign keys. */
     private UUID owner, editor, reviewer, customer, product;
+    /** The file of this test's draft: storage keys are unique, and every test commits. */
+    private String key;
 
     @BeforeEach void referencedRows() {
-        owner = ReferenceRows.user(entityManager);
-        editor = ReferenceRows.user(entityManager);
-        reviewer = ReferenceRows.user(entityManager);
-        customer = ReferenceRows.customer(entityManager);
-        product = ReferenceRows.product(entityManager).productId();
+        tx.executeWithoutResult(status -> {
+            owner = ReferenceRows.user(entityManager);
+            editor = ReferenceRows.user(entityManager);
+            reviewer = ReferenceRows.user(entityManager);
+            customer = ReferenceRows.customer(entityManager);
+            product = ReferenceRows.product(entityManager).productId();
+        });
+        key = "design-renders/" + UUID.randomUUID() + ".pdf";
     }
 
     private DesignWorkflowService.DraftView draftWithArtifact() throws Exception {
@@ -73,16 +84,88 @@ class DesignWorkflowIntegrationTest {
         when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
         var draft = workflow.create(customer, product, owner, editor, reviewer,
                 "Custom cabinet", "Width 1800 mm, white", editor);
-        byte[] bytes = "confirmed bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] bytes = com.stockflow.support.TestPdfs.blank();
         var checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
         var artifact = artifacts.saveAndFlush(new DesignArtifactJpaEntity(Identifiers.newId(), draft.id(),
-                new StoredFile("design-renders/test.pdf", "test.pdf", "application/pdf", bytes.length, Instant.EPOCH), checksum));
-        var row = drafts.findById(draft.id()).orElseThrow();
-        row.attachArtifact(artifact.getId());
-        row.editedBy(editor);
-        drafts.saveAndFlush(row);
-        when(storage.download("design-renders/test.pdf")).thenAnswer(call -> new ByteArrayInputStream(bytes));
+                new StoredFile(key, "test.pdf", "application/pdf", bytes.length, Instant.EPOCH), checksum));
+        tx.executeWithoutResult(status -> {
+            var row = drafts.findById(draft.id()).orElseThrow();
+            row.attachArtifact(artifact.getId());
+            row.editedBy(editor);
+            drafts.saveAndFlush(row);
+        });
+        when(storage.download(key)).thenAnswer(call -> new ByteArrayInputStream(bytes));
+        // Written before the store recorded SHA-256: every check falls back to hashing the bytes above.
+        when(storage.stat(key)).thenReturn(
+                new com.stockflow.common.storage.ObjectStat(bytes.length, "application/pdf", null));
         return workflow.get(draft.id(), owner);
+    }
+
+    @Test void aFileThePreflightRefusesCannotPassTheTechnicalReview() throws Exception {
+        var draft = draftWithArtifact();
+        when(storage.download(key)).thenAnswer(call -> new ByteArrayInputStream(
+                "not a PDF at all".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        assertThatThrownBy(() -> workflow.review(draft.id(), reviewer, draft.version(), draft.currentArtifactId(), true,
+                "Looks fine")).isInstanceOfSatisfying(BusinessException.class,
+                e -> assertThat(e.getMessage()).contains("PDF_UNREADABLE"));
+        // Rejecting needs no preflight: a reviewer may always send a file back.
+        assertThat(workflow.review(draft.id(), reviewer, draft.version(), draft.currentArtifactId(), false,
+                "Unreadable file").technicalReviewPassed()).isFalse();
+    }
+
+    /** BR-DSG-001 gates the bundle: the PRINT_READY file the print shop gets is checked, not only the preview reviewed. */
+    @Test void thePrintFileIsPreflightedNotOnlyThePreview() throws Exception {
+        var draft = draftWithArtifact();
+        String printKey = "design-renders/" + UUID.randomUUID() + ".pdf";
+        byte[] broken = "not a PDF at all".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var print = artifacts.saveAndFlush(new DesignArtifactJpaEntity(Identifiers.newId(), draft.id(),
+                com.stockflow.design.api.DesignArtifactRole.PRINT_READY,
+                new StoredFile(printKey, "print.pdf", "application/pdf", broken.length, Instant.EPOCH),
+                com.stockflow.common.storage.Checksums.sha256Hex(broken)));
+        tx.executeWithoutResult(status -> {
+            var row = drafts.findById(draft.id()).orElseThrow();
+            row.attachArtifact(com.stockflow.design.api.DesignArtifactRole.PRINT_READY, print.getId());
+            drafts.saveAndFlush(row);
+        });
+        when(storage.download(printKey)).thenAnswer(call -> new ByteArrayInputStream(broken));
+        var current = workflow.get(draft.id(), owner);
+
+        assertThatThrownBy(() -> workflow.review(draft.id(), reviewer, current.version(), current.currentArtifactId(),
+                true, "The preview looks fine")).isInstanceOfSatisfying(BusinessException.class,
+                e -> assertThat(e.getMessage()).contains("print.pdf").contains("PDF_UNREADABLE"));
+    }
+
+    /** A production instruction is a document about the job, not artwork: its fonts do not hold the review up. */
+    @Test void aProductionInstructionIsNotHeldToTheArtworksPreflight() throws Exception {
+        var draft = draftWithArtifact();
+        String noteKey = "design-renders/" + UUID.randomUUID() + ".pdf";
+        byte[] unreadable = "not a PDF at all".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var note = artifacts.saveAndFlush(new DesignArtifactJpaEntity(Identifiers.newId(), draft.id(),
+                com.stockflow.design.api.DesignArtifactRole.PRODUCTION_INSTRUCTION,
+                new StoredFile(noteKey, "huong-dan.pdf", "application/pdf", unreadable.length, Instant.EPOCH),
+                com.stockflow.common.storage.Checksums.sha256Hex(unreadable)));
+        tx.executeWithoutResult(status -> {
+            var row = drafts.findById(draft.id()).orElseThrow();
+            row.attachArtifact(com.stockflow.design.api.DesignArtifactRole.PRODUCTION_INSTRUCTION, note.getId());
+            drafts.saveAndFlush(row);
+        });
+        when(storage.download(noteKey)).thenAnswer(call -> new ByteArrayInputStream(unreadable));
+        var current = workflow.get(draft.id(), owner);
+
+        assertThat(workflow.review(draft.id(), reviewer, current.version(), current.currentArtifactId(), true,
+                "Artwork checked").technicalReviewPassed()).isTrue();
+    }
+
+    /** Only the assigned reviewer makes the server read the bundle: anyone else is refused before a byte is read. */
+    @Test void aReviewNobodyMayMakeReadsNoFile() throws Exception {
+        var draft = draftWithArtifact();
+        org.mockito.Mockito.clearInvocations(storage);
+
+        assertThatThrownBy(() -> workflow.review(draft.id(), editor, draft.version(), draft.currentArtifactId(), true,
+                "My own work is fine")).isInstanceOfSatisfying(BusinessException.class,
+                e -> assertThat(e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.FORBIDDEN));
+        org.mockito.Mockito.verify(storage, org.mockito.Mockito.never()).download(any());
     }
 
     /** The owner's own customer profile, as the customer module answers it. */
@@ -94,7 +177,7 @@ class DesignWorkflowIntegrationTest {
     @Test void ownerOfAnotherCustomerIsRefusedAtCreate() {
         when(identities.isActiveUserWithAnyRole(any(), any(String[].class))).thenReturn(true);
         when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
-        UUID otherCustomer = ReferenceRows.customer(entityManager);
+        UUID otherCustomer = tx.execute(status -> ReferenceRows.customer(entityManager));
         ownerProfile(owner, otherCustomer);
         assertThatThrownBy(() -> workflow.create(customer, product, owner, editor, reviewer, "Cabinet", "spec", editor))
                 .isInstanceOfSatisfying(BusinessException.class, e -> {
@@ -119,6 +202,9 @@ class DesignWorkflowIntegrationTest {
         var confirmed = workflow.confirm(draft.id(), owner, sent.version(), sent.currentArtifactId());
         var replay = workflow.confirm(draft.id(), owner, sent.version(), sent.currentArtifactId());
         assertThat(replay).isEqualTo(confirmed);
+        // The confirmed file is locked once, by the confirmation that made the snapshot, not by its replay.
+        org.mockito.Mockito.verify(files).retainAfterCommit(key,
+                com.stockflow.common.storage.RecordRetention.CONFIRMED_DESIGN);
         assertThat(confirmed.spec()).isEqualTo("Width 1800 mm, white");
         assertThat(confirmed.confirmedBy()).isEqualTo(owner);
         assertThat(workflow.get(draft.id(), owner).status()).isEqualTo("APPROVED");
@@ -161,12 +247,36 @@ class DesignWorkflowIntegrationTest {
                 .isInstanceOf(BusinessException.class);
     }
 
-    @Test void orderVerificationRejectsTamperedStorageBytes() throws Exception {
+    /**
+     * Tampered bytes are caught where the file is used - packing, prepress - not at checkout, which reads the
+     * database only and so never waits on the object store (BR-DSG-003, BR-PRD-02).
+     */
+    @Test void tamperedStorageBytesAreRejectedWhereTheFileIsUsed() throws Exception {
         var draft = draftWithArtifact();
         var snapshot = confirm(draft);
-        when(storage.download("design-renders/test.pdf")).thenReturn(new ByteArrayInputStream(new byte[]{1, 2, 3}));
-        assertThatThrownBy(() -> designs.verifySnapshot(snapshot.id(), draft.customerId()))
+        when(storage.download(key)).thenReturn(new ByteArrayInputStream(new byte[]{1, 2, 3}));
+        org.mockito.Mockito.clearInvocations(storage);
+
+        assertThat(designs.verifySnapshot(snapshot.id(), draft.customerId()).checksum()).isEqualTo(snapshot.checksum());
+        org.mockito.Mockito.verifyNoInteractions(storage);
+
+        assertThat(designs.verifyForFulfillment(snapshot.id(), snapshot.checksum()).matching()).isFalse();
+        when(storage.download(key)).thenReturn(new ByteArrayInputStream(new byte[]{1, 2, 3}));
+        assertThat(designs.verifyForPrinting(snapshot.id(), snapshot.checksum()).matching()).isFalse();
+    }
+
+    /** A file whose stored digest no longer matches is refused at confirmation: no snapshot is made of it. */
+    @Test void confirmationRefusesAFileThatChangedInStorage() throws Exception {
+        var draft = draftWithArtifact();
+        var reviewed = workflow.review(draft.id(), reviewer, draft.version(), draft.currentArtifactId(), true, "Technical checks passed");
+        var sent = workflow.submit(draft.id(), editor, reviewed.version());
+        when(storage.stat(key)).thenReturn(new com.stockflow.common.storage.ObjectStat(3,
+                "application/pdf", com.stockflow.common.storage.Checksums.sha256Hex(new byte[]{1, 2, 3})));
+        org.mockito.Mockito.clearInvocations(storage);   // the review's preflight read the file; the confirmation must not
+
+        assertThatThrownBy(() -> workflow.confirm(draft.id(), owner, sent.version(), sent.currentArtifactId()))
                 .isInstanceOf(BusinessException.class);
+        org.mockito.Mockito.verify(storage, org.mockito.Mockito.never()).download(any());
     }
 
     @Test void databaseRejectsSnapshotMutation() throws Exception {

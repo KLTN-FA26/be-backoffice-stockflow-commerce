@@ -2,7 +2,9 @@ package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.security.CurrentUser;
-import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.inventory.consumption.StockDamageReason;
 
 import java.time.Instant;
@@ -95,8 +97,13 @@ public interface PickLists {
      *         {@code PICK_LOCATION_MISMATCH}; {@code VALIDATION_FAILED}; {@code DAMAGE_PHOTO_REQUIRED},
      *         {@code UNSUPPORTED_MEDIA_TYPE}; {@code DAMAGE_AREA_MISSING} and the other refusals of inventory's report
      */
-    PickDamageView reportDamage(UUID taskId, UUID lineId, PickDamage damage, List<FileUpload> photos,
-                                CurrentUser actor);
+    PickDamageView reportDamage(UUID taskId, UUID lineId, PickDamage damage, IncomingFiles photos, CurrentUser actor);
+
+    /**
+     * A slot for one damage photo of the task, uploaded straight to the object store: for the task's assignee, in the
+     * task's warehouse.
+     */
+    UploadSlot beginDamagePhotoUpload(UUID taskId, UploadSlotRequest request, CurrentUser actor);
 
     /**
      * What the picker reports.

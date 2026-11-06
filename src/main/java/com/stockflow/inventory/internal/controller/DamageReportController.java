@@ -10,6 +10,9 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.common.storage.StorageException;
 import com.stockflow.inventory.internal.controller.dto.DamagePhotoLinkResponse;
 import com.stockflow.inventory.internal.controller.dto.DamageReportResponse;
@@ -79,6 +82,31 @@ class DamageReportController {
         this.mapper = mapper;
     }
 
+    @PostMapping(path = "/photo-uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Step one of a damage photo uploaded straight to storage: a signed PUT for exactly the declared "
+            + "file (JPEG or PNG, at most 20 MB). Name its uploadId in photoUploadIds of a JSON report")
+    @RequiresPermission(resource = InventoryResources.DAMAGE_REPORTS, action = Action.CREATE,
+            scope = DataScope.WAREHOUSE)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginPhotoUpload(@Valid @RequestBody UploadSlotRequest request,
+                                                                    @AuthenticatedUser CurrentUser user) {
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
+                .body(ApiResponse.ok(damages.beginPhotoUpload(user.userId(), request)));
+    }
+
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Report damaged units with 1-5 photos already uploaded to storage (photoUploadIds); otherwise "
+            + "as the multipart report")
+    @RequiresPermission(resource = InventoryResources.DAMAGE_REPORTS, action = Action.CREATE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<DamageReportResponse> reportWithUploads(@Valid @RequestBody ReportDamageRequest report,
+                                                               @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(damages.report(new StockDamages.ReportDamageCommand(
+                report.requestId(), report.stockItemId(), report.quantity(), report.reason(), report.note(),
+                report.damageLocationCode(), user.userId()),
+                IncomingFiles.uploaded(user.userId(), report.photoUploadIds()))));
+    }
+
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Report units of one stock row damaged, with 1-5 photos: they move to quarantine as DAMAGED "
@@ -100,7 +128,7 @@ class DamageReportController {
             }
             return ApiResponse.ok(mapper.toResponse(damages.report(new StockDamages.ReportDamageCommand(
                     report.requestId(), report.stockItemId(), report.quantity(), report.reason(), report.note(),
-                    report.damageLocationCode(), user.userId()), uploads)));
+                    report.damageLocationCode(), user.userId()), IncomingFiles.sent(uploads))));
         } catch (IOException failure) {
             throw new StorageException("Could not read the multipart upload", failure);
         } finally {
@@ -141,13 +169,16 @@ class DamageReportController {
     }
 
     @GetMapping("/{reportId}/photos/{photoId}/download-url")
-    @Operation(summary = "A short-lived link to one photo of a damage report")
+    @Operation(summary = "A short-lived link to one photo of a damage report: its display copy (no metadata); "
+            + "original=true saves the photo exactly as uploaded, and is audited")
     @RequiresPermission(resource = InventoryResources.DAMAGE_REPORTS, action = Action.READ,
             scope = DataScope.WAREHOUSE)
     public ResponseEntity<ApiResponse<DamagePhotoLinkResponse>> photo(@PathVariable UUID reportId,
-                                                                      @PathVariable UUID photoId) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(ApiResponse.ok(mapper.toResponse(damages.photoLink(reportId, photoId))));
+                                                                      @PathVariable UUID photoId,
+                                                                      @RequestParam(defaultValue = "false")
+                                                                      boolean original) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(mapper.toResponse(
+                original ? damages.photoOriginalLink(reportId, photoId) : damages.photoLink(reportId, photoId))));
     }
 
     @PostMapping("/{reportId}/dispositions")

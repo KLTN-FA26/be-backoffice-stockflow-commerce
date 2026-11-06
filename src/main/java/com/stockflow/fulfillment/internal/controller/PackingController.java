@@ -10,6 +10,9 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.common.storage.StorageException;
 import com.stockflow.fulfillment.internal.controller.dto.OpenKitRequest;
 import com.stockflow.fulfillment.internal.controller.dto.OpenPackageRequest;
@@ -198,6 +201,30 @@ class PackingController {
         return ApiResponse.ok(mapper.toResponse(packing.voidPackage(taskId, packageId, actor)));
     }
 
+    /** Step one of a damage photo uploaded straight to storage at the packing bench: a signed PUT. */
+    @PostMapping(value = "/tasks/{taskId}/packing-damage-photo-uploads",
+            consumes = org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
+    @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginDamagePhotoUpload(@PathVariable UUID taskId,
+            @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
+                .body(ApiResponse.ok(packing.beginDamagePhotoUpload(taskId, request, actor)));
+    }
+
+    /** {@link #reportDamageAfterPick} with photos already uploaded to storage, named in {@code photoUploadIds}. */
+    @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage-after-pick",
+            consumes = org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
+    @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<PickDamageResponse> reportDamageAfterPickWithUploads(@PathVariable UUID taskId,
+            @PathVariable UUID lineId, @Valid @RequestBody PackDamageRequest report,
+            @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(pickMapper.toResponse(packing.reportDamageAfterPick(taskId, lineId,
+                new Packing.PackDamage(report.requestId(), report.damagedQuantity(), report.reason(),
+                        report.note(), report.damageLocationCode()),
+                IncomingFiles.uploaded(actor.userId(), report.photoUploadIds()), actor)));
+    }
+
     /**
      * Units a pick line brought to the bench found damaged at packing (R8) - a packing step, so the packing permission.
      * {@code multipart/form-data}: a JSON part {@code report} and one to five image parts {@code photos}
@@ -225,7 +252,7 @@ class PackingController {
             }
             return ApiResponse.ok(pickMapper.toResponse(packing.reportDamageAfterPick(taskId, lineId,
                     new Packing.PackDamage(report.requestId(), report.damagedQuantity(), report.reason(),
-                            report.note(), report.damageLocationCode()), uploads, actor)));
+                            report.note(), report.damageLocationCode()), IncomingFiles.sent(uploads), actor)));
         } catch (IOException failure) {
             throw new StorageException("Could not read the multipart upload", failure);
         } finally {

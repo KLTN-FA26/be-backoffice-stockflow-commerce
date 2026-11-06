@@ -8,6 +8,12 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.StorageException;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
+import com.stockflow.design.internal.controller.dto.AttachArtifactUploadRequest;
+import com.stockflow.design.internal.controller.dto.DesignPreflightResponse;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.RequestBody;
 import com.stockflow.design.internal.controller.dto.ArtifactDownloadResponse;
 import com.stockflow.design.internal.controller.dto.DesignArtifactResponse;
 import com.stockflow.design.internal.service.DesignArtifactService;
@@ -61,12 +67,43 @@ class DesignController {
         }
     }
 
+    /**
+     * Step one of an upload that goes straight to the object store: a signed PUT for exactly the declared file. The
+     * response carries a credential, so it is never cached.
+     */
+    @PostMapping(path = "/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginUpload(@PathVariable UUID designId,
+            @AuthenticatedUser CurrentUser user, @Valid @RequestBody UploadSlotRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(ApiResponse.ok(
+                artifacts.beginUpload(designId, user == null ? null : user.userId(), request)));
+    }
+
+    /** Step two: attach the uploaded file as a revision. Retrying with the same upload answers with the same revision. */
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    public ApiResponse<DesignArtifactResponse> attachUpload(@PathVariable UUID designId,
+            @AuthenticatedUser CurrentUser user, @Valid @RequestBody AttachArtifactUploadRequest request) {
+        return ApiResponse.ok(mapper.toResponse(artifacts.attachUpload(designId, user == null ? null : user.userId(),
+                request.roleOrDefault(), request.uploadId())));
+    }
+
     @GetMapping
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<List<DesignArtifactResponse>> list(@PathVariable UUID designId,
                                                          @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(artifacts.list(designId, user == null ? null : user.userId()).stream()
                 .map(mapper::toResponse).toList());
+    }
+
+    @GetMapping("/{artifactId}/preflight")
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
+    public ApiResponse<DesignPreflightResponse> preflight(@PathVariable UUID designId, @PathVariable UUID artifactId,
+                                                         @AuthenticatedUser CurrentUser user) {
+        var report = artifacts.preflight(designId, artifactId, user == null ? null : user.userId());
+        return ApiResponse.ok(new DesignPreflightResponse(report.passed(), report.findings().stream()
+                .map(f -> new DesignPreflightResponse.Finding(f.code(), f.detail(), f.blocking())).toList()));
     }
 
     @GetMapping("/{artifactId}/download-url")

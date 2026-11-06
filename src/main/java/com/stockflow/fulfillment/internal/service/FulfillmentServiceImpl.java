@@ -244,8 +244,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return toTask(picks.save(pick));
     }
 
+    /** Audited: the customer's design file leaves the system for the warehouse. */
     @Override
     @Transactional(readOnly = true)
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.EXPORT,
+            resourceType = "fulfillment-task", resourceId = "#taskId", details = "{orderLineId: #orderLineId, role: #role}")
     public FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
                                                        CurrentUser actor) {
         var pick = requirePick(taskId);

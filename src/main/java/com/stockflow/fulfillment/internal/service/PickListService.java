@@ -20,7 +20,10 @@ import com.stockflow.fulfillment.internal.repository.PickLineMapper;
 import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.PreparedFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.inventory.consumption.DamagePhoto;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.inventory.consumption.PickDamageReporting;
@@ -41,7 +44,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -89,13 +94,15 @@ class PickListService implements PickLists {
     private final Clock clock;
     private final OrderReservations orderReservations;
     private final PickDamageReporting damages;
+    private final TransactionOperations tx;
 
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
                     WarehouseService warehouses, Clock clock, OrderReservations orderReservations,
-                    PickDamageReporting damages) {
+                    PickDamageReporting damages, TransactionOperations tx) {
         this.damages = damages;
+        this.tx = tx;
         this.orderReservations = orderReservations;
         this.picks = picks;
         this.pickLines = pickLines;
@@ -338,20 +345,65 @@ class PickListService implements PickLists {
     /**
      * {@inheritDoc}
      *
-     * <p>Locks: the pick first, as every write of the task, so two scans of one line - a confirmation and a damage
-     * report, or the same report twice - are taken one after the other and the second sees the line as the first left
-     * it. The photos are stored under the pick's lock only, before the order and the stock rows are locked: an upload
-     * never holds a lock a checkout or another picker waits on, and they are deleted again if anything after them
-     * fails. Then the order (a cancellation locks the order before the stock rows it releases), then inventory's - the
-     * SKU, the carton, the stock rows. The order line learns its new holds and, when nothing replaced the damaged
-     * units, goes ON_HOLD, under the order's lock already held.</p>
+     * <p>Not transactional itself. The checks that need no lock run first in a short read - scope, assignee, the same
+     * report sent again, whether the line can be reported - so a request that is refused or answered already reads no
+     * photo. The photos are then checked, scanned and stored with no transaction held: an upload never holds the pick,
+     * nor a pooled connection, while a confirmation of the same task or an order cancellation waits on it.</p>
+     *
+     * <p>Then one transaction. Locks: the pick first, as every write of the task, so two scans of one line - a
+     * confirmation and a damage report, or the same report twice - are taken one after the other and the second sees
+     * the line as the first left it; every check is made again under it, and the photos are adopted, deleted again if
+     * anything after them fails. Then the order (a cancellation locks the order before the stock rows it releases),
+     * then inventory's - the SKU, the carton, the stock rows. The order line learns its new holds and, when nothing
+     * replaced the damaged units, goes ON_HOLD, under the order's lock already held.</p>
      *
      * <p>The same report sent again is recognised from the line itself (superseded by a damage report of that many
      * units at that bin) before anything is stored, and answered whatever happened to the task since.</p>
      */
     @Override
-    public PickDamageView reportDamage(UUID taskId, UUID lineId, PickDamage damage, List<FileUpload> photos,
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public PickDamageView reportDamage(UUID taskId, UUID lineId, PickDamage damage, IncomingFiles photos,
                                        CurrentUser actor) {
+        Optional<PickDamageView> answered = tx.execute(status -> damageAnswered(taskId, lineId, damage, actor));
+        if (answered.isPresent()) {
+            return answered.get();
+        }
+        PreparedFiles prepared;
+        try {
+            prepared = damages.preparePhotos(photos);
+        } catch (BusinessException refused) {
+            // The same report sent again while the first was attaching these browser uploads: they are its, so the
+            // answer is what it made - or, still in progress, the 409 to try again.
+            if (refused.errorCode() != ErrorCode.CONFLICT) {
+                throw refused;
+            }
+            return tx.execute(status -> damageAnswered(taskId, lineId, damage, actor)).orElseThrow(() -> refused);
+        }
+        try (prepared) {
+            return tx.execute(status -> reportDamageLocked(taskId, lineId, damage, prepared, actor));
+        }
+    }
+
+    /**
+     * The checks of a damage report that need no lock - scope, assignee, whether the line can be reported - or the
+     * answer to the same report sent again. Run before any photo is read; all of it is checked again under the lock.
+     */
+    private Optional<PickDamageView> damageAnswered(UUID taskId, UUID lineId, PickDamage damage, CurrentUser actor) {
+        PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                "No pick task " + taskId));
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        pick.requireAssigned(actor.userId());
+        PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));
+        if (list.alreadyReportedDamaged(lineId, damage.locationCode(), damage.damagedQuantity())) {
+            return Optional.of(damageView(taskId, list, list.line(lineId).orElseThrow()));
+        }
+        TaskAccess.orderInFulfilment(orders, pick);
+        list.requireDamageable(lineId, damage.locationCode(), damage.damagedQuantity());
+        return Optional.empty();
+    }
+
+    private PickDamageView reportDamageLocked(UUID taskId, UUID lineId, PickDamage damage, PreparedFiles prepared,
+                                              CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         pick.requireAssigned(actor.userId());
@@ -363,7 +415,7 @@ class PickListService implements PickLists {
         TaskAccess.orderInFulfilment(orders, pick);
         list.requireDamageable(lineId, damage.locationCode(), damage.damagedQuantity());
         PickLine line = list.line(lineId).orElseThrow();
-        List<DamagePhoto> evidence = damages.storePhotos(photos);
+        List<DamagePhoto> evidence = damages.adoptPhotos(prepared);
         // Pick, then order, then stock rows - the order read again under its lock: cancelled while the photos were
         // stored, it gets nothing allocated.
         TaskAccess.requireStillInFulfilment(orders, pick);
@@ -427,6 +479,30 @@ class PickListService implements PickLists {
                         .toList()));
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public UploadSlot beginDamagePhotoUpload(UUID taskId, UploadSlotRequest request, CurrentUser actor) {
+        PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                "No pick task " + taskId));
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        pick.requireAssigned(actor.userId());
+        return damagePhotoSlot(actor.userId(), request);
+    }
+
+    /** A damage photo slot for {@code ownerId}; packing asks through here, having checked its own scope. */
+    UploadSlot damagePhotoSlot(UUID ownerId, UploadSlotRequest request) {
+        return damages.beginPhotoUpload(ownerId, request);
+    }
+
+    /**
+     * Damage photos checked, scanned and stored with no transaction; packing asks through here before it locks. Public,
+     * so the proxy applies its own propagation: not in the class-level transaction.
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public PreparedFiles prepareDamagePhotos(IncomingFiles photos) {
+        return damages.preparePhotos(photos);
+    }
+
     /** R8: the line can be reported damaged at packing, as far as the pick list knows. The caller holds the pick. */
     void requireDamageableAfterPick(PickJpaEntity pick, UUID lineId, int damaged) {
         toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()))
@@ -436,18 +512,19 @@ class PickListService implements PickLists {
     /**
      * R8, the pick list's side: the caller (packing) holds the pick and checked that the units are out of every parcel.
      * The task is PICKING (the units were in a tote) or PICKED (at the bench); a PICKED one goes back to PICKING.
-     * Photos first, under the pick's lock only; then the order; then inventory's locks. The picked line keeps the
+     * The photos were stored before the pick was locked ({@link PickDamageReporting#preparePhotos}) and are adopted
+     * here; then the order; then inventory's locks. The picked line keeps the
      * damaged units on record, the lines the report made are added, the task goes back to PICKING, and the order line
      * holds the replacements (or the impaired share) next to the hold the pick consumed - which still names the good
      * units that reached packing. With nothing to replace them, the order goes ON_HOLD (INVENTORY) as at picking.
      */
     PickDamageView damageAfterPick(PickJpaEntity pick, UUID lineId, Packing.PackDamage damage,
-                                   List<FileUpload> photos, CurrentUser actor) {
+                                   PreparedFiles prepared, CurrentUser actor) {
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
         list.requireDamageableAfterPick(lineId, damage.damagedQuantity());
         PickLine line = list.line(lineId).orElseThrow();
-        List<DamagePhoto> evidence = damages.storePhotos(photos);
+        List<DamagePhoto> evidence = damages.adoptPhotos(prepared);
         // Pick, then order (read again under its lock, as at picking), then stock rows.
         TaskAccess.requireStillInFulfilment(orders, pick);
         ReportPickDamageResult result = damages.reportAfterPick(new ReportPickDamageCommand(damage.requestId(),

@@ -6,7 +6,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.common.storage.FileStorage;
+import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -56,14 +56,14 @@ public class ReturnRequestQueries {
 
     private final ReturnRequestRepository returns;
     private final ReturnRequestSearch search;
-    private final FileStorage storage;
+    private final FileTransfers files;
     private final OrderRepository orders;
 
-    ReturnRequestQueries(ReturnRequestRepository returns, ReturnRequestSearch search, FileStorage storage,
+    ReturnRequestQueries(ReturnRequestRepository returns, ReturnRequestSearch search, FileTransfers files,
                          OrderRepository orders) {
         this.returns = returns;
         this.search = search;
-        this.storage = storage;
+        this.files = files;
         this.orders = orders;
     }
 
@@ -93,8 +93,33 @@ public class ReturnRequestQueries {
         return new Detail(request, returns.history(returnId));
     }
 
-    /** A short presigned link to one photo of the return, for the owner or the back office. */
+    /**
+     * A short presigned link showing one photo of the return, for the owner or the back office: its display copy -
+     * upright, a fraction of the size, without the phone's metadata (where it was taken) - or the photo as uploaded when
+     * it has no copy.
+     */
     public String evidenceLink(UUID returnId, UUID evidenceId, UUID ownCustomerId) {
+        return files.evidenceViewLink(evidence(returnId, evidenceId, ownCustomerId).fileKey(), LINK_LIFETIME).url();
+    }
+
+    /**
+     * The photo exactly as uploaded, metadata included, saved under its own name. Audited: it is the customer's or the
+     * warehouse's evidence in a dispute, and it may say where it was taken.
+     */
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.EXPORT,
+            resourceType = "return-evidence", resourceId = "#evidenceId",
+            details = "{returnId: #returnId, file: 'original'}")
+    public String evidenceOriginalLink(UUID returnId, UUID evidenceId, UUID ownCustomerId) {
+        ReturnEvidence photo = evidence(returnId, evidenceId, ownCustomerId);
+        return files.downloadLink(photo.fileKey(), photo.originalName()).url();
+    }
+
+    /** The thumbnail link of a photo for a detail view, or null when this storage provider signs no browser links. */
+    public String thumbnail(String fileKey) {
+        return files.evidenceThumbnailLink(fileKey).map(com.stockflow.common.storage.DownloadLink::url).orElse(null);
+    }
+
+    private ReturnEvidence evidence(UUID returnId, UUID evidenceId, UUID ownCustomerId) {
         ReturnRequest request = returns.findById(returnId)
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
@@ -103,7 +128,7 @@ public class ReturnRequestQueries {
         ReturnEvidence photo = request.evidence().stream().filter(e -> e.id().equals(evidenceId))
                 .filter(e -> ownCustomerId == null || e.stage() == ReturnEvidence.Stage.CLAIM).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No photo " + evidenceId));
-        return storage.presignedDownloadUrl(photo.fileKey(), LINK_LIFETIME);
+        return photo;
     }
 
     /**

@@ -18,6 +18,9 @@ import com.stockflow.fulfillment.internal.controller.dto.ConfirmPickRequest;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentArtifactAccessResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
 import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.common.storage.UploadSlot;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.common.storage.StorageException;
 import com.stockflow.fulfillment.internal.controller.dto.PackingCompletionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.PickDamageRequest;
@@ -209,6 +212,29 @@ class FulfillmentController {
                 request.foundQuantity(), actor)));
     }
 
+    /** Step one of a damage photo uploaded straight to storage, for the task's assignee: a signed PUT. */
+    @PostMapping(value = "/tasks/{taskId}/damage-photo-uploads",
+            consumes = org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
+    @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginDamagePhotoUpload(@PathVariable UUID taskId,
+            @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
+                .body(ApiResponse.ok(pickLists.beginDamagePhotoUpload(taskId, request, actor)));
+    }
+
+    /** {@link #reportDamage} with photos already uploaded to storage, named in {@code photoUploadIds}. */
+    @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage",
+            consumes = org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
+    @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<PickDamageResponse> reportDamageWithUploads(@PathVariable UUID taskId, @PathVariable UUID lineId,
+            @Valid @RequestBody PickDamageRequest report, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(pickLists.reportDamage(taskId, lineId, new PickLists.PickDamage(
+                report.requestId(), report.locationCode(), report.damagedQuantity(), report.reason(),
+                report.note(), report.damageLocationCode()),
+                IncomingFiles.uploaded(actor.userId(), report.photoUploadIds()), actor)));
+    }
+
     /**
      * SCRUM-277: the assignee is at the line's bin and finds some of the allocated units damaged - a picking step, so
      * the picking permission. {@code multipart/form-data}: a JSON part {@code report} and one to five image parts
@@ -237,7 +263,7 @@ class FulfillmentController {
             }
             return ApiResponse.ok(mapper.toResponse(pickLists.reportDamage(taskId, lineId, new PickLists.PickDamage(
                     report.requestId(), report.locationCode(), report.damagedQuantity(), report.reason(),
-                    report.note(), report.damageLocationCode()), uploads, actor)));
+                    report.note(), report.damageLocationCode()), IncomingFiles.sent(uploads), actor)));
         } catch (IOException failure) {
             throw new StorageException("Could not read the multipart upload", failure);
         } finally {

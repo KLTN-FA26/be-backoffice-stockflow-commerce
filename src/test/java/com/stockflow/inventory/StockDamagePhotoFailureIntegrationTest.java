@@ -65,19 +65,7 @@ class StockDamagePhotoFailureIntegrationTest {
     @DisplayName("the second photo fails to store: no stock change, no report, the first photo deleted again")
     void storeFailureLeavesNothing() {
         String sku = "DMGF-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-        UUID row = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku, "Fixture",
-                    sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Fixture','')", Identifiers.newId(), product, sku);
-            jdbc.update("""
-                    INSERT INTO inventory.stock_item (id, sku, location_code, expiry_date, on_hand, reserved, status,
-                                                      received_at, version, created_at)
-                    VALUES (?, ?, 'HCM-A01-2-B', ?, 5, 0, 'AVAILABLE', ?, 0, NOW())""", row, sku,
-                    LocalDate.now().plusDays(90), Timestamp.from(Instant.parse("2026-10-01T03:00:00Z")));
-        });
+        UUID row = stockRow(sku);
         UUID reporter = tx.execute(s -> ReferenceRows.user(entityManager));
         List<String> stored = new CopyOnWriteArrayList<>();
         AtomicInteger calls = new AtomicInteger();
@@ -88,11 +76,11 @@ class StockDamagePhotoFailureIntegrationTest {
             StoredFile file = (StoredFile) invocation.callRealMethod();
             stored.add(file.key());
             return file;
-        }).when(storage).store(any(), any(), any(), anyLong(), any());
+        }).when(storage).store(any(), any(), any(), anyLong(), any(), any());
         try {
             Throwable failure = catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () ->
                     damages.report(new StockDamages.ReportDamageCommand(UUID.randomUUID(), row, 2,
-                            DamageReason.BROKEN, null, null, reporter), List.of(photo("a.jpg"), photo("b.jpg")))));
+                            DamageReason.BROKEN, null, null, reporter), com.stockflow.common.storage.IncomingFiles.sent(List.of(photo("a.jpg"), photo("b.jpg"))))));
 
             assertThat(failure).isInstanceOf(BusinessException.class);
             assertThat(((BusinessException) failure).errorCode()).isEqualTo(ErrorCode.STORAGE_ERROR);
@@ -108,6 +96,48 @@ class StockDamagePhotoFailureIntegrationTest {
                 Integer.class, sku)).isZero();
         assertThat(stored).singleElement().satisfies(key -> assertThat(storage.exists(key))
                 .as("the photo stored before the failure is deleted with the rollback").isFalse());
+    }
+
+    @Test
+    @DisplayName("the photo is checked, scanned and stored before the report's transaction opens")
+    void photoIsStoredOutsideTheTransaction() {
+        String sku = "DMGT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        UUID row = stockRow(sku);
+        UUID reporter = tx.execute(s -> ReferenceRows.user(entityManager));
+        List<Boolean> inTransaction = new CopyOnWriteArrayList<>();
+        doAnswer(invocation -> {
+            inTransaction.add(org.springframework.transaction.support.TransactionSynchronizationManager
+                    .isActualTransactionActive());
+            return invocation.callRealMethod();
+        }).when(storage).store(any(), any(), any(), anyLong(), any(), any());
+        try {
+            WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> damages.report(
+                    new StockDamages.ReportDamageCommand(UUID.randomUUID(), row, 1, DamageReason.BROKEN, null, null,
+                            reporter), com.stockflow.common.storage.IncomingFiles.sent(List.of(photo("a.jpg")))));
+        } finally {
+            reset(storage);
+        }
+
+        assertThat(inTransaction).as("no lock or connection held while the photo is written").containsExactly(false);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?",
+                Integer.class, sku)).isOne();
+    }
+
+    private UUID stockRow(String sku) {
+        UUID row = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            UUID product = Identifiers.newId();
+            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku, "Fixture",
+                    sku.toLowerCase(Locale.ROOT));
+            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
+                    + " values (?,?,?,'Fixture','')", Identifiers.newId(), product, sku);
+            jdbc.update("""
+                    INSERT INTO inventory.stock_item (id, sku, location_code, expiry_date, on_hand, reserved, status,
+                                                      received_at, version, created_at)
+                    VALUES (?, ?, 'HCM-A01-2-B', ?, 5, 0, 'AVAILABLE', ?, 0, NOW())""", row, sku,
+                    LocalDate.now().plusDays(90), Timestamp.from(Instant.parse("2026-10-01T03:00:00Z")));
+        });
+        return row;
     }
 
     private static FileUpload photo(String name) {

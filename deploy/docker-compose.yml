@@ -17,8 +17,10 @@
 #     the same L2 segment reach loopback-published ports.
 #   - Every service has a memory limit, and they add up to ~3.4 GB. Without limits the JVM sizes its
 #     heap from the HOST's 4 GB and the kernel's OOM killer picks a victim - usually Postgres.
-#   - No ClamAV (~1.2 GB, a third of the machine). Upload scanning is switched OFF instead, which
-#     the application logs as a warning at startup. Acceptable while only the team uploads files.
+#   - ClamAV (~1.2 GB, a third of the machine) only with the `scan` profile. By default upload
+#     scanning is switched OFF instead, which the application logs as a warning at startup.
+#     Acceptable while only the team uploads files; on a machine with the memory for it, set
+#     COMPOSE_PROFILES=scan and UPLOAD_INSPECTION_ENABLED=true in .env (README, "Upload scanning").
 #   - No Elasticsearch: no Java code uses it.
 #   - Mailpit instead of a real SMTP server: every email the application sends is caught and shown
 #     at mail.<domain>, and nothing can reach a real inbox. Supplier PO and cancellation
@@ -112,17 +114,24 @@ services:
       # The PUBLIC hostname, not http://minio:9000. StorageConfig builds the presigner from this
       # same endpoint, so an internal name here produces download links no browser can open. The
       # cost is that the application's own uploads leave the VPS and come back through Cloudflare.
-      S3_ENDPOINT: https://s3.${DOMAIN}
-      S3_PATH_STYLE: "true"
+      #
+      # Real AWS S3 instead (README, "Object storage on AWS S3"): in .env set S3_ENDPOINT= (empty, so
+      # the SDK talks to AWS), S3_PATH_STYLE=false, AWS_REGION to the bucket's region, the IAM user's
+      # keys in S3_ACCESS_KEY / S3_SECRET_KEY, and PRODUCT_MEDIA_CDN_BASE_URL to the CloudFront host.
+      # The `-` (not `:-`) form matters: an empty S3_ENDPOINT must stay empty, not fall back to MinIO.
+      S3_ENDPOINT: ${S3_ENDPOINT-https://s3.${DOMAIN}}
+      S3_PATH_STYLE: ${S3_PATH_STYLE:-true}
       AWS_REGION: ${AWS_REGION:-ap-southeast-1}
-      PRODUCT_MEDIA_CDN_BASE_URL: https://media.${DOMAIN}
+      PRODUCT_MEDIA_CDN_BASE_URL: ${PRODUCT_MEDIA_CDN_BASE_URL:-https://media.${DOMAIN}}
+      STOCKFLOW_STORAGE_OBJECT_LOCK_ENABLED: ${S3_OBJECT_LOCK_ENABLED:-false}
       # Optional demo data (db/demo) - see .env.example for why it is off. Switching it either way
       # needs a database reset: Flyway refuses to start when migrations appear (or vanish) out of
       # order, and the demo versions interleave with the real ones.
       SPRING_FLYWAY_LOCATIONS: ${FLYWAY_LOCATIONS:-classpath:db/migration}
       # Off by default for the reason in application.yml: the request carries its own unit price.
       STOCKFLOW_CHECKOUT_GUEST_ENABLED: ${GUEST_CHECKOUT_ENABLED:-false}
-      STOCKFLOW_UPLOAD_INSPECTION_ENABLED: "false"
+      STOCKFLOW_UPLOAD_INSPECTION_ENABLED: ${UPLOAD_INSPECTION_ENABLED:-false}
+      STOCKFLOW_UPLOAD_INSPECTION_HOST: ${UPLOAD_INSPECTION_HOST:-clamav}
       # Connections allowed to set the client address through X-Forwarded-For (SCRUM-483): a regex over the
       # peer address. nginx reaches the application over the compose network (private range); the
       # application publishes no port. Same value as the default in application-prod.yml / -dev.yml. A
@@ -307,7 +316,43 @@ services:
         mc admin policy create local stockflow-app /tmp/app-policy.json
         mc admin user add local "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
         mc admin policy attach local stockflow-app --user "$$S3_ACCESS_KEY" || true
+        # As on AWS (infra/aws/configure-existing-bucket.sh): a direct upload nobody attached is
+        # gone after a day, a generated export after a week. Imported whole, so a re-run replaces
+        # the rules rather than adding them again.
+        cat > /tmp/lifecycle.json <<EOF
+        { "Rules": [
+            { "ID": "ExpireUnclaimedUploads", "Status": "Enabled", "Filter": { "Prefix": "incoming/" },
+              "Expiration": { "Days": 1 } },
+            { "ID": "ExpireGeneratedExports", "Status": "Enabled", "Filter": { "Prefix": "exports/" },
+              "Expiration": { "Days": 7 } } ] }
+        EOF
+        mc ilm import "local/$$S3_BUCKET" < /tmp/lifecycle.json
         echo "minio-init: bucket $$S3_BUCKET ready"
+
+  # Upload scanning, only with the `scan` profile (COMPOSE_PROFILES=scan in .env) and with
+  # UPLOAD_INSPECTION_ENABLED=true, which points the application at this host. ~1.2 GB: not on the
+  # 4 GB machine. INSTREAM is capped by StreamMaxLength, but a stream over MaxFileSize is silently
+  # NOT scanned and reported OK unless AlertExceedsMax is on; design renders may be 50 MiB, so the
+  # three limits are raised together and exceeding them is a detection (fail closed). Same settings
+  # as docker-compose.media.yml at the repository root.
+  clamav:
+    image: clamav/clamav:stable
+    <<: [*restart, *logging]
+    profiles: ["scan"]
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+    environment:
+      CLAMD_CONF_StreamMaxLength: 52M
+      CLAMD_CONF_MaxFileSize: 52M
+      CLAMD_CONF_MaxScanSize: 104M
+      CLAMD_CONF_AlertExceedsMax: "yes"
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
 
   # Traces from the dev profile's 100% sampling. In-memory storage, capped, so it cannot grow past
   # its limit; traces are lost on restart, which is fine for "why was that request slow just now".
@@ -372,4 +417,5 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  clamav-signatures:
   mailpit-data:

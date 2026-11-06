@@ -27,7 +27,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
@@ -74,7 +73,7 @@ class SupplierInvoiceIntegrationTest {
     @BeforeEach
     void setUp() {
         doAnswer(call -> "http://objects.test/" + call.getArgument(0)).when(storage).presignedDownloadUrl(anyString(),
-                any());
+                any(), any());
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         qc = tx.execute(s -> ReferenceRows.user(entityManager));
         accountant = tx.execute(s -> ReferenceRows.user(entityManager));
@@ -320,7 +319,7 @@ class SupplierInvoiceIntegrationTest {
     void cancelAndScan() {
         UUID po = order("CONFIRMED", "0", SOFA, 1);
         SupplierInvoices.InvoiceView invoice = enter(po, number(), billed(poLine(po, SOFA), 1, "1000", "0"));
-        byte[] pdf = "%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF".getBytes(StandardCharsets.US_ASCII);
+        byte[] pdf = com.stockflow.support.TestPdfs.blank();
         SupplierInvoices.InvoiceView scanned = invoices.attachScan(invoice.id(), new FileUpload("hd.pdf",
                 "application/pdf", pdf.length, new ByteArrayInputStream(pdf)));
         assertThat(scanned.scanName()).isEqualTo("hd.pdf");
@@ -331,6 +330,34 @@ class SupplierInvoiceIntegrationTest {
                 .isEqualTo(SupplierInvoiceStatus.CANCELLED);
         assertThat(code(() -> invoices.match(invoice.id(), accountant)))
                 .isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("the scan is stored with no transaction open; a cancelled invoice refuses one before anything is stored")
+    void scanIsStoredOutsideTheTransaction() {
+        UUID po = order("CONFIRMED", "0", SOFA, 1);
+        SupplierInvoices.InvoiceView invoice = enter(po, number(), billed(poLine(po, SOFA), 1, "1000", "0"));
+        byte[] pdf = com.stockflow.support.TestPdfs.blank();
+        java.util.List<Boolean> inTransaction = new java.util.concurrent.CopyOnWriteArrayList<>();
+        doAnswer(call -> {
+            inTransaction.add(org.springframework.transaction.support.TransactionSynchronizationManager
+                    .isActualTransactionActive());
+            return call.callRealMethod();
+        }).when(storage).store(any(), any(), any(), org.mockito.ArgumentMatchers.anyLong(), any(), any());
+        try {
+            invoices.attachScan(invoice.id(), new FileUpload("hd.pdf", "application/pdf", pdf.length,
+                    new ByteArrayInputStream(pdf)));
+            assertThat(inTransaction).as("no lock or connection held while the scan is written").containsExactly(false);
+
+            invoices.cancel(invoice.id(), "Nhà cung cấp thu hồi hoá đơn", accountant);
+            assertThat(code(() -> invoices.attachScan(invoice.id(), new FileUpload("hd2.pdf", "application/pdf",
+                    pdf.length, new ByteArrayInputStream(pdf))))).isEqualTo(ErrorCode.SUPPLIER_INVOICE_INVALID_TRANSITION);
+            assertThat(inTransaction).as("a refused scan is never uploaded").hasSize(1);
+        } finally {
+            org.mockito.Mockito.reset(storage);
+            doAnswer(call -> "http://objects.test/" + call.getArgument(0)).when(storage).presignedDownloadUrl(anyString(),
+                    any(), any());
+        }
     }
 
     @Test

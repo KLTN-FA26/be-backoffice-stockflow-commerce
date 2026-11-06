@@ -430,11 +430,40 @@ stockflow:
     # MinIO needs path-style addressing; real S3 uses virtual-host style. Wrong value produces a
     # DNS failure that looks nothing like a configuration problem.
     path-style: true
-    # Static keys only for MinIO. Left blank against real S3 so the SDK's default provider chain
-    # picks up the instance role - long-lived keys in a properties file are how credentials leak.
+    # Static keys for MinIO, or for real S3 from a machine with no AWS role (the VPS: an IAM user with
+    # only infra/aws's application policy). Blank on AWS compute so the default provider chain picks
+    # up the instance role. Never committed for a real account: long-lived keys leak from files.
     access-key: ${MINIO_ACCESS_KEY:stockflow}
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
+    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files and supplier
+    # invoice scans cannot be deleted or overwritten for these periods. Needs a bucket with Object Lock
+    # (infra/aws); MinIO in development has none, so it is off unless the deployment turns it on.
+    # The periods are placeholders until the business confirms them against the law that applies.
+    object-lock:
+      enabled: false
+      mode: GOVERNANCE
+      confirmed-design: P1095D
+      supplier-invoice: P3650D
+    # Browser uploads straight to the object store (StagedUploads, docs/direct-uploads-fe-contract.md).
+    staged-upload:
+      url-ttl: PT15M            # the signed PUT; S3 checks it when the upload starts, not when it ends
+      session-ttl: PT1H         # how long an upload may wait to be attached; incoming/ expires after a day
+      per-user-per-hour: 120    # slots one user may take in an hour
+    # Files no record names any more (OrphanedFileSweeper): nightly, report-only until delete is turned on.
+    # Supplier invoices, published product images, exports and the quarantine prefix are never swept.
+    orphan-sweep:
+      cron: "0 30 3 * * *"
+      delete: false
+      grace: P7D                # older than any transaction; a file still being attached is never touched
+      batch: 500
+
+  # ClamAV (docker-compose.media.yml). Off only in the local profile and on the VPS (deploy/), whose
+  # 4 GB cannot hold it; an upload is refused when the scanner is on and unreachable.
+  upload-inspection:
+    # Scans in flight per instance. One over waits for a slot up to acquire-timeout, then gets 429.
+    max-concurrent: 4
+    acquire-timeout: PT15S
 
   catalog:
     availability:

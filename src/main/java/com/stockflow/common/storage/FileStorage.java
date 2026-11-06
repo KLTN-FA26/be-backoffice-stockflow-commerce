@@ -2,6 +2,7 @@ package com.stockflow.common.storage;
 
 import java.io.InputStream;
 import java.time.Duration;
+import java.util.List;
 
 /**
  * Where uploaded and generated files live.
@@ -30,8 +31,72 @@ public interface FileStorage {
      *
      * @throws StorageException if the store is unreachable or refuses the write
      */
+    default StoredFile store(FileCategory category, String originalName, String contentType,
+                             long sizeBytes, InputStream content) {
+        return store(category, originalName, contentType, sizeBytes, content, null);
+    }
+
+    /**
+     * {@link #store(FileCategory, String, String, long, InputStream)}, with the SHA-256 the caller
+     * already computed over the same bytes.
+     *
+     * <p>Every object is written with a store-computed SHA-256, so {@link #stat} can answer for it
+     * later without a read. Passing {@code sha256} as well makes the store <i>check</i> the bytes it
+     * received against it and refuse the write on a difference: the digest the database records is
+     * then provably the digest of the object, end to end.</p>
+     *
+     * @param sha256 lower-case hex, or null when the caller has none
+     * @throws StorageException if the store is unreachable, refuses the write, or the bytes it
+     *         received do not hash to {@code sha256}
+     */
     StoredFile store(FileCategory category, String originalName, String contentType,
-                     long sizeBytes, InputStream content);
+                     long sizeBytes, InputStream content, String sha256);
+
+    /**
+     * What the store knows about an object, from its metadata alone (one HEAD request; no bytes).
+     *
+     * <p>This is how integrity is checked where a file is used: the store recorded the object's
+     * SHA-256 when it was written and recomputes it on any later write, so comparing
+     * {@link ObjectStat#sha256()} with the digest recorded at upload proves the object unchanged
+     * without downloading it. A null digest proves nothing; the caller hashes the bytes.</p>
+     *
+     * @throws StorageException if the key does not exist or the store cannot be reached
+     */
+    ObjectStat stat(String key);
+
+    /**
+     * Locks the current version of an object until {@code until} (S3 Object Lock, in the mode
+     * {@link ObjectLockProperties} configures): it cannot be deleted or overwritten in place until
+     * then. Only for business records ({@link RecordRetention}); call it through
+     * {@link FileTransfers#retainAfterCommit}, never on an object a transaction may still roll back.
+     *
+     * @throws StorageException if the bucket has no Object Lock, or the store refuses (a lock can be
+     *         extended but never shortened)
+     */
+    void retain(String key, java.time.Instant until);
+
+    /**
+     * Writes a copy the platform derived from a stored file (an evidence photo's display copy) at its derived key,
+     * with its SHA-256 declared. Only for {@link FileCategory#EVIDENCE_COPY} keys: everything else is stored under a
+     * key {@link #store} chooses.
+     */
+    void storeDerived(String key, String contentType, byte[] bytes);
+
+    /**
+     * Up to {@code max} objects under {@code prefix} whose keys sort after {@code startAfter} (null for the first
+     * page), in key order. For the orphaned-file sweep; never for a request path.
+     */
+    List<StoredObject> list(String prefix, String startAfter, int max);
+
+    /**
+     * A signed PUT a browser uses to write exactly the declared file to {@code incomingKey}: its length, type and
+     * SHA-256 are part of the signature, so the store refuses anything else. Only for keys under
+     * {@link StorageKeys#incoming}; {@link StagedUploads} is the one caller.
+     *
+     * @throws StorageException when the provider cannot sign browser uploads (the local filesystem)
+     */
+    PresignedUpload presignedUploadUrl(String incomingKey, String contentType, long sizeBytes, String sha256,
+                                       Duration validFor);
 
     /**
      * Open a stored file for server-side processing.
@@ -49,7 +114,18 @@ public interface FileStorage {
      * it — from a chat message, a proxy log, a browser history — can fetch the file until it
      * expires. Minutes, not days.</p>
      */
-    String presignedDownloadUrl(String key, Duration validFor);
+    default String presignedDownloadUrl(String key, Duration validFor) {
+        return presignedDownloadUrl(key, validFor, null);
+    }
+
+    /**
+     * {@link #presignedDownloadUrl(String, Duration)}, telling the browser how to treat the response: save it under
+     * its original name, or show it in the page and cache it while the link lives ({@link DownloadDisposition}).
+     * The overrides are part of the signature, so a holder of the link cannot change them.
+     *
+     * @param disposition null to serve the object's own headers
+     */
+    String presignedDownloadUrl(String key, Duration validFor, DownloadDisposition disposition);
 
     /**
      * Delete a stored file.

@@ -113,7 +113,8 @@ class SampleToPackingIntegrationTest {
     @BeforeEach
     void setUp() {
         org.mockito.Mockito.doAnswer(call -> "http://objects.test/" + call.getArgument(0)).when(storage)
-                .presignedDownloadUrl(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+                .presignedDownloadUrl(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         ConfirmedDesigns.stockBlanks(jdbc, tx, 40);
         UUID salesId = tx.execute(s -> ReferenceRows.user(entityManager));

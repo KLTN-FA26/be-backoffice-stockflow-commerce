@@ -57,9 +57,12 @@ public record DamageReportResponse(
                                    String note, UUID recordedBy, Instant recordedAt) {
     }
 
-    /** A photo; its bytes come from {@code GET .../photos/{photoId}/download-url}. */
+    /**
+     * A photo. {@code thumbnailUrl} is a short-lived link to a small copy (null when there is none); the photo itself
+     * comes from {@code GET .../photos/{photoId}/download-url}.
+     */
     @Schema(name = "DamageReportPhoto")
-    public record Photo(UUID id, String originalName, String contentType, long sizeBytes) {
+    public record Photo(UUID id, String originalName, String contentType, long sizeBytes, String thumbnailUrl) {
     }
 
     /**

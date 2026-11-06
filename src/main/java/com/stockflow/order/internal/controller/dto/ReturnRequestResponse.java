@@ -90,9 +90,12 @@ public record ReturnRequestResponse(
                        UUID replacementOrderLineId, Boolean receivedPlain, String disposalConsent) {
     }
 
-    /** A photo; its bytes come from {@code GET .../evidence/{evidenceId}/download-url}, never from this response. */
+    /**
+     * A photo. {@code thumbnailUrl} is a short-lived link to a small copy, set on the detail view (null in other answers,
+     * or for a photo without one); the photo itself comes from {@code GET .../evidence/{evidenceId}/download-url}.
+     */
     public record Evidence(UUID id, @Schema(example = "CLAIM") String stage, String originalName, String contentType,
-                           long sizeBytes, UUID uploadedBy, Instant uploadedAt) {
+                           long sizeBytes, UUID uploadedBy, Instant uploadedAt, String thumbnailUrl) {
     }
 
     public record Discrepancy(UUID id, UUID lineId, @Schema(example = "SHORT") String kind, String sku, int quantity,

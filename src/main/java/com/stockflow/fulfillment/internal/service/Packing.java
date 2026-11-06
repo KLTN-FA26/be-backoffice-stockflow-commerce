@@ -115,8 +115,12 @@ public interface Packing {
      *         refusals of inventory's report; {@code CONFLICT} for a request id another report used
      */
     PickLists.PickDamageView reportDamageAfterPick(UUID taskId, UUID lineId, PackDamage damage,
-                                                   java.util.List<com.stockflow.common.storage.FileUpload> photos,
+                                                   com.stockflow.common.storage.IncomingFiles photos,
                                                    CurrentUser actor);
+
+    /** A slot for one damage photo of the task, uploaded straight to the object store, in the task's warehouse. */
+    com.stockflow.common.storage.UploadSlot beginDamagePhotoUpload(UUID taskId,
+            com.stockflow.common.storage.UploadSlotRequest request, CurrentUser actor);
 
     /**
      * What the internal label of a sealed parcel prints (08 step 6): order, shipment, package n of N, recipient and

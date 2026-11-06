@@ -107,6 +107,32 @@ class ReturnRequestHttpTest {
     }
 
     @Test
+    @DisplayName("a photo uploaded straight to storage: the owner's slot gets as far as signing, another customer's is "
+            + "404, an invalid declaration 400, and an upload id nobody was given 404")
+    void photoUploads() throws Exception {
+        String returnId = open();
+        String declaration = """
+                {"fileName":"crack.png","contentType":"image/png","sizeBytes":1024,"sha256":"%s"}""".formatted("a".repeat(64));
+        // The test profile stores files on the local filesystem, which signs no browser upload: 503, as for downloads.
+        http.asCustomer(userA, post("/api/v1/returns/" + returnId + "/evidence/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content(declaration))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("STORAGE_ERROR"));
+        http.asCustomer(userB, post("/api/v1/returns/" + returnId + "/evidence/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content(declaration))
+                .andExpect(status().isNotFound());
+        http.asCustomer(userA, post("/api/v1/returns/" + returnId + "/evidence/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"fileName\":\"x.png\"}"))
+                .andExpect(status().isBadRequest());
+        http.asCustomer(userA, post("/api/v1/returns/" + returnId + "/evidence")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"uploadId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound());
+        http.asCustomer(userA, post("/api/v1/returns/" + returnId + "/receipt-evidence/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content(declaration))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     @DisplayName("the customer opens a return on their own order, sees it in their list; another customer gets 404 for "
             + "the order and the return; the back-office list is not theirs (403)")
     void portalScope() throws Exception {

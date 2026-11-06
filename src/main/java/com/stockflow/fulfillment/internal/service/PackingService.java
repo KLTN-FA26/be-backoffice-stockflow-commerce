@@ -10,7 +10,6 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.common.storage.FileUpload;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.domain.DeliveryMode;
@@ -55,7 +54,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
+import com.stockflow.common.storage.PreparedFiles;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -125,6 +127,7 @@ class PackingService implements Packing {
     private final LoadPlanReleases loadPlans;
     private final PlanVehicles planVehicles;
     private final PickListService pickLists;
+    private final TransactionOperations tx;
 
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
@@ -140,7 +143,7 @@ class PackingService implements Packing {
                    com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
                    com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans,
-                   PlanVehicles planVehicles, PickListService pickLists) {
+                   PlanVehicles planVehicles, PickListService pickLists, TransactionOperations tx) {
         this.picks = picks;
         this.pickLines = pickLines;
         this.packs = packs;
@@ -165,6 +168,7 @@ class PackingService implements Packing {
         this.loadPlans = loadPlans;
         this.planVehicles = planVehicles;
         this.pickLists = pickLists;
+        this.tx = tx;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -641,23 +645,63 @@ class PackingService implements Packing {
     /**
      * {@inheritDoc}
      *
-     * <p>The pick is locked first, and the same report sent again is answered from what it made before anything else
-     * is checked - the task is back at picking by then. Damage is a fact about goods, so it is taken whenever picked
-     * units are off the shelf: in a tote while the task is still PICKING (or picking again after an earlier report),
-     * or at the bench once it is PICKED - whatever hold the order is on, as long as it is not cancelled (a cancelled
-     * order's goods are put back, then reported on the shelf). The packing session has its say only when there is
-     * one: while it is being packed, only its packer or a manager reports; units in a parcel come out first. The pick
-     * list does the rest under the same lock.</p>
+     * <p>The same report sent again is answered from what it made before anything else is checked - the task is back
+     * at picking by then. Damage is a fact about goods, so it is taken whenever picked units are off the shelf: in a
+     * tote while the task is still PICKING (or picking again after an earlier report), or at the bench once it is
+     * PICKED - whatever hold the order is on, as long as it is not cancelled (a cancelled order's goods are put back,
+     * then reported on the shelf). The packing session has its say only when there is one: while it is being packed,
+     * only its packer or a manager reports; units in a parcel come out first.</p>
+     *
+     * <p>Not transactional itself. Every check runs first in a short read, so a refused or repeated request reads no
+     * photo; the photos are then checked, scanned and stored with no transaction held, so the pick is never locked
+     * while one is read. Then one transaction locks the pick, checks everything again, and the pick list does the rest
+     * under that lock, adopting the photos.</p>
      */
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public PickLists.PickDamageView reportDamageAfterPick(UUID taskId, UUID lineId, PackDamage damage,
-                                                          List<FileUpload> photos, CurrentUser actor) {
-        PickJpaEntity pick = lockPick(taskId);
+                                                          com.stockflow.common.storage.IncomingFiles photos,
+                                                          CurrentUser actor) {
+        java.util.function.Supplier<Optional<PickLists.PickDamageView>> unlocked = () -> tx.execute(status ->
+                damageAfterPickChecked(picks.findById(taskId).orElseThrow(() -> new BusinessException(
+                        ErrorCode.NOT_FOUND, "No fulfilment task " + taskId)), lineId, damage, actor));
+        Optional<PickLists.PickDamageView> answered = unlocked.get();
+        if (answered.isPresent()) {
+            return answered.get();
+        }
+        PreparedFiles prepared;
+        try {
+            prepared = pickLists.prepareDamagePhotos(photos);
+        } catch (BusinessException refused) {
+            // The same report sent again while the first was attaching these browser uploads: they are its, so the
+            // answer is what it made - or, still in progress, the 409 to try again.
+            if (refused.errorCode() != ErrorCode.CONFLICT) {
+                throw refused;
+            }
+            return unlocked.get().orElseThrow(() -> refused);
+        }
+        try (prepared) {
+            return tx.execute(status -> {
+                PickJpaEntity pick = lockPick(taskId);
+                // Made meanwhile by the same request: answered with it, and these photos go when they are closed.
+                return damageAfterPickChecked(pick, lineId, damage, actor)
+                        .orElseGet(() -> pickLists.damageAfterPick(pick, lineId, damage, prepared, actor));
+            });
+        }
+    }
+
+    /**
+     * What the same report sent again made, or empty when this one may be made: the warehouse, the task's state, the
+     * order, the line and the packing session all allow it. Run unlocked first and again under the pick's lock.
+     */
+    private Optional<PickLists.PickDamageView> damageAfterPickChecked(PickJpaEntity pick, UUID lineId,
+                                                                      PackDamage damage, CurrentUser actor) {
+        UUID taskId = pick.getId();
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         Optional<PickLists.PickDamageView> replay = pickLists.damageAfterPickReplay(pick, lineId,
                 damage.requestId());
         if (replay.isPresent()) {
-            return replay.get();
+            return replay;
         }
         if (pick.getStatus() != PickStatus.PICKING && pick.getStatus() != PickStatus.PICKED) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, pick.getStatus() == PickStatus.CANCELLED
@@ -680,7 +724,17 @@ class PackingService implements Packing {
                             .map(HoldView::serialNumber).orElse(null);
             session.requireUnpacked(line.getOrderLineId(), line.getLotNumber(), serial, damage.damagedQuantity());
         }
-        return pickLists.damageAfterPick(pick, lineId, damage, photos, actor);
+        return Optional.empty();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.stockflow.common.storage.UploadSlot beginDamagePhotoUpload(UUID taskId,
+            com.stockflow.common.storage.UploadSlotRequest request, CurrentUser actor) {
+        PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                "No fulfilment task " + taskId));
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        return pickLists.damagePhotoSlot(actor.userId(), request);
     }
 
     // ------------------------------------------------------------------ internals

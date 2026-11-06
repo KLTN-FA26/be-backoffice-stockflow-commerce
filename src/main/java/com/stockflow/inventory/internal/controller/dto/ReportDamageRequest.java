@@ -41,6 +41,11 @@ public record ReportDamageRequest(
         @Schema(description = "The QUARANTINE area the goods are taken to; empty lets the system choose one",
                 example = "HCM-QC01")
         @Size(max = 64, message = "damageLocationCode is at most 64 characters")
-        String damageLocationCode
+        String damageLocationCode,
+
+        @Schema(description = "With application/json only: the uploadIds of one to five photos uploaded straight to "
+                + "storage through the photo-uploads slot endpoint. Ignored with multipart, whose photos are parts")
+        @Size(max = 5, message = "at most 5 photos")
+        java.util.List<@NotNull UUID> photoUploadIds
 ) {
 }
