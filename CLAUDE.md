@@ -4,7 +4,8 @@ FPT University capstone **FA26SE029**, group **GFA26SE03**, 5 members, superviso
 A finished-goods warehouse and B2B sales platform for a Vietnamese business whose cups and packaging
 are printed to its wholesale customers' designs (decided 2026-10-06: B2B only). Since 2026-11-07 the
 printing is done by producers outside the system: goods arrive printed, in cartons, and are picked from
-stock like any other; the in-house production module is gone (`V20261108000100`).
+stock like any other; the in-house production module is gone (`V20261108000100`). Stock never changes
+warehouse: transfer orders between warehouses are gone too (`V20261108000300`).
 
 Read this before touching anything. It is short on purpose; it says what is not obvious from the
 code, and points at the code for the rest.
@@ -317,8 +318,8 @@ stores no assignee, warehouse or suggestion reasons (no migration; Tú owns the 
 `StockAllocator.plan` keeps FEFO/FIFO first and orders only the group where the need runs out: whole sealed cartons
 (largest first, while each fits), then opened cartons and loose units (smallest first), then a sealed carton broken
 last. A sealed carton another order holds part of counts as opened. The facts come from the same projection
-(`AvailabilityRow.stockPackageId`, `wholeCarton`), so every caller of `plan` - order release, short-pick reallocation,
-transfer orders - gets the order. `HoldView` carries the hold's `lpn` and `wholeCarton`; fulfillment
+(`AvailabilityRow.stockPackageId`, `wholeCarton`), so every caller of `plan` - order release and short-pick
+reallocation - gets the order. `HoldView` carries the hold's `lpn` and `wholeCarton`; fulfillment
 copies them onto `pick_line` (`V20261028003000`, checked by `tg_pick_line_carton`), and `PickList.confirm` accepts only
 the LPN for such a line: the deduction is from that carton, and a SKU scan would let the picker take any carton of it.
 

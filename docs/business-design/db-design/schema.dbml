@@ -67,7 +67,6 @@ Enum inventory.cycle_count_trigger_type {
   SCHEDULED
   SHORT_PICK
   MOVE_DISCREPANCY
-  TRANSFER_DISCREPANCY
   MANUAL
 }
 
@@ -214,32 +213,6 @@ Enum inventory.stock_reservation_status {
   CONSUMED
   RELEASED
   EXPIRED
-}
-
-Enum inventory.transfer_order_delivery_mode {
-  PARCEL
-  FULL_TRUCKLOAD
-}
-
-Enum inventory.transfer_order_reason {
-  REBALANCING
-  DEMAND
-  CAMPAIGN
-  OVERFLOW
-  OTHER
-}
-
-Enum inventory.transfer_order_status {
-  DRAFT
-  PENDING_APPROVAL
-  APPROVED
-  PICKING
-  IN_TRANSIT
-  PARTIALLY_RECEIVED
-  RECEIVED
-  COMPLETED
-  CLOSED
-  CANCELLED
 }
 
 Enum warehouse.area_status {
@@ -823,11 +796,6 @@ Enum fulfillment.load_estimate_mode {
   FEWEST_VEHICLES
 }
 
-Enum fulfillment.load_estimate_source_type {
-  ORDER
-  TRANSFER
-}
-
 Enum fulfillment.load_estimate_status {
   CURRENT
   SUPERSEDED
@@ -836,11 +804,6 @@ Enum fulfillment.load_estimate_status {
 Enum fulfillment.load_plan_selection_mode {
   SINGLE_TYPE
   FEWEST_VEHICLES
-}
-
-Enum fulfillment.load_plan_source_type {
-  ORDER
-  TRANSFER
 }
 
 Enum fulfillment.load_plan_status {
@@ -1730,7 +1693,7 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
 Table inventory.stock_reservation [headercolor: #3E7C4A] {
   id                uuid [pk]
   stock_item_id     uuid
-  order_id          uuid
+  order_id          uuid [not null]
   root_request_id   uuid [not null]
   request_id        uuid [not null, unique]
   quantity          int [not null]
@@ -1742,63 +1705,6 @@ Table inventory.stock_reservation [headercolor: #3E7C4A] {
   sku               varchar(64) [not null]
   allocated_from_id uuid
   order_number      varchar(32)
-  transfer_order_id uuid
-}
-
-Table inventory.transfer_order [headercolor: #3E7C4A] {
-  id                uuid [pk]
-  transfer_number   varchar(30) [not null, unique]
-  from_warehouse_id uuid [not null]
-  to_warehouse_id   uuid [not null]
-  status            inventory.transfer_order_status [not null, default: 'DRAFT']
-  reason            inventory.transfer_order_reason
-  expected_date     date
-  carrier           varchar(120)
-  tracking_number   varchar(128)
-  shipping_cost     decimal(18,2)
-  submitted_by      uuid
-  submitted_at      timestamptz
-  approved_by       uuid
-  approved_at       timestamptz
-  dispatched_by     uuid
-  dispatched_at     timestamptz
-  received_at       timestamptz
-  closed_at         timestamptz
-  close_reason      varchar(500)
-  cancel_reason     varchar(500)
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  delivery_mode     inventory.transfer_order_delivery_mode [not null, default: 'FULL_TRUCKLOAD']
-  packed_at         timestamptz
-  goods_left_at     timestamptz
-  rejected_by       uuid
-  rejected_at       timestamptz
-  rejection_reason  varchar(500)
-}
-
-Table inventory.transfer_order_line [headercolor: #3E7C4A] {
-  id                uuid [pk]
-  transfer_order_id uuid [not null]
-  line_no           int [not null]
-  sku               varchar(64) [not null]
-  lot_number        varchar(64)
-  requested_qty     int [not null]
-  shipped_qty       int [not null, default: 0]
-  received_qty      int [not null, default: 0]
-  damaged_qty       int [not null, default: 0]
-  received_by       uuid
-  discrepancy_note  varchar(1000)
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  indexes {
-    (transfer_order_id, line_no) [unique]
-  }
 }
 
 Table inventory.uom_conversions [headercolor: #3E7C4A] {
@@ -1932,7 +1838,6 @@ Table warehouse.putaway_task [headercolor: #8E6C3A] {
   last_modified_at       timestamptz
   last_modified_by       varchar(100)
   goods_receipt_line_id  uuid
-  transfer_order_line_id uuid
   return_request_line_id uuid
   stock_package_id       uuid
 }
@@ -3479,69 +3384,65 @@ Table fulfillment.dispatch_load [headercolor: #2C7873] {
 }
 
 Table fulfillment.dispatch_load_package [headercolor: #2C7873] {
-  id                uuid [pk]
-  load_id           uuid [not null]
-  package_id        uuid [not null]
-  shipment_id       uuid
-  scan_id           uuid [not null, unique]
-  loaded_at         timestamptz [not null]
-  loaded_by         uuid [not null]
-  active            boolean [not null, default: true]
-  removed_at        timestamptz
-  removed_by        uuid
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  transfer_order_id uuid
+  id               uuid [pk]
+  load_id          uuid [not null]
+  package_id       uuid [not null]
+  shipment_id      uuid [not null]
+  scan_id          uuid [not null, unique]
+  loaded_at        timestamptz [not null]
+  loaded_by        uuid [not null]
+  active           boolean [not null, default: true]
+  removed_at       timestamptz
+  removed_by       uuid
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
   indexes {
     (load_id, package_id) [unique]
   }
 }
 
 Table fulfillment.dispatch_load_shipment [headercolor: #2C7873] {
-  id                uuid [pk]
-  load_id           uuid [not null]
-  shipment_id       uuid
-  active            boolean [not null, default: true]
-  added_at          timestamptz [not null]
-  added_by          uuid [not null]
-  removed_at        timestamptz
-  removed_by        uuid
-  label_cod_amount  decimal(19,4)
-  cod_amount        decimal(19,4)
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  mode              fulfillment.dispatch_load_shipment_mode [not null]
-  transfer_order_id uuid
+  id               uuid [pk]
+  load_id          uuid [not null]
+  shipment_id      uuid [not null]
+  active           boolean [not null, default: true]
+  added_at         timestamptz [not null]
+  added_by         uuid [not null]
+  removed_at       timestamptz
+  removed_by       uuid
+  label_cod_amount decimal(19,4)
+  cod_amount       decimal(19,4)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  mode             fulfillment.dispatch_load_shipment_mode [not null]
   indexes {
     (load_id, shipment_id) [unique]
-    (load_id, transfer_order_id) [unique]
   }
 }
 
 Table fulfillment.dispatch_load_unload [headercolor: #2C7873] {
-  id                uuid [pk]
-  load_id           uuid [not null]
-  package_id        uuid [not null]
-  shipment_id       uuid
-  reason            varchar(500) [not null]
-  requested_at      timestamptz [not null]
-  unloaded_at       timestamptz
-  unloaded_by       uuid
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  transfer_order_id uuid
-  reason_code       fulfillment.dispatch_load_unload_reason_code
-  overridden        boolean [not null, default: false]
-  override_note     varchar(500)
+  id               uuid [pk]
+  load_id          uuid [not null]
+  package_id       uuid [not null]
+  shipment_id      uuid [not null]
+  reason           varchar(500) [not null]
+  requested_at     timestamptz [not null]
+  unloaded_at      timestamptz
+  unloaded_by      uuid
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  reason_code      fulfillment.dispatch_load_unload_reason_code
+  overridden       boolean [not null, default: false]
+  override_note    varchar(500)
   indexes {
     (load_id, package_id) [unique]
   }
@@ -3549,7 +3450,7 @@ Table fulfillment.dispatch_load_unload [headercolor: #2C7873] {
 
 Table fulfillment.load_estimate [headercolor: #2C7873] {
   id               uuid [pk]
-  source_type      fulfillment.load_estimate_source_type [not null]
+  source_type      varchar(16) [not null]
   source_id        uuid [not null]
   warehouse_id     uuid
   vehicle_type_ids jsonb [not null, default: `'[]'::jsonb`]
@@ -3594,7 +3495,7 @@ Table fulfillment.load_plan [headercolor: #2C7873] {
   code                     varchar(30) [not null, unique]
   request_id               uuid [not null, unique]
   warehouse_id             uuid [not null]
-  source_type              fulfillment.load_plan_source_type [not null, default: 'ORDER']
+  source_type              varchar(16) [not null, default: 'ORDER']
   selection_mode           fulfillment.load_plan_selection_mode [not null, default: 'SINGLE_TYPE']
   status                   fulfillment.load_plan_status [not null]
   note                     varchar(500)
@@ -3623,22 +3524,21 @@ Table fulfillment.load_plan [headercolor: #2C7873] {
 }
 
 Table fulfillment.load_plan_package [headercolor: #2C7873] {
-  id                uuid [pk]
-  load_plan_id      uuid [not null]
-  package_id        uuid [not null]
-  shipment_id       uuid
-  active            boolean [not null, default: true]
-  unplaced_reason   fulfillment.load_plan_package_unplaced_reason
-  added_at          timestamptz [not null]
-  added_by          uuid
-  released_at       timestamptz
-  release_reason    fulfillment.load_plan_package_release_reason
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  transfer_order_id uuid
+  id               uuid [pk]
+  load_plan_id     uuid [not null]
+  package_id       uuid [not null]
+  shipment_id      uuid [not null]
+  active           boolean [not null, default: true]
+  unplaced_reason  fulfillment.load_plan_package_unplaced_reason
+  added_at         timestamptz [not null]
+  added_by         uuid
+  released_at      timestamptz
+  release_reason   fulfillment.load_plan_package_release_reason
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
   indexes {
     (load_plan_id, package_id) [unique]
   }
@@ -3690,20 +3590,19 @@ Table fulfillment.load_plan_vehicle_type [headercolor: #2C7873] {
 }
 
 Table fulfillment.pack [headercolor: #2C7873] {
-  id                uuid [pk]
-  pick_id           uuid [unique]
-  status            fulfillment.pack_status [not null]
-  packed_at         timestamptz
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  started_at        timestamptz
-  started_by        uuid
-  packed_by         uuid
-  held_request_id   uuid
-  transfer_order_id uuid
+  id               uuid [pk]
+  pick_id          uuid [not null, unique]
+  status           fulfillment.pack_status [not null]
+  packed_at        timestamptz
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  started_at       timestamptz
+  started_by       uuid
+  packed_by        uuid
+  held_request_id  uuid
 }
 
 Table fulfillment.package [headercolor: #2C7873] {
@@ -3740,9 +3639,6 @@ Table fulfillment.package [headercolor: #2C7873] {
   kit_order_line_id    uuid
   kit_override_reason  varchar(500)
   label_outdated_at    timestamptz
-  transfer_order_id    uuid
-  kit_transfer_line_id uuid
-  stock_package_id     uuid
   indexes {
     (pack_id, package_no) [unique]
     (kit_group_id, kit_part_no) [unique]
@@ -3752,24 +3648,22 @@ Table fulfillment.package [headercolor: #2C7873] {
 Table fulfillment.package_line [headercolor: #2C7873] {
   id               uuid [pk]
   package_id       uuid [not null]
-  order_line_id    uuid
+  order_line_id    uuid [not null]
   quantity         int [not null]
   version          bigint [not null, default: 0]
   created_at       timestamptz [not null, default: `now()`]
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-  transfer_line_id uuid
   indexes {
     (package_id, order_line_id) [unique]
-    (package_id, transfer_line_id) [unique]
   }
 }
 
 Table fulfillment.package_scan [headercolor: #2C7873] {
   id               uuid [pk]
   package_id       uuid [not null]
-  order_line_id    uuid
+  order_line_id    uuid [not null]
   scanned_code     varchar(64) [not null]
   lot_number       varchar(64)
   serial_number    varchar(100)
@@ -3781,7 +3675,6 @@ Table fulfillment.package_scan [headercolor: #2C7873] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-  transfer_line_id uuid
 }
 
 Table fulfillment.pick [headercolor: #2C7873] {
@@ -4542,16 +4435,6 @@ Ref: inventory.stock_reservation.allocated_from_id > inventory.stock_reservation
 Ref: inventory.stock_reservation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_reservation.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_reservation.stock_item_id > inventory.stock_item.id [delete: cascade]
-Ref: inventory.stock_reservation.transfer_order_id > inventory.transfer_order.id [delete: restrict]
-Ref: inventory.transfer_order.approved_by > identity.app_user.id
-Ref: inventory.transfer_order.dispatched_by > identity.app_user.id
-Ref: inventory.transfer_order.from_warehouse_id > warehouse.warehouse.id [delete: restrict]
-Ref: inventory.transfer_order.rejected_by > identity.app_user.id
-Ref: inventory.transfer_order.submitted_by > identity.app_user.id
-Ref: inventory.transfer_order.to_warehouse_id > warehouse.warehouse.id [delete: restrict]
-Ref: inventory.transfer_order_line.received_by > identity.app_user.id
-Ref: inventory.transfer_order_line.sku > inventory.inventory_items.sku [delete: restrict]
-Ref: inventory.transfer_order_line.transfer_order_id > inventory.transfer_order.id [delete: cascade]
 Ref: inventory.uom_conversions.inventory_item_id > inventory.inventory_items.id [delete: cascade]
 Ref: warehouse.area.location_id > warehouse.storage_location.id [delete: restrict]
 Ref: warehouse.area.warehouse_id > warehouse.warehouse.id
@@ -4570,7 +4453,6 @@ Ref: warehouse.putaway_task.return_request_line_id > ordering.return_request_lin
 Ref: warehouse.putaway_task.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: warehouse.putaway_task.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: warehouse.putaway_task.target_location_id > warehouse.storage_location.id [delete: restrict]
-Ref: warehouse.putaway_task.transfer_order_line_id > inventory.transfer_order_line.id [delete: restrict]
 Ref: warehouse.shelf.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: warehouse.shelf.zone_id > warehouse.zone.id
 Ref: warehouse.shelf_level.shelf_id > warehouse.shelf.id
@@ -4788,7 +4670,6 @@ Ref: fulfillment.dispatch_load.loading_started_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.dispatch_load_package.load_id > fulfillment.dispatch_load.id [delete: restrict]
 Ref: fulfillment.dispatch_load_package.(load_id, shipment_id) > fulfillment.dispatch_load_shipment.(load_id, shipment_id) [delete: restrict]
-Ref: fulfillment.dispatch_load_package.(load_id, transfer_order_id) > fulfillment.dispatch_load_shipment.(load_id, transfer_order_id) [delete: restrict]
 Ref: fulfillment.dispatch_load_package.loaded_by > identity.app_user.id
 Ref: fulfillment.dispatch_load_package.package_id > fulfillment.package.id [delete: restrict]
 Ref: fulfillment.dispatch_load_package.removed_by > identity.app_user.id
@@ -4796,11 +4677,9 @@ Ref: fulfillment.dispatch_load_shipment.added_by > identity.app_user.id
 Ref: fulfillment.dispatch_load_shipment.load_id > fulfillment.dispatch_load.id [delete: restrict]
 Ref: fulfillment.dispatch_load_shipment.removed_by > identity.app_user.id
 Ref: fulfillment.dispatch_load_shipment.shipment_id > fulfillment.shipment.id [delete: restrict]
-Ref: fulfillment.dispatch_load_shipment.transfer_order_id > inventory.transfer_order.id [delete: restrict]
 Ref: fulfillment.dispatch_load_unload.load_id > fulfillment.dispatch_load.id [delete: restrict]
 Ref: fulfillment.dispatch_load_unload.package_id > fulfillment.package.id [delete: restrict]
 Ref: fulfillment.dispatch_load_unload.shipment_id > fulfillment.shipment.id [delete: restrict]
-Ref: fulfillment.dispatch_load_unload.transfer_order_id > inventory.transfer_order.id [delete: restrict]
 Ref: fulfillment.dispatch_load_unload.unloaded_by > identity.app_user.id
 Ref: fulfillment.load_placement.(load_plan_id, package_id) > fulfillment.load_plan_package.(load_plan_id, package_id) [delete: restrict]
 Ref: fulfillment.load_placement.(load_plan_vehicle_id, load_plan_id) > fulfillment.load_plan_vehicle.(id, load_plan_id) [delete: cascade]
@@ -4814,7 +4693,6 @@ Ref: fulfillment.load_plan_package.added_by > identity.app_user.id
 Ref: fulfillment.load_plan_package.load_plan_id > fulfillment.load_plan.id [delete: restrict]
 Ref: fulfillment.load_plan_package.package_id > fulfillment.package.id [delete: restrict]
 Ref: fulfillment.load_plan_package.shipment_id > fulfillment.shipment.id [delete: restrict]
-Ref: fulfillment.load_plan_package.transfer_order_id > inventory.transfer_order.id [delete: restrict]
 Ref: fulfillment.load_plan_vehicle.load_plan_id > fulfillment.load_plan.id [delete: restrict]
 Ref: fulfillment.load_plan_vehicle.vehicle_type_id > fulfillment.vehicle_type.id [delete: restrict]
 Ref: fulfillment.load_plan_vehicle_type.load_plan_id > fulfillment.load_plan.id [delete: cascade]
@@ -4822,22 +4700,16 @@ Ref: fulfillment.load_plan_vehicle_type.vehicle_type_id > fulfillment.vehicle_ty
 Ref: fulfillment.pack.packed_by > identity.app_user.id
 Ref: fulfillment.pack.pick_id > fulfillment.pick.id
 Ref: fulfillment.pack.started_by > identity.app_user.id
-Ref: fulfillment.pack.transfer_order_id > inventory.transfer_order.id
 Ref: fulfillment.package.kit_order_line_id > ordering.order_line.id [delete: restrict]
-Ref: fulfillment.package.kit_transfer_line_id > inventory.transfer_order_line.id [delete: restrict]
 Ref: fulfillment.package.pack_id > fulfillment.pack.id [delete: restrict]
 Ref: fulfillment.package.sealed_by > identity.app_user.id
 Ref: fulfillment.package.shipment_id > fulfillment.shipment.id [delete: restrict]
-Ref: fulfillment.package.stock_package_id > inventory.stock_package.id [delete: restrict]
-Ref: fulfillment.package.transfer_order_id > inventory.transfer_order.id [delete: restrict]
 Ref: fulfillment.package.voided_by > identity.app_user.id
 Ref: fulfillment.package_line.order_line_id > ordering.order_line.id [delete: restrict]
 Ref: fulfillment.package_line.package_id > fulfillment.package.id [delete: cascade]
-Ref: fulfillment.package_line.transfer_line_id > inventory.transfer_order_line.id [delete: restrict]
 Ref: fulfillment.package_scan.order_line_id > ordering.order_line.id [delete: restrict]
 Ref: fulfillment.package_scan.package_id > fulfillment.package.id [delete: restrict]
 Ref: fulfillment.package_scan.scanned_by > identity.app_user.id
-Ref: fulfillment.package_scan.transfer_line_id > inventory.transfer_order_line.id [delete: restrict]
 Ref: fulfillment.pick.assigned_user_id > identity.app_user.id
 Ref: fulfillment.pick.order_id > ordering.customer_order.id [delete: restrict]
 Ref: fulfillment.pick.warehouse_id > warehouse.warehouse.id
@@ -4925,8 +4797,6 @@ TableGroup inventory_group [color: #3E7C4A] {
   inventory.stock_movement
   inventory.stock_package
   inventory.stock_reservation
-  inventory.transfer_order
-  inventory.transfer_order_line
   inventory.uom_conversions
 }
 

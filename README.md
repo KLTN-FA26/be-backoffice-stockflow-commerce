@@ -79,7 +79,7 @@ com.stockflow
 ├── customer/        Profiles, addresses, segments                    → schema customer
 ├── product/         Product master, variants, attributes, BOM        → schema product
 ├── catalog/         Storefront catalog, pricing, promotions, search  → schema catalog
-├── inventory/       Stock, ATP, reservations, counts, transfers      → schema inventory
+├── inventory/       Stock, ATP, reservations, counts, cartons        → schema inventory
 ├── warehouse/       Warehouses, zones, bins, capacity                → schema warehouse
 ├── order/           Cart, orders, amendments, RMA                    → schema ordering
 ├── payment/         Payments, deposits, refunds, reconciliation      → schema payment
