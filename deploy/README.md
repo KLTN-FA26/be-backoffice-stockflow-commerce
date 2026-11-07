@@ -77,9 +77,10 @@ records in DNS), and `MAIL_HEALTH_ENABLED=false`. With `EMAIL_PROVIDER=resend` a
 refuses to start and deploy.sh rolls back, so set all of them before the deploy that switches. Optional:
 `RESEND_REPLY_TO` (Sales' mailbox), `RESEND_WEBHOOK_SECRET` with a webhook in Resend pointing at
 `https://api.<domain>/api/v1/notifications/webhooks/resend` (events `email.delivered`, `email.bounced`,
-`email.complained`, `email.delivery_delayed`, `email.failed`) for delivery reports. A server holding copies of real
-customers should set `CUSTOMER_EMAIL_ENABLED=false`. Check after switching: place a test order for a customer whose
-e-mail you own; the mail arrives and `notification.delivery_log` has a `SENT` row with a `provider_message_id`.
+`email.complained`, `email.delivery_delayed`, `email.failed`) for delivery reports. Customer order mail is off by
+default (`CUSTOMER_EMAIL_ENABLED=false`): the business documents leave it to a later phase. Check after switching with
+the portal invitation instead: invite a customer contact whose e-mail you own; the mail arrives and
+`notification.delivery_log` has a `SENT` row with a `provider_message_id`.
 
 Before deploying this feature, set all six `PO_BUYER_*` / `PO_RECEIVING_ADDRESS` values from
 `.env.example` in `/opt/stockflow/.env`. Compose refuses missing or empty values. Use the actual

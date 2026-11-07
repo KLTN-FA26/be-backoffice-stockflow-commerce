@@ -385,8 +385,11 @@ stockflow:
       locale: vi
       sender-name: ${EMAIL_SENDER_NAME:StockFlow}
       customer:
-        # Off sends no customer order mail (recorded as skipped) and leaves staff and supplier mail alone.
-        enabled: ${CUSTOMER_EMAIL_ENABLED:true}
+        # Off sends no customer order mail (recorded as skipped) and leaves staff and supplier mail alone. Off by
+        # default: the business documents put e-mail to customers in a later phase (kltn-docs 00 §6, A10) and keep
+        # only the in-app inbox for now, while the order and return mail here still describes flows they dropped
+        # (guest orders, free replacement orders). The portal invitation is not customer order mail and still goes.
+        enabled: ${CUSTOMER_EMAIL_ENABLED:false}
         max-attempts: 10
         first-retry-delay: PT1M
         max-retry-delay: PT6H

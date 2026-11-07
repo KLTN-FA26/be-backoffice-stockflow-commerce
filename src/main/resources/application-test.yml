@@ -48,6 +48,9 @@ stockflow:
       # of a real transport selects it itself (smtp with a mocked sender, resend against a local stub server).
       provider: recording
       customer:
+        # On here although it ships off: the tests exercise the customer mail so it still works the day it is
+        # switched on. A test of the switched-off path sets it false itself.
+        enabled: true
         # Driven by the tests that need it, never by the clock behind their back.
         retry-interval: PT24H
   inventory:

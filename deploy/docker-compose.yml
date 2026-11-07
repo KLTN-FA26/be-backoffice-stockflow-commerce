@@ -151,8 +151,9 @@ services:
       RESEND_FROM: ${RESEND_FROM:-}
       RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
       RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
-      # false on a server holding copies of real customers: no customer order mail, staff and supplier mail unchanged.
-      CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-true}
+      # Off until the customer mail phase of the business documents: no customer order mail, staff and supplier
+      # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
+      CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}
       TRACE_SAMPLING: ${TRACE_SAMPLING:-1.0}
       PO_BUYER_COMPANY_NAME: ${PO_BUYER_COMPANY_NAME:?PO_BUYER_COMPANY_NAME is required}
       PO_BUYER_COMPANY_ADDRESS: ${PO_BUYER_COMPANY_ADDRESS:?PO_BUYER_COMPANY_ADDRESS is required}
