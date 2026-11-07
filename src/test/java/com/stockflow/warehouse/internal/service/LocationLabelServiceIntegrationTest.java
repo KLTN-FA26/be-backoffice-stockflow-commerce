@@ -298,16 +298,25 @@ class LocationLabelServiceIntegrationTest {
         assertThat(aShelf).isLessThanOrEqualTo(5);
     }
 
+    /**
+     * The statements one call prepares. Hibernate's statistics are factory-wide: a scheduler or an after-commit
+     * listener of the shared context running at the same moment adds its own statements to the count, never takes any
+     * away. So the call is measured three times and the smallest count is its own.
+     */
     private long statements(Supplier<LocationLabelSheet> call) {
-        flushAndClear();
-        Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
-        statistics.setStatisticsEnabled(true);
-        statistics.clear();
-        try {
-            call.get();
-            return statistics.getPrepareStatementCount();
-        } finally {
-            statistics.setStatisticsEnabled(false);
+        long fewest = Long.MAX_VALUE;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            flushAndClear();
+            Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+            statistics.setStatisticsEnabled(true);
+            statistics.clear();
+            try {
+                call.get();
+                fewest = Math.min(fewest, statistics.getPrepareStatementCount());
+            } finally {
+                statistics.setStatisticsEnabled(false);
+            }
         }
+        return fewest;
     }
 }
