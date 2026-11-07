@@ -1,8 +1,10 @@
 # StockFlowCommerce — working notes for Claude Code
 
 FPT University capstone **FA26SE029**, group **GFA26SE03**, 5 members, supervisor Nguyễn Minh Sang.
-A warehouse, print-production and B2B sales platform for a Vietnamese business that prints cups
-and packaging to its wholesale customers' designs (decided 2026-10-06: B2B only).
+A finished-goods warehouse and B2B sales platform for a Vietnamese business whose cups and packaging
+are printed to its wholesale customers' designs (decided 2026-10-06: B2B only). Since 2026-11-07 the
+printing is done by producers outside the system: goods arrive printed, in cartons, and are picked from
+stock like any other; the in-house production module is gone (`V20261108000100`).
 
 Read this before touching anything. It is short on purpose; it says what is not obvious from the
 code, and points at the code for the rest.
@@ -316,18 +318,9 @@ the schema).
 (largest first, while each fits), then opened cartons and loose units (smallest first), then a sealed carton broken
 last. A sealed carton another order holds part of counts as opened. The facts come from the same projection
 (`AvailabilityRow.stockPackageId`, `wholeCarton`), so every caller of `plan` - order release, short-pick reallocation,
-production holds, transfer orders - gets the order. `HoldView` carries the hold's `lpn` and `wholeCarton`; fulfillment
+transfer orders - gets the order. `HoldView` carries the hold's `lpn` and `wholeCarton`; fulfillment
 copies them onto `pick_line` (`V20261028003000`, checked by `tg_pick_line_carton`), and `PickList.confirm` accepts only
 the LPN for such a line: the deduction is from that carton, and a SKU scan would let the picker take any carton of it.
-
-### Issuing blanks by carton (SCRUM-473)
-
-A blank hold in a carton - a production hold, or an order's released allocation - is issued to the print shop only on
-a scan of its LPN (`MaterialIssueService.requireScanned`), as picking does; an issue that sends no item scan (no
-`scannedCode`, a location scan or none) still goes through (the SCRUM-397 contract), and `PendingHold` shows the
-carton to bring. The blanks still
-enter the print shop loose, the carton opening or emptying. Finished goods are not put into cartons: G4-Q2 consumes them
-when the production order completes, so nothing is left in stock to pack.
 
 ### Purchase orders by carton (SCRUM-473)
 

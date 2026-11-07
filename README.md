@@ -1,7 +1,8 @@
 # StockFlowCommerce — modular monolith
 
-Inventory, print production and B2B sales for a business that prints cups and packaging to its
-wholesale customers' designs.
+A finished-goods warehouse and B2B sales for a business whose cups and packaging are printed to its
+wholesale customers' designs - by producers outside the system since 2026-11-07, so the goods arrive
+printed, in cartons.
 Capstone **FA26SE029** · group **GFA26SE03** · supervisor **Nguyễn Minh Sang**.
 
 One Spring Boot application, one Postgres database, **fourteen modules whose boundaries the build
