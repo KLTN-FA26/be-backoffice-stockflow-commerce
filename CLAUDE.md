@@ -270,11 +270,12 @@ short picks, which reuse the count holding it (`CycleCountRepositoryAdapter.BUSY
 Cartons are labelled while a DRAFT receipt is counted: `GoodsReceiptServiceImpl.replaceLines` →
 `InventoryService.countReceivingPackages`, which reconciles the line's RECEIVING cartons through the pure
 `ReceivingPackagePlan` (new → LPN, listed → recount, missing → VOID). `receive` puts each carton's count in one
-INBOUND row inside it (carton → IN_STOCK, unopened) and only the remainder loose. QC moves and reclassifies
-cartons whole, a list of LPNs per call: `moveStockPackages` / `reclassifyStockPackages`. Lock order everywhere:
+INBOUND row inside it (carton → IN_STOCK, unopened) and only the remainder loose. There is no QC step (kltn-docs 03
+BR-07, `V20261108000200`): a confirmed receipt goes straight to putaway. Cartons move and change status whole, a list
+of LPNs per call: `moveStockPackages` / `reclassifyStockPackages` (putaway uses the latter). Lock order everywhere:
 **SKU advisory locks (sorted) → `stock_package FOR UPDATE` → stock rows by id**.
 
-A loose `move` / `reclassify` and a carton move may share one reference (a receipt line to QC, a QC part). The
+A loose `move` / `reclassify` and a carton move may share one reference (a putaway task, a return line). The
 loose replay lookup is `StockMovementLog.findLooseByReference`, which ignores ledger lines naming a carton; a lookup
 that saw them would take the carton's line for the loose move's earlier attempt and silently skip it.
 `LpnSequence.reserve` is `REQUIRES_NEW`: one count labels several SKUs under their advisory locks, and a sequence
@@ -306,11 +307,10 @@ bin), not an event consumer. `StockOperationsServiceImpl.putAwayLoose` skips the
 confirmation of a task shares `(PUTAWAY_TASK, taskId)`, so a retry is made safe by `Idempotency-Key` and by `left`,
 computed from the ledger under the task lock. Goods already moved by hand into the chosen bin are put away where they
 stand (a `STATUS_CHANGE` ledger line from the bin to the bin, since a `MOVE` needs two places). Each task that becomes
-DONE publishes `PutawayCompleted`; procurement's `PutawayCompletedListener`, and `inspect` when it moves the receipt into
-`IN_PUTAWAY`, call `GoodsReceipt.closeIfPutAway` (DONE quantities per line). Both load the receipt `FOR UPDATE`
-(`GoodsReceiptRepository.findByIdForUpdate`), so a putaway that commits while the last QC decision runs is seen by
-whichever of the two comes second. Round A stores no assignee, warehouse or suggestion reasons (no migration; Tú owns
-the schema).
+DONE publishes `PutawayCompleted`; procurement's `PutawayCompletedListener` calls `GoodsReceipt.closeIfPutAway` (DONE
+quantities per line against what each line received). It loads the receipt `FOR UPDATE`
+(`GoodsReceiptRepository.findByIdForUpdate`), so two tasks finishing together are decided one after the other. Round A
+stores no assignee, warehouse or suggestion reasons (no migration; Tú owns the schema).
 
 ### Picking by carton (SCRUM-473)
 

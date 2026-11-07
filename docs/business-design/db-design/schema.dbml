@@ -283,7 +283,6 @@ Enum warehouse.move_task_origin {
   REPLENISHMENT
   RESLOTTING
   MANUAL
-  RECEIPT_QC
 }
 
 Enum warehouse.move_task_reason {
@@ -370,7 +369,6 @@ Enum procurement.goods_receipts_status {
   DRAFT
   PENDING_APPROVAL
   CONFIRMED
-  IN_QC
   IN_PUTAWAY
   CLOSED
   CANCELLED
@@ -453,12 +451,6 @@ Enum procurement.purchase_orders_supplier_confirmation_status {
   NOT_SENT
   PENDING
   CONFIRMED
-  REJECTED
-}
-
-Enum procurement.qc_inspections_outcome {
-  ACCEPTED
-  QUARANTINE
   REJECTED
 }
 
@@ -1504,7 +1496,6 @@ Table inventory.inventory_items [headercolor: #3E7C4A] {
   created_by                  varchar(100)
   last_modified_at            timestamptz
   last_modified_by            varchar(100)
-  qc_required                 boolean [not null, default: false]
   safety_stock                int
   removal_strategy            inventory.inventory_items_removal_strategy [not null, default: 'FEFO']
   max_shelf_life_days         int
@@ -1926,7 +1917,6 @@ Table warehouse.move_task [headercolor: #8E6C3A] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-  receipt_line_id  uuid
 }
 
 Table warehouse.putaway_task [headercolor: #8E6C3A] {
@@ -2102,10 +2092,6 @@ Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
   created_by        varchar(100)
   last_modified_at  timestamptz
   last_modified_by  varchar(100)
-  qc_required       boolean [not null, default: false]
-  qc_location_id    uuid
-  moved_to_qc_at    timestamptz
-  moved_to_qc_by    uuid
   uom_conversion_id uuid
 }
 
@@ -2359,22 +2345,6 @@ Table procurement.purchase_orders [headercolor: #7D5BA6] {
   supplier_reference           varchar(100)
   supplier_response_note       varchar(1000)
   auto_approved                boolean [not null, default: false]
-}
-
-Table procurement.qc_inspections [headercolor: #7D5BA6] {
-  id                 uuid [pk]
-  receipt_line_id    uuid [not null]
-  outcome            procurement.qc_inspections_outcome [not null]
-  quantity           decimal(18,3) [not null]
-  target_location_id uuid
-  reason             varchar(500)
-  inspected_by       uuid [not null]
-  inspected_at       timestamptz [not null, default: `now()`]
-  version            bigint [not null, default: 0]
-  created_at         timestamptz [not null, default: `now()`]
-  created_by         varchar(100)
-  last_modified_at   timestamptz
-  last_modified_by   varchar(100)
 }
 
 Table procurement.replenishment_proposal_lines [headercolor: #7D5BA6] {
@@ -4591,7 +4561,6 @@ Ref: warehouse.boundary.warehouse_id > warehouse.warehouse.id
 Ref: warehouse.move_task.approved_by > identity.app_user.id
 Ref: warehouse.move_task.assigned_user_id > identity.app_user.id
 Ref: warehouse.move_task.from_location_id > warehouse.storage_location.id [delete: restrict]
-Ref: warehouse.move_task.receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
 Ref: warehouse.move_task.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: warehouse.move_task.to_location_id > warehouse.storage_location.id [delete: restrict]
 Ref: warehouse.move_task.warehouse_id > warehouse.warehouse.id [delete: restrict]
@@ -4614,9 +4583,7 @@ Ref: warehouse.zone.warehouse_id > warehouse.warehouse.id
 Ref: procurement.approval_limits.role_id > identity.app_role.id [delete: cascade]
 Ref: procurement.goods_receipt_lines.inventory_item_id > inventory.inventory_items.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.location_id > warehouse.storage_location.id [delete: restrict]
-Ref: procurement.goods_receipt_lines.moved_to_qc_by > identity.app_user.id
 Ref: procurement.goods_receipt_lines.po_line_id > procurement.purchase_order_lines.id [delete: restrict]
-Ref: procurement.goods_receipt_lines.qc_location_id > warehouse.storage_location.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.receipt_id > procurement.goods_receipts.id [delete: cascade]
 Ref: procurement.goods_receipt_lines.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: procurement.goods_receipt_photos.receipt_id > procurement.goods_receipts.id [delete: restrict]
@@ -4658,9 +4625,6 @@ Ref: procurement.purchase_orders.source_proposal_id > procurement.replenishment_
 Ref: procurement.purchase_orders.submitted_by > identity.app_user.id
 Ref: procurement.purchase_orders.supplier_id > procurement.suppliers.id [delete: restrict]
 Ref: procurement.purchase_orders.warehouse_id > warehouse.warehouse.id [delete: restrict]
-Ref: procurement.qc_inspections.inspected_by > identity.app_user.id
-Ref: procurement.qc_inspections.receipt_line_id > procurement.goods_receipt_lines.id [delete: cascade]
-Ref: procurement.qc_inspections.target_location_id > warehouse.storage_location.id [delete: restrict]
 Ref: procurement.replenishment_proposal_lines.converted_po_id > procurement.purchase_orders.id [delete: restrict]
 Ref: procurement.replenishment_proposal_lines.converted_po_line_id > procurement.purchase_order_lines.id [delete: restrict]
 Ref: procurement.replenishment_proposal_lines.inventory_item_id > inventory.inventory_items.id [delete: restrict]
@@ -4995,7 +4959,6 @@ TableGroup procurement_group [color: #7D5BA6] {
   procurement.purchase_order_lines
   procurement.purchase_order_revisions
   procurement.purchase_orders
-  procurement.qc_inspections
   procurement.replenishment_proposal_lines
   procurement.replenishment_proposals
   procurement.subcontract_settlement

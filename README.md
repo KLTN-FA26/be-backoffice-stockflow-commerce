@@ -84,7 +84,7 @@ com.stockflow
 ├── order/           Cart, orders, amendments, RMA                    → schema ordering
 ├── payment/         Payments, deposits, refunds, reconciliation      → schema payment
 ├── fulfillment/     Picking, packing, shipments, tracking            → schema fulfillment
-├── procurement/     Suppliers, POs, goods receipt, QC                → schema procurement
+├── procurement/     Suppliers, POs, goods receipt                    → schema procurement
 ├── design/          Design studio, templates, snapshots, print jobs  → schema design
 ├── chat/            Conversations, messages, agent assignment        → schema chat
 ├── notification/    Templates, preferences, delivery log             → schema notification
