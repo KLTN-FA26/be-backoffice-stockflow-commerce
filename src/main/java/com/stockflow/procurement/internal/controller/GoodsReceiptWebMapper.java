@@ -13,8 +13,6 @@ interface GoodsReceiptWebMapper {
 
     GoodsReceiptResponse.Line toResponse(GoodsReceipts.LineView line);
 
-    GoodsReceiptResponse.Inspection toResponse(GoodsReceipts.InspectionView inspection);
-
     GoodsReceiptResponse.Package toResponse(GoodsReceipts.PackageView receiptPackage);
 
     GoodsReceiptRowResponse toResponse(GoodsReceipts.Row row);

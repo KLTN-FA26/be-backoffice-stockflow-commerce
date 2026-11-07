@@ -43,7 +43,7 @@ public interface StockPackageRepository {
     /**
      * What each of these stock packages still has waiting for putaway: the sum of its {@code INBOUND} rows only. A
      * package with no such row is absent. Putaway tasks are sized from this, not from {@link #onHandOf}, so a carton
-     * whose units are already available (or held by QC) never opens a task.
+     * whose units are already available (or quarantined) never opens a task.
      */
     Map<StockPackageId, Integer> inboundOnHandOf(Collection<StockPackageId> ids);
 

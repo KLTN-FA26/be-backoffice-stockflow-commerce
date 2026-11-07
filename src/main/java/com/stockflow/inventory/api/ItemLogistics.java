@@ -4,7 +4,7 @@ import java.math.BigDecimal;
 
 /**
  * The physical and handling data of one SKU's inventory item (docs 01 BR-08): what a unit weighs and
- * measures, how it ships, how it is stored and whether receiving sends it through QC. It used to sit
+ * measures, how it ships and how it is stored. It used to sit
  * on the product row; it is per SKU because two variants of one product (a 12oz and a 16oz cup) weigh
  * and pack differently.
  *
@@ -31,7 +31,6 @@ public record ItemLogistics(
         StorageClass storageClass,
         boolean requiresAdultSignature,
         String shippingRestrictionNote,
-        boolean qcRequired,
         boolean rotatable
 ) {
     /** Logistics without an opinion on rotation: the documented default, rotatable (docs 01, E13). */
@@ -39,9 +38,9 @@ public record ItemLogistics(
                          BigDecimal widthCm, BigDecimal heightCm, BigDecimal packageWeightKg,
                          BigDecimal packageLengthCm, BigDecimal packageWidthCm, BigDecimal packageHeightCm,
                          int packageCount, int packSize, StorageClass storageClass,
-                         boolean requiresAdultSignature, String shippingRestrictionNote, boolean qcRequired) {
+                         boolean requiresAdultSignature, String shippingRestrictionNote) {
         this(unitOfMeasure, barcode, weightKg, lengthCm, widthCm, heightCm, packageWeightKg, packageLengthCm,
                 packageWidthCm, packageHeightCm, packageCount, packSize, storageClass, requiresAdultSignature,
-                shippingRestrictionNote, qcRequired, true);
+                shippingRestrictionNote, true);
     }
 }

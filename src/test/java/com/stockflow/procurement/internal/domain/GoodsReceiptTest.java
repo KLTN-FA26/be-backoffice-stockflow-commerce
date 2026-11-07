@@ -14,7 +14,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** The receipt's step order (docs 03 §5.1), BR-05 and BR-08, without a database. */
+/** The receipt's step order (docs 03 §5.1) and BR-05, without a database. */
 class GoodsReceiptTest {
 
     private static final Instant NOW = Instant.parse("2026-10-09T03:00:00Z");
@@ -25,14 +25,9 @@ class GoodsReceiptTest {
                 UUID.randomUUID(), USER, null, null, NOW);
     }
 
-    private static ReceiptLine line(int qty, boolean qc) {
+    private static ReceiptLine line(int qty, boolean lotted) {
         return ReceiptLine.counted(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), qty,
-                qc ? "LOT-1" : null, null, null, qc, null);
-    }
-
-    private static QcInspection decision(QcOutcome outcome, int qty, String reason) {
-        return new QcInspection(UUID.randomUUID(), outcome, qty,
-                outcome == QcOutcome.ACCEPTED ? null : UUID.randomUUID(), reason, USER, NOW);
+                lotted ? "LOT-1" : null, null, null, null);
     }
 
     private static ErrorCode code(Throwable e) {
@@ -40,18 +35,13 @@ class GoodsReceiptTest {
     }
 
     @Test
-    @DisplayName("without a QC line, confirm goes straight to putaway; with one, to QC")
-    void confirmRoutes() {
-        GoodsReceipt twoStep = draft();
-        twoStep.replaceLines(List.of(line(5, false)));
-        twoStep.confirm(USER, NOW);
-        assertThat(twoStep.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
-        assertThat(twoStep.confirmedBy()).isEqualTo(USER);
-
-        GoodsReceipt threeStep = draft();
-        threeStep.replaceLines(List.of(line(5, false), line(3, true)));
-        threeStep.confirm(USER, NOW);
-        assertThat(threeStep.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+    @DisplayName("confirm goes straight to putaway: there is no quality check at the warehouse (kltn-docs 03 BR-07)")
+    void confirmGoesToPutaway() {
+        GoodsReceipt receipt = draft();
+        receipt.replaceLines(List.of(line(5, false), line(3, true)));
+        receipt.confirm(USER, NOW);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+        assertThat(receipt.confirmedBy()).isEqualTo(USER);
     }
 
     @Test
@@ -75,53 +65,9 @@ class GoodsReceiptTest {
     void distinctLines() {
         ReceiptLine a = line(2, true);
         ReceiptLine b = new ReceiptLine(UUID.randomUUID(), a.poLineId(), a.inventoryItemId(), a.locationId(), 1,
-                a.lotNumber(), null, null, true, null, null, null, null, List.of());
+                a.lotNumber(), null, null, null);
         assertThatThrownBy(() -> draft().replaceLines(List.of(a, b))).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
-    }
-
-    @Test
-    @DisplayName("QC: only after the move to QC, every unit decided once, reasons on non-accepted parts (BR-08)")
-    void qcRules() {
-        GoodsReceipt receipt = draft();
-        ReceiptLine qcLine = line(6, true);
-        ReceiptLine plain = line(4, false);
-        receipt.replaceLines(List.of(qcLine, plain));
-        receipt.confirm(USER, NOW);
-
-        assertThatThrownBy(() -> receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.ACCEPTED, 6, null)), NOW))
-                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThatThrownBy(() -> receipt.moveToQc(plain.id(), UUID.randomUUID(), USER, NOW))
-                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-
-        receipt.moveToQc(qcLine.id(), UUID.randomUUID(), USER, NOW);
-        assertThatThrownBy(() -> receipt.moveToQc(qcLine.id(), UUID.randomUUID(), USER, NOW))
-                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThatThrownBy(() -> receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.ACCEPTED, 5, null)), NOW))
-                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.QC_QUANTITY_MISMATCH);
-        assertThatThrownBy(() -> receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.ACCEPTED, 5, null),
-                decision(QcOutcome.REJECTED, 1, " ")), NOW))
-                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.QC_REASON_REQUIRED);
-
-        receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.ACCEPTED, 5, null),
-                decision(QcOutcome.REJECTED, 1, "cracked")), NOW);
-        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
-        assertThat(receipt.line(qcLine.id()).quantityForPutaway()).isEqualTo(5);
-        assertThatThrownBy(() -> receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.ACCEPTED, 6, null)), NOW))
-                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-    }
-
-    @Test
-    @DisplayName("when QC rejects everything and nothing else waits, the receipt closes")
-    void nothingToPutAway() {
-        GoodsReceipt receipt = draft();
-        ReceiptLine qcLine = line(2, true);
-        receipt.replaceLines(List.of(qcLine));
-        receipt.confirm(USER, NOW);
-        receipt.moveToQc(qcLine.id(), UUID.randomUUID(), USER, NOW);
-        receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.REJECTED, 2, "wrong print")), NOW);
-        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
-        assertThat(receipt.closedAt()).isEqualTo(NOW);
     }
 
     @Test
@@ -148,10 +94,9 @@ class GoodsReceiptTest {
     @DisplayName("SCRUM-464: a line the receipt does not have is RECEIPT_LINE_NOT_FOUND, not the receipt itself")
     void unknownLine() {
         GoodsReceipt receipt = draft();
-        ReceiptLine qcLine = line(2, true);
-        receipt.replaceLines(List.of(qcLine));
+        receipt.replaceLines(List.of(line(2, true)));
         receipt.confirm(USER, NOW);
-        assertThatThrownBy(() -> receipt.moveToQc(UUID.randomUUID(), UUID.randomUUID(), USER, NOW))
+        assertThatThrownBy(() -> receipt.line(UUID.randomUUID()))
                 .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_FOUND);
     }
 
@@ -189,27 +134,13 @@ class GoodsReceiptTest {
     }
 
     @Test
-    @DisplayName("closeIfPutAway: a QC line with nothing accepted does not hold the receipt open")
-    void linesWithNothingToPutAwayDoNotHoldItOpen() {
-        ReceiptLine qcLine = line(2, true);
-        ReceiptLine plain = line(4, false);
-        GoodsReceipt receipt = inPutaway(qcLine, plain);
-        receipt.moveToQc(qcLine.id(), UUID.randomUUID(), USER, NOW);
-        receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.REJECTED, 2, "wrong print")), NOW);
-        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
-
-        assertThat(receipt.closeIfPutAway(Map.of(plain.id(), 4), NOW)).isTrue();
-        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
-    }
-
-    @Test
     @DisplayName("closeIfPutAway: a receipt not in putaway is left alone")
     void notInPutawayIsLeftAlone() {
-        ReceiptLine qcLine = line(2, true);
-        GoodsReceipt inQc = inPutaway(qcLine);
-        assertThat(inQc.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
-        assertThat(inQc.closeIfPutAway(Map.of(), NOW)).isFalse();
-        assertThat(inQc.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+        ReceiptLine counted = line(2, true);
+        GoodsReceipt draft = draft();
+        draft.replaceLines(List.of(counted));
+        assertThat(draft.closeIfPutAway(Map.of(counted.id(), 2), NOW)).isFalse();
+        assertThat(draft.status()).isEqualTo(GoodsReceiptStatus.DRAFT);
 
         ReceiptLine plain = line(3, false);
         GoodsReceipt closed = inPutaway(plain);
@@ -262,10 +193,10 @@ class GoodsReceiptTest {
     }
 
     @Test
-    @DisplayName("approve posts the whole count as confirm does - IN_PUTAWAY, or IN_QC with a QC line - in the approver's name")
+    @DisplayName("approve posts the whole count as confirm does - IN_PUTAWAY - in the approver's name")
     void approvePosts() {
         GoodsReceipt plain = waiting(line(5, false));
-        plain.approve(MANAGER, "  bonus  ", NOW.plusSeconds(60), false);
+        plain.approve(MANAGER, "  bonus  ", NOW.plusSeconds(60));
         assertThat(plain.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(plain.confirmedBy()).isEqualTo(MANAGER);
         assertThat(plain.confirmedAt()).isEqualTo(NOW.plusSeconds(60));
@@ -276,25 +207,25 @@ class GoodsReceiptTest {
             assertThat(a.requestedBy()).isEqualTo(CLERK);
         });
 
-        GoodsReceipt withQc = waiting(line(5, false), line(3, true));
-        withQc.approve(MANAGER, "ok", NOW, false);
-        assertThat(withQc.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
-        assertThat(withQc.lines()).extracting(ReceiptLine::receivedQuantity).containsExactly(5, 3);
+        GoodsReceipt twoLines = waiting(line(5, false), line(3, true));
+        twoLines.approve(MANAGER, "ok", NOW);
+        assertThat(twoLines.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+        assertThat(twoLines.lines()).extracting(ReceiptLine::receivedQuantity).containsExactly(5, 3);
     }
 
     @Test
     @DisplayName("four eyes and a reason: the receiver and whoever asked cannot decide; a blank reason is refused")
     void decisionRules() {
         GoodsReceipt receipt = waiting(line(5, false));
-        assertThatThrownBy(() -> receipt.approve(USER, "ok", NOW, false)).extracting(GoodsReceiptTest::code)
+        assertThatThrownBy(() -> receipt.approve(USER, "ok", NOW)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
-        assertThatThrownBy(() -> receipt.approve(CLERK, "ok", NOW, false)).extracting(GoodsReceiptTest::code)
+        assertThatThrownBy(() -> receipt.approve(CLERK, "ok", NOW)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
-        assertThatThrownBy(() -> receipt.rejectExcess(CLERK, "no", NOW, false)).extracting(GoodsReceiptTest::code)
+        assertThatThrownBy(() -> receipt.rejectExcess(CLERK, "no", NOW)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
-        assertThatThrownBy(() -> receipt.approve(MANAGER, " ", NOW, false)).extracting(GoodsReceiptTest::code)
+        assertThatThrownBy(() -> receipt.approve(MANAGER, " ", NOW)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
-        assertThatThrownBy(() -> receipt.rejectExcess(MANAGER, null, NOW, false)).extracting(GoodsReceiptTest::code)
+        assertThatThrownBy(() -> receipt.rejectExcess(MANAGER, null, NOW)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
         assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
         assertThat(receipt.approval()).get().extracting(ReceiptApproval::pending).isEqualTo(true);
@@ -302,7 +233,7 @@ class GoodsReceiptTest {
         GoodsReceipt posted = draft();
         posted.replaceLines(List.of(line(5, false)));
         posted.confirm(USER, NOW);
-        assertThatThrownBy(() -> posted.approve(MANAGER, "ok", NOW, false)).extracting(GoodsReceiptTest::code)
+        assertThatThrownBy(() -> posted.approve(MANAGER, "ok", NOW)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
     }
 
@@ -312,13 +243,13 @@ class GoodsReceiptTest {
         UUID poLine = UUID.randomUUID();
         UUID other = UUID.randomUUID();
         ReceiptLine a = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 70, "A", null,
-                null, false, null, null, null, null, List.of());
+                null, null);
         ReceiptLine b = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 30, "B", null,
-                null, false, null, null, null, null, List.of());
+                null, null);
         ReceiptLine c = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 20, "C", null,
-                null, false, null, null, null, null, List.of());
+                null, null);
         ReceiptLine unrelated = new ReceiptLine(UUID.randomUUID(), other, UUID.randomUUID(), UUID.randomUUID(), 9, null,
-                null, null, false, null, null, null, null, List.of());
+                null, null, null);
         GoodsReceipt receipt = waiting(a, b, c, unrelated);
 
         receipt.cutBackTo(Map.of(poLine, 85, other, 9));
@@ -336,10 +267,10 @@ class GoodsReceiptTest {
     void rejectExcess() {
         UUID poLine = UUID.randomUUID();
         ReceiptLine a = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 20, null,
-                null, null, false, null, null, null, null, List.of());
+                null, null, null);
         GoodsReceipt receipt = waiting(a);
         receipt.cutBackTo(Map.of(poLine, 12));
-        receipt.rejectExcess(MANAGER, "8 back to the supplier", NOW, false);
+        receipt.rejectExcess(MANAGER, "8 back to the supplier", NOW);
         assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(receipt.lines()).extracting(ReceiptLine::receivedQuantity).containsExactly(12);
         assertThat(receipt.approval()).get().extracting(ReceiptApproval::decision)
@@ -347,7 +278,7 @@ class GoodsReceiptTest {
 
         GoodsReceipt nothing = waiting(a);
         nothing.cutBackTo(Map.of(poLine, 0));
-        nothing.rejectExcess(MANAGER, "full", NOW, false);
+        nothing.rejectExcess(MANAGER, "full", NOW);
         assertThat(nothing.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
         assertThat(nothing.confirmedAt()).isNull();
         assertThat(nothing.approval()).get().extracting(ReceiptApproval::reason).isEqualTo("full");
@@ -373,7 +304,7 @@ class GoodsReceiptTest {
 
     private static ReceiptLine itemLine(int qty) {
         return ReceiptLine.counted(UUID.randomUUID(), null, UUID.randomUUID(), UUID.randomUUID(), qty, null, null, null,
-                false, null);
+                null);
     }
 
     @Test
@@ -402,7 +333,7 @@ class GoodsReceiptTest {
         GoodsReceipt receipt = blindDraft();
         ReceiptLine a = itemLine(2);
         ReceiptLine same = new ReceiptLine(UUID.randomUUID(), null, a.inventoryItemId(), a.locationId(), 1, null, null,
-                null, false, null, null, null, null, List.of());
+                null, null);
         assertThatThrownBy(() -> receipt.replaceLines(List.of(a, same))).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
         receipt.replaceLines(List.of(a, itemLine(3)));
@@ -421,7 +352,7 @@ class GoodsReceiptTest {
 
         receipt.requestApproval(CLERK, NOW);
         assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
-        receipt.approve(MANAGER, "checked", NOW.plusSeconds(60), false);
+        receipt.approve(MANAGER, "checked", NOW.plusSeconds(60));
         assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(receipt.confirmedBy()).isEqualTo(MANAGER);
         assertThat(receipt.approval()).get().extracting(ReceiptApproval::decision)
@@ -440,7 +371,7 @@ class GoodsReceiptTest {
                 .isEqualTo(ErrorCode.RECEIPT_SELF_APPROVAL);
         assertThatThrownBy(() -> receipt.reject(MANAGER, " ", NOW)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED);
-        assertThatThrownBy(() -> receipt.rejectExcess(MANAGER, "no", NOW, false)).extracting(GoodsReceiptTest::code)
+        assertThatThrownBy(() -> receipt.rejectExcess(MANAGER, "no", NOW)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
         assertThatThrownBy(() -> receipt.cutBackTo(Map.of())).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);

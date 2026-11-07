@@ -404,9 +404,10 @@ class UserInboxIntegrationTest {
 
     @Test
     void everyRoleThatCanSignInHasTheBell() {
-        // The staff roles (V20261014000400; PRODUCTION_STAFF gone with V20261108000100) + CUSTOMER (V20260903000100),
+        // The staff roles (V20261014000400; PRODUCTION_STAFF gone with V20261108000100, QC_STAFF with V20261108000200)
+        // + CUSTOMER (V20260903000100),
         // each with VIEW_PAGE, READ and UPDATE.
-        List<String> roles = List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER", "INVENTORY_PLANNER", "QC_STAFF",
+        List<String> roles = List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER", "INVENTORY_PLANNER",
                 "SALES_STAFF", "ORDER_COORDINATOR", "SALES_MANAGER", "PROCUREMENT_STAFF", "ACCOUNTANT",
                 "SYSTEM_ADMIN", "CUSTOMER");
         for (String role : roles) {
@@ -421,7 +422,7 @@ class UserInboxIntegrationTest {
 
     @Test
     void everyStaffRoleAndTheCustomerCanOpenTheirOwnInbox() throws Exception {
-        for (String role : List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER", "INVENTORY_PLANNER", "QC_STAFF",
+        for (String role : List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER", "INVENTORY_PLANNER",
                 "SALES_STAFF", "ORDER_COORDINATOR", "SALES_MANAGER", "PROCUREMENT_STAFF", "ACCOUNTANT",
                 "SYSTEM_ADMIN", "CUSTOMER")) {
             String bearer = token(account(role), role);

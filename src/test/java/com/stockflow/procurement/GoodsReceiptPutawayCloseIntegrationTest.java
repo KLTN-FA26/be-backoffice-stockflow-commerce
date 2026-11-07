@@ -4,9 +4,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.procurement.internal.service.GoodsReceipts.Decision;
 import com.stockflow.procurement.internal.service.GoodsReceipts.LineView;
-import com.stockflow.procurement.internal.service.GoodsReceipts.Part;
 import com.stockflow.support.Await;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -34,9 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * SCRUM-92 spec §7 against a real PostgreSQL: a receipt in putaway closes once the quantities put away reach what
- * each line had to put away. The fixture is a warehouse of its own with a RECEIVING, a QUALITY_CONTROL and a
- * QUARANTINE area and one roomy bin, and a CONFIRMED order of two lines: a plain SKU and a {@code qc_required} one.
- * Loose units only, so a task is a quantity and nothing else.
+ * each line received. The fixture is a warehouse of its own with a RECEIVING area and one roomy bin, and a CONFIRMED
+ * order of two lines. Loose units only, so a task is a quantity and nothing else.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -51,36 +48,30 @@ class GoodsReceiptPutawayCloseIntegrationTest {
     @Autowired @Qualifier("procurementPutawayCompletedListener") Object putawayCompletedListener;
 
     private String receiving;
-    private String qcArea;
-    private String quarantine;
     private String bin;
     private UUID clerk;
     private UUID po;
     private UUID plainPoLine;
-    private UUID qcPoLine;
+    private UUID secondPoLine;
 
     @BeforeEach
     void setUp() {
         String prefix = "C" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT);
         receiving = prefix + "-RCV01";
-        qcArea = prefix + "-QCA01";
-        quarantine = prefix + "-QUA01";
         bin = prefix + "-B01-1-A";
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         UUID warehouse = Identifiers.newId();
         po = Identifiers.newId();
         UUID revision = Identifiers.newId();
         plainPoLine = Identifiers.newId();
-        qcPoLine = Identifiers.newId();
+        secondPoLine = Identifiers.newId();
         tx.executeWithoutResult(s -> {
-            UUID plainItem = item(prefix + "P", false);
-            UUID qcItem = item(prefix + "Q", true);
+            UUID plainItem = item(prefix + "P");
+            UUID secondItem = item(prefix + "Q");
             jdbc.update("INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width,"
                     + " map_height, version, created_at) VALUES (?, 'Putaway close', 'ACTIVE', ?, 'Test address', 'M',"
                     + " 50, 50, 0, NOW())", warehouse, prefix);
             area(warehouse, "RCV01", receiving, "RECEIVING", 1);
-            area(warehouse, "QCA01", qcArea, "QUALITY_CONTROL", 10);
-            area(warehouse, "QUA01", quarantine, "QUARANTINE", 20);
             bin(warehouse);
 
             UUID submitter = ReferenceRows.user(entityManager);
@@ -97,11 +88,11 @@ class GoodsReceiptPutawayCloseIntegrationTest {
                         changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
                     revision, po, submitter);
             poLine(revision, plainPoLine, 1, plainItem);
-            poLine(revision, qcPoLine, 2, qcItem);
+            poLine(revision, secondPoLine, 2, secondItem);
         });
     }
 
-    private UUID item(String sku, boolean qcRequired) {
+    private UUID item(String sku) {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Putaway close fixture", sku.toLowerCase(Locale.ROOT));
@@ -110,7 +101,7 @@ class GoodsReceiptPutawayCloseIntegrationTest {
         UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
         // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
         jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8,"
-                + " height_cm = 6, qc_required = ? where id = ?", qcRequired, item);
+                + " height_cm = 6 where id = ?", item);
         return item;
     }
 
@@ -189,8 +180,8 @@ class GoodsReceiptPutawayCloseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a two-step receipt closes after the last of its goods is put away, not before")
-    void twoStepReceiptClosesAfterItsLastTask() {
+    @DisplayName("a receipt closes after the last of its goods is put away, not before")
+    void receiptClosesAfterItsLastTask() {
         GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 12));
         assertThat(status(receipt.id())).isEqualTo("IN_PUTAWAY");
         UUID task = taskOf(receipt.id(), lineOf(receipt, plainPoLine).id());
@@ -205,43 +196,37 @@ class GoodsReceiptPutawayCloseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a mixed receipt closes at the QC decision that accepts nothing, once the plain line is put away")
-    void mixedReceiptClosesWhenLastQcLineAcceptsNothing() {
-        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 10), line(qcPoLine, 4));
-        assertThat(status(receipt.id())).isEqualTo("IN_QC");
+    @DisplayName("a two-line receipt stays in putaway until its second line is put away too")
+    void staysInPutawayUntilEveryLineIsPutAway() {
+        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 10), line(secondPoLine, 4));
+        assertThat(status(receipt.id())).isEqualTo("IN_PUTAWAY");
         UUID plainLine = lineOf(receipt, plainPoLine).id();
-        UUID qcLine = lineOf(receipt, qcPoLine).id();
+        UUID secondLine = lineOf(receipt, secondPoLine).id();
 
         putaway.confirm(taskOf(receipt.id(), plainLine), bin, null, 10, clerk);
         Await.until("the plain line to be fully put away", Duration.ofSeconds(20),
                 () -> putawayTasks.doneQuantityByReceiptLine(receipt.id()).getOrDefault(plainLine, 0) == 10);
-        // The listener has run (or will) and sees a receipt still in QC: it is left alone.
-        assertThat(status(receipt.id())).isEqualTo("IN_QC");
+        assertThat(status(receipt.id())).as("the second line is not put away yet").isEqualTo("IN_PUTAWAY");
 
-        receipts.moveToQc(receipt.id(), qcLine, qcArea, clerk);
-        receipts.inspect(receipt.id(), qcLine, new Decision(0, null, new Part(4, quarantine, "wrong print")), clerk);
-
-        // Closed by inspect itself, in its own transaction: nothing asynchronous is left to wait for.
-        assertThat(status(receipt.id())).isEqualTo("CLOSED");
+        putaway.confirm(taskOf(receipt.id(), secondLine), bin, null, 4, clerk);
+        Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));
     }
 
     @Test
-    @DisplayName("the listener closes a receipt that went IN_PUTAWAY after the last task was DONE: it reads the current state")
-    void listenerClosesAReceiptThatBecameInPutAwayAfterTheLastTask() {
-        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 10), line(qcPoLine, 4));
+    @DisplayName("the listener decides on the quantities as they are when it runs, not as the event saw them")
+    void listenerReadsTheCurrentState() {
+        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 10), line(secondPoLine, 4));
         UUID plainLine = lineOf(receipt, plainPoLine).id();
-        UUID qcLine = lineOf(receipt, qcPoLine).id();
+        UUID secondLine = lineOf(receipt, secondPoLine).id();
         UUID task = taskOf(receipt.id(), plainLine);
         putaway.confirm(task, bin, null, 10, clerk);
-        Await.until("the plain line to be fully put away", Duration.ofSeconds(20),
-                () -> putawayTasks.doneQuantityByReceiptLine(receipt.id()).getOrDefault(plainLine, 0) == 10);
-        receipts.moveToQc(receipt.id(), qcLine, qcArea, clerk);
-        receipts.inspect(receipt.id(), qcLine, new Decision(0, null, new Part(4, quarantine, "wrong print")), clerk);
-        // inspect closes this receipt itself; put it back to what a lost race leaves: IN_PUTAWAY, nothing closed it.
+        putaway.confirm(taskOf(receipt.id(), secondLine), bin, null, 4, clerk);
+        Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));
+        // Put it back to what a lost race leaves: IN_PUTAWAY with everything put away, nothing closed it.
         jdbc.update("update procurement.goods_receipts set status = 'IN_PUTAWAY', closed_at = null where id = ?",
                 receipt.id());
 
-        // Called directly, as PutawayTaskCreatorIntegrationTest.redeliver does: the asynchronous delivery is out of reach.
+        // The event of the first task, delivered again late: it names the plain line, the second was put away since.
         Object target = AopTestUtils.getTargetObject(putawayCompletedListener);
         // The target is not proxied, so the transaction the module listener would run in is opened here.
         tx.executeWithoutResult(s -> ReflectionTestUtils.invokeMethod(target, "on",

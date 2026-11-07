@@ -145,7 +145,6 @@ class PickConfirmationIntegrationTest {
     private UUID pickerHcm;
     private UUID otherPickerHcm;
     private UUID pickerHn;
-    private UUID qcHcm;
     private UUID customerUser;
     private final List<UUID> placed = new ArrayList<>();
 
@@ -190,7 +189,6 @@ class PickConfirmationIntegrationTest {
         pickerHcm = staff("WAREHOUSE_STAFF", HCM);
         otherPickerHcm = staff("WAREHOUSE_STAFF", HCM);
         pickerHn = staff("WAREHOUSE_STAFF", hn);
-        qcHcm = staff("QC_STAFF", HCM);
         customerUser = staff("CUSTOMER");
         deductions.events().clear();
     }
@@ -636,8 +634,6 @@ class PickConfirmationIntegrationTest {
         // The manager of the warehouse is not the assignee either: only the assignee confirms.
         confirm(task, lineId, managerHcm.toString(), "WAREHOUSE_MANAGER", scan)
                 .andExpect(status().isNotFound());
-        confirm(task, lineId, qcHcm.toString(), "QC_STAFF", scan)
-                .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
         confirm(task, lineId, coordinator.toString(), "ORDER_COORDINATOR", scan)
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
         confirm(task, lineId, customerUser.toString(), "CUSTOMER", scan)
@@ -650,7 +646,6 @@ class PickConfirmationIntegrationTest {
         String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines";
         call(get(url).header("Authorization", token(coordinator, "ORDER_COORDINATOR"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(1));
-        call(get(url).header("Authorization", token(qcHcm, "QC_STAFF"))).andExpect(status().isOk());
         call(get(url).header("Authorization", token(managerHcm, "WAREHOUSE_MANAGER"))).andExpect(status().isOk());
         call(get(url).header("Authorization", token(managerHn, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
@@ -755,9 +750,6 @@ class PickConfirmationIntegrationTest {
         call(post(putBackUrl).header("Authorization", token(pickerHn, "WAREHOUSE_STAFF"))
                 .contentType("application/json").content("{\"locationCode\":\"" + location + "\"}"))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
-        call(post(putBackUrl).header("Authorization", token(qcHcm, "QC_STAFF"))
-                .contentType("application/json").content("{\"locationCode\":\"" + location + "\"}"))
-                .andExpect(status().isForbidden());
         call(post(putBackUrl).header("Authorization", picker).contentType("application/json").content("{}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("locationCode"));
@@ -802,8 +794,6 @@ class PickConfirmationIntegrationTest {
                 .andExpect(jsonPath("$.data.items[*].warehouseId", not(hasItem(HCM.toString()))));
         call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(managerHcm, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isOk());
-        call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(qcHcm, "QC_STAFF")))
-                .andExpect(status().isForbidden());
         call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
                 .andExpect(status().isForbidden());
         call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(customerUser, "CUSTOMER")))

@@ -105,7 +105,7 @@ class PutawayServiceConfirmTest {
 
     private static ItemRow item(StorageClass storageClass) {
         ItemLogistics logistics = new ItemLogistics("PCS", null, new BigDecimal("0.010"), null, null, null, null, null,
-                null, null, 1, 1, storageClass, false, null, false);
+                null, null, 1, 1, storageClass, false, null);
         return new ItemRow(UUID.randomUUID(), SKU, 1, logistics,
                 new InventoryPolicy(null, null, null, RemovalStrategy.FEFO, TrackingMode.LOT, false, null));
     }

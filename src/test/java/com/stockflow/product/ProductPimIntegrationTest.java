@@ -160,14 +160,12 @@ class ProductPimIntegrationTest {
         var logistics = new ItemLogistics("EACH", "893" + suffix.replaceAll("[^0-9]", "1"),
                 new BigDecimal("0.012"), new BigDecimal("8"), new BigDecimal("8"), new BigDecimal("10"),
                 new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50,
-                StorageClass.FRAGILE, false, null, true);
+                StorageClass.FRAGILE, false, null);
         var after = items.describe(itemId, before.version(), logistics);
 
         assertThat(after.version()).isGreaterThan(before.version());
         assertThat(after.logistics().storageClass()).isEqualTo(StorageClass.FRAGILE);
         assertThat(after.logistics().packSize()).isEqualTo(50);
-        assertThat(jdbc.queryForObject("select qc_required from inventory.inventory_items where sku = ?",
-                Boolean.class, "CUP-" + suffix)).isTrue();
         assertThatThrownBy(() -> items.describe(itemId, before.version(), logistics))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK));

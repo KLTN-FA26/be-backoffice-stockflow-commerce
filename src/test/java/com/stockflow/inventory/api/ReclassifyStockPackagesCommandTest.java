@@ -25,16 +25,16 @@ class ReclassifyStockPackagesCommandTest {
     @Test
     @DisplayName("any other reference cannot make a carton AVAILABLE, which would skip every bin rule")
     void otherReferencesCannotMakeAvailable() {
-        assertThatThrownBy(() -> command(StockDisposition.AVAILABLE, MoveReference.QC_INSPECTION))
+        assertThatThrownBy(() -> command(StockDisposition.AVAILABLE, MoveReference.MOVE_TASK))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    @DisplayName("QC still quarantines or blocks a carton")
-    void qcStillQuarantines() {
-        assertThat(command(StockDisposition.QUARANTINE, MoveReference.QC_INSPECTION).disposition())
+    @DisplayName("a carton may still be quarantined or blocked under another reference")
+    void cartonsAreStillQuarantined() {
+        assertThat(command(StockDisposition.QUARANTINE, MoveReference.MOVE_TASK).disposition())
                 .isEqualTo(StockDisposition.QUARANTINE);
-        assertThat(command(StockDisposition.BLOCKED, MoveReference.QC_INSPECTION).disposition())
+        assertThat(command(StockDisposition.BLOCKED, MoveReference.MOVE_TASK).disposition())
                 .isEqualTo(StockDisposition.BLOCKED);
     }
 }

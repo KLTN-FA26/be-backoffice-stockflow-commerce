@@ -125,7 +125,7 @@ class StockDamageIntegrationTest {
         otherStaff = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         manager = staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
         managerElsewhere = staff("WAREHOUSE_MANAGER", otherWarehouse());
-        qc = staff("QC_STAFF", DemoData.WAREHOUSE_HCM);
+        qc = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         planner = staff("INVENTORY_PLANNER");
         recorded.clear();
     }
@@ -483,8 +483,8 @@ class StockDamageIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
         report(planner, "INVENTORY_PLANNER", reportJson(UUID.randomUUID(), row, 1, "BROKEN", null, null),
                 jpeg("x.jpg")).andExpect(status().isForbidden());
-        // QC staff find damage too; a manager of the warehouse who did not report it decides.
-        report(qc, "QC_STAFF", reportJson(UUID.randomUUID(), row, 1, "DIRTY_OR_MISPRINTED", null, null),
+        // Another clerk finds damage too; a manager of the warehouse who did not report it decides.
+        report(qc, "WAREHOUSE_STAFF", reportJson(UUID.randomUUID(), row, 1, "DIRTY_OR_MISPRINTED", null, null),
                 png("ink.png")).andExpect(status().isCreated());
         dispose(otherStaff, "WAREHOUSE_STAFF", reportId, "WRITE_OFF", 1, null, null).andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/inventory/damage-reports").header("Authorization", token(planner, "INVENTORY_PLANNER")))

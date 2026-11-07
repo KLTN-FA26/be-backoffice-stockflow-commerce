@@ -8,10 +8,8 @@ public enum MoveReference {
     PUTAWAY_TASK,
     TRANSFER_ORDER_LINE,
     ORDER,
-    /** A goods-receipt line: moving received goods from the receiving area to the QC area. */
+    /** A goods-receipt line: received goods moved on from the receiving area. */
     GOODS_RECEIPT_LINE,
-    /** A QC decision on received goods: quarantined or rejected parts leave the QC area. */
-    QC_INSPECTION,
     /** A return line (SCRUM-260): returned stock items QC passed, out of quarantine and back on sale at a bin. */
     RETURN_REQUEST_LINE
 }

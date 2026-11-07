@@ -35,8 +35,8 @@ interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEntity> {
      * On-time delivery, lead time and quality of one supplier, from its purchase orders and their goods
      * receipts. A PO is fulfilled once every line is received ({@code RECEIVED}, or {@code CLOSED} the
      * normal way); it was delivered on the day its last receipt was confirmed, counted from the day it
-     * was confirmed to the supplier (sent). Quality counts the QC decisions: accepted against rejected;
-     * a quarantine is not yet a verdict.
+     * was confirmed to the supplier (sent). Accepted and rejected quantities are 0: they counted receiving QC's
+     * decisions, and receiving QC was removed (kltn-docs 03 BR-07, {@code V20261108000200}). They go with suppliers.
      */
     @Query(value = """
             WITH receipts AS (
@@ -46,14 +46,6 @@ interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEntity> {
                          ON gr.po_id = po.id AND gr.confirmed_at IS NOT NULL AND gr.status <> 'CANCELLED'
                  WHERE po.supplier_id = :supplierId
                  GROUP BY po.id
-            ), quality AS (
-                SELECT COALESCE(SUM(q.quantity) FILTER (WHERE q.outcome = 'ACCEPTED'), 0) passed,
-                       COALESCE(SUM(q.quantity) FILTER (WHERE q.outcome = 'REJECTED'), 0) failed
-                  FROM procurement.qc_inspections q
-                  JOIN procurement.goods_receipt_lines l ON l.id = q.receipt_line_id
-                  JOIN procurement.goods_receipts gr ON gr.id = l.receipt_id
-                  JOIN procurement.purchase_orders po ON po.id = gr.po_id
-                 WHERE po.supplier_id = :supplierId
             ), orders AS (
                 SELECT po.*, r.received_at,
                        (po.status = 'RECEIVED' OR (po.status = 'CLOSED' AND po.close_kind = 'NORMAL')) fulfilled
@@ -70,8 +62,8 @@ interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEntity> {
                    AVG(EXTRACT(EPOCH FROM (received_at - confirmed_at)) / 86400.0)
                        FILTER (WHERE fulfilled AND confirmed_at IS NOT NULL AND received_at >= confirmed_at)
                        averageLeadTimeDays,
-                   (SELECT passed FROM quality)::bigint acceptedQuantity,
-                   (SELECT failed FROM quality)::bigint rejectedQuantity
+                   0::bigint acceptedQuantity,
+                   0::bigint rejectedQuantity
               FROM orders
             """, nativeQuery = true)
     SupplierPerformanceProjection performance(UUID supplierId, String businessZone);

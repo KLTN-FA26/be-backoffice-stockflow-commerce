@@ -144,7 +144,7 @@ class FulfillmentController {
 
     /**
      * The pick list: one line per hold of the order's stock lines, in walking order (print lines have
-     * none, docs 07 BR-06). The assignee, and managers, QC and coordinators of the task's warehouse.
+     * none, docs 07 BR-06). The assignee, and managers and coordinators of the task's warehouse.
      */
     @GetMapping("/tasks/{taskId}/pick-lines")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)

@@ -62,7 +62,7 @@ class InventoryItemsImplTest {
 
     private static ItemLogistics logistics(String unit, String barcode) {
         return new ItemLogistics(unit, barcode, BigDecimal.ONE, null, null, null, null, null, null, null, 1, 1,
-                StorageClass.NORMAL, false, null, false);
+                StorageClass.NORMAL, false, null);
     }
 
     private static InventoryPolicy policy(Integer reorder, Integer safety, Integer max, RemovalStrategy strategy,

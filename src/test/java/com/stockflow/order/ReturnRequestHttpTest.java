@@ -161,7 +161,7 @@ class ReturnRequestHttpTest {
 
     @Test
     @DisplayName("each step is its role's: Sales review (a photo first), the warehouse cannot approve, the Accountant "
-            + "cannot propose, QC cannot count a parcel")
+            + "cannot propose or count a parcel")
     void stepsByRole() throws Exception {
         String returnId = open();
         http.asRole(Role.WAREHOUSE_STAFF, staff, post("/api/v1/returns/" + returnId + "/approval"))
@@ -174,7 +174,7 @@ class ReturnRequestHttpTest {
                         .content("{\"lines\":[{\"lineId\":\"" + UUID.randomUUID() + "\",\"replacementQuantity\":0,"
                                 + "\"creditQuantity\":1}],\"moneyMode\":\"REFUND\"}"))
                 .andExpect(status().isForbidden());
-        http.asRole(Role.QC_STAFF, staff, post("/api/v1/returns/" + returnId + "/receipt")
+        http.asRole(Role.ACCOUNTANT, staff, post("/api/v1/returns/" + returnId + "/receipt")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"lines\":[{\"lineId\":\"" + UUID.randomUUID() + "\",\"quantity\":1}],"
                                 + "\"version\":0}"))
@@ -190,7 +190,7 @@ class ReturnRequestHttpTest {
     }
 
     @Test
-    @DisplayName("the warehouse's and QC's photos go through their own endpoints, each held by that step's permission "
+    @DisplayName("the warehouse's and the inspector's photos go through their own endpoints, each held by that step's permission "
             + "and the order's warehouse; a clerk of no warehouse neither lists nor reads the return")
     void staffPhotosAndWarehouses() throws Exception {
         String returnId = open();
@@ -214,7 +214,7 @@ class ReturnRequestHttpTest {
                         .file(photo()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
-        http.asRole(Role.QC_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/inspection-evidence")
+        http.asRole(Role.WAREHOUSE_MANAGER, staff, multipart("/api/v1/returns/" + returnId + "/inspection-evidence")
                         .file(photo()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));

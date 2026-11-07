@@ -16,9 +16,8 @@ import java.util.UUID;
  *
  * @param tolerancePercent the supplier's over-receipt tolerance (BR-02), zero when none is set
  * @param supplierRejected the supplier refused the order (#36): nothing is received against it
- * @param subcontract      a SUBCONTRACT order (SCRUM-434): its goods are a production order's finished goods, which
- *                         the production module holds and inspects once against the approved sample (user decision
- *                         2026-10-13) — receiving counts them and runs no QC of its own on them
+ * @param subcontract      a SUBCONTRACT order (SCRUM-434). Receiving treats it as any order since in-house production
+ *                         was removed: its goods are counted in and put away. It goes with purchase orders
  */
 public record ReceivingPurchaseOrder(
         UUID id,

@@ -198,7 +198,7 @@ public enum ErrorCode {
     SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
     DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
-    /** The destination already holds this SKU and lot in another status (QC state does not merge). */
+    /** The destination already holds this SKU and lot in another status (stock of two statuses does not merge). */
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
     /** The location exists, but it, its shelf or its warehouse is BLOCKED, in MAINTENANCE or INACTIVE (issue #67). */
     LOCATION_NOT_USABLE("This location cannot take stock right now", 409),
@@ -257,16 +257,12 @@ public enum ErrorCode {
      * this; it stays for clients that still map it, and for the database trigger's own refusal.
      */
     OVER_RECEIPT_TOLERANCE("The quantity exceeds what the purchase order line allows", 409),
-    /** The location exists but is not the kind of area this step needs (RECEIVING, QUALITY_CONTROL,
-     *  QUARANTINE), or is in another warehouse. */
+    /** The location exists but is not the kind of area this step needs (RECEIVING, QUARANTINE), or is in another
+     *  warehouse. */
     LOCATION_AREA_MISMATCH("The location is not an area of the right kind in this warehouse", 409),
     /** BR-03: a lot-tracked or expiry-tracked item was received without its lot or expiry date, or an
      *  untracked one with a lot. */
     RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
-    /** BR-08: accepted + quarantined + rejected must add up to what was moved to the QC area. */
-    QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
-    /** A line needs QC and the warehouse has no QUALITY_CONTROL area to send it to (docs 03 edge case). */
-    QC_AREA_MISSING("This warehouse has no QC area yet for the items that need QC", 409),
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
     RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
@@ -279,11 +275,6 @@ public enum ErrorCode {
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
-    /**
-     * SCRUM-473 decision D5: a SUBCONTRACT order's goods are held for their production order one row per receipt
-     * line, so they are not received into cartons.
-     */
-    RECEIPT_PACKAGES_NOT_SUPPORTED("Cartons are not labelled on a subcontract receipt", 409),
     /** SCRUM-92: no putaway task with this id. */
     PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
     /** SCRUM-92: the task has been put away completely; nothing is left to move. */
@@ -305,12 +296,8 @@ public enum ErrorCode {
     RECEIPT_LINE_UNIT_INVALID("A receipt line counts in its item's base unit, or in an active packing unit it has cartons of", 422),
     /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
     PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
-    /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */
-    QC_LOCATIONS_MUST_DIFFER("Quarantined and rejected goods go to two different quarantine areas", 409),
-    QC_REASON_REQUIRED("Quarantined or rejected goods need a reason (BR-08)", 400),
-    QC_TARGET_LOCATION_REQUIRED("Quarantined or rejected goods need the quarantine area they go to", 400),
     RECEIPT_LINE_NOT_FOUND("This receipt has no such line", 404),
-    /** Photos of a delivery or of one line it inspects: a bounded set per step, not an album. */
+    /** Photos of a delivery or of one of its lines: a bounded set, not an album. */
     GOODS_RECEIPT_PHOTO_LIMIT_REACHED("This receipt has as many photos here as it may hold", 409),
     /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
     SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),

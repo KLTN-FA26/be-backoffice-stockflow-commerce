@@ -8,7 +8,6 @@ import com.stockflow.contracts.GoodsReceiptConfirmed;
 import com.stockflow.contracts.ReceiptStockReadyForPutaway;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
-import com.stockflow.procurement.internal.domain.QcOutcome;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -31,18 +30,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * SCRUM-435 against a real database: the 2-step and 3-step receiving flows (docs 03), the purchase
- * order's progress on the new tables, the INBOUND / QUARANTINE / BLOCKED stock and its ledger, and the
- * rules stated twice (service and trigger). Each test builds its own CONFIRMED order and its own lots,
- * on the demo supplier, items and HCM map (HCM-RCV01 receiving, HCM-QCA01 QC, HCM-QC01 and HCM-RTV01
- * quarantine).
+ * SCRUM-435 against a real database: receiving (docs 03) - counted at the RECEIVING area, confirmed straight
+ * to putaway (no quality check at the warehouse, BR-07) - the purchase order's progress on the new tables, the
+ * INBOUND stock and its ledger, and the rules stated twice (service and trigger). Each test builds its own
+ * CONFIRMED order and its own lots, on the demo supplier, items and HCM map (HCM-RCV01 receiving).
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
 class GoodsReceiptIntegrationTest {
 
-    private static final String SOFA = "SOFA-3S-GREY";   // 2 steps: no QC, no lot
-    private static final String TABLE = "TABLE-OAK-160"; // 3 steps: QC, lot and expiry
+    private static final String SOFA = "SOFA-3S-GREY";   // no lot
+    private static final String TABLE = "TABLE-OAK-160"; // lot and expiry
 
     @Autowired GoodsReceipts receipts;
     @Autowired InventoryService inventory;
@@ -52,13 +50,11 @@ class GoodsReceiptIntegrationTest {
     @Autowired RecordedEvents.Recorder recorded;
 
     private UUID clerk;
-    private UUID qc;
     private String lot;
 
     @BeforeEach
     void setUp() {
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        qc = tx.execute(s -> ReferenceRows.user(entityManager));
         lot = "GR-" + UUID.randomUUID().toString().substring(0, 8);
         recorded.clear();
     }
@@ -132,7 +128,7 @@ class GoodsReceiptIntegrationTest {
     }
 
     @Test
-    @DisplayName("2 + 3 steps: confirm counts INBOUND stock and closes the PO; QC splits the TABLE lot three ways")
+    @DisplayName("confirm counts INBOUND stock, closes the PO and announces every line for putaway")
     void fullFlow() {
         UUID po = confirmedOrder(SOFA, 4, TABLE, 6);
         int atpBefore = inventory.availableToPromise(new Sku(TABLE));
@@ -147,11 +143,10 @@ class GoodsReceiptIntegrationTest {
                 new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "hcm-rcv01", null), table(po, 6)));
         GoodsReceipts.ReceiptView confirmed = receipts.confirm(draft.id(), clerk);
 
-        assertThat(confirmed.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
-        assertThat(confirmed.lines()).extracting(GoodsReceipts.LineView::sku, GoodsReceipts.LineView::qcProgress)
-                .containsExactlyInAnyOrder(
-                        org.assertj.core.groups.Tuple.tuple(SOFA, GoodsReceipts.QcProgress.NOT_REQUIRED),
-                        org.assertj.core.groups.Tuple.tuple(TABLE, GoodsReceipts.QcProgress.AWAITING_MOVE_TO_QC));
+        assertThat(confirmed.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+        assertThat(confirmed.lines()).extracting(GoodsReceipts.LineView::sku, GoodsReceipts.LineView::quantityForPutaway)
+                .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple(SOFA, 4),
+                        org.assertj.core.groups.Tuple.tuple(TABLE, 6));
         assertThat(poStatus(po)).isEqualTo("RECEIVED");
         assertThat(jdbc.queryForList("SELECT status FROM procurement.purchase_order_lines WHERE po_id = ?",
                 String.class, po)).containsOnly("RECEIVED");
@@ -171,58 +166,10 @@ class GoodsReceiptIntegrationTest {
         assertThat(recorded.ofType(GoodsReceiptConfirmed.class)).singleElement()
                 .satisfies(e -> assertThat(e.lines()).hasSize(2));
         assertThat(recorded.ofType(ReceiptStockReadyForPutaway.class)).singleElement()
-                .satisfies(e -> assertThat(e.lines()).singleElement()
-                        .satisfies(l -> assertThat(l.sku() + "@" + l.locationCode() + "x" + l.quantity())
-                                .isEqualTo(SOFA + "@HCM-RCV01x4")));
+                .satisfies(e -> assertThat(e.lines())
+                        .extracting(l -> l.sku() + "@" + l.locationCode() + "x" + l.quantity())
+                        .containsExactlyInAnyOrder(SOFA + "@HCM-RCV01x4", TABLE + "@HCM-RCV01x6"));
 
-        UUID tableLine = confirmed.lines().stream().filter(l -> l.sku().equals(TABLE)).findFirst().orElseThrow().id();
-        // BR-08: no QC decision before the goods are in the QC area.
-        assertThatThrownBy(() -> receipts.inspect(draft.id(), tableLine, new GoodsReceipts.Decision(6, null, null), qc))
-                .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThatThrownBy(() -> receipts.moveToQc(draft.id(), tableLine, "HCM-QC01", clerk))
-                .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.LOCATION_AREA_MISMATCH);
-
-        GoodsReceipts.ReceiptView inQc = receipts.moveToQc(draft.id(), tableLine, "HCM-QCA01", clerk);
-        assertThat(inQc.lines()).filteredOn(l -> l.id().equals(tableLine)).singleElement()
-                .satisfies(l -> assertThat(l.qcProgress()).isEqualTo(GoodsReceipts.QcProgress.IN_QC_AREA));
-        assertThat(stock(TABLE, "HCM-RCV01", lot)).isEqualTo("INBOUND:0");
-        assertThat(stock(TABLE, "HCM-QCA01", lot)).isEqualTo("INBOUND:6");
-
-        assertThatThrownBy(() -> receipts.inspect(draft.id(), tableLine, new GoodsReceipts.Decision(3,
-                new GoodsReceipts.Part(2, "HCM-QC01", "scratched"), null), qc))
-                .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.QC_QUANTITY_MISMATCH);
-
-        // SCRUM-464: each missing piece of a part with units is named; same area twice is its own code.
-        assertThat(fields(org.assertj.core.api.Assertions.catchThrowable(() -> receipts.inspect(draft.id(), tableLine,
-                new GoodsReceipts.Decision(4, new GoodsReceipts.Part(2, "HCM-QC01", " "), null), qc))))
-                .containsExactly("quarantined.reason:QC_REASON_REQUIRED");
-        assertThat(fields(org.assertj.core.api.Assertions.catchThrowable(() -> receipts.inspect(draft.id(), tableLine,
-                new GoodsReceipts.Decision(4, null, new GoodsReceipts.Part(2, null, "cracked")), qc))))
-                .containsExactly("rejected.locationCode:QC_TARGET_LOCATION_REQUIRED");
-        assertThat(fields(org.assertj.core.api.Assertions.catchThrowable(() -> receipts.inspect(draft.id(), tableLine,
-                new GoodsReceipts.Decision(4, new GoodsReceipts.Part(1, "HCM-QC01", "dent"),
-                        new GoodsReceipts.Part(1, "HCM-QC01", "crack")), qc))))
-                .containsExactly("rejected.locationCode:QC_LOCATIONS_MUST_DIFFER");
-
-        GoodsReceipts.ReceiptView decided = receipts.inspect(draft.id(), tableLine, new GoodsReceipts.Decision(3,
-                new GoodsReceipts.Part(2, "HCM-QC01", "scratched top"),
-                new GoodsReceipts.Part(1, "HCM-RTV01", "cracked leg")), qc);
-
-        assertThat(decided.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
-        assertThat(decided.lines()).filteredOn(l -> l.id().equals(tableLine)).singleElement().satisfies(l -> {
-            assertThat(l.quantityForPutaway()).isEqualTo(3);
-            assertThat(l.inspections()).extracting(GoodsReceipts.InspectionView::outcome)
-                    .containsExactlyInAnyOrder(QcOutcome.ACCEPTED, QcOutcome.QUARANTINE, QcOutcome.REJECTED);
-        });
-        assertThat(stock(TABLE, "HCM-QCA01", lot)).isEqualTo("INBOUND:3");
-        assertThat(stock(TABLE, "HCM-QC01", lot)).isEqualTo("QUARANTINE:2");
-        assertThat(stock(TABLE, "HCM-RTV01", lot)).isEqualTo("BLOCKED:1");
-        assertThat(jdbc.queryForList("""
-                SELECT from_status || '>' || to_status FROM inventory.stock_movement
-                 WHERE reference_type = 'QC_INSPECTION' AND lot_number = ?""", String.class, lot))
-                .containsExactlyInAnyOrder("INBOUND>QUARANTINE", "INBOUND>BLOCKED");
-        assertThat(inventory.availableToPromise(new Sku(TABLE))).isEqualTo(atpBefore);
-        assertThat(recorded.ofType(ReceiptStockReadyForPutaway.class)).hasSize(2);
     }
 
     @Test
@@ -253,7 +200,7 @@ class GoodsReceiptIntegrationTest {
         assertThat(lineIds(draft.id(), second)).isEmpty();
         assertThat(lineIds(draft.id(), third)).hasSize(1).doesNotContainAnyElementsOf(other);
 
-        assertThat(receipts.confirm(draft.id(), clerk).status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+        assertThat(receipts.confirm(draft.id(), clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(stock(TABLE, "HCM-RCV01", third)).isEqualTo("INBOUND:9");
     }
 
@@ -366,8 +313,6 @@ class GoodsReceiptIntegrationTest {
                 .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
         assertThatThrownBy(() -> receipts.replaceLines(receiptId, List.of()))
                 .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThatThrownBy(() -> receipts.moveToQc(receiptId, sofaLine, "HCM-QCA01", clerk))
-                .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
         // BR-05 again, in the database: a confirmed line keeps what was counted.
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update(
@@ -462,8 +407,8 @@ class GoodsReceiptIntegrationTest {
     }
 
     @Test
-    @DisplayName("SCRUM-464: a QC line in a warehouse with no QC area is QC_AREA_MISSING; display names and flags")
-    void qcAreaMissingAndDisplayFields() {
+    @DisplayName("SCRUM-464: display names and flags; a warehouse needs no QC area to receive")
+    void displayFields() {
         UUID po = confirmedOrder(TABLE, 2);
         UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-464", null), clerk).id();
         GoodsReceipts.ReceiptView counted = receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(
@@ -471,7 +416,6 @@ class GoodsReceiptIntegrationTest {
         assertThat(counted.lines()).singleElement().satisfies(l -> {
             assertThat(l.lotTracked()).isTrue();
             assertThat(l.expiryTracked()).isTrue();
-            assertThat(l.qcRequired()).isTrue();
         });
         assertThat(counted.warehouseCode()).isEqualTo("HCM");
         assertThat(counted.supplierName()).isNotBlank();
@@ -482,23 +426,15 @@ class GoodsReceiptIntegrationTest {
                  WHERE id = ?) AND type = 'QUALITY_CONTROL' AND status = 'ACTIVE'""", UUID.class, receiptId);
         tx.executeWithoutResult(s -> qcAreas.forEach(id ->
                 jdbc.update("UPDATE warehouse.area SET status = 'INACTIVE' WHERE id = ?", id)));
+        GoodsReceipts.ReceiptView confirmed;
         try {
-            assertThatThrownBy(() -> receipts.confirm(receiptId, clerk))
-                    .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.QC_AREA_MISSING);
+            confirmed = receipts.confirm(receiptId, clerk);
         } finally {
             tx.executeWithoutResult(s -> qcAreas.forEach(id ->
                     jdbc.update("UPDATE warehouse.area SET status = 'ACTIVE' WHERE id = ?", id)));
         }
-
-        GoodsReceipts.ReceiptView confirmed = receipts.confirm(receiptId, clerk);
+        assertThat(confirmed.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(confirmed.confirmedByName()).isNotBlank();
-        // A part of 0 units goes nowhere: its area is not looked up, even a stale code (SCRUM-464).
-        UUID tableLine = confirmed.lines().get(0).id();
-        receipts.moveToQc(receiptId, tableLine, "HCM-QCA01", clerk);
-        GoodsReceipts.ReceiptView inspected = receipts.inspect(receiptId, tableLine,
-                new GoodsReceipts.Decision(2, null, new GoodsReceipts.Part(0, "NO-SUCH-AREA", null)), qc);
-        assertThat(inspected.lines().get(0).inspections()).singleElement()
-                .satisfies(i -> assertThat(i.inspectedByName()).isNotBlank());
         var row = receipts.list(null, po, null, null, null, null, null, 0, 20, null).items();
         assertThat(row).singleElement().satisfies(r -> {
             assertThat(r.purchaseOrderNumber()).startsWith("PO-");

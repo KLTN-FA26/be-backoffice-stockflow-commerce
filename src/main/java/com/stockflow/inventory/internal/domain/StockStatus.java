@@ -3,16 +3,17 @@ package com.stockflow.inventory.internal.domain;
 /**
  * Condition of a stock record — a business rule expressed as a type rather than a label.
  *
- * <p>Only {@link #AVAILABLE} stock may be reserved or sold, which is what keeps goods still
- * awaiting QC (BRD 3.3.4) out of customer orders.</p>
+ * <p>Only {@link #AVAILABLE} stock may be reserved or sold, which is what keeps goods not yet put away out of customer
+ * orders.</p>
  *
- * <p>State machine, from the receiving docs (KLTN-FA26/docs 03 Receipt, 05 Putaway):</p>
+ * <p>State machine, from the receiving docs (KLTN-FA26/docs 03 Receipt, 05 Putaway, 20 Inventory control). There is no
+ * quality check at the warehouse (03 BR-07); QUARANTINE and BLOCKED rows written by receiving QC before it was removed
+ * stay as they are:</p>
  * <pre>
- *   INBOUND ──putaway (no QC, or QC accepted)──▶ AVAILABLE ──damageFound──▶ DAMAGED
- *      │                                             │
- *      ├──QC: quarantine──▶ QUARANTINE ──accepted──▶ (putaway) AVAILABLE
- *      │                        └──rejected──▶ BLOCKED   └──expiryReached──▶ EXPIRED
- *      └──QC: rejected──▶ BLOCKED ──returned to supplier──▶ (leaves stock)
+ *   INBOUND ──putaway──▶ AVAILABLE ──damageFound──▶ DAMAGED
+ *                            │
+ *   returned goods: QUARANTINE ──passed──▶ (putaway) AVAILABLE
+ *                     └──condemned──▶ BLOCKED      └──expiryReached──▶ EXPIRED
  * </pre>
  *
  * <p>{@link StockItem#receive} still creates {@link #QUARANTINE} stock; the receipt flow that
@@ -20,16 +21,17 @@ package com.stockflow.inventory.internal.domain;
  */
 public enum StockStatus {
 
-    /** Received, not yet put away: in a RECEIVING or QUALITY_CONTROL area (docs 03). Not sellable. */
+    /** Received, not yet put away: in a RECEIVING area (docs 03). Not sellable. */
     INBOUND,
 
-    /** Passed QC, in a pickable location, counted towards available-to-promise. */
+    /** Put away, in a pickable location, counted towards available-to-promise. */
     AVAILABLE,
 
-    /** Put on hold by QC, waiting for a second decision. Physically present, commercially invisible. */
+    /** On hold apart from good stock (a return, or legacy receiving QC), waiting for a decision. Physically present,
+     *  commercially invisible. */
     QUARANTINE,
 
-    /** Rejected by QC, waiting to go back to the supplier. Never sold, never put away. */
+    /** Condemned (a return, or legacy receiving QC), waiting to leave stock. Never sold, never put away. */
     BLOCKED,
 
     /** Damaged in handling; awaiting a write-off decision. */

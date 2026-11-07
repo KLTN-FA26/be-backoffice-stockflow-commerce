@@ -511,7 +511,7 @@ class VehicleTypeIntegrationTest {
             send(cannotUpdate, post(BASE), body).andExpect(status().isForbidden());
             send(cannotUpdate, put(BASE + "/" + id), update).andExpect(status().isForbidden());
         }
-        for (Role noAccess : List.of(Role.CUSTOMER, Role.ACCOUNTANT, Role.SALES_STAFF, Role.QC_STAFF)) {
+        for (Role noAccess : List.of(Role.CUSTOMER, Role.ACCOUNTANT, Role.SALES_STAFF)) {
             as(noAccess, get(BASE)).andExpect(status().isForbidden());
             as(noAccess, get(BASE + "/" + id)).andExpect(status().isForbidden());
             send(noAccess, post(BASE), body).andExpect(status().isForbidden());

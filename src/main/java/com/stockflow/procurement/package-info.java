@@ -1,5 +1,5 @@
 /**
- * <b>Suppliers, purchase orders, goods receipt, QC, invoice matching</b>
+ * <b>Suppliers, purchase orders, goods receipt, invoice matching</b>
  *
  * <p>WBS 3.2 + 3.3 + 3.4 · database schema {@code procurement}</p>
  *

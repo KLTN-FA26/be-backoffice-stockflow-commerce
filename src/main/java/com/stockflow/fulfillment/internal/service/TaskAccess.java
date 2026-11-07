@@ -26,7 +26,7 @@ final class TaskAccess {
      * The assignee sees the task; so does whoever oversees tasks or re-verifies designs, for the warehouses they are
      * assigned to (BR-SEC-002: a caller whose scope is ALL is not limited). Once picking is done the task is at the
      * packing table, where any packer of its warehouse may take it (G4-5, docs 08): they see it too. Seeded, that is
-     * managers, QC and coordinators, and warehouse staff at packing (V20261022000200).
+     * managers and coordinators, and warehouse staff at packing (V20261022000200).
      */
     static void requireVisible(PickJpaEntity pick, CurrentUser actor) {
         if (Objects.equals(pick.getAssignedUserId(), actor.userId())) {
@@ -42,7 +42,7 @@ final class TaskAccess {
 
     /**
      * The confirmed design files of a task's print lines (docs 08 step 2: printed goods are checked against the
-     * design at packing): the assignee; whoever re-verifies designs (managers and QC) in the task's warehouse; and,
+     * design at packing): the assignee; whoever re-verifies designs (managers) in the task's warehouse; and,
      * once the task is at the packing table, a packer of its warehouse. Anyone else: not found.
      */
     static void requireArtifactAccess(PickJpaEntity pick, CurrentUser actor) {

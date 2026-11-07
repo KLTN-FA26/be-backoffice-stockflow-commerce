@@ -46,7 +46,7 @@ import java.util.UUID;
 /**
  * Supplier invoices (SCRUM-308) and their three-way match against the purchase order and its receipts (SCRUM-309;
  * kltn-docs 04, BR-INV-001/002). The accountant enters an invoice as on the paper, attaches the scan, and matches it:
- * MATCHED, or EXCEPTION with what was found - quantities beyond what was received and passed QC, prices beyond the
+ * MATCHED, or EXCEPTION with what was found - quantities beyond what was received, prices beyond the
  * configured tolerance, another tax rate. Resolving an EXCEPTION and approving payment are SCRUM-310's.
  */
 @RestController
@@ -105,8 +105,8 @@ class SupplierInvoiceController {
     }
 
     @GetMapping("/match-basis/{purchaseOrderId}")
-    @Operation(summary = "What an invoice of one order may bill, per line: ordered, received and passed QC, awaiting "
-            + "QC, billed already, at which net price and tax rate")
+    @Operation(summary = "What an invoice of one order may bill, per line: ordered, received, billed already, at which "
+            + "net price and tax rate (awaitingQc is always 0: receiving QC was removed)")
     @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.READ)
     public ApiResponse<SupplierInvoiceResponses.Basis> basis(@PathVariable UUID purchaseOrderId) {
         return ApiResponse.ok(SupplierInvoiceWebMapper.toResponse(invoices.basis(purchaseOrderId)));
@@ -135,12 +135,12 @@ class SupplierInvoiceController {
     @PostMapping("/{invoiceId}/match")
     @Operation(summary = "Run the three-way match (BR-INV-002): MATCHED, or EXCEPTION with its variances",
             description = """
-                    Per line: units beyond what was received and passed QC, less what MATCHED invoices billed \
-                    (`OVER_INVOICED`; `AWAITING_QC` when QC has not concluded on them yet; `OVER_INVOICED_RECEIPT` \
-                    for the named delivery), a unit price off the order's net price by more than the configured \
+                    Per line: units beyond what was received, less what MATCHED invoices billed \
+                    (`OVER_INVOICED`; `OVER_INVOICED_RECEIPT` for the named delivery; `AWAITING_QC` no longer \
+                    arises, receiving QC was removed), a unit price off the order's net price by more than the configured \
                     tolerance (`PRICE`), another tax rate (`TAX_RATE`); for a subcontract order, nothing before its \
                     settlement is final (`SETTLEMENT_PENDING`) and no more than its net payable \
-                    (`ABOVE_SETTLEMENT`). Run again on an EXCEPTION once QC concluded or goods arrived.""")
+                    (`ABOVE_SETTLEMENT`). Run again on an EXCEPTION once goods arrived.""")
     @RequiresPermission(resource = PurchaseOrderResources.SUPPLIER_INVOICES, action = Action.UPDATE)
     public ApiResponse<SupplierInvoiceResponses.Invoice> match(@PathVariable UUID invoiceId,
                                                                @AuthenticatedUser CurrentUser user) {

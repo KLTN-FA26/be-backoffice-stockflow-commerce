@@ -168,12 +168,11 @@ class StockPackageLookupHttpTest {
     }
 
     @Test
-    @DisplayName("an inventory planner and QC staff only read cartons, and read them")
+    @DisplayName("an inventory planner only reads cartons, and reads them")
     void readOnlyRolesRead() throws Exception {
         UUID planner = staff("INVENTORY_PLANNER", WAREHOUSE_HCM);
-        UUID qc = staff("QC_STAFF", WAREHOUSE_HCM);
         read(Role.INVENTORY_PLANNER, planner, "/" + lpns.getFirst()).andExpect(status().isOk());
-        read(Role.QC_STAFF, qc, "/location-summary?location=" + RECEIVING).andExpect(status().isOk());
+        read(Role.INVENTORY_PLANNER, planner, "/location-summary?location=" + RECEIVING).andExpect(status().isOk());
     }
 
     @Test

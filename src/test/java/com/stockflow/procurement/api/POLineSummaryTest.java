@@ -13,7 +13,7 @@ class POLineSummaryTest {
 
     private static POLineSummary line(String status, int ordered, int received) {
         return new POLineSummary(UUID.randomUUID(), 1, UUID.randomUUID(), "SKU-1", "Sofa", "PCS", ordered, received,
-                BigDecimal.TEN, BigDecimal.ZERO, BigDecimal.TEN, status, false, false, false, "BOX", 4, ordered / 4);
+                BigDecimal.TEN, BigDecimal.ZERO, BigDecimal.TEN, status, false, false, "BOX", 4, ordered / 4);
     }
 
     @ParameterizedTest

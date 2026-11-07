@@ -39,15 +39,16 @@ import java.util.UUID;
 import java.util.function.Function;
 
 /**
- * Photos of a goods receipt (04b F-RCV steps 05 and 07): the warehouse's of what arrived, of the delivery as a whole or
- * of one line, while the receipt is counted or awaits approval; QC's of the line it inspects, while the receipt is in
- * QC. JPEG or PNG, at most 20 MB and {@value GoodsReceiptPhotoService#MAX_PHOTOS_PER_SUBJECT} per subject. Sent as
+ * Photos of a goods receipt (04b F-RCV step 05): the warehouse's of what arrived, of the delivery as a whole or of one
+ * line, while the receipt is counted or awaits approval - evidence when a carton is refused or a delivery disputed.
+ * JPEG or PNG, at most 20 MB and {@value GoodsReceiptPhotoService#MAX_PHOTOS_PER_SUBJECT} per subject. Sent as
  * multipart, or uploaded straight to storage through {@code /uploads} and named by its upload id
- * (docs/direct-uploads-fe-contract.md). Kept for good: there is no delete.
+ * (docs/direct-uploads-fe-contract.md). Kept for good: there is no delete. Photos QC took while receiving QC existed
+ * are listed with stage {@code QC}; none are added any more.
  */
 @RestController
 @RequestMapping("/api/v1/goods-receipts/{receiptId}")
-@Tag(name = "Goods receipt photos", description = "Evidence photos taken at receiving and at inbound QC")
+@Tag(name = "Goods receipt photos", description = "Evidence photos taken at receiving")
 class GoodsReceiptPhotoController {
 
     /** One photo; {@code thumbnailUrl} is a short-lived link to a small copy, absent where storage signs none. */
@@ -57,10 +58,6 @@ class GoodsReceiptPhotoController {
 
     /** A receiving photo uploaded through {@code /photos/uploads}; {@code receiptLineId} absent for the delivery. */
     record AttachReceivingPhoto(@NotNull UUID uploadId, UUID receiptLineId) {
-    }
-
-    /** A QC photo uploaded through {@code .../qc-photos/uploads}. */
-    record AttachQcPhoto(@NotNull UUID uploadId) {
     }
 
     record PhotoLink(String url, Instant expiresAt) {
@@ -107,43 +104,10 @@ class GoodsReceiptPhotoController {
                 IncomingFiles.uploaded(user.userId(), List.of(body.uploadId())), user.userId())));
     }
 
-    // ── At inbound QC: QC staff, of the line inspected ──
-
-    @PostMapping(path = "/lines/{lineId}/qc-photos", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Keep a QC photo of the line inspected (multipart: file)")
-    @RequiresPermission(resource = PurchaseOrderResources.QC_TASKS, action = Action.APPROVE)
-    public ApiResponse<PhotoResponse> addQcPhoto(@PathVariable UUID receiptId, @PathVariable UUID lineId,
-                                                 @RequestPart("file") MultipartFile file,
-                                                 @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(toResponse(sent(file, photo -> photos.add(receiptId, lineId, GoodsReceiptPhotoStage.QC,
-                photo, user.userId()))));
-    }
-
-    @PostMapping(path = "/lines/{lineId}/qc-photos/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "Step one of a QC photo uploaded straight to storage: a signed PUT for the declared file")
-    @RequiresPermission(resource = PurchaseOrderResources.QC_TASKS, action = Action.APPROVE)
-    public ResponseEntity<ApiResponse<UploadSlot>> beginQcUpload(@PathVariable UUID receiptId,
-            @PathVariable UUID lineId, @Valid @RequestBody UploadSlotRequest request,
-            @AuthenticatedUser CurrentUser user) {
-        return slot(photos.beginUpload(receiptId, lineId, GoodsReceiptPhotoStage.QC, request, user.userId()));
-    }
-
-    @PostMapping(path = "/lines/{lineId}/qc-photos", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Keep a QC photo uploaded through .../qc-photos/uploads; the same uploadId again answers the same photo")
-    @RequiresPermission(resource = PurchaseOrderResources.QC_TASKS, action = Action.APPROVE)
-    public ApiResponse<PhotoResponse> attachQcPhoto(@PathVariable UUID receiptId, @PathVariable UUID lineId,
-                                                    @Valid @RequestBody AttachQcPhoto body,
-                                                    @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(toResponse(photos.add(receiptId, lineId, GoodsReceiptPhotoStage.QC,
-                IncomingFiles.uploaded(user.userId(), List.of(body.uploadId())), user.userId())));
-    }
-
     // ── Reading ──
 
     @GetMapping("/photos")
-    @Operation(summary = "Every photo of the receipt, oldest first, receiving and QC, each with a thumbnail link")
+    @Operation(summary = "Every photo of the receipt, oldest first, each with a thumbnail link")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.READ)
     public ApiResponse<List<PhotoResponse>> list(@PathVariable UUID receiptId) {
         return ApiResponse.ok(photos.list(receiptId).stream().map(GoodsReceiptPhotoController::toResponse).toList());

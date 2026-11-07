@@ -96,7 +96,7 @@ class ProcurementPurchasabilityTest {
         when(inventory.itemPolicy(any(Sku.class))).thenAnswer(call -> {
             Sku sku = call.getArgument(0);
             return Optional.of(new InventoryItemPolicy(UUID.nameUUIDFromBytes(sku.code().getBytes()), sku.code(),
-                    false, false, false));
+                    false, false));
         });
         when(inventoryControl.item(any())).thenAnswer(call ->
                 new InventoryControlItem(((Sku) call.getArgument(0)).code(), "EACH", 0, null));

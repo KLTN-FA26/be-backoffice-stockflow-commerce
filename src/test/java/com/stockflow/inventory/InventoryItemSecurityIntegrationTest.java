@@ -39,8 +39,7 @@ class InventoryItemSecurityIntegrationTest {
             "{\"version\":%d,\"reorderPoint\":20,\"removalStrategy\":\"FEFO\",\"trackingMode\":\"NONE\","
                     + "\"expiryTracked\":false}";
     private static final String LOGISTICS_BODY =
-            "{\"version\":%d,\"unitOfMeasure\":\"EACH\",\"storageClass\":\"NORMAL\",\"requiresAdultSignature\":false,"
-                    + "\"qcRequired\":false}";
+            "{\"version\":%d,\"unitOfMeasure\":\"EACH\",\"storageClass\":\"NORMAL\",\"requiresAdultSignature\":false}";
     /** The role whose grants the last test rewrites; restored afterwards, as InventoryCatalogSecurityIntegrationTest does. */
     private static final String REWRITTEN_ROLE = "INVENTORY_PLANNER";
 

@@ -55,7 +55,11 @@ public enum FileCategory {
     SUPPLIER_INVOICE("supplier-invoices", 15 * 1024 * 1024,
             Set.of("application/pdf", "image/jpeg", "image/png")),
 
-    /** Photographs taken during goods receipt and QC. Evidence - never deleted casually. */
+    /**
+     * Photographs taken during goods receipt (receiving QC's from before it was removed among them) and of damaged
+     * stock. Evidence - never deleted casually. The {@code qc-evidence/} prefix stays: stored keys and the database's
+     * checks name it.
+     */
     QC_EVIDENCE("qc-evidence", 20 * 1024 * 1024,
             Set.of("image/jpeg", "image/png")),
 

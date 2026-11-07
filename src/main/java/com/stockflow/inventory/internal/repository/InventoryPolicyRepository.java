@@ -156,7 +156,7 @@ public class InventoryPolicyRepository {
                 rs.getInt("package_count"), rs.getInt("pack_size"),
                 StorageClass.valueOf(rs.getString("storage_class")),
                 rs.getBoolean("requires_adult_signature"), rs.getString("shipping_restriction_note"),
-                rs.getBoolean("qc_required"), rs.getBoolean("rotatable"));
+                rs.getBoolean("rotatable"));
     }
 
     /** The SKU of the item with this id; empty when there is none. */
@@ -333,13 +333,13 @@ where sku=? and version=?
                 update inventory.inventory_items set unit_of_measure=?, barcode=?, weight_kg=?, length_cm=?,
                     width_cm=?, height_cm=?, package_weight_kg=?, package_length_cm=?, package_width_cm=?,
                     package_height_cm=?, package_count=?, pack_size=?, storage_class=?, requires_adult_signature=?,
-                    shipping_restriction_note=?, qc_required=?, rotatable=?, version=version+1, last_modified_at=now(),
+                    shipping_restriction_note=?, rotatable=?, version=version+1, last_modified_at=now(),
                     last_modified_by=?
                 where sku=? and version=?
                 """, l.unitOfMeasure(), l.barcode(), l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(),
                 l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(), l.packageHeightCm(), l.packageCount(),
                 l.packSize(), l.storageClass().name(), l.requiresAdultSignature(), l.shippingRestrictionNote(),
-                l.qcRequired(), l.rotatable(), actor, sku, version) == 1;
+                l.rotatable(), actor, sku, version) == 1;
     }
 
     /** Whether a packing unit of the SKU (not its base unit) already uses this unit code. */

@@ -18,7 +18,6 @@ public enum Role {
     WAREHOUSE_STAFF(Roles.WAREHOUSE_STAFF, "Receive, put away, pick, pack and hand over to carriers"),
     WAREHOUSE_MANAGER(Roles.WAREHOUSE_MANAGER, "Approve adjustments and transfers, override slotting"),
     INVENTORY_PLANNER(Roles.INVENTORY_PLANNER, "Monitor stock levels and raise transfer orders"),
-    QC_STAFF(Roles.QC_STAFF, "Inspect inbound goods and printed output"),
     CUSTOMER(Roles.CUSTOMER, "Browse, design, order and track"),
     SALES_STAFF(Roles.SALES_STAFF, "Advise customers, edit designs, create assisted orders"),
     ORDER_COORDINATOR(Roles.ORDER_COORDINATOR, "Release orders to the warehouse and handle holds"),

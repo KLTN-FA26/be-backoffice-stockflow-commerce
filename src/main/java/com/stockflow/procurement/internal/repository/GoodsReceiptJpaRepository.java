@@ -13,7 +13,7 @@ import java.util.UUID;
 
 interface GoodsReceiptJpaRepository extends BaseJpaRepository<GoodsReceiptJpaEntity> {
 
-    /** Lines fetched with the header; inspections follow per line in batches ({@code @BatchSize}). */
+    /** Lines fetched with the header. */
     @Query("select distinct r from GoodsReceiptJpaEntity r left join fetch r.lines where r.id = :id")
     Optional<GoodsReceiptJpaEntity> findByIdWithLines(@Param("id") UUID id);
 

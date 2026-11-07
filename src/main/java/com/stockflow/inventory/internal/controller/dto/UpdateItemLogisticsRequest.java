@@ -51,9 +51,6 @@ public record UpdateItemLogisticsRequest(
         @Size(max = 500, message = "shippingRestrictionNote must be at most 500 characters")
         String shippingRestrictionNote,
 
-        @Schema(description = "Receiving sends this SKU through the QC area (3-step flow)")
-        boolean qcRequired,
-
         @Schema(description = "Packages of this SKU may be turned 6 ways when a truck is loaded (docs 01, 08, 09); "
                 + "true when absent")
         Boolean rotatable

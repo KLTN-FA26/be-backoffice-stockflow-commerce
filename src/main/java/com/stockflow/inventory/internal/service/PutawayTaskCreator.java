@@ -20,14 +20,14 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * Received goods are ready to be put away (confirmation of a no-QC line, or QC accepting part of one): open the
+ * Received goods are ready to be put away (a receipt is confirmed; there is no QC step, kltn-docs 03 BR-07): open the
  * warehouse's putaway tasks for them (SCRUM-92).
  *
  * <p>One task per carton of the line that is IN_STOCK with INBOUND units, wherever it stands now (a carton is put
  * away from wherever it stands, so a hand move must not hide it), sized by those units, plus one loose task for what
  * the line has beyond those cartons. Cartons are read here, not carried by the event, because the event is published
- * by procurement, which does not know them. A carton QC quarantined or rejected, or one already put away, has no
- * INBOUND units and opens nothing.</p>
+ * by procurement, which does not know them. A carton already put away, or quarantined since, has no INBOUND units
+ * and opens nothing.</p>
  *
  * <p>An event line whose receipt line already has any putaway task is skipped whole. The event is published at most
  * once per receipt line, so an existing task means this line was processed; recomputing would be wrong, because the

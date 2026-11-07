@@ -64,12 +64,11 @@ class InventoryCatalogMigrationUpgradeTest {
                 assertThat(normal.migrate().migrations).allSatisfy(m -> assertThat(
                         new java.math.BigInteger(m.version)).isGreaterThan(new java.math.BigInteger("20261008000200")));
                 normal.validate();
-                try (var row = sql.executeQuery("select safety_stock,reorder_point,qc_required from "
+                try (var row = sql.executeQuery("select safety_stock,reorder_point from "
                         + "inventory.inventory_items where sku='SOFA-3S-GREY'")) {
                     assertThat(row.next()).isTrue();
                     assertThat(row.getInt(1)).isEqualTo(5);
                     assertThat(row.getInt(2)).isEqualTo(12);
-                    assertThat(row.getBoolean(3)).isFalse();
                 }
                 try (var row = sql.executeQuery("select seo_title,slug,status from product.products where code='SOFA-3S'")) {
                     assertThat(row.next()).isTrue();

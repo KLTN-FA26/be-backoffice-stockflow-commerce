@@ -17,7 +17,7 @@ import java.util.UUID;
  * JPA mapping of a storage location (table {@code warehouse.storage_location}): one row for every
  * place stock can sit, whether a bin or a storage area. Not the domain model.
  *
- * <p>This is the row other modules point at - goods receipt lines, QC inspections and move tasks
+ * <p>This is the row other modules point at - goods receipt lines and move tasks
  * by id, stock movements, adjustments, cycle counts and pick lines by {@code locationCode} - so a
  * location is never deleted, only made {@code INACTIVE}.</p>
  *

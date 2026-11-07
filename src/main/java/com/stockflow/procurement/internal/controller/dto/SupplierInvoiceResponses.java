@@ -19,7 +19,8 @@ public final class SupplierInvoiceResponses {
     }
 
     /**
-     * What the last match found. {@code kind}: OVER_INVOICED, OVER_INVOICED_RECEIPT, AWAITING_QC, SETTLEMENT_PENDING
+     * What the last match found. {@code kind}: OVER_INVOICED, OVER_INVOICED_RECEIPT, AWAITING_QC (legacy: receiving QC
+     * was removed), SETTLEMENT_PENDING
      * (units; {@code expected} what was left to bill), PRICE (net unit price), TAX_RATE (percent), ABOVE_SETTLEMENT (of
      * a subcontract order, {@code lineId} null: net amounts). {@code amount} is the money at stake before tax, positive
      * when the supplier bills more than expected.
@@ -52,8 +53,8 @@ public final class SupplierInvoiceResponses {
     }
 
     /**
-     * Per line of one order, what an invoice of it may bill: {@code billable} received and passed QC (for a SUBCONTRACT
-     * order, passed by its final settlement), {@code awaitingQc} received but not concluded on, {@code invoiced} billed
+     * Per line of one order, what an invoice of it may bill: {@code billable} received (for a SUBCONTRACT order, passed
+     * by its final settlement), {@code awaitingQc} always 0 since receiving QC was removed, {@code invoiced} billed
      * by MATCHED invoices already, at {@code netUnitPrice} (the price less the line's discount) and {@code taxRate}.
      */
     public record BasisLine(UUID purchaseOrderLineId, int lineNo, String sku, int ordered, int billable,

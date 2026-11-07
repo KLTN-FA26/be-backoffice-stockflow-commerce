@@ -77,7 +77,7 @@ class ProcurementBusinessDateTest {
                 .thenReturn(Optional.of(new WarehouseView(warehouseId, "HCM", "Kho HCM", "HCM", true)));
         UUID item = UUID.randomUUID();
         when(inventory.itemPolicy(any(Sku.class)))
-                .thenReturn(Optional.of(new InventoryItemPolicy(item, "CHAIR-01", false, false, false)));
+                .thenReturn(Optional.of(new InventoryItemPolicy(item, "CHAIR-01", false, false)));
         when(inventoryControl.item(any())).thenReturn(new InventoryControlItem("CHAIR-01", "EACH", 0, null));
         // Listed with moq 1 in packs of 1 and no lead time of its own: the supplier's 7 days apply.
         when(supplierItems.findSupplier(supplierId)).thenReturn(Optional.of(

@@ -59,7 +59,7 @@ class DesignOwnerCustomerIntegrationTest {
     @BeforeEach
     void setUp() {
         adminUser = account("SALES_MANAGER");
-        reviewer = account("QC_STAFF");
+        reviewer = account("SALES_MANAGER");
         ownerA = account("CUSTOMER");
         ownerB = account("CUSTOMER");
         customerA = profileOf(ownerA);

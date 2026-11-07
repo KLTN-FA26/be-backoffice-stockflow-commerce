@@ -30,9 +30,10 @@ public interface InvoiceMatchFacts {
     }
 
     /**
-     * Units brought in by posted receipts (not a draft, not waiting for approval, not cancelled): {@code billable} -
-     * received on a line without QC, accepted by QC on one with it - and {@code awaitingQc}, received on a QC line but
-     * not concluded on (not inspected, or held in quarantine for a second decision). Rejected units are neither.
+     * Units brought in by posted receipts (not a draft, not waiting for approval, not cancelled): {@code billable},
+     * every unit received. {@code awaitingQc} is always 0: receiving QC was removed (kltn-docs 03 BR-07,
+     * {@code V20261108000200}), so no unit waits for a QC conclusion before it is billed. It goes with supplier
+     * invoices, which leave with purchase orders.
      */
     record Received(int billable, int awaitingQc) {
 

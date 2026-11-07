@@ -19,8 +19,8 @@ public interface StockMovementLog {
 
     /**
      * {@link #findByReference}, among the lines that name no carton on either side: how a retried loose move is
-     * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line
-     * to QC, a QC part to quarantine); a lookup that also saw the carton's lines would take them for the loose
+     * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line's
+     * cartons and its loose remainder); a lookup that also saw the carton's lines would take them for the loose
      * move's first attempt and skip it, so whichever ran first would decide whether the loose units moved at all.
      */
     Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,

@@ -18,10 +18,10 @@ import java.util.function.Supplier;
  * returns.
  *
  * <ul>
- *   <li><b>Quantity</b> (SCRUM-313; kltn-docs 04 BR-02, BR-05): a PO line is billed for units received, less what QC
- *       rejected, never twice. Units QC has not concluded on - not inspected, or held in quarantine for a second
- *       decision - are not billable yet: billing them is {@link InvoiceVarianceKind#AWAITING_QC}, billing beyond them
- *       {@link InvoiceVarianceKind#OVER_INVOICED}. Lines of one invoice on one PO line add up. A line naming its receipt
+ *   <li><b>Quantity</b> (SCRUM-313; kltn-docs 04 BR-02, BR-05): a PO line is billed for units received, never twice;
+ *       billing beyond them is {@link InvoiceVarianceKind#OVER_INVOICED}. ({@link InvoiceVarianceKind#AWAITING_QC},
+ *       units received but not yet concluded on by QC, no longer arises: receiving QC was removed, so
+ *       {@code awaitingQc} is always 0.) Lines of one invoice on one PO line add up. A line naming its receipt
  *       line is held to that delivery as well.</li>
  *   <li><b>Price</b> (SCRUM-314): the unit price against the PO line's net price (its price less its discount); off by
  *       more than {@code tolerancePercent} of it, either way, is {@link InvoiceVarianceKind#PRICE}. A free PO line

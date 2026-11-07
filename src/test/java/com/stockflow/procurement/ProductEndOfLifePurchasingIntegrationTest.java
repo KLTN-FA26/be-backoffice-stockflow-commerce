@@ -104,7 +104,7 @@ class ProductEndOfLifePurchasingIntegrationTest {
         items.describe(item, items.get(item).version(),
                 new ItemLogistics("EACH", null, new BigDecimal("0.5"), new BigDecimal("10"), new BigDecimal("10"),
                         new BigDecimal("10"), new BigDecimal("0.6"), new BigDecimal("12"), new BigDecimal("12"),
-                        new BigDecimal("12"), 1, 1, StorageClass.NORMAL, false, null, false));
+                        new BigDecimal("12"), 1, 1, StorageClass.NORMAL, false, null));
         return product;
     }
 

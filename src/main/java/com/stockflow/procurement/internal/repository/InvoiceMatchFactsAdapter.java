@@ -31,16 +31,11 @@ class InvoiceMatchFactsAdapter implements InvoiceMatchFacts {
     private static final String BILLED = "i.status IN ('MATCHED', 'PAID')";
 
     /**
-     * Per receipt line: units received, and those QC accepted and rejected. A line without QC is billable as received;
-     * on a line with QC only what was accepted is, and what is neither accepted nor rejected - not inspected, or held
-     * in quarantine for a second decision - awaits QC.
+     * Per receipt line: units received, every one of them billable - there is no quality check at the warehouse
+     * (kltn-docs 03 BR-07), so nothing waits for QC.
      */
     private static final String RECEIPT_LINES = """
-            SELECT l.id, l.po_line_id, l.received_qty, l.qc_required,
-                   COALESCE((SELECT SUM(q.quantity) FROM procurement.qc_inspections q
-                              WHERE q.receipt_line_id = l.id AND q.outcome = 'ACCEPTED'), 0) AS accepted,
-                   COALESCE((SELECT SUM(q.quantity) FROM procurement.qc_inspections q
-                              WHERE q.receipt_line_id = l.id AND q.outcome = 'REJECTED'), 0) AS rejected
+            SELECT l.id, l.po_line_id, l.received_qty
               FROM procurement.goods_receipt_lines l
               JOIN procurement.goods_receipts r ON r.id = l.receipt_id
              WHERE""" + " " + POSTED;
@@ -123,18 +118,12 @@ class InvoiceMatchFactsAdapter implements InvoiceMatchFacts {
         if (ids.isEmpty()) {
             return Map.of();
         }
-        Map<UUID, int[]> sums = new HashMap<>();
+        Map<UUID, Integer> sums = new HashMap<>();
         for (Object[] r : rows(RECEIPT_LINES + " AND " + condition, ids)) {
-            int receivedQty = ((Number) r[2]).intValue();
-            boolean qc = (Boolean) r[3];
-            int accepted = ((Number) r[4]).intValue();
-            int rejected = ((Number) r[5]).intValue();
-            int[] sum = sums.computeIfAbsent((UUID) r[keyColumn], key -> new int[2]);
-            sum[0] += qc ? accepted : receivedQty;
-            sum[1] += qc ? Math.max(receivedQty - accepted - rejected, 0) : 0;
+            sums.merge((UUID) r[keyColumn], ((Number) r[2]).intValue(), Integer::sum);
         }
         Map<UUID, Received> received = new HashMap<>();
-        sums.forEach((key, sum) -> received.put(key, new Received(sum[0], sum[1])));
+        sums.forEach((key, units) -> received.put(key, new Received(units, 0)));
         return received;
     }
 

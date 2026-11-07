@@ -22,14 +22,11 @@ import java.util.Optional;
  * <p>Idempotent: the event is delivered at least once, and two tasks finishing together deliver two events. The
  * decision is taken from the quantities put away at the time the listener runs ({@code closeIfPutAway}), so the
  * later of two events closes the receipt and the earlier one, or a redelivery, finds it already CLOSED and does
- * nothing. A receipt that is not in putaway, such as one still in QC, is left alone; its last QC decision tries
- * again.</p>
+ * nothing. A receipt that is not in putaway is left alone.</p>
  *
- * <p>The receipt is loaded {@code FOR UPDATE}, and the putaway quantities are read after the lock is held. The last
- * QC decision of a mixed receipt ({@code GoodsReceiptServiceImpl.inspect}) takes the same lock: if it is still
- * running when this event arrives, this waits for it to commit and then sees the receipt IN_PUTAWAY with the
- * quantities as they are now. A plain read could see the receipt still in QC while the inspection had read the
- * quantities from before the putaway, and then no one would close it.</p>
+ * <p>The receipt is loaded {@code FOR UPDATE}, and the putaway quantities are read after the lock is held, so two
+ * tasks finishing together are decided one after the other, each on the quantities as they are once the other has
+ * committed.</p>
  */
 @Component("procurementPutawayCompletedListener")
 class PutawayCompletedListener {

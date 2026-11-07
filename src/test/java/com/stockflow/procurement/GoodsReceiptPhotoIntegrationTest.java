@@ -59,11 +59,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
- * Photos of a goods receipt (04b F-RCV steps 05 and 07) through the real storage path and schema: the warehouse's while
- * the receipt is counted, QC's of a line it inspects while the receipt is in QC.
+ * Photos of a goods receipt (04b F-RCV step 05) through the real storage path and schema: the warehouse's while the
+ * receipt is counted. Receiving QC was removed (kltn-docs 03 BR-07): no QC photo is taken any more.
  *
- * <p>The fixture is the demo supplier's order of {@value #SOFA} (no QC) and {@value #TABLE} (QC, lot and expiry) into
- * HCM. Confirming the count sends the receipt to IN_QC, because the table goes through QC.</p>
+ * <p>The fixture is the demo supplier's order of {@value #SOFA} and {@value #TABLE} (lot and expiry) into HCM.
+ * Confirming the count sends the receipt to putaway.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -179,29 +179,26 @@ class GoodsReceiptPhotoIntegrationTest {
     }
 
     @Test
-    @DisplayName("receiving photos while counting, QC photos of the QC line while in QC: kept, listed, shown, audited")
+    @DisplayName("receiving photos while counting: kept, listed, shown, audited; no QC photo is taken any more")
     void photosOfEachStepAreKeptListedAndLinked() {
         PhotoView pallet = photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("pallet.jpg"), clerk);
         PhotoView crate = photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.RECEIPT, photo("thung-sofa.jpg"), clerk);
-        assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("early.jpg"), inspector)))
-                .as("QC photos wait for QC").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("qc.jpg"), inspector)))
+                .as("receiving QC was removed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
-        assertThat(receipts.confirm(receipt, clerk).status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+        assertThat(receipts.confirm(receipt, clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(code(() -> photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("late.jpg"), clerk)))
                 .as("the count is closed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThat(code(() -> photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.QC, photo("sofa.jpg"), inspector)))
-                .as("the sofa goes through no QC").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThat(code(() -> photos.add(receipt, null, GoodsReceiptPhotoStage.QC, photo("none.jpg"), inspector)))
-                .as("a QC photo is of a line").isEqualTo(ErrorCode.VALIDATION_FAILED);
-        PhotoView scratch = photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("vet-xuoc.jpg"), inspector);
+        assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("vet-xuoc.jpg"), inspector)))
+                .as("nor once it is confirmed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
         assertThat(photos.list(receipt)).extracting(PhotoView::id, PhotoView::stage, PhotoView::receiptLineId)
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple(pallet.id(), GoodsReceiptPhotoStage.RECEIPT, null),
-                        org.assertj.core.groups.Tuple.tuple(crate.id(), GoodsReceiptPhotoStage.RECEIPT, sofaLine),
-                        org.assertj.core.groups.Tuple.tuple(scratch.id(), GoodsReceiptPhotoStage.QC, tableLine));
-        assertThat(scratch.fileName()).isEqualTo("vet-xuoc.jpg");
-        assertThat(scratch.takenBy()).isEqualTo(inspector);
+                        org.assertj.core.groups.Tuple.tuple(crate.id(), GoodsReceiptPhotoStage.RECEIPT, sofaLine));
+        PhotoView scratch = crate;
+        assertThat(scratch.fileName()).isEqualTo("thung-sofa.jpg");
+        assertThat(scratch.takenBy()).isEqualTo(clerk);
         assertThat(scratch.takenAt()).isNotNull();
 
         String key = keyOf(scratch.id());
@@ -297,7 +294,7 @@ class GoodsReceiptPhotoIntegrationTest {
     }
 
     @Test
-    @DisplayName("the database keeps photos append-only, a QC photo on a QC line, and the sweep sees them as kept")
+    @DisplayName("the database keeps photos append-only, takes no new QC photo, and the sweep sees them as kept")
     void theSchemaStatesTheRulesAgain() {
         UUID kept = photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("kept.jpg"), clerk).id();
         String key = keyOf(kept);
@@ -314,9 +311,9 @@ class GoodsReceiptPhotoIntegrationTest {
         assertThatThrownBy(() -> jdbc.update("""
                 INSERT INTO procurement.goods_receipt_photos (id, receipt_id, receipt_line_id, stage, storage_key,
                     original_name, content_type, size_bytes, checksum, taken_by)
-                VALUES (?, ?, ?, 'QC', ?, 'x.jpg', 'image/jpeg', 1, ?, ?)""", Identifiers.newId(), receipt, sofaLine,
+                VALUES (?, ?, ?, 'QC', ?, 'x.jpg', 'image/jpeg', 1, ?, ?)""", Identifiers.newId(), receipt, tableLine,
                 "qc-evidence/2026/11/06/" + Identifiers.newId() + ".jpg", "0".repeat(64), inspector))
-                .as("the sofa goes through no QC").isInstanceOf(DataAccessException.class);
+                .as("receiving QC was removed").isInstanceOf(DataAccessException.class);
 
         Set<String> referenced = new HashSet<>();
         owners.forEach(owner -> {

@@ -376,7 +376,7 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * A whole carton is put on hold or condemned (QC), or put away as sellable stock: the row changes status in
+     * A whole carton is put on hold or condemned, or put away as sellable stock: the row changes status in
      * place, keeping its carton, so the carton is never split by a decision about its contents. Units still
      * reserved would silently lose their hold, as in {@link #block}.
      *
@@ -688,7 +688,7 @@ public final class StockItem extends AggregateRoot {
     /**
      * Units that may leave this stock item without breaking a customer's hold: {@code onHand −
      * reserved}, whatever the status. Unlike {@link #available()} this counts quarantined stock too
-     * — moving it from the receiving area to the QC area is still a move.
+     * — moving it from the receiving area to the quarantine area is still a move.
      */
     public Quantity movable() {
         return onHand.minus(reserved());
@@ -817,9 +817,9 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Units moved out of {@code source} that change status on the way (SCRUM-435): a QC decision
-     * sends part of a receipt to the quarantine area as QUARANTINE or BLOCKED, a putaway turns
-     * INBOUND goods into AVAILABLE ones. The layer (receipt time, serial) travels with the goods.
+     * Units moved out of {@code source} that change status on the way (SCRUM-435): a putaway turns
+     * INBOUND goods into AVAILABLE ones, a return's decision puts QUARANTINE goods back on sale. The layer
+     * (receipt time, serial) travels with the goods.
      */
     public static StockItem arrivedAs(StockItem source, LocationId destination, Quantity quantity,
                                       StockStatus status) {
@@ -1071,7 +1071,7 @@ public final class StockItem extends AggregateRoot {
     private void requireDamageable(Instant now) {
         if (status != StockStatus.AVAILABLE) {
             throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, switch (status) {
-                case INBOUND, QUARANTINE -> "%s at %s is %s; QC decides about goods not yet accepted"
+                case INBOUND, QUARANTINE -> "%s at %s is %s; goods not yet put away or in quarantine are not reported damaged"
                         .formatted(sku, location, status);
                 default -> "%s at %s is already %s; only AVAILABLE stock is reported damaged"
                         .formatted(sku, location, status);

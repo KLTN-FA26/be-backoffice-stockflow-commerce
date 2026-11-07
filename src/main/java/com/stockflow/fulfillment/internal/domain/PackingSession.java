@@ -303,7 +303,7 @@ public final class PackingSession {
                 return false;
             }
             case ON_HOLD -> throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
-                    "Packing is on hold for a design check; QC or a warehouse manager re-verifies it first");
+                    "Packing is on hold for a design check; a warehouse manager re-verifies it first");
             default -> throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "Packing is " + status);
         }
     }
@@ -699,7 +699,7 @@ public final class PackingSession {
         packedBy = actor;
     }
 
-    /** A printed design did not match its snapshot (BR-DSG-003, 08 BR-02): QC or a manager decides. */
+    /** A printed design did not match its snapshot (BR-DSG-003, 08 BR-02): a warehouse manager decides. */
     public void hold() {
         if (status != PackStatus.PACKING && status != PackStatus.ON_HOLD) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "Packing is " + status);

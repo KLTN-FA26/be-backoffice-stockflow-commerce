@@ -212,7 +212,6 @@ class GoodsReceiptWithoutPoIntegrationTest {
                 .andExpect(jsonPath("$.data.lines[0].sku").value(SOFA))
                 .andExpect(jsonPath("$.data.lines[0].purchaseOrderLineId").doesNotExist())
                 .andExpect(jsonPath("$.data.lines[0].quantity").value(3))
-                .andExpect(jsonPath("$.data.lines[0].qcRequired").value(false))
                 .andExpect(jsonPath("$.data.warnings.length()").value(0));
         // Recounting keeps the one line per item and lot.
         count(clerk, receipt, sofa(5)).andExpect(jsonPath("$.data.lines[0].quantity").value(5))
@@ -338,20 +337,20 @@ class GoodsReceiptWithoutPoIntegrationTest {
     }
 
     @Test
-    @DisplayName("the lot, expiry and QC rules of a normal receipt apply: a QC item goes to QC after approval")
-    void lotExpiryAndQcApply() throws Exception {
+    @DisplayName("the lot and expiry rules of a normal receipt apply; once approved it goes to putaway")
+    void lotAndExpiryApply() throws Exception {
         String suffix = UUID.randomUUID().toString().substring(0, 6);
         String receipt = draft(clerk, supplier(), "gift");
         String tableLine = """
                 {"sku":"%s","quantity":3,"lotNumber":"NP-%s","expiryDate":"%s","locationCode":"%s"}"""
                 .formatted(TABLE, suffix, LocalDate.now().plusYears(1), RECEIVING);
         count(clerk, receipt, tableLine).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.lines[0].qcRequired").value(true));
+                .andExpect(jsonPath("$.data.lines[0].lotTracked").value(true));
         confirm(clerk, receipt).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
         assertThat(inbound(TABLE, "NP-" + suffix)).isZero();
 
         decide(manager, receipt, "approval", "gift").andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("IN_QC"));
+                .andExpect(jsonPath("$.data.status").value("IN_PUTAWAY"));
         assertThat(inbound(TABLE, "NP-" + suffix)).isEqualTo(3);
     }
 

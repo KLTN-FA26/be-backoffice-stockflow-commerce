@@ -117,7 +117,7 @@ class TransferPackServiceTest {
         when(store.load(any(), anyString(), anyList())).thenAnswer(call -> session);
         when(itemControls.logistics(any())).thenAnswer(call -> new InventoryItemLogistics("SKU-A", 0, new ItemLogistics(
                 "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1, StorageClass.NORMAL, false,
-                null, false, true)));
+                null, true)));
     }
 
     @Nested

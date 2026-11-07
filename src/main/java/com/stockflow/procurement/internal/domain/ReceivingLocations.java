@@ -11,7 +11,4 @@ public interface ReceivingLocations {
     Optional<ReceivingLocation> byCode(String code);
 
     Map<UUID, ReceivingLocation> byIds(Collection<UUID> ids);
-
-    /** Whether the warehouse has at least one active area of this type. */
-    boolean hasArea(UUID warehouseId, String areaType);
 }

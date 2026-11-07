@@ -548,7 +548,7 @@ class PackingService implements Packing {
     }
 
     /**
-     * QC or a warehouse manager re-verifies held packing (08 §5 Verification Failed → In Progress): every print line
+     * A warehouse manager re-verifies held packing (08 §5 Verification Failed → In Progress): every print line
      * of the order is checked again; all matching, the order's design hold is resolved and the packer completes again.
      *
      * @return whether packing is back in progress
@@ -753,7 +753,7 @@ class PackingService implements Packing {
         return new Context(pick, requirePack(pick), order);
     }
 
-    /** Shown in the queue: an order packing may work on, or one held only for its design check (QC's work). */
+    /** Shown in the queue: an order packing may work on, or one held only for its design check (a manager's work). */
     private static boolean queueable(com.stockflow.order.api.OrderHoldState state) {
         if (state == null) {
             return false;

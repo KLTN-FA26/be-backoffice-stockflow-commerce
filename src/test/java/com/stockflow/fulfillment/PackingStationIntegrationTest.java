@@ -120,7 +120,6 @@ class PackingStationIntegrationTest {
     private UUID packerHcm;
     private UUID otherPackerHcm;
     private UUID packerElsewhere;
-    private UUID qcHcm;
     private UUID customerUser;
     private final List<UUID> placed = Collections.synchronizedList(new ArrayList<>());
 
@@ -133,7 +132,6 @@ class PackingStationIntegrationTest {
         otherPackerHcm = staff("WAREHOUSE_STAFF", HCM);
         UUID elsewhere = tx.execute(s -> otherWarehouse());
         packerElsewhere = staff("WAREHOUSE_STAFF", elsewhere);
-        qcHcm = staff("QC_STAFF", HCM);
         customerUser = staff("CUSTOMER");
     }
 
@@ -407,7 +405,7 @@ class PackingStationIntegrationTest {
 
     @Test
     @DisplayName("before picking ends 409 PACKING_NOT_READY; OC and customers 403; another warehouse OUT_OF_DATA_SCOPE; "
-            + "QC reads the queue; a second packer 409 PACKING_TAKEN; a manager steps in")
+            + "a second packer 409 PACKING_TAKEN; a manager steps in")
     void whoMayPack() throws Exception {
         OrderSummary order = paidOrder(sofa(1));
         UUID task = UUID.fromString(data(as(coordinator, "ORDER_COORDINATOR", post(BASE + "/tasks")
@@ -430,7 +428,6 @@ class PackingStationIntegrationTest {
         as(coordinator, "ORDER_COORDINATOR", post(BASE + "/tasks/" + task + "/packing-start"))
                 .andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(BASE + "/packing-queue")).andExpect(status().isForbidden());
-        as(qcHcm, "QC_STAFF", get(BASE + "/packing-queue")).andExpect(status().isOk());
         as(packerElsewhere, "WAREHOUSE_STAFF", get(BASE + "/tasks/" + task + "/packing-session"))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
         as(packerElsewhere, "WAREHOUSE_STAFF", get(BASE + "/packing-queue?warehouseId=" + HCM))

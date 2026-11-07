@@ -91,8 +91,7 @@ class PickListServiceTest {
         when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
                 task.getOrderId(), OrderStatus.PICKING, List.of(), null)));
         when(itemControls.logistics(any())).thenAnswer(call -> new InventoryItemLogistics("X", 0, new ItemLogistics(
-                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1, null, false, null,
-                false)));
+                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1, null, false, null)));
     }
 
     private PickLineJpaEntity line(String sku, String location, int allocated, UUID reservation) {

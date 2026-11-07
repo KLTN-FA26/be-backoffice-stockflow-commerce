@@ -194,7 +194,7 @@ public interface InventoryService {
     Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds);
 
     /**
-     * Move units and change their status in one step (QC decision, putaway); see
+     * Move units and change their status in one step (a return's decision, putaway); see
      * {@link ReclassifyStockCommand}. Same locking and errors as {@link #move}.
      */
     StockMove reclassify(ReclassifyStockCommand command);
@@ -225,7 +225,7 @@ public interface InventoryService {
     List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command);
 
     /**
-     * A QC decision about whole cartons: {@link #moveStockPackages} and the rows' status change in one step, so
+     * A decision about whole cartons: {@link #moveStockPackages} and the rows' status change in one step, so
      * no carton is split or opened. Same errors, plus {@code STOCK_STATUS_MISMATCH} (a row is not INBOUND or
      * QUARANTINE).
      */

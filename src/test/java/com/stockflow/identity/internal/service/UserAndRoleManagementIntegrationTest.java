@@ -144,12 +144,12 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void listsStaffWithFiltersAndLeavesCustomersOutUnlessAsked() {
-        StaffUser staff = create("QC_STAFF").user();
+        StaffUser staff = create("ACCOUNTANT").user();
         String customerEmail = unique("c") + "@example.com";
         UUID customerId = identity.registerCustomer(
                 new com.stockflow.identity.api.RegisterAccountCommand(customerEmail, STRONG, "Customer")).userId();
 
-        var byRole = identity.listUsers(new ListUsersQuery(staff.username(), null, "QC_STAFF", false, 0, 20, null));
+        var byRole = identity.listUsers(new ListUsersQuery(staff.username(), null, "ACCOUNTANT", false, 0, 20, null));
         assertThat(byRole.items()).extracting(StaffUser::userId).containsExactly(staff.userId());
 
         var staffOnly = identity.listUsers(new ListUsersQuery(customerEmail, null, null, false, 0, 20, null));
@@ -266,7 +266,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void theAuditEntryTellsLockFromDisableAndCarriesTheReason() {
-        UUID id = create("QC_STAFF").user().userId();
+        UUID id = create("ACCOUNTANT").user().userId();
 
         identity.changeUserStatus(id, UserStatusChange.LOCK, "Đăng nhập bất thường");
         identity.changeUserStatus(id, UserStatusChange.UNLOCK, "Đã kiểm tra, an toàn");
@@ -282,7 +282,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void aRefusedTransitionLeavesNoHistoryRowAndAFailureAuditEntryWithTheReason() {
-        UUID id = create("QC_STAFF").user().userId();
+        UUID id = create("ACCOUNTANT").user().userId();
 
         identity.changeUserStatus(id, UserStatusChange.DISABLE, "Tạm dừng");
         refused(ErrorCode.INVALID_USER_STATUS_TRANSITION,
@@ -298,7 +298,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void anActionThatChangesNothingIsRefusedAndWritesNoHistoryRow() {
-        UUID id = create("QC_STAFF").user().userId();
+        UUID id = create("ACCOUNTANT").user().userId();
 
         // an active account: enabling it, or unlocking it with no lockout running, changes nothing
         refused(ErrorCode.USER_STATUS_UNCHANGED, () -> identity.changeUserStatus(id, UserStatusChange.ENABLE, REASON));
@@ -354,7 +354,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void historyRowsCanNeitherBeChangedNorDeleted() {
-        UUID id = create("QC_STAFF").user().userId();
+        UUID id = create("ACCOUNTANT").user().userId();
         identity.changeUserStatus(id, UserStatusChange.LOCK, "Đăng nhập bất thường");
 
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> jdbc.update(
@@ -607,7 +607,7 @@ class UserAndRoleManagementIntegrationTest {
     @Test
     void warehouseRolesAreLimitedToTheirAssignedWarehousesResolvedPerRequest() {
         assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF")).scope()).isEqualTo(DataScope.WAREHOUSE);
-        assertThat(lookup.resolve(List.of("QC_STAFF", "WAREHOUSE_MANAGER")).scope()).isEqualTo(DataScope.WAREHOUSE);
+        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER")).scope()).isEqualTo(DataScope.WAREHOUSE);
         // The broadest of a user's roles: a clerk who also plans plans across warehouses.
         assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "INVENTORY_PLANNER")).scope()).isEqualTo(DataScope.ALL);
 
@@ -626,7 +626,7 @@ class UserAndRoleManagementIntegrationTest {
         assertThat(warehouseLookup.warehousesOf(clerk.userId()).prefixes()).isEmpty();
 
         CreatedStaffUser withWarehouse = identity.createStaffUser(new CreateStaffUserCommand(unique("w."),
-                unique("w") + "@example.com", null, null, List.of("QC_STAFF"),
+                unique("w") + "@example.com", null, null, List.of("WAREHOUSE_STAFF"),
                 List.of(com.stockflow.support.DemoData.WAREHOUSE_HCM)));
         assertThat(withWarehouse.user().warehouseIds()).containsExactly(com.stockflow.support.DemoData.WAREHOUSE_HCM);
     }
@@ -647,7 +647,7 @@ class UserAndRoleManagementIntegrationTest {
         StaffUser picker = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
                 "An Picker", null, List.of("WAREHOUSE_STAFF"), inHcm)).user();
         StaffUser manager = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
-                null, null, List.of("WAREHOUSE_MANAGER", "QC_STAFF"), inHcm)).user();
+                null, null, List.of("WAREHOUSE_MANAGER", "SALES_STAFF"), inHcm)).user();
         StaffUser sales = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
                 "Sales Person", null, List.of("SALES_STAFF"), inHcm)).user();
         StaffUser elsewhere = identity.createStaffUser(new CreateStaffUserCommand(unique("a."),
@@ -667,7 +667,7 @@ class UserAndRoleManagementIntegrationTest {
         assertThat(pickerRow.displayName()).isEqualTo("An Picker");
         assertThat(pickerRow.roles()).containsExactly("WAREHOUSE_STAFF");
         var managerRow = found.stream().filter(u -> u.userId().equals(manager.userId())).findFirst().orElseThrow();
-        // No full name given: the username is shown. Only the roles asked for are listed, not QC_STAFF.
+        // No full name given: the username is shown. Only the roles asked for are listed, not SALES_STAFF.
         assertThat(managerRow.displayName()).isEqualTo(manager.username());
         assertThat(managerRow.roles()).containsExactly("WAREHOUSE_MANAGER");
 

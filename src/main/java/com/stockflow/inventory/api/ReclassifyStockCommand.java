@@ -8,13 +8,13 @@ import java.util.UUID;
 
 /**
  * Move units to another location and give them a new status in the same step, writing one ledger
- * line that records both: QC sending part of a receipt to the quarantine area (INBOUND to QUARANTINE
- * or BLOCKED), a putaway turning INBOUND goods into AVAILABLE ones at the bin.
+ * line that records both: a returned item passed and put back at a bin (QUARANTINE to AVAILABLE), a putaway
+ * turning INBOUND goods into AVAILABLE ones at the bin.
  *
  * <p>Only INBOUND or QUARANTINE stock can be reclassified: stock that is already sellable, damaged
  * or expired changes status through an adjustment, not through a receiving decision.</p>
  *
- * @param referenceId the document that decided it (a QC inspection, a putaway task); also the
+ * @param referenceId the document that decided it (a return line, a putaway task); also the
  *                    idempotency key together with {@code reference}
  * @param receivedAt  the stock layer to take from (its receipt time), null when the location holds one
  */

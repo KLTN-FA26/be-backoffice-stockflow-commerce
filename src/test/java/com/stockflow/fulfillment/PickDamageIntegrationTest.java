@@ -105,7 +105,6 @@ class PickDamageIntegrationTest {
     private UUID picker;
     private UUID otherPicker;
     private UUID pickerElsewhere;
-    private UUID qc;
     private final List<UUID> placed = new ArrayList<>();
 
     @BeforeEach
@@ -124,7 +123,6 @@ class PickDamageIntegrationTest {
         picker = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         otherPicker = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         pickerElsewhere = staff("WAREHOUSE_STAFF", otherWarehouse());
-        qc = staff("QC_STAFF", DemoData.WAREHOUSE_HCM);
     }
 
     @AfterEach
@@ -719,8 +717,6 @@ class PickDamageIntegrationTest {
                 .andExpect(status().isNotFound());
         damage(task, lineId, pickerElsewhere, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 1),
                 true).andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
-        damage(task, lineId, qc, "QC_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 1), true)
-                .andExpect(status().isForbidden());
         damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 3), true)
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-B", 1), true)

@@ -42,7 +42,7 @@ import static org.mockito.Mockito.doAnswer;
 
 /**
  * SCRUM-308/309 against a real database: invoices entered against orders received through the real receiving flow,
- * matched three ways - quantities against what was received and passed QC, less what MATCHED invoices billed; prices
+ * matched three ways - quantities against what was received, less what MATCHED invoices billed; prices
  * against the configured 2 % tolerance; tax rates - and the rules the database states again. Each test builds its own
  * CONFIRMED order on the demo supplier, items and HCM map, as {@code GoodsReceiptIntegrationTest} does.
  */
@@ -51,8 +51,8 @@ import static org.mockito.Mockito.doAnswer;
 @TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class SupplierInvoiceIntegrationTest {
 
-    private static final String SOFA = "SOFA-3S-GREY";   // no QC, no lot
-    private static final String TABLE = "TABLE-OAK-160"; // QC, lot and expiry
+    private static final String SOFA = "SOFA-3S-GREY";   // no lot
+    private static final String TABLE = "TABLE-OAK-160"; // lot and expiry
 
     @Autowired SupplierInvoices invoices;
     @Autowired GoodsReceipts receipts;
@@ -64,7 +64,6 @@ class SupplierInvoiceIntegrationTest {
     @Autowired TransactionTemplate tx;
 
     private UUID clerk;
-    private UUID qc;
     private UUID accountant;
     private UUID supplier;
     private String lot;
@@ -75,7 +74,6 @@ class SupplierInvoiceIntegrationTest {
         doAnswer(call -> "http://objects.test/" + call.getArgument(0)).when(storage).presignedDownloadUrl(anyString(),
                 any(), any());
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        qc = tx.execute(s -> ReferenceRows.user(entityManager));
         accountant = tx.execute(s -> ReferenceRows.user(entityManager));
         supplier = jdbc.queryForObject("SELECT id FROM procurement.suppliers WHERE code = 'GOVIET'", UUID.class);
         lot = "INV-" + UUID.randomUUID().toString().substring(0, 8);
@@ -195,32 +193,15 @@ class SupplierInvoiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("only what QC accepted is billable: before QC the units are awaited, after it the rejected and the "
-            + "quarantined are not billed")
-    void qcDecidesWhatIsBillable() {
+    @DisplayName("every unit received is billable at once: there is no quality check at the warehouse (kltn-docs 03 BR-07)")
+    void everyReceivedUnitIsBillable() {
         UUID po = order("CONFIRMED", "0", TABLE, 6);
-        GoodsReceipts.ReceiptView receipt = received(po, TABLE, 6);
+        received(po, TABLE, 6);
         SupplierInvoices.InvoiceView invoice = enter(po, number(), billed(poLine(po, TABLE), 6, "1000", "0"));
 
-        assertThat(invoices.match(invoice.id(), accountant).variances())
-                .extracting(SupplierInvoices.VarianceView::kind).containsExactly(InvoiceVarianceKind.AWAITING_QC);
-
-        UUID line = receipt.lines().getFirst().id();
-        receipts.moveToQc(receipt.id(), line, "HCM-QCA01", clerk);
-        receipts.inspect(receipt.id(), line, new GoodsReceipts.Decision(3,
-                new GoodsReceipts.Part(2, "HCM-QC01", "scratched top"),
-                new GoodsReceipts.Part(1, "HCM-RTV01", "cracked leg")), qc);
-        assertThat(invoices.match(invoice.id(), accountant).variances())
-                .extracting(SupplierInvoices.VarianceView::kind, v -> v.expected().intValue())
-                .containsExactly(tuple(InvoiceVarianceKind.OVER_INVOICED, 3));
-
-        SupplierInvoices.InvoiceView corrected = invoices.revise(invoice.id(), new SupplierInvoices.Revise(po,
-                invoice.invoiceNumber(), today, null, "only the accepted units",
-                List.of(new SupplierInvoices.LineInput(poLine(po, TABLE), line, 3, new BigDecimal("1000"),
-                        BigDecimal.ZERO)), null));
-        assertThat(corrected.status()).isEqualTo(SupplierInvoiceStatus.DRAFT);
-        assertThat(corrected.variances()).isEmpty();
-        assertThat(invoices.match(invoice.id(), accountant).status()).isEqualTo(SupplierInvoiceStatus.MATCHED);
+        SupplierInvoices.InvoiceView matched = invoices.match(invoice.id(), accountant);
+        assertThat(matched.variances()).isEmpty();
+        assertThat(matched.status()).isEqualTo(SupplierInvoiceStatus.MATCHED);
     }
 
     @Test

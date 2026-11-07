@@ -390,7 +390,7 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
     }
 
     @Test
-    @DisplayName("reject the excess of a lot-tracked, QC line: the last lot is cut (70 + 50 -> 70 + 35) and the receipt goes to QC")
+    @DisplayName("reject the excess of a lot-tracked line: the last lot is cut (70 + 50 -> 70 + 35) and the receipt goes to putaway")
     void rejectCutsTheLastLot() throws Exception {
         UUID order = confirmedOrder(TABLE, 100);
         UUID line = poLine(order, TABLE);
@@ -404,7 +404,7 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
 
         rejectExcess(manager, receipt, "over the order")
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("IN_QC"));
+                .andExpect(jsonPath("$.data.status").value("IN_PUTAWAY"));
 
         assertThat(inbound(TABLE, "A-" + suffix)).isEqualTo(70);
         assertThat(inbound(TABLE, "B-" + suffix)).isEqualTo(35);
@@ -564,6 +564,6 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
                 SELECT r.code FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
                   JOIN identity.permission p ON p.id = rp.permission_id
                  WHERE p.code = 'procurement-goods-receipts:APPROVE' ORDER BY r.code""", String.class))
-                .contains("WAREHOUSE_MANAGER").doesNotContain("WAREHOUSE_STAFF", "QC_STAFF", "PROCUREMENT_STAFF");
+                .contains("WAREHOUSE_MANAGER").doesNotContain("WAREHOUSE_STAFF", "PROCUREMENT_STAFF");
     }
 }

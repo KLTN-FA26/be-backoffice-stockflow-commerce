@@ -33,7 +33,7 @@ class PackagingRulesTest {
     private static ItemLogistics item(String weight, String l, String w, String h, String pWeight, String pl,
                                       String pw, String ph, int packageCount, boolean rotatable) {
         return new ItemLogistics("EACH", null, d(weight), d(l), d(w), d(h), d(pWeight), d(pl), d(pw), d(ph),
-                packageCount, 1, StorageClass.NORMAL, false, null, false, rotatable);
+                packageCount, 1, StorageClass.NORMAL, false, null, rotatable);
     }
 
     private static ItemLogistics unitOnly() {

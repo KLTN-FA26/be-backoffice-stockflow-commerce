@@ -70,7 +70,7 @@ public interface FulfillmentService {
     FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor);
 
     /**
-     * QC or a warehouse manager re-verifies the designs of packing held for a mismatch: all matching now, the order's
+     * A warehouse manager re-verifies the designs of packing held for a mismatch: all matching now, the order's
      * DESIGN_MISMATCH hold is resolved and packing is back IN PROGRESS for the packer to complete (08 §5 Verification
      * Failed → In Progress); still mismatching, it stays on hold with the new evidence.
      */

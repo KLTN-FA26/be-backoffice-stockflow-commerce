@@ -17,7 +17,7 @@ import java.util.UUID;
 /**
  * The warehouses of a warehouse-bound user, read per request (SCRUM-457, ADR-0008).
  *
- * <p>Only callers whose roles' scope is WAREHOUSE pay for this — clerks, QC and
+ * <p>Only callers whose roles' scope is WAREHOUSE pay for this — clerks and
  * warehouse managers — and they are assigned one or two warehouses: one indexed read of
  * {@code user_warehouse}, and the prefix of each warehouse from the warehouse module. Not cached, so
  * an administrator's change applies on the user's very next request.</p>

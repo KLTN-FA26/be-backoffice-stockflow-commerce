@@ -331,9 +331,10 @@ public class DesignWorkflowService {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Assigned designer must be active sales staff or an e-commerce administrator");
         }
-        if (!identities.isActiveUserWithAnyRole(reviewer, Role.QC_STAFF.authority())) {
+        // The Sales Manager approves a customer's design (kltn-docs 12); QC staff did before receiving QC was removed.
+        if (!identities.isActiveUserWithAnyRole(reviewer, Role.SALES_MANAGER.authority())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Reviewer must be an active QC staff member");
+                    "Reviewer must be an active sales manager");
         }
     }
     private static DraftView view(DesignDraftJpaEntity d) {

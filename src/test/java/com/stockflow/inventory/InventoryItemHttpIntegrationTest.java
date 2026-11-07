@@ -68,7 +68,7 @@ class InventoryItemHttpIntegrationTest {
 
     private static String logisticsBody(long version) {
         return "{\"version\":" + version + ",\"unitOfMeasure\":\"EACH\",\"storageClass\":\"NORMAL\","
-                + "\"weightKg\":0.120,\"requiresAdultSignature\":false,\"qcRequired\":false}";
+                + "\"weightKg\":0.120,\"requiresAdultSignature\":false}";
     }
 
     private static String policyBody(long version, int reorderPoint) {

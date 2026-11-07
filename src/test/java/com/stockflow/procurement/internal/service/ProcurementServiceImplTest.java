@@ -137,7 +137,7 @@ class ProcurementServiceImplTest {
         when(warehouses.findWarehouse(warehouseId))
                 .thenReturn(Optional.of(new WarehouseView(warehouseId, "HCM", "Kho HCM", "addr", true)));
         when(inventory.itemPolicy(any(Sku.class)))
-                .thenReturn(Optional.of(new InventoryItemPolicy(itemId, "CUP-01", false, false, false)));
+                .thenReturn(Optional.of(new InventoryItemPolicy(itemId, "CUP-01", false, false)));
         when(inventoryControl.item(any())).thenReturn(new InventoryControlItem("CUP-01", "EACH", 0, null));
         when(products.nameForSku(anyString())).thenReturn(Optional.of("Paper cup"));
         when(products.purchasability(anyCollection())).thenReturn(Map.of("CUP-01", Purchasability.PURCHASABLE));

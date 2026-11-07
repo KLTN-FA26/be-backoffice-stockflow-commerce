@@ -40,7 +40,7 @@ import java.util.List;
 /**
  * Cartons (SCRUM-473): looking one up by its LPN, what a location holds by carton, a list of cartons, and printing
  * LPN labels (text, QR, Code 128) for the cartons of a receipt line or a reprint by LPN. Looking up is
- * {@code inventory-stock-packages:READ}, which staff, planners, QC and managers hold; printing and reprinting is
+ * {@code inventory-stock-packages:READ}, which staff, planners and managers hold; printing and reprinting is
  * {@code CREATE}, which only warehouse staff and managers hold.
  *
  * <p>Like location labels, the print answers a binary on success and the JSON envelope on error.</p>

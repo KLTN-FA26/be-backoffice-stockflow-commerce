@@ -52,7 +52,7 @@ import java.util.UUID;
  * Damaged stock (SCRUM-475; docs 03 §5, BR-STK-003): reported on a shelf with photos by anyone of the warehouse, and
  * decided - written off, sent back to the supplier, or restored - by a warehouse manager who did not report it.
  *
- * <p>Two permissions on one resource, on purpose: reporting is floor work ({@code CREATE}: warehouse and QC staff),
+ * <p>Two permissions on one resource, on purpose: reporting is floor work ({@code CREATE}: warehouse staff),
  * deciding is a manager's ({@code APPROVE}), and the reporter can never decide their own report (four eyes, in the
  * aggregate and the table). Damage found while picking is reported on the pick line, through fulfillment.</p>
  *

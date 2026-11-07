@@ -87,8 +87,6 @@ class FulfillmentTaskContextIntegrationTest {
     private UUID pickerHcm;
     private UUID otherPickerHcm;
     private UUID pickerHn;
-    private UUID qcHcm;
-    private UUID qcHn;
     private UUID salesUser;
     private UUID customerUser;
     private final List<UUID> placed = new ArrayList<>();
@@ -109,8 +107,6 @@ class FulfillmentTaskContextIntegrationTest {
         pickerHcm = staff("WAREHOUSE_STAFF", HCM);
         otherPickerHcm = staff("WAREHOUSE_STAFF", HCM);
         pickerHn = staff("WAREHOUSE_STAFF", hn);
-        qcHcm = staff("QC_STAFF", HCM);
-        qcHn = staff("QC_STAFF", hn);
         salesUser = staff("SALES_STAFF");
         customerUser = staff("CUSTOMER");
     }
@@ -425,30 +421,6 @@ class FulfillmentTaskContextIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].taskId").value(inHcm.toString()));
         call(get("/api/v1/fulfillment/tasks").param("warehouseId", hn.toString())
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF")))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
-    }
-
-    @Test
-    @DisplayName("QC sees only the tasks whose package is on a design hold, in their own warehouse")
-    void qcSeesHeldPackagesOfTheirWarehouse() throws Exception {
-        UUID held = taskRow(HCM, pickerHcm, "PICKED");
-        UUID heldElsewhere = taskRow(hn, pickerHn, "PICKED");
-        UUID notHeld = taskRow(HCM, otherPickerHcm, "PICKED");
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE fulfillment.pack SET status = 'ON_HOLD', started_at = NOW() WHERE pick_id IN (?, ?)", held, heldElsewhere));
-
-        call(get("/api/v1/fulfillment/tasks").param("size", "200").header("Authorization", token(qcHcm, "QC_STAFF")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[*].taskId", org.hamcrest.Matchers.hasItem(held.toString())))
-                .andExpect(jsonPath("$.data.items[*].taskId", org.hamcrest.Matchers.not(
-                        org.hamcrest.Matchers.hasItems(heldElsewhere.toString(), notHeld.toString()))))
-                .andExpect(jsonPath("$.data.items[*].packStatus",
-                        org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is("ON_HOLD"))))
-                .andExpect(jsonPath("$.data.items[*].warehouseId",
-                        org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is(HCM.toString()))));
-        call(get("/api/v1/fulfillment/tasks").param("warehouseId", HCM.toString())
-                .header("Authorization", token(qcHn, "QC_STAFF")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
     }

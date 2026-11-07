@@ -546,7 +546,7 @@ class SalesRollupIntegrationTest {
             send(get(REPORTS + "/top-products"), reader).andExpect(status().isOk());
             send(get(REPORTS + "/order-status-counts"), reader).andExpect(status().isOk());
         }
-        for (Role other : List.of(Role.WAREHOUSE_STAFF, Role.SALES_STAFF, Role.CUSTOMER, Role.QC_STAFF)) {
+        for (Role other : List.of(Role.WAREHOUSE_STAFF, Role.SALES_STAFF, Role.CUSTOMER, Role.INVENTORY_PLANNER)) {
             send(get(REPORTS + "/summary"), other).andExpect(status().isForbidden());
             send(get(REPORTS + "/sales-daily"), other).andExpect(status().isForbidden());
             send(get(REPORTS + "/top-products"), other).andExpect(status().isForbidden());

@@ -9,10 +9,7 @@ import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
-import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.common.domain.Sku;
@@ -30,11 +27,8 @@ import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder.Status;
 import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrders;
 import com.stockflow.procurement.internal.repository.GoodsReceiptSearch;
 import com.stockflow.procurement.internal.service.GoodsReceipts.Create;
-import com.stockflow.procurement.internal.service.GoodsReceipts.Decision;
 import com.stockflow.procurement.internal.service.GoodsReceipts.NewLine;
-import com.stockflow.procurement.internal.service.GoodsReceipts.Part;
 import com.stockflow.procurement.internal.service.GoodsReceipts.ReceiptView;
-import com.stockflow.warehouse.api.PutawayTasks;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
 import org.junit.jupiter.api.BeforeEach;
@@ -69,7 +63,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * kltn-docs warehouse/03 (receipt): BR-01 receivable PO, BR-02 over-receipt tolerance, BR-03 lot and expiry,
- * BR-05 a confirmed count is final, BR-06 expiry warning, BR-08 QC accounts for every unit.
+ * BR-05 a confirmed count is final, BR-06 expiry warning, BR-07 no quality check at the warehouse.
  */
 class GoodsReceiptServiceImplTest {
 
@@ -83,7 +77,6 @@ class GoodsReceiptServiceImplTest {
     private final ReceivingLocations locations = mock(ReceivingLocations.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
-    private final PutawayTasks putawayTasks = mock(PutawayTasks.class);
     private final IdentityService identity = mock(IdentityService.class);
     private final InventoryControlService inventoryControl = mock(InventoryControlService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
@@ -109,12 +102,12 @@ class GoodsReceiptServiceImplTest {
             UUID.randomUUID(), "RECEIVING");
 
     private GoodsReceiptServiceImpl service(Instant now) {
-        return new GoodsReceiptServiceImpl(receipts, search, orders, locations, inventory, warehouses, putawayTasks, identity,
+        return new GoodsReceiptServiceImpl(receipts, search, orders, locations, inventory, warehouses, identity,
                 inventoryControl, units, users, events, Clock.fixed(now, ZoneOffset.UTC));
     }
 
     private InventoryItemPolicy plainItem() {
-        return new InventoryItemPolicy(itemId, "CUP-01", false, false, false);
+        return new InventoryItemPolicy(itemId, "CUP-01", false, false);
     }
 
     @BeforeEach
@@ -141,7 +134,6 @@ class GoodsReceiptServiceImplTest {
             }
             return all;
         });
-        when(locations.hasArea(warehouse, "QUALITY_CONTROL")).thenReturn(true);
     }
 
     private ReceivingPurchaseOrder po(Status status, String ordered, String tolerance, boolean subcontract) {
@@ -163,8 +155,8 @@ class GoodsReceiptServiceImplTest {
         return receipt;
     }
 
-    private ReceiptLine counted(int qty, boolean qc) {
-        return ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), qty, null, null, null, qc, null);
+    private ReceiptLine counted(int qty) {
+        return ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), qty, null, null, null, null);
     }
 
     private NewLine newLine(int qty) {
@@ -251,7 +243,7 @@ class GoodsReceiptServiceImplTest {
         }
 
         @Test
-        @DisplayName("a counted line is on the receipt; a plain item needs no QC (2-step flow)")
+        @DisplayName("a counted line is on the receipt, at its receiving location")
         void happyPath() {
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft();
@@ -261,31 +253,14 @@ class GoodsReceiptServiceImplTest {
             assertThat(view.lines()).hasSize(1);
             assertThat(view.lines().get(0).quantity()).isEqualTo(40);
             assertThat(view.lines().get(0).locationCode()).isEqualTo("HCM-RCV-01");
-            assertThat(view.lines().get(0).qcRequired()).isFalse();
             assertThat(view.lines().get(0).sku()).isEqualTo("CUP-01");
-        }
-
-        @Test
-        @DisplayName("an item that needs QC is counted as a QC line, except on a SUBCONTRACT order (production QC)")
-        void qcRequiredFlag() {
-            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", false, false, true);
-            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
-            when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt standard = draft();
-            assertThat(service.replaceLines(standard.id(), List.of(newLine(5))).lines().get(0).qcRequired()).isTrue();
-
-            po(Status.CONFIRMED, "100", null, true);
-            GoodsReceipt subcontract = draft();
-            assertThat(service.replaceLines(subcontract.id(), List.of(newLine(5))).lines().get(0).qcRequired())
-                    .isFalse();
         }
 
         @Test
         @DisplayName("recounting the same PO line and lot keeps the draft line's id (cartons point at it)")
         void recountKeepsLineId() {
             po(Status.CONFIRMED, "100", null, false);
-            ReceiptLine existing = counted(10, false);
+            ReceiptLine existing = counted(10);
             GoodsReceipt receipt = draft(existing);
 
             ReceiptView view = service.replaceLines(receipt.id(), List.of(newLine(25)));
@@ -295,28 +270,10 @@ class GoodsReceiptServiceImplTest {
         }
 
         @Test
-        @DisplayName("SCRUM-473 D5: a SUBCONTRACT receipt refuses cartons on lines[i].packages, and labels none")
-        void subcontractRefusesCartons() {
-            po(Status.CONFIRMED, "100", null, true);
-            GoodsReceipt receipt = draft();
-            NewLine withCartons = new NewLine(poLineId, 10, null, null, "HCM-RCV-01", null, "CARTON",
-                    List.of(new GoodsReceipts.NewPackage(null, 10)));
-
-            BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(withCartons)));
-
-            assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_PACKAGES_NOT_SUPPORTED);
-            assertThat(e.fieldErrors()).extracting(FieldError::field, FieldError::code)
-                    .containsExactly(org.assertj.core.groups.Tuple.tuple("lines[0].packages",
-                            "RECEIPT_PACKAGES_NOT_SUPPORTED"));
-            verify(receipts, never()).save(any(GoodsReceipt.class));
-            verify(inventory, never()).countReceivingPackages(any());
-        }
-
-        @Test
         @DisplayName("a line left out of the recount that has labelled cartons is RECEIPT_LINE_HAS_PACKAGES")
         void droppedLineWithCartons() {
             po(Status.CONFIRMED, "100", null, false);
-            ReceiptLine existing = counted(10, false);
+            ReceiptLine existing = counted(10);
             GoodsReceipt receipt = draft(existing);
             when(inventory.receiptLinesWithStockPackages(anyCollection())).thenReturn(Set.of(existing.id()));
 
@@ -385,7 +342,7 @@ class GoodsReceiptServiceImplTest {
         }
 
         private void trackedWithMaxShelfLife(boolean lot, boolean expiry, Integer maxShelfLifeDays) {
-            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", lot, expiry, false,
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", lot, expiry,
                     maxShelfLifeDays);
             when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
             when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
@@ -593,7 +550,7 @@ class GoodsReceiptServiceImplTest {
         @DisplayName("BR-01 is asked again at confirmation: the order may have been cancelled since the count")
         void orderNoLongerReceivable() {
             po(Status.CANCELLED, "10", null, false);
-            GoodsReceipt receipt = draft(counted(5, false));
+            GoodsReceipt receipt = draft(counted(5));
             assertThat(code(() -> service.confirm(receipt.id(), user))).isEqualTo(ErrorCode.PURCHASE_ORDER_NOT_RECEIVABLE);
             verify(inventory, never()).receive(any());
         }
@@ -603,7 +560,7 @@ class GoodsReceiptServiceImplTest {
                 + "count is not posted, it waits for the manager (BR-RCP-001)")
         void toleranceAtConfirm() {
             po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft(counted(50, false));
+            GoodsReceipt receipt = draft(counted(50));
             when(receipts.receivedOnOtherReceipts(anyIterable(), eq(receipt.id()))).thenReturn(Map.of(poLineId, 60));
 
             ReceiptView view = service.confirm(receipt.id(), user);
@@ -619,16 +576,6 @@ class GoodsReceiptServiceImplTest {
         }
 
         @Test
-        @DisplayName("docs 03 edge: a receipt with QC goods and a warehouse without a QUALITY_CONTROL area is QC_AREA_MISSING")
-        void qcAreaMissing() {
-            po(Status.CONFIRMED, "100", null, false);
-            when(locations.hasArea(warehouse, "QUALITY_CONTROL")).thenReturn(false);
-            GoodsReceipt receipt = draft(counted(5, true));
-            assertThat(code(() -> service.confirm(receipt.id(), user))).isEqualTo(ErrorCode.QC_AREA_MISSING);
-            assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.DRAFT);
-        }
-
-        @Test
         @DisplayName("an empty receipt cannot be confirmed (INVALID_RECEIPT_TRANSITION)")
         void emptyReceipt() {
             po(Status.CONFIRMED, "100", null, false);
@@ -640,7 +587,7 @@ class GoodsReceiptServiceImplTest {
         @DisplayName("BR-05: a confirmed receipt is not confirmed twice")
         void notTwice() {
             po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft(counted(5, false));
+            GoodsReceipt receipt = draft(counted(5));
             service.confirm(receipt.id(), user);
             assertThat(code(() -> service.confirm(receipt.id(), user))).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
             verify(inventory, times(1)).receive(any());
@@ -651,7 +598,7 @@ class GoodsReceiptServiceImplTest {
                 + "goods are announced ready for putaway")
         void fullReceipt() {
             ReceivingPurchaseOrder order = po(Status.CONFIRMED, "100", null, false);
-            ReceiptLine line = counted(100, false);
+            ReceiptLine line = counted(100);
             GoodsReceipt receipt = draft(line);
             when(receipts.confirmedQuantities(poId)).thenReturn(Map.of(poLineId, 100));
             when(orders.supplierName(order.supplierId())).thenReturn(Optional.of("ACME"));
@@ -676,7 +623,7 @@ class GoodsReceiptServiceImplTest {
         @DisplayName("a partial receipt leaves the line and the order PARTIALLY_RECEIVED")
         void partialReceipt() {
             ReceivingPurchaseOrder order = po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft(counted(40, false));
+            GoodsReceipt receipt = draft(counted(40));
             when(receipts.confirmedQuantities(poId)).thenReturn(Map.of(poLineId, 40));
 
             service.confirm(receipt.id(), user);
@@ -689,7 +636,7 @@ class GoodsReceiptServiceImplTest {
         @DisplayName("over-receipt within tolerance (105 of 100 at 5%) still closes the line as RECEIVED")
         void overReceiptWithinTolerance() {
             ReceivingPurchaseOrder order = po(Status.CONFIRMED, "100", "5", false);
-            GoodsReceipt receipt = draft(counted(105, false));
+            GoodsReceipt receipt = draft(counted(105));
             when(receipts.confirmedQuantities(poId)).thenReturn(Map.of(poLineId, 105));
             service.confirm(receipt.id(), user);
             verify(orders).recordProgress(eq(order), eq(Map.of(poLineId, LineStatus.RECEIVED)), eq(Status.RECEIVED),
@@ -697,41 +644,16 @@ class GoodsReceiptServiceImplTest {
         }
 
         @Test
-        @DisplayName("a QC line goes to QC, the putaway announcement waits for QC; the confirmation event says so")
-        void qcLine() {
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft(counted(10, true));
-
-            ReceiptView view = service.confirm(receipt.id(), user);
-
-            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.IN_QC);
-            ArgumentCaptor<GoodsReceiptConfirmed> confirmed = ArgumentCaptor.forClass(GoodsReceiptConfirmed.class);
-            verify(events).publishEvent(confirmed.capture());
-            assertThat(confirmed.getValue().lines()).hasSize(1);
-            assertThat(confirmed.getValue().lines().get(0).qcRequired()).isTrue();
-            verify(events, never()).publishEvent(any(ReceiptStockReadyForPutaway.class));
-        }
-
-        @Test
-        @DisplayName("a SUBCONTRACT order's receipt is CLOSED as it is confirmed: no QC, no putaway announcement")
+        @DisplayName("a SUBCONTRACT order's receipt goes to putaway like any other: nothing in house takes its goods over")
         void subcontract() {
             po(Status.CONFIRMED, "100", null, true);
-            GoodsReceipt receipt = draft(counted(10, false));
+            GoodsReceipt receipt = draft(counted(10));
 
             ReceiptView view = service.confirm(receipt.id(), user);
 
-            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
-            verify(events, never()).publishEvent(any(ReceiptStockReadyForPutaway.class));
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+            verify(events).publishEvent(any(ReceiptStockReadyForPutaway.class));
             verify(inventory).receive(any());
-        }
-
-        @Test
-        @DisplayName("a SUBCONTRACT receipt needs a QUALITY_CONTROL area too (production QC waits there)")
-        void subcontractNeedsQcArea() {
-            po(Status.CONFIRMED, "100", null, true);
-            when(locations.hasArea(warehouse, "QUALITY_CONTROL")).thenReturn(false);
-            GoodsReceipt receipt = draft(counted(10, false));
-            assertThat(code(() -> service.confirm(receipt.id(), user))).isEqualTo(ErrorCode.QC_AREA_MISSING);
         }
 
         @Test
@@ -739,7 +661,7 @@ class GoodsReceiptServiceImplTest {
         void microsecondTime() {
             po(Status.CONFIRMED, "100", null, false);
             service = service(Instant.parse("2026-10-22T03:00:00.123456789Z"));
-            GoodsReceipt receipt = draft(counted(10, false));
+            GoodsReceipt receipt = draft(counted(10));
             service.confirm(receipt.id(), user);
             assertThat(receipt.confirmedAt()).isEqualTo(Instant.parse("2026-10-22T03:00:00.123456Z"));
         }
@@ -751,7 +673,7 @@ class GoodsReceiptServiceImplTest {
     @DisplayName("cancelling a draft voids the cartons labelled while counting; a confirmed receipt cannot be cancelled (BR-05)")
     void cancel() {
         po(Status.CONFIRMED, "100", null, false);
-        ReceiptLine line = counted(5, false);
+        ReceiptLine line = counted(5);
         GoodsReceipt receipt = draft(line);
 
         ReceiptView view = service.cancel(receipt.id());
@@ -759,205 +681,9 @@ class GoodsReceiptServiceImplTest {
         assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
         verify(inventory).voidStockPackagesOfReceiptLines(List.of(line.id()));
 
-        GoodsReceipt confirmed = draft(counted(5, false));
+        GoodsReceipt confirmed = draft(counted(5));
         service.confirm(confirmed.id(), user);
         assertThat(code(() -> service.cancel(confirmed.id()))).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-    }
-
-    // ------------------------------------------------------------------ QC
-
-    @Nested
-    class Qc {
-
-        private GoodsReceipt inQc(ReceiptLine line) {
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft(line);
-            service.confirm(receipt.id(), user);
-            return receipt;
-        }
-
-        private GoodsReceipt inQcMoved(ReceiptLine line) {
-            GoodsReceipt receipt = inQc(line);
-            service.moveToQc(receipt.id(), line.id(), "HCM-QC-01", user);
-            return receipt;
-        }
-
-        @Test
-        @DisplayName("docs 03 step 7: the QC line's goods are moved from the receiving bin to a QUALITY_CONTROL area of the warehouse")
-        void moveToQc() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQc(line);
-
-            ReceiptView view = service.moveToQc(receipt.id(), line.id(), "hcm-qc-01", user);
-
-            assertThat(view.lines().get(0).qcLocationCode()).isEqualTo("HCM-QC-01");
-            assertThat(view.lines().get(0).qcProgress()).isEqualTo(GoodsReceipts.QcProgress.IN_QC_AREA);
-            ArgumentCaptor<MoveStockCommand> move = ArgumentCaptor.forClass(MoveStockCommand.class);
-            verify(inventory).move(move.capture());
-            assertThat(move.getValue().quantity()).isEqualTo(10);
-        }
-
-        @Test
-        @DisplayName("the QC area must be a QUALITY_CONTROL area of this warehouse")
-        void moveToWrongArea() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQc(line);
-            assertThat(code(() -> service.moveToQc(receipt.id(), line.id(), "HCM-QUA-01", user)))
-                    .isEqualTo(ErrorCode.LOCATION_AREA_MISMATCH);
-            verify(inventory, never()).move(any());
-        }
-
-        @Test
-        @DisplayName("a line that needs no QC is not moved to QC, and a line is moved once")
-        void moveGuards() {
-            ReceiptLine plain = counted(5, false);
-            ReceiptLine qc = ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), 5, "L1", null,
-                    null, true, null);
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft(plain, qc);
-            service.confirm(receipt.id(), user);
-
-            assertThat(code(() -> service.moveToQc(receipt.id(), plain.id(), "HCM-QC-01", user)))
-                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-            service.moveToQc(receipt.id(), qc.id(), "HCM-QC-01", user);
-            assertThat(code(() -> service.moveToQc(receipt.id(), qc.id(), "HCM-QC-01", user)))
-                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        }
-
-        @Test
-        @DisplayName("BR-08: QC decides only on goods already moved to the QC area")
-        void inspectBeforeMove() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQc(line);
-            assertThat(code(() -> service.inspect(receipt.id(), line.id(), new Decision(10, null, null), user)))
-                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        }
-
-        @Test
-        @DisplayName("BR-08: accepted + quarantined + rejected must equal the units moved to QC")
-        void quantityMustAddUp() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQcMoved(line);
-            assertThat(code(() -> service.inspect(receipt.id(), line.id(),
-                    new Decision(6, new Part(3, "HCM-QUA-01", "scratched"), null), user)))
-                    .isEqualTo(ErrorCode.QC_QUANTITY_MISMATCH);
-            verify(inventory, never()).reclassify(any());
-        }
-
-        @Test
-        @DisplayName("BR-08: a quarantined or rejected part needs a reason (QC_REASON_REQUIRED on its own field)")
-        void reasonRequired() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQcMoved(line);
-            BusinessException e = thrown(() -> service.inspect(receipt.id(), line.id(),
-                    new Decision(7, new Part(3, "HCM-QUA-01", "  "), null), user));
-            assertThat(e.errorCode()).isEqualTo(ErrorCode.QC_REASON_REQUIRED);
-            assertThat(e.fieldErrors()).extracting(FieldError::field).containsExactly("quarantined.reason");
-        }
-
-        @Test
-        @DisplayName("a rejected part needs its quarantine area (QC_TARGET_LOCATION_REQUIRED), and it must be a QUARANTINE "
-                + "area of the warehouse")
-        void targetRequired() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQcMoved(line);
-            BusinessException missing = thrown(() -> service.inspect(receipt.id(), line.id(),
-                    new Decision(7, null, new Part(3, " ", "broken")), user));
-            assertThat(missing.errorCode()).isEqualTo(ErrorCode.QC_TARGET_LOCATION_REQUIRED);
-            assertThat(missing.fieldErrors()).extracting(FieldError::field).containsExactly("rejected.locationCode");
-
-            BusinessException wrongArea = thrown(() -> service.inspect(receipt.id(), line.id(),
-                    new Decision(7, null, new Part(3, "HCM-RCV-01", "broken")), user));
-            assertThat(wrongArea.errorCode()).isEqualTo(ErrorCode.LOCATION_AREA_MISMATCH);
-        }
-
-        @Test
-        @DisplayName("quarantined and rejected goods go to two different quarantine locations (QC_LOCATIONS_MUST_DIFFER)")
-        void locationsMustDiffer() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQcMoved(line);
-            assertThat(code(() -> service.inspect(receipt.id(), line.id(), new Decision(4,
-                    new Part(3, "HCM-QUA-01", "dented"), new Part(3, "HCM-QUA-01", "broken")), user)))
-                    .isEqualTo(ErrorCode.QC_LOCATIONS_MUST_DIFFER);
-        }
-
-        @Test
-        @DisplayName("a part of zero units needs no area and no reason and is not recorded")
-        void zeroPartIgnored() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQcMoved(line);
-
-            ReceiptView view = service.inspect(receipt.id(), line.id(),
-                    new Decision(10, new Part(0, "nonsense", null), new Part(0, null, null)), user);
-
-            assertThat(view.lines().get(0).inspections()).hasSize(1);
-            verify(inventory, never()).reclassify(any());
-        }
-
-        @Test
-        @DisplayName("all accepted: the receipt goes to putaway and the accepted units are announced from the QC area")
-        void allAccepted() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQcMoved(line);
-
-            ReceiptView view = service.inspect(receipt.id(), line.id(), new Decision(10, null, null), user);
-
-            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
-            assertThat(view.lines().get(0).quantityForPutaway()).isEqualTo(10);
-            ArgumentCaptor<ReceiptStockReadyForPutaway> ready = ArgumentCaptor.forClass(ReceiptStockReadyForPutaway.class);
-            verify(events).publishEvent(ready.capture());
-            assertThat(ready.getValue().lines().get(0).quantity()).isEqualTo(10);
-            assertThat(ready.getValue().lines().get(0).locationCode()).isEqualTo("HCM-QC-01");
-        }
-
-        @Test
-        @DisplayName("a split decision: quarantined units are reclassified QUARANTINE, rejected BLOCKED; only the accepted "
-                + "part is announced for putaway")
-        void splitDecision() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQcMoved(line);
-
-            service.inspect(receipt.id(), line.id(), new Decision(5,
-                    new Part(3, "HCM-QUA-01", "dented"), new Part(2, "HCM-QUA-02", "broken")), user);
-
-            ArgumentCaptor<ReclassifyStockCommand> reclassify = ArgumentCaptor.forClass(ReclassifyStockCommand.class);
-            verify(inventory, times(2)).reclassify(reclassify.capture());
-            assertThat(reclassify.getAllValues()).extracting(ReclassifyStockCommand::disposition)
-                    .containsExactly(StockDisposition.QUARANTINE, StockDisposition.BLOCKED);
-            assertThat(reclassify.getAllValues()).extracting(ReclassifyStockCommand::quantity).containsExactly(3, 2);
-            ArgumentCaptor<ReceiptStockReadyForPutaway> ready = ArgumentCaptor.forClass(ReceiptStockReadyForPutaway.class);
-            verify(events).publishEvent(ready.capture());
-            assertThat(ready.getValue().lines().get(0).quantity()).isEqualTo(5);
-        }
-
-        @Test
-        @DisplayName("nothing accepted: no putaway announcement and the receipt is CLOSED")
-        void nothingAccepted() {
-            ReceiptLine line = counted(10, true);
-            GoodsReceipt receipt = inQcMoved(line);
-
-            ReceiptView view = service.inspect(receipt.id(), line.id(),
-                    new Decision(0, null, new Part(10, "HCM-QUA-02", "all broken")), user);
-
-            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
-            verify(events, never()).publishEvent(any(ReceiptStockReadyForPutaway.class));
-        }
-
-        @Test
-        @DisplayName("a line is inspected once")
-        void inspectedOnce() {
-            ReceiptLine line = counted(10, true);
-            ReceiptLine other = ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), 5, "L2",
-                    null, null, true, null);
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft(line, other);
-            service.confirm(receipt.id(), user);
-            service.moveToQc(receipt.id(), line.id(), "HCM-QC-01", user);
-            service.inspect(receipt.id(), line.id(), new Decision(10, null, null), user);
-            assertThat(code(() -> service.inspect(receipt.id(), line.id(), new Decision(10, null, null), user)))
-                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-            assertThat(receipt.status()).as("the other line is still undecided").isEqualTo(GoodsReceiptStatus.IN_QC);
-        }
     }
 
     // ------------------------------------------------------------------ over-receipt approval (SCRUM-477)
@@ -983,10 +709,10 @@ class GoodsReceiptServiceImplTest {
             ReceiptLine[] lines = new ReceiptLine[quantities.length];
             for (int i = 0; i < quantities.length; i++) {
                 lines[i] = ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), quantities[i],
-                        quantities.length == 1 ? null : "L" + i, null, null, false, null);
+                        quantities.length == 1 ? null : "L" + i, null, null, null);
             }
             if (quantities.length > 1) {
-                InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, false, false);
+                InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, false);
                 when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
                 when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
             }
@@ -998,7 +724,7 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("a count within the tolerance is posted at once, as before")
         void withinToleranceIsPosted() {
-            GoodsReceipt receipt = draft(counted(105, false));
+            GoodsReceipt receipt = draft(counted(105));
             assertThat(service.confirm(receipt.id(), user).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
             verify(inventory).receive(any());
         }
@@ -1046,7 +772,7 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("four eyes: neither whoever started the receipt nor whoever asked for the approval decides it")
         void fourEyes() {
-            GoodsReceipt receipt = draft(counted(110, false));
+            GoodsReceipt receipt = draft(counted(110));
             UUID confirmer = UUID.randomUUID();
             service.confirm(receipt.id(), confirmer);
 
@@ -1077,7 +803,7 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("only a receipt that is waiting is decided; it is decided once")
         void onlyWaitingIsDecided() {
-            GoodsReceipt draft = draft(counted(110, false));
+            GoodsReceipt draft = draft(counted(110));
             assertThat(code(() -> service.approve(draft.id(), manager, "ok"))).as("DRAFT")
                     .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
             assertThat(code(() -> service.rejectExcess(draft.id(), manager, "no"))).as("DRAFT")
@@ -1209,14 +935,14 @@ class GoodsReceiptServiceImplTest {
         }
 
         @Test
-        @DisplayName("a subcontract order's approved receipt is handed to production and CLOSED, as its confirmation is")
+        @DisplayName("a subcontract order's approved receipt goes to putaway, as its confirmation does")
         void approveOnASubcontractOrder() {
             order = po(Status.CONFIRMED, "100", "5", true);
             GoodsReceipt receipt = waiting(110);
 
             ReceiptView view = service.approve(receipt.id(), manager, "ok");
 
-            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.CLOSED);
+            assertThat(view.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         }
     }
 
@@ -1244,8 +970,7 @@ class GoodsReceiptServiceImplTest {
         }
 
         private ReceiptLine item(int qty) {
-            return ReceiptLine.counted(UUID.randomUUID(), null, itemId, receivingBin.id(), qty, null, null, null,
-                    false, null);
+            return ReceiptLine.counted(UUID.randomUUID(), null, itemId, receivingBin.id(), qty, null, null, null, null);
         }
 
         private GoodsReceipts.CreateWithoutPo create(String reason) {
@@ -1329,7 +1054,7 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("a lot-tracked item still needs its lot (BR-03), and a line of a receipt against a PO still needs its PO line")
         void lotRulesAndPoLines() {
-            InventoryItemPolicy tracked = new InventoryItemPolicy(itemId, "CUP-01", true, false, false);
+            InventoryItemPolicy tracked = new InventoryItemPolicy(itemId, "CUP-01", true, false);
             when(inventory.itemPolicy(new Sku("CUP-01"))).thenReturn(Optional.of(tracked));
             GoodsReceipt receipt = blind();
             BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
@@ -1439,7 +1164,7 @@ class GoodsReceiptServiceImplTest {
             assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.PENDING_APPROVAL);
 
             po(Status.CONFIRMED, "100", "5", false);
-            GoodsReceipt withPo = draft(counted(110, false));
+            GoodsReceipt withPo = draft(counted(110));
             service.confirm(withPo.id(), user);
             assertThat(code(() -> service.reject(withPo.id(), manager, "x")))
                     .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
@@ -1487,7 +1212,7 @@ class GoodsReceiptServiceImplTest {
             assertThat(receipt.referencedPurchaseOrderId()).isNull();
 
             po(Status.CONFIRMED, "10", null, false);
-            GoodsReceipt withPo = draft(counted(1, false));
+            GoodsReceipt withPo = draft(counted(1));
             assertThat(code(() -> service.referencePurchaseOrder(withPo.id(), poId)))
                     .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
@@ -1508,7 +1233,7 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("BR-06: a lot expiring within the warning window of the receiving day is flagged EXPIRY_NEAR, never refused")
         void expiryNearWarning() {
-            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, true, false);
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, true);
             when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
             when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
             po(Status.CONFIRMED, "100", null, false);
@@ -1526,12 +1251,12 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("a cancelled receipt counted nothing: it flags nothing")
         void cancelledFlagsNothing() {
-            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, true, false);
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, true);
             when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
             when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft(ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), 1,
-                    "NEAR", TODAY.plusDays(2), null, false, null));
+                    "NEAR", TODAY.plusDays(2), null, null));
             ReceiptView view = service.cancel(receipt.id());
             assertThat(view.warnings()).isEmpty();
         }

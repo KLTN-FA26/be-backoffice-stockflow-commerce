@@ -22,7 +22,6 @@ public record POLineResponse(
         String status,
         @Schema(description = "BR-03: a receipt line needs a lot number") boolean lotTracked,
         @Schema(description = "BR-03: a receipt line needs an expiry date after the receiving date") boolean expiryTracked,
-        @Schema(description = "Goes through the QC area (3-step receiving)") boolean qcRequired,
         @Schema(description = "SCRUM-473: the packing unit ordered in; null for base units") String unitOfMeasure,
         @Schema(description = "Base units one of unitOfMeasure holds") Integer unitFactor,
         @Schema(description = "How many unitOfMeasure were ordered") Integer unitQuantity,

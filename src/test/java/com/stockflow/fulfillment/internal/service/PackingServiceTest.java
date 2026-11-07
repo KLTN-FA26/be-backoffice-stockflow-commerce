@@ -153,7 +153,7 @@ class PackingServiceTest {
         });
         when(itemControls.logistics(any())).thenAnswer(call -> new InventoryItemLogistics("SKU-A", 0, new ItemLogistics(
                 "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1, StorageClass.NORMAL, false,
-                null, false, true)));
+                null, true)));
         when(shipments.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
         when(shipments.findByPackIdOrderByReadyAtAscIdAsc(any())).thenReturn(List.of());
         when(designs.verifyForFulfillment(any(), any())).thenAnswer(call -> new DesignVerification(call.getArgument(0),
@@ -1017,7 +1017,7 @@ class PackingServiceTest {
         @DisplayName("a FRAGILE item makes a fragile line; the item's rotatable flag and box count carry over")
         void itemFlags() {
             when(itemControls.logistics(any())).thenReturn(new InventoryItemLogistics("SKU-A", 0, new ItemLogistics("PCS",
-                    null, null, null, null, null, null, null, null, null, 3, 1, StorageClass.FRAGILE, false, null, false,
+                    null, null, null, null, null, null, null, null, null, 3, 1, StorageClass.FRAGILE, false, null,
                     false)));
 
             service.session(pick.getId(), actor);

@@ -21,7 +21,7 @@ import java.util.UUID;
 public interface PickLists {
 
     /**
-     * A task's lines in walking order. The assignee, and managers, QC and coordinators of the task's
+     * A task's lines in walking order. The assignee, and managers and coordinators of the task's
      * warehouse, may read them.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}, {@code OUT_OF_DATA_SCOPE}

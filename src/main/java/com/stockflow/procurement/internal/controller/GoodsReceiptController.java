@@ -12,8 +12,6 @@ import com.stockflow.procurement.internal.controller.dto.CreateGoodsReceiptReque
 import com.stockflow.procurement.internal.controller.dto.CreateGoodsReceiptWithoutPoRequest;
 import com.stockflow.procurement.internal.controller.dto.GoodsReceiptResponse;
 import com.stockflow.procurement.internal.controller.dto.GoodsReceiptRowResponse;
-import com.stockflow.procurement.internal.controller.dto.MoveToQcRequest;
-import com.stockflow.procurement.internal.controller.dto.QcDecisionRequest;
 import com.stockflow.procurement.internal.controller.dto.ReceiptDecisionRequest;
 import com.stockflow.procurement.internal.controller.dto.ReceiptLinesRequest;
 import com.stockflow.procurement.internal.controller.dto.ReferencePurchaseOrderRequest;
@@ -39,9 +37,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Goods receipts against purchase orders (SCRUM-435, docs 03). Counting, confirming and moving goods
- * to QC are warehouse work ({@code procurement-goods-receipts}); deciding QC is the QC staff's
- * ({@code procurement-qc-tasks:APPROVE}). A count beyond a PO line's over-receipt tolerance waits for the warehouse
+ * Goods receipts against purchase orders (SCRUM-435, docs 03). Counting and confirming are warehouse work
+ * ({@code procurement-goods-receipts}); there is no quality check at the warehouse (kltn-docs 03 BR-07), so a confirmed
+ * receipt goes straight to putaway. A count beyond a PO line's over-receipt tolerance waits for the warehouse
  * manager, who approves it or rejects its excess ({@code procurement-goods-receipts:APPROVE}, BR-RCP-001).
  *
  * <p>The only way goods are received: the old {@code POST /purchase-orders/{id}/receipts}, which only
@@ -49,7 +47,7 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/goods-receipts")
-@Tag(name = "Goods receipts", description = "Receiving against purchase orders, with inbound QC")
+@Tag(name = "Goods receipts", description = "Receiving against purchase orders, then putaway")
 @PermissionResource(
         code = PurchaseOrderResources.GOODS_RECEIPTS,
         group = "Procurement",
@@ -114,7 +112,7 @@ class GoodsReceiptController {
     }
 
     @GetMapping("/{receiptId}")
-    @Operation(summary = "One receipt with its lines and QC results")
+    @Operation(summary = "One receipt with its lines and cartons")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.READ)
     public ApiResponse<GoodsReceiptResponse> get(@PathVariable UUID receiptId) {
         return ApiResponse.ok(mapper.toResponse(receipts.get(receiptId)));
@@ -138,7 +136,7 @@ class GoodsReceiptController {
                     (`lines[i].unitOfMeasure`, `lines[i].packages`, ...). Codes: `RECEIPT_LINE_UNIT_INVALID` (422: \
                     cartons in the base unit or a retired one, a packing unit without cartons), \
                     `UOM_CONVERSION_NOT_FOUND` (404: not a unit of the item), `RECEIPT_PACKAGES_EXCEED_LINE` (422), \
-                    `RECEIPT_PACKAGES_NOT_SUPPORTED` (409: a subcontract receipt), `RECEIPT_LINE_HAS_PACKAGES` (409: \
+                    `RECEIPT_LINE_HAS_PACKAGES` (409: \
                     the unit changed while a carton of the old one is kept, or a line that has ever had cartons - \
                     voided ones too - left out), \
                     `STOCK_PACKAGE_NOT_FOUND` (404: an LPN not of this line), `INVALID_STOCK_PACKAGE_TRANSITION` \
@@ -156,7 +154,7 @@ class GoodsReceiptController {
     }
 
     @PostMapping("/{receiptId}/confirmation")
-    @Operation(summary = "Confirm the count: goods become INBOUND stock, the PO progresses, receipt goes to QC or putaway",
+    @Operation(summary = "Confirm the count: goods become INBOUND stock, the PO progresses, receipt goes to putaway",
             description = """
                     A count beyond a PO line's over-receipt tolerance (BR-RCP-001) is not refused and not posted: the \
                     receipt becomes `PENDING_APPROVAL`, nothing is counted in, and the warehouse manager decides \
@@ -234,37 +232,5 @@ class GoodsReceiptController {
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> cancel(@PathVariable UUID receiptId) {
         return ApiResponse.ok(mapper.toResponse(receipts.cancel(receiptId)));
-    }
-
-    @PostMapping("/{receiptId}/lines/{lineId}/qc-transfer")
-    @Operation(summary = "The goods of a QC-required line were moved to a QUALITY_CONTROL area: its cartons whole,"
-            + " its loose units")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
-    public ApiResponse<GoodsReceiptResponse> moveToQc(@PathVariable UUID receiptId, @PathVariable UUID lineId,
-                                                      @Valid @RequestBody MoveToQcRequest request,
-                                                      @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(receipts.moveToQc(receiptId, lineId, request.qcLocationCode(),
-                user.userId())));
-    }
-
-    @PostMapping("/{receiptId}/lines/{lineId}/inspection")
-    @Operation(summary = "Record the QC decision on a line: accepted, quarantined, rejected (must add up, BR-08)",
-            description = "A quarantined or rejected part is its loose `quantity` plus the line's cartons it names in"
-                    + " `packages` (LPNs), each going whole at what was counted into it (SCRUM-473). A named carton is"
-                    + " one of this line's (STOCK_PACKAGE_NOT_FOUND), named once (VALIDATION_FAILED), in stock"
-                    + " (INVALID_STOCK_PACKAGE_TRANSITION) at the line's QC area (STOCK_PACKAGE_WRONG_LOCATION)."
-                    + " `accepted` is every unit no part takes; the loose parts may not exceed the line's"
-                    + " `looseQuantity` (QC_QUANTITY_MISMATCH).")
-    @RequiresPermission(resource = PurchaseOrderResources.QC_TASKS, action = Action.APPROVE)
-    public ApiResponse<GoodsReceiptResponse> inspect(@PathVariable UUID receiptId, @PathVariable UUID lineId,
-                                                     @Valid @RequestBody QcDecisionRequest request,
-                                                     @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(receipts.inspect(receiptId, lineId, new GoodsReceipts.Decision(
-                request.accepted(), part(request.quarantined()), part(request.rejected())), user.userId())));
-    }
-
-    private static GoodsReceipts.Part part(QcDecisionRequest.Part part) {
-        return part == null ? null
-                : new GoodsReceipts.Part(part.quantity(), part.locationCode(), part.reason(), part.packages());
     }
 }

@@ -16,13 +16,13 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * A goods receipt against one purchase order (docs 03, SCRUM-435): what arrived, counted, then for
- * the lines that need it, moved to the QC area and decided.
+ * A goods receipt against one purchase order (docs 03, SCRUM-435): what arrived, counted, then put away. There is no
+ * quality check at the warehouse (kltn-docs 03 BR-07): a confirmed count goes straight on to putaway.
  *
  * <pre>
- *   DRAFT ──confirm──▶ IN_QC ──every QC line decided──▶ IN_PUTAWAY ──(putaway, SCRUM-92)──▶ CLOSED
- *     │ │      └──────(no QC line)────────────────────────▲
- *     │ └──cancel──▶ CANCELLED            IN_QC ──nothing left to put away──▶ CLOSED
+ *   DRAFT ──confirm──▶ IN_PUTAWAY ──(putaway, SCRUM-92)──▶ CLOSED
+ *     │ │
+ *     │ └──cancel──▶ CANCELLED
  *     │
  *     └──confirm, count beyond a PO line's tolerance──▶ PENDING_APPROVAL ──manager approves / rejects the excess──▶ (as confirm)
  *                                                          └──cancel──▶ CANCELLED
@@ -33,9 +33,8 @@ import java.util.UUID;
  * whole count; <em>reject the excess</em> cuts the lines back to the tolerance and posts what is left (a receipt with
  * nothing left is cancelled). The decision, its maker and its reason stay on the receipt ({@link ReceiptApproval}).</p>
  *
- * <p>What the aggregate decides: the order of the steps, that a confirmed count is never edited
- * (BR-05), that QC decides only on goods already in the QC area and accounts for every unit of them
- * (BR-08). What it cannot see, and the service checks against the purchase order, the item and the
+ * <p>What the aggregate decides: the order of the steps, and that a confirmed count is never edited
+ * (BR-05). What it cannot see, and the service checks against the purchase order, the item and the
  * map: BR-01 (the PO is receivable), BR-02 (tolerance), BR-03 (lot and expiry), and the kind of area
  * each location is. The database states the same rules again as triggers.</p>
  *
@@ -148,26 +147,17 @@ public final class GoodsReceipt extends AggregateRoot {
     }
 
     /**
-     * The count is final (docs 03 step 6). The receipt goes on to QC when any line needs it, to
-     * putaway otherwise. The caller counts the goods in as INBOUND stock in the same transaction.
+     * The count is final (docs 03 step 6). The receipt goes on to putaway; the caller counts the goods in as INBOUND
+     * stock in the same transaction.
      */
     public void confirm(UUID userId, Instant now) {
-        confirm(userId, now, false);
-    }
-
-    /**
-     * {@code handedToProduction}: the receipt of a SUBCONTRACT order, whose goods the production module takes over
-     * in the same transaction for its single QC against the approved sample (user decision 2026-10-13). Receiving
-     * has nothing left to do with them — no QC, no putaway — so the receipt is CLOSED as it is confirmed.
-     */
-    public void confirm(UUID userId, Instant now, boolean handedToProduction) {
         requireStatus(GoodsReceiptStatus.DRAFT, "confirm");
         if (blind()) {
             throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
                     "Receipt %s has no purchase order: it is posted only after the warehouse manager approves it (BR-RCP-002)"
                             .formatted(number));
         }
-        post(userId, now, handedToProduction);
+        post(userId, now);
     }
 
     /**
@@ -183,10 +173,10 @@ public final class GoodsReceipt extends AggregateRoot {
     }
 
     /** The manager accepts the whole count; it is posted exactly as {@link #confirm} posts a count. */
-    public void approve(UUID approverId, String reason, Instant now, boolean handedToProduction) {
+    public void approve(UUID approverId, String reason, Instant now) {
         requireDecidable(approverId, reason);
         this.approval = approval.decided(ReceiptApproval.Decision.APPROVED, approverId, now, reason.strip());
-        post(approverId, now, handedToProduction);
+        post(approverId, now);
     }
 
     /**
@@ -194,7 +184,7 @@ public final class GoodsReceipt extends AggregateRoot {
      * PO line may still receive on this receipt) first, by {@link #cutBackTo}, then this posts what is left. With
      * nothing left the receipt is cancelled: nothing was received that the tolerance allows.
      */
-    public void rejectExcess(UUID approverId, String reason, Instant now, boolean handedToProduction) {
+    public void rejectExcess(UUID approverId, String reason, Instant now) {
         requireDecidable(approverId, reason);
         requirePurchaseOrder("reject the excess of");
         this.approval = approval.decided(ReceiptApproval.Decision.EXCESS_REJECTED, approverId, now, reason.strip());
@@ -202,7 +192,7 @@ public final class GoodsReceipt extends AggregateRoot {
             this.status = GoodsReceiptStatus.CANCELLED;
             return;
         }
-        post(approverId, now, handedToProduction);
+        post(approverId, now);
     }
 
     /**
@@ -276,20 +266,11 @@ public final class GoodsReceipt extends AggregateRoot {
         }
     }
 
-    private void post(UUID userId, Instant now, boolean handedToProduction) {
+    private void post(UUID userId, Instant now) {
         requireLines();
         this.confirmedBy = Objects.requireNonNull(userId, "userId");
         this.confirmedAt = Objects.requireNonNull(now, "now");
-        if (handedToProduction) {
-            if (lines.stream().anyMatch(ReceiptLine::qcRequired)) {
-                throw new IllegalStateException("A receipt handed to production has no receiving QC of its own");
-            }
-            this.status = GoodsReceiptStatus.CLOSED;
-            this.closedAt = now;
-            return;
-        }
-        this.status = lines.stream().anyMatch(ReceiptLine::qcRequired)
-                ? GoodsReceiptStatus.IN_QC : GoodsReceiptStatus.IN_PUTAWAY;
+        this.status = GoodsReceiptStatus.IN_PUTAWAY;
     }
 
     private void requireLines() {
@@ -323,76 +304,12 @@ public final class GoodsReceipt extends AggregateRoot {
         this.status = GoodsReceiptStatus.CANCELLED;
     }
 
-    // ------------------------------------------------------------------ QC
-
-    /** Docs 03 step 7: the goods of a 3-step line are now in the QC area. */
-    public ReceiptLine moveToQc(UUID lineId, UUID qcLocationId, UUID userId, Instant now) {
-        requireStatus(GoodsReceiptStatus.IN_QC, "move goods to QC on");
-        ReceiptLine line = line(lineId);
-        if (!line.qcRequired()) {
-            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
-                    "This line needs no QC; it goes straight to putaway (2-step flow)");
-        }
-        if (line.movedToQc()) {
-            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
-                    "The goods of this line are already in the QC area");
-        }
-        line.markMovedToQc(qcLocationId, userId, now);
-        return line;
-    }
-
-    /**
-     * Docs 03 steps 8–9. Every unit moved to QC gets exactly one outcome (BR-08), and quarantined or
-     * rejected units a reason. When this was the last undecided line, the receipt moves on: to putaway
-     * if anything is waiting for it, straight to CLOSED if nothing is.
-     */
-    public void inspect(UUID lineId, List<QcInspection> decisions, Instant now) {
-        requireStatus(GoodsReceiptStatus.IN_QC, "record QC on");
-        ReceiptLine line = line(lineId);
-        if (!line.movedToQc()) {
-            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
-                    "QC decides only on goods already moved to the QC area (BR-08)");
-        }
-        if (line.inspected()) {
-            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION, "This line has already been inspected");
-        }
-        int total = decisions.stream().mapToInt(QcInspection::quantity).sum();
-        if (total != line.receivedQuantity()) {
-            throw new BusinessException(ErrorCode.QC_QUANTITY_MISMATCH,
-                    "Accepted, quarantined and rejected add up to %d; %d units were moved to QC"
-                            .formatted(total, line.receivedQuantity()));
-        }
-        for (QcInspection decision : decisions) {
-            if (decision.outcome() != QcOutcome.ACCEPTED
-                    && (decision.reason() == null || decision.reason().isBlank())) {
-                throw new BusinessException(ErrorCode.QC_REASON_REQUIRED,
-                        "A %s decision needs a reason".formatted(decision.outcome()));
-            }
-            if (decision.outcome() != QcOutcome.ACCEPTED && decision.targetLocationId() == null) {
-                throw new BusinessException(ErrorCode.QC_TARGET_LOCATION_REQUIRED,
-                        "A %s decision needs the quarantine location the goods go to".formatted(decision.outcome()));
-            }
-        }
-        line.record(decisions);
-        if (lines.stream().filter(ReceiptLine::qcRequired).allMatch(ReceiptLine::inspected)) {
-            boolean anythingToPutAway = lines.stream().anyMatch(l -> l.quantityForPutaway() > 0);
-            if (anythingToPutAway) {
-                this.status = GoodsReceiptStatus.IN_PUTAWAY;
-            } else {
-                this.status = GoodsReceiptStatus.CLOSED;
-                this.closedAt = now;
-            }
-        }
-    }
-
     /**
      * SCRUM-92: the receipt closes once every line has had all its goods put away.
      *
      * <p>Decided on quantities ({@code doneByLine}: units of DONE putaway tasks per line), not on "no open task is
-     * left": tasks are opened asynchronously after the receipt event and, on a mixed receipt, a QC line gets its
-     * tasks only after the inspection, so "no open task" is also true before the first task exists and between two
-     * QC decisions. The quantity a line must reach is {@link ReceiptLine#quantityForPutaway()}; a line with nothing
-     * to put away (everything rejected or quarantined by QC) never holds the receipt open.</p>
+     * left": tasks are opened asynchronously after the receipt event, so "no open task" is also true before the first
+     * task exists. Every unit a line received is put away from it.</p>
      *
      * @return true when the receipt is now CLOSED; false, and unchanged, when it is not in putaway or a line is short
      */
@@ -401,7 +318,7 @@ public final class GoodsReceipt extends AggregateRoot {
             return false;
         }
         boolean allPutAway = lines.stream().allMatch(l ->
-                l.quantityForPutaway() <= 0 || doneByLine.getOrDefault(l.id(), 0) >= l.quantityForPutaway());
+                doneByLine.getOrDefault(l.id(), 0) >= l.receivedQuantity());
         if (!allPutAway) {
             return false;
         }

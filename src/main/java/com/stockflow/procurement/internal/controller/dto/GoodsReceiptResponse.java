@@ -6,8 +6,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * A goods receipt with its lines. {@code qcProgress} per line: NOT_REQUIRED (2-step flow),
- * AWAITING_MOVE_TO_QC, IN_QC_AREA, INSPECTED. {@code quantityForPutaway}: what waits for putaway.
+ * A goods receipt with its lines. {@code quantityForPutaway} per line: what it puts away, every unit it received
+ * (there is no quality check at the warehouse, kltn-docs 03 BR-07).
  *
  * <p>{@code warnings}: non-blocking business warnings, on the receipt and on the line they come from.
  * {@code EXPIRY_NEAR} (docs 03 BR-06): the lot expires within {@code stockflow.inventory.expiry-warning-days}
@@ -49,9 +49,8 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
      */
     public record Line(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
                        int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
-                       boolean qcRequired, boolean lotTracked, boolean expiryTracked, String qcProgress,
-                       String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
-                       List<Inspection> inspections, List<String> warnings, String unitOfMeasure,
+                       boolean lotTracked, boolean expiryTracked, int quantityForPutaway,
+                       List<String> warnings, String unitOfMeasure,
                        int looseQuantity, List<Package> packages, List<Unit> units,
                        @io.swagger.v3.oas.annotations.media.Schema(description = "SCRUM-473: the unit the PO line was"
                                + " ordered in, to pre-select; null for base units") String orderedUnitOfMeasure) {
@@ -69,13 +68,9 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
      * One labelled carton. {@code quantity}: what is in it now - what was counted into it while RECEIVING, what is
      * left in it once in stock; {@code receivedQty}: what was counted into it, fixed once it is in stock;
      * {@code nominalQty}: what its unit holds; {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST;
-     * {@code locationCode}: where it stands now - the receiving area, then the QC or quarantine area it went to.
+     * {@code locationCode}: where it stands now - the receiving area, then wherever it was moved or put away.
      */
     public record Package(UUID id, String lpn, int quantity, int receivedQty, int nominalQty, String status,
                           String locationCode) {
-    }
-
-    public record Inspection(UUID id, String outcome, int quantity, String locationCode, String reason,
-                             UUID inspectedBy, String inspectedByName, Instant inspectedAt) {
     }
 }

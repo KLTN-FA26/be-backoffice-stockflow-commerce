@@ -224,7 +224,7 @@ class GoodsReceiptExpiryWarningIntegrationTest {
         // Non-blocking: the receipt is confirmed all the same, and keeps saying so.
         mvc.perform(post("/api/v1/goods-receipts/" + receipt + "/confirmation").header("Authorization", clerk))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("IN_QC"))
+                .andExpect(jsonPath("$.data.status").value("IN_PUTAWAY"))
                 .andExpect(jsonPath("$.data.warnings[0]").value("EXPIRY_NEAR"));
         assertThat(receiptWarnings(fetch(receipt))).containsExactly("EXPIRY_NEAR");
     }

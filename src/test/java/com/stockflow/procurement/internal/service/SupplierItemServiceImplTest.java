@@ -67,9 +67,9 @@ class SupplierItemServiceImplTest {
         when(items.supplierForShare(supplierId)).thenReturn(Optional.of(supplier));
         when(items.findSupplier(supplierId)).thenReturn(Optional.of(supplier));
         when(inventory.itemPolicy(new com.stockflow.common.domain.Sku("CUP-01")))
-                .thenReturn(Optional.of(new InventoryItemPolicy(inventoryItemId, "CUP-01", false, false, false)));
+                .thenReturn(Optional.of(new InventoryItemPolicy(inventoryItemId, "CUP-01", false, false)));
         when(inventory.itemPolicy(inventoryItemId))
-                .thenReturn(Optional.of(new InventoryItemPolicy(inventoryItemId, "CUP-01", false, false, false)));
+                .thenReturn(Optional.of(new InventoryItemPolicy(inventoryItemId, "CUP-01", false, false)));
         when(products.purchasability(anyCollection())).thenReturn(Map.of("CUP-01", Purchasability.PURCHASABLE));
         when(purchasing.defaultSuppliers(anyCollection())).thenReturn(Map.of());
         when(items.save(any(), any(), any())).thenAnswer(call -> call.getArgument(0));
@@ -290,7 +290,7 @@ class SupplierItemServiceImplTest {
         SupplierItem item = stored("1500", 0);
         when(items.listBySupplier(supplierId, 0, 20, null)).thenReturn(PageResponse.of(List.of(item), 0, 20, 1));
         when(inventory.itemPolicies(anyCollection())).thenReturn(Map.of(inventoryItemId,
-                new InventoryItemPolicy(inventoryItemId, "CUP-01", false, false, false)));
+                new InventoryItemPolicy(inventoryItemId, "CUP-01", false, false)));
         when(purchasing.defaultSuppliers(anyCollection())).thenReturn(Map.of(inventoryItemId, supplierId));
 
         PageResponse<SupplierItemSummary> page = service.list(supplierId, 0, 20, null);

@@ -9,9 +9,7 @@ import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.internal.service.PutawayTaskCreator;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.procurement.internal.service.GoodsReceipts.Decision;
 import com.stockflow.procurement.internal.service.GoodsReceipts.NewPackage;
-import com.stockflow.procurement.internal.service.GoodsReceipts.Part;
 import com.stockflow.support.Await;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -54,10 +52,7 @@ class PutawayTaskCreatorIntegrationTest {
 
     private String sku;
     private String receiving;
-    private String qcArea;
-    private String quarantine;
     private UUID clerk;
-    private UUID qc;
     private UUID poLine;
     private UUID receiptId;
     private UUID lineId;
@@ -68,20 +63,16 @@ class PutawayTaskCreatorIntegrationTest {
     private String shelf;
 
     /** A confirmed receipt of 2000 units: cartons of 1000 and 980, 20 loose. */
-    private void receipt(boolean qcRequired) {
-        receipt(qcRequired, 2000, new NewPackage(null, 1000), new NewPackage(null, 980));
+    private void receipt() {
+        receipt(2000, new NewPackage(null, 1000), new NewPackage(null, 980));
     }
 
-    private void receipt(boolean qcRequired, int quantity, NewPackage... packages) {
+    private void receipt(int quantity, NewPackage... packages) {
         sku = "PTC-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         String prefix = "T" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT);
         receiving = prefix + "-RCV01";
-        qcArea = prefix + "-QCA01";
-        quarantine = prefix + "-QC01";
         shelf = prefix + "-PUT01";
-        String returnToVendor = prefix + "-RTV01";
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        qc = tx.execute(s -> ReferenceRows.user(entityManager));
         UUID warehouse = Identifiers.newId();
         warehouseId = warehouse;
         UUID po = Identifiers.newId();
@@ -97,7 +88,6 @@ class PutawayTaskCreatorIntegrationTest {
             // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
             jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6"
                     + " where id = ?", item);
-            jdbc.update("update inventory.inventory_items set qc_required = " + qcRequired + " where id = ?", item);
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
                     + " values (?, ?, 'CARTON', 100)", Identifiers.newId(), item);
 
@@ -105,9 +95,6 @@ class PutawayTaskCreatorIntegrationTest {
                     + " map_height, version, created_at) VALUES (?, 'Putaway creator', 'ACTIVE', ?, 'Test address', 'M',"
                     + " 50, 50, 0, NOW())", warehouse, prefix);
             area(warehouse, "RCV01", receiving, "RECEIVING", 1);
-            area(warehouse, "QCA01", qcArea, "QUALITY_CONTROL", 10);
-            area(warehouse, "QC01", quarantine, "QUARANTINE", 20);
-            area(warehouse, "RTV01", returnToVendor, "QUARANTINE", 30);
             area(warehouse, "PUT01", shelf, "OVERFLOW", 40);
 
             UUID submitter = ReferenceRows.user(entityManager);
@@ -173,9 +160,9 @@ class PutawayTaskCreatorIntegrationTest {
     }
 
     @Test
-    @DisplayName("two-step: confirmation opens a task per carton and one for the loose units")
-    void twoStepLineOpensATaskPerCartonAndOneLoose() {
-        receipt(false);
+    @DisplayName("confirmation opens a task per carton and one for the loose units")
+    void confirmationOpensATaskPerCartonAndOneLoose() {
+        receipt();
         awaitTasks(3);
 
         assertThat(tasks()).extracting(PutawayTaskView::quantity, PutawayTaskView::stockPackageId)
@@ -184,21 +171,9 @@ class PutawayTaskCreatorIntegrationTest {
     }
 
     @Test
-    @DisplayName("three-step: QC accepting part of the line opens tasks for the accepted part only")
-    void threeStepOpensTasksForTheAcceptedPartOnly() {
-        receipt(true);
-        receipts.moveToQc(receiptId, lineId, qcArea, clerk);
-        receipts.inspect(receiptId, lineId, new Decision(1000, new Part(0, quarantine, "dented", List.of(lpn1)), null), qc);
-        awaitTasks(2);
-
-        assertThat(tasks()).extracting(PutawayTaskView::quantity, PutawayTaskView::stockPackageId)
-                .containsExactlyInAnyOrder(tuple(980, cartonId(lpn2)), tuple(20, null));
-    }
-
-    @Test
     @DisplayName("an event delivered again opens nothing new")
     void redeliveredEventOpensNothingNew() {
-        receipt(false);
+        receipt();
         awaitTasks(3);
 
         tx.executeWithoutResult(s -> redeliver(event(receiving, 2000)));
@@ -209,7 +184,7 @@ class PutawayTaskCreatorIntegrationTest {
     @Test
     @DisplayName("a line wholly in cartons, put away and then redelivered, opens no loose task for stock already in bins")
     void redeliveryAfterPutawayOpensNothing() {
-        receipt(false, 1980, new NewPackage(null, 1000), new NewPackage(null, 980));
+        receipt(1980, new NewPackage(null, 1000), new NewPackage(null, 980));
         awaitTasks(2);
         inventory.reclassifyStockPackages(new ReclassifyStockPackagesCommand(List.of(lpn1, lpn2), shelf,
                 StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, UUID.randomUUID(), clerk, null));
@@ -221,18 +196,20 @@ class PutawayTaskCreatorIntegrationTest {
     }
 
     /**
-     * Driven through a 3-step line, whose confirmation publishes nothing, so no asynchronous listener races the
-     * hand move; the event is then handled directly, as the QC acceptance would have delivered it.
+     * The tasks the confirmation opened are deleted first, so the event is handled as if it had not been yet, with
+     * no asynchronous listener racing the hand move; it is then handled directly.
      */
     @Test
     @DisplayName("a carton moved by hand before the event is handled still gets its task, and loose is the true remainder")
     void cartonMovedByHandStillGetsATask() {
-        receipt(true);
-        receipts.moveToQc(receiptId, lineId, qcArea, clerk);
+        receipt();
+        awaitTasks(3);
+        tx.executeWithoutResult(s -> jdbc.update("delete from warehouse.putaway_task where goods_receipt_id = ?",
+                receiptId));
         inventory.moveStockPackages(new MoveStockPackagesCommand(lpn1, shelf, MoveReference.MOVE_TASK,
                 UUID.randomUUID(), clerk));
 
-        tx.executeWithoutResult(s -> redeliver(event(qcArea, 2000)));
+        tx.executeWithoutResult(s -> redeliver(event(receiving, 2000)));
 
         assertThat(tasks()).extracting(PutawayTaskView::quantity, PutawayTaskView::stockPackageId)
                 .containsExactlyInAnyOrder(tuple(1000, cartonId(lpn1)), tuple(980, cartonId(lpn2)), tuple(20, null));
