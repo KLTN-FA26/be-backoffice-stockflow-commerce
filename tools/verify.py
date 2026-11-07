@@ -167,8 +167,13 @@ for f in files:
             problems.append(f"NON-ENGLISH CODE {f}:{i}: {line.strip()[:80]}")
 
 # 6. module boundary: no import of another module's .internal.
-MODULES = {"identity","customer","product","catalog","inventory","warehouse","order","payment",
-           "fulfillment","procurement","design","chat","notification","reporting"}
+# Every top-level package under com.stockflow is a business module, except the shared base layer
+# (common) and the event records (contracts). Read from the tree rather than listed by hand: the
+# hand-written list had silently fallen behind (production was never in it), so checks 8 and 15
+# skipped a whole module without anyone noticing.
+SHARED_PACKAGES = {"common", "contracts"}
+MODULES = {os.path.basename(os.path.normpath(d))
+           for d in glob.glob(SRC + "/main/java/com/stockflow/*/")} - SHARED_PACKAGES
 for f in files:
     if "/src/test/" in f: continue
     p = pkg_of(f)
@@ -204,7 +209,7 @@ for f in files:
             problems.append(f"UNDECLARED DEP {f}: {own} -> {target} ({imp})")
 
 # 8. every module has package-info with @ApplicationModule
-for mod in sorted(MODULES | {"common", "contracts"}):
+for mod in sorted(MODULES | SHARED_PACKAGES):
     pi = os.path.join(SRC, "main/java/com/stockflow", mod, "package-info.java")
     if not os.path.exists(pi):
         problems.append(f"MISSING package-info for module {mod}")
