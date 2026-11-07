@@ -14,8 +14,8 @@ import java.util.UUID;
  * JPA mapping of a putaway task (table {@code warehouse.putaway_task}). Not the domain model.
  *
  * <p>Created when goods arrive and need moving to a storage location. A task has
- * exactly one source ({@code ck_putaway_task_source}): a goods receipt line (with its receipt), a
- * transfer order line or a return line. The receipt references are foreign keys to
+ * exactly one source ({@code ck_putaway_task_source}): a goods receipt line (with its receipt) or a
+ * return line. The receipt references are foreign keys to
  * {@code procurement.goods_receipts}/{@code goods_receipt_lines} since contract C4, the target one to
  * {@code warehouse.storage_location} (a bin or a storage area) since C2.</p>
  */
@@ -28,9 +28,6 @@ public class PutawayTaskJpaEntity extends BaseEntity {
 
     @Column(name = "goods_receipt_line_id")
     private UUID goodsReceiptLineId;
-
-    @Column(name = "transfer_order_line_id")
-    private UUID transferOrderLineId;
 
     @Column(name = "return_request_line_id")
     private UUID returnRequestLineId;
@@ -78,7 +75,6 @@ public class PutawayTaskJpaEntity extends BaseEntity {
 
     public UUID getGoodsReceiptId() { return goodsReceiptId; }
     public UUID getGoodsReceiptLineId() { return goodsReceiptLineId; }
-    public UUID getTransferOrderLineId() { return transferOrderLineId; }
     public UUID getReturnRequestLineId() { return returnRequestLineId; }
     public String getSku() { return sku; }
     public int getQuantity() { return quantity; }

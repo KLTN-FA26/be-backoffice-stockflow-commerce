@@ -5,11 +5,9 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
-import com.stockflow.fulfillment.internal.domain.PackingSession;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackingSessionStore;
 import com.stockflow.order.api.FulfillmentCandidate;
 import com.stockflow.order.api.FulfillmentCandidates;
 import com.stockflow.order.api.OrderService;
@@ -40,7 +38,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-/** The small collaborators of the fulfillment services: the task-creation list, the transfer guard, shipment context, partial rules. */
+/** The small collaborators of the fulfillment services: the task-creation list, shipment context, partial rules. */
 class SmallServicesTest {
 
     @Test
@@ -75,47 +73,6 @@ class SmallServicesTest {
         assertThat(service.candidates(WAREHOUSE, 0, 20)).isSameAs(page);
         assertThat(service.candidates(null, 1, 5)).isSameAs(page);
         verify(warehouses, never()).findWarehouse(null);
-    }
-
-    @Test
-    @DisplayName("10 BR-04: cancelling a transfer's picking cancels its plan first, then voids its parcels and cancels its live packing sessions")
-    void transferPickingCancellation() {
-        PackJpaRepository packs = mock(PackJpaRepository.class);
-        PackingSessionStore store = mock(PackingSessionStore.class);
-        LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
-        TransferDispatchGuardService guard = new TransferDispatchGuardService(packs, store, loadPlans);
-        UUID transferId = UUID.randomUUID();
-        PackJpaEntity live = PackJpaEntity.forTransfer(UUID.randomUUID(), transferId);
-        PackJpaEntity cancelled = PackJpaEntity.forTransfer(UUID.randomUUID(), transferId);
-        cancelled.cancel();
-        when(packs.findByTransferOrderIdOrderByCreatedAtDesc(transferId)).thenReturn(List.of(live, cancelled));
-        when(packs.lockById(live.getId())).thenReturn(Optional.of(live));
-        PackingSession session = new PackingSession(live.getId(), "TO-1", PackStatus.PACKING, NOW, UUID.randomUUID(), null,
-                null, List.of(), List.of(), List.of());
-        when(store.load(any(), any(), any())).thenReturn(session);
-
-        guard.beforePickingCancelled(transferId, NOW);
-
-        org.mockito.InOrder order = org.mockito.Mockito.inOrder(loadPlans, store);
-        order.verify(loadPlans).releaseTransfer(transferId, "picking of its transfer order was cancelled", NOW);
-        order.verify(store).save(session, live);
-        assertThat(session.status()).isEqualTo(PackStatus.CANCELLED);
-        verify(packs, never()).lockById(cancelled.getId());
-    }
-
-    @Test
-    @DisplayName("a transfer never packed has only its plan to release")
-    void transferWithoutPacking() {
-        PackJpaRepository packs = mock(PackJpaRepository.class);
-        PackingSessionStore store = mock(PackingSessionStore.class);
-        LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
-        UUID transferId = UUID.randomUUID();
-        when(packs.findByTransferOrderIdOrderByCreatedAtDesc(transferId)).thenReturn(List.of());
-
-        new TransferDispatchGuardService(packs, store, loadPlans).beforePickingCancelled(transferId, NOW);
-
-        verify(loadPlans).releaseTransfer(any(), any(), any());
-        verifyNoInteractions(store);
     }
 
     @Test

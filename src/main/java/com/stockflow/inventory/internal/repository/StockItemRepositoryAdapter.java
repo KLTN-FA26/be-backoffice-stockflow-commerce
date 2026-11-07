@@ -232,14 +232,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
                 .flatMap(id -> findByIdForUpdate(new StockItemId(id)));
     }
 
-    @Override
-    public List<StockItem> findWithReservationsForTransferOrder(UUID transferOrderId) {
-        return jpa.findStockItemIdsHoldingTransferOrder(transferOrderId).stream()
-                .sorted(java.util.Comparator.comparing(UUID::toString))
-                .map(id -> findByIdForUpdate(new StockItemId(id)))
-                .flatMap(Optional::stream)
-                .toList();
-    }
 
     @Override
     public Optional<StockItemId> findIdByReservationId(ReservationId reservationId) {

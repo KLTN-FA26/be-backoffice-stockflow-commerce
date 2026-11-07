@@ -131,7 +131,6 @@ public enum ErrorCode {
     RETURN_REQUEST_NOT_FOUND("Return request not found", 404),
     RECEIVABLE_NOT_FOUND("Receivable not found", 404),
     RESERVATION_NOT_FOUND("Stock reservation not found", 404),
-    TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
     INVENTORY_ITEM_NOT_FOUND("No inventory item for this SKU", 404),
     /** No such unit of measure on this SKU's inventory item (docs 01 UoM conversion). */
@@ -212,19 +211,19 @@ public enum ErrorCode {
     STOCK_PACKAGE_LABELS_EMPTY("Choose a receipt line or the cartons to print", 422),
     /** More carton labels than one print request renders (SCRUM-473). */
     STOCK_PACKAGE_LABELS_TOO_MANY("At most 500 carton labels at a time", 422),
-    /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
-    MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
+    /**
+     * Docs 11 BR-01: a move stays inside one warehouse (SCRUM-459). Stock never changes warehouse: transfers between
+     * warehouses were removed, a Production Order delivers straight to the warehouse that ships (kltn-docs 17).
+     */
+    MOVE_ACROSS_WAREHOUSES("Stock moves only between locations of one warehouse", 409),
     /**
      * Four eyes: whoever asked for a stock adjustment may not decide it - nor, for a {@code COUNT_VARIANCE}, whoever
      * counted the line it came from.
      */
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
-    INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
     /** The life of a stock package (V20261020000100): RECEIVING → IN_STOCK | VOID, IN_STOCK → CONSUMED | LOST, LOST → IN_STOCK. */
     INVALID_STOCK_PACKAGE_TRANSITION("This stock package cannot do that in its current status", 409),
-    /** Four eyes on a transfer above the approval threshold. */
-    TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
     /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
     PURCHASE_ORDER_NOT_RECEIVABLE("Goods cannot be received against this purchase order now", 409),
     INVALID_RECEIPT_TRANSITION("This goods receipt cannot move to that status right now", 409),
@@ -525,7 +524,7 @@ public enum ErrorCode {
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
     /**
-     * A hold that is not an order's goods on a shelf - a transfer's, or one on a legacy print-shop row (IN_PRODUCTION):
+     * A hold that is not an order's goods on a shelf - one on a legacy print-shop row (IN_PRODUCTION):
      * a pick does not close it (review of #109). The code keeps its name for clients that read it.
      */
     PRODUCTION_HOLD_NOT_PICKABLE("This stock hold is not an order's goods on a shelf and cannot be picked", 409),
@@ -619,20 +618,6 @@ public enum ErrorCode {
      */
     LOAD_PLAN_CONTROLLED_CANCELLED("A vehicle of this load plan was called off under control: the plan can no longer be "
             + "reopened or cancelled the normal way", 409),
-    /** SCRUM-287 PR T (LP2-8): only a transfer that travels as a full truckload is packed for a load plan. */
-    TRANSFER_NOT_FULL_TRUCKLOAD("This transfer order does not travel as a full truckload", 409),
-    /** Docs 10 BR-04: goods of the transfer left on a load plan's vehicle; its picking is no longer cancelled. */
-    TRANSFER_GOODS_LEFT("Goods of this transfer order already left the source warehouse", 409),
-    /** SCRUM-287 PR T: a transfer packed for a load plan is dispatched by the plan's last vehicle, not by hand. */
-    TRANSFER_DISPATCH_BY_LOAD_PLAN("This transfer order is dispatched by its load plan's last vehicle", 409),
-    /** Docs 09 BR-09 / LP2-1: only a packed transfer goes into a load plan. */
-    TRANSFER_NOT_PACKED("This transfer order is not packed for dispatch", 409),
-    /** Docs 09 §4.2 step 1 / 10 step 5: a transfer leaves whole with its load plan; nothing of it stays behind. */
-    TRANSFER_SHIPS_WHOLE("A transfer order leaves whole with its load plan", 409),
-    /** Docs 09 §3 LoadPlan.source_type: a plan holds customer orders' shipments or one transfer order, not both. */
-    LOAD_PLAN_SOURCE_MISMATCH("This load plan holds another kind of source", 409),
-    /** LP2-8: the stock carton is not an unopened carton of this transfer's goods at the source warehouse. */
-    STOCK_CARTON_NOT_SHIPPABLE("This stock carton cannot ship as it is", 409),
     /** Docs 09 BR-10 / BR-11: a placement breaks a loading rule; the field errors name each package and rule. */
     PLACEMENT_RULE_VIOLATION("A placement breaks a loading rule", 422),
     /** Docs 09 edge "bỏ kiện & tính lại": parcels were taken out of a vehicle; recalculate it before confirming. */
@@ -662,16 +647,13 @@ public enum ErrorCode {
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),
     /**
      * SCRUM-474 UNLOAD-DESIGN point 4: a parcel of a vehicle called off is locked - not scanned onto a load, not planned,
-     * not voided with its transfer's picking - until it is scanned off (or confirmed off by a warehouse manager).
+     * not voided - until it is scanned off (or confirmed off by a warehouse manager).
      */
     PACKAGE_UNLOAD_PENDING("This package is still to be unloaded from a vehicle that was called off; scan it off first",
             409),
     /** SCRUM-474 UNLOAD-DESIGN point 3: a vehicle of the plan already left; cancel the remaining vehicles one by one. */
     LOAD_PLAN_VEHICLE_DISPATCHED("A vehicle of this load plan already left the warehouse; cancel its remaining "
             + "vehicles one by one", 409),
-    /** SCRUM-474 UNLOAD-DESIGN point 10: a transfer's picking is not cancelled while a vehicle of its plan is loading. */
-    TRANSFER_LOADING_IN_PROGRESS("A vehicle of this transfer order's load plan is being loaded: run the controlled "
-            + "cancel of the load plan first, then cancel the picking", 409),
     /**
      * SCRUM-474 UNLOAD-DROP: a vehicle is dropped from its plan only when the plan's other vehicles all left (and at
      * least one did); before that it is booked, loaded or called off like the others.
@@ -679,10 +661,10 @@ public enum ErrorCode {
     LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT("Another vehicle of this load plan has not left yet: a vehicle is dropped from "
             + "the plan only once every other vehicle left", 409),
     /**
-     * SCRUM-474 UNLOAD-DROP: the vehicle carries parcels of a shipment, a transfer order, or an order that may not ship in
-     * parts, whose other parcels are on a vehicle that already left: they cannot be left behind for a new plan.
+     * SCRUM-474 UNLOAD-DROP: the vehicle carries parcels of a shipment, or of an order that may not ship in parts,
+     * whose other parcels are on a vehicle that already left: they cannot be left behind for a new plan.
      */
-    LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order or transfer that also left on another "
+    LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order that also left on another "
             + "vehicle: it cannot be dropped from the plan", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
@@ -744,8 +726,6 @@ public enum ErrorCode {
     PO_AMENDMENT_ALREADY_PENDING("An amendment of this purchase order already waits for a decision", 409),
     PO_AMENDMENT_NOT_PENDING("No amendment of this purchase order waits for a decision", 409),
     PO_AMENDMENT_NO_CHANGE("The amendment changes nothing", 400),
-    /** Only a DRAFT transfer is edited; a rejected one is back in DRAFT for that (docs 10 §5). */
-    TRANSFER_ORDER_NOT_EDITABLE("Only a draft transfer order can be edited", 409),
     /** The warehouse exists but is not ACTIVE: nothing new is received into or sent from it (SCRUM-390). */
     WAREHOUSE_INACTIVE("This warehouse is not active", 409),
     /** The prefix starts every location code of the warehouse, so it is unique system-wide. */

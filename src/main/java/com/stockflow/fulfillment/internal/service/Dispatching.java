@@ -31,11 +31,10 @@ public interface Dispatching {
 
     /**
      * A parcel still to take off a vehicle (SCRUM-392: its order was cancelled; SCRUM-474: its vehicle was called off
-     * under control). {@code reasonCode} only for the second kind. On a transfer plan's vehicle the parcel's key is its
-     * transfer order: {@code shipmentId} is null, {@code transferOrderId} and {@code shipmentCode} (its number) are set.
+     * under control). {@code reasonCode} only for the second kind.
      */
     record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,
-                         Instant requestedAt, String reasonCode, UUID transferOrderId) { }
+                         Instant requestedAt, String reasonCode) { }
 
     /** @param kit the kit it is a part of (SCRUM-287 LP2-6): every part is scanned; null for an ordinary parcel */
     record LoadParcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
@@ -48,13 +47,10 @@ public interface Dispatching {
      * @param labelCodAmount what its label says the carrier collects
      * @param codAmount      what the order fixed at the handover; null before
      * @param currency       of both amounts: the order's
-     * @param transferOrderId SCRUM-287 PR T: on a TRANSFER plan's vehicle the line is its transfer order -
-     *                       {@code shipmentId}, {@code orderId} and {@code taskId} are null, {@code code} is the
-     *                       transfer's number, {@code status} the transfer's
      */
     record LoadShipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
                         int packageCount, int loadedCount, BigDecimal labelCodAmount, BigDecimal codAmount,
-                        String currency, List<LoadParcel> packages, UUID transferOrderId) { }
+                        String currency, List<LoadParcel> packages) { }
 
     record LoadDetail(UUID loadId, String code, UUID warehouseId, String mode, String status, UUID carrierId,
                       String carrierCode, String carrierName, String vehiclePlate, String driverName,
@@ -83,13 +79,9 @@ public interface Dispatching {
                     String currency, Instant printedAt, String mode, String loadPlanCode, Integer vehicleSeq,
                     String vehicleTypeCode) { }
 
-    /**
-     * @param transferOrderId SCRUM-287 PR T: a transfer order on a TRANSFER plan's vehicle - {@code shipmentCode} is its
-     *                        number, the recipient and address its destination warehouse's
-     */
     record ManifestShipment(String shipmentCode, String orderNumber, String recipientName, String recipientPhone,
                             String deliveryAddress, int packageCount, BigDecimal weightKg, BigDecimal codAmount,
-                            boolean codChangedSinceLabel, List<ManifestParcel> packages, UUID transferOrderId) { }
+                            boolean codChangedSinceLabel, List<ManifestParcel> packages) { }
 
     record ManifestParcel(String labelCode, BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
                           BigDecimal heightCm, boolean loaded, com.stockflow.fulfillment.internal.domain.KitPart kit,

@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One hold on stock, held by one order line — or by one transfer order — inside one {@link StockItem}.
+ * One hold on stock, held by one order line inside one {@link StockItem}.
  *
  * <p><b>Why this class exists.</b> The first cut of this model kept {@code reserved} as a single
  * integer on the stock item. That number cannot answer three questions the business asks every
@@ -24,14 +24,8 @@ import java.util.UUID;
 public final class Reservation {
 
     private final ReservationId id;
-    /** The order line's order, for a checkout hold or an allocation; null for a transfer's hold. */
+    /** The order line's order, for a checkout hold or an allocation. */
     private final UUID orderId;
-    /**
-     * The transfer order, for stock allocated to a transfer at its source (SCRUM-287 PR T; kltn-docs 10 step 4, BR-02/03):
-     * no order may sell it. Exactly one of this and {@link #orderId} is set. It does not expire - there is no payment to
-     * wait for - so it is opened pinned; consumed when the transfer is dispatched.
-     */
-    private final UUID transferOrderId;
     /**
      * The caller's own idempotency key, shared by every hold this one reservation call produced.
      *
@@ -53,8 +47,8 @@ public final class Reservation {
     private ReleaseReason releaseReason;
     private Instant closedAt;
     /**
-     * The {@link SkuReservation} this hold was allocated from (F-FUL step 02), null for a transfer's hold and for a
-     * checkout hold placed on a stock item before SKU reservations existed. An allocation never expires.
+     * The {@link SkuReservation} this hold was allocated from (F-FUL step 02), null for a checkout hold placed on a
+     * stock item before SKU reservations existed. An allocation never expires.
      */
     private final UUID allocatedFrom;
 
@@ -62,34 +56,24 @@ public final class Reservation {
     public Reservation(ReservationId id, UUID orderId, UUID rootRequestId, UUID requestId,
                        Quantity quantity, Instant reservedAt, Instant expiresAt,
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
-        this(id, java.util.Objects.requireNonNull(orderId, "orderId"), null, rootRequestId, requestId, quantity,
-                reservedAt, expiresAt, status, releaseReason, closedAt, null);
+        this(id, orderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status, releaseReason, closedAt,
+                null);
     }
 
-    /**
-     * Full constructor, used by the persistence mapper when rehydrating a stored row. Exactly one owner: an order or a
-     * transfer order (SCRUM-287 PR T). A transfer's hold is never an allocation of a SKU reservation and never expires.
-     */
+    /** Full constructor, used by the persistence mapper when rehydrating a stored row. */
     @SuppressWarnings("java:S107")
-    public Reservation(ReservationId id, UUID orderId, UUID transferOrderId,
+    public Reservation(ReservationId id, UUID orderId,
                        UUID rootRequestId, UUID requestId, Quantity quantity, Instant reservedAt, Instant expiresAt,
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt, UUID allocatedFrom) {
         this.id = java.util.Objects.requireNonNull(id, "id");
         if (status == ReservationStatus.ALLOCATED) {
             throw new IllegalArgumentException("A hold on a stock item is never ALLOCATED; its SKU reservation is");
         }
-        if (allocatedFrom != null && (orderId == null || expiresAt != null)) {
-            throw new IllegalArgumentException("An allocation belongs to an order and does not expire");
+        if (allocatedFrom != null && expiresAt != null) {
+            throw new IllegalArgumentException("An allocation does not expire");
         }
         this.allocatedFrom = allocatedFrom;
-        if ((orderId == null) == (transferOrderId == null)) {
-            throw new IllegalArgumentException("A hold belongs to exactly one order or one transfer order");
-        }
-        if (transferOrderId != null && expiresAt != null) {
-            throw new IllegalArgumentException("A transfer hold does not expire");
-        }
-        this.orderId = orderId;
-        this.transferOrderId = transferOrderId;
+        this.orderId = java.util.Objects.requireNonNull(orderId, "orderId");
         this.rootRequestId = java.util.Objects.requireNonNull(rootRequestId, "rootRequestId");
         this.requestId = java.util.Objects.requireNonNull(requestId, "requestId");
         this.quantity = java.util.Objects.requireNonNull(quantity, "quantity");
@@ -117,17 +101,9 @@ public final class Reservation {
      */
     static Reservation allocate(UUID orderId, UUID allocatedFrom, UUID rootRequestId, UUID requestId,
                                 Quantity quantity, Instant now) {
-        return new Reservation(new ReservationId(com.stockflow.common.id.Identifiers.newId()), orderId, null,
+        return new Reservation(new ReservationId(com.stockflow.common.id.Identifiers.newId()), orderId,
                 rootRequestId, requestId, quantity, now, null, ReservationStatus.HELD, null, null,
                 java.util.Objects.requireNonNull(allocatedFrom, "allocatedFrom"));
-    }
-
-    /** A transfer order's hold (SCRUM-287 PR T): pinned from the start. Package-private, like {@link #open}. */
-    static Reservation openForTransfer(UUID transferOrderId, UUID rootRequestId, UUID requestId, Quantity quantity,
-                                       Instant now) {
-        return new Reservation(ReservationId.newId(), null,
-                java.util.Objects.requireNonNull(transferOrderId, "transferOrderId"), rootRequestId, requestId,
-                quantity, now, null, ReservationStatus.HELD, null, null, null);
     }
 
     /** True once {@code expiresAt} has passed and nobody has consumed or released the hold. */
@@ -156,7 +132,7 @@ public final class Reservation {
      * @return true if this call gave an active pinned hold its deadline
      */
     boolean rearm(Instant deadline) {
-        if (!status.isActive() || expiresAt != null || transferOrderId != null || allocatedFrom != null) {
+        if (!status.isActive() || expiresAt != null || allocatedFrom != null) {
             return false;
         }
         this.expiresAt = java.util.Objects.requireNonNull(deadline, "deadline");
@@ -206,7 +182,6 @@ public final class Reservation {
 
     public ReservationId id() { return id; }
     public UUID orderId() { return orderId; }
-    public UUID transferOrderId() { return transferOrderId; }
     public UUID rootRequestId() { return rootRequestId; }
     public UUID requestId() { return requestId; }
     public Quantity quantity() { return quantity; }
@@ -217,6 +192,6 @@ public final class Reservation {
     public Instant closedAt() { return closedAt; }
     public UUID allocatedFrom() { return allocatedFrom; }
 
-    /** Whether this hold is an allocation of a SKU reservation rather than a transfer's or pre-split checkout hold. */
+    /** Whether this hold is an allocation of a SKU reservation rather than a pre-split checkout hold. */
     public boolean isAllocation() { return allocatedFrom != null; }
 }

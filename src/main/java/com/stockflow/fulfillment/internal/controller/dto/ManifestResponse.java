@@ -27,8 +27,7 @@ public record ManifestResponse(String loadCode, String status, String warehouseN
 
     public record Shipment(String shipmentCode, String orderNumber, String recipientName, String recipientPhone,
                            String deliveryAddress, int packageCount, BigDecimal weightKg, BigDecimal codAmount,
-                           boolean codChangedSinceLabel, List<Parcel> packages,
-                           @JsonInclude(JsonInclude.Include.NON_NULL) java.util.UUID transferOrderId) {
+                           boolean codChangedSinceLabel, List<Parcel> packages) {
     }
 
     /**

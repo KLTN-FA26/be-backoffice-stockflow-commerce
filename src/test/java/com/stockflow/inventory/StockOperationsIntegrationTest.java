@@ -368,7 +368,7 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
     }
 
     @Test
-    @DisplayName("stock changes warehouse only through a transfer order, never by a plain move")
+    @DisplayName("stock never changes warehouse, a plain move least of all")
     void aMoveToAnotherWarehouseIsRefused() {
         Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(
                 () -> inventory.move(move(UUID.randomUUID(), BIN, "HN-RCV01", 1)));

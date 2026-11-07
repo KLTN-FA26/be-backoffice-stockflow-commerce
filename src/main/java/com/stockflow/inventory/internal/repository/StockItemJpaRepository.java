@@ -226,12 +226,4 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     @Query("select s.id from ReservationJpaEntity r join r.stockItem s where r.id = :reservationId")
     Optional<UUID> findStockItemIdByReservationId(@Param("reservationId") UUID reservationId);
-
-    /** SCRUM-287 PR T: the stock rows holding a transfer order's live allocation. */
-    @Query("""
-            select distinct r.stockItem.id from ReservationJpaEntity r
-            where r.transferOrderId = :transferOrderId
-              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
-            """)
-    List<UUID> findStockItemIdsHoldingTransferOrder(@Param("transferOrderId") UUID transferOrderId);
 }

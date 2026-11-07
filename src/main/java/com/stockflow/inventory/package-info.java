@@ -1,5 +1,5 @@
 /**
- * <b>Location-level stock, ATP, reservations, counts, transfers</b>
+ * <b>Location-level stock, ATP, reservations, counts</b>
  *
  * <p>WBS 3.6 + 3.10 · database schema {@code inventory}</p>
  *

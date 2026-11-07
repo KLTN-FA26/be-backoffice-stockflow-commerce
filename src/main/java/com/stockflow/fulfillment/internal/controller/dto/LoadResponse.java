@@ -44,14 +44,12 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mo
 
     /**
      * A parcel still to take off the vehicle: its order was cancelled (SCRUM-392) or the vehicle was called off under
-     * control (SCRUM-474; then {@code reasonCode} is set). Locked until scanned off. On a transfer plan's vehicle
-     * {@code shipmentId} is absent and {@code transferOrderId} set ({@code shipmentCode} is its number).
+     * control (SCRUM-474; then {@code reasonCode} is set). Locked until scanned off.
      */
     public record PendingUnload(UUID packageId, String labelCode,
                                 @JsonInclude(JsonInclude.Include.NON_NULL) UUID shipmentId, String shipmentCode,
                                 String reason, Instant requestedAt,
-                                @JsonInclude(JsonInclude.Include.NON_NULL) String reasonCode,
-                                @JsonInclude(JsonInclude.Include.NON_NULL) UUID transferOrderId) {
+                                @JsonInclude(JsonInclude.Include.NON_NULL) String reasonCode) {
     }
 
     /**
@@ -60,13 +58,10 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mo
      * @param labelCodAmount what the shipment's label says the carrier collects
      * @param codAmount      what the order fixed at the handover; null before it
      * @param currency       of both amounts
-     * @param transferOrderId SCRUM-287 PR T: the transfer order on a TRANSFER plan's vehicle (then shipmentId, orderId
-     *                       and taskId are null, code is the transfer's number); absent otherwise
      */
     public record Shipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
                            int packageCount, int loadedCount, BigDecimal labelCodAmount, BigDecimal codAmount,
-                           String currency, List<Parcel> packages,
-                           @JsonInclude(JsonInclude.Include.NON_NULL) UUID transferOrderId) {
+                           String currency, List<Parcel> packages) {
     }
 
     /**

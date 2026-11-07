@@ -294,7 +294,7 @@ class PutawayServiceConfirmTest {
         }
 
         @Test
-        @DisplayName("a bin of another warehouse is MOVE_ACROSS_WAREHOUSES: that is a transfer order")
+        @DisplayName("a bin of another warehouse is MOVE_ACROSS_WAREHOUSES: stock never changes warehouse")
         void otherWarehouse() {
             when(warehouses.findLocation(BIN)).thenReturn(Optional.of(location(binId, Kind.BIN, UUID.randomUUID(), BIN,
                     StorageLocationView.StorageClass.NORMAL, true)));

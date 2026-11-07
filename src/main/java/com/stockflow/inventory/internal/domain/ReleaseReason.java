@@ -28,8 +28,6 @@ public enum ReleaseReason {
     SUBCONTRACTED,
     /** A picker found fewer units at the bin than were allocated there; the units were allocated elsewhere (X-SHORT). */
     SHORT_PICKED,
-    /** Picking of a transfer order was cancelled before its goods left: its hold is free again (SCRUM-287 PR T). */
-    TRANSFER_CANCELLED,
     /**
      * A picker found the held units damaged (SCRUM-277): they went to quarantine, and the order holds the same
      * quantity again elsewhere, or as an impaired allocation on the damaged units until it is reallocated.
@@ -44,11 +42,10 @@ public enum ReleaseReason {
             case MANUAL_OVERRIDE -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
             // The legacy production reasons announce nothing an order acts on (a production hold was no order's;
             // SCRAPPED closed a cancelled order's printed goods, BR-PRD-10).
-            // SHORT_PICKED: the order keeps its stock, on another bin; nothing for it to act on. TRANSFER_CANCELLED: a
-            // transfer's hold, no order's. DAMAGED: the order keeps its units elsewhere or impaired, and learns of it
+            // SHORT_PICKED: the order keeps its stock, on another bin; nothing for it to act on. DAMAGED: the order
+            // keeps its units elsewhere or impaired, and learns of it
             // in the picker's own transaction (or from StockDamageReported); nothing to act on here either.
-            case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION, SUBCONTRACTED, SHORT_PICKED,
-                 TRANSFER_CANCELLED, DAMAGED ->
+            case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION, SUBCONTRACTED, SHORT_PICKED, DAMAGED ->
                     com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
         };
     }

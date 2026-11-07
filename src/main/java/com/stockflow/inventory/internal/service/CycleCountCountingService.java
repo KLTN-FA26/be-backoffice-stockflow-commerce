@@ -234,7 +234,7 @@ class CycleCountCountingService {
 
     /**
      * The line follows its carton to the bin it was moved to whole, inside the count's warehouse. A carton that left
-     * the warehouse (a transfer) is no longer this count's to count.
+     * the warehouse is no longer this count's to count.
      */
     private static void follow(CycleCount count, CycleCountLine line, StockPackage carton, String prefix) {
         if (carton.location().equals(line.slot().location())) {

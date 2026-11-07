@@ -16,7 +16,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 /** Writes only inventory schema. The same advisory lock is taken by the stock-row trigger. */
@@ -33,31 +32,6 @@ public class InventoryPolicyRepository {
     }
 
     /**
-     * The SKU locks (sorted), then these SKUs' cartons in stock, then every stock row of them, each in id order: the
-     * lock order of V20261020000100. The cartons come before the rows because a caller here may take units out of a
-     * carton's row (a transfer dispatch), and every carton writer takes the carton first; locking the rows first
-     * would wait in a circle with a pick holding a carton and waiting for its row.
-     */
-    public void lockReservationStock(Set<String> skus) {
-        if (skus.isEmpty()) return;
-        skus.stream().sorted().forEach(this::lock);
-        String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
-        jdbc.query("""
-                        select p.id from inventory.stock_package p
-                          join inventory.inventory_items i on i.id = p.inventory_item_id
-                         where i.sku in (""" + placeholders + """
-                        ) and p.status = 'IN_STOCK' order by p.id for update of p""",
-                r -> {},
-                skus.toArray());
-        jdbc.query(
-                "select id from inventory.stock_item where sku in ("
-                        + placeholders
-                        + ") order by id for update",
-                r -> {},
-                skus.toArray());
-    }
-
-    /**
      * Deletes the items of these SKUs; a foreign key that still points at one refuses the whole statement. Their stock
      * alerts go with them (ON DELETE CASCADE, V20261016000100); their rows on the alert queue, which has no foreign key
      * so that it never blocks a stock write, are removed here.
@@ -71,7 +45,7 @@ public class InventoryPolicyRepository {
 
     /**
      * The SKUs among these whose item some document uses ({@code inventory.item_in_use}: stock, the ledger,
-     * adjustments, counts, transfers, warehouse tasks, pick lines, a price, procurement), in SKU order. The same
+     * adjustments, counts, warehouse tasks, pick lines, a price, procurement), in SKU order. The same
      * function guards a SKU rename, so a delete and a rename refuse the same items.
      */
     public java.util.List<String> skusInUse(java.util.Collection<String> skus) {

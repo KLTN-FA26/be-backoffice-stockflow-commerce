@@ -494,9 +494,9 @@ class LoadEstimateIntegrationTest {
                     .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE"));
         }
         UUID confirmed = tx.execute(s -> order("CONFIRMED", Map.of(palletSku, 1)));
-        // SCRUM-287 PR T: transfers are estimated now - an unknown one is 404 as an order is.
+        // Transfers between warehouses were removed: TRANSFER is no source type any more.
         estimate(Role.ORDER_COORDINATOR, coordinator, body(UUID.randomUUID(), "TRANSFER", container))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isBadRequest());
         estimate(Role.ORDER_COORDINATOR, coordinator, body(UUID.randomUUID(), "ORDER", container))
                 .andExpect(status().isNotFound());
         UUID retired = tx.execute(s -> vehicleType("INACTIVE"));

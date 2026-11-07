@@ -6,7 +6,6 @@ package com.stockflow.inventory.api;
 public enum MoveReference {
     MOVE_TASK,
     PUTAWAY_TASK,
-    TRANSFER_ORDER_LINE,
     ORDER,
     /** A goods-receipt line: received goods moved on from the receiving area. */
     GOODS_RECEIPT_LINE,

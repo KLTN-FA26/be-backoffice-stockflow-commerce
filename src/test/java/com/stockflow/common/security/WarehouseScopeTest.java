@@ -41,13 +41,10 @@ class WarehouseScopeTest {
         WithCurrentUser.run(clerkOf(HCM, "HCM"), () -> {
             WarehouseScope.requireLocation("HCM-A01-2-03");
             WarehouseScope.requireWarehouse(HCM);
-            WarehouseScope.requireEither(HN, HCM);
             assertThatThrownBy(() -> WarehouseScope.requireLocation("HN-RCV01"))
                     .isInstanceOfSatisfying(BusinessException.class,
                             e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
             assertThatThrownBy(() -> WarehouseScope.requireWarehouse(HN)).isInstanceOf(BusinessException.class);
-            assertThatThrownBy(() -> WarehouseScope.requireEither(HN, UUID.randomUUID()))
-                    .isInstanceOf(BusinessException.class);
         });
     }
 

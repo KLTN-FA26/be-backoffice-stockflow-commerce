@@ -298,8 +298,8 @@ class StockOperationsServiceImpl implements StockOperations {
 
     /**
      * What every move of stock needs of its two ends, loose or in a carton: two different locations, in one
-     * warehouse (docs 11 BR-01: stock leaves its warehouse only on a transfer order, which records the dispatch,
-     * the transit and the receipt), and a destination that can take stock. Only the destination is checked (issue
+     * warehouse (docs 11 BR-01: stock never changes warehouse - a Production Order delivers straight to the warehouse
+     * that ships), and a destination that can take stock. Only the destination is checked (issue
      * #67): taking stock out of a blocked bin or a shelf in maintenance is how it gets emptied, and an adjustment
      * at a bin blocked for counting must still post.
      */
@@ -309,7 +309,7 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         if (!from.warehouseCode().equals(to.warehouseCode())) {
             throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
-                    "%s and %s are in different warehouses; use a transfer order".formatted(from, to));
+                    "%s and %s are in different warehouses; stock moves only inside one".formatted(from, to));
         }
         requireUsable(to);
     }

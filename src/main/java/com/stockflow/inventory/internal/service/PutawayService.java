@@ -268,7 +268,7 @@ public class PutawayService {
                 new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + source.locationCode()));
         if (!from.warehouseId().equals(bin.warehouseId())) {
             throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
-                    "%s is in another warehouse than the goods; use a transfer order".formatted(bin.locationCode()));
+                    "%s is in another warehouse than the goods".formatted(bin.locationCode()));
         }
         if (!bin.usable()) {
             throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE, bin.locationCode() + " cannot take stock now");

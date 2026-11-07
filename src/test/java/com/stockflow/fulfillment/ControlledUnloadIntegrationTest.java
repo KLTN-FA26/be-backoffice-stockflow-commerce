@@ -59,8 +59,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * the real filter chain, permission aspect, solver and database - one test per point of the decision: cancel only; one
  * vehicle back to PLANNED with the same layout while the others carry on; the whole plan refused once a vehicle left;
  * parcels locked until scanned off; scan-off and the warehouse manager's override; the permission; left-behind splits
- * untouched; the order-cancelled-while-loading path in both orders. The transfer picking cancel is in
- * {@link TransferLoadPlanningIntegrationTest}.
+ * untouched; the order-cancelled-while-loading path in both orders.
  *
  * <p>Shares its context, hence its database, with {@link FtlDispatchIntegrationTest}.</p>
  */
@@ -1015,6 +1014,4 @@ class ControlledUnloadIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
         assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
     }
-
-    // ---- the transfer's parcels are unloaded too (point 10 is in TransferLoadPlanningIntegrationTest) -----------
 }

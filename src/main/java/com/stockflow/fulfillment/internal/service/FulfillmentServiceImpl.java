@@ -401,7 +401,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
      * The warehouse a new task is picked in: the order's own once it is released; for a stock-only
      * order picked straight from CONFIRMED, where its holds are. Release does not check where the holds
      * sit, so they are checked here: stock in two warehouses, or outside the order's, cannot be picked as
-     * one task (the goods would have to be moved by a transfer order first, docs 11 BR-01).
+     * one task (stock never changes warehouse, docs 11 BR-01).
      */
     private UUID pickingWarehouse(OrderSummary order) {
         List<OrderHold> holds = inventory.holdsOf(order.orderId());

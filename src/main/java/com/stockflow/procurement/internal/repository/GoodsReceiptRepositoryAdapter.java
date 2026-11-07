@@ -65,7 +65,7 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
         });
     }
 
-    /** Same counter table and upsert as stock adjustment and transfer numbers. */
+    /** Same counter table and upsert as stock adjustment numbers. */
     @Override
     public String nextNumber(LocalDate day) {
         Number value = (Number) entityManager.createNativeQuery("""

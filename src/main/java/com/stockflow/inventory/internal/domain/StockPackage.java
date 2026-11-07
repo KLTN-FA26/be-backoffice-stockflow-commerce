@@ -107,7 +107,7 @@ public final class StockPackage {
 
     /**
      * Units left this carton's rows, {@code left} remaining in them. The one rule every path that takes stock out
-     * of a carton applies (a pick, a package, an issue, a transfer, a write-off): taken from, it is opened - it no
+     * of a carton applies (a pick, a package, a write-off): taken from, it is opened - it no
      * longer holds what was counted into it - and emptied, it is CONSUMED, in the same transaction, or the
      * commit-time check of V20261020000200 refuses (an IN_STOCK carton holds something; an unopened one holds
      * exactly its count).

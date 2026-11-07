@@ -137,12 +137,6 @@ public interface StockItemRepository {
      */
     List<StockItem> findWithReservationsForOrder(java.util.UUID orderId);
 
-    /**
-     * SCRUM-287 PR T: the stock rows holding a transfer order's live allocation, locked in id order (the caller holds
-     * the SKUs' advisory locks first).
-     */
-    List<StockItem> findWithReservationsForTransferOrder(java.util.UUID transferOrderId);
-
     /** The stock item a reservation is on, without locking it — so it can be locked in id order with another. */
     Optional<StockItemId> findIdByReservationId(ReservationId reservationId);
 

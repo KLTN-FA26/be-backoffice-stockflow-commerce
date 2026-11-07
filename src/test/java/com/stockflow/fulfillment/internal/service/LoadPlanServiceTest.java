@@ -30,15 +30,12 @@ import com.stockflow.fulfillment.internal.repository.LoadPlanNumbers;
 import com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.LoadPlanStore;
 import com.stockflow.fulfillment.internal.repository.LoadPlanVehicleJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentLocks;
 import com.stockflow.fulfillment.internal.repository.VehicleTypeJpaRepository;
-import com.stockflow.inventory.api.TransferDeliveryMode;
-import com.stockflow.inventory.api.TransferFulfillment;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.WithCurrentUser;
@@ -111,11 +108,9 @@ class LoadPlanServiceTest {
     private final PickJpaRepository picks = mock(PickJpaRepository.class);
     private final PackageLineJpaRepository packageLines = mock(PackageLineJpaRepository.class);
     private final DispatchLoadShipmentJpaRepository loadMembers = mock(DispatchLoadShipmentJpaRepository.class);
-    private final TransferFulfillment transfers = mock(TransferFulfillment.class);
-    private final PackJpaRepository packs = mock(PackJpaRepository.class);
     private final LoadPlanService service = new LoadPlanService(plans, members, planVehicles, store, numbers, parcels,
             packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers, warehouses, estimates, picks,
-            packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), transfers, packs, mock(PlatformTransactionManager.class));
+            packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), mock(PlatformTransactionManager.class));
 
     private final CurrentUser actor = FulfillmentFixtures.user();
     private FulfillmentFixtures.PlannedPlan planned;
@@ -212,10 +207,9 @@ class LoadPlanServiceTest {
     @DisplayName("creating a plan (09 §4.2 step 1)")
     class Creating {
 
-        private LoadPlans.CreatePlan request(String source, List<UUID> shipmentIds, List<UUID> typeIds,
-                                             List<UUID> transferIds) {
+        private LoadPlans.CreatePlan request(String source, List<UUID> shipmentIds, List<UUID> typeIds) {
             return new LoadPlans.CreatePlan(UUID.randomUUID(), WAREHOUSE, shipmentIds, typeIds, "SINGLE_TYPE", "note",
-                    source, transferIds);
+                    source);
         }
 
         @BeforeEach
@@ -248,26 +242,29 @@ class LoadPlanServiceTest {
                     null), actor)).errorCode()).isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
 
             WithCurrentUser.run(FulfillmentFixtures.userOf(OTHER_WAREHOUSE), DataScope.WAREHOUSE, () ->
-                    assertThat(refusal(() -> service.create(request(null, null, null, null), actor)).errorCode())
+                    assertThat(refusal(() -> service.create(request(null, null, null), actor)).errorCode())
                             .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
         }
 
         @Test
-        @DisplayName("a source type other than ORDER or TRANSFER, or a selection mode the planner does not know, is VALIDATION_FAILED")
+        @DisplayName("a source type other than ORDER - TRANSFER included, transfers were removed - or a selection mode the "
+                + "planner does not know, is VALIDATION_FAILED")
         void sourceAndModeAreValidated() {
-            var thrown = refusal(() -> service.create(request("PALLET", null, null, null), actor));
-            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("sourceType");
+            for (String source : List.of("PALLET", "TRANSFER")) {
+                var thrown = refusal(() -> service.create(request(source, null, null), actor));
+                assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("sourceType");
+            }
 
             var badMode = refusal(() -> service.create(new LoadPlans.CreatePlan(UUID.randomUUID(), WAREHOUSE, null, null,
-                    "CHEAPEST", null, null, null), actor));
+                    "CHEAPEST", null, null), actor));
             assertThat(badMode.fieldErrors()).extracting(f -> f.field()).containsExactly("selectionMode");
         }
 
         @Test
         @DisplayName("an empty plan is a DRAFT: no parcels, no types, saved as a new plan with the next number")
         void emptyDraft() {
-            var detail = service.create(request(null, null, null, null), actor);
+            var detail = service.create(request(null, null, null), actor);
 
             assertThat(detail.status()).isEqualTo("DRAFT");
             assertThat(detail.code()).isEqualTo("LP-20261022-0009");
@@ -277,13 +274,30 @@ class LoadPlanServiceTest {
         }
 
         @Test
-        @DisplayName("an ORDER plan takes shipments only and a TRANSFER plan one transfer only: LOAD_PLAN_SOURCE_MISMATCH")
-        void oneSourcePerPlan() {
-            assertThat(refusal(() -> service.create(request("ORDER", null, null, List.of(UUID.randomUUID())), actor))
-                    .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_SOURCE_MISMATCH);
-            assertThat(refusal(() -> service.create(request("TRANSFER", List.of(UUID.randomUUID()), null, null), actor))
-                    .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_SOURCE_MISMATCH);
+        @DisplayName("a shipment that is not found, not waiting, or not a full truckload of this warehouse is refused")
+        void shipmentGuards() {
+            UUID unknown = UUID.randomUUID();
+            when(shipmentLocks.lock(any())).thenReturn(List.of());
+            assertThat(refusal(() -> service.create(request(null, List.of(unknown), List.of(TRUCK_TYPE)), actor))
+                    .errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOUND);
+
+            ShipmentJpaEntity cancelled = fullTruckload(ShipmentStatus.CANCELLED, DeliveryMode.FULL_TRUCKLOAD, WAREHOUSE);
+            when(shipmentLocks.lock(any())).thenReturn(List.of(cancelled));
+            assertThat(refusal(() -> service.create(request(null, List.of(cancelled.getId()), List.of(TRUCK_TYPE)),
+                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
+
+            ShipmentJpaEntity parcelMode = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.PARCEL, WAREHOUSE);
+            when(shipmentLocks.lock(any())).thenReturn(List.of(parcelMode));
+            assertThat(refusal(() -> service.create(request(null, List.of(parcelMode.getId()), List.of(TRUCK_TYPE)),
+                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOR_LOAD);
+
+            ShipmentJpaEntity elsewhere = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.FULL_TRUCKLOAD,
+                    OTHER_WAREHOUSE);
+            when(shipmentLocks.lock(any())).thenReturn(List.of(elsewhere));
+            assertThat(refusal(() -> service.create(request(null, List.of(elsewhere.getId()), List.of(TRUCK_TYPE)),
+                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOR_LOAD);
         }
+
 
         private ShipmentJpaEntity fullTruckload(ShipmentStatus status, DeliveryMode mode, UUID warehouse) {
             var s = com.stockflow.fulfillment.internal.domain.Shipment.ready(UUID.randomUUID(), "SO-1-S1", UUID.randomUUID(),
@@ -304,31 +318,6 @@ class LoadPlanServiceTest {
         }
 
         @Test
-        @DisplayName("a shipment that is not found, not waiting, or not a full truckload of this warehouse is refused")
-        void shipmentGuards() {
-            UUID unknown = UUID.randomUUID();
-            when(shipmentLocks.lock(any())).thenReturn(List.of());
-            assertThat(refusal(() -> service.create(request(null, List.of(unknown), List.of(TRUCK_TYPE), null), actor))
-                    .errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOUND);
-
-            ShipmentJpaEntity cancelled = fullTruckload(ShipmentStatus.CANCELLED, DeliveryMode.FULL_TRUCKLOAD, WAREHOUSE);
-            when(shipmentLocks.lock(any())).thenReturn(List.of(cancelled));
-            assertThat(refusal(() -> service.create(request(null, List.of(cancelled.getId()), List.of(TRUCK_TYPE), null),
-                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
-
-            ShipmentJpaEntity parcelMode = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.PARCEL, WAREHOUSE);
-            when(shipmentLocks.lock(any())).thenReturn(List.of(parcelMode));
-            assertThat(refusal(() -> service.create(request(null, List.of(parcelMode.getId()), List.of(TRUCK_TYPE), null),
-                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOR_LOAD);
-
-            ShipmentJpaEntity elsewhere = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.FULL_TRUCKLOAD,
-                    OTHER_WAREHOUSE);
-            when(shipmentLocks.lock(any())).thenReturn(List.of(elsewhere));
-            assertThat(refusal(() -> service.create(request(null, List.of(elsewhere.getId()), List.of(TRUCK_TYPE), null),
-                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOR_LOAD);
-        }
-
-        @Test
         @DisplayName("BR-09: a shipment with a parcel in another live plan is LOAD_PLAN_PACKAGE_TAKEN, naming that plan")
         void parcelHeldByAnotherPlan() {
             ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.FULL_TRUCKLOAD, WAREHOUSE);
@@ -343,7 +332,7 @@ class LoadPlanServiceTest {
             when(other.getCode()).thenReturn("LP-OTHER");
             when(plans.findById(otherPlan)).thenReturn(Optional.of(other));
 
-            var thrown = refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE), null),
+            var thrown = refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE)),
                     actor));
 
             assertThat(thrown.errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN);
@@ -360,7 +349,7 @@ class LoadPlanServiceTest {
             when(parcels.describe(any())).thenReturn(Map.of(unmeasured.getId(), new LoadPlanParcels.Parcel(unmeasured, row,
                     null, null, "X")));
 
-            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE), null), actor))
+            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE)), actor))
                     .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_PACKAGE_UNMEASURED);
         }
 
@@ -374,12 +363,12 @@ class LoadPlanServiceTest {
                     sealed.getFirst(), row, null, LoadPlanParcels.carton(sealed.getFirst(), "X"), "X")));
             UUID unknownType = UUID.randomUUID();
             when(vehicleTypes.findAllById(any())).thenReturn(List.of());
-            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(unknownType), null), actor))
+            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(unknownType)), actor))
                     .errorCode()).isEqualTo(ErrorCode.VEHICLE_TYPE_NOT_FOUND);
 
             truckType.apply("Truck", "TRUCK", 2000, 1000, 1000, 0, null, null, new BigDecimal("1000"), 1, null, "INACTIVE");
             when(vehicleTypes.findAllById(any())).thenReturn(List.of(truckType));
-            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE), null), actor))
+            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE)), actor))
                     .errorCode()).isEqualTo(ErrorCode.VEHICLE_TYPE_INACTIVE);
         }
 
@@ -395,7 +384,7 @@ class LoadPlanServiceTest {
                     LoadPlanParcels.carton(p, "CUBE"), "CUBE")));
             when(parcels.describe(any())).thenReturn(described);
 
-            var detail = service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE), null), actor);
+            var detail = service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE)), actor);
 
             assertThat(detail.packageCount()).isEqualTo(2);
             assertThat(detail.status()).isEqualTo("DRAFT");
@@ -407,65 +396,20 @@ class LoadPlanServiceTest {
         void racesAreRefereedByTheDatabase() {
             org.mockito.Mockito.doThrow(new DataIntegrityViolationException("x",
                     new RuntimeException("duplicate key value violates unique constraint \"uk_load_plan_package_active\""))).when(store).insert(any(), any());
-            assertThat(refusal(() -> service.create(request(null, null, null, null), actor)).errorCode())
+            assertThat(refusal(() -> service.create(request(null, null, null), actor)).errorCode())
                     .isEqualTo(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN);
 
             org.mockito.Mockito.doThrow(new DataIntegrityViolationException("x",
                     new RuntimeException("tg_load_plan_package_check failed"))).when(store).insert(any(), any());
-            assertThat(refusal(() -> service.create(request(null, null, null, null), actor)).errorCode())
+            assertThat(refusal(() -> service.create(request(null, null, null), actor)).errorCode())
                     .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
 
             org.mockito.Mockito.doThrow(new DataIntegrityViolationException("x",
                     new RuntimeException("something else"))).when(store).insert(any(), any());
-            assertThatThrownBy(() -> service.create(request(null, null, null, null), actor))
+            assertThatThrownBy(() -> service.create(request(null, null, null), actor))
                     .isInstanceOf(DataIntegrityViolationException.class);
         }
 
-        @Test
-        @DisplayName("a transfer plan carries one transfer order: two is VALIDATION_FAILED on 'transferOrderIds'")
-        void oneTransferOnly() {
-            var thrown = refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE),
-                    List.of(UUID.randomUUID(), UUID.randomUUID())), actor));
-
-            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("transferOrderIds");
-        }
-
-        private TransferFulfillment.TransferView transfer(UUID id, UUID from, String status, boolean packed) {
-            return new TransferFulfillment.TransferView(id, "TO-0001", from, OTHER_WAREHOUSE, status,
-                    TransferDeliveryMode.FULL_TRUCKLOAD, packed ? NOW : null, null, null, List.of());
-        }
-
-        @Test
-        @DisplayName("a transfer that does not exist is TRANSFER_ORDER_NOT_FOUND; one leaving another warehouse LOAD_PLAN_SOURCE_MISMATCH; one not packed TRANSFER_NOT_PACKED")
-        void transferGuards() {
-            UUID id = UUID.randomUUID();
-            when(transfers.find(id)).thenReturn(Optional.empty());
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.TRANSFER_ORDER_NOT_FOUND);
-
-            when(transfers.find(id)).thenReturn(Optional.of(transfer(id, OTHER_WAREHOUSE, "PICKING", true)));
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_SOURCE_MISMATCH);
-
-            when(transfers.find(id)).thenReturn(Optional.of(transfer(id, WAREHOUSE, "PICKING", false)));
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.TRANSFER_NOT_PACKED);
-            when(transfers.find(id)).thenReturn(Optional.of(transfer(id, WAREHOUSE, "APPROVED", true)));
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.TRANSFER_NOT_PACKED);
-        }
-
-        @Test
-        @DisplayName("a transfer without a free sealed parcel is LOAD_PLAN_PACKAGE_TAKEN")
-        void transferWithoutParcels() {
-            UUID id = UUID.randomUUID();
-            when(transfers.find(id)).thenReturn(Optional.of(transfer(id, WAREHOUSE, "PICKING", true)));
-            when(packages.findByTransferOrderIdIn(any())).thenReturn(List.of());
-
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN);
-        }
     }
 
     @Nested
@@ -628,7 +572,7 @@ class LoadPlanServiceTest {
         private final LoadPlanService withTransactions = new LoadPlanService(plans, members, planVehicles, store,
                 numbers, parcels, packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers,
                 warehouses, estimates, picks, packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC),
-                Duration.ofSeconds(2), Duration.ofSeconds(12), transfers, packs, transactions);
+                Duration.ofSeconds(2), Duration.ofSeconds(12), transactions);
         private final List<Boolean> activeDuringSearch = new ArrayList<>();
         private final List<List<String>> eventsAtSearch = new ArrayList<>();
 
@@ -1018,7 +962,7 @@ class LoadPlanServiceTest {
     }
 
     @Nested
-    @DisplayName("an order or a transfer cancelled out of a plan, and parcels a plan holds")
+    @DisplayName("an order cancelled out of a plan, and parcels a plan holds")
     class Releases {
 
         @Test
@@ -1074,19 +1018,6 @@ class LoadPlanServiceTest {
             verifyNoInteractions(store);
         }
 
-        @Test
-        @DisplayName("a transfer whose picking was cancelled cancels the plan that holds it, with its loads")
-        void releaseTransfer() {
-            UUID transferId = UUID.randomUUID();
-            LoadPlanPackageJpaEntity held = mock(LoadPlanPackageJpaEntity.class);
-            when(held.getLoadPlanId()).thenReturn(plan.id());
-            when(members.findByTransferOrderIdAndActiveTrue(transferId)).thenReturn(List.of(held));
-
-            service.releaseTransfer(transferId, "picking cancelled", NOW);
-
-            assertThat(plan.status()).isEqualTo(LoadPlanStatus.CANCELLED);
-            verify(store).save(eq(plan), eq(header), eq(NOW));
-        }
     }
 
     @Nested
@@ -1112,19 +1043,5 @@ class LoadPlanServiceTest {
             assertThat(reconciliation.pieceCheck().balanced()).isTrue();
             assertThat(reconciliation.shipments()).singleElement().satisfies(s -> assertThat(s.code()).isEqualTo("SO-1-S1"));
         }
-    }
-
-    @Test
-    @DisplayName("a transfer is a manifest line waiting for dispatch while it is packed and picking; a cancelled picking and a transfer past it are not")
-    void transferAsAManifestLine() {
-        assertThat(LoadPlanService.transferFacts(new TransferFulfillment.TransferView(UUID.randomUUID(), "TO-1", WAREHOUSE,
-                OTHER_WAREHOUSE, "PICKING", TransferDeliveryMode.FULL_TRUCKLOAD, NOW, null, null, List.of())).status())
-                .isEqualTo(ShipmentStatus.READY_TO_DISPATCH);
-        assertThat(LoadPlanService.transferFacts(new TransferFulfillment.TransferView(UUID.randomUUID(), "TO-1", WAREHOUSE,
-                OTHER_WAREHOUSE, "PICKING", TransferDeliveryMode.FULL_TRUCKLOAD, null, null, null, List.of())).status())
-                .isEqualTo(ShipmentStatus.CANCELLED);
-        assertThat(LoadPlanService.transferFacts(new TransferFulfillment.TransferView(UUID.randomUUID(), "TO-1", WAREHOUSE,
-                OTHER_WAREHOUSE, "IN_TRANSIT", TransferDeliveryMode.FULL_TRUCKLOAD, NOW, null, null, List.of())).status())
-                .isEqualTo(ShipmentStatus.HANDED_OVER);
     }
 }

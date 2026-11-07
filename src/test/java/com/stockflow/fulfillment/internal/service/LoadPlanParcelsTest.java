@@ -10,7 +10,6 @@ import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
-import com.stockflow.inventory.api.TransferFulfillment;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -43,8 +42,7 @@ class LoadPlanParcelsTest {
     private final PackageLineJpaRepository lines = mock(PackageLineJpaRepository.class);
     private final ShipmentJpaRepository shipments = mock(ShipmentJpaRepository.class);
     private final OrderService orders = mock(OrderService.class);
-    private final TransferFulfillment transfers = mock(TransferFulfillment.class);
-    private final LoadPlanParcels parcels = new LoadPlanParcels(packages, lines, shipments, orders, transfers);
+    private final LoadPlanParcels parcels = new LoadPlanParcels(packages, lines, shipments, orders);
 
     @Test
     @DisplayName("centimetres with two decimals become whole millimetres, rounded up and never under-stated")
@@ -72,18 +70,6 @@ class LoadPlanParcelsTest {
         assertThat(carton.partCode()).isEqualTo("SKU-A");
         assertThat(carton.groupKey()).isEqualTo(shipment.toString());
         assertThat(carton.kitGroup()).isNull();
-    }
-
-    @Test
-    @DisplayName("a parcel of a transfer is grouped by its transfer order")
-    void transferParcelGroupsByTransfer() {
-        UUID transfer = UUID.randomUUID();
-        PackageJpaEntity p = new PackageJpaEntity(UUID.randomUUID(), UUID.randomUUID(), 1, "PKG-1", null, transfer);
-        p.apply(null, com.stockflow.fulfillment.internal.domain.PackageType.CARTON, PackageStatus.SEALED,
-                new BigDecimal("5"), new BigDecimal("30"), new BigDecimal("30"), new BigDecimal("30"), null, true, false,
-                false, false, NOW, null, null, null);
-
-        assertThat(LoadPlanParcels.carton(p, "X").groupKey()).isEqualTo(transfer.toString());
     }
 
     @Test
@@ -192,7 +178,7 @@ class LoadPlanParcelsTest {
         assertThat(described.get(single.getId()).partName()).isEqualTo("SKU-B");
         assertThat(described.get(empty.getId()).partName()).isEqualTo("PKG-3");
         assertThat(described.get(single.getId()).order()).isSameAs(order);
-        assertThat(described.get(single.getId()).sourceId()).isEqualTo(shipmentId);
+        assertThat(described.get(single.getId()).row().getShipmentId()).isEqualTo(shipmentId);
         assertThat(described.get(single.getId()).plannable()).isTrue();
     }
 

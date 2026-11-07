@@ -19,7 +19,7 @@ import java.util.UUID;
 
 /**
  * JPA mapping of one hold. Two kinds share the table (SCRUM-152): a hold on a stock item — an allocation, a
- * transfer's hold, a checkout hold placed before SKU reservations — which is a child of {@code stock_item} and
+ * checkout hold placed before SKU reservations — which is a child of {@code stock_item} and
  * never loaded or saved on its own; and a SKU reservation ({@code stock_item_id} null), the soft checkout hold,
  * which is its own aggregate and saved through {@code SkuReservationRepositoryAdapter}.
  *
@@ -53,15 +53,10 @@ public class ReservationJpaEntity {
     private StockItemJpaEntity stockItem;
 
     /**
-     * The order holding the stock (a foreign key into {@code ordering} since V20260928004000, ADR-0007);
-     * null for a transfer's hold.
+     * The order holding the stock (a foreign key into {@code ordering} since V20260928004000, ADR-0007).
      */
-    @Column(name = "order_id")
+    @Column(name = "order_id", nullable = false)
     private UUID orderId;
-
-    /** SCRUM-287 PR T: the transfer order the stock is allocated to; exactly one of the two owners is set. */
-    @Column(name = "transfer_order_id")
-    private UUID transferOrderId;
 
     /**
      * The caller's own idempotency key. Indexed but NOT unique: one reservation call can produce
@@ -145,13 +140,6 @@ public class ReservationJpaEntity {
 
     public UUID getId() { return id; }
     public UUID getOrderId() { return orderId; }
-    public UUID getTransferOrderId() { return transferOrderId; }
-
-    /** SCRUM-287 PR T: the hold is a transfer order's. */
-    public ReservationJpaEntity forTransfer(UUID transferOrderId) {
-        this.transferOrderId = transferOrderId;
-        return this;
-    }
     public UUID getRootRequestId() { return rootRequestId; }
     public UUID getRequestId() { return requestId; }
     public int getQuantity() { return quantity; }

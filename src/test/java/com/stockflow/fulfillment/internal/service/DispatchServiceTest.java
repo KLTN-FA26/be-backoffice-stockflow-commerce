@@ -30,7 +30,6 @@ import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentLocks;
 import com.stockflow.identity.api.IdentityService;
-import com.stockflow.inventory.api.TransferFulfillment;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
@@ -90,10 +89,9 @@ class DispatchServiceTest {
     private final IdentityService identities = mock(IdentityService.class);
     private final PlanVehicles planVehicles = mock(PlanVehicles.class);
     private final LeftBehindParcels leftBehind = mock(LeftBehindParcels.class);
-    private final TransferFulfillment transfers = mock(TransferFulfillment.class);
     private final DispatchService service = new DispatchService(loads, members, loaded, store, numbers, shipments, locks,
             packages, packageLines, picks, carriers, timeline, context, orders, warehouses, identities, planVehicles,
-            leftBehind, Clock.fixed(NOW, ZoneOffset.UTC), transfers);
+            leftBehind, Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final CurrentUser actor = FulfillmentFixtures.user();
     private CarrierJpaEntity ghn;

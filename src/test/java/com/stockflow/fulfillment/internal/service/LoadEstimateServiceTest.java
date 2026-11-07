@@ -14,8 +14,6 @@ import com.stockflow.inventory.api.PackagingRequest;
 import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingSpecResolver;
 import com.stockflow.inventory.api.RuleLevel;
-import com.stockflow.inventory.api.TransferDeliveryMode;
-import com.stockflow.inventory.api.TransferFulfillment;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -61,10 +59,9 @@ class LoadEstimateServiceTest {
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final PackagingSpecResolver packaging = mock(PackagingSpecResolver.class);
     private final PlatformTransactionManager transactions = mock(PlatformTransactionManager.class);
-    private final TransferFulfillment transfers = mock(TransferFulfillment.class);
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
     private final LoadEstimateService service = new LoadEstimateService(estimates, vehicleTypes, orders, warehouses,
-            packaging, json, transactions, Duration.ofSeconds(2), Duration.ofSeconds(12), transfers);
+            packaging, json, transactions, Duration.ofSeconds(2), Duration.ofSeconds(12));
 
     private final UUID orderId = UUID.randomUUID();
     private final UUID lineId = UUID.randomUUID();
@@ -124,9 +121,9 @@ class LoadEstimateServiceTest {
     @DisplayName("a solver budget that is not positive is refused at start-up")
     void budgetMustBePositive() {
         assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, warehouses, packaging, json,
-                transactions, Duration.ZERO, Duration.ofSeconds(12), transfers)).isInstanceOf(IllegalArgumentException.class);
+                transactions, Duration.ZERO, Duration.ofSeconds(12))).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, warehouses, packaging, json,
-                transactions, null, Duration.ofSeconds(12), transfers)).isInstanceOf(IllegalArgumentException.class);
+                transactions, null, Duration.ofSeconds(12))).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Nested
@@ -420,84 +417,6 @@ class LoadEstimateServiceTest {
     }
 
     @Nested
-    @DisplayName("a transfer order (SCRUM-287 PR T)")
-    class Transfers {
-
-        private final UUID transferId = UUID.randomUUID();
-
-        private TransferFulfillment.TransferView transfer(String status, UUID from) {
-            return new TransferFulfillment.TransferView(transferId, "TO-0001", from, OTHER_WAREHOUSE, status,
-                    TransferDeliveryMode.FULL_TRUCKLOAD, null, null, null,
-                    List.of(new TransferFulfillment.Line(lineId, 1, "CUP-12OZ", null, 20, 0)));
-        }
-
-        private LoadEstimates.CreateEstimate request(UUID warehouse) {
-            return new LoadEstimates.CreateEstimate(List.of(new LoadEstimates.Source(LoadEstimates.SourceType.TRANSFER,
-                    transferId)), warehouse, List.of(truckId), null);
-        }
-
-        @Test
-        @DisplayName("a transfer that does not exist is not found; naming another warehouse than its source is VALIDATION_FAILED")
-        void guards() {
-            when(transfers.find(transferId)).thenReturn(Optional.empty());
-            assertThatThrownBy(() -> service.create(request(null))).isInstanceOf(NotFoundException.class);
-
-            when(transfers.find(transferId)).thenReturn(Optional.of(transfer("APPROVED", WAREHOUSE)));
-            assertThat(refusal(() -> service.create(request(OTHER_WAREHOUSE))).fieldErrors())
-                    .extracting(f -> f.field()).containsExactly("warehouseId");
-        }
-
-        @Test
-        @DisplayName("a transfer is estimated until it is dispatched: a dispatched or completed one is not eligible")
-        void statusMustBeBeforeDispatch() {
-            for (String bad : List.of("IN_TRANSIT", "COMPLETED", "CANCELLED")) {
-                when(transfers.find(transferId)).thenReturn(Optional.of(transfer(bad, WAREHOUSE)));
-
-                assertThat(refusal(() -> service.create(request(null))).errorCode()).as(bad)
-                        .isEqualTo(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE);
-            }
-        }
-
-        @Test
-        @DisplayName("every requested unit is estimated, at the source warehouse")
-        void estimatesTheRequest() {
-            when(transfers.find(transferId)).thenReturn(Optional.of(transfer("PICKING", WAREHOUSE)));
-
-            var view = service.create(request(WAREHOUSE));
-
-            assertThat(view.sourceType()).isEqualTo(LoadEstimates.SourceType.TRANSFER);
-            assertThat(view.warehouseId()).isEqualTo(WAREHOUSE);
-            assertThat(view.lines()).singleElement().satisfies(l -> assertThat(l.quantity()).isEqualTo(20));
-            verify(estimates).lockSource("TRANSFER:" + transferId);
-        }
-
-        @Test
-        @DisplayName("a transfer dispatched or edited while it was planned is refused")
-        void changedMeanwhile() {
-            when(transfers.find(transferId)).thenReturn(Optional.of(transfer("PICKING", WAREHOUSE)),
-                    Optional.of(transfer("IN_TRANSIT", WAREHOUSE)));
-
-            assertThat(refusal(() -> service.create(request(null))).errorCode())
-                    .isEqualTo(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE);
-
-            when(transfers.find(transferId)).thenReturn(Optional.of(transfer("PICKING", WAREHOUSE)),
-                    Optional.of(transfer("PICKING", OTHER_WAREHOUSE)));
-            assertThat(refusal(() -> service.create(request(null))).errorCode())
-                    .isEqualTo(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE);
-        }
-
-        @Test
-        @DisplayName("a transfer none of whose lines can be measured is LOAD_ESTIMATE_PACKAGING_MISSING")
-        void unmeasured() {
-            when(transfers.find(transferId)).thenReturn(Optional.of(transfer("DRAFT", WAREHOUSE)));
-            org.mockito.Mockito.doReturn(List.of(unresolved("CUP-12OZ", 20, List.of("weightKg")))).when(packaging).resolveAll(any());
-
-            assertThat(refusal(() -> service.create(request(null))).errorCode())
-                    .isEqualTo(ErrorCode.LOAD_ESTIMATE_PACKAGING_MISSING);
-        }
-    }
-
-    @Nested
     @DisplayName("reading estimates back")
     class Reading {
 
@@ -566,7 +485,7 @@ class LoadEstimateServiceTest {
             verify(estimates, never()).saveAndFlush(any());
             verify(estimates, never()).saveAllAndFlush(any());
             verify(estimates, never()).lockSource(any());
-            org.mockito.Mockito.verifyNoInteractions(orders, packaging, transfers, warehouses);
+            org.mockito.Mockito.verifyNoInteractions(orders, packaging, warehouses);
         }
 
         @Test

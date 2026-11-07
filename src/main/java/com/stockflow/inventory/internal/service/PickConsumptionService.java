@@ -141,11 +141,11 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     }
 
     /**
-     * A pick deducts an order's goods from a shelf. A transfer's hold is consumed when the transfer is dispatched, never
-     * by a pick; nor are goods a legacy print-shop row still records ({@code IN_PRODUCTION}, review of #109).
+     * A pick deducts an order's goods from a shelf, never goods a legacy print-shop row still records
+     * ({@code IN_PRODUCTION}, review of #109).
      */
     private static void requireOrderStock(StockItem item, Reservation hold) {
-        if (hold.orderId() == null || item.status() == StockStatus.IN_PRODUCTION) {
+        if (item.status() == StockStatus.IN_PRODUCTION) {
             throw new BusinessException(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE,
                     "Hold %s is not an order's goods on a shelf; a pick does not close it".formatted(hold.id().value()));
         }

@@ -105,13 +105,9 @@ class StockItemDamageTest {
     void allocationRefusals() {
         StockItem item = available(10);
         Reservation hold = allocation(item, UUID.randomUUID(), UUID.randomUUID(), 3);
-        Reservation transfer = item.reserveForTransfer(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                Quantity.of(2), NOW);
 
         assertThat(refusal(() -> item.giveUpDamagedHeld(hold.id(), Quantity.of(4), NOW)))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThat(refusal(() -> item.giveUpDamagedHeld(transfer.id(), Quantity.of(1), NOW)))
-                .isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
         assertThat(refusal(() -> item.giveUpDamagedHeld(ReservationId.newId(), Quantity.of(1), NOW)))
                 .isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
         item.releaseReservation(hold.id(), ReleaseReason.ORDER_CANCELLED, NOW);

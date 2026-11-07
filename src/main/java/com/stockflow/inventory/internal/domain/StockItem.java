@@ -531,25 +531,6 @@ public final class StockItem extends AggregateRoot {
         return reservation;
     }
 
-    /**
-     * Hold this row's units for a transfer order at its source (SCRUM-287 PR T; kltn-docs 10 step 4, BR-02/03): a hold
-     * on this bin and lot - the same checks as {@link #allocate}, pinned from the start,
-     * announced to nobody (no order has a stake in it), never an allocation of a SKU reservation. Consumed when the
-     * transfer is dispatched, released when its picking is cancelled. Idempotent on {@code requestId}.
-     */
-    public Reservation reserveForTransfer(UUID transferOrderId, UUID rootRequestId, UUID requestId, Quantity quantity,
-                                          Instant now) {
-        Optional<Reservation> alreadyServed = findByRequestId(requestId);
-        if (alreadyServed.isPresent()) {
-            return alreadyServed.get();
-        }
-        requireHoldable(quantity, now, "transfer order " + transferOrderId);
-        Reservation reservation = Reservation.openForTransfer(transferOrderId, rootRequestId, requestId, quantity, now);
-        reservations.add(reservation);
-        checkInvariants();
-        return reservation;
-    }
-
     private void requireHoldable(Quantity quantity, Instant now, String holder) {
         if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
@@ -583,9 +564,6 @@ public final class StockItem extends AggregateRoot {
         }
         reservation.release(reason, now);
         checkInvariants();
-        if (reservation.orderId() == null) {
-            return;     // a transfer's hold: no order has a stake in it
-        }
         registerEvent(
                 new StockEvent.Released(
                         new StockReservationReleased(
@@ -639,9 +617,6 @@ public final class StockItem extends AggregateRoot {
         reservation.consume(now);
         this.onHand = this.onHand.minus(reservation.quantity());
         checkInvariants();
-        if (reservation.orderId() == null) {
-            return;
-        }
         registerEvent(
                 new StockEvent.Deducted(
                         new StockDeducted(
@@ -724,7 +699,7 @@ public final class StockItem extends AggregateRoot {
      * <b>together with</b> the units it holds. Unlike {@link #moveOut}, which refuses held units, the
      * promise travels with the goods, so there is never a moment in which they are unheld — no
      * release-then-move window in which another order's checkout could take them. The hold keeps its id,
-     * so whoever stored it (an order line, a transfer order) still finds it.
+     * so whoever stored it (an order line) still finds it.
      *
      * @throws IllegalArgumentException when the hold is not on this stock item
      * @throws IllegalStateException when the hold is closed
@@ -902,7 +877,7 @@ public final class StockItem extends AggregateRoot {
      * Free units of this row were found damaged on the shelf (docs 03 §5 AVAILABLE → DAMAGED): they leave it, for a
      * DAMAGED row in quarantine ({@link #takeUpDamaged}). {@code onHand} falls; no hold is touched.
      *
-     * <p>Only unheld units. A hold names units somebody will take - a picker, a transfer - and those
+     * <p>Only unheld units. A hold names units somebody will take - a picker - and those
      * are reported damaged where they are taken ({@link #giveUpDamagedHeld} for a pick), so the hold's owner learns
      * of it in the same transaction instead of finding its promise gone.</p>
      *
@@ -928,8 +903,7 @@ public final class StockItem extends AggregateRoot {
      *
      * @return the share of the hold that left with the damaged units
      * @throws BusinessException {@code RESERVATION_NOT_FOUND}, {@code RESERVATION_NOT_ACTIVE},
-     *         {@code PRODUCTION_HOLD_NOT_PICKABLE} for a hold that is not an order's, {@code VALIDATION_FAILED} for
-     *         more units than the hold keeps, and the refusals of {@link #giveUpDamaged}
+     *         {@code VALIDATION_FAILED} for more units than the hold keeps, and the refusals of {@link #giveUpDamaged}
      */
     public HeldShare giveUpDamagedHeld(ReservationId holdId, Quantity quantity, Instant now) {
         requireDamageable(now);
@@ -939,10 +913,6 @@ public final class StockItem extends AggregateRoot {
         if (!hold.status().isActive()) {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
                     "Reservation %s is already %s".formatted(holdId, hold.status()));
-        }
-        if (hold.orderId() == null) {
-            throw new BusinessException(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE,
-                    "Reservation %s is not an order's; only an order's units are picked".formatted(holdId));
         }
         if (hold.quantity().isLessThan(quantity)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -972,8 +942,7 @@ public final class StockItem extends AggregateRoot {
      * reports.
      *
      * @throws BusinessException {@code RESERVATION_NOT_FOUND}; {@code RESERVATION_NOT_ACTIVE} unless the hold was
-     *         consumed (picked); {@code PRODUCTION_HOLD_NOT_PICKABLE} for a hold that is not an order's;
-     *         {@code VALIDATION_FAILED} for none, or more units than the hold took
+     *         consumed (picked); {@code VALIDATION_FAILED} for none, or more units than the hold took
      */
     public HeldShare consumedShare(ReservationId holdId, Quantity quantity) {
         requireSomeUnits(quantity);
@@ -982,10 +951,6 @@ public final class StockItem extends AggregateRoot {
         if (hold.status() != ReservationStatus.CONSUMED) {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE, ("Reservation %s is %s; damage found after "
                     + "the pick is reported on units a pick took").formatted(holdId, hold.status()));
-        }
-        if (hold.orderId() == null) {
-            throw new BusinessException(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE,
-                    "Reservation %s is not an order's; only an order's units are picked".formatted(holdId));
         }
         if (hold.quantity().isLessThan(quantity)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,

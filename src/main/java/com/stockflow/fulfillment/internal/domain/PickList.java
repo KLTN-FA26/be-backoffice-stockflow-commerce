@@ -484,7 +484,7 @@ public final class PickList {
      * Puts everything a line picked back onto a bin (docs 07 BR-05, 17 §4.5 step 15) - less what was found damaged at
      * packing, which is in quarantine already; a line with nothing left has nothing to put back. Only for a task
      * cancelled after picking started, only for a PICKED line, only onto an active bin of the task's own
-     * warehouse — stock changes warehouse through a transfer order, never through a put-back.
+     * warehouse — stock never changes warehouse, a put-back least of all.
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code PUT_BACK_NOT_REQUIRED}; {@code PUT_BACK_LOCATION_INVALID}
      */

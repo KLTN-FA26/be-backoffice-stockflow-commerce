@@ -28,8 +28,6 @@ import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentLocks;
 import com.stockflow.identity.api.IdentityService;
-import com.stockflow.inventory.api.TransferDeliveryMode;
-import com.stockflow.inventory.api.TransferFulfillment;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
@@ -39,7 +37,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -65,8 +62,8 @@ import static org.mockito.Mockito.when;
 /**
  * A full truckload's vehicle signing (kltn-docs 09 §4.2 step 5, BR-14, BR-15; SCRUM-392): every parcel the plan placed on
  * the vehicle is on board, a shipment is handed over at its LAST vehicle's signature, the order is told that goods left,
- * and the plan is DISPATCHED when the last vehicle has left. A transfer's vehicle dispatches the transfer at its last
- * vehicle (10 step 5). The parcel loads' signature is {@code DispatchServiceTest}'s.
+ * and the plan is DISPATCHED when the last vehicle has left. The parcel loads' signature is
+ * {@code DispatchServiceTest}'s.
  */
 class DispatchVehicleHandoverTest {
 
@@ -80,13 +77,12 @@ class DispatchVehicleHandoverTest {
     private final ShipmentTimeline timeline = mock(ShipmentTimeline.class);
     private final OrderService orders = mock(OrderService.class);
     private final PlanVehicles planVehicles = mock(PlanVehicles.class);
-    private final TransferFulfillment transfers = mock(TransferFulfillment.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final DispatchService service = new DispatchService(loads, mock(DispatchLoadShipmentJpaRepository.class),
             mock(DispatchLoadPackageJpaRepository.class), store, mock(LoadNumbers.class), shipments, locks, packages,
             packageLines, mock(PickJpaRepository.class), carriers, timeline, mock(ShipmentContext.class), orders,
             warehouses, mock(IdentityService.class), planVehicles, mock(LeftBehindParcels.class),
-            Clock.fixed(NOW, ZoneOffset.UTC), transfers);
+            Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final CurrentUser actor = FulfillmentFixtures.user();
     private CarrierJpaEntity ghn;
@@ -140,12 +136,11 @@ class DispatchVehicleHandoverTest {
         return new Vehicle(vehicle, load, header);
     }
 
-    private List<PackageJpaEntity> sealedParcels(LoadPlan plan, UUID shipmentId, UUID transferId) {
+    private List<PackageJpaEntity> sealedParcels(LoadPlan plan, UUID shipmentId) {
         List<PackageJpaEntity> out = new ArrayList<>();
         int no = 1;
         for (LoadPlan.Member m : plan.members()) {
-            PackageJpaEntity parcel = new PackageJpaEntity(m.packageId(), UUID.randomUUID(), no, "PKG-" + no++, null,
-                    transferId);
+            PackageJpaEntity parcel = new PackageJpaEntity(m.packageId(), UUID.randomUUID(), no, "PKG-" + no++);
             parcel.apply(shipmentId, com.stockflow.fulfillment.internal.domain.PackageType.CARTON, PackageStatus.SEALED,
                     new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), null, true,
                     false, false, false, NOW, null, null, null);
@@ -198,7 +193,7 @@ class DispatchVehicleHandoverTest {
         }
 
         private void sealedWithContents() {
-            List<PackageJpaEntity> parcels = sealedParcels(plan, planned.shipmentId(), null);
+            List<PackageJpaEntity> parcels = sealedParcels(plan, planned.shipmentId());
             when(packageLines.findByPackageIdIn(any())).thenReturn(parcels.stream()
                     .map(p -> new PackageLineJpaEntity(UUID.randomUUID(), p.getId(), UUID.randomUUID(), 3)).toList());
         }
@@ -348,132 +343,6 @@ class DispatchVehicleHandoverTest {
 
             verify(orders).requirePlanCarriesTheRest(eq(row.getOrderId()), any());
             assertThat(load.status()).isEqualTo(LoadStatus.LOADING);
-        }
-    }
-
-    @Nested
-    @DisplayName("a transfer order's full truckload (10 step 5)")
-    class TransferTruckload {
-
-        private FulfillmentFixtures.PlannedPlan planned;
-        private LoadPlan plan;
-        private final UUID lineId = UUID.randomUUID();
-
-        private TransferFulfillment.TransferView transfer(String status) {
-            return new TransferFulfillment.TransferView(planned.shipmentId(), "TO-0001", WAREHOUSE, UUID.randomUUID(),
-                    status, TransferDeliveryMode.FULL_TRUCKLOAD, NOW, null, null,
-                    List.of(new TransferFulfillment.Line(lineId, 1, "SKU-A", null, 8, 0)));
-        }
-
-        private void confirmedTransferPlan(int cubes, int trucks) {
-            planned = FulfillmentFixtures.plannedPlan(cubes, trucks, LoadPlan.SOURCE_TRANSFER);
-            plan = planned.plan();
-            plan.confirm(planned.dispatcher(), NOW, planned.cartons());
-            when(transfers.find(planned.shipmentId())).thenReturn(Optional.of(transfer("PICKING")));
-            sealedParcels(plan, null, planned.shipmentId());
-            when(planVehicles.liveLoads(any())).thenReturn(new HashMap<>());
-        }
-
-        @Test
-        @DisplayName("a transfer no longer being picked cannot leave: PACKAGE_NOT_READY")
-        void transferMustStillBePicking() {
-            confirmedTransferPlan(2, 1);
-            when(transfers.find(planned.shipmentId())).thenReturn(Optional.of(transfer("IN_TRANSIT")));
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
-
-            assertThat(refusal(() -> service.handOver(v.load().id(), signed(v.header()), actor)).errorCode())
-                    .isEqualTo(ErrorCode.PACKAGE_NOT_READY);
-        }
-
-        @Test
-        @DisplayName("the last vehicle leaves: the transfer records goods left and is dispatched with the units its plan carried")
-        void lastVehicleDispatchesTheTransfer() {
-            confirmedTransferPlan(2, 1);
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
-            when(packageLines.findByPackageIdIn(any())).thenReturn(plan.placedPackageIds().stream()
-                    .map(id -> PackageLineJpaEntity.ofTransfer(UUID.randomUUID(), id, lineId, 4)).toList());
-            when(planVehicles.completeIfDispatched(any(), eq(plan), any())).thenReturn(true);
-
-            service.handOver(v.load().id(), signed(v.header()), actor);
-
-            assertThat(v.load().status()).isEqualTo(LoadStatus.DISPATCHED);
-            verify(transfers).recordGoodsLeft(planned.shipmentId(), NOW);
-            ArgumentCaptor<Map<UUID, Integer>> shipped = ArgumentCaptor.forClass(Map.class);
-            verify(transfers).dispatchLoaded(eq(planned.shipmentId()), eq(actor.userId()), shipped.capture());
-            assertThat(shipped.getValue()).containsExactly(Map.entry(lineId, 8));
-        }
-
-        @Test
-        @DisplayName("a vehicle that is not the last only records goods left: the transfer is dispatched at the last signature")
-        void notTheLastVehicle() {
-            confirmedTransferPlan(4, 2);
-            LoadPlan.Vehicle first = plan.activeVehicles().get(0);
-            LoadPlan.Vehicle second = plan.activeVehicles().get(1);
-            Vehicle one = vehicleLoad(plan, first, planned.shipmentId(), true);
-            Vehicle two = vehicleLoad(plan, second, planned.shipmentId(), true);
-            Map<UUID, DispatchLoadJpaEntity> live = new HashMap<>();
-            live.put(first.id(), one.header());
-            live.put(second.id(), two.header());
-            when(planVehicles.liveLoads(any())).thenReturn(live);
-            when(packageLines.findByPackageIdIn(any())).thenReturn(List.of());
-
-            service.handOver(one.load().id(), signed(one.header()), actor);
-
-            verify(transfers).recordGoodsLeft(eq(planned.shipmentId()), any());
-            verify(transfers, never()).dispatchLoaded(any(), any(), any());
-        }
-
-        @Test
-        @DisplayName("a vehicle of a transfer plan shows its transfer order and the parcels placed on it, with which are loaded")
-        void transferVehicleDetail() {
-            confirmedTransferPlan(2, 1);
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false);
-            List<PackageJpaEntity> parcels = sealedParcels(plan, null, planned.shipmentId());
-            when(packages.findByTransferOrderIdIn(any())).thenReturn(parcels);
-            v.load().scan(UUID.randomUUID(), new DispatchLoad.ParcelFacts(parcels.getFirst().getId(), "PKG-1",
-                    PackageStatus.SEALED, new DispatchLoad.ShipmentFacts(planned.shipmentId(), "TO-0001", WAREHOUSE,
-                    DeliveryMode.FULL_TRUCKLOAD, ShipmentStatus.READY_TO_DISPATCH, null, null), null,
-                    new DispatchLoad.Placement(true, plan.code(), 1, null)), actor.userId(), NOW);
-
-            var detail = service.get(v.load().id());
-
-            assertThat(detail.shipments()).singleElement().satisfies(line -> {
-                assertThat(line.transferOrderId()).isEqualTo(planned.shipmentId());
-                assertThat(line.code()).isEqualTo("TO-0001");
-                assertThat(line.packageCount()).isEqualTo(2);
-                assertThat(line.loadedCount()).isEqualTo(1);
-            });
-            assertThat(detail.loadPlanCode()).isEqualTo(plan.code());
-        }
-
-        @Test
-        @DisplayName("the printable manifest of a transfer's vehicle names the destination warehouse and has no COD")
-        void transferManifest() {
-            confirmedTransferPlan(2, 1);
-            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), false);
-            List<PackageJpaEntity> parcels = sealedParcels(plan, null, planned.shipmentId());
-            when(packages.findByTransferOrderIdIn(any())).thenReturn(parcels);
-            UUID to = transfer("PICKING").toWarehouseId();
-            when(warehouses.findWarehouse(to)).thenReturn(Optional.of(
-                    new com.stockflow.warehouse.api.WarehouseView(to, "HN", "HN warehouse", "2 Hang Bac", true)));
-            when(warehouses.findWarehouse(WAREHOUSE)).thenReturn(Optional.of(
-                    new com.stockflow.warehouse.api.WarehouseView(WAREHOUSE, "HCM", "HCM warehouse", "1 Le Loi", true)));
-            when(transfers.find(planned.shipmentId())).thenReturn(Optional.of(new TransferFulfillment.TransferView(
-                    planned.shipmentId(), "TO-0001", WAREHOUSE, to, "PICKING", TransferDeliveryMode.FULL_TRUCKLOAD, NOW,
-                    null, null, List.of())));
-
-            var manifest = service.manifest(v.load().id());
-
-            assertThat(manifest.mode()).isEqualTo("FULL_TRUCKLOAD");
-            assertThat(manifest.loadPlanCode()).isEqualTo(plan.code());
-            assertThat(manifest.codTotal()).isEqualByComparingTo("0");
-            assertThat(manifest.packageCount()).isEqualTo(2);
-            assertThat(manifest.shipments()).singleElement().satisfies(line -> {
-                assertThat(line.shipmentCode()).isEqualTo("TO-0001");
-                assertThat(line.recipientName()).isEqualTo("HN warehouse");
-                assertThat(line.deliveryAddress()).isEqualTo("2 Hang Bac");
-                assertThat(line.transferOrderId()).isEqualTo(planned.shipmentId());
-            });
         }
     }
 }

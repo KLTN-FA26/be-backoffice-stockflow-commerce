@@ -111,7 +111,10 @@ public record StockMovement(
 
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */
     public enum ReferenceType {
-        MOVE_TASK, PUTAWAY_TASK, TRANSFER_ORDER_LINE, ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION, PICK_LINE,
+        MOVE_TASK, PUTAWAY_TASK,
+        /** Legacy: lines transfers between warehouses wrote (dispatch); nothing writes one any more. */
+        TRANSFER_ORDER_LINE,
+        ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION, PICK_LINE,
         /** Legacy: lines in-house production wrote (issue, hand-over, completion); nothing writes one any more. */
         PRODUCTION_ORDER,
         EXPIRY_SWEEP,
