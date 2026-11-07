@@ -1,7 +1,6 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentFailed;
 import com.stockflow.contracts.PaymentReversed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,7 +8,11 @@ import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
 /**
- * Moves an order forward, or gives up on it, when payment resolves.
+ * Moves an order forward when money arrives, and back when the accountant takes it back.
+ *
+ * <p>There is no "payment failed" reaction: customers pay by bank transfer against the contract's instalments
+ * (kltn-docs 15 BR-01), so no gateway ever reports a failed payment. The old {@code PaymentFailed} event had no
+ * publisher and went with its listeners.</p>
  *
  * <p><b>Why this one is an event when {@code placeOrder} used a direct call.</b> The two
  * situations differ in a way worth being explicit about, because "always call directly" and
@@ -71,19 +74,5 @@ class PaymentEventListener {
                 event.reversedBy(), event.reversedAt());
         log.info("Order {}: payment {} reversed, {} {} taken back", event.orderId(), event.allocationId(),
                 event.amount(), event.currency());
-    }
-
-    /**
-     * Payment failed: cancel the order.
-     *
-     * <p>Inventory listens to the same event and releases its own holds. Two independent listeners
-     * on one fact, each owning its own reaction — rather than order calling inventory to clean up,
-     * which would put knowledge of inventory's cleanup into the order module.</p>
-     */
-    @ApplicationModuleListener
-    public void on(PaymentFailed event) {
-        orders.cancelAfterPaymentFailure(event.orderId(), event.failureCode());
-        log.info("Order {} cancelled after payment {} failed ({})",
-                event.orderId(), event.paymentId(), event.failureMessage());
     }
 }

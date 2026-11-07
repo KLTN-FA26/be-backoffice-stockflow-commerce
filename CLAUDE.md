@@ -199,13 +199,15 @@ Allocations are `stock_reservation` rows with `allocated_from_id`; they never ex
 consumes exactly one. `findByIdForUpdate` refreshes deliberately: returning the persistence-context
 copy would make the pessimistic lock decorative.
 
-### Payment failure → release
+### Payment → order (an event, not a call)
 
-`PaymentEventListener.on(PaymentFailed)` in `inventory/internal/service/`, annotated
-`@ApplicationModuleListener` (= `@TransactionalEventListener(AFTER_COMMIT)` + `@Async` +
-`@Transactional(REQUIRES_NEW)`). Asynchronous on purpose: a slow release must not delay payment, and
-a failed release must not roll back the payment. Idempotent by construction — releasing an already
-closed reservation is a no-op.
+`PaymentEventListener.on(PaymentCaptured)` / `on(PaymentReversed)` in `order/internal/service/`,
+annotated `@ApplicationModuleListener` (= `@TransactionalEventListener(AFTER_COMMIT)` + `@Async` +
+`@Transactional(REQUIRES_NEW)`). Asynchronous on purpose: money recorded by the accountant must not
+wait for, or be rolled back by, what the order does next. Counted once per payment, so a redelivery
+changes nothing. There is no "payment failed" event any more: customers pay by bank transfer against
+the contract's instalments (kltn-docs 15), so no gateway reports a failure; the old `PaymentFailed`
+had no publisher and went with its listeners.
 
 Spring Modulith's **event publication registry** replaces the transactional outbox: an event that a
 listener failed to process stays in `event_publication` and is retried. That table is migration

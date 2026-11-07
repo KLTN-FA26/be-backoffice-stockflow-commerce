@@ -319,7 +319,7 @@ for mod in sorted(MODULES):
 #     camelCase name: cancelNote, failureMessage, cancellationReason) is free text by convention, so
 #     it is refused here. Send an enum code (reasonCode) and let the owning module keep the text
 #     behind its own permission check. Only String-like components count: an enum named reason is
-#     a code. The three existing ones are listed below so the build stays
+#     a code. The existing ones are listed below so the build stays
 #     green; the list only ever shrinks. An entry that no longer matches a component is reported
 #     too, so removing the field means removing its line.
 FREE_TEXT_WORDS = {"note", "body", "comment", "message", "reason"}
@@ -327,8 +327,6 @@ FREE_TEXT_ALLOWED = {
     # Record.component: why it exists today.
     "OrderCancelled.note":                # what the customer or Sales typed when cancelling an order.
         "cancellation note shown to payment and fulfillment staff",
-    "PaymentFailed.failureMessage":       # the payment provider's own failure text.
-        "provider failure text, shown to staff only",
     "PurchaseOrderSent.cancellationReason":  # what purchasing typed when cancelling a purchase order.
         "reason printed in the supplier cancellation mail and sent to the supplier API",
     "PurchaseOrderSent.amendmentReason":  # what purchasing typed when amending an approved purchase order (SCRUM-117).

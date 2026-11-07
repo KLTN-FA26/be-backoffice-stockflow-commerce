@@ -54,12 +54,6 @@ public interface OrderService {
     CancellationOutcome cancelOwn(UUID orderId, UUID customerId, CancellationReasonCode reasonCode, String note,
                                   UUID requestedBy);
 
-    /**
-     * @deprecated since G3-2: {@link #startPicking(UUID, UUID)}. Kept one sprint for callers written before it.
-     */
-    @Deprecated(forRemoval = true)
-    OrderSummary releaseToFulfillment(UUID orderId);
-
     // ---- the warehouse and the carrier (G3-2). Every method joins the caller's transaction, takes the order's row
     // lock and is idempotent when the order is already where the call would take it (architecture decision A1).
 

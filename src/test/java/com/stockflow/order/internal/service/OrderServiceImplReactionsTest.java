@@ -12,7 +12,6 @@ import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.PaymentTerm;
-import com.stockflow.order.internal.domain.CancellationRequest;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.Order;
@@ -227,74 +226,6 @@ class OrderServiceImplReactionsTest {
 
             assertThat(order.paidAmount()).isEqualByComparingTo("1100000");
             verify(payments, never()).record(any(), any(), any(), anyString(), any());
-        }
-    }
-
-    @Nested
-    @DisplayName("a failed payment cancels the order (PaymentFailed)")
-    class PaymentFailed {
-
-        @Test
-        @DisplayName("an order waiting for payment is cancelled with PAYMENT_FAILED and the failure code as its note")
-        void cancels() {
-            Order order = waitingForPayment(PaymentTerm.PREPAID);
-
-            service.cancelAfterPaymentFailure(id(order), "CARD_DECLINED");
-
-            assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
-            assertThat(order.cancellationReasonCode()).isEqualTo(CancellationReasonCode.PAYMENT_FAILED);
-            assertThat(order.cancellationReason()).isEqualTo("PAYMENT_FAILED: CARD_DECLINED");
-            assertThat(order.reservationIds()).as("inventory releases its own holds on the same event").isEmpty();
-            verify(repository).save(order);
-            verify(events).publishEventsOf(order);
-            verify(inventory, never()).release(any(), anyString());
-        }
-
-        @Test
-        @DisplayName("a redelivered event for an order already cancelled does nothing")
-        void redeliveryIsIgnored() {
-            Order order = waitingForPayment(PaymentTerm.PREPAID);
-            service.cancelAfterPaymentFailure(id(order), "X");
-            org.mockito.Mockito.clearInvocations(repository, events);
-
-            service.cancelAfterPaymentFailure(id(order), "X");
-
-            verify(repository, never()).save(any());
-            verify(events, never()).publishEventsOf(any());
-        }
-
-        @Test
-        @DisplayName("an order that can no longer be cancelled is left for Sales; the listener does not throw")
-        void aDeliveredOrderIsLeftAlone() {
-            Order order = found(OrderFixtures.delivered(NOW));
-
-            service.cancelAfterPaymentFailure(id(order), "X");
-
-            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
-            verify(repository, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("an unknown order is an IllegalArgumentException")
-        void unknownOrder() {
-            when(repository.findByIdForUpdate(any())).thenReturn(Optional.empty());
-
-            assertThatThrownBy(() -> service.cancelAfterPaymentFailure(UUID.randomUUID(), "X"))
-                    .isInstanceOf(IllegalArgumentException.class);
-        }
-
-        @Test
-        @DisplayName("a pending cancellation request of the cancelled order is closed as EXPIRED")
-        void pendingRequestIsClosed() {
-            Order order = waitingForPayment(PaymentTerm.PREPAID);
-            CancellationRequest pending = CancellationRequest.open(id(order), UUID.randomUUID(),
-                    CancellationReasonCode.CUSTOMER_REQUEST, null, NOW);
-            when(requests.findPending(id(order))).thenReturn(Optional.of(pending));
-
-            service.cancelAfterPaymentFailure(id(order), "X");
-
-            verify(requests).save(pending);
-            assertThat(pending.decisionNote()).isEqualTo("Closed: the order was cancelled.");
         }
     }
 

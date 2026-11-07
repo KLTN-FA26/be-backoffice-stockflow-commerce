@@ -720,38 +720,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
-     * Cancel an order whose payment failed, <b>without</b> touching inventory.
-     *
-     * <p>Separate from {@link #cancel} on purpose. On the payment-failed path, inventory has its
-     * own listener on the same event and releases its own holds; calling
-     * {@code inventory.release(...)} from here as well would work — the release is idempotent —
-     * but it would encode "what inventory does when a payment fails" inside the order module, and
-     * that is inventory's business, not order's.</p>
-     */
-    public void cancelAfterPaymentFailure(UUID orderId, String failureCode) {
-        Order order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
-        if (order.status() == OrderStatus.CANCELLED) {
-            return; // Redelivered event; already handled.
-        }
-        if (order.printingStartedAt() != null && order.status().canTransitionTo(OrderStatus.CANCELLED)) {
-            referToStaff(order, CancellationReasonCode.PAYMENT_FAILED);
-            return;
-        }
-        if (!order.status().canTransitionTo(OrderStatus.CANCELLED) || order.packedForGood()) {
-            // A listener must not throw for a state it cannot change: the publication would be retried for ever.
-            log.warn("Payment of order {} failed ({}), but the order is {}{}: left for Sales", order.orderNumber(),
-                    failureCode, order.status(), order.packedForGood() ? " and packed" : "");
-            return;
-        }
-        order.cancel(CancellationReasonCode.PAYMENT_FAILED, failureCode, null, null, clock.instant());
-        order.clearReservations();
-        repository.save(order);
-        closeUndecidableCancellationRequest(order);
-        events.publishEventsOf(order);
-    }
-
-    /**
      * Count a captured payment, and confirm the order when it is the money its terms ask for (kltn-docs
      * 15 BR-02). Called by {@code PaymentEventListener}, not exposed on the port.
      *
@@ -893,12 +861,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     public OrderSummary recordReturnedToOrigin(UUID orderId, UUID by) {
         Order order = lockOrder(orderId);
         return order.markReturnedToOrigin(clock.instant(), by) ? saved(order) : toSummary(order);
-    }
-
-    @Override
-    @Deprecated(forRemoval = true)
-    public OrderSummary releaseToFulfillment(UUID orderId) {
-        return startPicking(orderId, null);
     }
 
     @Override

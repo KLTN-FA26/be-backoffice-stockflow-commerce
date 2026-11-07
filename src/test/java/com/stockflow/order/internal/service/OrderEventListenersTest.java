@@ -1,7 +1,6 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentFailed;
 import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.contracts.PaymentReversed;
 import com.stockflow.contracts.ReleaseReason;
@@ -87,14 +86,6 @@ class OrderEventListenersTest {
 
             verify(orders).reversePayment(order, reversal, BigDecimal.TEN, "VND", true, true,
                     "allocation %s reversed (reversal %s)".formatted(allocation, reversal), by, NOW);
-        }
-
-        @Test
-        @DisplayName("a failed payment cancels the order with the payment's failure code")
-        void failure() {
-            listener.on(new PaymentFailed(order, payment, "CARD_DECLINED", "declined by the bank"));
-
-            verify(orders).cancelAfterPaymentFailure(order, "CARD_DECLINED");
         }
     }
 
