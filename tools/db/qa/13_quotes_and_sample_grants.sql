@@ -1,6 +1,7 @@
 -- =============================================================================
--- Adversarial checks + happy paths: B2B quotes (SCRUM-448, V20261017000300), the sample -> quote key, and
--- who may answer a sample or a quote (V20261017000200 / 000300). Needs the demo seed. Rolled back at the end.
+-- Adversarial checks + happy paths: B2B quotes (SCRUM-448, V20261017000300) and who may answer a quote
+-- (V20261017000300). The print-sample checks went with in-house production (V20261108000100). Needs the demo seed.
+-- Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -92,20 +93,6 @@ SELECT pg_temp.expect_ok('QT15 sent, then accepted at 500 for 2,000', $q$
            responded_at = NOW(), responded_by = md5('demo:user:editor')::uuid WHERE id = md5('qa9:quote')::uuid;
     UPDATE ordering.quote_line SET accepted_quantity = 500, accepted_unit_price = 2000 WHERE id = md5('qa9:line')::uuid $q$);
 
-\echo '--- the sample -> quote key'
-SELECT pg_temp.expect_true('SQ1 fk_sample_request_quote is validated on this database',
-    EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_sample_request_quote' AND convalidated));
-SELECT pg_temp.expect_fail('SQ2 a sample naming a quote that does not exist', $q$
-    INSERT INTO production.sample_request (id, request_number, customer_id, quote_id, blank_sku, design_snapshot_id,
-                                           quantity, status)
-    SELECT gen_random_uuid(), 'SR-QA-9', customer_id, gen_random_uuid(), 'SOFA-3S-GREY', md5('qa9:snap')::uuid, 2, 'DRAFT'
-      FROM ordering.quote WHERE id = md5('qa9:quote')::uuid $q$);
-SELECT pg_temp.expect_ok('SQ3 a sample naming its quote', $q$
-    INSERT INTO production.sample_request (id, request_number, customer_id, quote_id, blank_sku, design_snapshot_id,
-                                           quantity, status)
-    SELECT gen_random_uuid(), 'SR-QA-10', customer_id, id, 'SOFA-3S-GREY', md5('qa9:snap')::uuid, 2, 'DRAFT'
-      FROM ordering.quote WHERE id = md5('qa9:quote')::uuid $q$);
-
 \echo '--- who answers (V20261017000200 / 000300)'
 CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$
     SELECT EXISTS (SELECT 1 FROM identity.role_permission rp
@@ -113,15 +100,6 @@ CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOO
                      JOIN identity.permission p ON p.id = rp.permission_id
                     WHERE r.code = role_code AND p.code = permission_code)
 $$;
-SELECT pg_temp.expect_true('GR1 the customer reads and answers samples',
-    pg_temp.grants('CUSTOMER', 'production-sample-requests:READ')
-    AND pg_temp.grants('CUSTOMER', 'production-sample-requests:APPROVE')
-    AND NOT pg_temp.grants('CUSTOMER', 'production-sample-requests:UPDATE'));
--- QC's own step is production-qc-results since V20261017000420 (11_workshop.sql checks it).
-SELECT pg_temp.expect_true('GR2 Sales records a sample answer; QC does not handle rounds',
-    pg_temp.grants('SALES_STAFF', 'production-sample-requests:APPROVE')
-    AND NOT pg_temp.grants('QC_STAFF', 'production-sample-requests:UPDATE')
-    AND pg_temp.grants('QC_STAFF', 'production-sample-requests:READ'));
 SELECT pg_temp.expect_true('GR3 only the customer answers a quote; Sales drafts and converts',
     pg_temp.grants('CUSTOMER', 'sales-quotes:APPROVE')
     AND NOT pg_temp.grants('SALES_STAFF', 'sales-quotes:APPROVE')
