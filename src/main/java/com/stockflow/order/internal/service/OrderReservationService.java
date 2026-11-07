@@ -29,20 +29,6 @@ class OrderReservationService implements OrderReservations {
     }
 
     @Override
-    public void addProductionHolds(UUID orderId, UUID orderLineId, Collection<UUID> reservationIds) {
-        if (reservationIds == null || reservationIds.isEmpty()) {
-            return;
-        }
-        Order order = orders.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        if (order.addProductionHolds(orderLineId, List.copyOf(reservationIds))) {
-            orders.save(order);
-            log.info("Order {} line {} holds {} more reservation(s) from production", order.orderNumber(),
-                    orderLineId, reservationIds.size());
-        }
-    }
-
-    @Override
     public void replaceHold(UUID orderId, UUID reservationId, Collection<UUID> replacements) {
         Order order = orders.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));

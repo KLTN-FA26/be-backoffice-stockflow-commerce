@@ -146,10 +146,10 @@ public record CustomerOrderDetailResponse(
 
     @Schema(name = "CustomerOrderLineProduction")
     public record Production(
-            @Schema(example = "IN_PROGRESS", description = "NOT_REQUIRED (stock goods), NOT_STARTED, IN_PROGRESS, DONE "
-                    + "or CANCELLED")
+            @Schema(example = "DONE", description = "NOT_REQUIRED (stock goods), NOT_STARTED (before release), DONE "
+                    + "(released: printed outside the system and in stock) or CANCELLED")
             String state,
-            @Schema(description = "Good units printed so far")
+            @Schema(description = "The line's units once released; 0 before")
             int goodQuantity) {
     }
 

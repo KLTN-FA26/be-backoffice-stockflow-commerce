@@ -572,8 +572,7 @@ class ReturnRequestIntegrationTest {
     }
 
     @Test
-    @DisplayName("printed goods: never returned on a change of mind (BR-RMA-002), never back on sale (OQ-12), and "
-            + "not reprinted without an approved sample or an earlier print run (BR-PRD-08)")
+    @DisplayName("printed goods: never returned on a change of mind (BR-RMA-002), never back on sale (OQ-12)")
     void printedGoods() {
         UUID order = printedDelivered(100);
         assertThat(code(catchThrowable(() -> open(order, ReturnReason.CHANGED_MIND, ReturnResolution.REFUND, 10))))
@@ -589,11 +588,6 @@ class ReturnRequestIntegrationTest {
         returns.inspect(request.id(), new ReturnRequestService.InspectReturnCommand(List.of(new ReturnRequest.Inspection(
                 only(request), 10, 0, ReturnItemCondition.DEFECTIVE, 0, 10, 0, null, "lem mực")), null, null), qc);
 
-        assertThat(code(catchThrowable(() -> returns.proposeResolution(request.id(),
-                new ReturnRequestService.ResolveReturnCommand(List.of(new ReturnRequest.Remedy(only(request), 10, 0)),
-                        null, null, null), sales)))).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
-        assertThat(queries.detail(request.id(), null).request().status()).as("nothing changed")
-                .isEqualTo(ReturnStatus.INSPECTED);
         assertThat(returns.proposeResolution(request.id(), new ReturnRequestService.ResolveReturnCommand(
                 List.of(new ReturnRequest.Remedy(only(request), 0, 10)), ReturnResolution.CREDIT_NOTE, null, null),
                 sales).status()).isEqualTo(ReturnStatus.SETTLEMENT_PENDING);

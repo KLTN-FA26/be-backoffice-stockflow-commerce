@@ -55,7 +55,7 @@ class OrderBalanceTest {
     private static Order packed(PaymentTerm term, BalancePolicy policy) {
         Order order = placed(term, policy);
         order.recordPayment(term == PaymentTerm.PREPAID ? order.total() : Money.vnd(330_000), NOW);
-        order.release(HCM, "HCM", STAFF, NOW, Map.of());
+        order.release(HCM, "HCM", STAFF, NOW);
         order.startPicking(STAFF, NOW);
         order.markPacked(NOW, STAFF);
         order.pullDomainEvents();
@@ -166,7 +166,7 @@ class OrderBalanceTest {
             order.decidePartialShipment(true);
             order.submit();
             order.recordPayment(Money.vnd(3_000_000), NOW);
-            order.release(HCM, "HCM", STAFF, NOW, Map.of());
+            order.release(HCM, "HCM", STAFF, NOW);
             order.startPicking(STAFF, NOW);
             order.markPacked(NOW, STAFF);
             UUID cups = cups(order);
@@ -279,8 +279,8 @@ class OrderBalanceTest {
         }
 
         @Test
-        @DisplayName("a deposit order in production without its deposit is held; production does not resume unpaid")
-        void depositInProductionIsHeld() {
+        @DisplayName("a released deposit order without its deposit is held, and does not resume unpaid")
+        void releasedDepositOrderIsHeld() {
             UUID snapshot = UUID.randomUUID();
             Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
                     Order.line(new Sku("CUP-PRINTED"), 10, Money.vnd(1_000), snapshot)), NOW);
@@ -289,8 +289,8 @@ class OrderBalanceTest {
             order.decidePartialShipment(true);
             order.submit();
             order.recordPayment(Money.vnd(5_000), NOW);
-            order.release(HCM, "HCM", STAFF, NOW, Map.of());
-            assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
+            order.release(HCM, "HCM", STAFF, NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
             assertThat(order.confirmationThreshold()).isEqualByComparingTo("5000");
 
             assertThat(order.reversePayment(Money.vnd(5_000), false, "duplicate", STAFF, NOW)).isTrue();
@@ -340,7 +340,7 @@ class OrderBalanceTest {
             order.decidePartialShipment(true);
             order.submit();
             order.recordPayment(Money.vnd(3_000_000), NOW);
-            order.release(HCM, "HCM", STAFF, NOW, Map.of());
+            order.release(HCM, "HCM", STAFF, NOW);
             order.startPicking(STAFF, NOW);
             Order.LedgerMoney ledger = new Order.LedgerMoney(new BigDecimal("5000000"), new BigDecimal("5000000"));
             order.recordHandover(handover(S1, order.lines().getFirst().id(), 1), ledger);
@@ -365,7 +365,7 @@ class OrderBalanceTest {
         void reversalAfterCancellation() {
             Order order = placed(PaymentTerm.PREPAID, null);
             order.recordPayment(order.total(), NOW);
-            order.recordPrintingStarted(NOW);
+            order.restoreFulfilmentFacts(NOW, null);   // printing started (the Production Order records it, 17 BR-11)
             order.cancel(com.stockflow.order.api.CancellationReasonCode.CUSTOMER_REQUEST, "changed plans", null,
                     new com.stockflow.order.api.CancellationFee(new BigDecimal("500000"), "blanks used", "agreed"),
                     STAFF, NOW);

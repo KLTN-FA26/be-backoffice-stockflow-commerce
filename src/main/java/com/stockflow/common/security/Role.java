@@ -26,8 +26,6 @@ public enum Role {
     SALES_MANAGER(Roles.SALES_MANAGER, "Product data and approval, internal prices, print setup, design review, staff accounts"),
     PROCUREMENT_STAFF(Roles.PROCUREMENT_STAFF, "Purchase orders and supplier coordination"),
     ACCOUNTANT(Roles.ACCOUNTANT, "Supplier invoices, three-way matching, reconciliation"),
-    /** Runs the in-house print stations (docs 19, V20261010000500). */
-    PRODUCTION_STAFF(Roles.PRODUCTION_STAFF, "Run the print stations: check files, print, record good and scrapped units"),
     /** Holds every permission, and its grants cannot be edited at runtime (V20260929000200). */
     SYSTEM_ADMIN(Roles.SYSTEM_ADMIN, "Every permission: users, roles, permissions and all modules");
 

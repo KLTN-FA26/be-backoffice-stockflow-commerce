@@ -51,7 +51,7 @@ public final class QuoteRequests {
             @NotNull(message = "validUntil is required") Instant validUntil,
             @Size(max = 2000, message = "terms are at most 2000 characters") String terms,
             @Schema(description = "SCRUM-502: the date the customer asks to receive the goods, not in the past; "
-                    + "optional. It becomes the due date of the production orders of the order this quote becomes")
+                    + "optional. It is copied onto the print lines of the order this quote becomes")
             LocalDate requestedDeliveryDate,
             @NotEmpty(message = "a quote needs at least one line") @Size(max = 50, message = "at most 50 lines")
             List<@Valid Line> lines) {
@@ -64,7 +64,7 @@ public final class QuoteRequests {
             @NotNull(message = "validUntil is required") Instant validUntil,
             @Size(max = 2000, message = "terms are at most 2000 characters") String terms,
             @Schema(description = "SCRUM-502: the date the customer asks to receive the goods, not in the past; "
-                    + "optional. It becomes the due date of the production orders of the order this quote becomes")
+                    + "optional. It is copied onto the print lines of the order this quote becomes")
             LocalDate requestedDeliveryDate,
             @NotEmpty(message = "a quote needs at least one line") @Size(max = 50, message = "at most 50 lines")
             List<@Valid Line> lines) {

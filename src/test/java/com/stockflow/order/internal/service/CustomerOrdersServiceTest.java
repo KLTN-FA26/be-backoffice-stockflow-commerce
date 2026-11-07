@@ -13,7 +13,6 @@ import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.CancellationRequestStatus;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.Order;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.domain.Quote;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
@@ -48,12 +47,11 @@ class CustomerOrdersServiceTest {
 
     private final OrderSearchRepository search = mock(OrderSearchRepository.class);
     private final OrderService orders = mock(OrderService.class);
-    private final ProductionRecords production = mock(ProductionRecords.class);
     private final CreditChecks creditChecks = mock(CreditChecks.class);
     private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
     private final QuoteRepository quotes = mock(QuoteRepository.class);
     private final CustomerOrdersService service =
-            new CustomerOrdersService(search, orders, production, creditChecks, requests, quotes,
+            new CustomerOrdersService(search, orders, creditChecks, requests, quotes,
                     mock(com.stockflow.catalog.api.CatalogService.class));
 
     private CustomerOrders.Query query(LocalDate from, LocalDate to) {
@@ -168,13 +166,12 @@ class CustomerOrdersServiceTest {
         }
 
         @Test
-        @DisplayName("blank-only orders do not ask production; the detail carries the lines, payment and an order-start timeline")
+        @DisplayName("blank-only orders need no production; the detail carries the lines, payment and an order-start timeline")
         void blankOrderDetail() {
             Order order = order(OrderFixtures.releasedPrepaid());
 
             CustomerOrders.Detail detail = service.myOrder(order.customerId(), order.id().value());
 
-            verify(production, never()).producedByLine(any());
             assertThat(detail.lines()).extracting(CustomerOrders.Line::sku).containsExactly("CUP-12OZ", "LID-90");
             assertThat(detail.lines()).allSatisfy(line -> assertThat(line.production().state())
                     .isEqualTo(CustomerOrders.ProductionState.NOT_REQUIRED));
@@ -189,18 +186,14 @@ class CustomerOrdersServiceTest {
         }
 
         @Test
-        @DisplayName("an order with a print line reads its good units from production, once")
-        void printLineAsksProduction() {
-            UUID design = UUID.randomUUID();
-            Order order = order(OrderFixtures.confirmedWithPrintLine(design));
-            UUID printLine = order.printLines().get(0).id();
-            when(production.producedByLine(order.id().value())).thenReturn(Map.of(printLine, 120));
+        @DisplayName("a print line of an order not released yet is not made yet")
+        void printLineBeforeRelease() {
+            Order order = order(OrderFixtures.confirmedWithPrintLine(UUID.randomUUID()));
 
             CustomerOrders.Detail detail = service.myOrder(order.customerId(), order.id().value());
 
             assertThat(detail.lines().get(0).production().state()).isEqualTo(CustomerOrders.ProductionState.NOT_STARTED);
-            assertThat(detail.lines().get(0).production().goodQuantity()).isEqualTo(120);
-            verify(production, org.mockito.Mockito.times(1)).producedByLine(order.id().value());
+            assertThat(detail.lines().get(0).production().goodQuantity()).isZero();
         }
 
         @Test

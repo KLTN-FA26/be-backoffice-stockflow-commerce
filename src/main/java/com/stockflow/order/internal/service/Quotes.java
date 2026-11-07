@@ -50,13 +50,6 @@ public interface Quotes {
     }
 
     /**
-     * Whether acceptance would pass the sample rule for this line (BR-ORD-008): an approved sample of
-     * this customer for the design on the blank, or a reorder of what was already printed for them.
-     */
-    record SampleGate(boolean satisfied, UUID approvedSampleId, boolean reorder) {
-    }
-
-    /**
      * @param priced            false for a reorder line the price list could not price (R1): no tiers, and
      *                          {@code moq}, {@code proposedUnitPrice}, {@code proposedLineTotal} are null
      * @param proposedUnitPrice the tier price of the proposed {@code quantity}, computed on the server
@@ -65,8 +58,7 @@ public interface Quotes {
     record LineView(UUID id, int lineNo, String blankSku, UUID designSnapshotId, String printSpec, int quantity,
                     boolean priced, Integer moq, List<Tier> tiers, BigDecimal proposedUnitPrice,
                     BigDecimal proposedLineTotal,
-                    Integer acceptedQuantity, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
-                    SampleGate sample) {
+                    Integer acceptedQuantity, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal) {
     }
 
     record Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, Instant changedAt,

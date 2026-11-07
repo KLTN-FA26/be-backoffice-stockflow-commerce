@@ -865,7 +865,7 @@ class LoadPlanServiceTest {
             OrderSummary order = FulfillmentFixtures.order(UUID.randomUUID(), List.of());
             var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
-                    BigDecimal.ZERO, BigDecimal.ZERO, false, true);
+                    BigDecimal.ZERO, BigDecimal.ZERO, false);
             OrderSummary strict = new OrderSummary(order.orderId(), "SO-0777", order.customerId(), OrderStatus.PACKED,
                     order.total(), order.lines(), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
                     null, null, lifecycle);

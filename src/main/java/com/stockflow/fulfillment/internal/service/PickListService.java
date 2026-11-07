@@ -619,8 +619,7 @@ class PickListService implements PickLists {
 
     private static List<PickList.OrderLine> orderLinesOf(OrderSummary order) {
         return order.lines().stream()
-                .map(line -> new PickList.OrderLine(line.lineId(), line.sku(), line.designSnapshotId() != null,
-                        line.reservationIds()))
+                .map(line -> new PickList.OrderLine(line.lineId(), line.sku(), line.reservationIds()))
                 .toList();
     }
 
@@ -647,10 +646,9 @@ class PickListService implements PickLists {
         }).toList();
     }
 
-    /** The holds of the order's stock lines, with the warehouse each one's location belongs to. */
+    /** The holds of the order's lines, with the warehouse each one's location belongs to. */
     private Map<UUID, PickList.Hold> holdsOf(OrderSummary order) {
         Set<UUID> ids = order.lines().stream()
-                .filter(line -> line.designSnapshotId() == null)
                 .flatMap(line -> line.reservationIds().stream())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (ids.isEmpty()) {

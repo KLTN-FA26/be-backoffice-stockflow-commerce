@@ -147,9 +147,6 @@ class QuoteSecurityIntegrationTest {
                 .andExpect(status().isForbidden());
         // The customer may answer, but not use Sales' verbs.
         send(post(QUOTES + "/" + id + "/conversion"), a, Map.of("version", version)).andExpect(status().isForbidden());
-        send(post(QUOTES + "/" + id + "/acceptance"), a, Map.of("version", version))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("DESIGN_SAMPLE_NOT_APPROVED"));
         send(post(QUOTES + "/" + id + "/change-request"), a, Map.of("version", version, "feedback", "Cheaper at 5"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("CHANGES_REQUESTED"))

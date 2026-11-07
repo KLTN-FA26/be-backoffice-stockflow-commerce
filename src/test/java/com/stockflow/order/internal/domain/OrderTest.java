@@ -124,7 +124,7 @@ class OrderTest {
     void cannotCancelAfterShipment() {
         Order order = submittedOrder();
         paidInFull(order);
-        order.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());
+        order.release(HCM, "HCM", COORDINATOR, NOW);
         order.startPicking(COORDINATOR, NOW);
         order.pullDomainEvents();
 
@@ -193,7 +193,7 @@ class OrderTest {
         assertThatThrownBy(() -> order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, "changed supplier",
                 new BigDecimal("25"), STAFF, NOW)).isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING));
-        order.recordPrintingStarted(NOW);
+        order.restoreFulfilmentFacts(NOW, null);   // printing started (the Production Order records it, 17 BR-11)
 
         order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, "changed supplier", new BigDecimal("25"), STAFF, NOW);
 
@@ -258,9 +258,9 @@ class OrderTest {
         assertThat(order.depositReceivedAt()).isEqualTo(NOW);
         assertThat(order.paymentStatus()).isEqualTo(PaymentStatus.PARTIALLY_PAID);
 
-        order.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());
+        order.release(HCM, "HCM", COORDINATOR, NOW);
         assertThat(order.recordPayment(Money.vnd(700_000), NOW)).isFalse();
-        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
+        assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(order.paymentStatus()).isEqualTo(PaymentStatus.PAID);
     }
 
@@ -423,39 +423,28 @@ class OrderTest {
     }
 
     @Test
-    @DisplayName("release with print lines: IN_PRODUCTION, one event carrying only the print lines and their sample")
-    void releaseToProduction() {
+    @DisplayName("release with print lines: READY_TO_FULFILL like any order - printed outside the system, the goods are in stock")
+    void releaseWithPrintLines() {
         Order order = paidOrder(true);
-        OrderLine print = order.printLines().getFirst();
-        UUID sample = UUID.randomUUID();
 
-        order.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of(print.id(), sample));
+        order.release(HCM, "HCM", COORDINATOR, NOW);
 
-        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
+        assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(order.warehouseId()).isEqualTo(HCM);
         assertThat(order.releasedBy()).isEqualTo(COORDINATOR);
-        var events = order.pullDomainEvents();
-        assertThat(events).singleElement().isInstanceOfSatisfying(OrderEvent.LinesReleased.class, e -> {
-            assertThat(e.payload().warehouseId()).isEqualTo(HCM);
-            assertThat(e.payload().lines()).singleElement().satisfies(l -> {
-                assertThat(l.orderLineId()).isEqualTo(print.id());
-                assertThat(l.blankSku()).isEqualTo("CUP-12OZ-WHITE");
-                assertThat(l.quantity()).isEqualTo(500);
-                assertThat(l.approvedSampleId()).isEqualTo(sample);
-            });
-        });
-        // Fulfilment waits for production (BR-PRD-06): picking the stock lines in parallel leaves the status as it is,
-        // and records once that the order's task is open (review of #150: it leaves the create-task list).
+        assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.Released.class,
+                e -> assertThat(e.payload().warehouseCode()).isEqualTo("HCM"));
+        // Opening the task picks every line and records once that it is open (review of #150).
         assertThat(order.startPicking(COORDINATOR, NOW)).isTrue();
-        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
+        assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
         assertThat(order.fulfilmentStartedAt()).isEqualTo(NOW);
         assertThat(order.startPicking(COORDINATOR, NOW.plusSeconds(60))).isFalse();
         assertThat(order.fulfilmentStartedAt()).isEqualTo(NOW);
     }
 
     @Test
-    @DisplayName("SCRUM-502: the date the customer asked for travels in the release event as the line's due date")
-    void releaseCarriesTheRequestedDeliveryDate() {
+    @DisplayName("SCRUM-502: the date the customer asked for stays on the line through the release")
+    void releaseKeepsTheRequestedDeliveryDate() {
         java.time.LocalDate asked = java.time.LocalDate.of(2026, 12, 15);
         UUID snapshot = UUID.randomUUID();
         Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
@@ -467,11 +456,10 @@ class OrderTest {
         paidInFull(order);
         order.pullDomainEvents();
 
-        order.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());
+        order.release(HCM, "HCM", COORDINATOR, NOW);
 
-        assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.LinesReleased.class,
-                e -> assertThat(e.payload().lines()).extracting(l -> l.blankSku() + " " + l.dueDate())
-                        .containsExactlyInAnyOrder("CUP-12OZ-WHITE 2026-12-15", "CUP-12OZ-BLACK null"));
+        assertThat(order.lines()).extracting(l -> l.sku().code() + " " + l.requestedDeliveryDate())
+                .containsExactly("CUP-12OZ-WHITE 2026-12-15", "CUP-12OZ-BLACK null", "LID-90MM null");
     }
 
     @Test
@@ -490,7 +478,7 @@ class OrderTest {
     @DisplayName("release with nothing to print: READY_TO_FULFILL and OrderReleased")
     void releaseStockOnly() {
         Order order = paidOrder(false);
-        order.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());
+        order.release(HCM, "HCM", COORDINATOR, NOW);
         assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.Released.class,
                 e -> assertThat(e.payload().warehouseCode()).isEqualTo("HCM"));
@@ -504,7 +492,7 @@ class OrderTest {
         Order unpaid = draftWithTwoLines();
         unpaid.lines().forEach(line -> unpaid.attachReservations(line.id(), List.of(UUID.randomUUID())));
         unpaid.submit();
-        assertThatThrownBy(() -> unpaid.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of()))
+        assertThatThrownBy(() -> unpaid.release(HCM, "HCM", COORDINATOR, NOW))
                 .isInstanceOf(InvalidOrderTransitionException.class);
 
         Order printed = paidOrder(true);
@@ -512,8 +500,8 @@ class OrderTest {
                 .isInstanceOf(InvalidOrderTransitionException.class);
 
         Order released = paidOrder(false);
-        released.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());
-        assertThatThrownBy(() -> released.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of()))
+        released.release(HCM, "HCM", COORDINATOR, NOW);
+        assertThatThrownBy(() -> released.release(HCM, "HCM", COORDINATOR, NOW))
                 .isInstanceOf(InvalidOrderTransitionException.class);
     }
 
@@ -526,29 +514,12 @@ class OrderTest {
         deposit.lines().forEach(line -> deposit.attachReservations(line.id(), List.of(UUID.randomUUID())));
         deposit.submit();
 
-        assertThatThrownBy(() -> deposit.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of()))
+        assertThatThrownBy(() -> deposit.release(HCM, "HCM", COORDINATOR, NOW))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ORDER_DEPOSIT_NOT_RECEIVED));
 
         deposit.recordPayment(Money.vnd(300_000), NOW);
-        deposit.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());
-        assertThat(deposit.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
-    }
-
-    @Test
-    @DisplayName("BR-PRD-06: READY_TO_FULFILL only once the good units cover every print line")
-    void productionCompletes() {
-        Order order = paidOrder(true);
-        UUID line = order.printLines().getFirst().id();
-        order.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of(line, UUID.randomUUID()));
-        order.pullDomainEvents();
-
-        assertThat(order.completeProduction(java.util.Map.of(line, 300), "HCM", NOW)).isFalse();
-        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
-        assertThat(order.completeProduction(java.util.Map.of(line, 500), "HCM", NOW)).isTrue();
-        assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
-        assertThat(order.pullDomainEvents()).singleElement().isInstanceOf(OrderEvent.Released.class);
-        // Again (a redelivered event): nothing more happens.
-        assertThat(order.completeProduction(java.util.Map.of(line, 500), "HCM", NOW)).isFalse();
+        deposit.release(HCM, "HCM", COORDINATOR, NOW);
+        assertThat(deposit.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
     }
 }

@@ -77,7 +77,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     public List<LotTrace.Hold> holds(UUID lotId, Set<String> warehouses) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         String sql = """
-                SELECT r.id, r.order_id, r.order_number, r.production_order_id, r.allocated_from_id, si.location_code,
+                SELECT r.id, r.order_id, r.order_number, r.allocated_from_id, si.location_code,
                        r.quantity,
                        r.status, r.reserved_at, r.closed_at
                   FROM inventory.stock_reservation r
@@ -85,7 +85,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
                  WHERE si.lot_id = :lotId""" + inWarehouses("si.location_code", warehouses, params)
                 + " ORDER BY r.reserved_at, r.id";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Hold(uuid(rs, "id"), uuid(rs, "order_id"),
-                rs.getString("order_number"), uuid(rs, "production_order_id"), uuid(rs, "allocated_from_id"), rs.getString("location_code"),
+                rs.getString("order_number"), uuid(rs, "allocated_from_id"), rs.getString("location_code"),
                 rs.getInt("quantity"), rs.getString("status"), instant(rs, "reserved_at"), instant(rs, "closed_at")));
     }
 

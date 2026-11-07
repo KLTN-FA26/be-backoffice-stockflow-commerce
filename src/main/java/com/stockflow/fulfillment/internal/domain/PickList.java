@@ -23,8 +23,8 @@ import java.util.function.Supplier;
  *
  * <p>The rules it keeps:</p>
  * <ul>
- *   <li>one line per live hold of the order's <b>stock</b> lines, in the task's warehouse; print lines
- *       get none — their finished goods come from production, not from a shelf (BR-06);</li>
+ *   <li>one line per live hold of the order's lines, in the task's warehouse - a print line too: its goods were
+ *       printed outside the system and received into stock like any other (kltn-docs 07 BR-06);</li>
  *   <li>a line is confirmed by scanning its location, then its SKU or barcode - its carton's LPN when it is drawn
  *       from one (SCRUM-473) - then the quantity, and
  *       only the exact allocation is accepted: more is BR-04, fewer is a short pick (SCRUM-268);</li>
@@ -42,8 +42,8 @@ import java.util.function.Supplier;
  */
 public final class PickList {
 
-    /** An order line as the pick list needs it: whose holds to pick, and whether it is printed. */
-    public record OrderLine(UUID lineId, String sku, boolean printLine, List<UUID> reservationIds) {
+    /** An order line as the pick list needs it: whose holds to pick. */
+    public record OrderLine(UUID lineId, String sku, List<UUID> reservationIds) {
         public OrderLine {
             reservationIds = reservationIds == null ? List.of() : List.copyOf(reservationIds);
         }
@@ -109,9 +109,6 @@ public final class PickList {
         List<Stop> stops = new ArrayList<>();
         Set<String> elsewhere = new TreeSet<>();
         for (OrderLine line : orderLines) {
-            if (line.printLine()) {
-                continue;
-            }
             for (UUID reservationId : line.reservationIds()) {
                 Hold hold = holds.get(reservationId);
                 if (hold == null || !hold.live()) {

@@ -23,7 +23,6 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.PriceTier;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.domain.Quote;
 import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
@@ -60,11 +59,8 @@ import java.util.function.Consumer;
  * Quotes on one transaction per use case (SCRUM-448).
  *
  * <p><b>Accept</b> checks, under the quote's row lock: the version the customer saw, the validity
- * (BR-ORD-008), an ACTIVE customer still allowed the quote's payment term (BR-ORD-007), and for every
- * line a sample this customer approved for that design on that blank — or a reorder of what was already
- * printed for them (plan D4). The sample facts come from {@code ordering.approved_sample} and
- * {@code order_line_production}, which the order module keeps from production's events; the order module
- * never reads production, which depends on it (no cycle).</p>
+ * (BR-ORD-008) and an ACTIVE customer still allowed the quote's payment term (BR-ORD-007). Print samples are
+ * approved on the Production Order, outside the quote (kltn-docs 17), so acceptance does not wait for one.</p>
  *
  * <p><b>Convert</b> places the order through {@link QuotedOrders} in the same transaction, at the
  * quantities and prices fixed at acceptance, with a request id derived from the quote: a second call — or
@@ -91,7 +87,6 @@ class QuoteService implements Quotes {
     private final CatalogService catalog;
     private final QuoteRepository quotes;
     private final QuoteSearch search;
-    private final ProductionRecords production;
     private final CustomerService customers;
     private final DesignService designs;
     private final QuotedOrders quotedOrders;
@@ -101,7 +96,7 @@ class QuoteService implements Quotes {
     private final ApplicationEventPublisher events;
     private final ProductService products;
 
-    QuoteService(QuoteRepository quotes, QuoteSearch search, ProductionRecords production, CustomerService customers,
+    QuoteService(QuoteRepository quotes, QuoteSearch search, CustomerService customers,
                  DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock,
                  CatalogService catalog, ApplicationEventPublisher events, ProductService products) {
         this.events = events;
@@ -109,7 +104,6 @@ class QuoteService implements Quotes {
         this.catalog = catalog;
         this.quotes = quotes;
         this.search = search;
-        this.production = production;
         this.customers = customers;
         this.designs = designs;
         this.quotedOrders = quotedOrders;
@@ -201,22 +195,10 @@ class QuoteService implements Quotes {
         Instant now = clock.instant();
         requireNewWorkFor(quote.customerId());
         requireTermAllowed(quote.customerId(), quote.offer());
-        // Validity before the sample rule: an expired quote is answered "expired", whatever its samples.
         if (quote.statusAt(now) == QuoteStatus.EXPIRED) {
             throw new BusinessException(ErrorCode.QUOTE_EXPIRED, "Quote " + quote.quoteNumber() + " has expired");
         }
         requireActiveSkus(quote.quoteNumber(), quote.offer());
-        List<String> missing = new ArrayList<>();
-        for (QuoteLine line : quote.offer().lines()) {
-            if (!gate(quote.customerId(), line).satisfied()) {
-                missing.add("line %d (%s)".formatted(line.lineNo(), line.blankSku().code()));
-            }
-        }
-        if (!missing.isEmpty()) {
-            throw new BusinessException(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED,
-                    "Quote %s has new designs without a sample this customer approved: %s (BR-ORD-008)"
-                            .formatted(quote.quoteNumber(), String.join(", ", missing)));
-        }
         QuoteStatus from = quote.status();
         quote.accept(acceptance.quantities(), user.userId(), now);
         quotes.save(quote);
@@ -630,15 +612,6 @@ class QuoteService implements Quotes {
                 sourceOrderNumber, salesUserId, at));
     }
 
-    private Quotes.SampleGate gate(UUID customerId, QuoteLine line) {
-        Optional<UUID> sample = production.approvedSampleOf(customerId, line.designSnapshotId(), line.blankSku().code());
-        if (sample.isPresent()) {
-            return new Quotes.SampleGate(true, sample.get(), false);
-        }
-        boolean reorder = production.producedBeforeFor(customerId, line.designSnapshotId(), line.blankSku().code());
-        return new Quotes.SampleGate(reorder, null, reorder);
-    }
-
     /** Derived from the quote, so every conversion attempt of one quote names the same order request. */
     static UUID conversionRequestId(UUID quoteId) {
         return UUID.nameUUIDFromBytes(("quote-conversion:" + quoteId).getBytes(StandardCharsets.UTF_8));
@@ -723,7 +696,7 @@ class QuoteService implements Quotes {
                     line.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList(),
                     proposedPrice, proposedLineTotal,
                     line.acceptedQuantity(), line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(),
-                    lineTotal, gate(quote.customerId(), line)));
+                    lineTotal));
         }
         ConvertedOrder converted = quote.convertedOrderId() == null ? null : orders.findById(quote.convertedOrderId())
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))

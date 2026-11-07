@@ -103,7 +103,7 @@ class OrderAllocatorTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"PENDING_PAYMENT", "CONFIRMED", "IN_PRODUCTION", "READY_TO_FULFILL", "PICKING",
+    @ValueSource(strings = {"PENDING_PAYMENT", "CONFIRMED", "READY_TO_FULFILL", "PICKING",
             "PARTIALLY_FULFILLED", "PACKED", "ON_HOLD", "SHIPPED", "DELIVERY_FAILED", "DELIVERED"})
     @DisplayName("lockPayable: every live status of a prepaid or deposit order takes payment")
     void payableStatuses(String status) {

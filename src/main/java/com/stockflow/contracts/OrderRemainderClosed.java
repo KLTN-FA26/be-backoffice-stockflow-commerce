@@ -15,17 +15,16 @@ import java.util.UUID;
  * ({@code effectiveTotal}), less what an earlier closure asked for - as PENDING refunds for the accountant.
  * {@code closureId} names this closure: payment asks each refund once per closure, so a redelivered event changes
  * nothing and a second closure of the same order (after a failed shipment came back) is not lost. Fulfillment stops
- * the rest: open pick lines, and packages of those units not handed over, put back (G4-4 / G4-5) - nothing for a
- * {@link #PRODUCTION_SHORTFALL}, whose units were never made.
- * {@code reasonCode} is a {@code CancellationReasonCode} name, or {@link #PRODUCTION_SHORTFALL}; there is no free
- * text (A7) - the agreement of a shortfall is on the order line.</p>
+ * the rest: open pick lines, and packages of those units not handed over, put back (G4-4 / G4-5).
+ * {@code reasonCode} is a {@code CancellationReasonCode} name; there is no free text (A7). Events written while
+ * in-house production existed may carry {@code PRODUCTION_SHORTFALL}: units production did not make, the customer
+ * agreeing (S6).</p>
  *
  * <p>Review of #150 (decisions 2026-10-17 / 2026-10-19), fields added as the contract rules allow: print lines closed
  * after printing started may keep a {@code feeAmount} agreed with the customer. The money received above what the order
  * is now worth paid {@code retainedFeeAmount} of it ({@code refundableAmount} is already net of the fee); payment opens
  * a receivable for {@code owedAmount}, the rest of it, due on the closing day. All 0 (or null, on events written
- * before) without a fee. Production stops the closed print lines' jobs - not for a {@link #PRODUCTION_SHORTFALL},
- * which production closed itself while the line's other jobs go on; printed goods are scrapped by the order.</p>
+ * before) without a fee.</p>
  *
  * See {@code package-info.java} for the rules on changing this contract.
  */
@@ -47,12 +46,6 @@ public record OrderRemainderClosed(
         BigDecimal retainedFeeAmount,
         BigDecimal owedAmount
 ) {
-
-    /**
-     * The {@code reasonCode} of units production did not make, the customer agreeing (S6): not a
-     * {@code CancellationReasonCode}, as nobody cancelled them.
-     */
-    public static final String PRODUCTION_SHORTFALL = "PRODUCTION_SHORTFALL";
 
     public OrderRemainderClosed {
         lines = lines == null ? List.of() : List.copyOf(lines);

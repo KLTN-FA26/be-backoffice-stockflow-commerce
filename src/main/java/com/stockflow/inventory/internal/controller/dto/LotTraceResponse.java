@@ -31,7 +31,7 @@ public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds
                       long onHand,
                       @Schema(description = "Free now: AVAILABLE, not past expiry, not held")
                       long available,
-                      @Schema(description = "On hand now and held by allocations or production holds")
+                      @Schema(description = "On hand now and held by allocations or other holds")
                       long held) { }
 
     @Schema(name = "LotBalance")
@@ -43,7 +43,7 @@ public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds
                           boolean hiddenDuringCount) { }
 
     @Schema(name = "LotHold", description = "An allocation (allocatedFrom set) or another hold on the lot's stock")
-    public record Hold(UUID reservationId, UUID orderId, String orderNumber, UUID productionOrderId,
+    public record Hold(UUID reservationId, UUID orderId, String orderNumber,
                        UUID allocatedFrom, String locationCode, int quantity, String status, Instant reservedAt,
                        Instant closedAt) { }
 

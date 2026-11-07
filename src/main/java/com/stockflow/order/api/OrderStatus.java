@@ -15,13 +15,12 @@ import java.util.stream.Collectors;
  * {@code OrderLifecycleMigrationUpgradeTest} check the two are equal.</p>
  *
  * <pre>
- *   DRAFT ─▶ PENDING_PAYMENT ─paid / deposit in─▶ CONFIRMED ─release─▶ IN_PRODUCTION ─every LSX done─▶ READY_TO_FULFILL
- *     │  └─▶ CONFIRMED / ON_HOLD (credit, within / over the limit)    └─release, stock only──────────▶ READY_TO_FULFILL
- *                                                                                                          │
+ *   DRAFT ─▶ PENDING_PAYMENT ─paid / deposit in─▶ CONFIRMED ─release─▶ READY_TO_FULFILL
+ *     │  └─▶ CONFIRMED / ON_HOLD (credit, within / over the limit)
+ *
  *   READY_TO_FULFILL ─▶ PICKING ─▶ PACKED ─handover─▶ SHIPPED ─▶ DELIVERED ─▶ COMPLETED ─▶ CLOSED
- *          └──── print only ────▶ PACKED      │                   └─▶ DELIVERY_FAILED ─▶ DELIVERED / RETURNED
+ *                                                                   └─▶ DELIVERY_FAILED ─▶ DELIVERED / RETURNED
  *                     PICKING / PACKED ─part handed over─▶ PARTIALLY_FULFILLED ─rest packed─▶ PACKED
- *   IN_PRODUCTION / READY_TO_FULFILL ─stock handed over before the prints (PACK-EARLY)─▶ PARTIALLY_FULFILLED
  *   DELIVERED ─▶ RETURN_REQUESTED ─▶ RETURNED ─▶ REFUNDED / PARTIALLY_REFUNDED ─▶ CLOSED
  * </pre>
  *
@@ -34,13 +33,9 @@ import java.util.stream.Collectors;
  * one failed, {@code DELIVERED} when all arrived; a shipment that comes back while others arrived makes the order
  * partial again.</p>
  *
- * <p><b>Shipping the stock first</b> (PACK-EARLY / PACK-PARTIAL, lead's decisions 2026-10-21; kltn-docs 17 BR-06
- * "trừ khi chính sách split-ship", open question D9). A mixed order whose Sales allowed partial shipments may have its
- * stock lines picked, packed and handed over while its print lines are still printed: IN_PRODUCTION →
- * PARTIALLY_FULFILLED, the order then waiting for production ({@code awaitingProduction}). When production completes
- * the print lines are packed and handed over as the rest of a split order (PARTIALLY_FULFILLED → PACKED → SHIPPED), or
- * staff close them ({@code closeRemainder}). The same from READY_TO_FULFILL when production finished after the stock
- * was packed but before it was handed over. An order that does not allow partial shipments ships whole, as before.</p>
+ * <p><b>No printing here.</b> The goods are printed outside the system and received into stock before an order is
+ * released (kltn-docs 07/11), so release goes straight to READY_TO_FULFILL. {@link #IN_PRODUCTION} and its edges stay
+ * only because status history written before that change carries them.</p>
  *
  * <p><b>Hold</b> (17 §5, 09 edge). {@code ON_HOLD} is entered from any status up to {@code PACKED} (and
  * {@code PARTIALLY_FULFILLED}) and left back to the status it was entered from, or to {@code CANCELLED}; a credit hold
@@ -63,7 +58,11 @@ public enum OrderStatus {
      */
     CONFIRMED,
 
-    /** Released with lines to print; production orders are running (SCRUM-423). */
+    /**
+     * Legacy: released with lines printed in house (SCRUM-423). No order enters it since in-house production was
+     * removed (V20261108000100 moved the orders still in it on); kept because status history rows carry it, and
+     * {@code ordering.order_status_transition} still lists its edges.
+     */
     IN_PRODUCTION,
 
     /** Released, and everything it needs is in stock: fulfilment may take it on. */

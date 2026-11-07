@@ -8,7 +8,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
-/** Native SQL on a key table written only by the payment listener, as {@code ProductionRecordsAdapter}. */
+/** Native SQL on a key table written only by the payment listener, as the other native adapters of this package. */
 @Repository
 class OrderPaymentsAdapter implements OrderPayments {
 

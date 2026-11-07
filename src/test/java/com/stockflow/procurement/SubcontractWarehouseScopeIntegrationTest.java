@@ -120,7 +120,6 @@ class SubcontractWarehouseScopeIntegrationTest {
         UUID snapshot = Identifiers.newId();
         UUID order = Identifiers.newId();
         UUID line = Identifiers.newId();
-        UUID root = Identifiers.newId();
         UUID sub = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
@@ -141,19 +140,6 @@ class SubcontractWarehouseScopeIntegrationTest {
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
                                                      design_checksum) VALUES (?, ?, ?, 1000, 2000, 'VND', ?, ?)""",
                     line, order, CUP.code(), snapshot, "b".repeat(64));
-            jdbc.update("""
-                    INSERT INTO production.production_order (id, order_number, type, status, warehouse_id, blank_sku,
-                        design_snapshot_id, design_checksum, planned_quantity, sales_order_id, sales_order_line_id)
-                    VALUES (?, ?, 'ORDER', 'PENDING_PREPRESS', ?, ?, ?, ?, 600, ?, ?)""",
-                    root, "LSX-SC-" + root.toString().substring(24), hcm, CUP.code(), snapshot, "b".repeat(64), order, line);
-            jdbc.update("""
-                    INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku,
-                        design_snapshot_id, design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                        origin, subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
-                    VALUES (?, ?, 'ORDER', 'SUBCONTRACTED', 'PENDING_PREPRESS', ?, ?, ?, ?, 400, ?, ?, ?,
-                            'SPLIT', 'SUPPLIED_BLANKS', ?, 800, 'VND')""",
-                    sub, "LSX-SC-" + sub.toString().substring(24), hcm, CUP.code(), snapshot, "b".repeat(64), order, line,
-                    root, subcontractor);
         });
         return sub;
     }

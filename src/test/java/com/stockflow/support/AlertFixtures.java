@@ -121,14 +121,23 @@ public final class AlertFixtures {
         tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.stock_item SET on_hand = ? WHERE id = ?", onHand, stockItem));
     }
 
-    /** Holds {@code quantity} of the stock row for an order that exists, as a live reservation. */
+    /**
+     * Holds {@code quantity} of the stock row for an order that exists, as a live reservation. The order has a
+     * well-formed number (on a day no real order uses): other classes sharing the database read every order of today -
+     * the sales rollup's rebuild does - and a malformed one would break them.
+     */
     public void hold(UUID stockItem, int quantity) {
         tx.executeWithoutResult(s -> {
             UUID order = Identifiers.newId();
             jdbc.update("INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,"
                     + " currency, placed_at, created_at, paid_amount, paid_in_full_at)"
-                    + " VALUES (?, ?, 'c0000000-0000-4000-8000-000000000001', ?, 'CONFIRMED', 1000, 'VND', NOW(), NOW(), 1000, NOW())",
-                    order, "SO-AL-" + order.toString().substring(24), Identifiers.newId());
+                    + " VALUES (?, ?, 'c0000000-0000-4000-8000-000000000001', ?, 'CONFIRMED', ?, 'VND', NOW(), NOW(), ?, NOW())",
+                    order, "SO-20991228-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current().nextInt(1_000_000)),
+                    Identifiers.newId(), quantity * 1000, quantity * 1000);
+            // An order has at least one line (the aggregate refuses to load otherwise, and the rollup loads it).
+            jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)"
+                    + " SELECT ?, ?, sku, ?, 1000, 'VND' FROM inventory.stock_item WHERE id = ?",
+                    Identifiers.newId(), order, quantity, stockItem);
             jdbc.update("INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id,"
                     + " quantity, reserved_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, NOW(), NULL, 'HELD')",
                     Identifiers.newId(), stockItem, order, Identifiers.newId(), Identifiers.newId(), quantity);

@@ -12,7 +12,6 @@ import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderRepository;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.domain.ReturnLine;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import org.slf4j.Logger;
@@ -36,17 +35,14 @@ import java.util.stream.Collectors;
  * The replacement of returned goods (SCRUM-260, "in lại / giao bù"): a new order of the same customer, at no charge,
  * for the accepted units a return makes good with new goods.
  *
- * <p><b>Why an order, and not a production job alone.</b> New goods have to be printed (or picked), packed, handed to
- * a carrier and delivered, and every one of those steps runs from an order: release chooses the warehouse and sends
- * print lines to production as {@code OrderLinesReleasedForProduction} - so the reprint is created by production
- * through its own event, under its own rules (BR-PRD-01 one job per order line, BR-PRD-08 the approved sample) - and
- * fulfilment picks, packs and ships released orders. A production job hung on the delivered order's line would break
- * BR-PRD-01 and leave its goods with nothing to ship them. It is the "subsequent delivery free of charge" of an ERP:
- * the replacement order names the return ({@code replaces_return_request_id}), costs nothing
- * ({@code ck_order_replacement_free}), and each return line names the replacement line it was made good by.</p>
+ * <p><b>Why an order.</b> New goods have to be picked, packed, handed to a carrier and delivered, and every one of
+ * those steps runs from an order: release chooses the warehouse and fulfilment picks, packs and ships released orders.
+ * It is the "subsequent delivery free of charge" of an ERP: the replacement order names the return
+ * ({@code replaces_return_request_id}), costs nothing ({@code ck_order_replacement_free}), and each return line names
+ * the replacement line it was made good by.</p>
  *
- * <p>Joins the resolving transaction: a replacement that cannot be placed (no stock for the blanks, a design with no
- * approved sample, a customer no longer ACTIVE) refuses the resolution, and Sales credit the units instead.</p>
+ * <p>Joins the resolving transaction: a replacement that cannot be placed (no stock, a customer no longer ACTIVE)
+ * refuses the resolution, and Sales credit the units instead.</p>
  */
 @Component
 class ReplacementOrders {
@@ -60,26 +56,23 @@ class ReplacementOrders {
     private final OrderRepository orders;
     private final InventoryService inventory;
     private final CustomerService customers;
-    private final ProductionRecords production;
     private final OrderEventPublisher events;
     private final Clock clock;
 
     ReplacementOrders(OrderRepository orders, InventoryService inventory, CustomerService customers,
-                      ProductionRecords production, OrderEventPublisher events, Clock clock) {
+                      OrderEventPublisher events, Clock clock) {
         this.orders = orders;
         this.inventory = inventory;
         this.customers = customers;
-        this.production = production;
         this.events = events;
         this.clock = clock;
     }
 
     /**
      * What a replacement needs before anything is placed: an ACTIVE customer (BR-CUS-003: no new order for a blocked
-     * one), and for every printed line a design the customer approved a sample of, or had printed for them before
-     * (BR-PRD-08, the rule the release applies) - production would refuse it otherwise, after the return was resolved.
+     * one).
      *
-     * @throws BusinessException {@code RETURN_CUSTOMER_NOT_ACTIVE}; {@code DESIGN_SAMPLE_NOT_APPROVED}
+     * @throws BusinessException {@code RETURN_CUSTOMER_NOT_ACTIVE}
      */
     void requirePlaceable(Order original, ReturnRequest request) {
         if (request.replacementUnits() == 0) {
@@ -90,21 +83,6 @@ class ReplacementOrders {
             throw new BusinessException(ErrorCode.RETURN_CUSTOMER_NOT_ACTIVE,
                     "Customer of order %s is %s: no replacement order can be placed; credit the units instead"
                             .formatted(original.orderNumber(), status));
-        }
-        for (ReturnLine line : request.lines()) {
-            if (line.replacementQuantity() == 0) {
-                continue;
-            }
-            OrderLine sold = original.findLine(line.orderLineId()).orElseThrow();
-            if (sold.isMadeToOrder()
-                    && production.approvedSampleOf(original.customerId(), sold.designSnapshotId(), sold.sku().code())
-                    .isEmpty()
-                    && !production.producedBeforeFor(original.customerId(), sold.designSnapshotId(), sold.sku().code())) {
-                throw new BusinessException(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED, ("%s of order %s cannot be reprinted: "
-                        + "its design has no sample the customer approved and was never printed for them "
-                        + "(BR-PRD-08); credit the units, or have a sample approved first")
-                        .formatted(sold.sku().code(), original.orderNumber()));
-            }
         }
     }
 

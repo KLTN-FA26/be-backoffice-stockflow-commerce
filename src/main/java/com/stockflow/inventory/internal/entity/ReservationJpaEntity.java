@@ -19,7 +19,7 @@ import java.util.UUID;
 
 /**
  * JPA mapping of one hold. Two kinds share the table (SCRUM-152): a hold on a stock item — an allocation, a
- * production hold, a checkout hold placed before SKU reservations — which is a child of {@code stock_item} and
+ * transfer's hold, a checkout hold placed before SKU reservations — which is a child of {@code stock_item} and
  * never loaded or saved on its own; and a SKU reservation ({@code stock_item_id} null), the soft checkout hold,
  * which is its own aggregate and saved through {@code SkuReservationRepositoryAdapter}.
  *
@@ -54,16 +54,12 @@ public class ReservationJpaEntity {
 
     /**
      * The order holding the stock (a foreign key into {@code ordering} since V20260928004000, ADR-0007);
-     * null for a production hold.
+     * null for a transfer's hold.
      */
     @Column(name = "order_id")
     private UUID orderId;
 
-    /** The production order holding blanks (V20261017000400); exactly one of the two owners is set. */
-    @Column(name = "production_order_id")
-    private UUID productionOrderId;
-
-    /** SCRUM-287 PR T: the transfer order the stock is allocated to. */
+    /** SCRUM-287 PR T: the transfer order the stock is allocated to; exactly one of the two owners is set. */
     @Column(name = "transfer_order_id")
     private UUID transferOrderId;
 
@@ -111,12 +107,11 @@ public class ReservationJpaEntity {
     }
 
     /** A hold, with the SKU it holds and the SKU reservation it was allocated from. */
-    public ReservationJpaEntity(UUID id, String sku, UUID orderId, UUID productionOrderId, UUID rootRequestId,
+    public ReservationJpaEntity(UUID id, String sku, UUID orderId, UUID rootRequestId,
                                 UUID requestId, int quantity, Instant reservedAt, Instant expiresAt,
                                 ReservationStatus status, ReleaseReason releaseReason, Instant closedAt,
                                 UUID allocatedFrom) {
-        this(id, orderId, productionOrderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status,
-                releaseReason, closedAt);
+        this(id, orderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status, releaseReason, closedAt);
         this.sku = sku;
         this.allocatedFrom = allocatedFrom;
     }
@@ -132,16 +127,8 @@ public class ReservationJpaEntity {
     public ReservationJpaEntity(UUID id, UUID orderId, UUID rootRequestId, UUID requestId, int quantity,
                          Instant reservedAt, Instant expiresAt, ReservationStatus status,
                          ReleaseReason releaseReason, Instant closedAt) {
-        this(id, orderId, null, rootRequestId, requestId, quantity, reservedAt, expiresAt, status, releaseReason,
-                closedAt);
-    }
-
-    public ReservationJpaEntity(UUID id, UUID orderId, UUID productionOrderId, UUID rootRequestId, UUID requestId,
-                         int quantity, Instant reservedAt, Instant expiresAt, ReservationStatus status,
-                         ReleaseReason releaseReason, Instant closedAt) {
         this.id = id;
         this.orderId = orderId;
-        this.productionOrderId = productionOrderId;
         this.rootRequestId = rootRequestId;
         this.requestId = requestId;
         this.quantity = quantity;
@@ -158,7 +145,6 @@ public class ReservationJpaEntity {
 
     public UUID getId() { return id; }
     public UUID getOrderId() { return orderId; }
-    public UUID getProductionOrderId() { return productionOrderId; }
     public UUID getTransferOrderId() { return transferOrderId; }
 
     /** SCRUM-287 PR T: the hold is a transfer order's. */

@@ -95,25 +95,6 @@ class PickConsumptionServiceTest {
             return ledgerRows.stream().filter(row -> types.contains(row.type()) && row.referenceType() == referenceType
                     && row.referenceId().equals(referenceId)).mapToInt(StockMovement::quantity).sum();
         }
-
-        @Override
-        public boolean handedOverFromProduction(com.stockflow.inventory.internal.domain.ReservationId hold,
-                                                LocationId location) {
-            return ledgerRows.stream().anyMatch(row -> row.type() == StockMovement.MovementType.MOVE
-                    && row.referenceType() == StockMovement.ReferenceType.PRODUCTION_ORDER);
-        }
-
-        @Override
-        public boolean consumedAtCompletion(com.stockflow.inventory.internal.domain.ReservationId hold,
-                                            LocationId location) {
-            return false;
-        }
-
-        @Override
-        public boolean bookedBackForScrap(com.stockflow.inventory.internal.domain.ReservationId hold,
-                                          LocationId location) {
-            return false;
-        }
     };
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final LocationDirectory locations = mock(LocationDirectory.class);
@@ -278,15 +259,16 @@ class PickConsumptionServiceTest {
     }
 
     @Nested
-    @DisplayName("production's stock is never picked")
-    class ProductionStock {
+    @DisplayName("only an order's goods on a shelf are picked")
+    class NotAnOrdersStock {
 
         @Test
-        @DisplayName("a production order's hold is refused, by a pick line and by hand, and nothing moves")
-        void aProductionHoldIsRefused() {
+        @DisplayName("a transfer's hold is refused, by a pick line and by hand, and nothing moves")
+        void aTransferHoldIsRefused() {
             UUID holdId = UUID.randomUUID();
             Reservation hold = new Reservation(ReservationId.of(holdId), null, UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null,
+                    null);
             StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", LocalDate.of(2030, 1, 1),
                     Quantity.of(10), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null);
             when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
@@ -299,7 +281,7 @@ class PickConsumptionServiceTest {
         }
 
         @Test
-        @DisplayName("an order's hold on goods in the print shop is refused too")
+        @DisplayName("an order's hold on goods a legacy print-shop row still records (IN_PRODUCTION) is refused too")
         void goodsInThePrintShopAreRefused() {
             UUID holdId = UUID.randomUUID();
             Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),

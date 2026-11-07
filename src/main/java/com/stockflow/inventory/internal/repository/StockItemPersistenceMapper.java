@@ -53,7 +53,6 @@ final class StockItemPersistenceMapper {
         return new Reservation(
                 new ReservationId(entity.getId()),
                 entity.getOrderId(),
-                entity.getProductionOrderId(),
                 entity.getTransferOrderId(),
                 entity.getRootRequestId(),
                 entity.getRequestId(),
@@ -99,7 +98,6 @@ final class StockItemPersistenceMapper {
                         r.id().value(),
                         item.sku().code(),
                         r.orderId(),
-                        r.productionOrderId(),
                         r.rootRequestId(),
                         r.requestId(),
                         r.quantity().value(),

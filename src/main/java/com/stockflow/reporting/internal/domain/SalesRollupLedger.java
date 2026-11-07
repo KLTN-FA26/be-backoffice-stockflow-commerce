@@ -50,14 +50,9 @@ public interface SalesRollupLedger {
     java.util.List<OrderContribution> returnsOf(LocalDate day);
 
     /**
-     * Records that units production closed out of an order line (a short completion, S6) were taken off the rollups,
-     * keeping what it took: the order's placed day, the value and the units. {@code closureId} is the closure's own id.
-     *
-     * @return true if this call recorded it, false if it was recorded before (and nothing was changed)
+     * The closures recorded on {@code orderId}, in the order they were applied: units in-house production closed out
+     * of an order line (a short completion, S6) while it existed. Nothing records one any more.
      */
-    boolean markClosureApplied(UUID closureId, OrderContribution taken);
-
-    /** The closures recorded on {@code orderId}, in the order they were applied. */
     java.util.List<OrderContribution> closuresOfOrder(UUID orderId);
 
     /** The closures recorded on the orders placed on {@code day}, for a rebuild to apply again. */

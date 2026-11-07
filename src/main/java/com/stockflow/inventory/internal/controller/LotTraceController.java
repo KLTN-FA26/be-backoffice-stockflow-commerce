@@ -67,7 +67,7 @@ class LotTraceController {
                 trace.balances().stream().map(b -> new LotTraceResponse.Balance(b.locationCode(), b.status(),
                         b.onHand(), b.held(), b.hiddenDuringCount())).toList(),
                 trace.holds().stream().map(h -> new LotTraceResponse.Hold(h.reservationId(), h.orderId(),
-                        h.orderNumber(), h.productionOrderId(), h.allocatedFrom(), h.locationCode(), h.quantity(), h.status(),
+                        h.orderNumber(), h.allocatedFrom(), h.locationCode(), h.quantity(), h.status(),
                         h.reservedAt(), h.closedAt())).toList(),
                 trace.orders().stream().map(o -> new LotTraceResponse.OrderLeg(o.orderId(), o.orderNumber(),
                         o.picked(), o.putBack(),

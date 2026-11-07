@@ -62,8 +62,7 @@ public record PlaceOrderCommand(
      *                         customer approved, so a later edit to the design cannot change what
      *                         was ordered
      * @param requestedDeliveryDate the date the customer asked to receive a print line (SCRUM-502, from its
-     *                         quote); it becomes the production order's due date. Null when none was asked;
-     *                         never set on a stock line
+     *                         quote). Null when none was asked; never set on a stock line
      */
     public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId,
                        java.time.LocalDate requestedDeliveryDate) {

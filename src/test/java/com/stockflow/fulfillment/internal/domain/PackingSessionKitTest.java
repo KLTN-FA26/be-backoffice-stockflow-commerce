@@ -29,8 +29,8 @@ class PackingSessionKitTest {
 
     /**
      * 2 tables (top and base: 2 boxes a unit, not rotatable), 1 desk (3 boxes, fragile), 5 cups (one box, the
-     * ordinary case), 1 shelf (2 boxes, like the table), 1 printed desk not produced yet (PACK-EARLY: none reached
-     * packing).
+     * ordinary case), 1 shelf (2 boxes, like the table), 1 printed desk none of which reached packing (nothing of it
+     * picked yet).
      */
     private static PackingSession session() {
         return session(true);
@@ -248,7 +248,7 @@ class PackingSessionKitTest {
     }
 
     @Test
-    @DisplayName("review of #155: no kit for a line with nothing at packing (a print line not produced yet, PACK-EARLY); "
+    @DisplayName("review of #155: no kit for a line with nothing at packing (a print line none of which was picked); "
             + "an empty kit already opened holds a unit")
     void aKitNeedsAUnitThatReachedPacking() {
         var session = session();

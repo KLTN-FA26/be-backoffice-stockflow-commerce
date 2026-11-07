@@ -164,9 +164,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "closed_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal closedAmount = java.math.BigDecimal.ZERO;
 
-    @Column(name = "awaiting_production", nullable = false)
-    private boolean awaitingProduction;
-
     /** V20261022000400 (review of #150): when fulfillment opened the order's task. */
     @Column(name = "fulfilment_started_at")
     private Instant fulfilmentStartedAt;
@@ -334,9 +331,8 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public com.stockflow.order.api.BalancePolicy getBalancePolicy() { return balancePolicy; }
 
-    public void applyPartialShipment(boolean allowed, boolean awaiting) {
+    public void applyPartialShipment(boolean allowed) {
         this.allowPartialShipment = allowed;
-        this.awaitingProduction = awaiting;
     }
 
     public boolean isAllowPartialShipment() { return allowPartialShipment; }
@@ -369,7 +365,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public java.math.BigDecimal getRemainderFeeAmount() { return remainderFeeAmount; }
     public java.math.BigDecimal getRemainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
     public java.math.BigDecimal getRemainderFeePaidAmount() { return remainderFeePaidAmount; }
-    public boolean isAwaitingProduction() { return awaitingProduction; }
     public java.math.BigDecimal getCodAmount() { return codAmount; }
 
     public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,

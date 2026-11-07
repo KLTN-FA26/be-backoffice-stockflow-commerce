@@ -44,9 +44,7 @@ class OrderRemainderClosedListener {
         orders.lockForPayment(event.orderId());
         BigDecimal unplaced = settlement.requestRemainderRefunds(event.orderId(),
                 event.closureId() == null ? event.orderId() : event.closureId(), refundable, event.currency(),
-                OrderRemainderClosed.PRODUCTION_SHORTFALL.equals(event.reasonCode())
-                        ? "Order %s: units production did not make, the customer agreeing".formatted(event.orderNumber())
-                        : "Order %s: rest closed (%s)".formatted(event.orderNumber(), event.reasonCode()));
+                "Order %s: rest closed (%s)".formatted(event.orderNumber(), event.reasonCode()));
         if (unplaced.signum() > 0) {
             log.warn("Order {}: rest closed with {} {} to refund, but no captured payment carries {} of it; the "
                     + "accountant must settle it by hand", event.orderNumber(), refundable, event.currency(), unplaced);

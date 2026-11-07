@@ -124,7 +124,7 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
             return toDomain(jpa.save(managed));
         }
         return toDomain(jpa.save(new ReservationJpaEntity(reservation.id().value(), reservation.sku().code(),
-                reservation.orderId(), null, reservation.rootRequestId(), reservation.requestId(),
+                reservation.orderId(), reservation.rootRequestId(), reservation.requestId(),
                 reservation.quantity().value(), reservation.reservedAt(), reservation.expiresAt(),
                 reservation.status(), reservation.releaseReason(), reservation.closedAt(), null)));
     }

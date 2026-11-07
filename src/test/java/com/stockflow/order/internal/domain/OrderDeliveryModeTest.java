@@ -21,7 +21,6 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,7 +59,7 @@ class OrderDeliveryModeTest {
 
     private static Order released(PaymentTerm term, BalancePolicy policy) {
         Order order = confirmed(term, policy);
-        order.release(HCM, "HCM", STAFF, NOW, Map.of());
+        order.release(HCM, "HCM", STAFF, NOW);
         assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         return order;
     }
@@ -84,7 +83,7 @@ class OrderDeliveryModeTest {
 
             assertThat(order.changeDeliveryMode(DeliveryMode.FULL_TRUCKLOAD)).isTrue();
             assertThat(order.changeDeliveryMode(DeliveryMode.FULL_TRUCKLOAD)).as("the same mode").isFalse();
-            order.release(HCM, "HCM", STAFF, NOW, Map.of());
+            order.release(HCM, "HCM", STAFF, NOW);
             assertThat(order.changeDeliveryMode(DeliveryMode.PARCEL)).isTrue();
             order.startPicking(STAFF, NOW);
             assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
@@ -243,7 +242,7 @@ class OrderDeliveryModeTest {
 
         private Order picking(Order order) {
             order.changeDeliveryMode(DeliveryMode.FULL_TRUCKLOAD);
-            order.release(HCM, "HCM", STAFF, NOW, Map.of());
+            order.release(HCM, "HCM", STAFF, NOW);
             order.startPicking(STAFF, NOW);
             assertThat(order.deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
             return order;

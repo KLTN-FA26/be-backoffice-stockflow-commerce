@@ -45,8 +45,9 @@ public final class StockAdjustment extends AggregateRoot {
     /** The receipt layer, when the location holds several layers of the lot; null picks the only one. */
     private Instant receivedAt;
     /**
-     * The hold whose units this write-off takes (BR-PRD-10: printed goods of a cancelled order, still held so nobody
-     * can take them); approving it closes the hold as it deducts the units. Null for every other write-off.
+     * Legacy: the hold whose units this write-off takes (BR-PRD-10, while in-house production existed: printed goods of
+     * a cancelled order, still held so nobody could take them); approving it closes the hold as it deducts the units.
+     * Nothing asks for one any more; null for every write-off since.
      */
     private UUID reservationId;
     /**

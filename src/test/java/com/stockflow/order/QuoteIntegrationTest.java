@@ -11,7 +11,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.storage.FileStorage;
-import com.stockflow.contracts.SampleApproved;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveAddressCommand;
 import com.stockflow.order.api.OrderService;
@@ -19,11 +18,8 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.api.PaymentTerm;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.service.Quotes;
-import com.stockflow.production.internal.service.SampleProductionProgress;
-import com.stockflow.production.internal.service.SampleRequests;
 import com.stockflow.support.Await;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.IntegrationTest;
@@ -67,11 +63,9 @@ import static org.mockito.Mockito.verify;
 
 /**
  * SCRUM-448 against a real PostgreSQL with every migration, the real design verification, real stock and
- * the real event plumbing — and the real sample flow of SCRUM-394: the approval that unlocks acceptance
- * is made by production's own services and reaches the order module as {@code SampleApproved} through its
- * asynchronous listener, exactly as in the running application. Nothing is set by SQL to stand for a
- * transition; the only SQL writes are the reference rows another module would own (users, a customer and
- * its portal account).
+ * the real event plumbing. Acceptance waits for no print sample: samples are approved on the Production Order,
+ * outside the quote (kltn-docs 17). Nothing is set by SQL to stand for a transition; the only SQL writes are the
+ * reference rows another module would own (users, a customer and its portal account).
  *
  * <p>Security is off in this context: the caller is passed in, as the controller does. Who may call what
  * is covered over HTTP by {@code QuoteSecurityIntegrationTest}.</p>
@@ -88,11 +82,8 @@ class QuoteIntegrationTest {
     private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired Quotes quotes;
-    @Autowired SampleRequests samples;
-    @Autowired SampleProductionProgress workshop;
     @Autowired OrderService orders;
     @Autowired CustomerService customers;
-    @Autowired ProductionRecords productionRecords;
     @Autowired FileStorage storage;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
@@ -111,7 +102,7 @@ class QuoteIntegrationTest {
     @BeforeEach
     void setUp() {
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
-        // A sample's blanks are held from submission (Q1): bring this test's own, not the shared demo stock.
+        // The orders converted here hold blanks: bring this test's own, not the shared demo stock.
         com.stockflow.support.ConfirmedDesigns.stockBlanks(jdbc, tx, 30);
         sales = staff(Role.SALES_STAFF);
         UUID portalUser = tx.execute(s -> ReferenceRows.user(entityManager));
@@ -158,24 +149,6 @@ class QuoteIntegrationTest {
         return quotes.send(sales, created.id(), created.version());
     }
 
-    /**
-     * SCRUM-394 for real: draft, submit (SAMPLE production order), the workshop's completion through its
-     * contract, sending, and the customer's approval — then production's SampleApproved reaches the order
-     * module's listener.
-     */
-    private UUID approvedSample(ConfirmedDesigns.Design design) {
-        SampleRequests.Sample sample = samples.create(sales, new SampleRequests.Create(customerId, null,
-                new SampleRequests.Draft(design.snapshotId(), BLANK, 2, null)));
-        SampleRequests.Sample submitted = samples.submit(sales, sample.id(), hcm);
-        workshop.productionCompleted(submitted.productionOrder().id());
-        samples.markSent(sales, sample.id());
-        samples.approve(portal, sample.id());
-        Await.until("the order module records the approved sample", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM ordering.approved_sample WHERE sample_request_id = ?", Integer.class,
-                sample.id()) == 1);
-        return sample.id();
-    }
-
     private int ordersOf(UUID customer) {
         return jdbc.queryForObject("SELECT count(*) FROM ordering.customer_order WHERE customer_id = ?", Integer.class,
                 customer);
@@ -202,17 +175,14 @@ class QuoteIntegrationTest {
     // ------------------------------------------------------------------------------------- tests
 
     @Test
-    @DisplayName("quote -> sample approved by the customer -> accepted at a tier -> converted into one order at the quote's price")
-    void quoteSampleOrder() throws Exception {
+    @DisplayName("quote -> accepted at a tier -> converted into one order at the quote's price")
+    void quoteToOrder() throws Exception {
         ConfirmedDesigns.Design design = design();
         Quotes.QuoteView created = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
                 draft(design, PaymentTerm.PREPAID, Instant.now().plus(Duration.ofDays(7)))));
         assertThat(created.status()).isEqualTo(QuoteStatus.DRAFT);
         assertThat(created.quoteNumber()).startsWith("QT-");
-        assertThat(created.lines()).singleElement().satisfies(line -> {
-            assertThat(line.moq()).isEqualTo(2);
-            assertThat(line.sample().satisfied()).isFalse();
-        });
+        assertThat(created.lines()).singleElement().satisfies(line -> assertThat(line.moq()).isEqualTo(2));
         assertThatThrownBy(() -> quotes.get(portal, created.id())).as("a draft is Sales' working copy")
                 .isInstanceOf(NotFoundException.class);
 
@@ -222,15 +192,10 @@ class QuoteIntegrationTest {
         assertThat(quotes.list(portal, new Quotes.Criteria(null, null, null, 0, 20, null)).items())
                 .extracting(Quotes.Row::id).containsExactly(sent.id());
 
-        // BR-ORD-008: no approved sample of this customer for this design on this blank yet.
-        assertThatThrownBy(() -> quotes.accept(portal, sent.id(), new Quotes.Acceptance(sent.version(), Map.of())))
-                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
         assertThatThrownBy(() -> quotes.accept(sales, sent.id(), new Quotes.Acceptance(sent.version(), Map.of())))
                 .as("only the customer answers").extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.FORBIDDEN);
 
-        UUID sample = approvedSample(design);
         Quotes.QuoteView seen = quotes.get(portal, sent.id());
-        assertThat(seen.lines().getFirst().sample()).isEqualTo(new Quotes.SampleGate(true, sample, false));
 
         UUID lineId = seen.lines().getFirst().id();
         assertThatThrownBy(() -> quotes.accept(portal, sent.id(), new Quotes.Acceptance(seen.version() - 1,
@@ -286,7 +251,6 @@ class QuoteIntegrationTest {
                 new CustomerPriceService.TierInput(5, new BigDecimal("2800"))), null);
         ConfirmedDesigns.Design design = design();
         Quotes.QuoteView sent = sentQuote(design);
-        approvedSample(design);
         Quotes.QuoteView seen = quotes.get(portal, sent.id());
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(seen.version(),
                 Map.of(seen.lines().getFirst().id(), 5)));
@@ -317,7 +281,6 @@ class QuoteIntegrationTest {
                     .extracting(t -> t.minQuantity() + "@" + t.unitPrice().stripTrailingZeros().toPlainString())
                     .containsExactly("2@3000", "5@2800");
             assertThat(line.acceptedQuantity()).isNull();
-            assertThat(line.sample().satisfied()).as("the approved design needs no new sample").isTrue();
         });
         assertThat(reorder.history()).singleElement().satisfies(t ->
                 assertThat(t.reason()).startsWith("Reorder of order "));
@@ -389,7 +352,6 @@ class QuoteIntegrationTest {
         });
         assertThat(draft.proposedTotal()).isEqualByComparingTo("9200");
         Quotes.QuoteView first = quotes.send(sales, draft.id(), draft.version());
-        approvedSample(design);
 
         // Only this customer answers.
         assertThatThrownBy(() -> quotes.accept(sales, first.id(), new Quotes.Acceptance(first.version(), Map.of())))
@@ -446,12 +408,10 @@ class QuoteIntegrationTest {
         });
         assertThat(order.total().amount()).isEqualByComparingTo("8800");
 
-        // Prepaid and not paid: nothing goes to production.
+        // Prepaid and not paid: it is not released.
         assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
         assertThatThrownBy(() -> releases.release(orderId, hcm, sales.userId())).isInstanceOf(RuntimeException.class);
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
-        assertThat(recorded.matching(com.stockflow.contracts.OrderLinesReleasedForProduction.class,
-                e -> e.orderId().equals(orderId))).isEmpty();
     }
 
     @Test
@@ -472,8 +432,6 @@ class QuoteIntegrationTest {
         assertThat(draft.proposedTotal()).isEqualByComparingTo("12500");
 
         Quotes.QuoteView sent = quotes.send(sales, draft.id(), draft.version());
-        approvedSample(logoA);
-        approvedSample(logoB);
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
                 quotes.get(portal, sent.id()).version(), Map.of()));
         assertThat(accepted.lines()).extracting(Quotes.LineView::acceptedUnitPrice)
@@ -495,7 +453,6 @@ class QuoteIntegrationTest {
                         List.of(new Quotes.Line(BLANK, design.snapshotId(), "Logo", 2,
                                 List.of(new Quotes.Tier(2, new BigDecimal("3000"))))))));
         Quotes.QuoteView sent = quotes.send(sales, created.id(), created.version());
-        approvedSample(design);
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
                 quotes.get(portal, sent.id()).version(), Map.of()));
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
@@ -514,7 +471,6 @@ class QuoteIntegrationTest {
             assertThat(line.moq()).isNull();
             assertThat(line.quantity()).isEqualTo(2);
             assertThat(line.designSnapshotId()).isEqualTo(design.snapshotId());
-            assertThat(line.sample().satisfied()).isTrue();
         });
         assertThat(noticesOf(request.id(), CustomerActedOnQuote.Action.REORDER_REQUESTED)).hasSize(1);
         assertThat(ordersOf(customerId)).isEqualTo(ordersBefore);
@@ -592,7 +548,6 @@ class QuoteIntegrationTest {
         Quotes.QuoteView created = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
                 twoUnits(design, PaymentTerm.DEPOSIT)));
         Quotes.QuoteView sent = quotes.send(sales, created.id(), created.version());
-        approvedSample(design);
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
                 quotes.get(portal, sent.id()).version(), Map.of()));
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
@@ -648,7 +603,6 @@ class QuoteIntegrationTest {
     void concurrentConversion() throws Exception {
         ConfirmedDesigns.Design design = design();
         Quotes.QuoteView sent = sentQuote(design);
-        approvedSample(design);
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
                 quotes.get(portal, sent.id()).version(), Map.of()));
         int before = ordersOf(customerId);
@@ -667,7 +621,6 @@ class QuoteIntegrationTest {
     void conversionRollsBack() throws Exception {
         ConfirmedDesigns.Design design = design();
         Quotes.QuoteView sent = sentQuote(design);
-        approvedSample(design);
         Quotes.QuoteView seen = quotes.get(portal, sent.id());
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(seen.version(),
                 Map.of(seen.lines().getFirst().id(), 100_000)));
@@ -680,19 +633,6 @@ class QuoteIntegrationTest {
         assertThat(ordersOf(customerId)).isEqualTo(before);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.quote_status_history WHERE quote_id = ? "
                 + "AND to_status = 'CONVERTED'", Integer.class, accepted.id())).isZero();
-    }
-
-    @Test
-    @DisplayName("an approval of the design counts only for the customer who gave it")
-    void sampleApprovalIsTheCustomersOwn() throws Exception {
-        ConfirmedDesigns.Design design = design();
-        UUID sample = approvedSample(design);
-        UUID stranger = tx.execute(s -> ReferenceRows.customer(entityManager));
-
-        assertThat(productionRecords.approvedSampleOf(customerId, design.snapshotId(), BLANK)).contains(sample);
-        assertThat(productionRecords.approvedSampleOf(stranger, design.snapshotId(), BLANK)).isEmpty();
-        assertThat(productionRecords.approvedSampleOf(customerId, design.snapshotId(), "TABLE-OAK-160")).isEmpty();
-        assertThat(recorded.matching(SampleApproved.class, e -> e.sampleRequestId().equals(sample))).hasSize(1);
     }
 
     @Test

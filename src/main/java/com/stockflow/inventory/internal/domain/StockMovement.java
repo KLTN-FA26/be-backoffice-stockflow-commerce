@@ -112,11 +112,13 @@ public record StockMovement(
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */
     public enum ReferenceType {
         MOVE_TASK, PUTAWAY_TASK, TRANSFER_ORDER_LINE, ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION, PICK_LINE,
-        PRODUCTION_ORDER, EXPIRY_SWEEP,
+        /** Legacy: lines in-house production wrote (issue, hand-over, completion); nothing writes one any more. */
+        PRODUCTION_ORDER,
+        EXPIRY_SWEEP,
         /**
          * A completed package whose custom-printed goods left stock with it (decision 2026-10-16). Historical only:
-         * since G4-Q2 (2026-10-21) printed goods leave when their production order completes and no line names a
-         * package any more; the value stays for the lines written before.
+         * from G4-Q2 (2026-10-21) printed goods left when their production order completed, and since in-house
+         * production was removed they are picked like any stock; the value stays for the lines written before.
          */
         PACKAGE,
         /**

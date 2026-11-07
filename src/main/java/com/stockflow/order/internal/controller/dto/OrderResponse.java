@@ -130,14 +130,13 @@ public record OrderResponse(
         BigDecimal amountDueOnDelivery,
 
         @Schema(description = "Sales allowed the order to ship in parts (PACK-PARTIAL): packing may complete part of "
-                + "it, part of it may be handed over, and a mixed order's stock may ship while its prints are made "
-                + "(PACK-EARLY). False by default; set with PUT /orders/{orderId}/partial-shipment; null on rows that "
-                + "do not carry it")
+                + "it, and part of it may be handed over. False by default; set with PUT "
+                + "/orders/{orderId}/partial-shipment; null on rows that do not carry it")
         Boolean allowPartialShipment,
 
-        @Schema(description = "Its printed goods are at packing: no print lines, or production completed. False while "
-                + "the order is printed, or partly shipped before production completed (PACK-EARLY); null on rows "
-                + "that do not carry it")
+        @Schema(deprecated = true, description = "Always true: printing is done outside the system, so an order's "
+                + "goods are in stock before it is released. Kept for clients that still read it; null on rows that "
+                + "do not carry it")
         Boolean printLinesReady,
 
         @Schema(example = "PARCEL", description = "How the order travels (LP-1): PARCEL (parcels through a carrier, the "
@@ -209,12 +208,8 @@ public record OrderResponse(
             @Schema(description = "Units closed out of a partly fulfilled order: they will not be delivered")
             Integer cancelledQuantity,
 
-            @Schema(description = "A print line production could not finish: what the customer agreed to go without "
-                    + "(review 2026-10-25, S6), and how much of it production closed; null when nothing was agreed")
-            ProductionShortfall productionShortfall,
-
-            @Schema(description = "SCRUM-502: the date the customer asked to receive this print line, from its quote; "
-                    + "the production order's due date. Null when none was asked or for a stock line")
+            @Schema(description = "SCRUM-502: the date the customer asked to receive this print line, from its quote. "
+                    + "Null when none was asked or for a stock line")
             java.time.LocalDate requestedDeliveryDate
     ) {
 
@@ -222,12 +217,7 @@ public record OrderResponse(
                     List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
                     Integer deliveredQuantity, Integer cancelledQuantity) {
             this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
-                    shippedQuantity, deliveredQuantity, cancelledQuantity, null, null);
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, null);
         }
-    }
-
-    @Schema(name = "OrderLineProductionShortfall")
-    public record ProductionShortfall(int agreedQuantity, String note, UUID agreedBy, java.time.Instant agreedAt,
-                                      int closedQuantity) {
     }
 }

@@ -27,7 +27,7 @@ class OrderStatusTest {
             Map.entry(DRAFT, EnumSet.of(PENDING_PAYMENT, CONFIRMED, ON_HOLD, CANCELLED)),
             Map.entry(PENDING_PAYMENT, EnumSet.of(CONFIRMED, CANCELLED)),
             Map.entry(CONFIRMED, EnumSet.of(IN_PRODUCTION, READY_TO_FULFILL, ON_HOLD, CANCELLED)),
-            // PARTIALLY_FULFILLED: PACK-EARLY (lead's decision 2026-10-21), the stock shipped ahead of the prints.
+            // Legacy edges (IN_PRODUCTION is entered no more, V20261108000100); PARTIALLY_FULFILLED was PACK-EARLY.
             Map.entry(IN_PRODUCTION, EnumSet.of(READY_TO_FULFILL, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             Map.entry(READY_TO_FULFILL, EnumSet.of(PICKING, PACKED, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             Map.entry(PICKING, EnumSet.of(PACKED, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),

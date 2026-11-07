@@ -17,7 +17,6 @@ import com.stockflow.design.api.DesignService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.PriceTier;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.domain.Quote;
 import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
@@ -52,7 +51,7 @@ import static org.mockito.Mockito.when;
 /**
  * The quote lifecycle of kltn-docs 03 §18 as {@link QuoteService} drives it: Sales sends and cancels, only the
  * customer answers, a stale version is refused, a sent quote past its validity reads as expired (BR-ORD-008), and
- * every transition is written to the history. {@code QuoteServiceTest} covers the sample rule and conversion.
+ * every transition is written to the history. {@code QuoteServiceTest} covers acceptance and conversion.
  */
 class QuoteServiceTransitionsTest {
 
@@ -61,11 +60,10 @@ class QuoteServiceTransitionsTest {
 
     private final QuoteRepository quotes = mock(QuoteRepository.class);
     private final QuoteSearch search = mock(QuoteSearch.class);
-    private final ProductionRecords production = mock(ProductionRecords.class);
     private final CustomerService customers = mock(CustomerService.class);
     private final ProductService products = mock(ProductService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
-    private final QuoteService service = new QuoteService(quotes, search, production, customers,
+    private final QuoteService service = new QuoteService(quotes, search, customers,
             mock(DesignService.class), mock(QuotedOrders.class), mock(OrderService.class), new ObjectMapper(),
             Clock.fixed(NOW, ZoneOffset.UTC), mock(com.stockflow.catalog.api.CatalogService.class), events, products);
 
@@ -91,7 +89,6 @@ class QuoteServiceTransitionsTest {
                 VERSION)));
         when(search.history(any())).thenReturn(List.of());
         when(products.lockedPurchasability(any())).thenReturn(Map.of());
-        when(production.approvedSampleOf(any(), any(), any())).thenReturn(Optional.of(UUID.randomUUID()));
     }
 
     private Quote stored(QuoteStatus status, Instant validUntil) {
@@ -214,7 +211,7 @@ class QuoteServiceTransitionsTest {
     }
 
     @Test
-    @DisplayName("a sent quote past its validity is answered QUOTE_EXPIRED, whatever its samples (BR-ORD-008)")
+    @DisplayName("a sent quote past its validity is answered QUOTE_EXPIRED (BR-ORD-008)")
     void expiredQuoteIsNotAccepted() {
         Quote quote = stored(QuoteStatus.SENT, NOW.minusSeconds(1));
 

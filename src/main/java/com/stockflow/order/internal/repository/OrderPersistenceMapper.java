@@ -43,12 +43,6 @@ final class OrderPersistenceMapper {
                         line.getCancelledQuantity());
                     if (line.getDesignChecksum() != null) { mapped.recordDesignChecksum(line.getDesignChecksum()); }
                     mapped.withRequestedDeliveryDate(line.getRequestedDeliveryDate());
-                    if (line.getShortfallAgreedQuantity() != null || line.getShortfallClosedQuantity() > 0) {
-                        mapped.withShortfall(line.getShortfallAgreedQuantity() == null ? null
-                                : new OrderLine.ShortfallAgreement(line.getShortfallAgreedQuantity(),
-                                        line.getShortfallAgreedNote(), line.getShortfallAgreedBy(),
-                                        line.getShortfallAgreedAt()), line.getShortfallClosedQuantity());
-                    }
                     return mapped;
                 })
                 .toList();
@@ -77,7 +71,7 @@ final class OrderPersistenceMapper {
         order.restoreGoodsLeft(entity.getGoodsLeftAt());
         order.restoreReplacement(entity.getReplacesReturnRequestId());
         order.restoreBalance(entity.getBalancePolicy(), entity.getCodAmount());
-        order.restorePartialShipment(entity.isAllowPartialShipment(), entity.isAwaitingProduction());
+        order.restorePartialShipment(entity.isAllowPartialShipment());
         order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
                 entity.getRemainderFeePaidAmount());
         order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
@@ -125,7 +119,7 @@ final class OrderPersistenceMapper {
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyGoodsLeft(order.goodsLeftAt());
         entity.applyBalance(order.balancePolicy(), order.codAmount());
-        entity.applyPartialShipment(order.allowPartialShipment(), order.awaitingProduction());
+        entity.applyPartialShipment(order.allowPartialShipment());
         entity.applyRemainderFee(order.remainderFeeAmount(), order.remainderFeeRetainedAmount(),
                 order.remainderFeePaidAmount());
         entity.applyClosedAmount(order.closedAmount());
@@ -185,20 +179,9 @@ final class OrderPersistenceMapper {
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
                         entity.getBilledAmount(), null, null, null, List.of(), List.of(), null, null,
-                        entity.isAllowPartialShipment(), printLinesReady(entity), entity.getDeliveryMode(),
+                        entity.isAllowPartialShipment(), entity.getDeliveryMode(),
                         com.stockflow.order.internal.domain.Order.deliveryModeLocked(entity.getStatus(),
                                 entity.getStatusBeforeHold(), entity.getPackingStartedAt(), entity.getPackedAt())));
-    }
-
-    /**
-     * A list row's view of {@code Order#printLinesReady} without its lines: not while it is printed (or held from
-     * there), nor while it waits for production after its stock left (review of #150). An order with no print line
-     * reads as not ready only in the first two cases, which a stock-only order never is in.
-     */
-    private static boolean printLinesReady(OrderJpaEntity entity) {
-        boolean printing = entity.getStatus() == OrderStatus.IN_PRODUCTION
-                || entity.getStatus() == OrderStatus.ON_HOLD && entity.getStatusBeforeHold() == OrderStatus.IN_PRODUCTION;
-        return !printing && !entity.isAwaitingProduction();
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {
@@ -232,10 +215,6 @@ final class OrderPersistenceMapper {
                     mapped.setDesignChecksum(line.designChecksum());
                     mapped.setCancelledQuantity(line.cancelledQuantity());
                     mapped.setRequestedDeliveryDate(line.requestedDeliveryDate());
-                    OrderLine.ShortfallAgreement agreed = line.shortfallAgreement();
-                    mapped.setShortfall(agreed == null ? null : agreed.quantity(), agreed == null ? null : agreed.note(),
-                            agreed == null ? null : agreed.agreedBy(), agreed == null ? null : agreed.agreedAt(),
-                            line.shortfallClosedQuantity());
                     return mapped;
                 })
                 .toList();

@@ -168,7 +168,7 @@ class DispatchVehicleHandoverTest {
                 BigDecimal.ZERO, NOW, null, null, List.of(), BigDecimal.ZERO, null);
         var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(shipment), BigDecimal.ZERO,
-                BigDecimal.ZERO, true, true);
+                BigDecimal.ZERO, true);
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), OrderStatus.SHIPPED, Money.vnd(100_000), List.of(),
                 NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null, lifecycle);
     }

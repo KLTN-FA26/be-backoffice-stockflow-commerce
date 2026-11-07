@@ -15,8 +15,7 @@ import java.util.UUID;
  * by id when they already hold one, by code when a person scanned or typed it.</p>
  *
  * <p>A cycle count (SCRUM-162) asks two more: the shelves of a zone, to plan a count by zone, and locations by code
- * whatever their status, to tell bins from areas without dropping a blocked bin that still holds stock to count. A
- * subcontractor's location (created on first use) and the areas of a type serve the print shop.</p>
+ * whatever their status, to tell bins from areas without dropping a blocked bin that still holds stock to count.</p>
  *
  * <p>Administering the map - warehouses, zones, shelves, areas, boundaries - is used by this
  * module's own controllers only and lives on the internal {@code WarehouseLayoutService} and its
@@ -38,14 +37,7 @@ public interface WarehouseService {
     /** @return empty when no location has this id */
     Optional<StorageLocationView> findLocation(UUID locationId);
 
-    /**
-     * The location of the blanks this warehouse has sent to one print subcontractor (decision Q7, SCRUM-441): one
-     * per subcontractor and sending warehouse, code {@code <prefix>-SUB-<supplier code>}, created the first time it
-     * is asked for and returned as it is afterwards. Not on the map, not pickable, not a putaway target.
-     */
-    StorageLocationView subcontractorLocation(UUID warehouseId, UUID supplierId, String supplierCode);
-
-    /** The storage areas of {@code type} in a warehouse, by location code (the print shop finds its packing area). */
+    /** The storage areas of {@code type} in a warehouse, by location code. */
     java.util.List<StorageLocationView> areasOf(UUID warehouseId, StorageLocationView.AreaType type);
 
     /**

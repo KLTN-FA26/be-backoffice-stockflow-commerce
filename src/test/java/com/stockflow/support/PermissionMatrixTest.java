@@ -91,7 +91,6 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)"),
             Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
             Map.entry("GET /api/v1/quotes", "portal list: the caller's own customer's quotes, sent ones only (SCRUM-448)"),
-            Map.entry("GET /api/v1/production/sample-requests", "portal list: the caller's own customer's sample requests (SCRUM-394)"),
             Map.entry("GET /api/v1/catalog/products/availability",
                     "stock indicator for the caller's own ACTIVE customer, the customer taken from the token (SCRUM-429)"),
             Map.entry("GET /api/v1/catalog/products/prices",
@@ -296,10 +295,9 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/designs/{id}/change-requests", "{\"version\":0,\"reason\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/confirmation-withdrawals", "{\"version\":0,\"reason\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/confirmations", "{\"version\":0,\"artifactId\":\"" + UUID.randomUUID() + "\"}"),
-                // SCRUM-448 / 394 / R1: valid bodies, so only the owner check can refuse the victim's quote, sample and order.
+                // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
-                Map.entry("POST /api/v1/production/sample-requests/{sampleRequestId}/change-request", "{\"feedback\":\"stolen\"}"),
                 Map.entry("POST /api/v1/orders/{orderId}/reorder", "{\"requestId\":\"" + UUID.randomUUID() + "\"}"),
                 // SCRUM-243: a well-formed claim on the victim's order, so only the owner check can refuse it.
                 Map.entry("POST /api/v1/orders/{orderId}/returns", "{\"requestId\":\"" + UUID.randomUUID()
@@ -323,8 +321,7 @@ class PermissionMatrixTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
 
-    UUID attackerUser, victimUser, victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable, victimQuote,
-            victimSampleRequest;
+    UUID attackerUser, victimUser, victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable, victimQuote;
 
     @BeforeEach
     void victim() {
@@ -337,7 +334,6 @@ class PermissionMatrixTest {
         victimDesign = Identifiers.newId();
         victimReceivable = Identifiers.newId();
         victimQuote = Identifiers.newId();
-        victimSampleRequest = Identifiers.newId();
         UUID snapshot = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("INSERT INTO customer.customer (id, user_id, full_name, email, status, version, created_at) VALUES (?, ?, 'Attacker', ?, 'ACTIVE', 0, NOW())",
@@ -360,7 +356,7 @@ class PermissionMatrixTest {
             jdbc.update("""
                     INSERT INTO payment.receivable (id, order_id, customer_id, amount, currency, issued_at, due_date, status)
                     VALUES (?, ?, ?, 1000, 'VND', NOW(), CURRENT_DATE + 30, 'OPEN')""", victimReceivable, victimOrder, victimCustomer);
-            // The victim's own quote, sent to them, and a sample request of theirs (SCRUM-448 / 394).
+            // The victim's own quote, sent to them (SCRUM-448).
             int n = ThreadLocalRandom.current().nextInt(1_000_000);
             jdbc.update("""
                     INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until,
@@ -371,11 +367,6 @@ class PermissionMatrixTest {
                     INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
                     VALUES (?, ?, ?, 'https://example.com/victim.pdf', NOW(), NOW(), '[]'::jsonb)""",
                     snapshot, victimDesign, "c".repeat(64));
-            jdbc.update("""
-                    INSERT INTO production.sample_request (id, request_number, customer_id, blank_sku, design_snapshot_id,
-                        quantity, status, version, created_at)
-                    VALUES (?, ?, ?, 'SOFA-3S-GREY', ?, 1, 'DRAFT', 0, NOW())""",
-                    victimSampleRequest, "SR-20991231-%06d".formatted(n), victimCustomer, snapshot);
             // A quote without a line is not a quote (Quote.Offer refuses to restore it, 400 before any owner check):
             // one line of the victim's design with one price tier, so only the owner check can refuse it.
             UUID victimQuoteLine = Identifiers.newId();
@@ -417,7 +408,6 @@ class PermissionMatrixTest {
                 case "designId" -> victimDesign;
                 case "receivableId" -> victimReceivable;
                 case "quoteId" -> victimQuote;
-                case "sampleRequestId" -> victimSampleRequest;
                 case "id" -> h.template().startsWith("/api/v1/designs") ? victimDesign
                         : h.template().startsWith("/api/v1/orders") ? victimOrder : UUID.randomUUID();
                 default -> UUID.randomUUID();
@@ -494,7 +484,7 @@ class PermissionMatrixTest {
             if (OWN_DATA_ONLY.containsKey(h.key())) {
                 if (status >= 500) problems.add(h.key() + " answered " + status);
                 for (UUID other : List.of(victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable,
-                        victimQuote, victimSampleRequest)) {
+                        victimQuote)) {
                     if (answer.contains(other.toString())) problems.add(h.key() + " (own-data-only) exposed another customer's id " + other);
                 }
             } else if (status != 403 && status != 404) {
@@ -518,11 +508,11 @@ class PermissionMatrixTest {
     @Test
     void theOwnerOfTheSameRowsIsServed() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
-        // The victim's quote and sample request are valid rows their owner reads (B-6a): the 404 the attacker gets is
-        // the owner check, not a broken fixture.
+        // The victim's quote is a valid row its owner reads (B-6a): the 404 the attacker gets is the owner check, not a
+        // broken fixture.
         for (String path : List.of("/api/v1/orders/" + victimOrder, "/api/v1/orders/me/" + victimOrder,
                 "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses",
-                "/api/v1/quotes/" + victimQuote, "/api/v1/production/sample-requests/" + victimSampleRequest)) {
+                "/api/v1/quotes/" + victimQuote)) {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }

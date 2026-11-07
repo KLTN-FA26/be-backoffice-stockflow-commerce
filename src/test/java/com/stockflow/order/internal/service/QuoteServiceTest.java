@@ -18,7 +18,6 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.PriceTier;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.domain.Quote;
 import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
@@ -47,9 +46,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * The quote use cases' decisions with collaborators mocked: the sample rule's reorder branch (which real
- * data can only reach for designs printed before samples existed), what conversion hands the order core,
- * and that a converted quote is answered without placing again. The flows themselves run against the
+ * The quote use cases' decisions with collaborators mocked: acceptance without any sample rule, what conversion hands
+ * the order core, and that a converted quote is answered without placing again. The flows themselves run against the
  * database in {@code QuoteIntegrationTest}.
  */
 class QuoteServiceTest {
@@ -58,7 +56,6 @@ class QuoteServiceTest {
 
     private final QuoteRepository quotes = mock(QuoteRepository.class);
     private final QuoteSearch search = mock(QuoteSearch.class);
-    private final ProductionRecords production = mock(ProductionRecords.class);
     private final CustomerService customers = mock(CustomerService.class);
     private final DesignService designs = mock(DesignService.class);
     private final QuotedOrders quotedOrders = mock(QuotedOrders.class);
@@ -66,7 +63,7 @@ class QuoteServiceTest {
     private final com.stockflow.catalog.api.CatalogService catalog = mock(com.stockflow.catalog.api.CatalogService.class);
     private final org.springframework.context.ApplicationEventPublisher events =
             mock(org.springframework.context.ApplicationEventPublisher.class);
-    private final QuoteService service = new QuoteService(quotes, search, production, customers, designs, quotedOrders,
+    private final QuoteService service = new QuoteService(quotes, search, customers, designs, quotedOrders,
             orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events,
             mock(com.stockflow.product.api.ProductService.class));
 
@@ -127,27 +124,13 @@ class QuoteServiceTest {
     }
 
     @Test
-    void aReorderOfWhatWasPrintedForThisCustomerIsAcceptedWithoutASample() {
+    void aNewDesignIsAcceptedWithoutASample() {
+        // Print samples are approved on the Production Order, outside the quote (kltn-docs 17): nothing to wait for.
         Quote quote = stored(QuoteStatus.SENT);
-        when(production.approvedSampleOf(customer, design, "CUP-PP-500")).thenReturn(Optional.empty());
-        when(production.producedBeforeFor(customer, design, "CUP-PP-500")).thenReturn(true);
 
         Quotes.QuoteView accepted = service.accept(portal, quote.id(), new Quotes.Acceptance(7, Map.of()));
 
         assertThat(accepted.status()).isEqualTo(QuoteStatus.ACCEPTED);
-        assertThat(accepted.lines().getFirst().sample()).isEqualTo(new Quotes.SampleGate(true, null, true));
-    }
-
-    @Test
-    void neitherASampleNorAReorderRefusesAcceptance() {
-        Quote quote = stored(QuoteStatus.SENT);
-        when(production.approvedSampleOf(any(), any(), any())).thenReturn(Optional.empty());
-        when(production.producedBeforeFor(any(), any(), any())).thenReturn(false);
-
-        assertThatThrownBy(() -> service.accept(portal, quote.id(), new Quotes.Acceptance(7, Map.of())))
-                .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
-        assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
-        verify(quotes, never()).save(any());
     }
 
     @Test

@@ -3,7 +3,6 @@ package com.stockflow.inventory;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
@@ -47,7 +46,6 @@ class SameReceiptMergeIntegrationTest {
 
     private static final String SHELF = "HCM-A01-1-B";
     private static final String OTHER_BIN = "HCM-A02-2-A";
-    private static final String PRINT_SHOP = "HCM-PRD01";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
     @Autowired InventoryService inventory;
@@ -162,30 +160,6 @@ class SameReceiptMergeIntegrationTest {
         inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
                 .forEach(allocation -> holdOf.put(allocation.reservationId(), allocation.holdIds().getFirst()));
         return reservations.stream().map(holdOf::get).toList();
-    }
-
-    @Test
-    @DisplayName("two holds of one FIFO receipt issued to the print shop land in one layer there, both still held")
-    void secondIssueMerges() {
-        UUID order = confirmedOrder();
-        List<UUID> holds = tx.execute(s -> {
-            List<UUID> ids = new java.util.ArrayList<>();
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order));
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 4, order));
-            inventory.pinReservations(order);
-            // SCRUM-152: checkout holds the SKU; the release puts each reservation on the FIFO layer as an allocation.
-            inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
-                    .forEach(allocation -> ids.addAll(allocation.holdIds()));
-            return ids;
-        });
-        for (UUID hold : holds) {
-            tx.executeWithoutResult(s -> inventory.issueReserved(new IssueReservedStockCommand(hold, order,
-                    Identifiers.newId(), PRINT_SHOP, clerk)));
-        }
-
-        assertThat(layers()).extracting(row -> row.get("location_code") + ":" + row.get("on_hand") + ":"
-                        + row.get("reserved") + ":" + row.get("status"))
-                .containsExactly(SHELF + ":3:0:AVAILABLE", PRINT_SHOP + ":7:7:IN_PRODUCTION");
     }
 
     @Test

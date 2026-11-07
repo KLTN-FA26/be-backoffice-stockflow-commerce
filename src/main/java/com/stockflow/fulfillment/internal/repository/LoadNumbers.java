@@ -7,7 +7,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 
 /**
- * Load (manifest) numbers {@code LD-yyyyMMdd-nnnn} from {@code platform.document_sequence}, as TO-, GR-, LSX- are;
+ * Load (manifest) numbers {@code LD-yyyyMMdd-nnnn} from {@code platform.document_sequence}, as TO- and GR- are;
  * and the lock that makes opening a load idempotent under concurrency.
  */
 @Component

@@ -4,9 +4,9 @@ import java.util.UUID;
 
 /**
  * Deducts the stock a pick line takes, and books it back when the order is cancelled afterwards
- * (kltn-docs 07 Output "giảm tồn tại vị trí nguồn", BR-05; SCRUM-275). Custom-printed goods are never picked and
- * do not pass through here: they leave stock when their production order completes (decision G4-Q2, 2026-10-21;
- * {@code InventoryService#consumeFinishedGoods}), and packing deducts nothing for them.
+ * (kltn-docs 07 Output "giảm tồn tại vị trí nguồn", BR-05; SCRUM-275). Custom-printed goods pass through here like
+ * any other: they are printed outside the system and received into stock before they are picked, and packing deducts
+ * nothing.
  *
  * <p>Both methods join the caller's transaction and are idempotent per pick line: the ledger row a
  * line wrote ({@code inventory.stock_movement}, reference {@code PICK_LINE}) is how a repeat is

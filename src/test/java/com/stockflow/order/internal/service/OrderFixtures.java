@@ -52,7 +52,7 @@ final class OrderFixtures {
     /** The same, released: READY_TO_FULFILL (no print line). */
     static Order releasedPrepaid() {
         Order order = confirmedPrepaid();
-        order.release(WAREHOUSE, "HCM", STAFF, NOW, java.util.Map.of());
+        order.release(WAREHOUSE, "HCM", STAFF, NOW);
         order.pullDomainEvents();
         order.pullTransitions();
         return order;

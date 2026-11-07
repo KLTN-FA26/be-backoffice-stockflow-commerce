@@ -21,7 +21,6 @@ import com.stockflow.inventory.internal.domain.HeldStock;
 import com.stockflow.inventory.internal.domain.InsufficientStockException;
 import com.stockflow.inventory.internal.domain.InventoryItemDirectory;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
-import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
@@ -34,7 +33,6 @@ import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
-import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.support.WithCurrentUser;
 import org.junit.jupiter.api.BeforeEach;
@@ -567,65 +565,6 @@ class InventoryServiceImplReservationTest {
                     assertThat(codeOf(() -> service.release(reservation.id().value(), "MANUAL_OVERRIDE")))
                             .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
             verify(repository, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("a hold in the print shop is closed by production, not by a release: it stays held")
-        void inPrintShopIsKept() {
-            StockItem printShop = new StockItem(StockItemId.newId(), CUP, new LocationId("HCM-PRD01"), null, null,
-                    Quantity.of(50), StockStatus.IN_PRODUCTION, List.of(), 0L);
-            Reservation reservation = new Reservation(ReservationId.newId(), ORDER, UUID.randomUUID(),
-                    UUID.randomUUID(), Quantity.of(10), NOW, null, ReservationStatus.HELD, null, null);
-            StockItem held = new StockItem(printShop.id(), CUP, new LocationId("HCM-PRD01"), null, null,
-                    Quantity.of(50), StockStatus.IN_PRODUCTION, List.of(reservation), 0L);
-            when(repository.findByReservationIdForUpdate(reservation.id())).thenReturn(Optional.of(held));
-
-            service.release(reservation.id().value(), "ORDER_CANCELLED");
-
-            assertThat(held.reserved().value()).isEqualTo(10);
-            verify(repository, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("BR-PRD-10: printed goods waiting in packing are packed or scrapped, never freed for someone else to buy")
-        void finishedCustomGoodsAreKept() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 50);
-            Reservation reservation = bin.reserve(ORDER, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(20), NOW);
-            when(repository.findByReservationIdForUpdate(reservation.id())).thenReturn(Optional.of(bin));
-            when(operations.isFinishedCustomGoods(any(), any())).thenReturn(true);
-
-            service.release(reservation.id().value(), "ORDER_CANCELLED");
-
-            assertThat(bin.reserved().value()).isEqualTo(20);
-            verify(repository, never()).save(any());
-        }
-    }
-
-    // ------------------------------------------------------------------ delegations that carry a rule
-
-    @Nested
-    @DisplayName("issuing and scrapping reserved stock")
-    class Issuing {
-
-        @Test
-        @DisplayName("a SKU reservation holds no goods yet: it cannot be issued before the order is released")
-        void skuReservationIsNotIssuable() {
-            UUID id = UUID.randomUUID();
-            when(skuReservations.exists(ReservationId.of(id))).thenReturn(true);
-
-            assertThat(codeOf(() -> service.issueReserved(new com.stockflow.inventory.api.IssueReservedStockCommand(id,
-                    ORDER, UUID.randomUUID(), "HCM-PCK01", UUID.randomUUID())))).isEqualTo(ErrorCode.RESERVATION_NOT_ISSUABLE);
-            verify(operations, never()).issueReserved(any());
-        }
-
-        @Test
-        @DisplayName("a SKU reservation was never allocated, so nothing was ever printed from it: nothing to scrap")
-        void skuReservationHasNothingToScrap() {
-            UUID id = UUID.randomUUID();
-            when(skuReservations.exists(ReservationId.of(id))).thenReturn(true);
-
-            assertThat(service.scrapCancelledPrint(id, ORDER, "cancelled", UUID.randomUUID())).isEmpty();
-            verify(operations, never()).scrapCancelledPrint(any(UUID.class), any(), any(), any());
         }
     }
 }

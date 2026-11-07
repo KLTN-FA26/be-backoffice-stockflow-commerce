@@ -1,12 +1,9 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ScrapCancelledPrintCommand;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.HoldReason;
@@ -15,7 +12,6 @@ import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.Order;
-import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderPayments;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
@@ -27,7 +23,6 @@ import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.time.Clock;
-import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
@@ -285,30 +280,8 @@ class OrderServiceImplReactionsTest {
                     STAFF));
 
             holds.forEach(hold -> verify(inventory).release(hold, "ORDER_CANCELLED"));
-            verify(inventory, never()).scrapCancelledPrint(any());
             assertThat(order.reservationIds()).isEmpty();
             verify(events).publishEventsOf(order);
-        }
-
-        @Test
-        @DisplayName("an unprinted print line is scrapped for its open units, by whoever cancelled (BR-PRD-10)")
-        void scrapsPrintedUnits() {
-            UUID design = UUID.randomUUID();
-            Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 10, 27), 9), UUID.randomUUID(),
-                    UUID.randomUUID(), List.of(Order.line(new Sku("CUP-12OZ"), 500, Money.vnd(2_000), design)), NOW);
-            order.applyTerms(PaymentTerm.PREPAID, null);
-            order.attachReservations(order.lines().get(0).id(), List.of(UUID.randomUUID()));
-            order.submit();
-            found(order);
-
-            service.cancelLoaded(order, new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, null, null,
-                    STAFF));
-
-            ArgumentCaptor<ScrapCancelledPrintCommand> scrap = ArgumentCaptor.forClass(ScrapCancelledPrintCommand.class);
-            verify(inventory).scrapCancelledPrint(scrap.capture());
-            assertThat(scrap.getValue().orderId()).isEqualTo(id(order));
-            assertThat(scrap.getValue().quantity()).isEqualTo(500);
-            assertThat(scrap.getValue().requestedBy()).isEqualTo(STAFF);
         }
 
         @Test

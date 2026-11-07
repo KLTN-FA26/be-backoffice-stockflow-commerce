@@ -120,7 +120,6 @@ class OrderServiceImplLifecycleTest {
         assertThat(codeOf(() -> service.recordDelivery(id, STAFF))).isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(codeOf(() -> service.putOnHold(id, HoldReason.ADDRESS, "x", STAFF))).isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(codeOf(() -> service.resolveHold(id, "x", STAFF))).isEqualTo(ErrorCode.NOT_FOUND);
-        assertThat(codeOf(() -> service.recordPrintingStarted(id))).isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(codeOf(() -> service.recordPacked(id))).isEqualTo(ErrorCode.NOT_FOUND);
     }
 
@@ -208,32 +207,16 @@ class OrderServiceImplLifecycleTest {
     }
 
     @Test
-    @DisplayName("a locked read answers with the order's status, or empty; a withdrawn line is a cancelled or fully shipped one")
+    @DisplayName("a locked read answers with the order's status, or empty")
     void lockedReads() {
         Order order = loaded(OrderFixtures.releasedPrepaid());
 
         assertThat(service.lockedStatus(order.id().value())).contains(OrderStatus.READY_TO_FULFILL);
         assertThat(service.lockedStatus(UUID.randomUUID())).isEmpty();
-        assertThat(service.lockedLineWithdrawn(order.id().value(), cups(order))).isFalse();
-        assertThat(service.lockedLineWithdrawn(order.id().value(), UUID.randomUUID()))
-                .as("a line the order does not have is not wanted").isTrue();
-        assertThat(service.lockedLineWithdrawn(UUID.randomUUID(), cups(order)))
-                .as("an order that does not exist wants nothing").isTrue();
     }
 
     @Test
-    @DisplayName("a cancelled order's lines are all withdrawn")
-    void cancelledOrderWithdrawsEverything() {
-        Order order = OrderFixtures.draft(com.stockflow.order.api.PaymentTerm.PREPAID, UUID.randomUUID());
-        order.submit();
-        order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null, null, STAFF, NOW);
-        loaded(order);
-
-        assertThat(service.lockedLineWithdrawn(order.id().value(), cups(order))).isTrue();
-    }
-
-    @Test
-    @DisplayName("printing started and packing started are recorded once each (LP-1: packing locks the delivery mode)")
+    @DisplayName("packing started is recorded once (LP-1: packing locks the delivery mode)")
     void factsAreRecordedOnce() {
         Order order = loaded(OrderFixtures.releasedPrepaid());
 
@@ -280,7 +263,6 @@ class OrderServiceImplLifecycleTest {
         assertThat(closed.lifecycle().lines()).extracting(OrderSummary.LineProgress::cancelledQuantity)
                 .containsExactly(0, 5);
         lidHolds.forEach(hold -> verify(inventory).release(hold, "ORDER_CANCELLED"));
-        verify(inventory, never()).scrapCancelledPrint(any());
         assertThat(lids(order)).isNotNull();
     }
 

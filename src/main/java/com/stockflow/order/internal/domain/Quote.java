@@ -38,8 +38,8 @@ public final class Quote {
      * The commercial content Sales edits while the quote is a draft.
      *
      * @param requestedDeliveryDate the date the customer asks to receive the goods (SCRUM-502, PROD-DUE): copied onto
-     *                              every print line of the order the quote becomes, then the production orders' due
-     *                              date. Null when the customer asked for none.
+     *                              every print line of the order the quote becomes. Null when the customer asked for
+     *                              none.
      */
     public record Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
                         java.time.LocalDate requestedDeliveryDate, List<QuoteLine> lines) {

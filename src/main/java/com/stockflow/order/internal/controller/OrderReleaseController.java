@@ -105,8 +105,8 @@ class OrderReleaseController {
     }
 
     @PostMapping("/{orderId}/release")
-    @Operation(summary = "Release a paid order from a warehouse: to production when it has print lines, "
-            + "otherwise ready to fulfil (BR-PRD-08 sample, BR-PRD-09 deposit). Optionally chooses how it travels "
+    @Operation(summary = "Release a paid order (or a deposit order whose deposit is in) from a warehouse: ready to "
+            + "fulfil, every line allocated on its bins. Optionally chooses how it travels "
             + "(deliveryMode, LP-1): a mode other than the order's needs sales-order-delivery-modes:UPDATE too (403); "
             + "409 DELIVERY_MODE_FTL_NO_COD for a full truckload whose balance is collected on delivery")
     @RequiresPermission(resource = OrderResources.ORDERS, action = Action.APPROVE, scope = DataScope.ALL)

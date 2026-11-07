@@ -314,26 +314,10 @@ public enum ErrorCode {
     GOODS_RECEIPT_PHOTO_LIMIT_REACHED("This receipt has as many photos here as it may hold", 409),
     /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
     SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
-    /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
-    DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
-    /** SCRUM-394: a sample round moves only along 03-state-machines §17. */
-    INVALID_SAMPLE_REQUEST_TRANSITION("This sample request cannot move to that status right now", 409),
     /** BR-ORD-007 / BR-CUS-003: new work (a sample round, a quote, an order) is only for an ACTIVE customer. */
     CUSTOMER_NOT_ACTIVE("This customer is not active and cannot take on new work", 409),
-    /** SCRUM-394: a sample linked to a quote prints a design and blank of that quote, for its customer. */
-    SAMPLE_QUOTE_MISMATCH("The quote is not for this customer, design and blank", 409),
     /** SCRUM-394: a sample is linked only to a quote still being negotiated. */
     QUOTE_NOT_OPEN("The quote is no longer open", 409),
-    /** SCRUM-394: a round that ended in CHANGES_REQUESTED is followed by exactly one next round. */
-    SAMPLE_NEXT_ROUND_EXISTS("The next round of this sample request has already been started", 409),
-    /** SCRUM-396..401: a production order moves only along 03-state-machines §16. */
-    INVALID_PRODUCTION_TRANSITION("This production order cannot move to that status right now", 409),
-    /** BR-PRD-02: the print file no longer matches the design the order locked. */
-    PRINT_FILE_MISMATCH("The print file does not match the locked design", 409),
-    /** SCRUM-397: a hold issued to production is live, its owner's, and no longer waits for payment. */
-    RESERVATION_NOT_ISSUABLE("This stock hold cannot be issued", 409),
-    /** BR-PRD-03: never more blanks than the production order still needs. */
-    ISSUE_EXCEEDS_REQUIREMENT("More blanks than the production order still needs", 409),
     /** Review of #109: goods past their expiry cannot move to a new location; they are written off (EXPIRED). */
     STOCK_EXPIRED("This stock is past its expiry date and can only be written off", 409),
     /**
@@ -353,12 +337,6 @@ public enum ErrorCode {
     DAMAGE_RETURN_NOT_SHIPPABLE("Only goods decided for the supplier are handed to it, and once", 409),
     /** SCRUM-475: restored goods go back onto an active bin of the warehouse they were damaged in. */
     DAMAGE_RESTORE_LOCATION_INVALID("Restored goods go back onto an active bin of the same warehouse", 409),
-    /** SCRUM-409: the location scanned at a blank issue is not where the hold's goods are. */
-    ISSUE_LOCATION_MISMATCH("The scanned location is not where this hold's blanks are", 409),
-    /** SCRUM-409: the SKU or barcode scanned at a blank issue is not the hold's. */
-    ISSUE_ITEM_MISMATCH("The scanned item is not this hold's SKU", 409),
-    /** BR-PRD-01: a source already has a production order, and it describes different work. */
-    PRODUCTION_SOURCE_CONFLICT("A production order already exists for this source with different content", 409),
     /** SCRUM-448: a quote moves only along 03-state-machines §18. */
     INVALID_QUOTE_TRANSITION("This quote cannot move to that status right now", 409),
     /** BR-ORD-008: a quote is answered only within its validity. */
@@ -369,23 +347,21 @@ public enum ErrorCode {
     /** R1: a reorder line the price list cannot price waits for Sales; nothing is sent or accepted unpriced. */
     QUOTE_NOT_PRICED("A line of this quote has no price yet; Sales enters it before the quote is sent", 409),
     ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
-    /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
+    /** A deposit order is released only once the deposit has arrived (kltn-docs 15 §4.2). */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
-    /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */
+    /**
+     * A print line names the blank its design is printed on, and printed goods enter stock only from a producer outside
+     * the system, against a Production Order (kltn-docs 17) that is not built yet: releasing would allocate, pick and
+     * ship plain blanks. Lifted when lines name the customer's own printed SKU and its goods are received.
+     */
+    ORDER_PRINT_GOODS_NOT_RECEIVED("This order has printed goods that are not in stock yet; it is released once they "
+            + "are received from the producer", 409),
+    /** SCRUM-460: once released, a customer asks and Sales or the coordinator decides. */
     ORDER_NOT_CANCELLABLE("This order can no longer be cancelled; raise a return instead", 409),
     /** Audit of #109 (decision 2026-10-17): before printing a cancellation is refunded in full - nothing is kept. */
     CANCELLATION_FEE_BEFORE_PRINTING("Printing has not started: the order is refunded in full, no fee is kept", 409),
     /** Work for an order that has been cancelled (printing started, a package completed) is refused. */
     ORDER_CANCELLED("This order is cancelled", 409),
-    /**
-     * Review 2026-10-25 of S6: production completes a print line short only within what the customer agreed with Sales,
-     * recorded on the order line.
-     */
-    PRODUCTION_SHORTFALL_NOT_AGREED("The customer has not agreed to go without these units: Sales records it on the "
-            + "order first", 409),
-    /** The same review: who recorded the customer's agreement does not also close the shortfall (four eyes). */
-    PRODUCTION_SHORTFALL_SELF_APPROVAL("The customer's agreement was recorded by you: someone else completes the job "
-            + "short", 409),
     /** Decision 2026-10-17: once printing started, only staff cancel an order (fee, blanks, printed goods). */
     CANCELLATION_NEEDS_STAFF("Printing has started: staff decide this order's cancellation", 409),
     ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),
@@ -561,8 +537,11 @@ public enum ErrorCode {
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
-    /** A production order's hold, or goods in the print shop: production closes them, not a pick (review of #109). */
-    PRODUCTION_HOLD_NOT_PICKABLE("This stock hold belongs to production and cannot be picked", 409),
+    /**
+     * A hold that is not an order's goods on a shelf - a transfer's, or one on a legacy print-shop row (IN_PRODUCTION):
+     * a pick does not close it (review of #109). The code keeps its name for clients that read it.
+     */
+    PRODUCTION_HOLD_NOT_PICKABLE("This stock hold is not an order's goods on a shelf and cannot be picked", 409),
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),

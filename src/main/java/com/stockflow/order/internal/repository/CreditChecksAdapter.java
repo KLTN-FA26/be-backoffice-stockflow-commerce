@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Native SQL on {@code ordering.order_credit_check} and the order table, as {@code ProductionRecordsAdapter}. */
+/** Native SQL on {@code ordering.order_credit_check} and the order table, as the other native adapters of this package. */
 @Repository
 class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
 

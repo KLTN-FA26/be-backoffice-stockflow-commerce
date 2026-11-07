@@ -15,7 +15,6 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.CreditChecks;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.service.CustomerOrders;
 import com.stockflow.order.internal.service.DeliveryModes;
 import com.stockflow.support.DemoData;
@@ -70,7 +69,6 @@ class CustomerOrderPortalIntegrationTest {
     @Autowired OrderService orders;
     @Autowired CustomerOrders customerOrders;
     @Autowired DeliveryModes deliveryModes;
-    @Autowired ProductionRecords productionRecords;
     @Autowired CreditChecks creditChecks;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -138,8 +136,8 @@ class CustomerOrderPortalIntegrationTest {
         return token(userA, "CUSTOMER");
     }
 
-    /** An order of A's already in production, inserted as a row: how it got there is not what is tested here. */
-    private UUID[] orderInProduction() {
+    /** An order of A's already released, inserted as a row: how it got there is not what is tested here. */
+    private UUID[] releasedOrderWithPrintLine() {
         UUID draft = Identifiers.newId();
         UUID snapshot = Identifiers.newId();
         UUID order = Identifiers.newId();
@@ -158,7 +156,7 @@ class CustomerOrderPortalIntegrationTest {
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                                                          currency, placed_at, version, created_at, paid_amount,
                                                          paid_in_full_at, warehouse_id, released_at, released_by)
-                    VALUES (?, ?, ?, ?, 'IN_PRODUCTION', 30000, 'VND', NOW(), 0, NOW(), 30000, NOW(), ?, NOW(), ?)""",
+                    VALUES (?, ?, ?, ?, 'READY_TO_FULFILL', 30000, 'VND', NOW(), 0, NOW(), 30000, NOW(), ?, NOW(), ?)""",
                     order, orderNumber(), customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staffUser);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
@@ -169,21 +167,6 @@ class CustomerOrderPortalIntegrationTest {
                     VALUES (?, ?, 'TABLE-OAK-160', 1, 10000, 'VND')""", stockLine, order);
         });
         return new UUID[] {order, printLine, stockLine};
-    }
-
-    /** One production order's good units for a line, as the production module reports them. */
-    private void produced(UUID order, UUID line, int good) {
-        UUID productionOrder = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku,
-                        design_snapshot_id, design_checksum, planned_quantity, sales_order_id, sales_order_line_id)
-                    SELECT ?, ?, 'ORDER', 'IN_HOUSE', 'PENDING_PREPRESS', ?, 'SOFA-3S-GREY', l.design_snapshot_id,
-                           l.design_checksum, ?, l.order_id, l.id
-                      FROM ordering.order_line l WHERE l.id = ?""",
-                    productionOrder, "LSX-IT-" + productionOrder.toString().substring(24), DemoData.WAREHOUSE_HCM, good, line);
-            productionRecords.recordCompleted(productionOrder, line, good, Instant.now());
-        });
     }
 
     private UUID heldOrder() {
@@ -455,33 +438,20 @@ class CustomerOrderPortalIntegrationTest {
     }
 
     @Test
-    @DisplayName("an order in production shows each print line's state and good units; a stock line needs none")
+    @DisplayName("a released order's print line is made - printed outside the system, in stock - and a stock line needs none")
     void productionState() throws Exception {
-        UUID[] ids = orderInProduction();
+        UUID[] ids = releasedOrderWithPrintLine();
         String authorization = customerA();
 
         mvc.perform(get("/api/v1/orders/me/" + ids[0]).header("Authorization", authorization))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.statusGroup").value("IN_PRODUCTION"))
-                .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[1] + "')].production.state").value("IN_PROGRESS"))
-                .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[1] + "')].production.goodQuantity").value(0))
+                .andExpect(jsonPath("$.data.statusGroup").value("PREPARING"))
+                .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[1] + "')].production.state").value("DONE"))
+                .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[1] + "')].production.goodQuantity").value(10))
                 .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[2] + "')].production.state").value("NOT_REQUIRED"))
                 // No history was recorded for a row inserted by hand: one entry, the status it is in.
                 .andExpect(jsonPath("$.data.timeline.length()").value(1))
-                .andExpect(jsonPath("$.data.timeline[0].status").value("IN_PRODUCTION"));
-
-        produced(ids[0], ids[1], 4);
-        mvc.perform(get("/api/v1/orders/me/" + ids[0]).header("Authorization", authorization))
-                .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[1] + "')].production.state").value("IN_PROGRESS"))
-                .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[1] + "')].production.goodQuantity").value(4));
-
-        // The rest of the line is finished (a line has one production order here; its good units grow to cover it).
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE ordering.order_line_production SET good_quantity = 10 WHERE order_line_id = ?", ids[1]));
-        mvc.perform(get("/api/v1/orders/me/" + ids[0]).header("Authorization", authorization))
-                .andExpect(jsonPath("$.data.statusGroup").value("IN_PRODUCTION"))
-                .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[1] + "')].production.state").value("DONE"))
-                .andExpect(jsonPath("$.data.lines[?(@.lineId == '" + ids[1] + "')].production.goodQuantity").value(10));
+                .andExpect(jsonPath("$.data.timeline[0].status").value("READY_TO_FULFILL"));
     }
 
     @Test

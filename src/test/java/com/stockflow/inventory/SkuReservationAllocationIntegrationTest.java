@@ -9,7 +9,6 @@ import com.stockflow.inventory.api.AllocateStockResult;
 import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReallocateStockCommand;
-import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockReservation;
@@ -525,18 +524,6 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(recount.cycleCountId()).isEqualTo(manual.id());
         assertThat(countsOf("SHORT_PICK")).isZero();
         assertThat(atp()).as("a MANUAL count freezes nothing while open: 22 - 4 reserved").isEqualTo(18);
-    }
-
-    @Test
-    @DisplayName("a production hold cannot take the units checkout reservations promised")
-    void productionHoldsRespectSkuReservations() {
-        reserve(order(), 20);
-        assertThat(atp()).isEqualTo(2);
-        UUID productionOrder = Identifiers.newId();
-        assertThat(code(catchThrowable(() -> tx.execute(s -> inventory.reserveForProduction(
-                new ReserveProductionStockCommand(UUID.randomUUID(), new Sku(sku), 3, productionOrder, "HCM"))))))
-                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(reservedEverywhere()).isZero();
     }
 
     @Test

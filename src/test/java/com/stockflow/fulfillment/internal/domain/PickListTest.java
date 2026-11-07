@@ -54,8 +54,8 @@ class PickListTest {
     class Planning {
 
         @Test
-        @DisplayName("one line per live hold of a stock line, in walking order by location; print lines get none")
-        void oneLinePerHoldOfAStockLine() {
+        @DisplayName("one line per live hold, in walking order by location - a print line's too (07 BR-06)")
+        void oneLinePerHold() {
             UUID sofa = UUID.randomUUID();
             UUID cup = UUID.randomUUID();
             UUID printed = UUID.randomUUID();
@@ -66,9 +66,9 @@ class PickListTest {
             var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
 
             List<PickLine> added = list.plan(List.of(
-                            new PickList.OrderLine(sofa, "SOFA-3S-GREY", false, List.of(h1, h2)),
-                            new PickList.OrderLine(cup, "CUP-12", false, List.of(h3)),
-                            new PickList.OrderLine(printed, "CUP-PRINT", true, List.of(hPrint))),
+                            new PickList.OrderLine(sofa, "SOFA-3S-GREY", List.of(h1, h2)),
+                            new PickList.OrderLine(cup, "CUP-12", List.of(h3)),
+                            new PickList.OrderLine(printed, "CUP-PRINT", List.of(hPrint))),
                     Map.of(h1, hold(h1, "SOFA-3S-GREY", "HCM-B01-1-A", HCM, 2),
                             h2, hold(h2, "SOFA-3S-GREY", "HCM-A01-2-B", HCM, 1),
                             h3, hold(h3, "CUP-12", "HCM-A02-1-A", HCM, 50),
@@ -76,14 +76,13 @@ class PickListTest {
                     UUID::randomUUID);
 
             assertThat(added).extracting(PickLine::locationCode)
-                    .containsExactly("HCM-A01-2-B", "HCM-A02-1-A", "HCM-B01-1-A");
-            assertThat(added).extracting(PickLine::sequenceNo).containsExactly(1, 2, 3);
-            assertThat(added).extracting(PickLine::reservationId).containsExactly(h2, h3, h1);
-            assertThat(added).extracting(PickLine::orderLineId).containsExactly(sofa, cup, sofa);
-            assertThat(added).extracting(PickLine::allocatedQty).containsExactly(1, 50, 2);
+                    .containsExactly("HCM-A01-2-B", "HCM-A02-1-A", "HCM-B01-1-A", "HCM-C01-1-A");
+            assertThat(added).extracting(PickLine::sequenceNo).containsExactly(1, 2, 3, 4);
+            assertThat(added).extracting(PickLine::reservationId).containsExactly(h2, h3, h1, hPrint);
+            assertThat(added).extracting(PickLine::orderLineId).containsExactly(sofa, cup, sofa, printed);
+            assertThat(added).extracting(PickLine::allocatedQty).containsExactly(1, 50, 2, 100);
             assertThat(added).allSatisfy(line -> assertThat(line.status()).isEqualTo(PickLineStatus.OPEN));
-            assertThat(added).noneMatch(line -> line.sku().equals("CUP-PRINT"));
-            assertThat(list.lines()).hasSize(3);
+            assertThat(list.lines()).hasSize(4);
         }
 
         @Test
@@ -91,7 +90,7 @@ class PickListTest {
         void planningIsIdempotent() {
             UUID h1 = UUID.randomUUID();
             var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
-            var order = List.of(new PickList.OrderLine(UUID.randomUUID(), "SOFA-3S-GREY", false, List.of(h1)));
+            var order = List.of(new PickList.OrderLine(UUID.randomUUID(), "SOFA-3S-GREY", List.of(h1)));
             var holds = Map.of(h1, hold(h1, "SOFA-3S-GREY", "HCM-A01-2-B", HCM, 1));
 
             assertThat(list.plan(order, holds, UUID::randomUUID)).hasSize(1);
@@ -107,7 +106,7 @@ class PickListTest {
             var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
 
             List<PickLine> added = list.plan(
-                    List.of(new PickList.OrderLine(UUID.randomUUID(), "SOFA-3S-GREY", false, List.of(live, released))),
+                    List.of(new PickList.OrderLine(UUID.randomUUID(), "SOFA-3S-GREY", List.of(live, released))),
                     Map.of(live, hold(live, "SOFA-3S-GREY", "HCM-A01-2-B", HCM, 1),
                             released, new PickList.Hold(released, "SOFA-3S-GREY", "HCM-A02-1-A", HCM, null, 1, false)),
                     UUID::randomUUID);
@@ -123,8 +122,8 @@ class PickListTest {
             var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
 
             Throwable thrown = catchThrowable(() -> list.plan(List.of(
-                            new PickList.OrderLine(UUID.randomUUID(), "SOFA-3S-GREY", false, List.of(here)),
-                            new PickList.OrderLine(UUID.randomUUID(), "TABLE-OAK-160", false, List.of(there))),
+                            new PickList.OrderLine(UUID.randomUUID(), "SOFA-3S-GREY", List.of(here)),
+                            new PickList.OrderLine(UUID.randomUUID(), "TABLE-OAK-160", List.of(there))),
                     Map.of(here, hold(here, "SOFA-3S-GREY", "HCM-A01-2-B", HCM, 1),
                             there, hold(there, "TABLE-OAK-160", "HN-A01-1-A", HN, 1)),
                     UUID::randomUUID));
@@ -140,7 +139,7 @@ class PickListTest {
         @DisplayName("a task already picked, short or cancelled gets no lines")
         void onlyPendingOrPickingTasksArePlanned() {
             UUID h1 = UUID.randomUUID();
-            var order = List.of(new PickList.OrderLine(UUID.randomUUID(), "SOFA-3S-GREY", false, List.of(h1)));
+            var order = List.of(new PickList.OrderLine(UUID.randomUUID(), "SOFA-3S-GREY", List.of(h1)));
             var holds = Map.of(h1, hold(h1, "SOFA-3S-GREY", "HCM-A01-2-B", HCM, 1));
             for (PickStatus status : List.of(PickStatus.PICKED, PickStatus.SHORT, PickStatus.CANCELLED)) {
                 var list = new PickList(UUID.randomUUID(), HCM, status, false, List.of());
@@ -287,7 +286,7 @@ class PickListTest {
         }
 
         @Test
-        @DisplayName("a task with no lines (print lines only) has nothing to wait for")
+        @DisplayName("a task with no lines (an order with nothing left to pick) has nothing to wait for")
         void noLines() {
             picking().requireAllPicked();
         }
@@ -391,7 +390,7 @@ class PickListTest {
             var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
 
             List<PickLine> added = list.plan(
-                    List.of(new PickList.OrderLine(UUID.randomUUID(), "CUP-12", false, List.of(h))),
+                    List.of(new PickList.OrderLine(UUID.randomUUID(), "CUP-12", List.of(h))),
                     Map.of(h, new PickList.Hold(h, "CUP-12", "HCM-A02-1-A", HCM, null, 10, true, LPN, true)),
                     UUID::randomUUID);
 
@@ -408,7 +407,7 @@ class PickListTest {
             var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
 
             List<PickLine> added = list.plan(
-                    List.of(new PickList.OrderLine(UUID.randomUUID(), "CUP-12", false, List.of(h))),
+                    List.of(new PickList.OrderLine(UUID.randomUUID(), "CUP-12", List.of(h))),
                     Map.of(h, hold(h, "CUP-12", "HCM-A02-1-A", HCM, 3)), UUID::randomUUID);
 
             assertThat(added).singleElement().satisfies(line -> {

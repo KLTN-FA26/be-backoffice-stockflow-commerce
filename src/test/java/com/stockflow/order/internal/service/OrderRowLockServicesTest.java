@@ -229,28 +229,6 @@ class OrderRowLockServicesTest {
         private final OrderReservationService service = new OrderReservationService(repository);
 
         @Test
-        @DisplayName("production holds are added to the line under the order lock and saved")
-        void productionHoldsAreAdded() {
-            Order order = locked(OrderFixtures.releasedPrepaid());
-            UUID line = order.lines().get(0).id();
-            UUID hold = UUID.randomUUID();
-
-            service.addProductionHolds(order.id().value(), line, List.of(hold));
-
-            assertThat(order.reservationIds()).contains(hold);
-            verify(repository).save(order);
-        }
-
-        @Test
-        @DisplayName("no reservation ids: the order is not even loaded")
-        void emptyHoldsAreIgnored() {
-            service.addProductionHolds(UUID.randomUUID(), UUID.randomUUID(), List.of());
-            service.addProductionHolds(UUID.randomUUID(), UUID.randomUUID(), null);
-
-            verify(repository, never()).findByIdForUpdate(any());
-        }
-
-        @Test
         @DisplayName("a hold is replaced by the allocations that took its place, keeping the other holds")
         void aHoldIsReplaced() {
             Order order = locked(OrderFixtures.releasedPrepaid());
@@ -277,12 +255,10 @@ class OrderRowLockServicesTest {
         }
 
         @Test
-        @DisplayName("an unknown order is NOT_FOUND for both operations")
+        @DisplayName("an unknown order is NOT_FOUND")
         void unknownOrder() {
             when(repository.findByIdForUpdate(any(OrderId.class))).thenReturn(Optional.empty());
 
-            assertThat(codeOf(() -> service.addProductionHolds(UUID.randomUUID(), UUID.randomUUID(),
-                    List.of(UUID.randomUUID())))).isEqualTo(ErrorCode.NOT_FOUND);
             assertThat(codeOf(() -> service.replaceHold(UUID.randomUUID(), UUID.randomUUID(),
                     List.of(UUID.randomUUID())))).isEqualTo(ErrorCode.NOT_FOUND);
         }

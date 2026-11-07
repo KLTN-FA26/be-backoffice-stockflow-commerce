@@ -39,7 +39,7 @@ class OrderAllocator {
     static final String ORDER_ALLOCATION = "ORDER_ALLOCATION";
 
     /** Statuses in which an order takes money by allocation; CANCELLED has its own answer (the refund path). */
-    private static final Set<String> PAYABLE = Set.of("PENDING_PAYMENT", "CONFIRMED", "IN_PRODUCTION",
+    private static final Set<String> PAYABLE = Set.of("PENDING_PAYMENT", "CONFIRMED",
             "READY_TO_FULFILL", "PICKING", "PARTIALLY_FULFILLED", "PACKED", "ON_HOLD", "SHIPPED", "DELIVERY_FAILED",
             "DELIVERED");
 

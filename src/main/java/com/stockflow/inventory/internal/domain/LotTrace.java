@@ -25,7 +25,7 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
      * @param receivedQuantity units its receipt ledger lines brought in
      * @param onHand           units of it on hand now, in any status
      * @param available        units free to promise now: AVAILABLE, not past expiry, not held
-     * @param held             units on hand now held by allocations or production holds
+     * @param held             units on hand now held by allocations or other holds
      */
     public record Summary(UUID lotId, String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt,
                           String origin, UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId,
@@ -49,13 +49,13 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
     }
 
     /** An allocation or hold placed on the lot's stock, in any status. */
-    public record Hold(UUID reservationId, UUID orderId, String orderNumber, UUID productionOrderId,
+    public record Hold(UUID reservationId, UUID orderId, String orderNumber,
                        UUID allocatedFrom, String locationCode, int quantity, String status, Instant reservedAt,
                        Instant closedAt) { }
 
     /**
-     * A customer order the lot left for: units picked, or printed and consumed when their production order
-     * completed (G4-Q2), and units put back.
+     * A customer order the lot left for: units picked (or, while in-house production existed, consumed when their
+     * production order completed, G4-Q2), and units put back.
      *
      * @param orderNumber the order's number as it read when the units moved (a snapshot on the ledger line)
      */

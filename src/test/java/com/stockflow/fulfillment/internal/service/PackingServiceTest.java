@@ -178,7 +178,7 @@ class PackingServiceTest {
         var line = new OrderSummary.LineSummary(lineId, "SKU-A", 10, Money.vnd(10_000), Money.vnd(100_000), List.of());
         var lifecycle = new OrderSummary.Lifecycle(hold, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
                 new BigDecimal("100000"), new BigDecimal("100000"), BigDecimal.ZERO, List.of(), List.of(), BigDecimal.ZERO,
-                BigDecimal.ZERO, allowPartial, printReady);
+                BigDecimal.ZERO, allowPartial);
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), status, Money.vnd(100_000), List.of(line), NOW,
                 null, null, null, "Ms Lan", null, "0900000001", null, null, null, WAREHOUSE, NOW, null, null, lifecycle);
     }
@@ -261,14 +261,12 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("an order still printed is packed ahead of its prints only when Sales allowed partial shipments")
-        void packEarlyNeedsSalesApproval() {
-            orderIs(OrderStatus.IN_PRODUCTION, false, null);
-            assertThat(refusal(() -> service.start(pick.getId(), actor)).errorCode())
-                    .isEqualTo(ErrorCode.PACK_PARTIAL_NOT_ALLOWED);
-
+        @DisplayName("a legacy order still IN_PRODUCTION is not worked: its task is refused before packing is reached")
+        void anOrderStillInProductionIsNotPacked() {
             orderIs(OrderStatus.IN_PRODUCTION, true, null);
-            assertThat(service.start(pick.getId(), actor).packStatus()).isEqualTo("PACKING");
+
+            assertThat(refusal(() -> service.start(pick.getId(), actor)).errorCode())
+                    .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
         }
 
         @Test
@@ -666,7 +664,7 @@ class PackingServiceTest {
             OrderSummary base = order(OrderStatus.PACKED, false, true, null);
             var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
-                    BigDecimal.ZERO, BigDecimal.ZERO, false, true, com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD,
+                    BigDecimal.ZERO, BigDecimal.ZERO, false, com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD,
                     true);
             when(orders.markPacked(eq(orderId), any())).thenReturn(new OrderSummary(orderId, "SO-0001", base.customerId(),
                     OrderStatus.PACKED, base.total(), base.lines(), NOW, null, null, null, null, null, null, null, null,
@@ -795,7 +793,7 @@ class PackingServiceTest {
                     List.of(), snapshot, "sha-confirmed");
             var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
                     BigDecimal.ZERO, new BigDecimal("140000"), new BigDecimal("140000"), BigDecimal.ZERO, List.of(),
-                    List.of(), BigDecimal.ZERO, BigDecimal.ZERO, false, true);
+                    List.of(), BigDecimal.ZERO, BigDecimal.ZERO, false);
             return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(140_000),
                     List.of(stock, printed), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
                     null, null, lifecycle);
@@ -970,23 +968,49 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("a printed line is at packing once production completed, and not while it is still printed (PACK-EARLY)")
-        void printLinesAvailability() {
+        @DisplayName("a printed line has available what was picked of it, like any line")
+        void printLineIsPicked() {
+            UUID hold = UUID.randomUUID();
+            printedOrder(List.of(hold));
+            when(pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).thenReturn(List.of(
+                    pickedLine(lineId, 4, "LSX-1", hold)));
+            when(inventory.holds(any())).thenReturn(List.of(new HoldView(hold, "CUP-PRINT", "HCM-A-01", "LSX-1", 4,
+                    HoldView.Status.CONSUMED, null, null)));
+
+            service.session(pick.getId(), actor);
+
+            assertThat(lastFacts.getFirst().printLine()).isTrue();
+            assertThat(lastFacts.getFirst().available()).as("the picked units, counted once").isEqualTo(4);
+            assertThat(lastFacts.getFirst().lots()).containsEntry("LSX-1", 4);
+        }
+
+        @Test
+        @DisplayName("legacy: a printed line production delivered before it was removed counts its consumed hold; a live "
+                + "hold of blanks counts nothing")
+        void legacyPrintedGoodsCount() {
+            UUID delivered = UUID.randomUUID();
+            UUID blanks = UUID.randomUUID();
+            printedOrder(List.of(delivered, blanks));
+            when(pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).thenReturn(List.of());
+            when(inventory.holds(any())).thenReturn(List.of(
+                    new HoldView(delivered, "CUP-PRINT", "HCM-PCK01", "LOT-P", 3, HoldView.Status.CONSUMED, null, null),
+                    new HoldView(blanks, "CUP-PRINT", "HCM-A-01", "LOT-B", 1, HoldView.Status.HELD, null, null)));
+
+            service.session(pick.getId(), actor);
+
+            assertThat(lastFacts.getFirst().available()).isEqualTo(3);
+            assertThat(lastFacts.getFirst().lots()).containsOnlyKeys("LOT-P");
+        }
+
+        private void printedOrder(List<UUID> holds) {
             var printed = new OrderSummary.LineSummary(lineId, "CUP-PRINT", 4, Money.vnd(10_000), Money.vnd(40_000),
-                    List.of(), UUID.randomUUID(), "sha");
-            for (boolean ready : new boolean[] {true, false}) {
-                var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                        BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
-                        BigDecimal.ZERO, BigDecimal.ZERO, true, ready);
-                when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-0001",
-                        UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(40_000), List.of(printed), NOW, null, null, null,
-                        null, null, null, null, null, null, WAREHOUSE, NOW, null, null, lifecycle)));
-
-                service.session(pick.getId(), actor);
-
-                assertThat(lastFacts.getFirst().printLine()).isTrue();
-                assertThat(lastFacts.getFirst().available()).isEqualTo(ready ? 4 : 0);
-            }
+                    holds, UUID.randomUUID(), "sha");
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
+                    BigDecimal.ZERO, BigDecimal.ZERO, true);
+            when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-0001",
+                    UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(40_000), List.of(printed), NOW, null, null, null,
+                    null, null, null, null, null, null, WAREHOUSE, NOW, null, null, lifecycle)));
         }
 
         @Test
@@ -1034,10 +1058,9 @@ class PackingServiceTest {
             UUID heldForDesign = UUID.randomUUID();
             UUID heldForPayment = UUID.randomUUID();
             UUID cancelled = UUID.randomUUID();
-            UUID printedEarly = UUID.randomUUID();
-            UUID printedNoConsent = UUID.randomUUID();
+            UUID stillInProduction = UUID.randomUUID();
             List<PickJpaEntity> candidates = new ArrayList<>(List.of(picked(ok), picked(heldForDesign),
-                    picked(heldForPayment), picked(cancelled), picked(printedEarly), picked(printedNoConsent)));
+                    picked(heldForPayment), picked(cancelled), picked(stillInProduction)));
             when(picks.findAll(any(org.springframework.data.jpa.domain.Specification.class),
                     any(org.springframework.data.domain.Pageable.class)))
                     .thenReturn(new org.springframework.data.domain.PageImpl<>(candidates));
@@ -1046,16 +1069,13 @@ class PackingServiceTest {
                     new OrderHoldState(heldForDesign, OrderStatus.ON_HOLD, HoldReason.DESIGN_MISMATCH, false),
                     new OrderHoldState(heldForPayment, OrderStatus.ON_HOLD, HoldReason.PAYMENT, false),
                     new OrderHoldState(cancelled, OrderStatus.CANCELLED, null, false),
-                    new OrderHoldState(printedEarly, OrderStatus.IN_PRODUCTION, null, true),
-                    new OrderHoldState(printedNoConsent, OrderStatus.IN_PRODUCTION, null, false)));
+                    new OrderHoldState(stillInProduction, OrderStatus.IN_PRODUCTION, null, true)));
             PackJpaEntity okPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(0).getId(), PackStatus.PACKING,
                     null);
             okPack.apply(PackStatus.PACKING, NOW, packer, null, null);
             PackJpaEntity designPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(1).getId(), PackStatus.ON_HOLD,
                     null);
-            PackJpaEntity earlyPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(4).getId(), PackStatus.PENDING,
-                    null);
-            when(packs.findByPickIdIn(any())).thenReturn(List.of(okPack, designPack, earlyPack));
+            when(packs.findByPickIdIn(any())).thenReturn(List.of(okPack, designPack));
             PackageJpaEntity sealed = FulfillmentFixtures.parcel(UUID.randomUUID(), 1, "40", "30", "25", "5");
             PackageJpaEntity open = new PackageJpaEntity(UUID.randomUUID(), okPack.getId(), 2, "PKG-2");
             PackageJpaEntity voided = new PackageJpaEntity(UUID.randomUUID(), okPack.getId(), 3, "PKG-3");
@@ -1072,14 +1092,14 @@ class PackingServiceTest {
 
             var page = service.queue(null, null, 0, 20, actor);
 
-            assertThat(page.items()).extracting(Packing.QueueRow::orderId).containsExactly(ok, heldForDesign, printedEarly);
+            assertThat(page.items()).extracting(Packing.QueueRow::orderId).containsExactly(ok, heldForDesign);
             Packing.QueueRow row = page.items().getFirst();
             assertThat(row.packStatus()).isEqualTo("PACKING");
             assertThat(row.packageCount()).as("the voided parcel is not counted").isEqualTo(2);
             assertThat(row.sealedPackageCount()).isEqualTo(1);
             assertThat(row.shipmentCount()).as("the cancelled shipment is not counted").isEqualTo(1);
             assertThat(row.packerName()).isEqualTo("Packer An");
-            assertThat(page.totalElements()).isEqualTo(3);
+            assertThat(page.totalElements()).isEqualTo(2);
         }
 
         private PackageJpaEntity withPack(PackageJpaEntity row, UUID packId) {

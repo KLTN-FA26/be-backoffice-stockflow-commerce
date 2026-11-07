@@ -61,7 +61,7 @@ class OrderLifecycleTest {
             order.submit();
             order.recordPayment(term == PaymentTerm.PREPAID ? order.total() : Money.vnd(330_000), NOW);
         }
-        order.release(HCM, "HCM", STAFF, NOW, java.util.Map.of());
+        order.release(HCM, "HCM", STAFF, NOW);
         order.pullDomainEvents();
         order.pullTransitions();
         return order;
@@ -315,7 +315,7 @@ class OrderLifecycleTest {
             order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
             order.submit();
             order.recordPayment(order.total(), NOW);
-            order.release(HCM, "HCM", STAFF, NOW, java.util.Map.of());
+            order.release(HCM, "HCM", STAFF, NOW);
             order.markPacked(NOW, STAFF);
             assertThat(order.amountDueBeforeHandover()).isZero();
             // A prepaid order is confirmed only paid in full, so the gate can only bite if money were taken back -
@@ -664,28 +664,6 @@ class OrderLifecycleTest {
             assertThat(order.remainderRefundAmount()).isZero();
             assertThat(order.billedAmount()).as("S1's COD: 500 000 less the 330 000 deposit")
                     .isEqualByComparingTo("170000");
-        }
-
-        @Test
-        @DisplayName("production finishing while the order is held: resolving goes to READY_TO_FULFILL")
-        void productionFinishedWhileHeld() {
-            UUID snapshot = UUID.randomUUID();
-            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
-                    Order.line(new Sku("CUP-PRINTED"), 10, Money.vnd(1_000), snapshot)), NOW);
-            order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-            order.submit();
-            order.recordPayment(order.total(), NOW);
-            order.release(HCM, "HCM", STAFF, NOW, java.util.Map.of());
-            assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
-            order.putOnHold(HoldReason.CUSTOMER, "chờ khách", STAFF, NOW);
-            order.pullDomainEvents();
-            assertThat(order.completeProduction(java.util.Map.of(order.lines().getFirst().id(), 10), "HCM", NOW))
-                    .isTrue();
-            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
-            assertThat(order.statusBeforeHold()).isEqualTo(OrderStatus.READY_TO_FULFILL);
-            assertThat(order.pullDomainEvents()).hasAtLeastOneElementOfType(OrderEvent.Released.class);
-            order.resolveHold("khách xác nhận", STAFF, NOW);
-            assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         }
 
         @Test

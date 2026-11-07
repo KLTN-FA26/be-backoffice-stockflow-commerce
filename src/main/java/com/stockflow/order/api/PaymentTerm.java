@@ -7,7 +7,7 @@ package com.stockflow.order.api;
 public enum PaymentTerm {
     /** Paid in full before anything is released. Every order placed through checkout today. */
     PREPAID,
-    /** A deposit before production (BR-PRD-09), the rest as the order's {@link BalancePolicy} says (G2-3). */
+    /** A deposit before release (kltn-docs 15 §4.2), the rest as the order's {@link BalancePolicy} says (G2-3). */
     DEPOSIT,
     /** Paid after delivery, within the customer's credit limit (SCRUM-427). */
     CREDIT

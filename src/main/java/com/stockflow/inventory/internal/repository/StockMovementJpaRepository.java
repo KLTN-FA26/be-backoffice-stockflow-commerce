@@ -35,15 +35,4 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
             @org.springframework.data.repository.query.Param("types") java.util.Collection<StockMovement.MovementType> types,
             @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,
             @org.springframework.data.repository.query.Param("referenceId") UUID referenceId);
-
-    boolean existsByMovementTypeAndReferenceTypeAndReasonAndToLocationCodeAndFromStatusAndToStatus(
-            StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, String reason,
-            String toLocationCode, com.stockflow.inventory.internal.domain.StockStatus fromStatus,
-            com.stockflow.inventory.internal.domain.StockStatus toStatus);
-
-    boolean existsByMovementTypeAndReferenceTypeAndReasonAndFromLocationCode(StockMovement.MovementType movementType,
-            StockMovement.ReferenceType referenceType, String reason, String fromLocationCode);
-
-    boolean existsByMovementTypeAndReferenceTypeAndReasonAndToLocationCode(StockMovement.MovementType movementType,
-            StockMovement.ReferenceType referenceType, String reason, String toLocationCode);
 }

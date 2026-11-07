@@ -3,7 +3,6 @@ package com.stockflow.inventory;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.support.DemoData;
@@ -40,7 +39,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StockPackageConsumptionIntegrationTest {
 
     private static final String SHELF = "HCM-A01-1-B";
-    private static final String PRINT_SHOP = "HCM-PRD01";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
     @Autowired InventoryService inventory;
@@ -139,29 +137,6 @@ class StockPackageConsumptionIntegrationTest {
         assertThat(jdbc.queryForList("""
                 select from_stock_package_id from inventory.stock_movement
                  where sku = ? and movement_type = 'PICK'""", UUID.class, sku)).containsExactly(box, box);
-    }
-
-    @Test
-    @DisplayName("a hold issued to the print shop out of a carton leaves it loose there; the carton is emptied")
-    void issueLeavesTheCarton() {
-        UUID box = cartonOnShelf("I");
-        UUID order = confirmedOrder();
-        UUID hold = hold(order, 5);
-
-        tx.executeWithoutResult(s -> inventory.issueReserved(new IssueReservedStockCommand(hold, order,
-                Identifiers.newId(), PRINT_SHOP, clerk)));
-
-        assertThat(carton(box)).containsEntry("status", "CONSUMED").containsEntry("held", 0L);
-        assertThat(jdbc.queryForList("""
-                select on_hand, status, stock_package_id from inventory.stock_item
-                 where sku = ? and location_code = ?""", sku, PRINT_SHOP)).singleElement().satisfies(row -> {
-                    assertThat(row).containsEntry("on_hand", 5).containsEntry("status", "IN_PRODUCTION");
-                    assertThat(row.get("stock_package_id")).as("arrives loose").isNull();
-                });
-        assertThat(jdbc.queryForObject("""
-                select from_stock_package_id from inventory.stock_movement
-                 where sku = ? and movement_type = 'MOVE' and to_location_code = ?""", UUID.class, sku, PRINT_SHOP))
-                .isEqualTo(box);
     }
 
     @Test

@@ -63,7 +63,8 @@ public final class PackingSession {
      * One order line as packing sees it.
      *
      * @param wanted    what the order still wants of it: its quantity less units closed out of it
-     * @param available what reached the packing area for it: picked (a stock line) or produced (a print line)
+     * @param available what reached the packing area for it: picked (a print line of an order released while
+     *                  in-house production existed also counts what production delivered)
      * @param lots      lot number to the units of it picked or produced; empty when the goods have no lot. When some
      *                  of them have a lot and some do not, the units without one are under {@link #NO_LOT}
      * @param serials   the serial numbers of the goods; empty when they have none

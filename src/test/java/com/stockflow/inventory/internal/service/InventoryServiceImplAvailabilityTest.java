@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.domain.Sku;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
@@ -9,22 +8,15 @@ import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.LowStockItem;
 import com.stockflow.inventory.api.RemovalStrategy;
-import com.stockflow.inventory.api.ReserveProductionStockCommand;
-import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
-import com.stockflow.inventory.internal.domain.InsufficientStockException;
 import com.stockflow.inventory.internal.domain.InventoryItemDirectory;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
-import com.stockflow.inventory.internal.domain.ReleaseReason;
-import com.stockflow.inventory.internal.domain.Reservation;
-import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.SkuReservationRepository;
-import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
@@ -58,10 +50,8 @@ import java.util.UUID;
 
 import static com.stockflow.inventory.internal.service.InventoryFixtures.NOW;
 import static com.stockflow.inventory.internal.service.InventoryFixtures.TODAY;
-import static com.stockflow.inventory.internal.service.InventoryFixtures.codeOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -71,11 +61,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** Available-to-promise (kltn-docs 13/14: ATP per SKU and per warehouse), levels, low stock and production holds. */
+/** Available-to-promise (kltn-docs 13/14: ATP per SKU and per warehouse), levels and low stock. */
 class InventoryServiceImplAvailabilityTest {
 
     private static final Sku CUP = new Sku("CUP-12OZ");
-    private static final UUID PRODUCTION_ORDER = UUID.randomUUID();
     private static final UUID ORDER = UUID.randomUUID();
 
     private final StockItemRepository repository = mock(StockItemRepository.class);
@@ -377,177 +366,6 @@ class InventoryServiceImplAvailabilityTest {
                     new ThresholdRow("T0001", 1, 20, null)));
 
             assertThat(service.lowStockBatch(null, 5)).extracting(LowStockItem::sku).containsExactly("T0001");
-        }
-    }
-
-    @Nested
-    @DisplayName("holds for production orders")
-    class ProductionHolds {
-
-        @Test
-        @DisplayName("a production hold needs the whole SKU's ATP, checkout reservations included")
-        void needsSystemWideAtp() {
-            when(repository.availableQuantities(any(), any())).thenReturn(Map.of("CUP-12OZ", 100L));
-            when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 90L));
-
-            InsufficientStockException refused = catchThrowableOfType(InsufficientStockException.class,
-                    () -> service.reserveForProduction(new ReserveProductionStockCommand(UUID.randomUUID(), CUP, 11,
-                            PRODUCTION_ORDER, "HCM")));
-
-            assertThat(refused.available()).isEqualTo(10);
-            verify(policies).lock("CUP-12OZ");
-        }
-
-        @Test
-        @DisplayName("holds are placed on the production order's own warehouse only, in id order, FEFO planned")
-        void holdsInTheProductionWarehouse() {
-            StockItem local = stock("HCM-A01-1-A", "L1", TODAY.plusDays(20), 30);
-            StockItem elsewhere = stock("HN-A01-1-A", "L0", TODAY.plusDays(5), 500);
-            when(repository.availableQuantities(any(), any())).thenReturn(Map.of("CUP-12OZ", 530L));
-            when(repository.findAvailabilityBySku(CUP)).thenReturn(List.of(local, elsewhere).stream().map(item ->
-                    new StockAllocator.Candidate(item.id(), item.location(), item.lotNumber(), item.expiryDate(),
-                            item.status(), item.available(), item.receivedAt())).toList());
-
-            ReserveStockResult result = service.reserveForProduction(new ReserveProductionStockCommand(
-                    UUID.randomUUID(), CUP, 30, PRODUCTION_ORDER, "hcm"));
-
-            assertThat(result.quantityReserved()).isEqualTo(30);
-            assertThat(local.reserved().value()).isEqualTo(30);
-            assertThat(elsewhere.reserved().value()).isZero();
-            assertThat(local.reservations().get(0).productionOrderId()).isEqualTo(PRODUCTION_ORDER);
-            assertThat(result.orderId()).isNull();
-            verify(repository).save(local);
-        }
-
-        @Test
-        @DisplayName("a warehouse that cannot cover the quantity is INSUFFICIENT_STOCK even when the system as a whole can")
-        void warehouseShort() {
-            StockItem local = stock("HCM-A01-1-A", "L1", null, 10);
-            when(repository.availableQuantities(any(), any())).thenReturn(Map.of("CUP-12OZ", 510L));
-            when(repository.findAvailabilityBySku(CUP)).thenReturn(List.of(new StockAllocator.Candidate(local.id(),
-                    local.location(), "L1", null, local.status(), local.available(), null)));
-
-            assertThat(codeOf(() -> service.reserveForProduction(new ReserveProductionStockCommand(UUID.randomUUID(),
-                    CUP, 30, PRODUCTION_ORDER, "HCM")))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        }
-
-        @Test
-        @DisplayName("cancelling the production order releases the blanks it held and returns the units released")
-        void releaseHolds() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 100);
-            bin.reserveForProduction(PRODUCTION_ORDER, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(25), NOW);
-            when(repository.findWithReservationsForProductionOrder(PRODUCTION_ORDER)).thenReturn(List.of(bin));
-
-            int released = service.releaseProductionHolds(PRODUCTION_ORDER);
-
-            assertThat(released).isEqualTo(25);
-            assertThat(bin.reserved().value()).isZero();
-            assertThat(bin.reservations().get(0).releaseReason()).isEqualTo(ReleaseReason.PRODUCTION_CANCELLED);
-            verify(repository).save(bin);
-        }
-
-        @Test
-        @DisplayName("blanks already issued to the print shop are closed by production itself, not released here")
-        void issuedBlanksAreLeftAlone() {
-            StockItem printShop = new StockItem(StockItemId.newId(), CUP, new LocationId("HCM-PRD01"), null, null,
-                    Quantity.of(25), StockStatus.IN_PRODUCTION, List.of(), 0L);
-            when(repository.findWithReservationsForProductionOrder(PRODUCTION_ORDER)).thenReturn(List.of(printShop));
-
-            assertThat(service.releaseProductionHolds(PRODUCTION_ORDER)).isZero();
-            verify(repository, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("a hold handed to its order: same hold, the order's now")
-        void handHoldToOrder() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 100);
-            Reservation hold = bin.reserveForProduction(PRODUCTION_ORDER, UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(25), NOW);
-            when(repository.findByReservationIdForUpdate(hold.id())).thenReturn(Optional.of(bin));
-
-            service.handHoldToOrder(hold.id().value(), PRODUCTION_ORDER, ORDER);
-
-            assertThat(hold.orderId()).isEqualTo(ORDER);
-            verify(repository).save(bin);
-        }
-
-        @Test
-        @DisplayName("handing it over again is a no-op")
-        void handHoldIsIdempotent() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 100);
-            Reservation hold = bin.reserveForProduction(PRODUCTION_ORDER, UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(25), NOW);
-            bin.handHoldToOrder(hold.id(), PRODUCTION_ORDER, ORDER);
-            when(repository.findByReservationIdForUpdate(hold.id())).thenReturn(Optional.of(bin));
-
-            service.handHoldToOrder(hold.id().value(), PRODUCTION_ORDER, ORDER);
-
-            verify(repository, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("a hold of another production order cannot be handed over")
-        void handHoldOfAnotherProductionOrder() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 100);
-            Reservation hold = bin.reserveForProduction(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(25), NOW);
-            when(repository.findByReservationIdForUpdate(hold.id())).thenReturn(Optional.of(bin));
-
-            assertThat(codeOf(() -> service.handHoldToOrder(hold.id().value(), PRODUCTION_ORDER, ORDER)))
-                    .isEqualTo(ErrorCode.RESERVATION_NOT_ISSUABLE);
-        }
-
-        @Test
-        @DisplayName("a subcontracted part: the hold gives up only the units asked and keeps the rest")
-        void reduceHold() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 100);
-            Reservation hold = bin.reserveForProduction(PRODUCTION_ORDER, UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(25), NOW);
-            when(repository.findByReservationIdForUpdate(hold.id())).thenReturn(Optional.of(bin));
-
-            service.reduceHold(hold.id().value(), null, PRODUCTION_ORDER, 10);
-
-            assertThat(bin.reserved().value()).isEqualTo(15);
-            verify(repository).save(bin);
-        }
-
-        @Test
-        @DisplayName("a hold cannot give up more than it holds, or nothing, or when it is not this production order's")
-        void reduceHoldRefusals() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 100);
-            Reservation hold = bin.reserveForProduction(PRODUCTION_ORDER, UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(25), NOW);
-            when(repository.findByReservationIdForUpdate(hold.id())).thenReturn(Optional.of(bin));
-
-            assertThat(codeOf(() -> service.reduceHold(hold.id().value(), null, PRODUCTION_ORDER, 26)))
-                    .isEqualTo(ErrorCode.RESERVATION_NOT_ISSUABLE);
-            assertThat(codeOf(() -> service.reduceHold(hold.id().value(), null, PRODUCTION_ORDER, 0)))
-                    .isEqualTo(ErrorCode.RESERVATION_NOT_ISSUABLE);
-            assertThat(codeOf(() -> service.reduceHold(hold.id().value(), null, UUID.randomUUID(), 5)))
-                    .isEqualTo(ErrorCode.RESERVATION_NOT_ISSUABLE);
-            verify(repository, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("live holds: only those still active are listed, each once, with their bin and lot")
-        void liveHolds() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", TODAY.plusDays(9), 100);
-            Reservation live = bin.reserveForProduction(PRODUCTION_ORDER, UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(25), NOW);
-            Reservation closed = bin.reserveForProduction(PRODUCTION_ORDER, UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(5), NOW);
-            bin.releaseReservation(closed.id(), ReleaseReason.PRODUCTION_CANCELLED, NOW);
-            when(repository.findIdByReservationId(live.id())).thenReturn(Optional.of(bin.id()));
-            when(repository.findIdByReservationId(closed.id())).thenReturn(Optional.of(bin.id()));
-
-            var holds = service.liveHolds(List.of(live.id().value(), closed.id().value(), live.id().value()));
-
-            assertThat(holds).singleElement().satisfies(hold -> {
-                assertThat(hold.reservationId()).isEqualTo(live.id().value());
-                assertThat(hold.quantity()).isEqualTo(25);
-                assertThat(hold.locationCode()).isEqualTo("HCM-A01-1-A");
-            });
-            assertThat(live.status()).isEqualTo(ReservationStatus.HELD);
         }
     }
 

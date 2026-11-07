@@ -51,7 +51,7 @@ public interface CustomerOrders {
     }
 
     /** Where printing a line stands. {@code NOT_REQUIRED} for a line of stock goods. */
-    enum ProductionState { NOT_REQUIRED, NOT_STARTED, IN_PROGRESS, DONE, CANCELLED }
+    enum ProductionState { NOT_REQUIRED, NOT_STARTED, DONE, CANCELLED }
 
     /**
      * @param statuses  empty or null for every status
@@ -83,7 +83,7 @@ public interface CustomerOrders {
                                    Instant decidedAt, String decisionNote) {
     }
 
-    /** @param goodQuantity good units printed so far, as the production module reported them */
+    /** @param goodQuantity the line's units once released (printed outside the system, in stock); 0 before */
     record Production(ProductionState state, int goodQuantity) {
     }
 

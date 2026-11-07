@@ -13,10 +13,6 @@ package com.stockflow.inventory.internal.domain;
  *      ├──QC: quarantine──▶ QUARANTINE ──accepted──▶ (putaway) AVAILABLE
  *      │                        └──rejected──▶ BLOCKED   └──expiryReached──▶ EXPIRED
  *      └──QC: rejected──▶ BLOCKED ──returned to supplier──▶ (leaves stock)
- *
- *   AVAILABLE ──issued to the print shop, held──▶ IN_PRODUCTION ──finished──▶ AVAILABLE (PACKING, held)
- *                                                      ├──unprinted, returned──▶ AVAILABLE
- *                                                      └──spoilt, out of the hold──approved write-off──▶ (leaves)
  * </pre>
  *
  * <p>{@link StockItem#receive} still creates {@link #QUARANTINE} stock; the receipt flow that
@@ -43,14 +39,10 @@ public enum StockStatus {
     EXPIRED,
 
     /**
-     * Issued to the print shop (SCRUM-397): in a PRODUCTION area, held for its order or production order. Also
-     * blanks at a subcontractor's location (SCRUM-441) and a subcontractor's finished goods waiting for production
-     * QC in a QUALITY_CONTROL area: production's goods, wherever they are.
-     * Never sellable, whatever happens to the hold, and the hold itself is closed only by production: an order
-     * cancelled after its blanks were issued does not release it, so printed cups never come back as blanks
-     * another order can buy and production can still tell printed from unprinted. The goods leave this status
-     * only by an explicit step: finished goods to PACKING, unprinted blanks back to storage, spoilt units
-     * written off by an approved adjustment.
+     * Legacy: blanks issued to the in-house print shop or a subcontractor (SCRUM-397/441). Nothing enters it since
+     * in-house production was removed (kltn-docs 07/11; V20261108000100 released the holds still on such rows). Kept
+     * because stock rows and ledger lines recorded before carry it ({@code ck_stock_item_status}). Never sellable; an
+     * approved adjustment writes what is left off.
      */
     IN_PRODUCTION;
 

@@ -8,8 +8,8 @@ import java.util.UUID;
  * history of that choice - at release, or since, until packing started.
  *
  * @param previousMode the mode before the change
- * @param orderStatus  the order's status once it was changed (READY_TO_FULFILL or IN_PRODUCTION for a choice at
- *                     release)
+ * @param orderStatus  the order's status once it was changed (READY_TO_FULFILL for a choice at release; history
+ *                     written while in-house production existed may say IN_PRODUCTION)
  * @param changedBy    who changed it
  */
 public record DeliveryModeChange(DeliveryMode deliveryMode, DeliveryMode previousMode, OrderStatus orderStatus,

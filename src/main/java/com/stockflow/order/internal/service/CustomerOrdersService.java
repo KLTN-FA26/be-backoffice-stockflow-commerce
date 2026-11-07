@@ -10,7 +10,6 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.domain.CreditChecks;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -41,7 +40,10 @@ class CustomerOrdersService implements CustomerOrders {
     private static final SortWhitelist SORT = SortWhitelist.of("placedAt", "orderNumber", "totalAmount")
             .withDefault("placedAt", Sort.Direction.DESC);
 
-    /** Statuses from which the goods are released to the warehouse or beyond: printing, if any, is over. */
+    /**
+     * Statuses from which the goods are released to the warehouse or beyond. Printing is done outside the system before
+     * the goods are received (kltn-docs 07/11), so a released order's print lines are made.
+     */
     private static final Set<OrderStatus> PAST_PRODUCTION = java.util.EnumSet.of(OrderStatus.READY_TO_FULFILL,
             OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.SHIPPED,
             OrderStatus.DELIVERY_FAILED, OrderStatus.DELIVERED, OrderStatus.RETURN_REQUESTED, OrderStatus.RETURNED,
@@ -52,14 +54,12 @@ class CustomerOrdersService implements CustomerOrders {
 
     private final OrderSearchRepository search;
     private final OrderService orders;
-    private final ProductionRecords productionRecords;
     private final CreditChecks creditChecks;
     private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
     private final com.stockflow.order.internal.domain.QuoteRepository quotes;
     private final com.stockflow.catalog.api.CatalogService catalog;
 
-    CustomerOrdersService(OrderSearchRepository search, OrderService orders, ProductionRecords productionRecords,
-                          CreditChecks creditChecks,
+    CustomerOrdersService(OrderSearchRepository search, OrderService orders, CreditChecks creditChecks,
                           com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
                           com.stockflow.order.internal.domain.QuoteRepository quotes,
                           com.stockflow.catalog.api.CatalogService catalog) {
@@ -68,7 +68,6 @@ class CustomerOrdersService implements CustomerOrders {
         this.quotes = quotes;
         this.search = search;
         this.orders = orders;
-        this.productionRecords = productionRecords;
         this.creditChecks = creditChecks;
     }
 
@@ -96,9 +95,6 @@ class CustomerOrdersService implements CustomerOrders {
         OrderSummary summary = orders.findById(orderId)
                 .filter(order -> customerId.equals(order.customerId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        Map<UUID, Integer> produced = summary.lines().stream().anyMatch(line -> line.designSnapshotId() != null)
-                ? productionRecords.producedByLine(orderId)
-                : Map.of();
         // Where each stock SKU is on sale today, for a portal that puts the order back in a basket (SCRUM-190).
         // Design lines are not reordered this way (a new quote asks for them), so they are not looked up.
         var listings = catalog.listings(summary.lines().stream().filter(line -> line.designSnapshotId() == null)
@@ -108,7 +104,7 @@ class CustomerOrdersService implements CustomerOrders {
                     var listing = listings.get(line.sku());
                     return new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
                             line.lineTotal().amount(), line.designSnapshotId(),
-                            production(line, summary.status(), produced),
+                            production(line, summary.status()),
                             listing == null ? null : listing.slug(), listing == null ? null : listing.title(),
                             listing == null ? null : listing.imageUrl());
                 })
@@ -172,11 +168,7 @@ class CustomerOrdersService implements CustomerOrders {
         OrderStatus status = summary.status();
         boolean cancel = status.customerMayCancelDirectly();
         var lifecycle = summary.lifecycle();
-        // Review of #150: stock packed ahead of the prints, nothing handed over, is still cancelled (Order#packedForGood).
-        boolean printing = status == OrderStatus.IN_PRODUCTION || lifecycle != null
-                && status == OrderStatus.ON_HOLD && lifecycle.statusBeforeHold() == OrderStatus.IN_PRODUCTION;
-        boolean packed = lifecycle != null && lifecycle.packedAt() != null
-                && !(printing && lifecycle.shipments().isEmpty() && lifecycle.goodsLeftAt() == null);
+        boolean packed = lifecycle != null && lifecycle.packedAt() != null;
         boolean request = !cancel && !packed && status.canTransitionTo(OrderStatus.CANCELLED)
                 && !cancellationRequests.hasPending(summary.orderId());
         return new AllowedActions(cancel, request, quotes.findByConvertedOrderId(summary.orderId()).isPresent());
@@ -249,25 +241,20 @@ class CustomerOrdersService implements CustomerOrders {
     }
 
     /**
-     * @param producedByLine good units per line, from {@code ProductionRecords.producedByLine}, read once
-     *                       for the order
+     * Where a print line's goods stand, from the order's status alone: printing is done outside the system, so the
+     * goods of a released order are made - all of the line's units - and nothing is made before release.
      */
-    static Production production(OrderSummary.LineSummary line, OrderStatus orderStatus,
-                                 Map<UUID, Integer> producedByLine) {
+    static Production production(OrderSummary.LineSummary line, OrderStatus orderStatus) {
         if (line.designSnapshotId() == null) {
             return new Production(ProductionState.NOT_REQUIRED, 0);
         }
-        int produced = producedByLine.getOrDefault(line.lineId(), 0);
         if (orderStatus == OrderStatus.CANCELLED) {
-            return new Production(ProductionState.CANCELLED, produced);
+            return new Production(ProductionState.CANCELLED, 0);
         }
-        if (produced >= line.quantity() || PAST_PRODUCTION.contains(orderStatus)) {
-            return new Production(ProductionState.DONE, produced);
+        if (PAST_PRODUCTION.contains(orderStatus)) {
+            return new Production(ProductionState.DONE, line.quantity());
         }
-        if (orderStatus == OrderStatus.IN_PRODUCTION) {
-            return new Production(ProductionState.IN_PROGRESS, produced);
-        }
-        return new Production(ProductionState.NOT_STARTED, produced);
+        return new Production(ProductionState.NOT_STARTED, 0);
     }
 
     /**

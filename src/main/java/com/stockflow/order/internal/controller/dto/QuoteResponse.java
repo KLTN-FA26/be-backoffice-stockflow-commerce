@@ -23,7 +23,7 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
 
     /**
      * @param moq    the minimum order quantity, where the lowest tier starts
-     * @param sample whether acceptance passes the sample rule for this line, and why
+     * @param sample always {@link Sample#NOT_REQUIRED}; kept for clients that still read it
      */
     public record Line(UUID id, int lineNo, String blankSku, UUID designSnapshotId, String printSpec, int quantity,
                        boolean priced, Integer moq, List<Tier> tiers, BigDecimal proposedUnitPrice,
@@ -35,7 +35,14 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
     public record Tier(int minQuantity, BigDecimal unitPrice) {
     }
 
+    /**
+     * Acceptance no longer waits for an approved sample: print samples are approved on the Production Order, outside
+     * the quote (kltn-docs 17). Every line answers {@link #NOT_REQUIRED} until clients stop reading the field.
+     */
+    @io.swagger.v3.oas.annotations.media.Schema(deprecated = true)
     public record Sample(boolean satisfied, UUID approvedSampleId, boolean reorder) {
+
+        public static final Sample NOT_REQUIRED = new Sample(true, null, false);
     }
 
     public record Order(UUID orderId, String orderNumber, String status, BigDecimal total) {

@@ -19,10 +19,8 @@ import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.service.ProductVariantService;
-import com.stockflow.product.internal.service.ProductVariantService.NewVariant;
 import com.stockflow.product.internal.service.SkuPurchasingService;
 import com.stockflow.product.internal.service.SkuUnitService;
-import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -337,25 +335,6 @@ class InventoryItemMasterDataIntegrationTest {
         assertThat(history()).contains("SALES_UNIT");
     }
 
-    // ---- blank foreign keys ----------------------------------------------------------------------------------
-
-    @Test
-    @DisplayName("a blank is an inventory item: unknown blanks are refused, a used blank is neither renamed nor deleted")
-    void blankIsAnInventoryItem() {
-        UUID design = snapshot();
-        assertThatThrownBy(() -> sampleRequest("NO-SUCH-BLANK-" + suffix, design))
-                .isInstanceOf(DataIntegrityViolationException.class).hasMessageContaining("fk_sample_request_blank");
-        UUID sample = sampleRequest(sku, design);
-
-        assertThatThrownBy(() -> variants.update(productId, variantId, new NewVariant(sku + "-R", "12oz", null, null)))
-                .isNotNull();
-        assertThat(jdbc.queryForObject("SELECT blank_sku FROM production.sample_request WHERE id = ?", String.class,
-                sample)).isEqualTo(sku);
-        assertThatThrownBy(() -> tx.executeWithoutResult(s ->
-                jdbc.update("DELETE FROM inventory.inventory_items WHERE sku = ?", sku)))
-                .isInstanceOf(DataIntegrityViolationException.class);
-    }
-
     // ---- helpers ---------------------------------------------------------------------------------------------
 
     private static UomConversionDraft packing(String code, int factor, boolean defaultPurchase, boolean active) {
@@ -385,32 +364,6 @@ class InventoryItemMasterDataIntegrationTest {
     private List<String> history() {
         return jdbc.queryForList("SELECT change_type FROM product.product_change_log WHERE product_id = ?",
                 String.class, productId);
-    }
-
-    private UUID snapshot() {
-        UUID draft = Identifiers.newId();
-        UUID snapshot = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_SOFA);
-            jdbc.update("""
-                    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
-                                                        artifact_manifest)
-                    VALUES (?, ?, ?, 'https://example.com/print.pdf', NOW(), NOW(), '[]'::jsonb)""",
-                    snapshot, draft, "a".repeat(64));
-        });
-        return snapshot;
-    }
-
-    private UUID sampleRequest(String blank, UUID design) {
-        UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO production.sample_request (id, request_number, customer_id, blank_sku, design_snapshot_id,
-                    quantity, status)
-                VALUES (?, ?, ?, ?, ?, 3, 'DRAFT')""", id, "SR-IT-" + id.toString().substring(24),
-                DemoData.CUSTOMER_ID, blank, design));
-        return id;
     }
 
     private static void assertCode(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, ErrorCode code) {

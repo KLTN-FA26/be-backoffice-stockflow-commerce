@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -34,8 +33,8 @@ class CustomerOrdersMappingTest {
                 List.of(), design, design == null ? null : "a".repeat(64));
     }
 
-    private static CustomerOrders.Production production(OrderSummary.LineSummary line, OrderStatus status, int produced) {
-        return CustomerOrdersService.production(line, status, Map.of(line.lineId(), produced));
+    private static CustomerOrders.Production production(OrderSummary.LineSummary line, OrderStatus status) {
+        return CustomerOrdersService.production(line, status);
     }
 
     private static CreditChecks.Check check(CreditChecks.Outcome outcome, Instant decidedAt) {
@@ -138,32 +137,23 @@ class CustomerOrdersMappingTest {
     void stockLineNeedsNoProduction() {
         var stock = line(UUID.randomUUID(), 5, null);
         for (OrderStatus status : OrderStatus.values()) {
-            assertThat(production(stock, status, 0).state()).as(status.name()).isEqualTo(ProductionState.NOT_REQUIRED);
+            assertThat(production(stock, status).state()).as(status.name()).isEqualTo(ProductionState.NOT_REQUIRED);
         }
     }
 
     @Test
-    @DisplayName("a print line: not started, in progress, done, cancelled")
+    @DisplayName("a print line: not started before release, done once released - printed outside the system - cancelled")
     void printLineStates() {
         var print = line(UUID.randomUUID(), 10, DESIGN);
 
-        assertThat(production(print, OrderStatus.CONFIRMED, 0)).isEqualTo(
+        assertThat(production(print, OrderStatus.CONFIRMED)).isEqualTo(
                 new CustomerOrders.Production(ProductionState.NOT_STARTED, 0));
-        assertThat(production(print, OrderStatus.IN_PRODUCTION, 0)).isEqualTo(
-                new CustomerOrders.Production(ProductionState.IN_PROGRESS, 0));
-        assertThat(production(print, OrderStatus.IN_PRODUCTION, 4)).isEqualTo(
-                new CustomerOrders.Production(ProductionState.IN_PROGRESS, 4));
-        // The good units cover the line before the order has moved on.
-        assertThat(production(print, OrderStatus.IN_PRODUCTION, 10)).isEqualTo(
+        assertThat(production(print, OrderStatus.READY_TO_FULFILL)).isEqualTo(
                 new CustomerOrders.Production(ProductionState.DONE, 10));
-        // Past production the line is done even if no completion was recorded.
-        assertThat(production(print, OrderStatus.READY_TO_FULFILL, 0).state()).isEqualTo(ProductionState.DONE);
-        assertThat(production(print, OrderStatus.SHIPPED, 0).state()).isEqualTo(ProductionState.DONE);
-        assertThat(production(print, OrderStatus.COMPLETED, 0).state()).isEqualTo(ProductionState.DONE);
-        assertThat(production(print, OrderStatus.CANCELLED, 4)).isEqualTo(
-                new CustomerOrders.Production(ProductionState.CANCELLED, 4));
-        // A line the production module reported nothing about.
-        assertThat(CustomerOrdersService.production(print, OrderStatus.IN_PRODUCTION, Map.of()).goodQuantity()).isZero();
+        assertThat(production(print, OrderStatus.SHIPPED).state()).isEqualTo(ProductionState.DONE);
+        assertThat(production(print, OrderStatus.COMPLETED).state()).isEqualTo(ProductionState.DONE);
+        assertThat(production(print, OrderStatus.CANCELLED)).isEqualTo(
+                new CustomerOrders.Production(ProductionState.CANCELLED, 0));
     }
 
     @Test

@@ -516,15 +516,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
-    public void recordPrintingStarted(UUID orderId) {
-        Order order = lockOrder(orderId);
-        if (order.recordPrintingStarted(clock.instant())) {
-            repository.save(order);
-            log.info("Order {}: printing started", order.orderNumber());
-        }
-    }
-
-    @Override
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public void recordPackingStarted(UUID orderId) {
         Order order = lockOrder(orderId);
@@ -548,14 +539,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public Optional<OrderStatus> lockedStatus(UUID orderId) {
         return repository.findByIdForUpdate(new OrderId(orderId)).map(Order::status);
-    }
-
-    @Override
-    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
-    public boolean lockedLineWithdrawn(UUID orderId, UUID lineId) {
-        return repository.findByIdForUpdate(new OrderId(orderId))
-                .map(order -> order.status() == OrderStatus.CANCELLED || order.lineWithdrawn(lineId))
-                .orElse(true);
     }
 
     /**
@@ -632,11 +615,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 clock.instant());
 
         if (wasHoldingStock) {
-            // Nothing has shipped (a cancellation after a package is refused): every open unit of a print line is scrap.
-            releaseHolds(order, order.lines().stream().collect(Collectors.toMap(line -> line,
-                            line -> line.quantity() - line.cancelledQuantity(), (a, b) -> a, java.util.LinkedHashMap::new)),
-                    "cancel", "Order %s cancelled: printed custom goods (BR-PRD-10)".formatted(order.orderNumber()),
-                    command.cancelledBy());
+            releaseHolds(order.lines());
             order.clearReservations();
         }
 
@@ -650,27 +629,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
-     * Frees the stock holds of {@code closed}'s lines. BR-PRD-10 (decision 2026-10-16, 19/10: cancel allowed with a
-     * production fee, the printed cups are SCRAP): the printed goods of a print line that will not ship - as many as
-     * {@code closed} says for it - are scrapped, never sold: since G4-Q2 (2026-10-21) they left stock when production
-     * completed, so inventory books exactly those units back under a hold of their own and asks a SCRAP write-off of
-     * them in {@code by}'s name. Inventory decides from the goods' state which holds are printed goods; the release
-     * leaves those alone, and releasing a hold already consumed or closed does nothing.
-     *
-     * @param step what closes the units ("cancel", "closure"): with the line and its closed count after the step, the
-     *             idempotency key of the write-off
+     * Frees the stock holds of {@code lines}. The goods of a print line not shipped stay in stock as the customer's
+     * surplus (kltn-docs 17 BR-07): nothing is scrapped. Releasing a hold already consumed by a pick or closed does
+     * nothing - its goods are fulfillment's to put back (G4-4).
      */
-    private void releaseHolds(Order order, java.util.Map<OrderLine, Integer> closed, String step, String scrapNote,
-                              UUID by) {
-        // SKU order: each write-off takes its SKU's lock, and checkout takes them sorted too (no deadlock).
-        closed.entrySet().stream().filter(entry -> entry.getKey().isMadeToOrder() && entry.getValue() > 0)
-                .sorted(java.util.Comparator.comparing(entry -> entry.getKey().sku().code()))
-                .forEach(entry -> inventory.scrapCancelledPrint(new com.stockflow.inventory.api.ScrapCancelledPrintCommand(
-                        order.id().value(), UUID.nameUUIDFromBytes("print-scrap:%s:%s:%d".formatted(step,
-                                entry.getKey().id(), entry.getKey().cancelledQuantity())
-                                .getBytes(java.nio.charset.StandardCharsets.UTF_8)),
-                        entry.getKey().reservationIds(), entry.getValue(), scrapNote, by)));
-        closed.keySet().stream().flatMap(line -> line.reservationIds().stream())
+    private void releaseHolds(java.util.Collection<OrderLine> lines) {
+        lines.stream().flatMap(line -> line.reservationIds().stream())
                 .forEach(reservationId -> inventory.release(reservationId, "ORDER_CANCELLED"));
     }
 
@@ -1030,43 +994,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .filter(line -> line.cancelledQuantity() > closedBefore.get(line.id()))
                 .collect(Collectors.toMap(line -> line, line -> line.cancelledQuantity() - closedBefore.get(line.id()),
                         (a, b) -> a, java.util.LinkedHashMap::new));
-        // The holds of the units that will not go: still held stock is freed, printed goods not shipped are scrapped
-        // (BR-PRD-10) - only the closed units, the shipped ones are the customer's - and a hold already consumed by a
-        // pick is left as it is (its goods are fulfillment's to put back, G4-4).
-        releaseHolds(order, closedLines, "closure", "Order %s: rest closed, printed custom goods (BR-PRD-10)"
-                .formatted(order.orderNumber()), by);
+        // The holds of the lines with units that will not go are freed; a hold already consumed by a pick is left as
+        // it is (its goods are fulfillment's to put back, G4-4).
+        releaseHolds(closedLines.keySet());
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());
-        return saved(order);
-    }
-
-    @Override
-    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
-            resourceType = "order", resourceId = "#orderId")
-    public OrderSummary agreeProductionShortfall(UUID orderId, UUID orderLineId, int units, String note, UUID by) {
-        Order order = lockOrder(orderId);
-        order.agreeProductionShortfall(orderLineId, units, note, by, clock.instant());
-        // The note is what the customer said: it stays on the line, not in the log.
-        log.info("Order {}: the customer goes without at most {} unit(s) of line {}", order.orderNumber(), units,
-                orderLineId);
-        return saved(order);
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * <p>Not audited here: it commits or rolls back with production's short completion, which is audited as its
-     * transition - an audit row written on return from here would outlive a rollback after it.</p>
-     */
-    @Override
-    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
-    public OrderSummary closeProductionShortfall(UUID orderId, UUID orderLineId, int units, UUID by) {
-        Order order = lockOrder(orderId);
-        BigDecimal closed = order.closeProductionShortfall(orderLineId, units, by, clock.instant());
-        // Production completes or ends the job and settles its blanks in this transaction; why is on the line's
-        // agreement and on the production order's record.
-        log.info("Order {}: {} unit(s) of line {} not made, closed ({} {} worth)", order.orderNumber(), units,
-                orderLineId, closed, order.total().currency());
         return saved(order);
     }
 
@@ -1185,12 +1117,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 lifecycleOf(order));
     }
 
-    private static OrderSummary.ProductionShortfall productionShortfallOf(OrderLine line) {
-        OrderLine.ShortfallAgreement agreed = line.shortfallAgreement();
-        return agreed == null ? null : new OrderSummary.ProductionShortfall(agreed.quantity(), agreed.note(),
-                agreed.agreedBy(), agreed.agreedAt(), line.shortfallClosedQuantity());
-    }
-
     /** The hold, the milestones, how much of each line went out and the shipments (G3-2). */
     static OrderSummary.Lifecycle lifecycleOf(Order order) {
         List<OrderSummary.LineProgress> progress = order.lines().stream()
@@ -1200,7 +1126,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                         order.shipments().stream()
                                 .filter(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED)
                                 .mapToInt(s -> s.quantities().getOrDefault(line.id(), 0)).sum(),
-                        line.cancelledQuantity(), productionShortfallOf(line)))
+                        line.cancelledQuantity()))
                 .toList();
         List<OrderSummary.Shipment> shipments = order.shipments().stream()
                 .map(s -> new OrderSummary.Shipment(s.id(), s.status(), s.amount(), s.billedAmount(),
@@ -1213,7 +1139,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
                 order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount(),
-                order.allowPartialShipment(), order.printLinesReady(), order.deliveryMode(),
+                order.allowPartialShipment(), order.deliveryMode(),
                 order.deliveryModeLocked(), order.goodsLeftAt(), order.replacesReturnRequestId());
     }
 

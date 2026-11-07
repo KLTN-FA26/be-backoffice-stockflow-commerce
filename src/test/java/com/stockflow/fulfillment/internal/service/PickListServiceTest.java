@@ -210,17 +210,20 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("an order of print lines only has nothing to pick: holds are not even read (07 BR-06)")
-        void printLinesAreNotPicked() {
+        @DisplayName("a print line is planned like any line: one pick line per live hold (07 BR-06)")
+        void printLinesArePicked() {
             var print = new OrderSummary.LineSummary(UUID.randomUUID(), "CUP-PRINT", 100,
                     com.stockflow.common.domain.Money.vnd(1000), com.stockflow.common.domain.Money.vnd(100_000),
                     List.of(resA), UUID.randomUUID(), "abc");
             OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING, List.of(print), null);
+            when(inventory.holds(any())).thenReturn(List.of(held(resA, "CUP-PRINT", "HCM-A-01", 100,
+                    HoldView.Status.HELD)));
+            locationsIn(task.getWarehouseId(), "HCM-A-01");
 
             service.planLines(task, order);
 
-            verify(inventory, never()).holds(any());
-            verify(pickLines, never()).saveAll(any());
+            verify(inventory).holds(any());
+            verify(pickLines).saveAll(any());
         }
     }
 

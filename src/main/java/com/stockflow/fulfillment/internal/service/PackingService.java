@@ -82,9 +82,9 @@ import java.util.stream.Collectors;
  * a shipment. See {@link Packing} for the contract and {@link PackingSession} for the rules.
  *
  * <p><b>Lock order</b>, as everywhere in fulfillment: the pick first ({@code SELECT … FOR UPDATE}), then the order (its
- * service takes the order's row lock). Packing changes no stock: picked goods left it when they were picked, printed
- * goods when their production order completed (decision G4-Q2, 2026-10-21). Cancelling an order takes the order and
- * stock locks in its own transaction and reaches the pick only afterwards, in the listener.</p>
+ * service takes the order's row lock). Packing changes no stock: picked goods left it when they were picked - a print
+ * line's too, since its goods are printed outside the system and received into stock. Cancelling an order takes the
+ * order and stock locks in its own transaction and reaches the pick only afterwards, in the listener.</p>
  */
 @Service
 @Transactional
@@ -92,10 +92,7 @@ class PackingService implements Packing {
 
     private static final Logger log = LoggerFactory.getLogger(PackingService.class);
 
-    /**
-     * The order statuses packing may change parcels in: released, picking, or the rest of a split order - and
-     * IN_PRODUCTION, its stock packed ahead of the prints, when Sales allowed partial shipments (PACK-EARLY).
-     */
+    /** The order statuses packing may change parcels in: released, picking, or the rest of a split order. */
     private static final Set<OrderStatus> PACKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
             OrderStatus.PARTIALLY_FULFILLED);
     private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.PACKING,
@@ -480,7 +477,7 @@ class PackingService implements Packing {
 
     /**
      * See {@code FulfillmentService.completePacking}. The pick is locked first; the order's row lock is taken by its
-     * service. Nothing leaves stock here, a print line included: its goods left when production completed (G4-Q2).
+     * service. Nothing leaves stock here: every line's goods left when they were picked.
      */
     public Completed complete(UUID taskId, PackingCompletion request, CurrentUser actor) {
         Context ctx = forWork(taskId);
@@ -762,8 +759,7 @@ class PackingService implements Packing {
             return false;
         }
         return PACKABLE.contains(state.status()) || (state.status() == OrderStatus.ON_HOLD
-                && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH)
-                || state.status() == OrderStatus.IN_PRODUCTION && state.allowPartialShipment();
+                && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH);
     }
 
     /** LP-1: the order's delivery mode in fulfillment's words (the same names); PARCEL on a row without it. */
@@ -777,15 +773,6 @@ class PackingService implements Packing {
     }
 
     private static void requirePackable(OrderSummary order) {
-        if (order.status() == OrderStatus.IN_PRODUCTION) {
-            // PACK-EARLY: packing the stock while the prints are made ships part of the order - Sales' decision.
-            if (!allowsPartialShipment(order)) {
-                throw new BusinessException(ErrorCode.PACK_PARTIAL_NOT_ALLOWED, ("Order %s is still printed: its stock "
-                        + "is packed ahead of the prints only when Sales allows partial shipments on the order; "
-                        + "otherwise it waits at packing until production completes").formatted(order.orderNumber()));
-            }
-            return;
-        }
         if (!PACKABLE.contains(order.status())) {
             String why = order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
                     && order.lifecycle().holdReason() != null ? " (" + order.lifecycle().holdReason() + ")" : "";
@@ -800,18 +787,25 @@ class PackingService implements Packing {
 
     /**
      * The order's lines as the packing table sees them: what the order still wants (its quantity less units closed),
-     * what reached packing (a stock line: what was picked and not put back; a print line: everything, production
-     * delivered it before the order was released to the warehouse), the lots and serials of those goods, and the SKU's
+     * what reached packing (what was picked and not put back), the lots and serials of those goods, and the SKU's
      * barcode, rotatable flag and storage class.
+     *
+     * <p>Legacy: a print line of an order released while in-house production existed was never picked - production
+     * consumed its hold when it delivered the printed goods to packing (G4-Q2). Those units, a CONSUMED hold of the line
+     * that no pick of this task took, count as having reached packing too, so such an order still ships. Nothing makes
+     * a hold like that any more.</p>
      */
     private List<PackingSession.Line> facts(PickJpaEntity pick, OrderSummary order) {
         Map<UUID, Integer> closed = new HashMap<>();
         if (order.lifecycle() != null) {
             order.lifecycle().lines().forEach(p -> closed.put(p.lineId(), p.cancelledQuantity()));
         }
-        Map<UUID, List<PickLineJpaEntity>> picked = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())
-                .stream().filter(line -> line.getStatus() == PickLineStatus.PICKED)
+        List<PickLineJpaEntity> taskLines = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        Map<UUID, List<PickLineJpaEntity>> picked = taskLines.stream()
+                .filter(line -> line.getStatus() == PickLineStatus.PICKED)
                 .collect(Collectors.groupingBy(PickLineJpaEntity::getOrderLineId));
+        Set<UUID> takenByPicks = taskLines.stream().map(PickLineJpaEntity::getReservationId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
         List<UUID> holdIds = new ArrayList<>();
         picked.values().forEach(lines -> lines.forEach(line -> {
             if (line.getReservationId() != null) {
@@ -819,7 +813,9 @@ class PackingService implements Packing {
             }
         }));
         order.lines().stream().filter(line -> line.designSnapshotId() != null)
-                .forEach(line -> holdIds.addAll(line.reservationIds()));
+                .flatMap(line -> line.reservationIds().stream())
+                .filter(id -> !takenByPicks.contains(id))
+                .forEach(holdIds::add);
         Map<UUID, HoldView> holds = holdIds.isEmpty() ? Map.of() : inventory.holds(holdIds).stream()
                 .collect(Collectors.toMap(HoldView::reservationId, Function.identity()));
         Map<String, ItemLogistics> logistics = new HashMap<>();
@@ -831,27 +827,24 @@ class PackingService implements Packing {
             boolean print = line.designSnapshotId() != null;
             Map<String, Integer> lots = new TreeMap<>();
             java.util.Set<String> serials = new java.util.TreeSet<>();
-            int available;
+            // What was picked, less what was found damaged here since (R8): that went back to quarantine. A print line
+            // is picked like any other: its goods were printed outside the system and received into stock.
+            List<PickLineJpaEntity> rows = picked.getOrDefault(line.lineId(), List.of()).stream()
+                    .filter(row -> row.getGoodQty() > 0).toList();
+            int available = rows.stream().mapToInt(PickLineJpaEntity::getGoodQty).sum();
+            for (PickLineJpaEntity row : rows) {
+                HoldView hold = row.getReservationId() == null ? null : holds.get(row.getReservationId());
+                collect(lots, serials, row.getLotNumber(), hold == null ? null : hold.serialNumber(),
+                        row.getGoodQty());
+            }
             if (print) {
-                // PACK-EARLY: while the order is printed (or shipped its stock before production completed) its printed
-                // goods are not at packing yet; once production completed, everything it wants is.
-                available = order.lifecycle() == null || order.lifecycle().printLinesReady() ? wanted : 0;
+                // Legacy (see the method's javadoc): printed goods in-house production delivered to packing.
                 for (UUID id : line.reservationIds()) {
-                    HoldView hold = holds.get(id);
-                    if (hold != null && (hold.status() == HoldView.Status.HELD
-                            || hold.status() == HoldView.Status.CONSUMED)) {
+                    HoldView hold = takenByPicks.contains(id) ? null : holds.get(id);
+                    if (hold != null && hold.status() == HoldView.Status.CONSUMED) {
+                        available += hold.quantity();
                         collect(lots, serials, hold.lotNumber(), hold.serialNumber(), hold.quantity());
                     }
-                }
-            } else {
-                // What was picked, less what was found damaged here since (R8): that went back to quarantine.
-                List<PickLineJpaEntity> rows = picked.getOrDefault(line.lineId(), List.of()).stream()
-                        .filter(row -> row.getGoodQty() > 0).toList();
-                available = rows.stream().mapToInt(PickLineJpaEntity::getGoodQty).sum();
-                for (PickLineJpaEntity row : rows) {
-                    HoldView hold = row.getReservationId() == null ? null : holds.get(row.getReservationId());
-                    collect(lots, serials, row.getLotNumber(), hold == null ? null : hold.serialNumber(),
-                            row.getGoodQty());
                 }
             }
             if (lots.keySet().equals(Set.of(PackingSession.NO_LOT))) {

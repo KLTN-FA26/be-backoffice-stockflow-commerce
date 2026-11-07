@@ -167,7 +167,7 @@ class DispatchServiceTest {
                 List.of());
         var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(shipment), BigDecimal.ZERO,
-                BigDecimal.ZERO, allowPartial, true);
+                BigDecimal.ZERO, allowPartial);
         return new OrderSummary(row.getOrderId(), "SO-0001", UUID.randomUUID(), OrderStatus.SHIPPED, Money.vnd(100_000),
                 List.of(line), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null,
                 lifecycle);
@@ -699,7 +699,7 @@ class DispatchServiceTest {
             OrderSummary base = orderWithShipment(row, "0", true, 3);
             var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
-                    BigDecimal.ZERO, new BigDecimal("80000"), true, true);
+                    BigDecimal.ZERO, new BigDecimal("80000"), true);
             OrderSummary shipped = new OrderSummary(base.orderId(), "SO-0001", base.customerId(), OrderStatus.SHIPPED,
                     base.total(), base.lines(), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
                     null, null, lifecycle);

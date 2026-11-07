@@ -7,8 +7,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Move unreserved units of one SKU and lot from one location to another (SCRUM-424): issuing blanks
- * to the {@code PRODUCTION} area, moving printed goods to {@code PACKING}, a putaway, a re-slot.
+ * Move unreserved units of one SKU and lot from one location to another (SCRUM-424): a putaway, a re-slot.
  *
  * @param requestId     the caller's id for this move. A retry with the same id returns the move
  *                      already made instead of moving the goods twice

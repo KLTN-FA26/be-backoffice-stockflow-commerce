@@ -59,8 +59,7 @@ public interface OrderService {
 
     /**
      * The warehouse starts picking: READY_TO_FULFILL → PICKING (kltn-docs 17 §4.2 step 6). An order already picking,
-     * packed or partly shipped is left alone, and so is one IN_PRODUCTION: picking its stock lines in parallel does
-     * not change it (17 §4.2 step 5).
+     * packed or partly shipped is left alone.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_INVALID_TRANSITION} from
      *         any other status
@@ -183,28 +182,6 @@ public interface OrderService {
     OrderSummary resolveHold(UUID orderId, String note, UUID by);
 
     /**
-     * Sales records that the customer agreed to go without at most {@code units} of a print line production cannot
-     * finish, and how the agreement was given (review 2026-10-25 of S6). Production completes the line's job short only
-     * within it; a new agreement replaces the last.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}, {@code VALIDATION_FAILED},
-     *         {@code ORDER_INVALID_TRANSITION} once the order is not printed for any more
-     */
-    OrderSummary agreeProductionShortfall(UUID orderId, UUID orderLineId, int units, String note, UUID by);
-
-    /**
-     * Production completed a print line's job short within the customer's agreement (review 2026-10-25, S6):
-     * {@code units} of the line leave the order - it is worth less, the money received above that is asked back
-     * ({@code OrderRemainderClosed}, reason {@code PRODUCTION_SHORTFALL}) - and the goods made cover the line. Joins the
-     * caller's transaction, under the order's lock; the line's holds are production's to settle.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}, {@code VALIDATION_FAILED},
-     *         {@code PRODUCTION_SHORTFALL_NOT_AGREED} beyond the agreement, {@code ORDER_INVALID_TRANSITION} once the
-     *         order is not printed for any more
-     */
-    OrderSummary closeProductionShortfall(UUID orderId, UUID orderLineId, int units, UUID by);
-
-    /**
      * Close what is left of a partly fulfilled order (17 edge "short pick"): its units not shipped will not be
      * delivered; their stock holds are released, payment refunds money received above what the order is now worth
      * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED.
@@ -216,7 +193,7 @@ public interface OrderService {
     /**
      * The same, keeping {@code fee} - an amount agreed with the customer for print lines closed after printing
      * started, at most their value (review of #150): the money received pays it first, the rest is refunded, what it
-     * does not cover is owed. Printed goods not shipped are scrapped; production stops the closed lines' jobs.
+     * does not cover is owed.
      *
      * @throws com.stockflow.common.error.BusinessException {@code CANCELLATION_FEE_BEFORE_PRINTING},
      *         {@code VALIDATION_FAILED}, {@code ORDER_INVALID_TRANSITION}
@@ -226,13 +203,6 @@ public interface OrderService {
 
     /** A printed design did not match at packing (BR-DSG-003): ON_HOLD for QC, reason DESIGN_MISMATCH. */
     void putOnDesignHold(UUID orderId, String reason);
-
-    /**
-     * Production started printing for the order - an in-house run, or work sent to a subcontractor. Joins the caller's
-     * transaction and takes the order's row lock, so a cancellation in flight either came first (this is refused,
-     * {@code ORDER_CANCELLED}, and nothing is printed) or comes after and may keep an agreed fee (03 §9). Idempotent.
-     */
-    void recordPrintingStarted(UUID orderId);
 
     /**
      * Fulfillment completed a package of the order. Joins the caller's transaction and takes the order's row lock,
@@ -252,19 +222,11 @@ public interface OrderService {
     void recordPackingStarted(UUID orderId);
 
     /**
-     * The order's status read under its row lock, in the caller's transaction: what production checks before it
-     * completes, releases or carries on work for the order, so a cancellation cannot slip in between the check and
-     * the work (audit of #109). Empty for an unknown order.
+     * The order's status read under its row lock, in the caller's transaction: what fulfillment checks before it
+     * carries on work for the order, so a cancellation cannot slip in between the check and the work (audit of #109).
+     * Empty for an unknown order.
      */
     Optional<OrderStatus> lockedStatus(UUID orderId);
-
-    /**
-     * Whether a line's goods are no longer wanted, read under the order's row lock in the caller's transaction: the
-     * order is cancelled (or unknown), or every unit of the line was closed out of it ({@link #closeRemainder}, e.g.
-     * the print lines of a mixed order whose stock already shipped, PACK-EARLY). Production stops the line's work then,
-     * as for a cancelled order.
-     */
-    boolean lockedLineWithdrawn(UUID orderId, UUID lineId);
 
     /** QC reverified the design: the DESIGN_MISMATCH hold is resolved back to where it was held from. */
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);

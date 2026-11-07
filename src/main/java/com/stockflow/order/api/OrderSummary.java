@@ -68,10 +68,7 @@ public record OrderSummary(
      * @param wholeOrderCodAmount    what the carrier collects for an order handed over whole, without shipments
      *                               recorded on it ({@code markShipped}): fixed at that handover; 0 otherwise (G4-2a)
      * @param allowPartialShipment   Sales allowed the order to ship in parts (PACK-PARTIAL, lead's decision
-     *                               2026-10-21): packing may complete part of it and part of it may be handed over -
-     *                               for a mixed order, its stock while the prints are made (PACK-EARLY)
-     * @param printLinesReady        its printed goods are at packing: no print lines, or production completed. False
-     *                               while it is printed, or partly fulfilled before production completed (PACK-EARLY)
+     *                               2026-10-21): packing may complete part of it and part of it may be handed over
      * @param deliveryMode           how it travels (LP-1, lead's decision 2026-10-22): PARCEL unless the Order
      *                               Coordinator chose a full truckload; packing copies it onto every shipment
      * @param deliveryModeLocked     packing started (or the order is past it, cancelled or closed): the delivery mode
@@ -86,7 +83,7 @@ public record OrderSummary(
                             Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
                             BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
                             BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount, boolean allowPartialShipment,
-                            boolean printLinesReady, DeliveryMode deliveryMode, boolean deliveryModeLocked,
+                            DeliveryMode deliveryMode, boolean deliveryModeLocked,
                             Instant goodsLeftAt, UUID replacesReturnRequestId) {
 
         public Lifecycle {
@@ -104,11 +101,11 @@ public record OrderSummary(
                          Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
                          BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
                          List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment, boolean printLinesReady, DeliveryMode deliveryMode,
+                         boolean allowPartialShipment, DeliveryMode deliveryMode,
                          boolean deliveryModeLocked, Instant goodsLeftAt) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
                     completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment,
                     deliveryMode, deliveryModeLocked, goodsLeftAt, null);
         }
 
@@ -118,11 +115,11 @@ public record OrderSummary(
                          Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
                          BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
                          List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment, boolean printLinesReady, DeliveryMode deliveryMode,
+                         boolean allowPartialShipment, DeliveryMode deliveryMode,
                          boolean deliveryModeLocked) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
                     completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment,
                     deliveryMode, deliveryModeLocked, null);
         }
 
@@ -132,14 +129,14 @@ public record OrderSummary(
                          Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
                          BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
                          List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment, boolean printLinesReady) {
+                         boolean allowPartialShipment) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
                     completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment,
                     DeliveryMode.PARCEL, false, null);
         }
 
-        /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed, prints ready. */
+        /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed. */
         public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
                          Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
@@ -147,7 +144,7 @@ public record OrderSummary(
                          List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
                     completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, false, true);
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, false);
         }
 
         /** Without the whole-order COD (callers written before G4-2a). */
@@ -172,24 +169,8 @@ public record OrderSummary(
         }
     }
 
-    /**
-     * How much of one line went out: in shipments not returned, delivered, and closed; and for a print line production
-     * could not finish, what the customer agreed to go without (null when nothing was agreed).
-     */
-    public record LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity,
-                               ProductionShortfall productionShortfall) {
-
-        public LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity) {
-            this(lineId, shippedQuantity, deliveredQuantity, cancelledQuantity, null);
-        }
-    }
-
-    /**
-     * Review 2026-10-25 of S6: the customer goes without at most {@code agreedQuantity} units of a print line, as Sales
-     * recorded it; {@code closedQuantity} of them production closed, completing the line short.
-     */
-    public record ProductionShortfall(int agreedQuantity, String note, UUID agreedBy, Instant agreedAt,
-                                      int closedQuantity) {
+    /** How much of one line went out: in shipments not returned, delivered, and closed. */
+    public record LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity) {
     }
 
     /** Units of one order line in one shipment. */

@@ -7,7 +7,6 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.PermissionDeniedException;
 import com.stockflow.common.security.Role;
-import com.stockflow.contracts.OrderLinesReleasedForProduction;
 import com.stockflow.contracts.OrderReleased;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.order.api.DeliveryMode;
@@ -17,9 +16,7 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
-import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderRepository;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.domain.WarehouseDirectory;
 import com.stockflow.payment.api.CreditPosition;
 import com.stockflow.payment.api.PaymentService;
@@ -30,7 +27,6 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.ZoneOffset;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -43,21 +39,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Releasing an order (SCRUM-423, kltn-docs 17 / 19 §4.1): an approved sample for every new design (BR-PRD-08), no credit
- * for an overdue customer (15 §4.3 step 4, 17 BR-02), stock allocated on the warehouse's bins, and the delivery mode
+ * Releasing an order (SCRUM-423, kltn-docs 17 §4.2): no credit for an overdue customer (15 §4.3 step 4, 17 BR-02), stock
+ * allocated on the warehouse's bins, no order with print lines until their goods are received, and the delivery mode
  * only for someone allowed to choose it (LP-1).
  */
 class OrderReleaseServiceTest {
 
     private final OrderRepository repository = mock(OrderRepository.class);
-    private final ProductionRecords production = mock(ProductionRecords.class);
     private final WarehouseDirectory warehouses = mock(WarehouseDirectory.class);
     private final OrderEventPublisher events = mock(OrderEventPublisher.class);
     private final OrderService orders = mock(OrderService.class);
@@ -66,7 +60,7 @@ class OrderReleaseServiceTest {
     private final OrderStockAllocation allocation = mock(OrderStockAllocation.class);
     private final DeliveryModeHistory deliveryModes = mock(DeliveryModeHistory.class);
     private final OrderSummary summary = mock(OrderSummary.class);
-    private final OrderReleaseService service = new OrderReleaseService(repository, production, warehouses, events,
+    private final OrderReleaseService service = new OrderReleaseService(repository, warehouses, events,
             orders, Clock.fixed(NOW, ZoneOffset.UTC), inventory, paymentService, allocation, deliveryModes);
 
     @BeforeEach
@@ -127,58 +121,17 @@ class OrderReleaseServiceTest {
     }
 
     @Test
-    @DisplayName("a new design without an approved sample is refused (BR-PRD-08), naming the blank; nothing is allocated")
-    void newDesignNeedsAnApprovedSample() {
-        UUID design = UUID.randomUUID();
-        Order order = loaded(OrderFixtures.confirmedWithPrintLine(design));
-        when(production.approvedSample(design, "CUP-12OZ")).thenReturn(Optional.empty());
-        when(production.producedBefore(design, order.id().value())).thenReturn(false);
+    @DisplayName("an order with a print line waits CONFIRMED: its printed goods are not received yet, and its line names "
+            + "the blank - nothing is allocated (ORDER_PRINT_GOODS_NOT_RECEIVED)")
+    void aPrintLineWaitsForItsGoods() {
+        Order order = loaded(OrderFixtures.confirmedWithPrintLine(UUID.randomUUID()));
 
-        assertThatThrownBy(() -> service.release(order.id().value(), WAREHOUSE, STAFF))
-                .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, ex -> {
-                    assertThat(ex.errorCode()).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
-                    assertThat(ex.getMessage()).contains("CUP-12OZ");
-                });
+        assertThat(codeOf(() -> service.release(order.id().value(), WAREHOUSE, STAFF)))
+                .isEqualTo(ErrorCode.ORDER_PRINT_GOODS_NOT_RECEIVED);
+
         assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
         verify(allocation, never()).allocate(any(), anyString());
         verify(repository, never()).save(any());
-    }
-
-    @Test
-    @DisplayName("an approved sample sends the order to IN_PRODUCTION and travels in the production event")
-    void approvedSampleGoesToProduction() {
-        UUID design = UUID.randomUUID();
-        UUID sample = UUID.randomUUID();
-        Order order = loaded(OrderFixtures.confirmedWithPrintLine(design));
-        when(production.approvedSample(design, "CUP-12OZ")).thenReturn(Optional.of(sample));
-
-        service.release(order.id().value(), WAREHOUSE, STAFF);
-
-        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
-        OrderLine printLine = order.printLines().get(0);
-        assertThat(order.pullDomainEvents()).anySatisfy(event -> assertThat(event)
-                .isInstanceOfSatisfying(com.stockflow.order.internal.domain.OrderEvent.LinesReleased.class, released -> {
-                    OrderLinesReleasedForProduction payload = released.payload();
-                    assertThat(payload.lines()).singleElement().satisfies(line -> {
-                        assertThat(line.orderLineId()).isEqualTo(printLine.id());
-                        assertThat(line.approvedSampleId()).isEqualTo(sample);
-                        assertThat(line.quantity()).isEqualTo(500);
-                    });
-                }));
-        verify(allocation).allocate(order, "HCM");
-    }
-
-    @Test
-    @DisplayName("a design already printed for an earlier order is a repeat and needs no sample")
-    void aRepeatDesignNeedsNoSample() {
-        UUID design = UUID.randomUUID();
-        Order order = loaded(OrderFixtures.confirmedWithPrintLine(design));
-        when(production.approvedSample(design, "CUP-12OZ")).thenReturn(Optional.empty());
-        when(production.producedBefore(design, order.id().value())).thenReturn(true);
-
-        service.release(order.id().value(), WAREHOUSE, STAFF);
-
-        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
     }
 
     @Test
@@ -273,52 +226,5 @@ class OrderReleaseServiceTest {
         service.release(order.id().value(), WAREHOUSE, order.deliveryMode(), user());
 
         assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
-    }
-
-    @Test
-    @DisplayName("a finished production run moves an order whose prints are all produced to READY_TO_FULFILL")
-    void productionFinishedReadiesTheOrder() {
-        UUID design = UUID.randomUUID();
-        Order order = loaded(OrderFixtures.confirmedWithPrintLine(design));
-        when(production.approvedSample(any(), anyString())).thenReturn(Optional.of(UUID.randomUUID()));
-        service.release(order.id().value(), WAREHOUSE, STAFF);
-        order.pullDomainEvents();
-        UUID printLine = order.printLines().get(0).id();
-        when(production.producedByLine(order.id().value())).thenReturn(Map.of(printLine, 500));
-
-        service.productionFinished(order.id().value());
-
-        assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
-        verify(repository, org.mockito.Mockito.times(2)).save(order);
-    }
-
-    @Test
-    @DisplayName("production short of the ordered quantity leaves the order IN_PRODUCTION and saves nothing more")
-    void productionShortChangesNothing() {
-        UUID design = UUID.randomUUID();
-        Order order = loaded(OrderFixtures.confirmedWithPrintLine(design));
-        when(production.approvedSample(any(), anyString())).thenReturn(Optional.of(UUID.randomUUID()));
-        service.release(order.id().value(), WAREHOUSE, STAFF);
-        UUID printLine = order.printLines().get(0).id();
-        when(production.producedByLine(order.id().value())).thenReturn(Map.of(printLine, 499));
-
-        service.productionFinished(order.id().value());
-
-        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
-        verify(repository, org.mockito.Mockito.times(1)).save(order);
-    }
-
-    @Test
-    @DisplayName("production finished for an unknown or never-released order is logged and ignored")
-    void productionFinishedForAnOrderNotReleased() {
-        Order draft = loaded(OrderFixtures.draft(PaymentTerm.PREPAID, UUID.randomUUID()));
-        when(repository.findByIdForUpdate(new OrderId(UUID.fromString("00000000-0000-0000-0000-000000000001"))))
-                .thenReturn(Optional.empty());
-
-        service.productionFinished(draft.id().value());
-        service.productionFinished(UUID.fromString("00000000-0000-0000-0000-000000000001"));
-
-        verify(repository, never()).save(any());
-        verify(events, never()).publishEventsOf(eq(draft));
     }
 }

@@ -598,7 +598,8 @@ class UserAndRoleManagementIntegrationTest {
         refused(ErrorCode.ROLE_CODE_ALREADY_EXISTS,
                 () -> identity.createRole(new CreateRoleCommand("ACCOUNTANT", "Dup", null, null, null)));
         assertThat(identity.listRoles()).filteredOn(RoleSummary::system)
-                .extracting(RoleSummary::code).contains("SYSTEM_ADMIN", "CUSTOMER", "PRODUCTION_STAFF");
+                .extracting(RoleSummary::code).contains("SYSTEM_ADMIN", "CUSTOMER", "WAREHOUSE_STAFF")
+                .doesNotContain("PRODUCTION_STAFF");
     }
 
     // ---- warehouse data scope (SCRUM-457) -----------------------------------------------------
@@ -606,7 +607,7 @@ class UserAndRoleManagementIntegrationTest {
     @Test
     void warehouseRolesAreLimitedToTheirAssignedWarehousesResolvedPerRequest() {
         assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF")).scope()).isEqualTo(DataScope.WAREHOUSE);
-        assertThat(lookup.resolve(List.of("QC_STAFF", "PRODUCTION_STAFF")).scope()).isEqualTo(DataScope.WAREHOUSE);
+        assertThat(lookup.resolve(List.of("QC_STAFF", "WAREHOUSE_MANAGER")).scope()).isEqualTo(DataScope.WAREHOUSE);
         // The broadest of a user's roles: a clerk who also plans plans across warehouses.
         assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "INVENTORY_PLANNER")).scope()).isEqualTo(DataScope.ALL);
 

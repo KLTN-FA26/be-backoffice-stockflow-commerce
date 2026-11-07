@@ -86,10 +86,10 @@ class LoadEstimateService implements LoadEstimates {
 
     /**
      * Where an estimate makes sense: CONFIRMED (the release dialog estimates before releasing, design v2 §2, with the
-     * warehouse it is about to choose), released to production or the warehouse, and partly fulfilled (its remaining
-     * units only). DRAFT, PENDING_PAYMENT, ON_HOLD and everything from SHIPPED on are refused.
+     * warehouse it is about to choose), released to the warehouse, and partly fulfilled (its remaining units only).
+     * DRAFT, PENDING_PAYMENT, ON_HOLD and everything from SHIPPED on are refused.
      */
-    private static final Set<OrderStatus> ESTIMABLE = EnumSet.of(OrderStatus.CONFIRMED, OrderStatus.IN_PRODUCTION,
+    private static final Set<OrderStatus> ESTIMABLE = EnumSet.of(OrderStatus.CONFIRMED,
             OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED);
 
     private static final TypeReference<List<EstimateLine>> LINES = new TypeReference<>() { };

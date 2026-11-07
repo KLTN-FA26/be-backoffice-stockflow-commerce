@@ -436,9 +436,6 @@ public final class StockItem extends AggregateRoot {
      */
     /** Gives the order's pinned holds here a deadline again; see {@link Reservation#rearm}. */
     public int rearmReservationsOf(UUID orderId, Instant deadline) {
-        if (status == StockStatus.IN_PRODUCTION) {
-            return 0;   // goods on the press do not go back to waiting for payment
-        }
         int rearmed = 0;
         for (Reservation reservation : reservations) {
             if (orderId.equals(reservation.orderId()) && reservation.rearm(deadline)) {
@@ -500,25 +497,6 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Hold blanks for a production order rather than an order (a sample round from its submission,
-     * decision Q1 2026-10-12; a reprint round). The same checks as {@link #reserve}; the hold is pinned
-     * from the start and announces nothing to {@code order}, which has no stake in it.
-     */
-    public Reservation reserveForProduction(UUID productionOrderId, UUID rootRequestId, UUID requestId,
-                                            Quantity quantity, Instant now) {
-        Optional<Reservation> alreadyServed = findByRequestId(requestId);
-        if (alreadyServed.isPresent()) {
-            return alreadyServed.get();
-        }
-        requireHoldable(quantity, now, "production order " + productionOrderId);
-        Reservation reservation =
-                Reservation.openForProduction(productionOrderId, rootRequestId, requestId, quantity, now);
-        reservations.add(reservation);
-        checkInvariants();
-        return reservation;
-    }
-
-    /**
      * Allocate part of a SKU reservation to this stock item (F-FUL step 02, BR-STK-006): the order was released to
      * this warehouse and the planner chose this bin and lot. A hard hold, pinned, that the picker will walk to; the
      * units stop being the SKU's soft reservation once the caller marks it {@link SkuReservation#markAllocated}.
@@ -555,7 +533,7 @@ public final class StockItem extends AggregateRoot {
 
     /**
      * Hold this row's units for a transfer order at its source (SCRUM-287 PR T; kltn-docs 10 step 4, BR-02/03): a hold
-     * on this bin and lot like a production hold - the same checks as {@link #allocate}, pinned from the start,
+     * on this bin and lot - the same checks as {@link #allocate}, pinned from the start,
      * announced to nobody (no order has a stake in it), never an allocation of a SKU reservation. Consumed when the
      * transfer is dispatched, released when its picking is cancelled. Idempotent on {@code requestId}.
      */
@@ -606,7 +584,7 @@ public final class StockItem extends AggregateRoot {
         reservation.release(reason, now);
         checkInvariants();
         if (reservation.orderId() == null) {
-            return;     // a production hold: order has no stake in it
+            return;     // a transfer's hold: no order has a stake in it
         }
         registerEvent(
                 new StockEvent.Released(
@@ -617,14 +595,8 @@ public final class StockItem extends AggregateRoot {
                                 reason.toContract())));
     }
 
-    /**
-     * Release every live hold that has outlived its {@code expiresAt}. Called by the sweeper. Never in the print
-     * shop: see {@link StockStatus#IN_PRODUCTION}.
-     */
+    /** Release every live hold that has outlived its {@code expiresAt}. Called by the sweeper. */
     public int releaseExpired(Instant now) {
-        if (status == StockStatus.IN_PRODUCTION) {
-            return 0;   // holds in the print shop are closed only by production (they are pinned anyway)
-        }
         List<ReservationId> expired =
                 reservations.stream().filter(r -> r.isExpiredAt(now)).map(Reservation::id).toList();
         expired.forEach(rid -> releaseReservation(rid, ReleaseReason.RESERVATION_EXPIRED, now));
@@ -677,54 +649,6 @@ public final class StockItem extends AggregateRoot {
                                 sku.code(),
                                 location.code(),
                                 reservation.quantity().value())));
-    }
-
-    /**
-     * Decision G4-Q2 (2026-10-21), kltn-docs 19 BR-10: printed goods consumed on this layer when their production
-     * order completed belong to an order that has since been cancelled (or whose unshipped rest was closed). They
-     * cannot go back on sale, so they come back onto the books here only to be written off as SCRAP: {@code onHand}
-     * grows by the units and a new hold of exactly them is opened for {@code orderId}, pinned, so nothing can take
-     * them before the write-off is decided.
-     *
-     * <p>The new hold carries the consumed hold's id as its {@code rootRequestId}, so the units already brought back
-     * from that hold are known: no more than it consumed ever come back, however many closures ask. Idempotent on
-     * {@code requestId}.</p>
-     *
-     * @return the new hold, or empty when everything the consumed hold took has been brought back already
-     */
-    public Optional<Reservation> bookBackForScrap(ReservationId consumed, UUID orderId, UUID requestId,
-                                                  Quantity wanted, Instant now) {
-        Objects.requireNonNull(orderId, "orderId");
-        Optional<Reservation> alreadyServed = reservations.stream().filter(r -> r.requestId().equals(requestId))
-                .findFirst();
-        if (alreadyServed.isPresent()) {
-            return alreadyServed;
-        }
-        Reservation source = findReservation(consumed).orElseThrow(() -> new IllegalArgumentException(
-                "Reservation %s does not belong to stock item %s".formatted(consumed, id)));
-        if (source.status() != ReservationStatus.CONSUMED || !orderId.equals(source.orderId())) {
-            throw new IllegalArgumentException("Reservation %s is not order %s's consumed goods".formatted(consumed,
-                    orderId));
-        }
-        if (status != StockStatus.AVAILABLE || stockPackageId != null) {
-            // Finished goods reach packing as loose stock (emptyLayerOf); a carton never takes printed goods back.
-            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                    "Stock item %s is %s%s; printed goods come back onto their loose AVAILABLE layer".formatted(id,
-                            status, stockPackageId == null ? "" : " in a carton"));
-        }
-        int back = reservations.stream().filter(r -> r != source && consumed.value().equals(r.rootRequestId()))
-                .mapToInt(r -> r.quantity().value()).sum();
-        int take = Math.min(wanted.value(), source.quantity().value() - back);
-        if (take <= 0) {
-            return Optional.empty();
-        }
-        Quantity quantity = Quantity.of(take);
-        this.onHand = onHand.plus(quantity);
-        Reservation hold = new Reservation(ReservationId.newId(), orderId, null, consumed.value(), requestId, quantity,
-                now, null, ReservationStatus.HELD, null, null);
-        reservations.add(hold);
-        checkInvariants();
-        return Optional.of(hold);
     }
 
     /**
@@ -800,7 +724,7 @@ public final class StockItem extends AggregateRoot {
      * <b>together with</b> the units it holds. Unlike {@link #moveOut}, which refuses held units, the
      * promise travels with the goods, so there is never a moment in which they are unheld — no
      * release-then-move window in which another order's checkout could take them. The hold keeps its id,
-     * so whoever stored it (an order line, a production order) still finds it.
+     * so whoever stored it (an order line, a transfer order) still finds it.
      *
      * @throws IllegalArgumentException when the hold is not on this stock item
      * @throws IllegalStateException when the hold is closed
@@ -820,8 +744,7 @@ public final class StockItem extends AggregateRoot {
 
     /**
      * The destination side of {@link #handOverReservation}: the hold and its units arrive here, in this
-     * layer's status (issued blanks become {@link StockStatus#IN_PRODUCTION}, finished goods
-     * {@link StockStatus#AVAILABLE} again).
+     * layer's status (goods found fit after a damage report are {@link StockStatus#AVAILABLE} again).
      */
     public void takeOverReservation(StockItem from, Reservation reservation) {
         if (!sku.equals(from.sku) || !Objects.equals(lotNumber, from.lotNumber)
@@ -835,120 +758,6 @@ public final class StockItem extends AggregateRoot {
         }
         reservations.add(reservation);
         this.onHand = onHand.plus(reservation.quantity());
-        checkInvariants();
-    }
-
-    /**
-     * Units leave a hold in the print shop without leaving the layer (SCRUM-398..401): spoilt units waiting
-     * for their write-off, unprinted blanks about to go back to storage. The hold keeps its id and covers
-     * {@code quantity} fewer units, or closes with {@code reason} when that is all of it. {@code onHand} does not
-     * change, and the units stay {@link StockStatus#IN_PRODUCTION}: freed from the hold, they are still not
-     * sellable — whatever comes next is an explicit step (an approved adjustment, a return).
-     *
-     * @throws IllegalStateException when the stock is not in the print shop or the hold is closed
-     * @throws IllegalArgumentException when the hold covers fewer units, or is not on this stock item
-     */
-    public void takeFromHold(ReservationId reservationId, Quantity quantity, ReleaseReason reason, Instant now) {
-        if (status != StockStatus.IN_PRODUCTION) {
-            throw new IllegalStateException("Stock item %s is %s, not in the print shop".formatted(id, status));
-        }
-        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
-                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
-        if (reservation.status().isTerminal()) {
-            throw new IllegalStateException("Reservation %s is %s".formatted(reservationId, reservation.status()));
-        }
-        if (quantity.isZero() || reservation.quantity().isLessThan(quantity)) {
-            throw new IllegalArgumentException("Reservation %s holds %s, not %s".formatted(reservationId,
-                    reservation.quantity(), quantity));
-        }
-        if (quantity.equals(reservation.quantity())) {
-            reservation.release(reason, now);
-        } else {
-            reservation.reduceBy(quantity);
-        }
-        checkInvariants();
-    }
-
-    /**
-     * A hold in storage covers {@code quantity} fewer units, which become free again (SCRUM-441: the part of an
-     * order a subcontractor makes with its own blanks). The hold keeps its id, or closes with {@code reason}
-     * when that is all of it. Not in the print shop: there, units leave a hold only through
-     * {@link #takeFromHold}, which keeps them out of sale.
-     */
-    public void reduceHold(ReservationId reservationId, Quantity quantity, ReleaseReason reason, Instant now) {
-        if (status == StockStatus.IN_PRODUCTION) {
-            throw new IllegalStateException("Stock item %s is in the print shop".formatted(id));
-        }
-        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
-                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
-        if (reservation.status().isTerminal() || quantity.isZero() || reservation.quantity().isLessThan(quantity)) {
-            throw new IllegalArgumentException("Reservation %s (%s, %s) cannot give up %s".formatted(reservationId,
-                    reservation.status(), reservation.quantity(), quantity));
-        }
-        if (quantity.equals(reservation.quantity())) {
-            reservation.release(reason, now);
-        } else {
-            reservation.reduceBy(quantity);
-        }
-        checkInvariants();
-    }
-
-    /**
-     * Goods just received for a production order (a subcontractor's finished goods, SCRUM-441, decision Q8) are
-     * held for it at once, on their INBOUND layer: they never wait unheld for QC or putaway. Pinned, idempotent on
-     * {@code requestId}; refused for any other status, or for more than the layer has unheld.
-     */
-    public Reservation holdArrival(UUID productionOrderId, UUID rootRequestId, UUID requestId, Quantity quantity,
-                                   Instant now) {
-        Optional<Reservation> alreadyServed = findByRequestId(requestId);
-        if (alreadyServed.isPresent()) {
-            return alreadyServed.get();
-        }
-        if (status != StockStatus.INBOUND) {
-            throw new IllegalStateException("Stock item %s is %s, not just received".formatted(id, status));
-        }
-        if (movable().isLessThan(quantity)) {
-            throw new InsufficientStockException(sku.code(), quantity.value(), movable().value());
-        }
-        Reservation reservation = Reservation.openForProduction(productionOrderId, rootRequestId, requestId, quantity, now);
-        reservations.add(reservation);
-        checkInvariants();
-        return reservation;
-    }
-
-    /**
-     * Held blanks a subcontractor turned into the goods received back (SCRUM-441, decision Q9) leave stock: the
-     * hold covers {@code quantity} fewer units (consumed when that is all of it) and {@code onHand} falls by as
-     * many. Only in the print shop or at a subcontractor (IN_PRODUCTION).
-     */
-    public void consumeFromHold(ReservationId reservationId, Quantity quantity, Instant now) {
-        if (status != StockStatus.IN_PRODUCTION) {
-            throw new IllegalStateException("Stock item %s is %s, not issued to production".formatted(id, status));
-        }
-        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
-                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
-        if (reservation.status().isTerminal() || quantity.isZero() || reservation.quantity().isLessThan(quantity)) {
-            throw new IllegalArgumentException("Reservation %s (%s, %s) cannot give %s".formatted(reservationId,
-                    reservation.status(), reservation.quantity(), quantity));
-        }
-        if (quantity.equals(reservation.quantity())) {
-            reservation.consume(now);
-        } else {
-            reservation.reduceBy(quantity);
-        }
-        this.onHand = onHand.minus(quantity);
-        checkInvariants();
-    }
-
-    /** See {@link Reservation#handToOrder}: the hold must be the production order's own. */
-    public void handHoldToOrder(ReservationId reservationId, UUID productionOrderId, UUID orderId) {
-        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
-                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
-        if (!Objects.equals(productionOrderId, reservation.productionOrderId())) {
-            throw new IllegalArgumentException("Reservation %s is not production order %s's".formatted(reservationId,
-                    productionOrderId));
-        }
-        reservation.handToOrder(orderId);
         checkInvariants();
     }
 
@@ -1093,7 +902,7 @@ public final class StockItem extends AggregateRoot {
      * Free units of this row were found damaged on the shelf (docs 03 §5 AVAILABLE → DAMAGED): they leave it, for a
      * DAMAGED row in quarantine ({@link #takeUpDamaged}). {@code onHand} falls; no hold is touched.
      *
-     * <p>Only unheld units. A hold names units somebody will take - a picker, the print shop, a transfer - and those
+     * <p>Only unheld units. A hold names units somebody will take - a picker, a transfer - and those
      * are reported damaged where they are taken ({@link #giveUpDamagedHeld} for a pick), so the hold's owner learns
      * of it in the same transaction instead of finding its promise gone.</p>
      *
@@ -1140,9 +949,19 @@ public final class StockItem extends AggregateRoot {
                     "Reservation %s keeps %s unit(s); %s found damaged".formatted(holdId, hold.quantity(), quantity));
         }
         UUID origin = hold.allocatedFrom() != null ? hold.allocatedFrom() : hold.id().value();
-        reduceHold(holdId, quantity, ReleaseReason.DAMAGED, now);
+        reduceHold(hold, quantity, ReleaseReason.DAMAGED, now);
         giveUpDamaged(quantity, now);
         return new HeldShare(hold.orderId(), origin, quantity);
+    }
+
+    /** The live {@code hold} covers {@code quantity} fewer units, keeping its id, or closes with {@code reason}. */
+    private void reduceHold(Reservation hold, Quantity quantity, ReleaseReason reason, Instant now) {
+        if (quantity.equals(hold.quantity())) {
+            hold.release(reason, now);
+        } else {
+            hold.reduceBy(quantity);
+        }
+        checkInvariants();
     }
 
     /**
@@ -1252,8 +1071,6 @@ public final class StockItem extends AggregateRoot {
     private void requireDamageable(Instant now) {
         if (status != StockStatus.AVAILABLE) {
             throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, switch (status) {
-                case IN_PRODUCTION -> "%s at %s is in the print shop; production writes off spoilt blanks"
-                        .formatted(sku, location);
                 case INBOUND, QUARANTINE -> "%s at %s is %s; QC decides about goods not yet accepted"
                         .formatted(sku, location, status);
                 default -> "%s at %s is already %s; only AVAILABLE stock is reported damaged"

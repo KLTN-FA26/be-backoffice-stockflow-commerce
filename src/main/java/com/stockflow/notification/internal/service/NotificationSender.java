@@ -2,7 +2,6 @@ package com.stockflow.notification.internal.service;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.stockflow.contracts.CustomerActedOnQuote;
-import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.notification.api.PortalInvitationMail;
@@ -90,28 +89,6 @@ class NotificationSender {
                 takeover ? messages.getString("quote.mail.takeover.subject").formatted(subject) : subject,
                 takeover ? messages.getString("quote.mail.takeover.body").formatted(body) : body,
                 "staff_quote");
-    }
-
-    /**
-     * Tells the staff who can unblock a held production order (Jira 396 / 398 / 401), in Vietnamese like the
-     * other staff mail. One message to every recipient: a refusal is retried as a whole from the event registry.
-     */
-    void sendProductionHold(ProductionOrderHeld event, com.stockflow.common.security.Role audience,
-                            List<String> recipients) {
-        var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-        String reason = messages.containsKey("production.hold.reason." + event.reasonCode())
-                ? messages.getString("production.hold.reason." + event.reasonCode()) : event.reasonCode();
-        String source = event.sampleRequestId() != null
-                ? messages.getString("production.hold.source.sample").formatted(event.sampleRequestId())
-                : messages.getString("production.hold.source.order").formatted(event.salesOrderId());
-        // Facts only: the note the workshop typed stays on the production order, which the reader opens.
-        String note = event.blanksNeeded() == null || event.blankSku() == null ? ""
-                : messages.getString("production.hold.blanks").formatted(event.blanksNeeded(), event.blankSku());
-        sendToStaff(recipients,
-                messages.getString("production.hold.mail.subject").formatted(event.orderNumber(), reason),
-                messages.getString("production.hold.mail.body." + audience.name().toLowerCase(Locale.ROOT))
-                        .formatted(event.orderNumber(), reason, source, note),
-                "staff_production_hold");
     }
 
     /**

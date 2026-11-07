@@ -189,7 +189,7 @@ class SmallServicesTest {
                 List.of());
         var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(new OrderSummary.LineProgress(line, shipped, 0,
-                closed)), List.of(), BigDecimal.ZERO, BigDecimal.ZERO, allowPartial, true);
+                closed)), List.of(), BigDecimal.ZERO, BigDecimal.ZERO, allowPartial);
         return new OrderSummary(id, "SO-1", UUID.randomUUID(), OrderStatus.PACKED, Money.vnd(1000L * quantity),
                 List.of(summary), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null,
                 lifecycle);
