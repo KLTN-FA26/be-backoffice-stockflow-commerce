@@ -1,6 +1,6 @@
 -- =============================================================================
--- Adversarial checks + happy paths: stock ledger, adjustments, cycle counts, transfer orders,
--- move tasks (docs 07, 10, 11). Needs the demo seed. Rolled back at the end.
+-- Adversarial checks + happy paths: stock ledger, adjustments, cycle counts, move tasks (docs 07, 11). Transfers
+-- between warehouses were removed (V20261108000300). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -111,40 +111,12 @@ SELECT pg_temp.expect_ok('I20 approved by someone else, posted, with its ledger 
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type, reference_id, actor_id, occurred_at)
     VALUES (gen_random_uuid(), 'COUNT_CORRECTION', 'SOFA-3S-GREY', 'HCM-A01-2-B', 2, 'STOCK_ADJUSTMENT', md5('qa:adj:1')::uuid, md5('demo:user:approver')::uuid, NOW()) $q$);
 
-\echo '--- inter-warehouse transfer (docs 10)'
-SELECT pg_temp.expect_fail('I21 transfer within one warehouse (BR-01)', $q$
-    INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id)
-    VALUES (gen_random_uuid(), 'TO-QA-X', md5('demo:wh:HCM')::uuid, md5('demo:wh:HCM')::uuid) $q$);
-INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id, reason)
-VALUES (md5('qa:to:1')::uuid, 'TO-QA-1', md5('demo:wh:HCM')::uuid, md5('qa:wh:HN')::uuid, 'REBALANCING');
-INSERT INTO inventory.transfer_order_line (id, transfer_order_id, line_no, sku, requested_qty)
-VALUES (md5('qa:tol:1')::uuid, md5('qa:to:1')::uuid, 1, 'SOFA-3S-GREY', 5);
-SELECT pg_temp.expect_fail('I22 approved by its submitter', $q$
-    UPDATE inventory.transfer_order SET status = 'APPROVED', submitted_by = md5('demo:user:editor')::uuid, submitted_at = NOW(),
-        approved_by = md5('demo:user:editor')::uuid, approved_at = NOW() WHERE id = md5('qa:to:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I23 shipping more than requested', $q$
-    UPDATE inventory.transfer_order_line SET shipped_qty = 6 WHERE id = md5('qa:tol:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I24 IN_TRANSIT without dispatch evidence', $q$
-    UPDATE inventory.transfer_order SET status = 'IN_TRANSIT', submitted_by = md5('demo:user:editor')::uuid, submitted_at = NOW(),
-        approved_by = md5('demo:user:approver')::uuid, approved_at = NOW() WHERE id = md5('qa:to:1')::uuid $q$);
-SELECT pg_temp.expect_ok('I25 submit, approve, dispatch 5', $q$
-    UPDATE inventory.transfer_order SET status = 'IN_TRANSIT', submitted_by = md5('demo:user:editor')::uuid, submitted_at = NOW(),
-        approved_by = md5('demo:user:approver')::uuid, approved_at = NOW(),
-        dispatched_by = md5('demo:user:editor')::uuid, dispatched_at = NOW() WHERE id = md5('qa:to:1')::uuid;
-    UPDATE inventory.transfer_order_line SET shipped_qty = 5 WHERE id = md5('qa:tol:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I26 cancelled after dispatch (BR-04)', $q$
-    UPDATE inventory.transfer_order SET status = 'CANCELLED', cancel_reason = 'x' WHERE id = md5('qa:to:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I27 destination receives more than was shipped', $q$
-    UPDATE inventory.transfer_order_line SET received_qty = 6 WHERE id = md5('qa:tol:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I28 short receipt without a discrepancy note (BR-05)', $q$
-    UPDATE inventory.transfer_order_line SET received_qty = 4 WHERE id = md5('qa:tol:1')::uuid $q$);
-SELECT pg_temp.expect_ok('I29 4 good + 1 damaged, noted; putaway at the destination from the TO line', $q$
-    UPDATE inventory.transfer_order_line SET received_qty = 4, damaged_qty = 1, received_by = md5('demo:user:approver')::uuid WHERE id = md5('qa:tol:1')::uuid;
-    UPDATE inventory.transfer_order SET status = 'RECEIVED', received_at = NOW() WHERE id = md5('qa:to:1')::uuid;
-    INSERT INTO warehouse.putaway_task (id, transfer_order_line_id, sku, quantity, status, created_at)
-    VALUES (gen_random_uuid(), md5('qa:tol:1')::uuid, 'SOFA-3S-GREY', 4, 'PENDING', NOW()) $q$);
-SELECT pg_temp.expect_fail('I30 CLOSED (short-close) without a reason', $q$
-    UPDATE inventory.transfer_order SET status = 'CLOSED', closed_at = NOW() WHERE id = md5('qa:to:1')::uuid $q$);
+\echo '--- inter-warehouse transfer (removed, V20261108000300)'
+SELECT pg_temp.expect_fail('I21 transfer orders are gone: stock never changes warehouse', $q$
+    SELECT 1 FROM inventory.transfer_order $q$);
+SELECT pg_temp.expect_fail('I22 a putaway task has no transfer line to come from', $q$
+    INSERT INTO warehouse.putaway_task (id, sku, quantity, status, created_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 4, 'PENDING', NOW()) $q$);
 
 \echo '--- intra-warehouse move task (docs 11)'
 SELECT pg_temp.expect_fail('I31 move to a location of another warehouse (BR-01)', $q$
@@ -211,20 +183,6 @@ SELECT pg_temp.expect_ok('I45 withdrawn by its requester', $q$
 SELECT pg_temp.expect_fail('I46 a pending adjustment that says it was withdrawn', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, withdrawn_at)
     VALUES (gen_random_uuid(), 'ADJ-QA-S3', 'HCM-A01-2-B', 'SOFA-3S-GREY', -1, 'DAMAGED', md5('demo:user:editor')::uuid, NOW()) $q$);
-
-\echo '--- editing a draft transfer (SCRUM-462, V20261013000600)'
-INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id, reason)
-VALUES (md5('qa:to:2')::uuid, 'TO-QA-2', md5('demo:wh:HCM')::uuid, md5('qa:wh:HN')::uuid, 'REBALANCING');
-INSERT INTO inventory.transfer_order_line (id, transfer_order_id, line_no, sku, requested_qty)
-VALUES (md5('qa:tol:2')::uuid, md5('qa:to:2')::uuid, 1, 'SOFA-3S-GREY', 5);
-SELECT pg_temp.expect_ok('I47 a DRAFT transfer turned around, with a new date, reason and quantity', $q$
-    UPDATE inventory.transfer_order SET from_warehouse_id = md5('qa:wh:HN')::uuid, to_warehouse_id = md5('demo:wh:HCM')::uuid,
-           reason = 'DEMAND', expected_date = CURRENT_DATE + 3 WHERE id = md5('qa:to:2')::uuid;
-    UPDATE inventory.transfer_order_line SET requested_qty = 3 WHERE id = md5('qa:tol:2')::uuid $q$);
-SELECT pg_temp.expect_fail('I48 the date of a transfer past DRAFT', $q$
-    UPDATE inventory.transfer_order SET expected_date = CURRENT_DATE + 9 WHERE id = md5('qa:to:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I49 the requested quantity of a transfer past DRAFT', $q$
-    UPDATE inventory.transfer_order_line SET requested_qty = 9 WHERE id = md5('qa:tol:1')::uuid $q$);
 
 \echo '--- in-app inbox (SCRUM-147, V20261014000400); I50-I54 belong to the stock-alert migration'
 INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key, created_at)
