@@ -88,7 +88,7 @@ class NoRoleNameAccessTest {
             new Allowed("design/internal/service/DesignWorkflowService.java", "Role.CUSTOMER.authority()",
                     "the design's owner must be a customer account"),
             new Allowed("design/internal/service/DesignWorkflowService.java", "Role.SALES_STAFF.authority()",
-                    "the designer a design is handed to must be Sales or the E-commerce Admin"),
+                    "the designer a design is handed to must be Sales or the Sales Manager"),
             new Allowed("design/internal/service/DesignWorkflowService.java", "Role.QC_STAFF.authority()",
                     "the reviewer a design is handed to must be QC"),
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
@@ -262,7 +262,7 @@ class NoRoleNameAccessTest {
                         + ".PreAuthorize(\"x\")", "http.hasAnyAuthority(\"A\")", "roles.stream().map(Role::name)")) {
             check("x/X.java", 1, bad, true, problems, used);
         }
-        check("application.yml", 1, "      roles: ECOMMERCE_ADMIN", false, problems, used);
+        check("application.yml", 1, "      roles: SALES_MANAGER", false, problems, used);
         assertThat(problems).hasSize(10);
     }
 }

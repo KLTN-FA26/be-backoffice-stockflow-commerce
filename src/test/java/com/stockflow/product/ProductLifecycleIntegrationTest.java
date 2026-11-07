@@ -59,7 +59,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-461 over HTTP, through the real filter chain, the permission aspect and the seeded role grants
- * (ECOMMERCE_ADMIN, SYSTEM_ADMIN, SALES_STAFF, WAREHOUSE_STAFF, PROCUREMENT_STAFF), against Postgres: the brand a
+ * (SALES_MANAGER, SYSTEM_ADMIN, SALES_STAFF, WAREHOUSE_STAFF, PROCUREMENT_STAFF), against Postgres: the brand a
  * submission needs, the version a PUT quotes, discontinuing with a reason (warnings, never a refusal; variants
  * OBSOLETE), suspending and resuming, the storefront's view of an INACTIVE product, deleting a draft, and the
  * history. Every refusal is asserted by its exact {@code errorCode} and, where the rule names one, its
@@ -112,9 +112,9 @@ class ProductLifecycleIntegrationTest {
         return "Bearer " + token;
     }
 
-    /** Product people: ECOMMERCE_ADMIN has every product-products permission (create, update, approve, delete). */
+    /** Product people: SALES_MANAGER has every product-products permission (create, update, approve, delete). */
     private String editor() {
-        return token(editorUser, "ECOMMERCE_ADMIN");
+        return token(editorUser, "SALES_MANAGER");
     }
 
     /** SYSTEM_ADMIN: approves, and alone suspends, resumes and discontinues (product-lifecycle:APPROVE). */
@@ -300,7 +300,7 @@ class ProductLifecycleIntegrationTest {
         String poNumber = jdbc.queryForObject("SELECT po_number FROM procurement.purchase_orders WHERE id = ?", String.class, po);
         String orderNumber = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?", String.class, order);
 
-        // Who may discontinue: product-lifecycle:APPROVE, the System Admin only (kltn-docs 01 §5.1). ECOMMERCE_ADMIN
+        // Who may discontinue: product-lifecycle:APPROVE, the System Admin only (kltn-docs 01 §5.1). SALES_MANAGER
         // approves and publishes but does not end a product's life; WAREHOUSE_STAFF and SALES_STAFF have neither.
         String path = "/api/v1/products/" + id + "/discontinuation";
         String body = reasonAndVersion("Het dong san pham", approved.version());
@@ -399,7 +399,7 @@ class ProductLifecycleIntegrationTest {
 
         assertRefused(send("POST", token(UUID.randomUUID(), "SALES_STAFF"), suspension,
                 reasonAndVersion("recall", approved.version())), 403, "FORBIDDEN");
-        // product-lifecycle:APPROVE is the System Admin's alone (kltn-docs 01 §5.1): not the E-commerce Admin's.
+        // product-lifecycle:APPROVE is the System Admin's alone (kltn-docs 01 §5.1): not the Sales Manager's.
         assertRefused(send("POST", editor(), suspension, reasonAndVersion("recall", approved.version())), 403, "FORBIDDEN");
         assertRefused(send("POST", editor(), resumption, "{\"version\":%d}".formatted(approved.version())), 403, "FORBIDDEN");
         assertRefused(send("POST", approver(), suspension, "{\"version\":%d}".formatted(approved.version())), 400, "VALIDATION_FAILED");
@@ -555,7 +555,7 @@ class ProductLifecycleIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, sku)).isOne();
         String path = "/api/v1/products/" + id + "?version=" + draft.version();
 
-        // product-products:DELETE: ECOMMERCE_ADMIN and SYSTEM_ADMIN have it; SALES_STAFF (create/update) and WAREHOUSE_STAFF do not.
+        // product-products:DELETE: SALES_MANAGER and SYSTEM_ADMIN have it; SALES_STAFF (create/update) and WAREHOUSE_STAFF do not.
         assertRefused(send("DELETE", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), path, null), 403, "FORBIDDEN");
         assertRefused(send("DELETE", token(UUID.randomUUID(), "SALES_STAFF"), path, null), 403, "FORBIDDEN");
         mvc.perform(delete(path)).andExpect(status().isUnauthorized());
@@ -819,13 +819,13 @@ class ProductLifecycleIntegrationTest {
     // ------------------------------------------------------------------ permissions
 
     @Test
-    @DisplayName("the seeded grants: ECOMMERCE_ADMIN and SYSTEM_ADMIN hold product-products:DELETE, nobody else does")
+    @DisplayName("the seeded grants: SALES_MANAGER and SYSTEM_ADMIN hold product-products:DELETE, nobody else does")
     void deletePermissionIsSeededForTwoRoles() {
         List<String> holders = jdbc.queryForList("""
                 SELECT r.code FROM identity.role_permission rp
                   JOIN identity.app_role r ON r.id = rp.role_id
                   JOIN identity.permission p ON p.id = rp.permission_id
                  WHERE p.code = 'product-products:DELETE' ORDER BY r.code""", String.class);
-        assertThat(holders).containsExactly("ECOMMERCE_ADMIN", "SYSTEM_ADMIN");
+        assertThat(holders).containsExactly("SALES_MANAGER", "SYSTEM_ADMIN");
     }
 }

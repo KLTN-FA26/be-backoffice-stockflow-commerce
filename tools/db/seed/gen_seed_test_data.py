@@ -190,8 +190,8 @@ STAFF = [
     ("sales2", "Lý Gia Hân", ["SALES_STAFF"], [], "ACTIVE"),
     ("dieuphoi", "Mai Xuân Trường", ["ORDER_COORDINATOR"], [], "ACTIVE"),
     ("ketoan", "Tạ Thị Hồng", ["ACCOUNTANT"], [], "ACTIVE"),
-    ("ecom", "Châu Ngọc Ánh", ["ECOMMERCE_ADMIN"], [], "ACTIVE"),
-    ("ecom2", "Vương Thảo Vy", ["ECOMMERCE_ADMIN"], [], "ACTIVE"),
+    ("ecom", "Châu Ngọc Ánh", ["SALES_MANAGER"], [], "ACTIVE"),
+    ("ecom2", "Vương Thảo Vy", ["SALES_MANAGER"], [], "ACTIVE"),
     ("sanxuat.hn", "Lâm Văn Tài", ["PRODUCTION_STAFF"], ["HN"], "ACTIVE"),
     ("sanxuat.bd", "Kiều Văn Sơn", ["PRODUCTION_STAFF"], ["BD"], "ACTIVE"),
     ("thietke", "Dương Thùy Linh", ["SALES_STAFF"], [], "ACTIVE"),
@@ -4323,7 +4323,7 @@ def reconcile_after(t):
 
 
 # ---------------------------------------------------------------------------- customers' own prices (SCRUM-428)
-# CustomerPriceService.create / replace, by the E-commerce Admin (catalog-customer-prices:CREATE). The repository
+# CustomerPriceService.create / replace, by the Sales Manager (catalog-customer-prices:CREATE). The repository
 # replaces the tiers as a whole on every save, so a revised price's tiers carry the revision's time and the header's
 # version moved once. A price list is made after the customer's last order of that SKU: an order placed later would
 # have been priced from it (14 BR-03), and the seeded orders are priced from the segment / base price (unit_price).
@@ -4506,7 +4506,7 @@ resent = at(date(2026, 10, 8), 8, 45)
 invite("quancomnha", 1, t0, "sales1", "FAILED", revoked=resent)
 invite("quancomnha", 2, resent, "sales1", "SENT")
 
-# Never activated; the E-commerce Admin closed it (customer-status:APPROVE). Closing suspends the portal account
+# Never activated; the Sales Manager closed it (customer-status:APPROVE). Closing suspends the portal account
 # (syncPortalAccess -> PortalAccountService.suspend: ACTIVE -> DISABLED); the expired invitation is left as it was.
 t0 = at(date(2026, 9, 22), 15)
 user_row, cust_row = onboard("taphoabinhminh", "Cửa hàng tạp hóa Bình Minh", "Trương Văn Minh", "0912340604",
@@ -4521,7 +4521,7 @@ user_row.update(status="DISABLED")
 touched(user_row, 1, closed)
 
 # ---------------------------------------------------------------------------- staff status changes, renames
-# CustomerServiceImpl.changeStatus by the E-commerce Admin, on customers without a portal account (nothing to suspend):
+# CustomerServiceImpl.changeStatus by the Sales Manager, on customers without a portal account (nothing to suspend):
 # the blocked and the closed customer of section 5, a block lifted (a reason is required, decision 2026-10-17) and a
 # closed customer reopened (reason required, ck_customer_status_history_reopen_reason). No order falls in a time the
 # customer was blocked or closed, which it could not have placed then; one reopened may order again.
@@ -4744,7 +4744,7 @@ w(f"""-- =======================================================================
 -- * Every row has created_by = 'seed'; ids are md5('seed:' || key)::uuid.
 -- * Sign in with any staff account below, password  Stockflow@2026
 --     quanly.hn / quanly.bd (WAREHOUSE_MANAGER), kho.hn1, kho.bd1 (WAREHOUSE_STAFF), qc.hn, muahang1,
---     kehoach, sales1, dieuphoi, ketoan, ecom / ecom2 (ECOMMERCE_ADMIN), sanxuat.hn, kiemduyet ...
+--     kehoach, sales1, dieuphoi, ketoan, ecom / ecom2 (SALES_MANAGER), sanxuat.hn, kiemduyet ...
 --   No SYSTEM_ADMIN is created: use the one the database already has. Nothing here refers to it.
 --   customer accounts: kh.<code>, e.g. kh.caphemoc, kh.trasuamay (CUSTOMER role)
 -- * Scenario "today" is {TODAY.isoformat()}: history runs from August 2026.

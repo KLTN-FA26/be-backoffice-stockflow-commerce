@@ -22,7 +22,8 @@ public enum Role {
     CUSTOMER(Roles.CUSTOMER, "Browse, design, order and track"),
     SALES_STAFF(Roles.SALES_STAFF, "Advise customers, edit designs, create assisted orders"),
     ORDER_COORDINATOR(Roles.ORDER_COORDINATOR, "Release orders to the warehouse and handle holds"),
-    ECOMMERCE_ADMIN(Roles.ECOMMERCE_ADMIN, "Catalog, pricing, promotions, design templates"),
+    /** Was ECOMMERCE_ADMIN; renamed by V20261107000100 (kltn-docs 00 §2, 2026-11-05) with its id and grants. */
+    SALES_MANAGER(Roles.SALES_MANAGER, "Product data and approval, internal prices, print setup, design review, staff accounts"),
     PROCUREMENT_STAFF(Roles.PROCUREMENT_STAFF, "Purchase orders and supplier coordination"),
     ACCOUNTANT(Roles.ACCOUNTANT, "Supplier invoices, three-way matching, reconciliation"),
     /** Runs the in-house print stations (docs 19, V20261010000500). */

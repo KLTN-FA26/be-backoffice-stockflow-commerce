@@ -125,7 +125,7 @@ class CatalogProjectionStartupIntegrationTest {
         mvc.perform(get("/api/v1/catalog/products/ban-an-go-soi").header("Authorization", auth))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.variants[0].sku").value("TABLE-OAK-160"))
                 .andExpect(jsonPath("$.data.variants[0].price").value(8000000));
-        for (String role : List.of("ECOMMERCE_ADMIN", "SALES_STAFF", "WAREHOUSE_STAFF",
+        for (String role : List.of("SALES_MANAGER", "SALES_STAFF", "WAREHOUSE_STAFF",
                 "WAREHOUSE_MANAGER", "INVENTORY_PLANNER")) {
             String signedIn = authorization(role);
             mvc.perform(get("/api/v1/catalog/products").header("Authorization", signedIn))

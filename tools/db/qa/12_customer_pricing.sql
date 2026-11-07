@@ -114,7 +114,7 @@ SELECT pg_temp.expect_fail('G9 a second group with the same code', $q$
     VALUES (gen_random_uuid(), 'QA-SEG-530', 'Again', 0, NOW()) $q$);
 
 \echo '--- grants'
-SELECT pg_temp.expect_ok('P12 catalog-customer-prices: E-commerce Admin edits, Sales and Coordinator read, Customer nothing', $q$
+SELECT pg_temp.expect_ok('P12 catalog-customer-prices: Sales Manager edits, Sales and Coordinator read, Customer nothing', $q$
     DO $d$ BEGIN
         IF EXISTS (SELECT 1 FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
                    JOIN identity.permission p ON p.id = rp.permission_id
@@ -134,7 +134,7 @@ SELECT pg_temp.expect_ok('G6 catalog-segment-prices: E-commerce and System Admin
         IF (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
             JOIN identity.permission p ON p.id = rp.permission_id
             WHERE p.resource = 'catalog-segment-prices' AND p.action = 'UPDATE'
-              AND r.code IN ('ECOMMERCE_ADMIN', 'SYSTEM_ADMIN')) <> 2
+              AND r.code IN ('SALES_MANAGER', 'SYSTEM_ADMIN')) <> 2
         THEN RAISE EXCEPTION 'an administrator cannot edit group prices'; END IF;
     END $d$ $q$);
 
@@ -149,7 +149,7 @@ SELECT pg_temp.expect_ok('G10 customer-segments: admins manage, Sales and Coordi
         IF (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
             JOIN identity.permission p ON p.id = rp.permission_id
             WHERE p.resource = 'customer-segments' AND p.action = 'UPDATE'
-              AND r.code IN ('ECOMMERCE_ADMIN', 'SYSTEM_ADMIN')) <> 2
+              AND r.code IN ('SALES_MANAGER', 'SYSTEM_ADMIN')) <> 2
         THEN RAISE EXCEPTION 'an administrator cannot assign groups'; END IF;
     END $d$ $q$);
 

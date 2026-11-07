@@ -262,10 +262,10 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-controlled-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
-            Map.entry("customer-status:APPROVE", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
+            Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
-            Map.entry("platform-actuator:READ", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
-            Map.entry("platform-actuator:UPDATE", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
+            Map.entry("platform-actuator:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("platform-actuator:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ACCOUNTANT,
                     Role.SYSTEM_ADMIN)),
@@ -275,7 +275,7 @@ class PermissionMatrixTest {
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
                     Role.INVENTORY_PLANNER, Role.PROCUREMENT_STAFF, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
-                    Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)));
+                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -588,7 +588,7 @@ class PermissionMatrixTest {
     /**
      * kltn-docs 01 §5.1: suspending, resuming and discontinuing a product are the System Admin's. The three handlers
      * need {@code product-lifecycle:APPROVE}, and the seeded matrix grants it to SYSTEM_ADMIN and nobody else - not
-     * the E-commerce Admin, who approves and publishes with {@code product-products:APPROVE}.
+     * the Sales Manager, who approves and publishes with {@code product-products:APPROVE}.
      */
     @Test
     void onlyTheSystemAdminSuspendsResumesAndDiscontinuesAProduct() {
@@ -604,7 +604,7 @@ class PermissionMatrixTest {
                 .filter(role -> roles.resolve(List.of(role.authority())).permissions().contains(lifecycle))
                 .toList();
         assertThat(holders).containsExactly(Role.SYSTEM_ADMIN);
-        assertThat(roles.resolve(List.of(Role.ECOMMERCE_ADMIN.authority())).permissions())
+        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
                 .contains(PermissionCode.of("product-products", com.stockflow.common.security.Action.APPROVE));
     }
 
@@ -712,13 +712,13 @@ class PermissionMatrixTest {
         List<Role> holders = Arrays.stream(Role.values())
                 .filter(role -> roles.resolve(List.of(role.authority())).permissions().contains(users))
                 .toList();
-        assertThat(holders).containsExactlyInAnyOrder(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN);
+        assertThat(holders).containsExactlyInAnyOrder(Role.SALES_MANAGER, Role.SYSTEM_ADMIN);
         for (Role role : holders) {
             assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
                     .contains(PermissionCode.parse("identity-roles:READ"),
                             PermissionCode.parse("warehouse-warehouses:READ"));
         }
-        assertThat(roles.resolve(List.of(Role.ECOMMERCE_ADMIN.authority())).permissions())
+        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
                         PermissionCode.parse("warehouse-warehouses:CREATE"),
                         PermissionCode.parse("warehouse-warehouses:UPDATE"));

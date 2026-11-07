@@ -58,7 +58,7 @@ class DesignOwnerCustomerIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        adminUser = account("ECOMMERCE_ADMIN");
+        adminUser = account("SALES_MANAGER");
         reviewer = account("QC_STAFF");
         ownerA = account("CUSTOMER");
         ownerB = account("CUSTOMER");
@@ -85,7 +85,7 @@ class DesignOwnerCustomerIntegrationTest {
     private String adminToken() {
         String value = UUID.randomUUID().toString();
         when(decoder.decode(value)).thenReturn(Jwt.withTokenValue(value).header("alg", "RS256")
-                .subject(adminUser.toString()).claim("roles", List.of("ECOMMERCE_ADMIN")).build());
+                .subject(adminUser.toString()).claim("roles", List.of("SALES_MANAGER")).build());
         return "Bearer " + value;
     }
 

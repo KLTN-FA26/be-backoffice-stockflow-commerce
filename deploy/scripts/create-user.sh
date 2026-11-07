@@ -2,7 +2,7 @@
 # =============================================================================
 # Creates a staff account on the dev server, or resets an existing one's password and adds roles.
 #
-#   bash scripts/create-user.sh admin admin@example.com ECOMMERCE_ADMIN
+#   bash scripts/create-user.sh admin admin@example.com SYSTEM_ADMIN
 #   bash scripts/create-user.sh kho1  kho1@example.com  WAREHOUSE_STAFF WAREHOUSE_MANAGER
 #
 # Why this exists: the dev profile carries no demo users that can sign in (the demo seed's authors

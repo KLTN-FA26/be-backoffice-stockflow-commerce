@@ -116,7 +116,7 @@ class CustomerPricingIntegrationTest {
 
     @BeforeAll
     void staff() {
-        admin = token(account("ECOMMERCE_ADMIN"));
+        admin = token(account("SALES_MANAGER"));
         UUID salesUser = account("SALES_STAFF");
         sales = token(salesUser);
         salesId = salesUser;
@@ -403,7 +403,7 @@ class CustomerPricingIntegrationTest {
     }
 
     /**
-     * P7 (user decision 2026-10-12): E-commerce Admin and System Admin manage customer-group prices; Sales reads
+     * P7 (user decision 2026-10-12): Sales Manager and System Admin manage customer-group prices; Sales reads
      * and negotiates per quote; resolution stays own tiers -> group price -> base price.
      */
     @Test

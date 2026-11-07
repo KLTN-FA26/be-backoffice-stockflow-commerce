@@ -22,7 +22,7 @@
 -- * Every row has created_by = 'seed'; ids are md5('seed:' || key)::uuid.
 -- * Sign in with any staff account below, password  Stockflow@2026
 --     quanly.hn / quanly.bd (WAREHOUSE_MANAGER), kho.hn1, kho.bd1 (WAREHOUSE_STAFF), qc.hn, muahang1,
---     kehoach, sales1, dieuphoi, ketoan, ecom / ecom2 (ECOMMERCE_ADMIN), sanxuat.hn, kiemduyet ...
+--     kehoach, sales1, dieuphoi, ketoan, ecom / ecom2 (SALES_MANAGER), sanxuat.hn, kiemduyet ...
 --   No SYSTEM_ADMIN is created: use the one the database already has. Nothing here refers to it.
 --   customer accounts: kh.<code>, e.g. kh.caphemoc, kh.trasuamay (CUSTOMER role)
 -- * Scenario "today" is 2026-10-12: history runs from August 2026.
@@ -121,8 +121,8 @@ INSERT INTO identity.user_role (id, user_id, role_id, created_at, created_by) VA
     ('13cf0db3-7f87-747f-58df-e90427d7f4f3', 'e55a9bc9-280a-76b0-1824-8b1902111987', (SELECT id FROM identity.app_role WHERE code = 'SALES_STAFF'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
     ('1c751abf-eebf-e31c-d00c-863b7a9548b3', 'c71d4bee-6cca-89d2-d946-5cc9c14cd22a', (SELECT id FROM identity.app_role WHERE code = 'ORDER_COORDINATOR'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
     ('a7e961ff-7a61-6e47-c754-83bb2cc147d4', '8530788d-f4ab-3acd-432d-0c20a2adb318', (SELECT id FROM identity.app_role WHERE code = 'ACCOUNTANT'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
-    ('eb24c025-d075-7295-2709-cb88eeae72f2', 'fb590a56-2d5b-4636-bdea-743fcba1b763', (SELECT id FROM identity.app_role WHERE code = 'ECOMMERCE_ADMIN'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
-    ('eb570bdb-4071-8332-453d-35335e28bd0f', 'dcf51336-092e-d661-87b4-60a7bc3f41a1', (SELECT id FROM identity.app_role WHERE code = 'ECOMMERCE_ADMIN'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
+    ('eb24c025-d075-7295-2709-cb88eeae72f2', 'fb590a56-2d5b-4636-bdea-743fcba1b763', (SELECT id FROM identity.app_role WHERE code = 'SALES_MANAGER'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
+    ('eb570bdb-4071-8332-453d-35335e28bd0f', 'dcf51336-092e-d661-87b4-60a7bc3f41a1', (SELECT id FROM identity.app_role WHERE code = 'SALES_MANAGER'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
     ('14b9d75a-f0b4-b36d-fcc5-beb2a0537527', '2e912e04-f0ed-b633-d7f6-df6ffa96041d', (SELECT id FROM identity.app_role WHERE code = 'PRODUCTION_STAFF'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
     ('b31f7de2-46af-5773-43e6-9f3e4e883180', '0baf1bc2-1003-4e61-38d6-8d28d98653c1', (SELECT id FROM identity.app_role WHERE code = 'PRODUCTION_STAFF'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),
     ('d7bb9ef4-d974-b678-0593-dbd548f6cf5d', '51c8328f-c371-4d20-1881-ac895d0d210a', (SELECT id FROM identity.app_role WHERE code = 'SALES_STAFF'), TIMESTAMPTZ '2026-08-01 08:00:00+07', 'seed'),

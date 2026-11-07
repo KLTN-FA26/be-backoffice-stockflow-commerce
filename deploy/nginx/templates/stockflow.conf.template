@@ -103,7 +103,7 @@ server {
 
     # /actuator is passed through: on this dev server the team uses loggers and threaddump. The
     # application guards it itself - only the liveness/readiness probes and info are anonymous,
-    # everything else needs an ECOMMERCE_ADMIN token (ResourceServerSecurityConfig). For a
+    # everything else needs a token holding platform-actuator:READ (ActuatorPermission). For a
     # production server, return 404 here instead.
     #
     # Swagger UI for the frontend team: https://api.${DOMAIN}/swagger-ui.html (anonymous).

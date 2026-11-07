@@ -26,7 +26,7 @@ import java.util.UUID;
  * (→ {@code DISCONTINUED}, terminal). Same URLs as before, under {@code /api/v1/products}.
  *
  * <p><b>Who.</b> kltn-docs 01 §5.1: {@code Active → Inactive}, {@code Inactive → Active} and {@code Discontinued} are
- * the System Admin's. These handlers used {@code product-products:APPROVE}, which the E-commerce Admin holds to
+ * the System Admin's. These handlers used {@code product-products:APPROVE}, which the Sales Manager holds to
  * approve and publish; they now have a resource of their own, {@code product-lifecycle:APPROVE}, granted to
  * SYSTEM_ADMIN only (V20261019000700). APPROVE because it is the sensitive, sign-off class of action: an
  * administrator ticks it explicitly, never through "select all". Approving, rejecting, publishing and

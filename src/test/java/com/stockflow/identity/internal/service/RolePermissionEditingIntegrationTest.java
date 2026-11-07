@@ -179,22 +179,22 @@ class RolePermissionEditingIntegrationTest {
     /** SYSTEM_ADMIN always holds the right, so another role is free to give it up. */
     @Test
     void anotherRoleMayGiveUpManagingPermissionsWhileSystemAdminHoldsIt() {
-        RoleMatrixView admin = identity.roleMatrix("ECOMMERCE_ADMIN");
+        RoleMatrixView admin = identity.roleMatrix("SALES_MANAGER");
         List<String> before = granted(admin);
         try {
             RoleMatrixView saved = identity.updateRolePermissions(new UpdateRolePermissionsCommand(
-                    "ECOMMERCE_ADMIN", admin.version(), without(before, MANAGE_RBAC)));
+                    "SALES_MANAGER", admin.version(), without(before, MANAGE_RBAC)));
 
             assertThat(granted(saved)).doesNotContain(MANAGE_RBAC);
         } finally {
-            RoleMatrixView now = identity.roleMatrix("ECOMMERCE_ADMIN");
-            identity.updateRolePermissions(new UpdateRolePermissionsCommand("ECOMMERCE_ADMIN", now.version(), before));
+            RoleMatrixView now = identity.roleMatrix("SALES_MANAGER");
+            identity.updateRolePermissions(new UpdateRolePermissionsCommand("SALES_MANAGER", now.version(), before));
         }
     }
 
     /**
      * The guard itself, with SYSTEM_ADMIN's grant taken away for the duration: SYSTEM_ADMIN is not
-     * editable through the service, so this is the only way left to make ECOMMERCE_ADMIN the last
+     * editable through the service, so this is the only way left to make SALES_MANAGER the last
      * holder, and the guard still has to hold if a migration ever leaves it that way.
      */
     @Test
@@ -208,14 +208,14 @@ class RolePermissionEditingIntegrationTest {
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
         tx.executeWithoutResult(status -> jdbc.update("DELETE " + systemAdminGrant, MANAGE_RBAC));
         try {
-            RoleMatrixView admin = identity.roleMatrix("ECOMMERCE_ADMIN");
+            RoleMatrixView admin = identity.roleMatrix("SALES_MANAGER");
 
             assertThatThrownBy(() -> identity.updateRolePermissions(new UpdateRolePermissionsCommand(
-                    "ECOMMERCE_ADMIN", admin.version(), without(granted(admin), MANAGE_RBAC))))
+                    "SALES_MANAGER", admin.version(), without(granted(admin), MANAGE_RBAC))))
                     .isInstanceOfSatisfying(BusinessException.class,
                             ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.RBAC_LOCKOUT));
             // Refused inside the transaction, so the version bump rolled back with it.
-            assertThat(identity.roleMatrix("ECOMMERCE_ADMIN").version()).isEqualTo(admin.version());
+            assertThat(identity.roleMatrix("SALES_MANAGER").version()).isEqualTo(admin.version());
         } finally {
             tx.executeWithoutResult(status -> jdbc.update("""
                     INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)

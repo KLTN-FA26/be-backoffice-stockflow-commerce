@@ -492,7 +492,7 @@ class SalesRollupIntegrationTest {
         awaitPlaced(order);
 
         JsonNode top = data(send(get(REPORTS + "/top-products").param("from", today.toString())
-                .param("to", today.toString()).param("limit", "3"), Role.ECOMMERCE_ADMIN).andExpect(status().isOk()));
+                .param("to", today.toString()).param("limit", "3"), Role.SALES_MANAGER).andExpect(status().isOk()));
 
         assertThat(top.size()).isBetween(1, 3);
         JsonNode sofa = Stream.iterate(0, i -> i + 1).limit(top.size()).map(top::get)
@@ -591,7 +591,7 @@ class SalesRollupIntegrationTest {
         mvc.perform(get(REPORTS + "/summary")).andExpect(status().isUnauthorized());
         mvc.perform(post(REPORTS + "/rebuild")).andExpect(status().isUnauthorized());
 
-        for (Role reader : List.of(Role.ACCOUNTANT, Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN, Role.WAREHOUSE_MANAGER,
+        for (Role reader : List.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN, Role.WAREHOUSE_MANAGER,
                 Role.ORDER_COORDINATOR)) {
             send(get(REPORTS + "/summary"), reader).andExpect(status().isOk());
             send(get(REPORTS + "/sales-daily"), reader).andExpect(status().isOk());
@@ -620,7 +620,7 @@ class SalesRollupIntegrationTest {
         awaitPlaced(order);
         List<String> before = snapshot(today);
 
-        for (Role role : List.of(Role.ACCOUNTANT, Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)) {
+        for (Role role : List.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)) {
             JsonNode result = data(send(post(REPORTS + "/rebuild").param("from", today.minusDays(2).toString())
                     .param("to", today.toString()), role).andExpect(status().isOk()));
             assertThat(result.path("days").asInt()).isEqualTo(3);

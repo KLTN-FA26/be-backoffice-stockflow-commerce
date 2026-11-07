@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
 
 /**
  * A customer group (kltn-docs 18 §4.3 step 10: "Quản trị bán hàng gán nhóm"), the key of a group price
- * (13 §3: a customer without its own price list pays its group's price). Managed by the E-commerce Admin
+ * (13 §3: a customer without its own price list pays its group's price). Managed by the Sales Manager
  * (user decision P7).
  *
  * <p>The code is the group's identity in price rules and reports, so it is fixed once created: upper-case

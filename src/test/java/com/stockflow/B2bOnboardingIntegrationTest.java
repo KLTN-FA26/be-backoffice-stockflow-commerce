@@ -134,7 +134,7 @@ class B2bOnboardingIntegrationTest {
 
     @BeforeAll
     void staff() {
-        ecommerceAdmin = staffToken("ECOMMERCE_ADMIN");
+        ecommerceAdmin = staffToken("SALES_MANAGER");
         warehouse = staffToken("WAREHOUSE_STAFF");
         systemAdmin = staffToken("SYSTEM_ADMIN");
     }
@@ -276,7 +276,7 @@ class B2bOnboardingIntegrationTest {
                 SELECT count(*) FROM identity.role_permission rp
                 JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
                 WHERE p.code = 'customer-customers:CREATE'
-                  AND r.code IN ('SALES_STAFF','ECOMMERCE_ADMIN','SYSTEM_ADMIN')""", Long.class)).isEqualTo(3);
+                  AND r.code IN ('SALES_STAFF','SALES_MANAGER','SYSTEM_ADMIN')""", Long.class)).isEqualTo(3);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM identity.role_permission rp
                 JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
@@ -741,7 +741,7 @@ class B2bOnboardingIntegrationTest {
         reopen(customerId, "   ").andExpect(status().isBadRequest());
         changeStatus(customerId, "BLOCKED").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_CUSTOMER_STATUS_TRANSITION"));
-        // Sales is not the manager (kltn-docs 18 §2: E-commerce Admin).
+        // Sales is not the manager (kltn-docs 18 §2: Sales Manager).
         mvc.perform(post("/api/v1/customers/" + customerId + "/status").header("Authorization", "Bearer " + sales)
                         .contentType("application/json").content(json(Map.of("status", "ACTIVE", "reason", "x"))))
                 .andExpect(status().isForbidden());

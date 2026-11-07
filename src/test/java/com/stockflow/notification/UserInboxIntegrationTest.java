@@ -406,7 +406,7 @@ class UserInboxIntegrationTest {
     void everyRoleThatCanSignInHasTheBell() {
         // 11 staff roles (V20261014000400) + CUSTOMER (V20260903000100), each with VIEW_PAGE, READ and UPDATE.
         List<String> roles = List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER", "INVENTORY_PLANNER", "QC_STAFF",
-                "SALES_STAFF", "ORDER_COORDINATOR", "ECOMMERCE_ADMIN", "PROCUREMENT_STAFF", "ACCOUNTANT",
+                "SALES_STAFF", "ORDER_COORDINATOR", "SALES_MANAGER", "PROCUREMENT_STAFF", "ACCOUNTANT",
                 "PRODUCTION_STAFF", "SYSTEM_ADMIN", "CUSTOMER");
         for (String role : roles) {
             assertThat(jdbc.queryForList("""
@@ -421,7 +421,7 @@ class UserInboxIntegrationTest {
     @Test
     void everyStaffRoleAndTheCustomerCanOpenTheirOwnInbox() throws Exception {
         for (String role : List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER", "INVENTORY_PLANNER", "QC_STAFF",
-                "SALES_STAFF", "ORDER_COORDINATOR", "ECOMMERCE_ADMIN", "PROCUREMENT_STAFF", "ACCOUNTANT",
+                "SALES_STAFF", "ORDER_COORDINATOR", "SALES_MANAGER", "PROCUREMENT_STAFF", "ACCOUNTANT",
                 "PRODUCTION_STAFF", "SYSTEM_ADMIN", "CUSTOMER")) {
             String bearer = token(account(role), role);
             list(bearer, "").andExpect(status().isOk());

@@ -23,7 +23,7 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
- * Back-office management of customer-group prices (user decision P7, 2026-10-12): E-commerce Admin and System
+ * Back-office management of customer-group prices (user decision P7, 2026-10-12): Sales Manager and System
  * Admin set them, Sales reads them and negotiates per quote instead. Resolution is unchanged: the customer's
  * own tiers, else its group's price, else the base price ({@link PriceResolver}).
  *

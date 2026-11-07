@@ -327,7 +327,7 @@ public class DesignWorkflowService {
                     "Design owner must be an active customer account");
         }
         if (designer != null && !identities.isActiveUserWithAnyRole(designer,
-                Role.SALES_STAFF.authority(), Role.ECOMMERCE_ADMIN.authority())) {
+                Role.SALES_STAFF.authority(), Role.SALES_MANAGER.authority())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Assigned designer must be active sales staff or an e-commerce administrator");
         }

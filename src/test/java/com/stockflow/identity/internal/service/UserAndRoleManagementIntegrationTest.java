@@ -485,13 +485,13 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void anEcommerceAdminCannotPromoteAnyoneToSystemAdminNorTakeOverAnAdmin() {
-        StaffUser shopAdmin = create("ECOMMERCE_ADMIN").user();
+        StaffUser shopAdmin = create("SALES_MANAGER").user();
         StaffUser clerk = create("SALES_STAFF").user();
         StaffUser admin = create("SYSTEM_ADMIN").user();
         String empty = unique("EMPTY_").toUpperCase(Locale.ROOT);
         identity.createRole(new CreateRoleCommand(empty, "Nothing", null, null, null));
         StaffUser newcomer = create(empty).user();
-        CurrentUser caller = actor(shopAdmin.userId(), Role.ECOMMERCE_ADMIN);
+        CurrentUser caller = actor(shopAdmin.userId(), Role.SALES_MANAGER);
 
         // The newcomer holds nothing, so the shop admin may manage them — but not hand them more
         // than the shop admin holds.
@@ -517,13 +517,13 @@ class UserAndRoleManagementIntegrationTest {
         refused(ErrorCode.PRIVILEGE_ESCALATION, () -> as(caller, () -> identity.createStaffUser(
                 new CreateStaffUserCommand(unique("x."), unique("x") + "@example.com", null, null, List.of("SYSTEM_ADMIN"), null))));
 
-        assertThat(roleCodes(shopAdmin.userId())).containsExactly("ECOMMERCE_ADMIN");
+        assertThat(roleCodes(shopAdmin.userId())).containsExactly("SALES_MANAGER");
     }
 
     @Test
     void anEcommerceAdminCannotTickAPermissionItDoesNotHoldOntoItsOwnRole() {
-        StaffUser shopAdmin = create("ECOMMERCE_ADMIN").user();
-        CurrentUser caller = actor(shopAdmin.userId(), Role.ECOMMERCE_ADMIN);
+        StaffUser shopAdmin = create("SALES_MANAGER").user();
+        CurrentUser caller = actor(shopAdmin.userId(), Role.SALES_MANAGER);
         String custom = unique("R_").toUpperCase(Locale.ROOT);
         identity.createRole(new CreateRoleCommand(custom, "Custom", null, null, null));
 

@@ -104,7 +104,7 @@ class StockflowJwtAuthenticationConverterTest {
             throw new IllegalStateException("redis and postgres are both down");
         });
 
-        assertThatThrownBy(() -> converter.convert(token(List.of("ECOMMERCE_ADMIN"), null)))
+        assertThatThrownBy(() -> converter.convert(token(List.of("SALES_MANAGER"), null)))
                 .isInstanceOf(AuthenticationServiceException.class);
     }
 

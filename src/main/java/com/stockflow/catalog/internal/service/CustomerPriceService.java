@@ -22,7 +22,7 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * Back-office management of customers' own prices (SCRUM-428; kltn-docs 13 §2: E-commerce Admin
+ * Back-office management of customers' own prices (SCRUM-428; kltn-docs 13 §2: Sales Manager
  * configures price lists per customer and quantity tier).
  *
  * <p>Every change locks the SKU's product first when it is published - the lock checkout takes before

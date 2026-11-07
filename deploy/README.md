@@ -237,7 +237,7 @@ cores. `deploy.sh` waits up to 300 s.
 4. **Create the first accounts.** The database starts with no user who can sign in (security is on
    here, unlike the local profile), so nobody can obtain a token until you do this:
    ```bash
-   bash scripts/create-user.sh admin admin@<domain> ECOMMERCE_ADMIN
+   bash scripts/create-user.sh admin admin@<domain> SYSTEM_ADMIN
    bash scripts/create-user.sh kho1  kho1@<domain>  WAREHOUSE_STAFF
    ```
    It asks for the password (12+ characters). Running it again for an existing username resets the

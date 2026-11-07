@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Customer groups from the back office (user decision P7, 2026-10-12): the E-commerce Admin (and System Admin)
+ * Customer groups from the back office (user decision P7, 2026-10-12): the Sales Manager (and System Admin)
  * creates and renames groups and puts customers in them; Sales and the Order Coordinator read. Who may call
  * what is the {@code customer-segments} resource (V20261017000600).
  *

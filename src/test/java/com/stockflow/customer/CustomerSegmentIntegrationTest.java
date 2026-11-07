@@ -112,7 +112,7 @@ class CustomerSegmentIntegrationTest {
 
     @Test
     void theAdminManagesGroupsSalesReadsAndAGroupPricesItsCustomers() throws Exception {
-        String admin = token("ECOMMERCE_ADMIN");
+        String admin = token("SALES_MANAGER");
         String sales = token("SALES_STAFF");
         String suffix = UUID.randomUUID().toString().substring(24).toUpperCase();
         Map<String, Object> group = Map.of("code", " dai-ly-" + suffix.toLowerCase() + " ", "name", "Đại lý cấp 1");

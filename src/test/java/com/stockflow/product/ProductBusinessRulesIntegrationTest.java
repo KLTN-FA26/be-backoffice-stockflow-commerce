@@ -73,11 +73,11 @@ class ProductBusinessRulesIntegrationTest {
         tax = ProductFixtures.taxonomy(taxonomy, suffix);
     }
 
-    /** ECOMMERCE_ADMIN holds every product-products permission. */
+    /** SALES_MANAGER holds every product-products permission. */
     private String editor() {
         String token = UUID.randomUUID().toString();
         when(decoder.decode(token)).thenReturn(Jwt.withTokenValue(token).header("alg", "RS256")
-                .subject(editorUser.toString()).claim("roles", List.of("ECOMMERCE_ADMIN")).build());
+                .subject(editorUser.toString()).claim("roles", List.of("SALES_MANAGER")).build());
         return "Bearer " + token;
     }
 

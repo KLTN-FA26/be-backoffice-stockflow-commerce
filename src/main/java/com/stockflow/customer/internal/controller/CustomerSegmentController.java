@@ -25,7 +25,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Customer groups and who is in them (user decision P7): E-commerce Admin and System Admin manage, Sales and the
+ * Customer groups and who is in them (user decision P7): Sales Manager and System Admin manage, Sales and the
  * Order Coordinator read; customers hold no grant. A group's prices are {@code /api/v1/catalog/segment-prices};
  * the customers of a group are {@code GET /api/v1/customers?segmentId=}.
  */
