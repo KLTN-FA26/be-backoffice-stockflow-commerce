@@ -3,7 +3,8 @@
  *
  * <p>WBS 3.7 + 3.8 + 3.9 · database schema {@code fulfillment}</p>
  *
- * <p><b>May depend on:</b> order, inventory, warehouse, identity (no longer design: the warehouse checks no design,
+ * <p><b>May depend on:</b> order, inventory, warehouse, identity, customer (only to find the signed-in customer
+ * whose order's vehicles the portal shows, 3-6; no longer design: the warehouse checks no design,
  * kltn-docs 08 §1). Plus {@code common} and {@code contracts}, which are
  * available to every module. From inventory it uses two named interfaces: {@code api}, and
  * {@code consumption} — the narrow one that deducts picked stock, books put-backs and reports damage found at a
@@ -19,5 +20,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "inventory :: api",
-        "inventory :: consumption", "warehouse :: api", "identity :: api"})
+        "inventory :: consumption", "warehouse :: api", "identity :: api", "customer :: api"})
 package com.stockflow.fulfillment;

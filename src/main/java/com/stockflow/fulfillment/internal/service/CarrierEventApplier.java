@@ -69,6 +69,7 @@ class CarrierEventApplier {
     private final CarrierBookingJpaRepository bookings;
     private final ShipmentJpaRepository shipments;
     private final TrackingMilestoneJpaRepository milestones;
+    private final com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository corrections;
     private final Dispatching dispatching;
     private final ShipmentService shipmentOutcomes;
     private final ApplicationEventPublisher publisher;
@@ -78,7 +79,9 @@ class CarrierEventApplier {
     @SuppressWarnings("java:S107")
     CarrierEventApplier(CarrierEventJpaRepository events, DispatchLoadJpaRepository loads,
                         CarrierBookingJpaRepository bookings, ShipmentJpaRepository shipments,
-                        TrackingMilestoneJpaRepository milestones, Dispatching dispatching,
+                        TrackingMilestoneJpaRepository milestones,
+                        com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository corrections,
+                        Dispatching dispatching,
                         ShipmentService shipmentOutcomes, ApplicationEventPublisher publisher, ObjectMapper json,
                         Clock clock) {
         this.events = events;
@@ -86,6 +89,7 @@ class CarrierEventApplier {
         this.bookings = bookings;
         this.shipments = shipments;
         this.milestones = milestones;
+        this.corrections = corrections;
         this.dispatching = dispatching;
         this.shipmentOutcomes = shipmentOutcomes;
         this.publisher = publisher;
@@ -276,6 +280,7 @@ class CarrierEventApplier {
         if (targets.isEmpty()) {
             return new Outcome(CarrierEventResult.NEEDS_REVIEW, "No shipment left on load " + m.loadCode());
         }
+        requireNotCorrected(targets);
         int changed = 0;
         for (UUID shipment : targets) {
             changed += shipmentOutcomes.carrierOutcome(shipment, target, reason, note, at, eventId) ? 1 : 0;
@@ -298,6 +303,7 @@ class CarrierEventApplier {
         List<ShipmentJpaRepository.ShipmentState> targets = m.shipmentId() != null
                 ? onLoad.stream().filter(s -> s.getId().equals(m.shipmentId())).toList()
                 : onLoad.stream().filter(s -> s.getStatus() != ShipmentStatus.DELIVERED).toList();
+        requireNotCorrected(targets.stream().map(ShipmentJpaRepository.ShipmentState::getId).toList());
         List<String> silent = new ArrayList<>();
         int changed = 0;
         for (ShipmentJpaRepository.ShipmentState shipment : targets) {
@@ -329,7 +335,7 @@ class CarrierEventApplier {
     /**
      * The carrier closed the order: the outcomes its drop-offs carry that were not applied yet are - Ahamove may report
      * the last drop-off only inside the order's completion. Each as its own callback would be: its shipment, its time,
-     * its reason; one already further along is left as it is.
+     * its reason; one corrected by hand is not touched (E17), one already further along is left as it is.
      */
     private Outcome completed(CarrierJpaEntity carrier, Matched m, UUID eventId) {
         if (m.stops().isEmpty()) {
@@ -341,8 +347,13 @@ class CarrierEventApplier {
         for (CarrierReport stop : m.stops()) {
             bookings.shipmentAtStop(m.bookingId(), stop.stop()).ifPresent(id -> byShipment.put(id, stop));
         }
+        List<String> corrected = byShipment.isEmpty() ? List.of()
+                : corrections.correctedAmong(List.copyOf(byShipment.keySet()));
         int changed = 0;
         for (Map.Entry<UUID, CarrierReport> entry : byShipment.entrySet()) {
+            if (corrected.contains(shipments.codeOf(entry.getKey()).orElse(null))) {
+                continue;
+            }
             CarrierReport stop = entry.getValue();
             Instant at = stop.reportedAt() != null ? stop.reportedAt() : clock.instant();
             ShipmentStatus status = shipments.statesOnLoad(m.loadId()).stream()
@@ -360,9 +371,10 @@ class CarrierEventApplier {
                     : ShipmentStatus.DELIVERY_FAILED, failure == null ? null : failure.reason(), note, at, eventId)
                     ? 1 : 0;
         }
+        String skipped = corrected.isEmpty() ? "" : "; corrected by hand, not touched: " + String.join(", ", corrected);
         return changed > 0 ? new Outcome(CarrierEventResult.APPLIED,
-                        "Outcomes of %d drop-off(s) from the completed order".formatted(changed))
-                : new Outcome(CarrierEventResult.IGNORED, "The drop-offs' outcomes were applied already");
+                        "Outcomes of %d drop-off(s) from the completed order%s".formatted(changed, skipped))
+                : new Outcome(CarrierEventResult.IGNORED, "The drop-offs' outcomes were applied already" + skipped);
     }
 
     /**
@@ -395,6 +407,22 @@ class CarrierEventApplier {
             throw new BusinessException(com.stockflow.common.error.ErrorCode.INVALID_LOAD_TRANSITION,
                     "Load %s is %s: the carrier reports %s before the vehicle left".formatted(m.loadCode(), status,
                             m.report().kind()));
+        }
+    }
+
+    /**
+     * E17: once the warehouse manager corrected a shipment's outcome by hand, the carrier's later reports about it are
+     * not applied - they go to the error list for the manager to look at.
+     */
+    private void requireNotCorrected(List<UUID> shipmentIds) {
+        if (shipmentIds.isEmpty()) {
+            return;
+        }
+        List<String> corrected = corrections.correctedAmong(shipmentIds);
+        if (!corrected.isEmpty()) {
+            throw new BusinessException(com.stockflow.common.error.ErrorCode.SHIPMENT_STATE_CONFLICT, ("The outcome of "
+                    + "%s was corrected by hand: the carrier's report is not applied (E17)").formatted(
+                    String.join(", ", corrected)));
         }
     }
 

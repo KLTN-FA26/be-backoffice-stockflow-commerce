@@ -61,4 +61,23 @@ public interface Shipments {
      *         {@code VALIDATION_FAILED} (no reason, OTHER without a note); {@code SHIPMENT_NOT_FOUND}
      */
     ShipmentDetail recordOutcome(UUID shipmentId, Outcome outcome, CurrentUser actor);
+
+    /**
+     * What the warehouse manager corrects (09 §4.3 step 5, E17).
+     *
+     * @param outcome       DELIVERED or DELIVERY_FAILED: what the shipment really came to
+     * @param failureReason required with DELIVERY_FAILED
+     * @param note          required with OTHER
+     * @param reason        why the carrier's report was wrong; required
+     */
+    record Correction(String outcome, String failureReason, String note, String reason) { }
+
+    /**
+     * Corrects an outcome the carrier reported wrongly: DELIVERED ↔ DELIVERY_FAILED while the order is not completed,
+     * with a reason; the order follows, and the shipment takes no carrier report for its outcome any more (E17).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code SHIPMENT_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code SHIPMENT_STATE_CONFLICT}; {@code ORDER_DELIVERY_NOT_CORRECTABLE}; {@code VALIDATION_FAILED}
+     */
+    ShipmentDetail correctOutcome(UUID shipmentId, Correction correction, CurrentUser actor);
 }

@@ -68,6 +68,7 @@ class ShipmentService implements Shipments {
     private final ShipmentContext context;
     private final OrderService orders;
     private final IdentityService identities;
+    private final com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository corrections;
     private final Clock clock;
 
     @SuppressWarnings("java:S107")
@@ -76,7 +77,9 @@ class ShipmentService implements Shipments {
                     PickJpaRepository picks, CarrierJpaRepository carriers, DispatchLoadJpaRepository loads,
                     DispatchLoadShipmentJpaRepository members, ShipmentTimeline timeline, ShipmentContext context,
                     OrderService orders,
-                    IdentityService identities, Clock clock) {
+                    IdentityService identities,
+                    com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository corrections,
+                    Clock clock) {
         this.shipments = shipments;
         this.locks = locks;
         this.events = events;
@@ -89,6 +92,7 @@ class ShipmentService implements Shipments {
         this.context = context;
         this.orders = orders;
         this.identities = identities;
+        this.corrections = corrections;
         this.clock = clock;
     }
 
@@ -164,6 +168,50 @@ class ShipmentService implements Shipments {
         timeline.record(shipment, before, order, null, carrierName, loadCode);
         log.info("Shipment {}: {} -> {} (order now {})", row.getCode(), before, target,
                 order == null ? "?" : order.status());
+        return detail(row);
+    }
+
+    @Override
+    public ShipmentDetail correctOutcome(UUID shipmentId, Correction correction, CurrentUser actor) {
+        String why = correction.reason() == null || correction.reason().isBlank() ? null : correction.reason().strip();
+        if (why == null || why.length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A correction says why the carrier was wrong",
+                    List.of(FieldError.of("reason", "required, at most 500 characters")));
+        }
+        ShipmentStatus target = switch (correction.outcome() == null ? "" : correction.outcome().strip()
+                .toUpperCase(Locale.ROOT)) {
+            case "DELIVERED" -> ShipmentStatus.DELIVERED;
+            case "DELIVERY_FAILED" -> ShipmentStatus.DELIVERY_FAILED;
+            default -> throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unknown corrected outcome",
+                    List.of(FieldError.of("outcome", "DELIVERED or DELIVERY_FAILED")));
+        };
+        DeliveryFailureReason reason = target == ShipmentStatus.DELIVERY_FAILED ? reason(correction.failureReason())
+                : null;
+        String note = target == ShipmentStatus.DELIVERY_FAILED && correction.note() != null
+                && !correction.note().isBlank() ? correction.note().strip() : null;
+        ShipmentJpaEntity row = lock(shipmentId);
+        Shipment shipment = row.toDomain();
+        ShipmentStatus before = shipment.status();
+        Instant now = clock.instant();
+        UUID by = actor.userId();
+        if (!shipment.correctOutcome(target, reason, note, by, now)) {
+            return detail(row);
+        }
+        // The order follows in this transaction: a delivery taken back, or a failure that was a delivery after all.
+        OrderSummary order = target == ShipmentStatus.DELIVERY_FAILED
+                ? orders.correctShipmentToFailed(row.getOrderId(), row.getId(), orderReason(reason), note, now, by)
+                : tellOrder(row, ShipmentStatus.DELIVERED, null, null, by, now);
+        corrections.save(new com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity(
+                com.stockflow.common.id.Identifiers.newId(), row.getId(), before.name(), target.name(),
+                reason == null ? null : reason.name(), note, why, by, now));
+        row.apply(shipment);
+        shipments.saveAndFlush(row);
+        String carrierName = row.getCarrierId() == null ? null
+                : carriers.findById(row.getCarrierId()).map(CarrierJpaEntity::getName).orElse(null);
+        String loadCode = row.getLoadId() == null ? null
+                : loads.findById(row.getLoadId()).map(DispatchLoadJpaEntity::getCode).orElse(null);
+        timeline.record(shipment, before, order, null, carrierName, loadCode);
+        log.info("Shipment {}: {} corrected to {} by hand ({})", row.getCode(), before, target, why);
         return detail(row);
     }
 

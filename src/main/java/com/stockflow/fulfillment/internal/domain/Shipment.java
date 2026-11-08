@@ -206,6 +206,40 @@ public final class Shipment {
         return returned(null, at);
     }
 
+    /**
+     * The warehouse manager corrects an outcome the carrier reported wrongly (09 §4.3 step 5, E17): DELIVERED →
+     * DELIVERY_FAILED (with the reason it failed) or DELIVERY_FAILED → DELIVERED, recorded by them, the reason being
+     * the correction's. Nothing else is a correction.
+     *
+     * @return whether it changed anything (false: the shipment already has that outcome)
+     * @throws BusinessException {@code SHIPMENT_STATE_CONFLICT} for a shipment with neither outcome
+     */
+    public boolean correctOutcome(ShipmentStatus target, DeliveryFailureReason reason, String note, UUID by,
+                                  Instant at) {
+        recorder(by);
+        if (status == target) {
+            return false;
+        }
+        if (target == ShipmentStatus.DELIVERED && status == ShipmentStatus.DELIVERY_FAILED) {
+            return delivered(by, at);
+        }
+        if (target != ShipmentStatus.DELIVERY_FAILED || status != ShipmentStatus.DELIVERED) {
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("Shipment %s is %s: only a delivery or a "
+                    + "failed delivery is corrected").formatted(code, status));
+        }
+        Objects.requireNonNull(reason, "reason");
+        if (reason == DeliveryFailureReason.OTHER && (note == null || note.isBlank())) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A failure for another reason says what it was");
+        }
+        status = ShipmentStatus.DELIVERY_FAILED;
+        outcomeAt = at;
+        outcomeBy = by;
+        failureReason = reason;
+        failureNote = note;
+        recorded.add(new Step(status, at, by, note));
+        return true;
+    }
+
     private boolean delivered(UUID by, Instant at) {
         if (!move(ShipmentStatus.DELIVERED)) {
             return false;

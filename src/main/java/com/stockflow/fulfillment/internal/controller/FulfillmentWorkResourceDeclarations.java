@@ -61,6 +61,11 @@ final class FulfillmentWorkResourceDeclarations {
             apiPath = "/api/v1/fulfillment/carrier-events", actions = {Action.READ, Action.UPDATE})
     static final class CarrierEvents { private CarrierEvents() { } }
 
+    @PermissionResource(code = FulfillmentResources.DELIVERY_CORRECTIONS, group = "Fulfillment",
+            label = "Delivery outcome corrected when the carrier reported it wrongly", route = "/fulfillment/shipments",
+            apiPath = "/api/v1/fulfillment/shipments", actions = {Action.UPDATE})
+    static final class DeliveryCorrections { private DeliveryCorrections() { } }
+
     @PermissionResource(code = FulfillmentResources.DELIVERY_OUTCOMES, group = "Fulfillment",
             label = "Delivery outcomes", route = "/fulfillment/shipments", apiPath = "/api/v1/fulfillment/shipments",
             actions = {Action.UPDATE, Action.APPROVE})

@@ -969,6 +969,14 @@ class DispatchService implements Dispatching {
                 // records that goods left: from now it is no longer cancelled (review of #162).
                 recordGoodsLeft(orderId, unitsInPlan.getOrDefault(orderId, List.of()), now, onManifest.stream()
                         .map(rows::get).filter(row -> row.getOrderId().equals(orderId)).findFirst().orElseThrow());
+                // 17 BR-27 / E23: the customer hears of each vehicle with goods of the order, in the portal's inbox.
+                if (order != null) {
+                    String carrierName = carriers.findById(load.carrierId()).map(CarrierJpaEntity::getName)
+                            .orElse(null);
+                    timeline.vehicleLeft(new com.stockflow.contracts.VehicleHandedOver(Identifiers.newId(), load.id(),
+                            load.code(), load.warehouseId(), orderId, order.orderNumber(), order.customerId(),
+                            carrierName, load.waybillNo(), load.snapshot().vehiclePlate(), now));
+                }
             }
             if (completing.isEmpty()) {
                 continue;

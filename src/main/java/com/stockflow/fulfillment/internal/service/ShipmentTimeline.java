@@ -41,6 +41,11 @@ class ShipmentTimeline {
         record(shipment, before, order, orderNumber, carrierName, loadCode, null);
     }
 
+    /** A vehicle with goods of an order left (3-6): announced in the caller's transaction, delivered after commit. */
+    void vehicleLeft(com.stockflow.contracts.VehicleHandedOver event) {
+        publisher.publishEvent(event);
+    }
+
     /**
      * @param carrierEventId the carrier event the steps came from (3-5: source CARRIER_WEBHOOK), or null for steps a
      *                       person recorded

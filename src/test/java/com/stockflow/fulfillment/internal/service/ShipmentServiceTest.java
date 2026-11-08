@@ -65,7 +65,8 @@ class ShipmentServiceTest {
     private final OrderService orders = mock(OrderService.class);
     private final IdentityService identities = mock(IdentityService.class);
     private final ShipmentService service = new ShipmentService(shipments, locks, events, packages, picks, carriers,
-            loads, members, timeline, context, orders, identities, Clock.fixed(NOW, ZoneOffset.UTC));
+            loads, members, timeline, context, orders, identities,
+            mock(com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository.class), Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final com.stockflow.common.security.CurrentUser actor = FulfillmentFixtures.user();
 

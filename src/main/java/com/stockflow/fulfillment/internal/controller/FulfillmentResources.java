@@ -22,6 +22,12 @@ final class FulfillmentResources {
     static final String WAYBILL_CORRECTIONS = FulfillmentPermissions.WAYBILL_CORRECTIONS;
     static final String WAYBILL_IMPORTS = FulfillmentPermissions.WAYBILL_IMPORTS;
     static final String CARRIER_EVENTS = FulfillmentPermissions.CARRIER_EVENTS;
+    static final String DELIVERY_CORRECTIONS = FulfillmentPermissions.DELIVERY_CORRECTIONS;
+    /**
+     * The order module's resource, declared there ({@code OrderResources.ORDERS}): a customer reads their own order's
+     * vehicles with what reads the order (3-6).
+     */
+    static final String ORDERS = "sales-orders";
     static final String DELIVERY_OUTCOMES = FulfillmentPermissions.DELIVERY_OUTCOMES;
 
     private FulfillmentResources() { }

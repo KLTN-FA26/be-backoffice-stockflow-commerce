@@ -73,6 +73,12 @@ public final class FulfillmentPermissions {
     public static final String CARRIER_EVENTS = "fulfillment-carrier-events";
 
     /**
+     * UPDATE: correct a shipment's outcome the carrier reported wrongly, DELIVERED ↔ DELIVERY_FAILED with a reason
+     * (3-6; kltn-docs 09 §4.3 step 5, E17; V20261108001800). Warehouse manager and system admin.
+     */
+    public static final String DELIVERY_CORRECTIONS = "fulfillment-delivery-corrections";
+
+    /**
      * UPDATE: record a delivery outcome - on its own, RETURNED only; APPROVE: also DELIVERED and DELIVERY_FAILED, which
      * move the order and bill it (kltn-docs 09 BR-02).
      */
