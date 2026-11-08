@@ -18,7 +18,7 @@ public record ManifestResponse(String loadCode, String status, String warehouseN
                                String carrierRepresentative, String signatureRef, String handoverNote,
                                Instant dispatchedAt, String dispatchedByName, List<Shipment> shipments,
                                int shipmentCount, int packageCount, BigDecimal totalWeightKg, Instant printedAt,
-                               String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode) {
+                               String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode, String waybillNo) {
 
     public record Shipment(String shipmentCode, String orderNumber, String recipientName, String recipientPhone,
                            String deliveryAddress, int packageCount, BigDecimal weightKg, List<Parcel> packages) {

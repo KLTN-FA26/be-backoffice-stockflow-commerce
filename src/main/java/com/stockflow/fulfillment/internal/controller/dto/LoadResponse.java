@@ -41,7 +41,8 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String st
                            List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel,
                            String cancelReasonCode,
                            @JsonInclude(JsonInclude.Include.NON_NULL) UUID replacementLoadId,
-                           @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode) {
+                           @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode,
+                           String waybillNo, String carrierConnectionType) {
 
     /**
      * A parcel still to take off the vehicle: its order was cancelled (SCRUM-392) or the vehicle was called off under

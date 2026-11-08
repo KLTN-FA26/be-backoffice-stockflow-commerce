@@ -61,7 +61,7 @@ public class DispatchLoadStore {
                 header.getHandoverNote(), header.getCancelledAt(), header.getCancelledBy(),
                 header.getCancelReason(), header.getVersion(), onManifest, onVehicle, header.getBookedAt(),
                 header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelledBy(),
-                header.getBookingCancelReason(), toUnload, header.getCancelReasonCode()));
+                header.getBookingCancelReason(), toUnload, header.getCancelReasonCode(), header.getWaybillNo()));
     }
 
     /** Inserts a new load (header first: the manifest rows reference it). */

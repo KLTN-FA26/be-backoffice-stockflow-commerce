@@ -54,6 +54,13 @@ public final class FulfillmentPermissions {
     public static final String CONTROLLED_CANCELLATIONS = "fulfillment-controlled-cancellations";
 
     /**
+     * UPDATE: correct a load's waybill number after the vehicle left the warehouse, with a reason (3-2; kltn-docs 09
+     * BR-24 "sau khi rời kho chỉ Quản lý kho"; V20261108001400). Before that, recording it is
+     * {@link #DISPATCH}'s. Warehouse manager and system admin only.
+     */
+    public static final String WAYBILL_CORRECTIONS = "fulfillment-waybill-corrections";
+
+    /**
      * UPDATE: record a delivery outcome - on its own, RETURNED only; APPROVE: also DELIVERED and DELIVERY_FAILED, which
      * move the order and bill it (kltn-docs 09 BR-02).
      */

@@ -204,6 +204,15 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/scans", "fulfillment-dispatch:UPDATE"),
             Map.entry("DELETE /api/v1/fulfillment/loads/{loadId}/scans/{packageId}", "fulfillment-dispatch:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/handover", "fulfillment-dispatch:UPDATE"),
+            // 3-2 (V20261108001400): the waybill number and files are loading work; a correction after the vehicle
+            // left also needs fulfillment-waybill-corrections, checked by the service.
+            Map.entry("PUT /api/v1/fulfillment/loads/{loadId}/waybill", "fulfillment-dispatch:UPDATE"),
+            Map.entry("GET /api/v1/fulfillment/loads/{loadId}/waybill-history", "fulfillment-shipments:READ"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/waybill-files", "fulfillment-dispatch:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/waybill-files/uploads", "fulfillment-dispatch:UPDATE"),
+            Map.entry("GET /api/v1/fulfillment/loads/{loadId}/waybill-files", "fulfillment-shipments:READ"),
+            Map.entry("GET /api/v1/fulfillment/loads/{loadId}/waybill-files/{fileId}/download-url",
+                    "fulfillment-shipments:READ"),
             // SCRUM-474 UNLOAD-DESIGN (V20261102020100): the controlled cancel after loading started, and the override.
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/controlled-cancellation",
                     "fulfillment-controlled-cancellations:UPDATE"),
@@ -256,6 +265,8 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-dispatch:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // SCRUM-474 UNLOAD-DESIGN point 6: only the warehouse manager (and the admin) calls off after loading started.
             Map.entry("fulfillment-controlled-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // 3-2, kltn-docs 09 BR-24: after the vehicle left, only the warehouse manager (and the admin) corrects it.
+            Map.entry("fulfillment-waybill-corrections:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),

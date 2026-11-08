@@ -21,6 +21,18 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
 
     Optional<DispatchLoadJpaEntity> findByRequestId(UUID requestId);
 
+    /** Loads of {@code carrierId} other than {@code loadId}, not cancelled, holding {@code waybill} (09 BR-23). */
+    default List<DispatchLoadJpaEntity> findLiveByCarrierAndWaybill(UUID carrierId, String waybill, UUID loadId) {
+        return findByWaybill(carrierId, waybill, loadId, com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED);
+    }
+
+    @Query("select l from DispatchLoadJpaEntity l where l.carrierId = :carrierId and l.waybillNo = :waybill "
+            + "and l.id <> :loadId and l.status <> :cancelled order by l.code")
+    List<DispatchLoadJpaEntity> findByWaybill(@Param("carrierId") UUID carrierId, @Param("waybill") String waybill,
+                                              @Param("loadId") UUID loadId,
+                                              @Param("cancelled") com.stockflow.fulfillment.internal.domain.LoadStatus
+                                                      cancelled);
+
     /** What a load is, read without loading the entity (so a lock taken next reads it fresh). */
     interface LoadKey {
         UUID getWarehouseId();

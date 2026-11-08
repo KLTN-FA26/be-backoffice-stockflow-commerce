@@ -632,6 +632,12 @@ public enum ErrorCode {
     /** Docs 09 BR-03: a shipment leaves with all its parcels; take it off the manifest to let the rest go. */
     LOAD_NOT_FULLY_LOADED("Some packages on the manifest are not scanned yet", 409),
     LOAD_EMPTY("Nothing is on this load's manifest", 409),
+    /** 3-2 (kltn-docs 09 BR-23): the driver signs only once the load carries the carrier's waybill number. */
+    LOAD_WAYBILL_MISSING("Record the carrier's waybill number before the handover", 409),
+    /** 3-2 (09 BR-23, E19): a waybill number is unique within its carrier among loads not cancelled. */
+    WAYBILL_DUPLICATE("Another load of this carrier has this waybill number", 409),
+    /** 3-2 (09 §4.4 (4)): an API_BOOKING carrier's number comes from its booking API, never typed or imported. */
+    WAYBILL_FROM_CARRIER_API("This carrier's waybill number comes from its booking", 409),
     /** SCRUM-392: the parcel moved to another shipment (a left-behind split) since its label was printed: reprint it. */
     LABEL_OUTDATED("The package label is out of date; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),

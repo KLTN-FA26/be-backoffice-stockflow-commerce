@@ -71,7 +71,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000",
         "stockflow.fulfillment.packing.dim-divisor=6000", "stockflow.fulfillment.load-planning.solver-budget=PT2S",
         "stockflow.fulfillment.load-planning.solver-wall-limit=PT2S",
-        "stockflow.test.context=ftl-dispatch"})
+        "stockflow.test.context=ftl-dispatch",
+        // 3-2: waybill files are scanned as every upload is; no ClamAV runs in tests.
+        "stockflow.upload-inspection.enabled=false"})
 class FtlDispatchIntegrationTest {
 
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
@@ -297,9 +299,11 @@ class FtlDispatchIntegrationTest {
         return data(dispatch(get(LOADS + "/" + loadId)).andExpect(status().isOk()));
     }
 
+    /** Booked with the carrier's waybill number (3-2: required before the handover), one per load. */
     private JsonNode book(String loadId, UUID carrier, String plate) throws Exception {
         return data(dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier + "\""
-                + (plate == null ? "" : ",\"vehiclePlate\":\"" + plate + "\"") + ",\"driverName\":\"Tai\"}"))
+                + (plate == null ? "" : ",\"vehiclePlate\":\"" + plate + "\"") + ",\"driverName\":\"Tai\""
+                + ",\"waybillNo\":\"WB-" + loadId + "\"}"))
                 .andExpect(status().isOk()));
     }
 
@@ -489,6 +493,140 @@ class FtlDispatchIntegrationTest {
         assertThat(load(again).path("shipments")).singleElement().satisfies(s -> assertThat(s.path("shipmentId")
                 .asText()).isEqualTo(shipment.toString()));
         assertThat(book(again, ghn, null).path("status").asText()).isEqualTo("VEHICLE_BOOKED");
+    }
+
+    // ---- the waybill number (3-2; 09 §4.4, BR-23, BR-24, BR-28) --------------------------------
+
+    private ResultActions waybill(UUID user, String role, String loadId, String number, String reason)
+            throws Exception {
+        return as(user, role, body(put(LOADS + "/" + loadId + "/waybill"), "{\"waybillNo\":\"" + number + "\""
+                + (reason == null ? "" : ",\"reason\":\"" + reason + "\"") + "}"));
+    }
+
+    private static byte[] onePagePdf() throws Exception {
+        try (var document = new org.apache.pdfbox.pdmodel.PDDocument();
+             var out = new java.io.ByteArrayOutputStream()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            document.save(out);
+            return out.toByteArray();
+        }
+    }
+
+    @Test
+    @DisplayName("3-2: a load leaves only with its carrier's waybill number; the number is unique within its carrier among "
+            + "live loads; after the vehicle left only the warehouse manager corrects it, with a reason; every change "
+            + "is in the history, and the number is on the load, the list and the manifest")
+    void theWaybillNumber() throws Exception {
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck5t);
+        String loadId = loadOf(plan, 1);
+        // No carrier booked yet: there is no carrier's number to record.
+        waybill(dispatcher, "WAREHOUSE_STAFF", loadId, "WB-EARLY", null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+
+        // Booked without a number, loaded, signed: refused until the number is recorded (BR-23).
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn
+                + "\",\"vehiclePlate\":\"51C-777.77\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.waybillNo").doesNotExist());
+        dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());
+        for (String label : labels(load(loadId))) {
+            scanOnto(loadId, label).andExpect(status().isOk());
+        }
+        handOver(loadId).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_WAYBILL_MISSING"));
+
+        // Another live load of the same carrier has the number: refused, naming it.
+        String other = historyLoad("51C-OTHER");
+        String taken = jdbc.queryForObject("SELECT waybill_no FROM fulfillment.dispatch_load WHERE id = ?::uuid",
+                String.class, other);
+        waybill(dispatcher, "WAREHOUSE_STAFF", loadId, taken, null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_DUPLICATE"));
+        String number = "WB-" + loadId;
+        waybill(dispatcher, "WAREHOUSE_STAFF", loadId, number, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.waybillNo").value(number))
+                .andExpect(jsonPath("$.data.carrierConnectionType").value("MANUAL"));
+        handOver(loadId).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
+        dispatch(get(LOADS + "/" + loadId + "/manifest")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.waybillNo").value(number));
+        assertThat(loadsPage("&search=" + number).path("items")).singleElement()
+                .satisfies(row -> assertThat(row.path("waybillNo").asText()).isEqualTo(number));
+
+        // After the vehicle left: a correction - the warehouse manager's, with a reason (BR-24).
+        waybill(dispatcher, "WAREHOUSE_STAFF", loadId, number + "-FIX", "the carrier sent another")
+                .andExpect(status().isForbidden());
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        waybill(manager, "WAREHOUSE_MANAGER", loadId, number + "-FIX", null).andExpect(status().isBadRequest());
+        waybill(manager, "WAREHOUSE_MANAGER", loadId, number + "-FIX", "the carrier sent another")
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.waybillNo").value(number + "-FIX"));
+
+        JsonNode history = data(dispatch(get(LOADS + "/" + loadId + "/waybill-history")).andExpect(status().isOk()));
+        assertThat(history).hasSize(2);
+        assertThat(history.get(0).hasNonNull("oldWaybillNo")).isFalse();
+        assertThat(history.get(0).path("newWaybillNo").asText()).isEqualTo(number);
+        assertThat(history.get(0).path("source").asText()).isEqualTo("MANUAL");
+        assertThat(history.get(0).path("changedBy").asText()).isEqualTo(dispatcher.toString());
+        assertThat(history.get(1).path("newWaybillNo").asText()).isEqualTo(number + "-FIX");
+        assertThat(history.get(1).path("changedBy").asText()).isEqualTo(manager.toString());
+        assertThat(history.get(1).path("reason").asText()).isEqualTo("the carrier sent another");
+    }
+
+    @Test
+    @DisplayName("3-2: a number given at booking is recorded; a cancelled booking takes it with it (the history keeps "
+            + "it) and frees it; an API_BOOKING carrier's number is never typed; waybill files are kept with a live "
+            + "load and not with a cancelled one")
+    void waybillWithTheBooking() throws Exception {
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck5t);
+        String loadId = loadOf(plan, 1);
+        String number = "WB-" + loadId;
+        assertThat(book(loadId, ghn, "51C-888.88").path("waybillNo").asText()).isEqualTo(number);
+        dispatch(body(post(LOADS + "/" + loadId + "/booking-cancellation"), "{\"reason\":\"xe không tới\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.waybillNo").doesNotExist());
+        JsonNode history = data(dispatch(get(LOADS + "/" + loadId + "/waybill-history")).andExpect(status().isOk()));
+        assertThat(history).hasSize(2);
+        assertThat(history.get(1).path("oldWaybillNo").asText()).isEqualTo(number);
+        assertThat(history.get(1).hasNonNull("newWaybillNo")).isFalse();
+        assertThat(history.get(1).path("reason").asText()).contains("xe không tới");
+        // The number is free again, here or for another load of the carrier.
+        assertThat(book(loadId, ghn, "51C-888.88").path("waybillNo").asText()).isEqualTo(number);
+
+        // A carrier booked through its API gives the number; nobody types it.
+        UUID aha = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO fulfillment.carrier (id, code, name, status, connection_type, webhook_enabled,
+                    api_environment, api_account, api_key_sealed, webhook_auth_header, webhook_auth_value_sealed)
+                VALUES (?, ?, 'Ahamove', 'ACTIVE', 'API_BOOKING', TRUE, 'STAGING', '84908000000',
+                        'v1:AAAAAAAAAAAAAAAAAAAAAAAA', 'apikey', 'v1:BBBBBBBBBBBBBBBBBBBBBBBB')""",
+                aha, "AHA" + aha.toString().substring(28).toUpperCase()));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha
+                + "\",\"waybillNo\":\"AHA-TYPED\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_FROM_CARRIER_API"));
+
+        // The carrier's waybill file, kept with the load and fetched by a short-lived link.
+        var file = new org.springframework.mock.web.MockMultipartFile("file", "van-don.pdf", "application/pdf",
+                onePagePdf());
+        JsonNode kept = data(as(dispatcher, "WAREHOUSE_STAFF", org.springframework.test.web.servlet.request
+                .MockMvcRequestBuilders.multipart(LOADS + "/" + loadId + "/waybill-files").file(file))
+                .andExpect(status().isCreated()));
+        assertThat(kept.path("fileName").asText()).isEqualTo("van-don.pdf");
+        assertThat(data(dispatch(get(LOADS + "/" + loadId + "/waybill-files")).andExpect(status().isOk())))
+                .singleElement().satisfies(f -> assertThat(f.path("fileId").asText())
+                        .isEqualTo(kept.path("fileId").asText()));
+        // The file is found and the link asked of the store; the local store of the tests signs none (MinIO's
+        // integration tests cover signing), so it answers STORAGE_ERROR rather than a link.
+        dispatch(get(LOADS + "/" + loadId + "/waybill-files/" + kept.path("fileId").asText() + "/download-url"))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.errorCode").value("STORAGE_ERROR"));
+        dispatch(get(LOADS + "/" + loadId + "/waybill-files/" + UUID.randomUUID() + "/download-url"))
+                .andExpect(status().isNotFound());
+        as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(LOADS + "/" + loadId + "/waybill-files"))
+                .andExpect(status().isForbidden());
+
+        // Reopened, the plan cancels the load: its files are history, it takes no new one.
+        JsonNode now = data(dispatch(get(PLANS + "/" + plan.path("loadPlanId").asText())).andExpect(status().isOk()));
+        step(now, "/reopening", "{\"expectedVersion\":" + now.path("version").asLong() + ",\"reason\":\"đổi xe\"}");
+        as(dispatcher, "WAREHOUSE_STAFF", org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(LOADS + "/" + loadId + "/waybill-files").file(file)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
     }
 
     // ---- an order cancelled while its vehicle loads -------------------------------------------
@@ -916,8 +1054,9 @@ class FtlDispatchIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate,
                     status, loading_started_at, dispatched_at, dispatched_by, carrier_representative, shipment_count,
-                    package_count)
-                VALUES (?, ?, gen_random_uuid(), ?, ?, ?, 'DISPATCHED', NOW(), NOW(), ?, 'Tai', 1, 1)""",
+                    package_count, waybill_no)
+                VALUES (?, ?, gen_random_uuid(), ?, ?, ?, 'DISPATCHED', NOW(), NOW(), ?, 'Tai', 1, 1,
+                        'WB-' || gen_random_uuid())""",
                 id, "LD-TEST-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate,
                 dispatcher));
         return id.toString();

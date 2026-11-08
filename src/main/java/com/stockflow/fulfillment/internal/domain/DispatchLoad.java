@@ -30,10 +30,18 @@ import java.util.UUID;
  * a load already dispatched - nothing changes and nothing is refused. What another load holds is refused, naming that
  * load (09 edge "quét nhầm kiện của xe / chuyến khác → chặn, báo kiện thuộc xe / kế hoạch nào").</p>
  *
+ * <p>The waybill number (3-2; 09 §4.4, BR-23, BR-24) is the carrier's number for this vehicle: it is recorded once a
+ * carrier is booked, is required before the signature ({@code LOAD_WAYBILL_MISSING}), goes with the booking when the
+ * booking falls through, and after the vehicle left is changed only as a correction with a reason. That it is unique
+ * within its carrier is the service's to check against the other loads (and {@code uk_dispatch_load_waybill}'s).</p>
+ *
  * <p>Pure Java: no Spring, no JPA. What it must know of shipments and parcels it does not own is passed in
  * ({@link ShipmentFacts}, {@link ParcelFacts}); the service reads those under the load's lock.</p>
  */
 public final class DispatchLoad {
+
+    /** A carrier's waybill number: printable, no spaces, at most 64 characters (09 §4.4). */
+    public static final java.util.regex.Pattern WAYBILL = java.util.regex.Pattern.compile("^[!-~]{1,64}$");
 
     /** What the load needs to know of a shipment to take it on its manifest. */
     public record ShipmentFacts(UUID shipmentId, String code, UUID warehouseId, ShipmentStatus status,
@@ -105,7 +113,23 @@ public final class DispatchLoad {
                            Instant cancelledAt, UUID cancelledBy, String cancelReason,
                            long version, List<Member> members, List<Loaded> loaded, Instant bookedAt, UUID bookedBy,
                            Instant bookingCancelledAt, UUID bookingCancelledBy, String bookingCancelReason,
-                           List<Unload> unloads, UnloadReasonCode cancelReasonCode) {
+                           List<Unload> unloads, UnloadReasonCode cancelReasonCode, String waybillNo) {
+
+        /** Without the waybill number (callers written before 3-2). */
+        public Snapshot(UUID id, String code, UUID requestId, UUID warehouseId, UUID carrierId,
+                        UUID loadPlanVehicleId, String vehiclePlate, String driverName, String driverPhone,
+                        LoadStatus status, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
+                        UUID dispatchedBy, String carrierRepresentative, String signatureRef, String handoverNote,
+                        Instant cancelledAt, UUID cancelledBy, String cancelReason,
+                        long version, List<Member> members, List<Loaded> loaded, Instant bookedAt, UUID bookedBy,
+                        Instant bookingCancelledAt, UUID bookingCancelledBy, String bookingCancelReason,
+                        List<Unload> unloads, UnloadReasonCode cancelReasonCode) {
+            this(id, code, requestId, warehouseId, carrierId, loadPlanVehicleId, vehiclePlate, driverName,
+                    driverPhone, status, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
+                    carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelledBy,
+                    cancelReason, version, members, loaded, bookedAt, bookedBy, bookingCancelledAt,
+                    bookingCancelledBy, bookingCancelReason, unloads, cancelReasonCode, null);
+        }
 
         /** Without the code of a controlled cancel (every load but one called off after loading started). */
         public Snapshot(UUID id, String code, UUID requestId, UUID warehouseId, UUID carrierId,
@@ -120,7 +144,7 @@ public final class DispatchLoad {
                     driverPhone, status, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
                     carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelledBy,
                     cancelReason, version, members, loaded, bookedAt, bookedBy, bookingCancelledAt,
-                    bookingCancelledBy, bookingCancelReason, unloads, null);
+                    bookingCancelledBy, bookingCancelReason, unloads, null, null);
         }
 
         /** Without booking and unloads (callers written before SCRUM-392). */
@@ -133,7 +157,7 @@ public final class DispatchLoad {
             this(id, code, requestId, warehouseId, carrierId, loadPlanVehicleId, vehiclePlate, driverName,
                     driverPhone, status, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
                     carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelledBy, cancelReason,
-                    version, members, loaded, null, null, null, null, null, List.of());
+                    version, members, loaded, null, null, null, null, null, List.of(), null, null);
         }
     }
 
@@ -163,6 +187,7 @@ public final class DispatchLoad {
     private UUID cancelledBy;
     private String cancelReason;
     private UnloadReasonCode cancelReasonCode;
+    private String waybillNo;
     private final long version;
     private final Map<UUID, Member> members = new LinkedHashMap<>();
     private final Map<UUID, Loaded> loaded = new LinkedHashMap<>();
@@ -195,6 +220,7 @@ public final class DispatchLoad {
         this.cancelledBy = s.cancelledBy();
         this.cancelReason = s.cancelReason();
         this.cancelReasonCode = s.cancelReasonCode();
+        this.waybillNo = s.waybillNo();
         this.version = s.version();
         if (s.members() != null) {
             s.members().forEach(m -> members.put(m.shipmentId(), m));
@@ -333,20 +359,34 @@ public final class DispatchLoad {
      * @return whether it changed the load
      */
     public boolean book(UUID carrier, String plate, String driver, String phone, UUID by, Instant at) {
+        return book(carrier, plate, driver, phone, null, by, at);
+    }
+
+    /**
+     * {@link #book(UUID, String, String, String, UUID, Instant)}, with the waybill number when the carrier gave it at
+     * booking (09 §4.2 step 6: "nhập biển số / tài xế / mã vận đơn nếu đã có"). Left null, the number the load has is
+     * kept while the carrier stays the same and dropped when it changes: a number is one carrier's.
+     *
+     * @throws BusinessException {@code VALIDATION_FAILED} for a malformed number
+     */
+    public boolean book(UUID carrier, String plate, String driver, String phone, String waybill, UUID by,
+                        Instant at) {
         Objects.requireNonNull(carrier, "the carrier the vehicle is booked with");
         if (status != LoadStatus.PLANNED && status != LoadStatus.VEHICLE_BOOKED) {
             throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION,
                     "Load %s is %s; a vehicle is booked before loading starts".formatted(code, status));
         }
+        String number = waybill == null ? (carrier.equals(carrierId) ? waybillNo : null) : waybill(waybill);
         if (status == LoadStatus.VEHICLE_BOOKED && carrier.equals(carrierId)
                 && Objects.equals(trimmed(plate), vehiclePlate) && Objects.equals(trimmed(driver), driverName)
-                && Objects.equals(trimmed(phone), driverPhone)) {
+                && Objects.equals(trimmed(phone), driverPhone) && Objects.equals(number, waybillNo)) {
             return false;
         }
         carrierId = carrier;
         vehiclePlate = trimmed(plate);
         driverName = trimmed(driver);
         driverPhone = trimmed(phone);
+        waybillNo = number;
         bookedAt = at;
         bookedBy = Objects.requireNonNull(by);
         status = LoadStatus.VEHICLE_BOOKED;
@@ -354,8 +394,60 @@ public final class DispatchLoad {
     }
 
     /**
+     * The carrier's waybill number for this vehicle, with the vehicle's plate and driver when known (09 §4.4: typed, or
+     * imported from the system's file template). Recorded once a carrier is booked; before the vehicle leaves, the
+     * dispatcher may change it freely; after it left it is a correction and says why (BR-24 - who may make it is the
+     * service's check). A plate, driver or phone left null keeps the one recorded. The same values again change
+     * nothing.
+     *
+     * @return whether it changed the load
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} when no carrier is booked (PLANNED) or the load is
+     *         CANCELLED; {@code VALIDATION_FAILED} for a malformed number or a correction without a reason
+     */
+    public boolean recordWaybill(String waybill, String plate, String driver, String phone, String reason) {
+        if (status == LoadStatus.PLANNED || status == LoadStatus.CANCELLED || carrierId == null) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, (status == LoadStatus.CANCELLED
+                    ? "Load %s is cancelled: a waybill number is recorded on a live load"
+                    : "Load %s has no carrier booked yet: book the vehicle first").formatted(code));
+        }
+        String number = waybill(waybill);
+        String newPlate = plate == null ? vehiclePlate : trimmed(plate);
+        String newDriver = driver == null ? driverName : trimmed(driver);
+        String newPhone = phone == null ? driverPhone : trimmed(phone);
+        if (number.equals(waybillNo) && Objects.equals(newPlate, vehiclePlate)
+                && Objects.equals(newDriver, driverName) && Objects.equals(newPhone, driverPhone)) {
+            return false;
+        }
+        if (status == LoadStatus.DISPATCHED && trimmed(reason) == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Load %s has left the warehouse: correcting its "
+                    + "waybill says why").formatted(code));
+        }
+        if (status == LoadStatus.DISPATCHED && newPlate == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Load %s left with a plate on its manifest: it cannot be removed".formatted(code));
+        }
+        waybillNo = number;
+        vehiclePlate = newPlate;
+        driverName = newDriver;
+        driverPhone = newPhone;
+        return true;
+    }
+
+    /** {@code raw}, trimmed, when it is a waybill number; otherwise {@code VALIDATION_FAILED}. */
+    private static String waybill(String raw) {
+        String number = trimmed(raw);
+        if (number == null || !WAYBILL.matcher(number).matches()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A waybill number is 1-64 printable characters, "
+                    + "no spaces", List.of(com.stockflow.common.api.FieldError.of("waybillNo",
+                    "1-64 printable characters, no spaces")));
+        }
+        return number;
+    }
+
+    /**
      * The booking fell through before loading started (the carrier cancelled, another vehicle is booked instead):
-     * VEHICLE_BOOKED → PLANNED, the carrier and vehicle cleared, the reason kept. PLANNED already: nothing changes.
+     * VEHICLE_BOOKED → PLANNED, the carrier, vehicle and waybill number cleared (the waybill history keeps them, 09
+     * §4.2 step 6), the reason kept. PLANNED already: nothing changes.
      *
      * @throws BusinessException {@code INVALID_LOAD_TRANSITION} once loading started; {@code VALIDATION_FAILED} without a
      *         reason
@@ -376,6 +468,7 @@ public final class DispatchLoad {
         vehiclePlate = null;
         driverName = null;
         driverPhone = null;
+        waybillNo = null;
         bookedAt = null;
         bookedBy = null;
         bookingCancelledAt = at;
@@ -493,7 +586,8 @@ public final class DispatchLoad {
      * Both sides sign the manifest (09 §4.2 step 5): DISPATCHED. Every shipment on it leaves with all its parcels
      * ({@code parcelsByShipment}: the sealed parcels each one has) - one with a parcel not scanned is refused,
      * naming the parcels ({@code LOAD_NOT_FULLY_LOADED}): the plan placed them on this vehicle. The driver's name and
-     * the vehicle plate are on the manifest. Already dispatched: nothing changes.
+     * the vehicle plate are on the manifest, and the carrier's waybill number is required ({@code LOAD_WAYBILL_MISSING};
+     * 09 BR-23). Already dispatched: nothing changes.
      *
      * @return the shipments to hand over, in the order they were put on; empty when it was dispatched before
      */
@@ -513,6 +607,10 @@ public final class DispatchLoad {
         if (!handover.signed()) {
             throw new BusinessException(ErrorCode.HANDOVER_NOT_SIGNED,
                     "Both sides sign the manifest of load %s before it leaves".formatted(code));
+        }
+        if (waybillNo == null) {
+            throw new BusinessException(ErrorCode.LOAD_WAYBILL_MISSING, ("Load %s has no waybill number: record the "
+                    + "carrier's number before the driver signs").formatted(code));
         }
         String representative = trimmed(handover.carrierRepresentative());
         String plate = trimmed(handover.vehiclePlate()) != null ? trimmed(handover.vehiclePlate()) : vehiclePlate;
@@ -704,7 +802,7 @@ public final class DispatchLoad {
                 carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelledBy, cancelReason,
                 version, List.copyOf(members.values()), List.copyOf(loaded.values()), bookedAt, bookedBy,
                 bookingCancelledAt, bookingCancelledBy, bookingCancelReason, List.copyOf(unloads.values()),
-                cancelReasonCode);
+                cancelReasonCode, waybillNo);
     }
 
     private void requireOpen(String what) {
@@ -735,6 +833,7 @@ public final class DispatchLoad {
     public UUID requestId() { return requestId; }
     public UUID warehouseId() { return warehouseId; }
     public UUID carrierId() { return carrierId; }
+    public String waybillNo() { return waybillNo; }
     public Instant bookedAt() { return bookedAt; }
     /** The load-plan vehicle this load is (SCRUM-287 PR D); null only for a load of the parcel shipping removed. */
     public UUID loadPlanVehicleId() { return loadPlanVehicleId; }

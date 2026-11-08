@@ -303,9 +303,11 @@ class ControlledUnloadIntegrationTest {
         return data(dispatch(get(LOADS + "/" + loadId)).andExpect(status().isOk()));
     }
 
+    /** Booked with the carrier's waybill number (3-2: required before the handover), one per load. */
     private JsonNode book(String loadId, UUID carrier, String plate) throws Exception {
         return data(dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier + "\""
-                + (plate == null ? "" : ",\"vehiclePlate\":\"" + plate + "\"") + ",\"driverName\":\"Tai\"}"))
+                + (plate == null ? "" : ",\"vehiclePlate\":\"" + plate + "\"") + ",\"driverName\":\"Tai\""
+                + ",\"waybillNo\":\"WB-" + loadId + "\"}"))
                 .andExpect(status().isOk()));
     }
 
@@ -580,8 +582,9 @@ class ControlledUnloadIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate,
                     status, loading_started_at, dispatched_at, dispatched_by, carrier_representative, shipment_count,
-                    package_count)
-                VALUES (?, ?, gen_random_uuid(), ?, ?, ?, 'DISPATCHED', NOW(), NOW(), ?, 'Tai', 1, 1)""",
+                    package_count, waybill_no)
+                VALUES (?, ?, gen_random_uuid(), ?, ?, ?, 'DISPATCHED', NOW(), NOW(), ?, 'Tai', 1, 1,
+                        'WB-' || gen_random_uuid())""",
                 id, "LD-UL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate,
                 dispatcher));
         return id.toString();

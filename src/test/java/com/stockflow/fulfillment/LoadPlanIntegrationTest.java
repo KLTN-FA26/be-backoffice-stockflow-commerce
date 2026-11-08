@@ -545,7 +545,8 @@ class LoadPlanIntegrationTest {
         UUID ghn = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Nhanh"));
         // PR E (SCRUM-392): booked, then loading.
         dispatch(body(post(BASE + "/loads/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn
-                + "\",\"vehiclePlate\":\"51C-123.45\"}")).andExpect(status().isOk())
+                + "\",\"vehiclePlate\":\"51C-123.45\",\"waybillNo\":\"WB-" + loadId + "\"}"))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("VEHICLE_BOOKED"));
         dispatch(post(BASE + "/loads/" + loadId + "/loading-start")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("LOADING"));
@@ -557,7 +558,7 @@ class LoadPlanIntegrationTest {
         // Not loading after all: cancelled - the parcels are free, the load cancelled.
         tx.executeWithoutResult(s -> jdbc.update("UPDATE fulfillment.dispatch_load SET status = 'PLANNED', "
                 + "loading_started_at = NULL, loading_started_by = NULL, carrier_id = NULL, booked_at = NULL, "
-                + "booked_by = NULL WHERE id = ?", loadId));
+                + "booked_by = NULL, waybill_no = NULL WHERE id = ?", loadId));
         plan = step(plan, "/cancellation", reason(plan, "customer will collect"));
         assertThat(plan.path("status").asText()).isEqualTo("CANCELLED");
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.dispatch_load WHERE id = ?", String.class,

@@ -32,10 +32,10 @@ class DispatchLoadTest {
                 UUID.randomUUID());
     }
 
-    /** A plan's vehicle booked with no plate and being loaded. */
+    /** A plan's vehicle booked with no plate, its waybill number recorded, and being loaded. */
     private static DispatchLoad loading() {
         DispatchLoad load = vehicle();
-        load.book(GHN, null, null, null, DISPATCHER, NOW);
+        load.book(GHN, null, null, null, "WB-0001", DISPATCHER, NOW);
         load.startLoading(DISPATCHER, NOW);
         return load;
     }
@@ -127,6 +127,56 @@ class DispatchLoadTest {
         UUID again = UUID.randomUUID();
         assertThat(load.scan(again, sealed(parcel, ready(s1)), DISPATCHER, NOW)).isTrue();
         assertThat(load.scanned(again)).isPresent();
+    }
+
+    @Test
+    @DisplayName("waybill number (09 §4.4, BR-23, BR-24): booked with it or recorded after, kept while the carrier stays, "
+            + "gone with the booking, required to leave, corrected after leaving only with a reason")
+    void theWaybillNumber() {
+        DispatchLoad load = vehicle();
+        assertThat(code(() -> load.recordWaybill("WB-1", null, null, null, null)))
+                .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        assertThat(load.book(GHN, "51C-1", null, null, " WB-1 ", DISPATCHER, NOW)).isTrue();
+        assertThat(load.waybillNo()).isEqualTo("WB-1");
+        // Booked again with the same carrier and no number: kept; with another carrier: a number is one carrier's.
+        assertThat(load.book(GHN, "51C-2", null, null, DISPATCHER, NOW)).isTrue();
+        assertThat(load.waybillNo()).isEqualTo("WB-1");
+        assertThat(load.book(UUID.randomUUID(), "51C-2", null, null, DISPATCHER, NOW)).isTrue();
+        assertThat(load.waybillNo()).isNull();
+        assertThat(load.book(GHN, "51C-2", null, null, DISPATCHER, NOW)).isTrue();
+        assertThat(load.recordWaybill("WB-2", null, "Tài", "0900", null)).isTrue();
+        assertThat(load.snapshot().waybillNo()).isEqualTo("WB-2");
+        assertThat(load.snapshot().driverName()).isEqualTo("Tài");
+        assertThat(load.snapshot().vehiclePlate()).isEqualTo("51C-2");
+        assertThat(load.recordWaybill("WB-2", null, null, null, null)).isFalse();
+        assertThat(code(() -> load.recordWaybill("WB 3", null, null, null, null)))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(() -> load.recordWaybill(" ", null, null, null, null))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(() -> load.recordWaybill("W".repeat(65), null, null, null, null)))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(load.cancelBooking("Xe hỏng", DISPATCHER, NOW)).isTrue();
+        assertThat(load.waybillNo()).isNull();
+
+        DispatchLoad noNumber = vehicle();
+        UUID s1 = UUID.randomUUID();
+        UUID parcel = UUID.randomUUID();
+        noNumber.addShipment(ftl(s1, null), DISPATCHER, NOW);
+        noNumber.book(GHN, "51C-1", null, null, DISPATCHER, NOW);
+        noNumber.startLoading(DISPATCHER, NOW);
+        noNumber.scan(UUID.randomUUID(), placed(parcel, ftl(s1, null), HERE), DISPATCHER, NOW);
+        assertThat(code(() -> noNumber.handOver(SIGNED, Map.of(s1, Set.of(parcel)), Map.of(), DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.LOAD_WAYBILL_MISSING);
+        assertThat(noNumber.recordWaybill("WB-9", null, null, null, null)).isTrue();
+        assertThat(noNumber.handOver(SIGNED, Map.of(s1, Set.of(parcel)), Map.of(), DISPATCHER, NOW)).containsExactly(s1);
+
+        // After the vehicle left: a correction says why; the plate on the manifest cannot be removed.
+        assertThat(code(() -> noNumber.recordWaybill("WB-10", null, null, null, " ")))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(() -> noNumber.recordWaybill("WB-10", "", null, null, "Hãng gửi lại mã")))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(noNumber.recordWaybill("WB-10", null, null, null, "Hãng gửi lại mã")).isTrue();
+        assertThat(noNumber.waybillNo()).isEqualTo("WB-10");
+        assertThat(DispatchLoad.restore(noNumber.snapshot()).waybillNo()).isEqualTo("WB-10");
     }
 
     @Test
@@ -256,7 +306,7 @@ class DispatchLoadTest {
         assertThat(load.addShipment(shipment, DISPATCHER, NOW)).isTrue();
         assertThat(code(() -> load.addShipment(ftl(UUID.randomUUID(), "LD-OTHER"), DISPATCHER, NOW)))
                 .isEqualTo(ErrorCode.SHIPMENT_ON_ANOTHER_LOAD);
-        load.book(GHN, "51C-1", null, null, DISPATCHER, NOW);
+        load.book(GHN, "51C-1", null, null, "WB-0001", DISPATCHER, NOW);
         load.startLoading(DISPATCHER, NOW);
         UUID mine = UUID.randomUUID();
         UUID theirs = UUID.randomUUID();
@@ -286,7 +336,7 @@ class DispatchLoadTest {
         load.addShipment(ftl(doomed, null), DISPATCHER, NOW);
         load.addShipment(ftl(kept, null), DISPATCHER, NOW);
         assertThat(load.withdrawShipment(UUID.randomUUID(), "x", NOW)).isFalse();
-        load.book(UUID.randomUUID(), "51C-1", null, null, DISPATCHER, NOW);
+        load.book(UUID.randomUUID(), "51C-1", null, null, "WB-0001", DISPATCHER, NOW);
         load.startLoading(DISPATCHER, NOW);
         UUID onBoard = UUID.randomUUID();
         UUID keptParcel = UUID.randomUUID();

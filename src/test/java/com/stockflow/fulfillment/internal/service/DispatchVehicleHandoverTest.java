@@ -83,6 +83,8 @@ class DispatchVehicleHandoverTest {
             mock(DispatchLoadPackageJpaRepository.class), store, mock(LoadNumbers.class), shipments, locks, packages,
             packageLines, mock(PickJpaRepository.class), carriers, timeline, mock(ShipmentContext.class), orders,
             warehouses, mock(IdentityService.class), planVehicles, mock(LeftBehindParcels.class),
+            new Waybills(loads, mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class)),
+            mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class),
             Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final CurrentUser actor = FulfillmentFixtures.user();
@@ -109,7 +111,7 @@ class DispatchVehicleHandoverTest {
                 WAREHOUSE, vehicle.id());
         load.addShipment(new DispatchLoad.ShipmentFacts(shipmentKey, "SHP-" + shipmentKey.toString().substring(0, 4),
                 WAREHOUSE, ShipmentStatus.READY_TO_DISPATCH, null), actor.userId(), NOW);
-        load.book(ghn.getId(), "51C-" + vehicle.seq(), "An", null, actor.userId(), NOW);
+        load.book(ghn.getId(), "51C-" + vehicle.seq(), "An", null, "WB-" + vehicle.seq(), actor.userId(), NOW);
         load.startLoading(actor.userId(), NOW);
         if (scanAll) {
             for (LoadPlan.Placed placed : vehicle.placements()) {
@@ -397,7 +399,7 @@ class DispatchVehicleHandoverTest {
                     vehicle.id());
             load.addShipment(new DispatchLoad.ShipmentFacts(planned.shipmentId(), row.getCode(), WAREHOUSE,
                     ShipmentStatus.READY_TO_DISPATCH, null), actor.userId(), NOW);
-            load.book(ghn.getId(), "51C", null, null, actor.userId(), NOW);
+            load.book(ghn.getId(), "51C", null, null, "WB-1", actor.userId(), NOW);
             DispatchLoadJpaEntity header = new DispatchLoadJpaEntity(load.snapshot());
             header.apply(load.snapshot());
             when(loads.lockById(load.id())).thenReturn(Optional.of(header));

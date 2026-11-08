@@ -46,6 +46,11 @@ final class FulfillmentWorkResourceDeclarations {
             apiPath = "/api/v1/fulfillment", actions = {Action.UPDATE})
     static final class ControlledCancellations { private ControlledCancellations() { } }
 
+    @PermissionResource(code = FulfillmentResources.WAYBILL_CORRECTIONS, group = "Fulfillment",
+            label = "Waybill correction after the vehicle left", route = "/fulfillment/loads",
+            apiPath = "/api/v1/fulfillment/loads", actions = {Action.UPDATE})
+    static final class WaybillCorrections { private WaybillCorrections() { } }
+
     @PermissionResource(code = FulfillmentResources.DELIVERY_OUTCOMES, group = "Fulfillment",
             label = "Delivery outcomes", route = "/fulfillment/shipments", apiPath = "/api/v1/fulfillment/shipments",
             actions = {Action.UPDATE, Action.APPROVE})

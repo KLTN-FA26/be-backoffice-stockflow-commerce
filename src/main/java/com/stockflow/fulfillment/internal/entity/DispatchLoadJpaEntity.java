@@ -53,6 +53,7 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     /** SCRUM-474 UNLOAD-DESIGN point 7: set only by a controlled cancel (V20261102020000). */
     @Enumerated(EnumType.STRING)
     @Column(name = "cancel_reason_code", length = 20) private UnloadReasonCode cancelReasonCode;
+    @Column(name = "waybill_no", length = 64) private String waybillNo;
 
     protected DispatchLoadJpaEntity() {
     }
@@ -90,6 +91,7 @@ public class DispatchLoadJpaEntity extends BaseEntity {
         this.cancelledBy = s.cancelledBy();
         this.cancelReason = s.cancelReason();
         this.cancelReasonCode = s.cancelReasonCode();
+        this.waybillNo = s.waybillNo();
     }
 
     public String getCode() { return code; }
@@ -119,4 +121,5 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancelReason() { return cancelReason; }
     public UnloadReasonCode getCancelReasonCode() { return cancelReasonCode; }
+    public String getWaybillNo() { return waybillNo; }
 }

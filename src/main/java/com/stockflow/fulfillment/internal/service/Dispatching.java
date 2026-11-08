@@ -30,7 +30,7 @@ public interface Dispatching {
     record LoadRow(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId, String carrierName,
                    String vehiclePlate, String driverName, int shipmentCount, int packageCount,
                    Instant loadingStartedAt, Instant dispatchedAt, long version, UUID loadPlanId, String loadPlanCode,
-                   Integer vehicleSeq) { }
+                   Integer vehicleSeq, String waybillNo) { }
 
     /**
      * A parcel still to take off a vehicle (SCRUM-392: its order was cancelled; SCRUM-474: its vehicle was called off
@@ -60,7 +60,7 @@ public interface Dispatching {
                       Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt, UUID bookedBy,
                       Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads,
                       boolean carrierBookingToCancel, String cancelReasonCode, UUID replacementLoadId,
-                      String replacementLoadCode) { }
+                      String replacementLoadCode, String waybillNo, String carrierConnectionType) { }
 
     /**
      * The answer to the controlled cancel of one vehicle: the load, now CANCELLED, and the PLANNED load that took its
@@ -74,7 +74,7 @@ public interface Dispatching {
                     String driverName, String driverPhone, String carrierRepresentative, String signatureRef,
                     String handoverNote, Instant dispatchedAt, String dispatchedByName, List<ManifestShipment> shipments,
                     int shipmentCount, int packageCount, BigDecimal totalWeightKg, Instant printedAt,
-                    String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode) { }
+                    String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode, String waybillNo) { }
 
     record ManifestShipment(String shipmentCode, String orderNumber, String recipientName, String recipientPhone,
                             String deliveryAddress, int packageCount, BigDecimal weightKg,
@@ -84,8 +84,35 @@ public interface Dispatching {
                           BigDecimal heightCm, boolean loaded, com.stockflow.fulfillment.internal.domain.KitPart kit,
                           Instant labelOutdatedAt) { }
 
-    /** A load plan's vehicle booked with a carrier outside the system (09 §4.2 step 5); plate and driver optional. */
-    record Booking(UUID carrierId, String vehiclePlate, String driverName, String driverPhone) { }
+    /**
+     * A load plan's vehicle booked with a carrier outside the system (09 §4.2 step 6); plate, driver and the carrier's
+     * waybill number optional ("nhập biển số / tài xế / mã vận đơn nếu đã có").
+     */
+    record Booking(UUID carrierId, String vehiclePlate, String driverName, String driverPhone, String waybillNo) {
+
+        /** Without the waybill number: given later (3-2). */
+        public Booking(UUID carrierId, String vehiclePlate, String driverName, String driverPhone) {
+            this(carrierId, vehiclePlate, driverName, driverPhone, null);
+        }
+    }
+
+    /**
+     * The carrier's waybill number for a load, typed (09 §4.4 "(3) Nhập tay"), with the vehicle's plate and driver when
+     * known (null keeps what the load has).
+     *
+     * @param reason required once the vehicle left: the change is then a correction (BR-24)
+     */
+    record WaybillEntry(String waybillNo, String vehiclePlate, String driverName, String driverPhone, String reason) { }
+
+    /**
+     * One change of a load's waybill number (09 §4.4, BR-24).
+     *
+     * @param newWaybillNo  null when the booking was cancelled and the number went with it
+     * @param source        MANUAL, FILE, WEBHOOK or API
+     * @param changedByName null for a webhook
+     */
+    record WaybillChange(String oldWaybillNo, String newWaybillNo, String source, UUID changedBy,
+                         String changedByName, Instant changedAt, String reason) { }
 
     /** @param version the load's version as the dispatcher saw it when the driver signed */
     record Handover(Long version, String carrierRepresentative, String vehiclePlate, String driverPhone,
@@ -134,16 +161,37 @@ public interface Dispatching {
 
     /**
      * A confirmed plan's vehicle booked with a carrier: PLANNED → VEHICLE_BOOKED; again before loading, the booking's
-     * details are replaced.
+     * details are replaced. A waybill number given is recorded (and must be the carrier's only); none given keeps the
+     * number while the carrier stays the same and drops it when the carrier changes.
      *
      * @throws com.stockflow.common.error.BusinessException {@code INVALID_LOAD_TRANSITION} (loading started),
      *         {@code INVALID_LOAD_PLAN_TRANSITION} (the plan is not CONFIRMED), {@code CARRIER_NOT_FOUND},
-     *         {@code CARRIER_INACTIVE}
+     *         {@code CARRIER_INACTIVE}, {@code WAYBILL_DUPLICATE}, {@code WAYBILL_FROM_CARRIER_API}
      */
     LoadDetail book(UUID loadId, Booking booking, CurrentUser actor);
 
-    /** The booking fell through before loading: back to PLANNED with the reason; {@code INVALID_LOAD_TRANSITION} once loading. */
+    /**
+     * The booking fell through before loading: back to PLANNED with the reason, the carrier, vehicle and waybill number
+     * cleared (the waybill history keeps the number); {@code INVALID_LOAD_TRANSITION} once loading.
+     */
     LoadDetail cancelBooking(UUID loadId, String reason, CurrentUser actor);
+
+    // ---- the waybill number (3-2; 09 §4.4, BR-23, BR-24) --------------------------------------------------------------
+
+    /**
+     * Records the carrier's waybill number for a booked load, with its plate and driver when known. Before the vehicle
+     * left the dispatcher may change it; after, it is a correction: it needs {@code fulfillment-waybill-corrections}
+     * and a reason. Every change is in {@link #waybillHistory}. The same values again change nothing.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOAD_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code INVALID_LOAD_TRANSITION} (no carrier booked, or cancelled); {@code WAYBILL_FROM_CARRIER_API}
+     *         (the carrier's booking API gives it); {@code WAYBILL_DUPLICATE}; {@code VALIDATION_FAILED}; 403 for a
+     *         correction without the permission
+     */
+    LoadDetail recordWaybill(UUID loadId, WaybillEntry entry, CurrentUser actor);
+
+    /** Every change of the load's waybill number, oldest first. */
+    List<WaybillChange> waybillHistory(UUID loadId);
 
     /** The booked vehicle arrived: LOADING (BR-14: the plan is locked from now on). */
     LoadDetail startLoading(UUID loadId, CurrentUser actor);

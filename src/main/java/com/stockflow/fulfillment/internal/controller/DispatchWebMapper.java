@@ -41,7 +41,8 @@ class DispatchWebMapper {
     LoadRowResponse toResponse(Dispatching.LoadRow r) {
         return new LoadRowResponse(r.loadId(), r.code(), r.warehouseId(), r.status(), r.carrierId(),
                 r.carrierName(), r.vehiclePlate(), r.driverName(), r.shipmentCount(), r.packageCount(),
-                r.loadingStartedAt(), r.dispatchedAt(), r.version(), r.loadPlanId(), r.loadPlanCode(), r.vehicleSeq());
+                r.loadingStartedAt(), r.dispatchedAt(), r.version(), r.loadPlanId(), r.loadPlanCode(), r.vehicleSeq(),
+                r.waybillNo());
     }
 
     LoadResponse toResponse(Dispatching.LoadDetail d) {
@@ -60,7 +61,8 @@ class DispatchWebMapper {
                 d.bookedAt(), d.bookedBy(), d.bookingCancelledAt(), d.bookingCancelReason(),
                 d.pendingUnloads().stream().map(u -> new LoadResponse.PendingUnload(u.packageId(), u.labelCode(),
                         u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt(), u.reasonCode())).toList(),
-                d.carrierBookingToCancel(), d.cancelReasonCode(), d.replacementLoadId(), d.replacementLoadCode());
+                d.carrierBookingToCancel(), d.cancelReasonCode(), d.replacementLoadId(), d.replacementLoadCode(),
+                d.waybillNo(), d.carrierConnectionType());
     }
 
     ControlledCancelResponse toResponse(Dispatching.ControlledCancelResult r) {
@@ -80,7 +82,7 @@ class DispatchWebMapper {
                                 p.labelOutdatedAt() != null, p.labelOutdatedAt()))
                                 .toList())).toList(),
                 m.shipmentCount(), m.packageCount(), m.totalWeightKg(), m.printedAt(), m.loadPlanCode(),
-                m.vehicleSeq(), m.vehicleTypeCode());
+                m.vehicleSeq(), m.vehicleTypeCode(), m.waybillNo());
     }
 
     ShipmentRowResponse toResponse(Shipments.ShipmentRow r) {

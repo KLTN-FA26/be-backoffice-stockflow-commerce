@@ -125,13 +125,13 @@ class DispatchController {
     @Operation(summary = "A confirmed load plan's vehicle booked with a carrier (outside the system): PLANNED -> "
             + "VEHICLE_BOOKED; again before loading replaces the booking. 404 CARRIER_NOT_FOUND; 409 "
             + "INVALID_LOAD_TRANSITION (loading started), INVALID_LOAD_PLAN_TRANSITION (plan not CONFIRMED), "
-            + "CARRIER_INACTIVE")
+            + "CARRIER_INACTIVE, WAYBILL_DUPLICATE, WAYBILL_FROM_CARRIER_API (the waybill number, if given)")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> book(@PathVariable UUID loadId, @Valid @RequestBody BookingRequest request,
                                           @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(dispatching.book(loadId, new Dispatching.Booking(request.carrierId(),
-                request.vehiclePlate(), request.driverName(), request.driverPhone()), actor)));
+                request.vehiclePlate(), request.driverName(), request.driverPhone(), request.waybillNo()), actor)));
     }
 
     @PostMapping("/{loadId}/booking-cancellation")

@@ -102,6 +102,8 @@ class DispatchService implements Dispatching {
     private final IdentityService identities;
     private final PlanVehicles planVehicles;
     private final LeftBehindParcels leftBehind;
+    private final Waybills waybills;
+    private final com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges;
     private final Clock clock;
 
     @SuppressWarnings("java:S107")
@@ -113,6 +115,8 @@ class DispatchService implements Dispatching {
                     ShipmentTimeline timeline, ShipmentContext context, OrderService orders,
                     WarehouseService warehouses,
                     IdentityService identities, PlanVehicles planVehicles, LeftBehindParcels leftBehind,
+                    Waybills waybills,
+                    com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges,
                     Clock clock) {
         this.loads = loads;
         this.members = members;
@@ -132,6 +136,8 @@ class DispatchService implements Dispatching {
         this.identities = identities;
         this.planVehicles = planVehicles;
         this.leftBehind = leftBehind;
+        this.waybills = waybills;
+        this.waybillChanges = waybillChanges;
         this.clock = clock;
     }
 
@@ -157,7 +163,8 @@ class DispatchService implements Dispatching {
         }
         if (search != null && !search.isBlank()) {
             Specification<DispatchLoadJpaEntity> byCode = Specs.contains("code", search.trim());
-            filters.add(byCode.or(Specs.contains("vehiclePlate", search.trim())).or(inPlanCode(search.trim())));
+            filters.add(byCode.or(Specs.contains("vehiclePlate", search.trim()))
+                    .or(Specs.contains("waybillNo", search.trim())).or(inPlanCode(search.trim())));
         }
         var found = loads.findAll(Specification.allOf(filters),
                 Pages.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id")));
@@ -174,7 +181,7 @@ class DispatchService implements Dispatching {
                     row.getVehiclePlate(), row.getDriverName(), row.getShipmentCount(), row.getPackageCount(),
                     row.getLoadingStartedAt(), row.getDispatchedAt(), row.getVersion(),
                     vehicle == null ? null : vehicle.loadPlanId(), vehicle == null ? null : vehicle.loadPlanCode(),
-                    vehicle == null ? null : vehicle.seq());
+                    vehicle == null ? null : vehicle.seq(), row.getWaybillNo());
         });
     }
 
@@ -362,10 +369,18 @@ class DispatchService implements Dispatching {
             throw new BusinessException(ErrorCode.CARRIER_INACTIVE,
                     "Carrier %s is no longer in use".formatted(carrier.getCode()));
         }
+        if (booking.waybillNo() != null) {
+            waybills.requireTypeable(carrier);
+        }
         DispatchLoadJpaEntity header = locked.header();
+        String before = load.waybillNo();
+        Instant now = clock.instant();
         if (load.book(carrier.getId(), booking.vehiclePlate(), booking.driverName(), booking.driverPhone(),
-                actor.userId(), clock.instant())) {
+                booking.waybillNo(), actor.userId(), now)) {
+            waybills.requireUnique(carrier.getId(), load.waybillNo(), load.id());
             header = store.save(load, header);
+            waybills.record(load.id(), before, load.waybillNo(), WaybillSource.MANUAL, actor.userId(), now,
+                    load.waybillNo() == null ? "Booked with carrier " + carrier.getCode() : null);
             log.info("Load {} booked with carrier {}", load.code(), carrier.getCode());
         }
         return detail(header, load);
@@ -376,11 +391,57 @@ class DispatchService implements Dispatching {
         Locked locked = lockForChange(loadId);
         DispatchLoad load = locked.load();
         DispatchLoadJpaEntity header = locked.header();
-        if (load.cancelBooking(reason, actor.userId(), clock.instant())) {
+        String before = load.waybillNo();
+        Instant now = clock.instant();
+        if (load.cancelBooking(reason, actor.userId(), now)) {
             header = store.save(load, header);
-            log.info("Load {}: booking cancelled ({})", load.code(), reason == null ? null : reason.trim());
+            waybills.record(load.id(), before, null, WaybillSource.MANUAL, actor.userId(), now,
+                    "Booking cancelled: " + reason.strip());
+            log.info("Load {}: booking cancelled ({})", load.code(), reason.trim());
         }
         return detail(header, load);
+    }
+
+    @Override
+    public LoadDetail recordWaybill(UUID loadId, WaybillEntry entry, CurrentUser actor) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        if (load.carrierId() != null) {
+            waybills.requireTypeable(carriers.findById(load.carrierId())
+                    .orElseThrow(() -> new BusinessException(ErrorCode.CARRIER_NOT_FOUND)));
+        }
+        if (load.status() == LoadStatus.DISPATCHED) {
+            // BR-24: after the vehicle left only the warehouse manager corrects it - a permission, never a role.
+            actor.require(FulfillmentPermissions.WAYBILL_CORRECTIONS, com.stockflow.common.security.Action.UPDATE);
+        }
+        DispatchLoadJpaEntity header = locked.header();
+        String before = load.waybillNo();
+        if (load.recordWaybill(entry.waybillNo(), entry.vehiclePlate(), entry.driverName(), entry.driverPhone(),
+                entry.reason())) {
+            waybills.requireUnique(load.carrierId(), load.waybillNo(), load.id());
+            Instant now = clock.instant();
+            header = store.save(load, header);
+            waybills.record(load.id(), before, load.waybillNo(), WaybillSource.MANUAL, actor.userId(), now,
+                    entry.reason());
+            log.info("Load {}: waybill {} recorded{}", load.code(), load.waybillNo(),
+                    load.status() == LoadStatus.DISPATCHED ? " (correction after dispatch)" : "");
+        }
+        return detail(header, load);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<WaybillChange> waybillHistory(UUID loadId) {
+        DispatchLoadJpaEntity header = loads.findById(loadId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.LOAD_NOT_FOUND));
+        WarehouseScope.requireWarehouse(header.getWarehouseId());
+        var rows = waybillChanges.findByLoadIdOrderByChangedAtAscIdAsc(loadId);
+        Set<UUID> people = rows.stream().map(r -> r.getChangedBy()).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<UUID, String> names = people.isEmpty() ? Map.of() : identities.displayNames(people);
+        return rows.stream().map(r -> new WaybillChange(r.getOldWaybillNo(), r.getNewWaybillNo(), r.getSource(),
+                r.getChangedBy(), r.getChangedBy() == null ? null : names.get(r.getChangedBy()), r.getChangedAt(),
+                r.getReason())).toList();
     }
 
     @Override
@@ -849,7 +910,7 @@ class DispatchService implements Dispatching {
                 header.getDriverPhone(), header.getCarrierRepresentative(), header.getSignatureRef(),
                 header.getHandoverNote(), header.getDispatchedAt(), dispatcher, lines, lines.size(), parcelCount,
                 weight, clock.instant(), ctx == null ? null : ctx.plan().code(), ctx == null || ctx.vehicle() == null ? null : ctx.vehicle().seq(),
-                ctx == null || ctx.vehicle() == null ? null : ctx.vehicle().spec().code());
+                ctx == null || ctx.vehicle() == null ? null : ctx.vehicle().spec().code(), header.getWaybillNo());
     }
 
     private static String addressLine(OrderSummary.AddressSummary a) {
@@ -945,7 +1006,8 @@ class DispatchService implements Dispatching {
                 header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelReason(),
                 pendingUnloads(load), load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null,
                 header.getCancelReasonCode() == null ? null : header.getCancelReasonCode().name(),
-                replacement == null ? null : replacement.getId(), replacement == null ? null : replacement.getCode());
+                replacement == null ? null : replacement.getId(), replacement == null ? null : replacement.getCode(),
+                header.getWaybillNo(), carrier == null ? null : carrier.getConnectionType());
     }
 
     /**
