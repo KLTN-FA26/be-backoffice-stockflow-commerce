@@ -63,9 +63,12 @@ ALTER TABLE fulfillment.carrier
         (webhook_secret_sealed IS NULL OR webhook_secret_sealed ~ '^v1:[A-Za-z0-9+/]+={0,2}$')
         AND (webhook_auth_value_sealed IS NULL OR webhook_auth_value_sealed ~ '^v1:[A-Za-z0-9+/]+={0,2}$')
         AND (api_key_sealed IS NULL OR api_key_sealed ~ '^v1:[A-Za-z0-9+/]+={0,2}$')),
-    -- An object of wording -> one of the six internal reasons (09 §4.3 step 3), at most 100 entries.
-    -- (jsonb_path_* without _tz are immutable, so they may sit in a CHECK; a subquery may not.)
+    -- An object of wording -> one of the six internal reasons (09 §4.3 step 3), at most 100 entries. Every value a
+    -- string first, in strict mode: a number or an object compares as unknown and slips through the list check, and
+    -- lax mode unwraps an array before filtering it. jsonb_path_* without _tz are immutable, so they may sit in a
+    -- CHECK; a subquery may not.
     ADD CONSTRAINT ck_carrier_failure_reason_map CHECK (jsonb_typeof(failure_reason_map) = 'object'
+        AND NOT jsonb_path_exists(failure_reason_map, 'strict $.* ? (@.type() != "string")')
         AND NOT jsonb_path_exists(failure_reason_map,
             '$.* ? (@ != "CUSTOMER_ABSENT" && @ != "REFUSED" && @ != "WRONG_ADDRESS" && @ != "LOST" && @ != "DAMAGED" && @ != "OTHER")')
         AND jsonb_array_length(jsonb_path_query_array(failure_reason_map, '$.keyvalue()')) <= 100);

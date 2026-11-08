@@ -61,6 +61,12 @@ class CarrierConnectionMigrationUpgradeTest {
                         + "failure_reason_map = '{\"Khách vắng\": \"ABSENT\"}' WHERE code = 'TRUCKCO'");
                 RawSql.refused(db, "ck_carrier_failure_reason_map", "UPDATE fulfillment.carrier SET "
                         + "failure_reason_map = '[\"OTHER\"]' WHERE code = 'TRUCKCO'");
+                RawSql.refused(db, "ck_carrier_failure_reason_map (a number)", "UPDATE fulfillment.carrier SET "
+                        + "failure_reason_map = '{\"Khách vắng\": 1}' WHERE code = 'TRUCKCO'");
+                RawSql.refused(db, "ck_carrier_failure_reason_map (an array)", "UPDATE fulfillment.carrier SET "
+                        + "failure_reason_map = '{\"Khách vắng\": [\"REFUSED\"]}' WHERE code = 'TRUCKCO'");
+                RawSql.refused(db, "ck_carrier_failure_reason_map (an object)", "UPDATE fulfillment.carrier SET "
+                        + "failure_reason_map = '{\"Khách vắng\": {}}' WHERE code = 'TRUCKCO'");
                 RawSql.refused(db, "ck_carrier_webhook_auth_header", "UPDATE fulfillment.carrier SET "
                         + "webhook_auth_header = 'api key' WHERE code = 'TRUCKCO'");
                 assertThat(RawSql.update(db, "UPDATE fulfillment.carrier SET connection_type = 'API_BOOKING', "
