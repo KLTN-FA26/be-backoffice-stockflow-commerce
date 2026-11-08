@@ -32,6 +32,22 @@ public final class ReferenceRows {
         return id;
     }
 
+    /**
+     * An ACTIVE truck carrier of the catalogue, connected MANUAL, with a code of its own; returns its id. Loads are booked
+     * with truck hirers: the parcel carriers seeded by V20261021000400 are INACTIVE since V20261108001300.
+     */
+    public static UUID truckCarrier(EntityManager em, String name) {
+        UUID id = Identifiers.newId();
+        em.createNativeQuery("""
+                        INSERT INTO fulfillment.carrier (id, code, name, status, version, created_at)
+                        VALUES (?1, ?2, ?3, 'ACTIVE', 0, NOW())""")
+                .setParameter(1, id)
+                .setParameter(2, "TR" + id.toString().replace("-", "").substring(20).toUpperCase())
+                .setParameter(3, name)
+                .executeUpdate();
+        return id;
+    }
+
     /** A {@code customer.customer} row with no account; returns its id. */
     public static UUID customer(EntityManager em) {
         UUID id = Identifiers.newId();

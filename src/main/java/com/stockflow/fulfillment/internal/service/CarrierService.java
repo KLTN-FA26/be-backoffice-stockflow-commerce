@@ -112,8 +112,9 @@ class CarrierService implements Carriers {
 
     /**
      * Replaces {@code row}'s connection settings with {@code input}. A secret left null keeps the one saved when the
-     * new type still uses it; everything the new type does not use is cleared. An API key is issued per environment,
-     * so changing the environment without a new key is refused rather than sending the old key to the other one.
+     * new type still uses it, and so does a failure-reason table left null (an empty one empties it); everything the
+     * new type does not use is cleared. An API key is issued to one account in one environment, so changing either
+     * without a new key is refused rather than sending the old key where it was not issued.
      */
     private void connect(CarrierJpaEntity row, ConnectionInput input) {
         List<FieldError> errors = new ArrayList<>();
@@ -125,7 +126,7 @@ class CarrierService implements Carriers {
         String webhookSecret = secret(input.webhookSecret(), "webhookSecret", 16, errors);
         String authValue = secret(input.webhookAuthValue(), "webhookAuthValue", 16, errors);
         String apiKey = secret(input.apiKey(), "apiKey", 8, errors);
-        FailureReasonMap reasons = reasons(input.failureReasonMap(), errors);
+        FailureReasonMap reasons = input.failureReasonMap() == null ? null : reasons(input.failureReasonMap(), errors);
         if (type == null) {
             throw invalid(errors);
         }
@@ -136,9 +137,12 @@ class CarrierService implements Carriers {
         String keptAuth = booking ? row.getWebhookAuthValueSealed() : null;
         String keptKey = booking ? row.getApiKeySealed() : null;
         CarrierApiEnvironment env = booking ? environment : null;
+        String account = booking ? trimmed(input.apiAccount()) : null;
         if (booking && apiKey == null && keptKey != null && env != null
-                && !env.name().equals(row.getApiEnvironment())) {
-            errors.add(FieldError.of("apiKey", "a key is issued per environment: give the " + env + " key"));
+                && (!env.name().equals(row.getApiEnvironment()) || !java.util.Objects.equals(account,
+                row.getApiAccount()))) {
+            errors.add(FieldError.of("apiKey", "a key is issued to one account in one environment: give the key of "
+                    + "this account in " + env));
         }
         boolean enabled = input.webhookEnabled() != null ? input.webhookEnabled()
                 : type.sendsWebhooks() && (!CarrierConnectionType.valueOf(row.getConnectionType()).sendsWebhooks()
@@ -147,15 +151,21 @@ class CarrierService implements Carriers {
                 signed && (webhookSecret != null || keptSecret != null),
                 booking ? trimmed(input.webhookAuthHeader()) : null,
                 booking && (authValue != null || keptAuth != null), env,
-                booking ? trimmed(input.apiAccount()) : null,
-                booking && (apiKey != null || keptKey != null));
-        connection.violations().forEach(v -> errors.add(FieldError.of(v.field(), v.rule())));
+                account, booking && (apiKey != null || keptKey != null));
+        // One error per field: a malformed value already named is not also reported missing.
+        connection.violations().stream()
+                .filter(v -> errors.stream().noneMatch(e -> e.field().equals(v.field())))
+                .forEach(v -> errors.add(FieldError.of(v.field(), v.rule())));
         if (!errors.isEmpty()) {
             throw invalid(errors);
         }
 
         Map<String, String> stored = new LinkedHashMap<>();
-        reasons.entries().forEach((wording, reason) -> stored.put(wording, reason.name()));
+        if (reasons == null) {
+            stored.putAll(row.getFailureReasonMap());
+        } else {
+            reasons.entries().forEach((wording, reason) -> stored.put(wording, reason.name()));
+        }
         row.connect(type.name(), connection.webhookEnabled(),
                 signed ? (webhookSecret != null ? cipher.seal(webhookSecret, context(row, "webhook-secret"))
                         : keptSecret) : null,

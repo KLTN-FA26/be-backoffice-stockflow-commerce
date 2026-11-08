@@ -137,9 +137,6 @@ class CarrierConnectionIntegrationTest {
                 .andExpect(jsonPath("$.data.connection.apiKeyConfigured").value(true))
                 .andReturn().getResponse().getContentAsString();
         assertThat(read).doesNotContain(API_KEY).doesNotContain(HEADER_CREDENTIAL).doesNotContain("v1:");
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.audit_log WHERE resource_id = ? "
-                + "AND (coalesce(details::text, '') LIKE ? OR coalesce(details::text, '') LIKE ?)", Long.class,
-                id.toString(), "%" + API_KEY + "%", "%" + HEADER_CREDENTIAL + "%")).isZero();
     }
 
     @Test

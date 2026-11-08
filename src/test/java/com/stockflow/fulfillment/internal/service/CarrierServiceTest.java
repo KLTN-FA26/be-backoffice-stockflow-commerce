@@ -227,7 +227,6 @@ class CarrierServiceTest {
 
         assertThat(view.connection()).isEqualTo(new Carriers.ConnectionView("API_BOOKING", true, false, "apikey", true,
                 "STAGING", "84908000000", true, Map.of("Khách không nghe máy", "CUSTOMER_ABSENT")));
-        assertThat(view.toString()).doesNotContain("key-12345678").doesNotContain("header-credential-1234");
         assertThat(row.getApiKeySealed()).startsWith("v1:").doesNotContain("key-12345678");
         assertThat(cipher.open(row.getApiKeySealed(), "carrier:" + row.getId() + ":api-key")).isEqualTo("key-12345678");
         assertThat(cipher.open(row.getWebhookAuthValueSealed(), "carrier:" + row.getId() + ":webhook-auth-value"))
@@ -253,8 +252,9 @@ class CarrierServiceTest {
 
         Carriers.ConnectionView manual = service.update(row.getId(), connect(new Carriers.ConnectionInput("MANUAL",
                 null, null, null, null, null, null, null, null), 0L)).connection();
+        // The failure-reason table is the carrier's vocabulary, not a setting of the API: left out, it stays.
         assertThat(manual).isEqualTo(new Carriers.ConnectionView("MANUAL", false, false, null, false, null, null,
-                false, Map.of()));
+                false, Map.of("Khách không nghe máy", "CUSTOMER_ABSENT")));
         assertThat(row.getApiKeySealed()).isNull();
         assertThat(row.getWebhookAuthValueSealed()).isNull();
     }
@@ -286,6 +286,50 @@ class CarrierServiceTest {
     }
 
     @Test
+    @DisplayName("a table left out keeps the one saved, an empty one empties it; a new account needs a new key")
+    void reasonTableAndAccount() {
+        CarrierJpaEntity row = existing("AHA", "ACTIVE");
+        when(repository.findByCode("AHA")).thenReturn(Optional.of(row));
+        when(repository.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
+        service.update(row.getId(), connect(booking("STAGING", "key-12345678", "header-credential-1234"), 0L));
+
+        Carriers.ConnectionInput noTable = new Carriers.ConnectionInput("API_BOOKING", null, null, "apikey", null,
+                "STAGING", "84908000000", null, null);
+        assertThat(service.update(row.getId(), connect(noTable, 0L)).connection().failureReasonMap())
+                .containsEntry("Khách không nghe máy", "CUSTOMER_ABSENT");
+        Carriers.ConnectionInput emptied = new Carriers.ConnectionInput("API_BOOKING", null, null, "apikey", null,
+                "STAGING", "84908000000", null, Map.of());
+        assertThat(service.update(row.getId(), connect(emptied, 0L)).connection().failureReasonMap()).isEmpty();
+
+        Carriers.ConnectionInput otherAccount = new Carriers.ConnectionInput("API_BOOKING", null, null, "apikey", null,
+                "STAGING", "84911111111", null, null);
+        assertThat(refusal(() -> service.update(row.getId(), connect(otherAccount, 0L))).fieldErrors())
+                .extracting(f -> f.field()).containsExactly("apiKey");
+    }
+
+    @Test
+    @DisplayName("a malformed setting is named once, not also reported missing")
+    void oneErrorPerField() {
+        CarrierJpaEntity row = existing("AHA", "ACTIVE");
+        when(repository.findByCode("AHA")).thenReturn(Optional.of(row));
+
+        BusinessException refused = refusal(() -> service.update(row.getId(), connect(booking("MOON",
+                "key-12345678", "header-credential-1234"), 0L)));
+
+        assertThat(refused.fieldErrors()).extracting(f -> f.field()).containsExactly("apiEnvironment");
+    }
+
+    @Test
+    @DisplayName("the service's records never print a secret")
+    void recordsMaskSecrets() {
+        Carriers.ConnectionInput input = booking("STAGING", "key-12345678", "header-credential-1234");
+        String printed = input + " " + connect(input, 0L);
+
+        assertThat(printed).doesNotContain("key-12345678").doesNotContain("header-credential-1234").contains("***")
+                .contains("84908000000");
+    }
+
+    @Test
     @DisplayName("without a secrets key a connection with a secret is 503 SECRETS_UNAVAILABLE; MANUAL still saves")
     void noKeyNoSecrets() {
         CarrierService keyless = new CarrierService(repository, new SecretCipher(new SecretCipherProperties("")));
@@ -299,5 +343,9 @@ class CarrierServiceTest {
         assertThat(keyless.update(row.getId(), connect(new Carriers.ConnectionInput("MANUAL", null, null, null, null,
                 null, null, null, Map.of("Mất hàng", "LOST")), 0L)).connection().failureReasonMap())
                 .containsEntry("Mất hàng", "LOST");
+        // Every rule first, the seal last: a request refused anyway is 400, not 503, even with a secret in it.
+        assertThat(refusal(() -> keyless.update(row.getId(), connect(new Carriers.ConnectionInput("API_BOOKING",
+                null, null, "apikey", "header-credential-1234", null, "84908000000", "key-12345678", null), 0L)))
+                .errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
 }

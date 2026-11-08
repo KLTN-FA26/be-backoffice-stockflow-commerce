@@ -143,8 +143,9 @@ class DispatchHandoverIntegrationTest {
         otherCustomerUser = staff("CUSTOMER");
         customer = customerOf(customerUser);
         customerOf(otherCustomerUser);
-        ghn = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHN'", UUID.class);
-        ghtk = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHTK'", UUID.class);
+        // Truck hirers of the test's own: the parcel carriers are retired (V20261108001300).
+        ghn = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Nhanh"));
+        ghtk = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Tiết Kiệm"));
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
     }
 
@@ -388,7 +389,8 @@ class DispatchHandoverIntegrationTest {
         JsonNode load = vehicle(ghn, shipment);
         assertThat(load.path("shipmentCount").asInt()).isEqualTo(1);
         assertThat(load.path("expectedPackageCount").asInt()).isEqualTo(2);
-        assertThat(load.path("carrierCode").asText()).isEqualTo("GHN");
+        assertThat(load.path("carrierCode").asText())
+                .isEqualTo(jdbc.queryForObject("SELECT code FROM fulfillment.carrier WHERE id = ?", String.class, ghn));
         String loadId = load.path("loadId").asText();
         assertThat(load.path("code").asText()).matches("LD-\\d{8}-\\d{4}");
 
@@ -442,7 +444,7 @@ class DispatchHandoverIntegrationTest {
         assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
         assertThat(shipped.lifecycle().shipments()).singleElement().satisfies(s -> {
             assertThat(s.shipmentId()).isEqualTo(shipment);
-            assertThat(s.carriage().carrierName()).isEqualTo("Giao Hàng Nhanh");
+            assertThat(s.carriage().carrierName()).isEqualTo("Xe tải Nhanh");
             assertThat(s.carriage().packageCount()).isEqualTo(2);
         });
         assertThat(recorded.ofType(ShipmentStatusChanged.class)).singleElement().satisfies(e -> {
@@ -464,7 +466,7 @@ class DispatchHandoverIntegrationTest {
 
         // The printable manifest.
         dispatch(get(BASE + "/loads/" + loadId + "/manifest")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.carrierName").value("Giao Hàng Nhanh"))
+                .andExpect(jsonPath("$.data.carrierName").value("Xe tải Nhanh"))
                 .andExpect(jsonPath("$.data.vehiclePlate").value("51C-999.99"));
         JsonNode manifest = data(dispatch(get(BASE + "/loads/" + loadId + "/manifest")));
         assertThat(manifest.path("shipmentCount").asInt()).isEqualTo(1);
@@ -480,7 +482,7 @@ class DispatchHandoverIntegrationTest {
                 .andExpect(jsonPath("$.data.deliveryState").value("IN_TRANSIT"))
                 .andExpect(jsonPath("$.data.shipments[0].status").value("HANDED_OVER"))
                 .andExpect(jsonPath("$.data.shipments[0].packageCount").value(2))
-                .andExpect(jsonPath("$.data.shipments[0].carrierName").value("Giao Hàng Nhanh"))
+                .andExpect(jsonPath("$.data.shipments[0].carrierName").value("Xe tải Nhanh"))
                 .andReturn().getResponse().getContentAsString();
         assertThat(mine).doesNotContain(dispatcher.toString(), "handedOverBy", "recordedBy", "MF-SIGNED-1",
                 "Nguyen Van Tai");

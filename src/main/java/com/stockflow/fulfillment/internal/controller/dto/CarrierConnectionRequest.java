@@ -6,21 +6,24 @@ import jakarta.validation.constraints.Size;
 import java.util.Map;
 
 /**
- * How a carrier connects (kltn-docs 09 §4.1 step 2, BR-21), replaced whole except for the three secrets: a secret left
- * out keeps the one saved, a value replaces it. Secrets are write-only - the response says only whether each is set.
- * Settings the chosen type does not use are cleared.
+ * How a carrier connects (kltn-docs 09 §4.1 step 2, BR-21), replaced whole except for the three secrets and the
+ * failure-reason table: one left out keeps what is saved, a value replaces it. Secrets are write-only - the response
+ * says only whether each is set. Settings the chosen type does not use are cleared (a secret sent for one is ignored).
  *
  * @param connectionType    MANUAL, WEBHOOK_LOAD or API_BOOKING
- * @param webhookEnabled    whether its webhooks are accepted now; left out: on for a carrier that sends webhooks
+ * @param webhookEnabled    whether its webhooks are accepted now; left out: kept for a carrier that already sent
+ *                          webhooks, on for one that starts to
  * @param webhookSecret     WEBHOOK_LOAD: the secret its events are signed with (HMAC-SHA256 of the body), 16-512
  * @param webhookAuthHeader API_BOOKING: the header its webhooks carry the credential in ({@code apikey},
  *                          {@code Authorization})
  * @param webhookAuthValue  API_BOOKING: the whole value expected in that header, 16-512
  * @param apiEnvironment    API_BOOKING: STAGING or PRODUCTION; changing it needs a new {@code apiKey}
- * @param apiAccount        API_BOOKING: the account the carrier issued the key to (Ahamove: the phone number)
+ * @param apiAccount        API_BOOKING: the account the carrier issued the key to (Ahamove: the phone number); changing
+ *                          it needs a new {@code apiKey}
  * @param apiKey            API_BOOKING: 8-512 characters
  * @param failureReasonMap  the carrier's wording of a failed delivery to CUSTOMER_ABSENT, REFUSED, WRONG_ADDRESS, LOST,
- *                          DAMAGED or OTHER; wording missing from it is recorded as OTHER with the carrier's words
+ *                          DAMAGED or OTHER; wording missing from it is recorded as OTHER with the carrier's words.
+ *                          Left out, the table saved is kept; an empty one empties it
  */
 public record CarrierConnectionRequest(@NotBlank String connectionType,
                                        Boolean webhookEnabled,

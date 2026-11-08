@@ -65,6 +65,10 @@ class CarrierConnectionTest {
         assertThat(map.resolve("  khách KHÔNG   nghe máy ")).isEqualTo(new FailureReasonMap.Resolution(
                 DeliveryFailureReason.CUSTOMER_ABSENT, "khách KHÔNG   nghe máy"));
         assertThat(map.resolve("Sai địa chỉ").reason()).isEqualTo(DeliveryFailureReason.WRONG_ADDRESS);
+        // The same words decomposed (NFD, combining marks) and with a non-breaking space still match.
+        String decomposed = java.text.Normalizer.normalize("Sai\u00A0địa chỉ", java.text.Normalizer.Form.NFD);
+        assertThat(decomposed).isNotEqualTo("Sai địa chỉ");
+        assertThat(map.resolve(decomposed).reason()).isEqualTo(DeliveryFailureReason.WRONG_ADDRESS);
     }
 
     @Test

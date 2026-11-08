@@ -93,7 +93,12 @@ public final class FailureReasonMap {
     public record Resolution(DeliveryFailureReason reason, String carrierWording) {
     }
 
+    /**
+     * NFC first: Vietnamese typed on one keyboard and sent by another system may compose the same letter differently
+     * (precomposed or with combining marks). Then case and runs of spaces, the non-breaking one included.
+     */
     private static String normalise(String wording) {
-        return wording.strip().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        return java.text.Normalizer.normalize(wording, java.text.Normalizer.Form.NFC).strip()
+                .replaceAll("[\\s\\u00A0]+", " ").toLowerCase(Locale.ROOT);
     }
 }

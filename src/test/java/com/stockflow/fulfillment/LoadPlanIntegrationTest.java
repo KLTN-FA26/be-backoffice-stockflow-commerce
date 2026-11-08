@@ -541,7 +541,8 @@ class LoadPlanIntegrationTest {
         plan = step(plan, "/confirmation", version(plan));
         UUID loadId = jdbc.queryForObject("SELECT id FROM fulfillment.dispatch_load WHERE load_plan_vehicle_id = ? AND "
                 + "status = 'PLANNED'", UUID.class, vehicleId);
-        UUID ghn = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHN'", UUID.class);
+        // A truck hirer of the test's own: the parcel carriers are retired (V20261108001300).
+        UUID ghn = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Nhanh"));
         // PR E (SCRUM-392): booked, then loading.
         dispatch(body(post(BASE + "/loads/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn
                 + "\",\"vehiclePlate\":\"51C-123.45\"}")).andExpect(status().isOk())
