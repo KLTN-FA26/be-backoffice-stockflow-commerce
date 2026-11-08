@@ -71,6 +71,7 @@ public class CustomerDesignService {
     private final PrintConfigs printConfigs;
     private final DraftViews views;
     private final DesignQuoteRequestService quoteRequests;
+    private final DesignProjectService projects;
     private final EntityManager entityManager;
     private final Clock clock;
 
@@ -79,7 +80,7 @@ public class CustomerDesignService {
                                  DesignDecisionJpaRepository decisions, DesignSnapshotJpaRepository snapshots,
                                  CustomerService customers, ProductService products, PrintConfigs printConfigs,
                                  DraftViews views, DesignQuoteRequestService quoteRequests,
-                                 EntityManager entityManager, Clock clock) {
+                                 DesignProjectService projects, EntityManager entityManager, Clock clock) {
         this.drafts = drafts;
         this.documents = documents;
         this.assets = assets;
@@ -90,12 +91,16 @@ public class CustomerDesignService {
         this.printConfigs = printConfigs;
         this.views = views;
         this.quoteRequests = quoteRequests;
+        this.projects = projects;
         this.entityManager = entityManager;
         this.clock = clock;
     }
 
-    /** What a customer starts a design from: a product, one of its variants and that variant's template, and a name. */
-    public record StartDesign(UUID productId, String sku, String templateCode, String name) {
+    /**
+     * What a customer starts a design from: a product, one of its variants and that variant's template, a name, and the
+     * design project to start it in, if any (§4.1 step 3).
+     */
+    public record StartDesign(UUID productId, String sku, String templateCode, String name, UUID projectId) {
     }
 
     /** A design's layout as stored: canonical JSON, its checksum, and the design version it was read at. */
@@ -127,6 +132,9 @@ public class CustomerDesignService {
         documents.save(new DesignDocumentJpaEntity(draft.getId(), layout, CanonicalJson.sha256Hex(layout),
                 clock.instant()));
         decide(draft, actor, DesignDecisionType.CREATED, "SKU " + template.sku() + ", template " + template.code());
+        if (command.projectId() != null) {
+            projects.joinOnStart(draft, command.projectId(), actor);
+        }
         return views.of(draft);
     }
 
@@ -277,6 +285,10 @@ public class CustomerDesignService {
         documents.save(new DesignDocumentJpaEntity(draft.getId(), layout.getDocument(), layout.getChecksum(),
                 clock.instant()));
         decide(draft, actor, DesignDecisionType.DERIVED_FROM_SNAPSHOT, snapshotId.toString());
+        if (source.getProjectId() != null) {
+            // In the same project while it is open; a closed project takes it not (BR-22).
+            projects.joinRevision(draft, source.getProjectId(), actor);
+        }
         return views.of(draft);
     }
 

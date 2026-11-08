@@ -94,6 +94,23 @@ class DesignAssetController {
         return ApiResponse.ok(toResponse(assets.attachUpload(designId, actor(user), request.uploadId())));
     }
 
+    /** A file of the design's project library (kltn-docs 12 §4.9 step 29). */
+    record LibraryPick(@jakarta.validation.constraints.NotNull UUID assetId) {
+    }
+
+    /**
+     * Places a file of the design's project library on the design: copied into it, once its template takes it (BR-18).
+     * Placing the same file again answers with the image it made.
+     */
+    @PostMapping(path = "/library", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Place a file of the design's project library on the design, as a copy")
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    public ApiResponse<DesignAssetResponse> placeFromLibrary(@PathVariable UUID designId,
+            @AuthenticatedUser CurrentUser user, @Valid @RequestBody LibraryPick request) {
+        return ApiResponse.ok(toResponse(assets.placeFromLibrary(designId, actor(user), request.assetId())));
+    }
+
     @GetMapping
     @Operation(summary = "The design's images, newest first")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)

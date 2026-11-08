@@ -112,7 +112,7 @@ public class DesignSubmissionService {
     }
 
     /** What the first read found: why the design cannot go, or the print file to check before it does. */
-    private record Plan(List<LayoutPreflight.Issue> issues, List<String> outdatedFiles, PrintConfig template,
+    record Plan(List<LayoutPreflight.Issue> issues, List<String> outdatedFiles, PrintConfig template,
                         String printFileKey, String printFileChecksum) {
     }
 
@@ -133,13 +133,7 @@ public class DesignSubmissionService {
         Plan plan = tx.execute(status -> plan(id, actor, version, quote));
         List<LayoutPreflight.Issue> issues = new ArrayList<>(plan.issues());
         if (issues.isEmpty() && plan.outdatedFiles().isEmpty()) {
-            String problem;
-            try (PrintFileCopy print = PrintFileCopy.download(storage, plan.printFileKey(), plan.printFileChecksum())) {
-                problem = PrintFileGeometry.problem(print, plan.template());
-            }
-            if (problem != null) {
-                issues.add(new LayoutPreflight.Issue("PRINT_FILE_INVALID", null, null, problem));
-            }
+            issues.addAll(printFileIssues(plan));
         }
         if (!issues.isEmpty()) {
             tx.executeWithoutResult(status -> recordFailure(id, actor, issues));
@@ -155,7 +149,11 @@ public class DesignSubmissionService {
         return tx.execute(status -> submitLocked(id, actor, version, plan, quote));
     }
 
-    private Plan plan(UUID id, UUID actor, long version, DesignQuoteRequestService.QuoteRequestInput quote) {
+    /**
+     * The first, read-only step (see the class javadoc), in the caller's transaction: also how a batch checks each of its
+     * designs.
+     */
+    Plan plan(UUID id, UUID actor, long version, DesignQuoteRequestService.QuoteRequestInput quote) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
         DesignWorkflow.requireVersion(draft.getVersion(), version);
@@ -211,7 +209,7 @@ public class DesignSubmissionService {
     }
 
     /** {@code PREFLIGHT_FAILED} in the history, without touching the design: its version does not move. */
-    private void recordFailure(UUID id, UUID actor, List<LayoutPreflight.Issue> issues) {
+    void recordFailure(UUID id, UUID actor, List<LayoutPreflight.Issue> issues) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         decide(draft, actor, DesignDecisionType.PREFLIGHT_FAILED, summary(issues));
     }
@@ -222,6 +220,36 @@ public class DesignSubmissionService {
         DesignDraftJpaEntity draft = drafts.lockById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         // The lock read may hand back a copy loaded before: read the row as it is now.
         entityManager.refresh(draft);
+        Instant now = submitOne(draft, actor, version, plan, null);
+        events.publishEvent(new DesignSubmittedForReview(id, draft.getCustomerId(), draft.getSku(), now));
+        if (quote != null) {
+            quoteRequests.attach(draft, actor, quote);
+        }
+        return views.of(draft);
+    }
+
+    /**
+     * The print file checked against the template (plan D2), read from storage with no transaction held: a finding
+     * when it is not the studio's for this template, none when it is.
+     */
+    List<LayoutPreflight.Issue> printFileIssues(Plan plan) {
+        String problem;
+        try (PrintFileCopy print = PrintFileCopy.download(storage, plan.printFileKey(), plan.printFileChecksum())) {
+            problem = PrintFileGeometry.problem(print, plan.template());
+        }
+        return problem == null ? List.of() : List.of(new LayoutPreflight.Issue("PRINT_FILE_INVALID", null, null,
+                problem));
+    }
+
+    /**
+     * Submits a design already locked and read as it is now, if nothing it was checked on moved: its owner, its version,
+     * its status, its template. No event: a design submitted alone announces itself, a batch announces the batch
+     * ({@link DesignBatchSubmissionService}).
+     *
+     * @param roundId the project's review round it is submitted in, or null when it goes alone
+     * @return when it was submitted
+     */
+    Instant submitOne(DesignDraftJpaEntity draft, UUID actor, long version, Plan plan, UUID roundId) {
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
         DesignWorkflow.requireVersion(draft.getVersion(), version);
         CustomerDesignRules.requireDraft(draft.getStatus());
@@ -234,13 +262,10 @@ public class DesignSubmissionService {
         Instant now = clock.instant();
         draft.submitForReview(now);
         drafts.saveAndFlush(draft);
-        decide(draft, actor, DesignDecisionType.SUBMITTED_FOR_REVIEW, "Layout " + documents.findById(id)
-                .map(DesignDocumentJpaEntity::getChecksum).orElse("-"));
-        events.publishEvent(new DesignSubmittedForReview(id, draft.getCustomerId(), draft.getSku(), now));
-        if (quote != null) {
-            quoteRequests.attach(draft, actor, quote);
-        }
-        return views.of(draft);
+        decide(draft, actor, DesignDecisionType.SUBMITTED_FOR_REVIEW, "Layout " + documents.findById(draft.getId())
+                .map(DesignDocumentJpaEntity::getChecksum).orElse("-")
+                + (roundId == null ? "" : ", review round " + roundId));
+        return now;
     }
 
     /** The design's images as the preflight reads them: stored type and size, measured pixels. */

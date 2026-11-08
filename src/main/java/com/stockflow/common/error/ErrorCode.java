@@ -686,6 +686,18 @@ public enum ErrorCode {
      * A quote is asked on an approved design on its own; a draft asks with its submission (kltn-docs 12 §4.8).
      */
     DESIGN_NOT_APPROVED("This design is not approved", 409),
+    /** A closed design project takes no design, batch or quote request; it never reopens (kltn-docs 12 BR-22, B42). */
+    DESIGN_PROJECT_ARCHIVED("This design project is closed", 409),
+    /** A design project holds at most 20 designs, archived ones not counted (kltn-docs 12 B42). */
+    DESIGN_PROJECT_FULL("This design project already has the most designs allowed", 409),
+    /** A design project's library holds at most 30 files (kltn-docs 12 B43). */
+    DESIGN_PROJECT_LIBRARY_FULL("This design project's library already has the most files allowed", 409),
+    /** A design project closes only once none of its designs waits for review (kltn-docs 12 BR-22). */
+    DESIGN_PROJECT_HAS_PENDING("A design of this project waits for review", 409),
+    /** A design belongs to one project at most (kltn-docs 12 BR-17). */
+    DESIGN_IN_ANOTHER_PROJECT("This design belongs to another project", 409),
+    /** A design waiting for review neither leaves its project nor moves to another (kltn-docs 12 BR-17). */
+    DESIGN_PENDING_IN_PROJECT("A design waiting for review stays in its project", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
@@ -805,6 +817,11 @@ public enum ErrorCode {
      * {@code details.issues} lists each finding as {@code {rule, surfaceCode?, elementId?, message}}.
      */
     DESIGN_PREFLIGHT_FAILED("The design did not pass the print checks", 422),
+    /**
+     * A batch is submitted whole or not at all (kltn-docs 12 BR-19): {@code details.designs} lists each design that
+     * did not pass, with its {@code issues} or the {@code roles} of files to render again.
+     */
+    DESIGN_BATCH_PREFLIGHT_FAILED("Some designs did not pass the print checks; none was submitted", 422),
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),

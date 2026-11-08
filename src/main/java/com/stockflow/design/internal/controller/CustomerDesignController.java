@@ -57,7 +57,8 @@ class CustomerDesignController {
     }
 
     record StartRequest(@NotNull UUID productId, @NotBlank @Size(max = 64) String sku,
-                        @NotBlank @Size(max = 50) String templateCode, @NotBlank @Size(max = 200) String name) {
+                        @NotBlank @Size(max = 50) String templateCode, @NotBlank @Size(max = 200) String name,
+                        UUID projectId) {
     }
 
     record RenameRequest(@PositiveOrZero long version, @NotBlank @Size(max = 200) String name) {
@@ -71,12 +72,13 @@ class CustomerDesignController {
     }
 
     @PostMapping("/mine")
-    @Operation(summary = "Start a design on a variant's template; the customer and owner are the caller")
+    @Operation(summary = "Start a design on a variant's template, in one of the caller's projects if named; the "
+            + "customer and owner are the caller")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.CREATE)
     public ResponseEntity<ApiResponse<DesignDraftResponse>> start(@Valid @RequestBody StartRequest request,
                                                                   @AuthenticatedUser CurrentUser user) {
         var started = service.start(actor(user), new CustomerDesignService.StartDesign(request.productId(),
-                request.sku(), request.templateCode(), request.name()));
+                request.sku(), request.templateCode(), request.name(), request.projectId()));
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(drafts.toResponse(started)));
     }
 

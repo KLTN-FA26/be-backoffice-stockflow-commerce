@@ -68,8 +68,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionOperations;
 
 /**
- * The Sales Manager's side of a customer's design (kltn-docs 12 §4.4, §4.5): the queue of designs waiting, and the
- * decision on one. Who may decide is the permission on the endpoint ({@code design-designs:APPROVE}; BR-06), not who
+ * The Sales Manager's side of a customer's design (kltn-docs 12 §4.4, §4.5): the queue of designs submitted alone, and
+ * the decision on one - also on one in a project's review round, which the decision counts towards closing (§4.10,
+ * {@link DesignReviewRounds}). Who may decide is the permission on the endpoint ({@code design-designs:APPROVE}; BR-06), not who
  * owns the design.
  *
  * <h2>Approving is one step (BR-09)</h2>
@@ -111,6 +112,7 @@ public class DesignReviewService {
     private final ApplicationEventPublisher events;
     private final DraftViews views;
     private final DesignQuoteRequestService quoteRequests;
+    private final DesignReviewRounds reviewRounds;
     private final EntityManager entityManager;
     private final TransactionOperations tx;
     private final Clock clock;
@@ -123,8 +125,8 @@ public class DesignReviewService {
                                ProductService products, UomConversionService units, FileStorage storage,
                                FileTransfers files, PrintReadyStamp stamp, ProductionInstructionSheet instructions,
                                ApplicationEventPublisher events, DraftViews views,
-                               DesignQuoteRequestService quoteRequests, EntityManager entityManager,
-                               TransactionOperations tx, Clock clock) {
+                               DesignQuoteRequestService quoteRequests, DesignReviewRounds reviewRounds,
+                               EntityManager entityManager, TransactionOperations tx, Clock clock) {
         this.drafts = drafts;
         this.documents = documents;
         this.assets = assets;
@@ -143,6 +145,7 @@ public class DesignReviewService {
         this.events = events;
         this.views = views;
         this.quoteRequests = quoteRequests;
+        this.reviewRounds = reviewRounds;
         this.entityManager = entityManager;
         this.tx = tx;
         this.clock = clock;
@@ -206,6 +209,7 @@ public class DesignReviewService {
         draft.returnToDraft(actor, reason, clock.instant());
         drafts.saveAndFlush(draft);
         decide(draft, actor, DesignDecisionType.RETURNED, reason);
+        reviewRounds.decided(id, "RETURNED", actor, draft.getReviewedAt());
         events.publishEvent(new DesignReviewed(id, draft.getOwnerUserId(), "RETURNED", draft.getSku(),
                 draft.getReviewedAt(), quoteRequests.openOf(id)));
         return views.of(draft);
@@ -313,6 +317,7 @@ public class DesignReviewService {
         drafts.saveAndFlush(draft);
         decide(draft, actor, DesignDecisionType.APPROVED, "Snapshot " + snapshotId + ", SKU " + issued.sku()
                 + ", checksum " + snapshot.getChecksum() + (note == null ? "" : ". " + note));
+        reviewRounds.decided(id, "APPROVED", actor, now);
         events.publishEvent(new DesignReviewed(id, draft.getOwnerUserId(), "APPROVED", issued.sku(), now,
                 quoteRequests.openOf(id)));
         return views.of(draft);

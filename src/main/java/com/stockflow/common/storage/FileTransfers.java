@@ -162,6 +162,35 @@ public class FileTransfers {
     }
 
     /**
+     * Copies a stored file to a new key of {@code category}, inside the caller's transaction, and returns that key: if
+     * the transaction rolls back, the copy is deleted again. Server-side where the store supports it. For a file one
+     * record hands to another that must own its own copy - a design project's library file placed on a design, which
+     * keeps its copy when the file leaves the library (kltn-docs 12 BR-18).
+     */
+    public String copy(String sourceKey, FileCategory category, String contentType) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("Copying a file requires an active database transaction");
+        }
+        String target = StorageKeys.generate(category, contentType, clock.instant());
+        storage.copy(sourceKey, target);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                // An unknown commit outcome may already reference this object: preserve it.
+                if (status == STATUS_ROLLED_BACK) {
+                    try {
+                        storage.delete(target);
+                    } catch (RuntimeException cleanupFailure) {
+                        log.error("Orphaned copy requires cleanup: {}", target, cleanupFailure);
+                    }
+                }
+            }
+        });
+        return target;
+    }
+
+    /**
      * Makes an approved product rendition reachable through the CDN by copying it to its public key,
      * and returns that key. Must run inside the approving transaction: if the approval rolls back,
      * a copy this call created is deleted again, so nothing becomes public for an approval that

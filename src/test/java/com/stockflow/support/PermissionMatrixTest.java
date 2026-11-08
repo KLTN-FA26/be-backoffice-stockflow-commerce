@@ -85,6 +85,10 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
             Map.entry("POST /api/v1/designs/mine", "starts a design for the caller's own customer (resolved from the "
                     + "token; no customer id is taken from the request)"),
+            Map.entry("GET /api/v1/design-projects", "list filtered to projects the caller owns (owner predicate in the "
+                    + "query)"),
+            Map.entry("POST /api/v1/design-projects", "starts a project for the caller's own customer (resolved from "
+                    + "the token; no customer id is taken from the request)"),
             Map.entry("GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/orders/payment-terms", "payment terms offered to the caller's own customer profile"),
@@ -289,6 +293,16 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/designs/{id}/technical-review-requests", "{\"version\":0}"),
                 // 2F-8: a well-formed request, so only the owner check can refuse a quote on the victim's design.
                 Map.entry("POST /api/v1/designs/{id}/quote-requests", "{\"cartons\":1}"),
+                // 2F-9: well-formed writes on the victim's project and design, so only the owner check can refuse them.
+                Map.entry("POST /api/v1/design-projects", "{\"name\":\"stolen\"}"),
+                Map.entry("PUT /api/v1/design-projects/{id}", "{\"version\":0,\"name\":\"stolen\"}"),
+                Map.entry("POST /api/v1/design-projects/{id}/designs", "{\"designId\":\"" + victimDesign + "\"}"),
+                Map.entry("POST /api/v1/design-projects/{id}/quote-requests", "{\"lines\":[{\"designId\":\""
+                        + victimDesign + "\",\"cartons\":1}]}"),
+                Map.entry("POST /api/v1/design-projects/{id}/review-rounds", "{\"designs\":[{\"id\":\"" + victimDesign
+                        + "\",\"version\":0},{\"id\":\"" + UUID.randomUUID() + "\",\"version\":0}]}"),
+                Map.entry("POST /api/v1/designs/{designId}/assets/library", "{\"assetId\":\"" + UUID.randomUUID()
+                        + "\"}"),
                 Map.entry("PUT /api/v1/designs/{id}/document", "{\"version\":0,\"document\":{\"schemaVersion\":1,"
                         + "\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-GREY\",\"surfaces\":{}}}"),
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.
@@ -319,7 +333,8 @@ class PermissionMatrixTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
 
-    UUID attackerUser, victimUser, victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable, victimQuote;
+    UUID attackerUser, victimUser, victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable, victimQuote,
+            victimProject;
 
     @BeforeEach
     void victim() {
@@ -332,6 +347,7 @@ class PermissionMatrixTest {
         victimDesign = Identifiers.newId();
         victimReceivable = Identifiers.newId();
         victimQuote = Identifiers.newId();
+        victimProject = Identifiers.newId();
         UUID snapshot = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("INSERT INTO customer.customer (id, user_id, full_name, email, status, version, created_at) VALUES (?, ?, 'Attacker', ?, 'ACTIVE', 0, NOW())",
@@ -345,6 +361,11 @@ class PermissionMatrixTest {
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, owner_user_id, status, created_at, current_artifacts)
                     VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", victimDesign, victimCustomer, DemoData.PRODUCT_SOFA, victimUser);
+            // The victim's design project (2F-9), holding their design.
+            jdbc.update("""
+                    INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
+                    VALUES (?, ?, ?, 'Victim project', 'ACTIVE', NOW())""", victimProject, victimCustomer, victimUser);
+            jdbc.update("UPDATE design.design_draft SET project_id = ? WHERE id = ?", victimProject, victimDesign);
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at, hold_reason, payment_term, credit_term_days)
                     VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT', 'CREDIT', 30)""",
@@ -407,6 +428,7 @@ class PermissionMatrixTest {
                 case "receivableId" -> victimReceivable;
                 case "quoteId" -> victimQuote;
                 case "id" -> h.template().startsWith("/api/v1/designs") ? victimDesign
+                        : h.template().startsWith("/api/v1/design-projects") ? victimProject
                         : h.template().startsWith("/api/v1/orders") ? victimOrder : UUID.randomUUID();
                 default -> UUID.randomUUID();
             };
@@ -482,7 +504,7 @@ class PermissionMatrixTest {
             if (OWN_DATA_ONLY.containsKey(h.key())) {
                 if (status >= 500) problems.add(h.key() + " answered " + status);
                 for (UUID other : List.of(victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable,
-                        victimQuote)) {
+                        victimQuote, victimProject)) {
                     if (answer.contains(other.toString())) problems.add(h.key() + " (own-data-only) exposed another customer's id " + other);
                 }
             } else if (status != 403 && status != 404) {

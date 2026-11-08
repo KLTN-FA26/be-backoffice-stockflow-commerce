@@ -1,6 +1,7 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
+import com.stockflow.contracts.DesignProjectQuoteRequested;
 import com.stockflow.contracts.DesignQuoteRequested;
 import com.stockflow.contracts.DesignReviewed;
 import com.stockflow.identity.api.StaffContact;
@@ -65,6 +66,12 @@ class DesignQuoteRequestNotificationListener {
         tell(message(event), "Decision on design " + event.designId());
     }
 
+    /** One quote asked over approved designs of a project (kltn-docs 12 §4.11): one notice, every line in it. */
+    @ApplicationModuleListener
+    public void on(DesignProjectQuoteRequested event) {
+        tell(message(event), "Project quote request " + event.requestId());
+    }
+
     private void tell(InboxMessage message, String what) {
         List<StaffContact> recipients = staff.activeHolders(SALES, null);
         if (recipients.isEmpty()) {
@@ -89,6 +96,20 @@ class DesignQuoteRequestNotificationListener {
         return new InboxMessage(CATEGORY, InboxSeverity.INFO, texts.getString("inbox.design.quote.title").formatted(sku),
                 body, LINK, SOURCE_TYPE, event.designId().toString(),
                 "design-quote:%s:%d".formatted(event.requestId(), event.requestedAt().toEpochMilli()));
+    }
+
+    static InboxMessage message(DesignProjectQuoteRequested event) {
+        ResourceBundle texts = texts();
+        String lines = event.lines().stream().map(line -> LogSafe.text(line.customerSku()) + " x" + line.cartons())
+                .collect(java.util.stream.Collectors.joining(", "));
+        String body = texts.getString("inbox.design.projectQuote.body").formatted(event.lines().size(), lines);
+        if (event.desiredDeliveryDate() != null) {
+            body += " " + texts.getString("inbox.design.quote.delivery")
+                    .formatted(DATE.format(event.desiredDeliveryDate()));
+        }
+        return new InboxMessage(CATEGORY, InboxSeverity.INFO, texts.getString("inbox.design.projectQuote.title")
+                .formatted(event.lines().size()), body, "/admin/design-project-quote-requests", "DESIGN_PROJECT",
+                event.projectId().toString(), "design-project-quote:" + event.requestId());
     }
 
     static InboxMessage message(DesignReviewed event) {

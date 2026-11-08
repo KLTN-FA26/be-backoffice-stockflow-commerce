@@ -72,6 +72,8 @@ public class DesignDraftJpaEntity extends BaseEntity {
     private Instant reviewedAt;
     @Column(name = "archived_at")
     private Instant archivedAt;
+    @Column(name = "project_id")
+    private UUID projectId;
 
     protected DesignDraftJpaEntity() {
     }
@@ -98,6 +100,12 @@ public class DesignDraftJpaEntity extends BaseEntity {
     }
 
     public void derivedFrom(UUID snapshotId) { parentSnapshotId = snapshotId; }
+
+    /** Joins a project of its own customer (kltn-docs 12 BR-17; fk_design_draft_project). */
+    public void joinProject(UUID project) { projectId = project; }
+
+    /** Leaves its project; never while it waits for review (tg_design_draft_project_while_pending). */
+    public void leaveProject() { projectId = null; }
 
     public void rename(String nextName) { name = nextName; }
 
@@ -155,4 +163,5 @@ public class DesignDraftJpaEntity extends BaseEntity {
     public Instant getReviewRequestedAt() { return reviewRequestedAt; }
     public Instant getReviewedAt() { return reviewedAt; }
     public Instant getArchivedAt() { return archivedAt; }
+    public UUID getProjectId() { return projectId; }
 }

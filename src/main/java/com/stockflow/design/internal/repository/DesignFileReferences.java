@@ -11,8 +11,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The design files a draft revision or a confirmed snapshot names, and the images a customer uploaded into a design,
- * for the orphaned-file sweep. Every revision and every image row is kept, so only a file whose attaching transaction
+ * The design files a draft revision or a confirmed snapshot names, the images a customer uploaded into a design, and
+ * the files in a design project's library, for the orphaned-file sweep. Every revision and every image row is kept, so only a file whose attaching transaction
  * never committed is an orphan.
  */
 @Component
@@ -35,9 +35,13 @@ class DesignFileReferences implements StoredFileReferences {
             return Set.of();
         }
         if (category == FileCategory.DESIGN_ASSET) {
-            return new HashSet<>(jdbc.queryForList(
-                    "SELECT storage_key FROM design.design_asset WHERE storage_key IN (:keys)", Map.of("keys", keys),
-                    String.class));
+            // A design project's library file is claimed while it is in the library; removed, the sweep takes it -
+            // every design it was placed on holds its own copy (kltn-docs 12 BR-18).
+            return new HashSet<>(jdbc.queryForList("""
+                    SELECT storage_key FROM design.design_asset WHERE storage_key IN (:keys)
+                    UNION
+                    SELECT storage_key FROM design.design_project_asset WHERE storage_key IN (:keys)""",
+                    Map.of("keys", keys), String.class));
         }
         if (category != FileCategory.DESIGN_RENDER) {
             return Set.of();

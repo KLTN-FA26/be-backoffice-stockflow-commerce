@@ -38,14 +38,40 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
             @Param("statuses") Collection<DesignStatus> statuses, Pageable pageable);
 
     /**
-     * The Sales Manager's queue (kltn-docs 12 §4.4): customers' designs waiting for review, the longest waiting first.
+     * The Sales Manager's queue (kltn-docs 12 §4.4): customers' designs submitted on their own and waiting for review,
+     * the longest waiting first. A design waiting in a project's review round is that round's, one item of the queue
+     * of rounds (§4.10).
      */
     @Query(value = "select d from DesignDraftJpaEntity d where d.templateId is not null and "
-            + "d.status = com.stockflow.design.internal.domain.DesignStatus.PENDING_REVIEW "
+            + "d.status = com.stockflow.design.internal.domain.DesignStatus.PENDING_REVIEW and not exists ("
+            + "select 1 from DesignReviewRoundDesignJpaEntity m where m.draftId = d.id and m.outcome is null) "
             + "order by d.reviewRequestedAt asc, d.id asc",
             countQuery = "select count(d) from DesignDraftJpaEntity d where d.templateId is not null and "
-            + "d.status = com.stockflow.design.internal.domain.DesignStatus.PENDING_REVIEW")
+            + "d.status = com.stockflow.design.internal.domain.DesignStatus.PENDING_REVIEW and not exists ("
+            + "select 1 from DesignReviewRoundDesignJpaEntity m where m.draftId = d.id and m.outcome is null)")
     Page<DesignDraftJpaEntity> reviewQueue(Pageable pageable);
+
+    /** A project's designs, archived ones aside, the oldest first: the project's view, side by side (§4.9 step 30). */
+    @Query("select d from DesignDraftJpaEntity d where d.projectId = :projectId "
+            + "and d.status <> com.stockflow.design.internal.domain.DesignStatus.ARCHIVED order by d.createdAt, d.id")
+    java.util.List<DesignDraftJpaEntity> inProject(@Param("projectId") UUID projectId);
+
+    /**
+     * A project's designs, archived ones aside, locked in id order - the order a batch locks them in - so that closing
+     * the project sees every submission that committed before it (BR-22).
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select d from DesignDraftJpaEntity d where d.projectId = :projectId "
+            + "and d.status <> com.stockflow.design.internal.domain.DesignStatus.ARCHIVED order by d.id")
+    java.util.List<DesignDraftJpaEntity> lockInProject(@Param("projectId") UUID projectId);
+
+    /** What the 20-design limit counts (B42): a project's designs, archived ones aside. */
+    @Query("select count(d) from DesignDraftJpaEntity d where d.projectId = :projectId "
+            + "and d.status <> com.stockflow.design.internal.domain.DesignStatus.ARCHIVED")
+    long countInProject(@Param("projectId") UUID projectId);
+
+    /** Whether a design of the project waits for review: the project cannot close meanwhile (BR-22). */
+    boolean existsByProjectIdAndStatus(UUID projectId, DesignStatus status);
 
     /** What the draft limit counts (B37). */
     long countByCustomerIdAndStatus(UUID customerId, DesignStatus status);

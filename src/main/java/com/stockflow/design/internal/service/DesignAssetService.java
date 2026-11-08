@@ -22,6 +22,8 @@ import com.stockflow.design.internal.entity.DesignAssetJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
 import com.stockflow.design.internal.repository.DesignAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
+import com.stockflow.design.internal.repository.DesignProjectAssetJpaRepository;
+import com.stockflow.design.internal.entity.DesignProjectAssetJpaEntity;
 import com.stockflow.product.api.PrintConfig;
 import com.stockflow.product.api.PrintConfigs;
 import jakarta.persistence.EntityManager;
@@ -64,6 +66,7 @@ public class DesignAssetService {
 
     private final DesignDraftJpaRepository drafts;
     private final DesignAssetJpaRepository assets;
+    private final DesignProjectAssetJpaRepository library;
     private final PrintConfigs printConfigs;
     private final FileTransfers files;
     private final StagedUploads staged;
@@ -72,10 +75,12 @@ public class DesignAssetService {
     private final Clock clock;
 
     public DesignAssetService(DesignDraftJpaRepository drafts, DesignAssetJpaRepository assets,
-                              PrintConfigs printConfigs, FileTransfers files, StagedUploads staged,
-                              TransactionOperations tx, EntityManager entityManager, Clock clock) {
+                              DesignProjectAssetJpaRepository library, PrintConfigs printConfigs, FileTransfers files,
+                              StagedUploads staged, TransactionOperations tx, EntityManager entityManager,
+                              Clock clock) {
         this.drafts = drafts;
         this.assets = assets;
+        this.library = library;
         this.printConfigs = printConfigs;
         this.files = files;
         this.staged = staged;
@@ -161,6 +166,37 @@ public class DesignAssetService {
         try (PreparedFiles prepared = staged.accept(FileCategory.DESIGN_ASSET, userId, List.of(uploadId))) {
             return attach(designId, userId, key, prepared, UnaryOperator.identity());
         }
+    }
+
+    /**
+     * Places a file of the design's project library on the design (kltn-docs 12 §4.9 step 29, BR-18): the file is
+     * copied into the design - its own image from then on, whatever happens to the library - once the design's template
+     * takes it, as an upload would be checked; a file it does not take is not placed. Placing the same library file on
+     * the same design again answers with the image it made.
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#designId")
+    public AssetView placeFromLibrary(UUID designId, UUID userId, UUID libraryAssetId) {
+        DesignDraftJpaEntity draft = ownDesign(designId, userId, true);
+        // ":library:" keeps a library placement from ever naming an upload's key.
+        String key = userId + ":asset:library:" + libraryAssetId;
+        Optional<DesignAssetJpaEntity> placed = assets.findByDraftIdAndUploadKey(designId, key);
+        if (placed.isPresent()) {
+            return view(placed.get());
+        }
+        CustomerDesignRules.requireDraft(draft.getStatus());
+        DesignProjectAssetJpaEntity file = library.findById(libraryAssetId)
+                .filter(found -> found.getProjectId().equals(draft.getProjectId()))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        requireRoom(designId);
+        PrintConfig template = templateOf(draft);
+        new Admission(null, Set.copyOf(template.allowedFileFormats()), template.maxFileSizeMb() * MEBIBYTE)
+                .requireAccepts(file.getContentType(), file.getSizeBytes());
+        String copy = files.copy(file.getStorageKey(), FileCategory.DESIGN_ASSET, file.getContentType());
+        var asset = new DesignAssetJpaEntity(designId, Identifiers.newId(), copy, file.getOriginalName(),
+                file.getContentType(), file.getSizeBytes(), file.getChecksum(), file.getWidthPx(), file.getHeightPx(),
+                key, clock.instant(), userId.toString());
+        assets.saveAndFlush(asset);
+        return view(asset);
     }
 
     /** The design's images, newest first; to whoever reads the design (plan D7). */

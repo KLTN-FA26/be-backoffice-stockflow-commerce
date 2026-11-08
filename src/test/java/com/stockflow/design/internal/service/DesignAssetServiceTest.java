@@ -55,8 +55,9 @@ class DesignAssetServiceTest {
     private final FileTransfers files = mock(FileTransfers.class);
     private final StagedUploads staged = mock(StagedUploads.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-11-08T03:00:00Z"), ZoneOffset.UTC);
-    private final DesignAssetService service = new DesignAssetService(drafts, assets, printConfigs, files, staged,
-            TransactionOperations.withoutTransaction(), mock(EntityManager.class), clock);
+    private final DesignAssetService service = new DesignAssetService(drafts, assets,
+            mock(com.stockflow.design.internal.repository.DesignProjectAssetJpaRepository.class), printConfigs, files,
+            staged, TransactionOperations.withoutTransaction(), mock(EntityManager.class), clock);
 
     private final UUID owner = UUID.randomUUID();
     private final UUID designId = UUID.randomUUID();

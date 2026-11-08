@@ -57,6 +57,6 @@ class DraftViews {
         return new DesignWorkflowService.DraftView(d.getId(), d.getCustomerId(), d.getProductId(), d.getOwnerUserId(),
                 d.getName(), d.getSpec(), d.getStatus().name(), d.getCurrentArtifactId(), d.getReviewedBy(),
                 d.getReviewNotes(), d.getVersion(), d.getParentSnapshotId(), slug, d.getSku(), d.getTemplateCode(),
-                d.getReviewRequestedAt(), d.getReviewedAt(), updatedAt);
+                d.getReviewRequestedAt(), d.getReviewedAt(), updatedAt, d.getProjectId());
     }
 }

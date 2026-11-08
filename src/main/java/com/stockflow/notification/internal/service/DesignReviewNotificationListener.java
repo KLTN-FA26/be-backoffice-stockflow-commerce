@@ -1,6 +1,7 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
+import com.stockflow.contracts.DesignBatchSubmittedForReview;
 import com.stockflow.contracts.DesignSubmittedForReview;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.InboxMessage;
@@ -55,6 +56,31 @@ class DesignReviewNotificationListener {
                 "staff_design_review"));
         log.info("Design {} waits for review: {} reviewer(s), {} newly told", event.designId(), recipients.size(),
                 told);
+    }
+
+    /** A project's designs submitted together: one notice for the round (kltn-docs 12 §4.10), not one per design. */
+    @ApplicationModuleListener
+    public void on(DesignBatchSubmittedForReview event) {
+        List<StaffContact> recipients = staff.activeHolders(REVIEWERS, null);
+        if (recipients.isEmpty()) {
+            log.warn("Review round {} waits, but nobody active holds {}; nobody was notified", event.roundId(),
+                    REVIEWERS);
+            return;
+        }
+        InboxMessage message = message(event);
+        int told = notices.deliver(recipients, message, emails -> sender.sendStaffNotice(emails, message,
+                "staff_design_review"));
+        log.info("Review round {} of {} designs waits: {} reviewer(s), {} newly told", event.roundId(),
+                event.designIds().size(), recipients.size(), told);
+    }
+
+    static InboxMessage message(DesignBatchSubmittedForReview event) {
+        ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        int designs = event.designIds().size();
+        return new InboxMessage(CATEGORY, InboxSeverity.INFO, texts.getString("inbox.design.batch.title")
+                .formatted(designs), texts.getString("inbox.design.batch.body").formatted(designs),
+                "/admin/design-review-rounds/" + event.roundId(), "DESIGN_REVIEW_ROUND", event.roundId().toString(),
+                "design-review-round:" + event.roundId());
     }
 
     static InboxMessage message(DesignSubmittedForReview event) {

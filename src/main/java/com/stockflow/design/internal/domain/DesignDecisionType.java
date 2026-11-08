@@ -22,5 +22,9 @@ public enum DesignDecisionType {
     /** The customer deleted the draft. */
     ARCHIVED,
     /** The customer asked for a quote on it; the notes give the cartons and the delivery date they would like. */
-    QUOTE_REQUESTED
+    QUOTE_REQUESTED,
+    /** The design joined a design project; the notes name it. */
+    ADDED_TO_PROJECT,
+    /** The design left its design project; the notes name it. */
+    REMOVED_FROM_PROJECT
 }

@@ -403,7 +403,7 @@ class CustomerDesignIntegrationTest {
                         Identifiers.newId(), customerId, productId, owner);
             }
         });
-        var command = new CustomerDesignService.StartDesign(productId, sku, "CUP12-BODY", "Cùng lúc");
+        var command = new CustomerDesignService.StartDesign(productId, sku, "CUP12-BODY", "Cùng lúc", null);
         CountDownLatch go = new CountDownLatch(1);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
