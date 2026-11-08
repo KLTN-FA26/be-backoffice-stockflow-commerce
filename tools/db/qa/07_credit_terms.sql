@@ -1,5 +1,6 @@
 -- =============================================================================
--- Commercial terms and credit at the order (SCRUM-427, V20261013000400; kltn-docs 15 §4.3, 18 §3).
+-- Commercial terms and credit at the order (SCRUM-427, V20261013000400; kltn-docs 15 §4.3, 18 §3), and the customer's
+-- default payment schedule (4B-1, V20261108001900; kltn-docs 18 BR-03).
 -- Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -89,6 +90,57 @@ SELECT pg_temp.expect_fail('K15 an automatic check that names a decider', $q$
                                              decided_by)
     VALUES (gen_random_uuid(), md5('qa:order:k10')::uuid, NOW(), 0, 0, 1000000, 'OVER_LIMIT',
             md5('demo:user:approver')::uuid) $q$);
+
+\echo '--- the default payment schedule (customer.default_payment_schedule, checked at commit)'
+SELECT pg_temp.expect_fail('K16 a schedule whose shares add up to 90', $q$
+    WITH s AS (
+        INSERT INTO customer.default_payment_schedule (id, customer_id, set_by, set_at)
+        VALUES (md5('qa:dps:1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('demo:user:approver')::uuid, NOW())
+        RETURNING id)
+    INSERT INTO customer.default_payment_installment (schedule_id, seq, name, percent, milestone)
+    SELECT s.id, v.seq, v.name, v.percent, v.milestone FROM s,
+           (VALUES (1, 'Đặt cọc', 60.00, 'ON_SIGNING'), (2, 'Trước giao', 30.00, 'BEFORE_DELIVERY'))
+               AS v (seq, name, percent, milestone) $q$);
+SELECT pg_temp.expect_fail('K17 a schedule paying after delivery that no accountant approved', $q$
+    WITH s AS (
+        INSERT INTO customer.default_payment_schedule (id, customer_id, set_by, set_at)
+        VALUES (md5('qa:dps:1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('demo:user:approver')::uuid, NOW())
+        RETURNING id)
+    INSERT INTO customer.default_payment_installment (schedule_id, seq, name, percent, milestone, due_days)
+    SELECT s.id, v.seq, v.name, v.percent, v.milestone, v.due_days FROM s,
+           (VALUES (1, 'Đặt cọc', 40.00, 'ON_SIGNING', 0), (2, 'Công nợ', 60.00, 'AFTER_DELIVERY', 30))
+               AS v (seq, name, percent, milestone, due_days) $q$);
+SELECT pg_temp.expect_ok('K18 40% on signing, 60% thirty days after delivery, approved, on the approved credit', $q$
+    WITH s AS (
+        INSERT INTO customer.default_payment_schedule (id, customer_id, set_by, set_at, approved_by, approved_at)
+        VALUES (md5('qa:dps:1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('demo:user:approver')::uuid, NOW(),
+                md5('demo:user:approver')::uuid, NOW())
+        RETURNING id)
+    INSERT INTO customer.default_payment_installment (schedule_id, seq, name, percent, milestone, due_days)
+    SELECT s.id, v.seq, v.name, v.percent, v.milestone, v.due_days FROM s,
+           (VALUES (1, 'Đặt cọc', 40.00, 'ON_SIGNING', 0), (2, 'Công nợ', 60.00, 'AFTER_DELIVERY', 30))
+               AS v (seq, name, percent, milestone, due_days) $q$);
+SELECT pg_temp.expect_fail('K19 the credit taken away while the schedule pays after delivery', $q$
+    UPDATE customer.credit_profile SET allow_credit = FALSE, credit_limit = NULL, credit_term_days = NULL,
+                                       default_payment_term = 'PREPAID'
+     WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' $q$);
+SELECT pg_temp.expect_fail('K20 an instalment removed, the rest adding up to 40', $q$
+    DELETE FROM customer.default_payment_installment WHERE schedule_id = md5('qa:dps:1')::uuid AND seq = 2 $q$);
+SELECT pg_temp.expect_fail('K21 a share of 0', $q$
+    UPDATE customer.default_payment_installment SET percent = 0 WHERE schedule_id = md5('qa:dps:1')::uuid AND seq = 1 $q$);
+SELECT pg_temp.expect_fail('K22 a milestone the contract does not know', $q$
+    UPDATE customer.default_payment_installment SET milestone = 'ON_DELIVERY'
+     WHERE schedule_id = md5('qa:dps:1')::uuid AND seq = 1 $q$);
+SELECT pg_temp.expect_fail('K23 a second schedule for the same customer', $q$
+    INSERT INTO customer.default_payment_schedule (id, customer_id, set_by, set_at)
+    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_ok('K24 the schedule moved to paying before delivery, the credit then taken away', $q$
+    WITH moved AS (
+        UPDATE customer.default_payment_installment SET milestone = 'BEFORE_DELIVERY', due_days = 0
+         WHERE schedule_id = md5('qa:dps:1')::uuid AND seq = 2 RETURNING schedule_id)
+    UPDATE customer.credit_profile SET allow_credit = FALSE, credit_limit = NULL, credit_term_days = NULL,
+                                       default_payment_term = 'PREPAID'
+     WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' AND EXISTS (SELECT 1 FROM moved) $q$);
 
 ROLLBACK;
 \echo 'PASS 07_credit_terms'
