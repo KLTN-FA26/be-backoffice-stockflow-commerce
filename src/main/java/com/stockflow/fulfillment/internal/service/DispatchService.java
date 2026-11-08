@@ -405,6 +405,21 @@ class DispatchService implements Dispatching {
         Locked locked = lockForChange(loadId);
         DispatchLoad load = locked.load();
         DispatchLoadJpaEntity header = locked.header();
+        var live = carrierBookings.findLive(loadId).orElse(null);
+        if (live != null && com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity.UNCONFIRMED
+                .equals(live.getStatus())) {
+            if (reason == null || reason.isBlank()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Cancelling a booking says why");
+            }
+            live.released(reason.strip());
+            carrierBookings.saveAndFlush(live);
+            log.info("Load {}: unconfirmed carrier booking released ({})", load.code(), reason.strip());
+            return detail(header, load);
+        }
+        if (live != null) {
+            // Booked or being booked through the carrier's API meanwhile: its order is cancelled there first.
+            throw CarrierBookingService.inProgress(load.code(), live);
+        }
         String before = load.waybillNo();
         Instant now = clock.instant();
         if (load.cancelBooking(reason, actor.userId(), now)) {
@@ -412,6 +427,35 @@ class DispatchService implements Dispatching {
             waybills.record(load.id(), before, null, WaybillSource.MANUAL, actor.userId(), now,
                     "Booking cancelled: " + reason.strip());
             log.info("Load {}: booking cancelled ({})", load.code(), reason.trim());
+        }
+        return detail(header, load);
+    }
+
+    @Override
+    public LoadDetail cancelCarrierBooking(UUID loadId, UUID bookingId, String reason, CurrentUser actor) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        DispatchLoadJpaEntity header = locked.header();
+        // First read of the booking in this transaction: the lock returns the row as it is now.
+        var booking = carrierBookings.lockById(bookingId).orElse(null);
+        if (booking == null || !com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity.BOOKED
+                .equals(booking.getStatus())) {
+            return detail(header, load);
+        }
+        Instant now = clock.instant();
+        booking.cancelled(reason, now);
+        carrierBookings.saveAndFlush(booking);
+        if (load.status() == LoadStatus.VEHICLE_BOOKED) {
+            String before = load.waybillNo();
+            load.cancelBooking(reason, actor.userId(), now);
+            header = store.save(load, header);
+            waybills.record(load.id(), before, null, WaybillSource.API, actor.userId(), now,
+                    "Booking cancelled at the carrier: " + reason);
+            log.info("Load {}: booking cancelled with its carrier order {} ({})", load.code(),
+                    booking.getCarrierOrderId(), reason);
+        } else {
+            log.warn("Load {}: carrier order {} cancelled while the load is {}", load.code(),
+                    booking.getCarrierOrderId(), load.status());
         }
         return detail(header, load);
     }
@@ -453,11 +497,23 @@ class DispatchService implements Dispatching {
                     + "called off while the carrier took the order").formatted(load.code(), load.status()));
         }
         PlanVehicles.requireConfirmed(locked.plan());
+        // First read of the claim in this transaction: the lock returns the row as it is now. A claim made unconfirmed
+        // by a call slower than ABANDONED_AFTER is still this order's.
         var booking = carrierBookings.lockById(bookingId)
                 .filter(b -> com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity.REQUESTED
-                        .equals(b.getStatus()))
+                        .equals(b.getStatus()) || com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity
+                        .UNCONFIRMED.equals(b.getStatus()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT,
                         "The booking of load %s was given up meanwhile".formatted(load.code())));
+        Set<String> claimed = booking.getStops().stream().map(s -> String.valueOf(s.get("shipmentId")))
+                .collect(Collectors.toSet());
+        Set<String> manifest = load.activeShipments().stream().map(UUID::toString).collect(Collectors.toSet());
+        if (!claimed.equals(manifest)) {
+            // 09 BR-29: the order's drop-offs are the load's shipments; a load whose shipments changed meanwhile does
+            // not take an order made for others.
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("The shipments of load %s changed while "
+                    + "the carrier took the order").formatted(load.code()));
+        }
         Instant now = clock.instant();
         load.book(carrierId, null, null, null, orderId, actor.userId(), now);
         waybills.requireUnique(carrierId, load.waybillNo(), load.id());
@@ -716,6 +772,26 @@ class DispatchService implements Dispatching {
      * not allow partial shipments with all its shipments in the plan at once - one shipment at a time (the order told
      * in this transaction, PACK-PARTIAL). Once every vehicle has left, the plan is DISPATCHED.
      */
+    /**
+     * A load riding on a carrier's order (its waybill number is that order's id) leaves only while the carrier still
+     * holds the order: one cancelled while loading started (a cancel racing the loading, the carrier calling it off)
+     * would send a truck nobody booked (09 BR-29).
+     */
+    private void requireCarrierOrder(DispatchLoad load) {
+        if (load.waybillNo() == null) {
+            return;
+        }
+        carrierBookings.findByLoads(List.of(load.id())).stream()
+                .filter(b -> load.waybillNo().equals(b.getCarrierOrderId())).findFirst()
+                .filter(b -> !com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity.BOOKED
+                        .equals(b.getStatus()))
+                .ifPresent(gone -> {
+                    throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s rides on carrier order "
+                            + "%s, which is %s: it cannot leave on it - unload it with a controlled cancel")
+                            .formatted(load.code(), gone.getCarrierOrderId(), gone.getStatus()));
+                });
+    }
+
     private LoadDetail handOverVehicle(Locked locked, Handover request, CurrentUser actor) {
         DispatchLoadJpaEntity header = locked.header();
         DispatchLoad load = locked.load();
@@ -731,6 +807,7 @@ class DispatchService implements Dispatching {
         if (load.status() == LoadStatus.LOADING) {
             PlanVehicles.requireConfirmed(ctx);
         }
+        requireCarrierOrder(load);
         Instant now = clock.instant();
         UUID by = actor.userId();
         LoadPlan plan = ctx.plan();

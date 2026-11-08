@@ -65,10 +65,19 @@ public interface CarrierBookingGateway {
     List<ServiceOption> services(Caller caller, String cityId);
 
     /**
+     * The status the carrier gives the order now ({@code ASSIGNING}, {@code CANCELLED}, ...); empty when it knows no
+     * such order. Asked after a refused cancel, to tell an order already gone from one the driver picked up.
+     *
+     * @throws CarrierCallFailed when the carrier refused or did not answer
+     */
+    java.util.Optional<String> orderStatus(Caller caller, String orderId);
+
+    /**
      * A call that did not do what was asked.
      *
-     * @param answered false when no answer came (a timeout, a refused connection): the carrier may or may not have
-     *                 acted on it
+     * @param answered false when the carrier's own answer did not come back - a timeout, a refused connection, a 5xx
+     *                 (a proxy's error page, or the carrier failing after it may have acted): the carrier may or may
+     *                 not have done what was asked
      * @param code     the carrier's error code when it gave one ({@code SERVICE_NOT_VALID_AT_PICKUP}, ...)
      */
     final class CarrierCallFailed extends RuntimeException {

@@ -4,6 +4,7 @@ import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.fulfillment.internal.domain.CarrierConnectionType;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.entity.CarrierPickupPointJpaEntity;
@@ -23,8 +24,9 @@ import java.util.regex.Pattern;
 /**
  * Where an API_BOOKING carrier picks up at each warehouse (3-4; kltn-docs 09 BR-29 "điểm lấy hàng là kho xuất", E24):
  * the address as the carrier reads it, who hands the goods over, and the province - which picks the carrier's service
- * code for the load's vehicle type and bounds the drop-offs. Kept by the warehouse manager, replaced whole under the
- * carrier's row lock, for API_BOOKING carriers only.
+ * code for the load's vehicle type and bounds the drop-offs. Kept by the warehouse manager, for API_BOOKING carriers
+ * only. A manager limited to warehouses sees and replaces the points of those warehouses only: the others' are kept as
+ * they are, under the carrier's row lock.
  */
 @Service
 @Transactional
@@ -50,13 +52,16 @@ public class CarrierPickupPoints {
     @Transactional(readOnly = true)
     public List<PickupPoint> list(UUID carrierId) {
         carriers.findById(carrierId).orElseThrow(() -> new BusinessException(ErrorCode.CARRIER_NOT_FOUND));
-        return points.findByCarrierIdOrderByWarehouseIdAsc(carrierId).stream().map(CarrierPickupPoints::view)
-                .toList();
+        return points.findByCarrierIdOrderByWarehouseIdAsc(carrierId).stream().filter(CarrierPickupPoints::inScope)
+                .map(CarrierPickupPoints::view).toList();
     }
 
     /**
+     * The points of the caller's warehouses become {@code wanted}; those of other warehouses stay.
+     *
      * @throws BusinessException {@code CARRIER_NOT_FOUND}; 409 {@code CARRIER_NOT_API_BOOKING}; {@code NOT_FOUND} for
-     *         an unknown warehouse; {@code VALIDATION_FAILED} for a malformed field or a warehouse listed twice
+     *         an unknown warehouse; {@code OUT_OF_DATA_SCOPE} for a warehouse the caller is not assigned to;
+     *         {@code VALIDATION_FAILED} for a malformed field or a warehouse listed twice
      */
     public List<PickupPoint> replace(UUID carrierId, List<PickupPoint> wanted) {
         List<PickupPoint> given = wanted == null ? List.of() : wanted;
@@ -101,14 +106,22 @@ public class CarrierPickupPoints {
                     "Carrier %s does not book through an API".formatted(carrier.getCode()));
         }
         for (PickupPoint p : clean) {
+            WarehouseScope.requireWarehouse(p.warehouseId());
             if (warehouses.findWarehouse(p.warehouseId()).isEmpty()) {
                 throw new BusinessException(ErrorCode.NOT_FOUND, "No warehouse " + p.warehouseId());
             }
         }
-        points.deleteByCarrier(carrierId);
+        // Flushed before the new rows: Hibernate inserts before it deletes, and uk_carrier_pickup_point would refuse.
+        points.deleteAll(points.findByCarrierIdOrderByWarehouseIdAsc(carrierId).stream()
+                .filter(CarrierPickupPoints::inScope).toList());
+        points.flush();
         points.saveAllAndFlush(clean.stream().map(p -> new CarrierPickupPointJpaEntity(Identifiers.newId(), carrierId,
                 p.warehouseId(), p.provinceCode(), p.address(), p.contactName(), p.contactPhone())).toList());
         return list(carrierId);
+    }
+
+    private static boolean inScope(CarrierPickupPointJpaEntity p) {
+        return WarehouseScope.restriction().map(limit -> limit.ids().contains(p.getWarehouseId())).orElse(true);
     }
 
     private static PickupPoint view(CarrierPickupPointJpaEntity p) {

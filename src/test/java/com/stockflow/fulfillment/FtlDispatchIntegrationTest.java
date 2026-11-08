@@ -861,7 +861,9 @@ class FtlDispatchIntegrationTest {
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKING_IN_PROGRESS"));
         assertThat(load(loadId).path("waybillNo").asText()).isEqualTo("AHA-24ABCD");
 
-        // Cancelled: the carrier first. Refused (the driver picked up): nothing changes here.
+        // Cancelled: the carrier first. Refused (the driver picked up, the order is under way): nothing changes here.
+        org.mockito.Mockito.when(carrierGateway.orderStatus(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq("AHA-24ABCD"))).thenReturn(java.util.Optional.of("IN PROCESS"));
         org.mockito.Mockito.doThrow(new com.stockflow.fulfillment.internal.service.CarrierBookingGateway
                 .CarrierCallFailed(true, "INVALID_ORDER_STATUS", "406 INVALID_ORDER_STATUS"))
                 .when(carrierGateway).cancel(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(
@@ -890,9 +892,122 @@ class FtlDispatchIntegrationTest {
                 org.mockito.ArgumentMatchers.eq("AHA-24ABCE"));
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.carrier_booking WHERE carrier_order_id = "
                 + "'AHA-24ABCE'", String.class)).isEqualTo("CANCELLED");
-        // Every call is the gateway's to log; none of it holds the key in clear.
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.carrier_api_call WHERE request_body LIKE "
-                + "'%aha-key-0123456789%'", Long.class)).isZero();
+    }
+
+    @Test
+    @DisplayName("3-4: a call that does not come back may have made an order - the claim holds the load (UNCONFIRMED), "
+            + "no second order is made until a dispatcher releases it; a cancel refused for an order the carrier "
+            + "dropped already still cancels")
+    void aCallThatDoesNotComeBack() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        String loadCode = load(loadId).path("code").asText();
+        deliverTo(shipment, "79");
+        String book = "{\"carrierId\":\"" + aha + "\"}";
+
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenThrow(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.CarrierCallFailed(false, null, "Ahamove did not answer"));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), book)).andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.errorCode").value("EXTERNAL_SERVICE_ERROR"));
+        JsonNode held = load(loadId);
+        assertThat(held.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(held.path("carrierBooking").path("status").asText()).isEqualTo("UNCONFIRMED");
+        assertThat(held.path("carrierBooking").path("lastError").asText()).contains(loadCode);
+
+        org.mockito.Mockito.reset(carrierGateway);
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-2", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), book)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKING_IN_PROGRESS"));
+        org.mockito.Mockito.verify(carrierGateway, org.mockito.Mockito.never()).place(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        // The dispatcher checked the carrier's portal: released, then booked.
+        dispatch(body(post(LOADS + "/" + loadId + "/booking-cancellation"), "{\"reason\":\"no order on the portal\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PLANNED"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.carrier_booking WHERE load_id = ?::uuid "
+                + "AND status = 'FAILED' AND cancel_reason = 'no order on the portal'", Long.class, loadId)).isOne();
+        assertThat(data(dispatch(body(post(LOADS + "/" + loadId + "/booking"), book)).andExpect(status().isOk()))
+                .path("waybillNo").asText()).isEqualTo("AHA-2");
+
+        // Refused, but the carrier no longer holds the order (nobody took it): cancelled here as well.
+        org.mockito.Mockito.doThrow(new com.stockflow.fulfillment.internal.service.CarrierBookingGateway
+                .CarrierCallFailed(true, "INVALID_ORDER_STATUS", "406 INVALID_ORDER_STATUS"))
+                .when(carrierGateway).cancel(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(
+                        "AHA-2"));
+        org.mockito.Mockito.when(carrierGateway.orderStatus(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq("AHA-2"))).thenReturn(java.util.Optional.of("CANCELLED"));
+        JsonNode cancelled = data(dispatch(body(post(LOADS + "/" + loadId + "/booking-cancellation"),
+                "{\"reason\":\"đổi giờ\"}")).andExpect(status().isOk()));
+        assertThat(cancelled.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(cancelled.path("carrierBooking").path("status").asText()).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    @DisplayName("3-4: while the carrier takes the order, a cancel is refused (the claim is in flight); the load called "
+            + "off meanwhile does not take the order - it is cancelled at the carrier again")
+    void aLoadThatMovesWhileTheCarrierBooks() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck5t);
+        String loadId = loadOf(plan, 1);
+        deliverTo(shipment, "79");
+        java.util.concurrent.atomic.AtomicInteger cancelDuringCall = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<String> cancelError = new java.util.concurrent.atomic
+                .AtomicReference<>();
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+                    var during = dispatch(body(post(LOADS + "/" + loadId + "/booking-cancellation"),
+                            "{\"reason\":\"đổi ý\"}")).andReturn().getResponse();
+                    cancelDuringCall.set(during.getStatus());
+                    cancelError.set(json.readTree(during.getContentAsString()).path("errorCode").asText());
+                    JsonNode now = data(dispatch(get(PLANS + "/" + plan.path("loadPlanId").asText()))
+                            .andExpect(status().isOk()));
+                    step(now, "/reopening", "{\"expectedVersion\":" + now.path("version").asLong()
+                            + ",\"reason\":\"đổi xe\"}");
+                    return new com.stockflow.fulfillment.internal.service.CarrierBookingGateway.Placed("AHA-9", null);
+                });
+
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+
+        assertThat(cancelDuringCall.get()).isEqualTo(409);
+        assertThat(cancelError.get()).isEqualTo("CARRIER_BOOKING_IN_PROGRESS");
+        org.mockito.Mockito.verify(carrierGateway).cancel(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq("AHA-9"));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.carrier_booking WHERE carrier_order_id = "
+                + "'AHA-9'", String.class)).isEqualTo("CANCELLED");
+        assertThat(load(loadId).path("status").asText()).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    @DisplayName("3-4: a manager limited to a warehouse sees and replaces that warehouse's pickup point only; "
+            + "another warehouse's is kept, and naming it is OUT_OF_DATA_SCOPE")
+    void pickupPointsPerWarehouse() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        UUID elsewhere = tx.execute(s -> otherWarehouse());
+        UUID managerElsewhere = staff("WAREHOUSE_MANAGER", elsewhere);
+        String point = "{\"pickupPoints\":[{\"warehouseId\":\"%s\",\"provinceCode\":\"%s\",\"address\":\"%s\"}]}";
+
+        as(managerElsewhere, "WAREHOUSE_MANAGER", body(put(BASE + "/carriers/" + aha + "/pickup-points"),
+                point.formatted(elsewhere, "01", "5 Tràng Tiền, Hoàn Kiếm, Hà Nội"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].warehouseId").value(elsewhere.toString()));
+        as(manager, "WAREHOUSE_MANAGER", get(BASE + "/carriers/" + aha + "/pickup-points")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].warehouseId").value(HCM.toString()));
+        as(manager, "WAREHOUSE_MANAGER", body(put(BASE + "/carriers/" + aha + "/pickup-points"),
+                point.formatted(HCM, "79", "9 Lê Lợi, Bến Nghé, Quận 1, Hồ Chí Minh"))).andExpect(status().isOk());
+        assertThat(jdbc.queryForList("SELECT province_code FROM fulfillment.carrier_pickup_point WHERE carrier_id = ? "
+                + "ORDER BY province_code", String.class, aha)).containsExactly("01", "79");
+        as(manager, "WAREHOUSE_MANAGER", body(put(BASE + "/carriers/" + aha + "/pickup-points"),
+                point.formatted(elsewhere, "01", "6 Tràng Tiền"))).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
     }
 
     @Test

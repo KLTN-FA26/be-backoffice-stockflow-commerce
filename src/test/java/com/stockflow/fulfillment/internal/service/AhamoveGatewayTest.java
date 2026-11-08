@@ -177,6 +177,67 @@ class AhamoveGatewayTest {
     }
 
     @Test
+    @DisplayName("a 5xx is no answer to rely on - the order may exist; a log that cannot be written fails nothing")
+    void serverErrorsAreNotRefusals() {
+        org.mockito.Mockito.doThrow(new IllegalStateException("pool exhausted")).when(calls).record(any(), any(),
+                eq("BOOK"), any(), any(), any(), any(), any(), anyLong());
+        token("t1");
+        server.expect(requestTo(STAGING + "/v3/orders")).andRespond(withStatus(HttpStatus.BAD_GATEWAY)
+                .body("<html>bad gateway</html>"));
+        server.expect(requestTo(STAGING + "/v3/orders")).andRespond(withSuccess("{\"order_id\":\"24ABCD\"}",
+                MediaType.APPLICATION_JSON));
+
+        CarrierBookingGateway.CarrierCallFailed gateway502 = catchThrowableOfType(
+                CarrierBookingGateway.CarrierCallFailed.class, () -> gateway.place(caller, order()));
+
+        assertThat(gateway502.answered()).isFalse();
+        assertThat(gateway502.getMessage()).startsWith("502");
+        // The order Ahamove made reaches the caller even though its log line failed.
+        assertThat(gateway.place(caller, order()).orderId()).isEqualTo("24ABCD");
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("an order's status is read after a refused cancel; an order Ahamove does not know is empty")
+    void readsAnOrdersStatus() {
+        token("t1");
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCD")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("{\"_id\":\"24ABCD\",\"status\":\"cancelled\"}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCE")).andRespond(withStatus(HttpStatus.NOT_FOUND)
+                .body("{\"code\":\"ORDER_NOT_FOUND\"}").contentType(MediaType.APPLICATION_JSON));
+
+        assertThat(gateway.orderStatus(caller, "24ABCD")).contains("CANCELLED");
+        assertThat(gateway.orderStatus(caller, "24ABCE")).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("nothing logged ever holds the key or the token")
+    void theLogHoldsNoSecret() {
+        token("tok-secret-0123456789");
+        server.expect(requestTo(STAGING + "/v3/orders")).andRespond(withSuccess("{\"order_id\":\"24ABCD\"}",
+                MediaType.APPLICATION_JSON));
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCD")).andRespond(withStatus(HttpStatus.NOT_ACCEPTABLE)
+                .body("{\"code\":\"INVALID_ORDER_STATUS\"}").contentType(MediaType.APPLICATION_JSON));
+
+        gateway.place(caller, order());
+        catchThrowableOfType(CarrierBookingGateway.CarrierCallFailed.class, () -> gateway.cancel(caller, "24ABCD"));
+
+        org.mockito.ArgumentCaptor<String> requests = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<String> responses = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<String> errors = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(calls, org.mockito.Mockito.times(3)).record(any(), any(), any(), any(), any(), requests.capture(),
+                responses.capture(), errors.capture(), anyLong());
+        java.util.List<String> logged = new java.util.ArrayList<>();
+        logged.addAll(requests.getAllValues());
+        logged.addAll(responses.getAllValues());
+        logged.addAll(errors.getAllValues());
+        assertThat(logged).filteredOn(java.util.Objects::nonNull)
+                .noneMatch(text -> text.contains(KEY) || text.contains("tok-secret-0123456789"));
+        server.verify();
+    }
+
+    @Test
     @DisplayName("the caller never prints its key")
     void callerMasksTheKey() {
         assertThat(caller.toString()).doesNotContain(KEY).contains("84908000000");

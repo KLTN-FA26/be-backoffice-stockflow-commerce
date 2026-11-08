@@ -22,6 +22,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -95,6 +96,25 @@ class AhamoveGateway implements CarrierBookingGateway {
         body.put("comment", properties.cancelComment());
         authorised(caller, "CANCEL", HttpMethod.DELETE, "/v3/orders/" + UriUtils.encodePathSegment(orderId,
                 StandardCharsets.UTF_8), body.toString());
+    }
+
+    @Override
+    public java.util.Optional<String> orderStatus(Caller caller, String orderId) {
+        Answer answer;
+        try {
+            answer = authorised(caller, "STATUS", HttpMethod.GET, "/v3/orders/" + UriUtils.encodePathSegment(orderId,
+                    StandardCharsets.UTF_8), null);
+        } catch (CarrierCallFailed failed) {
+            if (failed.answered() && failed.getMessage() != null && failed.getMessage().startsWith("404")) {
+                return java.util.Optional.empty();
+            }
+            throw failed;
+        }
+        JsonNode order = answer.json();
+        if (order != null && order.has("order") && order.get("order").isObject()) {
+            order = order.get("order");
+        }
+        return java.util.Optional.ofNullable(text(order, "status")).map(s -> s.strip().toUpperCase(Locale.ROOT));
     }
 
     @Override
@@ -182,24 +202,43 @@ class AhamoveGateway implements CarrierBookingGateway {
             boolean ok = answer.status() < 400;
             // A token call carries the key and answers with the token: neither goes to the log.
             boolean secret = "TOKEN".equals(operation);
-            calls.record(caller.carrierId(), caller.bookingId(), operation,
-                    ok ? CarrierApiCalls.Outcome.OK : CarrierApiCalls.Outcome.REFUSED, answer.status(),
-                    secret ? null : body, secret ? null : answer.body(), ok ? null : describe(answer), millis);
+            logCall(caller, operation, ok ? CarrierApiCalls.Outcome.OK : CarrierApiCalls.Outcome.REFUSED,
+                    answer.status(), secret ? null : body, secret ? null : answer.body(), ok ? null : describe(answer),
+                    millis);
             return answer;
         } catch (RestClientException noAnswer) {
             long millis = (System.nanoTime() - started) / 1_000_000;
-            calls.record(caller.carrierId(), caller.bookingId(), operation, CarrierApiCalls.Outcome.NO_ANSWER, null,
-                    "TOKEN".equals(operation) ? null : body, null, noAnswer.getClass().getSimpleName(), millis);
+            logCall(caller, operation, CarrierApiCalls.Outcome.NO_ANSWER, null, "TOKEN".equals(operation) ? null : body,
+                    null, noAnswer.getClass().getSimpleName(), millis);
             log.warn("Ahamove {} for carrier {} got no answer: {}", operation, caller.carrierId(),
                     noAnswer.getClass().getSimpleName());
             throw new CarrierCallFailed(false, null, "Ahamove did not answer");
         }
     }
 
+    /**
+     * Writes the call to the log, and nothing it does fails the call: an order Ahamove created must reach the booking
+     * even if its log line could not be written (a full pool, a constraint).
+     */
+    private void logCall(Caller caller, String operation, CarrierApiCalls.Outcome outcome, Integer status,
+                         String request, String response, String error, long millis) {
+        try {
+            calls.record(caller.carrierId(), caller.bookingId(), operation, outcome, status, request, response, error,
+                    millis);
+        } catch (RuntimeException unlogged) {
+            log.warn("Ahamove {} for carrier {} could not be logged: {}", operation, caller.carrierId(),
+                    unlogged.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * A 4xx is Ahamove refusing; a 5xx is not an answer to rely on - a gateway's error page, or Ahamove failing after it
+     * may have acted - so it counts as no answer.
+     */
     private CarrierCallFailed refusal(Answer answer) {
         String code = answer.json() == null ? null : firstNonNull(text(answer.json(), "code"),
                 text(answer.json(), "error"));
-        return new CarrierCallFailed(true, code, describe(answer));
+        return new CarrierCallFailed(answer.status() < 500, code, describe(answer));
     }
 
     /** "406 SERVICE_NOT_VALID_AT_PICKUP: <Ahamove's words>", from whatever the error body carries. */

@@ -18,8 +18,9 @@ import java.util.UUID;
 /** Orders created at carriers for loads (3-4), and their pickup points. */
 public interface CarrierBookingJpaRepository extends BaseJpaRepository<CarrierBookingJpaEntity> {
 
-    /** The load's order in flight or held, if any (at most one: uk_carrier_booking_live). */
-    @Query("select b from CarrierBookingJpaEntity b where b.loadId = :loadId and b.status in ('REQUESTED', 'BOOKED')")
+    /** The load's order in flight, held or possibly held, if any (at most one: uk_carrier_booking_live). */
+    @Query("select b from CarrierBookingJpaEntity b where b.loadId = :loadId "
+            + "and b.status in ('REQUESTED', 'BOOKED', 'UNCONFIRMED')")
     Optional<CarrierBookingJpaEntity> findLive(@Param("loadId") UUID loadId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
@@ -36,19 +37,23 @@ public interface CarrierBookingJpaRepository extends BaseJpaRepository<CarrierBo
     List<CarrierBookingJpaEntity> findAbandoned(@Param("before") Instant before, Pageable page);
 
     /**
-     * Orders still held at the carrier for a load that no longer needs them - called off (CANCELLED), or booked again
-     * by hand - or whose cancel the carrier refused fewer than {@code attempts} times; oldest first.
+     * Orders still held at the carrier for a load that no longer needs them - called off (CANCELLED), or un-booked
+     * without the carrier being told (PLANNED: a shipment was taken off the vehicle, so the order's drop-offs are
+     * wrong) - or whose cancel the carrier refused fewer than {@code attempts} times; oldest first. A booked order and a
+     * PLANNED load never meet otherwise: the load is booked and un-booked in the transaction that books or cancels the
+     * order.
      */
     default List<CarrierBookingJpaEntity> findToCancel(int attempts, Pageable page) {
-        return findToCancel(attempts, com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED, page);
+        return findToCancel(attempts, List.of(com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED,
+                com.stockflow.fulfillment.internal.domain.LoadStatus.PLANNED), page);
     }
 
     @Query("select b from CarrierBookingJpaEntity b, DispatchLoadJpaEntity l where l.id = b.loadId and ("
-            + "(b.status = 'BOOKED' and l.status = :cancelled) "
+            + "(b.status = 'BOOKED' and l.status in :unwanted) "
             + "or (b.status = 'CANCEL_FAILED' and b.cancelAttempts < :attempts)) order by b.requestedAt")
     List<CarrierBookingJpaEntity> findToCancel(@Param("attempts") int attempts,
-                                               @Param("cancelled") com.stockflow.fulfillment.internal.domain.LoadStatus
-                                                       cancelled, Pageable page);
+                                               @Param("unwanted") Collection<com.stockflow.fulfillment.internal.domain
+                                                       .LoadStatus> unwanted, Pageable page);
 
     @Query("select p from CarrierPickupPointJpaEntity p where p.carrierId = :carrierId and p.warehouseId = :warehouseId")
     Optional<CarrierPickupPointJpaEntity> pickupPoint(@Param("carrierId") UUID carrierId,

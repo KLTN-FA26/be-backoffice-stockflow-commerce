@@ -16,8 +16,10 @@ import java.util.UUID;
 /**
  * One order created at a carrier for a load (table {@code fulfillment.carrier_booking}; kltn-docs 09 BR-29: one vehicle,
  * one order; the pickup is the warehouse, each shipment a drop-off). Its life: REQUESTED while the call is under way,
- * then BOOKED (the carrier's order id is the load's waybill number) or FAILED; a booked order ends CANCELLED, or
- * CANCEL_FAILED when the carrier refused to cancel it after the load was called off.
+ * then BOOKED (the carrier's order id is the load's waybill number), FAILED (the carrier refused: nothing was created
+ * there) or UNCONFIRMED (the call did not come back: the order may exist there, so the load stays held until someone has
+ * checked the carrier's portal and released it); a booked order ends CANCELLED, or CANCEL_FAILED when the carrier
+ * refused to cancel it after the load no longer needed it.
  */
 @Entity
 @Table(name = "carrier_booking", schema = "fulfillment")
@@ -26,6 +28,7 @@ public class CarrierBookingJpaEntity extends BaseEntity {
     public static final String REQUESTED = "REQUESTED";
     public static final String BOOKED = "BOOKED";
     public static final String FAILED = "FAILED";
+    public static final String UNCONFIRMED = "UNCONFIRMED";
     public static final String CANCELLED = "CANCELLED";
     public static final String CANCEL_FAILED = "CANCEL_FAILED";
 
@@ -73,24 +76,55 @@ public class CarrierBookingJpaEntity extends BaseEntity {
         this.lastError = null;
     }
 
-    /** The carrier refused or did not answer: nothing was created there. */
+    /** The carrier answered and refused: nothing was created there. */
     public void failed(String error) {
         this.status = FAILED;
         this.lastError = cut(error);
     }
 
-    /** Cancelled at the carrier. */
+    /**
+     * The call did not come back - no answer, an answer that is not the carrier's (a 5xx), or a crash: the order may
+     * exist at the carrier. The claim keeps the load until it is released by hand.
+     */
+    public void unconfirmed(String error) {
+        this.status = UNCONFIRMED;
+        this.lastError = cut(error);
+    }
+
+    /** An unconfirmed claim released by a dispatcher who found no order at the carrier, or cancelled it there. */
+    public void released(String reason) {
+        this.status = FAILED;
+        this.cancelReason = cutReason(reason);
+        this.lastError = cut(lastError + " - released: " + reason);
+    }
+
+    /** Cancelled at the carrier. A booking already cancelled keeps when and why it was. */
     public void cancelled(String reason, Instant at) {
+        if (CANCELLED.equals(status)) {
+            return;
+        }
         this.status = CANCELLED;
-        this.cancelReason = reason == null ? null : reason.length() <= 500 ? reason : reason.substring(0, 500);
+        this.cancelReason = cutReason(reason);
         this.cancelledAt = at;
     }
 
-    /** The carrier refused to cancel (or did not answer); counted, so a sweep gives up after a few tries. */
+    /** The carrier refused to cancel; counted, so a sweep gives up after a few refusals. Never undoes a cancel. */
     public void cancelRefused(String error) {
+        if (CANCELLED.equals(status)) {
+            return;
+        }
         this.status = CANCEL_FAILED;
         this.cancelAttempts++;
         this.lastError = cut(error);
+    }
+
+    /** The carrier did not answer a cancel: not a refusal, so not counted; the next sweep tries again. */
+    public void cancelUnanswered(String error) {
+        this.lastError = cut(error);
+    }
+
+    private static String cutReason(String reason) {
+        return reason == null ? null : reason.length() <= 500 ? reason : reason.substring(0, 500);
     }
 
     private static String cut(String error) {

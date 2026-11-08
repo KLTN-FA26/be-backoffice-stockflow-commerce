@@ -57,7 +57,8 @@ class PlanVehiclesTest {
     private final DispatchLoadPackageJpaRepository loaded = mock(DispatchLoadPackageJpaRepository.class);
     private final DispatchLoadStore loadStore = mock(DispatchLoadStore.class);
     private final PlanVehicles planVehicles = new PlanVehicles(plans, planStore, vehicles, planMembers, loads,
-            loadMembers, loaded, loadStore);
+            loadMembers, loaded, loadStore,
+            mock(com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository.class), mock(Waybills.class));
 
     private FulfillmentFixtures.LeftBehindPlan scenario;
     private LoadPlan plan;

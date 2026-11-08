@@ -55,9 +55,15 @@ import java.util.stream.Stream;
  *   <li>a short transaction books the load under its locks ({@link Dispatching#applyCarrierBooking}) - or records the
  *       refusal, leaving the load PLANNED.</li>
  * </ol>
- * If the load moved between the first and the third step (its plan reopened, someone else booked it), the order the
- * carrier just created is cancelled there again, so no truck comes for a load that no longer wants it. A claim whose
- * call never came back is given up after {@link #ABANDONED_AFTER} (the sweeper's and the next booking's job).
+ * If the load moved between the first and the third step (its plan reopened, someone else booked it, its shipments
+ * changed), the order the carrier just created is cancelled there again, so no truck comes for a load that no longer
+ * wants it.
+ *
+ * <p><b>A call that does not come back is not a refusal.</b> A timeout, a 5xx or a crash after the request left may
+ * follow an order the carrier did create. Such a claim becomes {@code UNCONFIRMED} - at once, or after
+ * {@link #ABANDONED_AFTER} for a claim whose process died - and keeps holding the load: a second order, a second truck,
+ * is not made until a dispatcher has looked on the carrier's portal for an order bearing the load's code, cancelled it
+ * there if it exists, and cancelled the booking here, which releases the claim.</p>
  */
 @Service
 class CarrierBookingService implements Bookings {
@@ -114,14 +120,31 @@ class CarrierBookingService implements Bookings {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Carrier %s gives the waybill number, the "
                     + "vehicle and the driver itself once a driver takes the order").formatted(carrier.getCode()));
         }
+        // A claim whose process died mid-call is unconfirmed, like a call that got no answer: it keeps the load. Its
+        // own transaction, so the refusal that follows does not roll it back.
+        tx.executeWithoutResult(s -> bookings.findLive(loadId).filter(b ->
+                CarrierBookingJpaEntity.REQUESTED.equals(b.getStatus())
+                        && b.getRequestedAt().isBefore(clock.instant().minus(ABANDONED_AFTER)))
+                .ifPresent(b -> b.unconfirmed(unconfirmed("the call never came back", "the load's code"))));
         Prepared prepared = tx.execute(s -> prepare(loadId, carrier, request, actor));
         CarrierBookingGateway.Placed placed;
         try {
             placed = gateway.place(prepared.caller(), prepared.order());
         } catch (CarrierBookingGateway.CarrierCallFailed failed) {
-            tx.executeWithoutResult(s -> bookings.lockById(prepared.bookingId())
-                    .ifPresent(b -> b.failed(failed.getMessage())));
-            throw refusal(carrier, failed, "book");
+            if (failed.answered()) {
+                settleClaim(prepared.bookingId(), b -> b.failed(failed.getMessage()));
+                throw refusal(carrier, failed, "book");
+            }
+            settleClaim(prepared.bookingId(), b -> b.unconfirmed(unconfirmed(failed.getMessage(),
+                    prepared.order().remarks())));
+            throw new BusinessException(ErrorCode.EXTERNAL_SERVICE_ERROR, ("Carrier %s did not answer, and may have "
+                    + "created the order: look on its portal for an order with remark %s, cancel it there if it "
+                    + "exists, then cancel this booking to book again").formatted(carrier.getCode(),
+                    prepared.order().remarks()));
+        } catch (RuntimeException unknown) {
+            settleClaim(prepared.bookingId(), b -> b.unconfirmed(unconfirmed(unknown.getClass().getSimpleName(),
+                    prepared.order().remarks())));
+            throw unknown;
         }
         try {
             Dispatching.LoadDetail booked = tx.execute(s -> dispatching.applyCarrierBooking(loadId, carrier.getId(),
@@ -136,6 +159,12 @@ class CarrierBookingService implements Bookings {
         }
     }
 
+    /**
+     * A booked order is cancelled at the carrier first, then here under the load's locks
+     * ({@link Dispatching#cancelCarrierBooking}). Anything else - no carrier order, a claim in flight or unconfirmed -
+     * is {@link Dispatching#cancelBooking}'s, which decides under the same locks, so a booking that lands meanwhile is
+     * refused rather than left held at the carrier.
+     */
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public Dispatching.LoadDetail cancelBooking(UUID loadId, String reason, CurrentUser actor) {
@@ -143,8 +172,8 @@ class CarrierBookingService implements Bookings {
             DispatchLoadJpaEntity header = loads.findById(loadId)
                     .orElseThrow(() -> new BusinessException(ErrorCode.LOAD_NOT_FOUND));
             WarehouseScope.requireWarehouse(header.getWarehouseId());
-            return bookings.findLive(loadId).filter(b -> CarrierBookingJpaEntity.BOOKED.equals(b.getStatus())
-                    && header.getStatus() == LoadStatus.VEHICLE_BOOKED).orElse(null);
+            return bookings.findLive(loadId).filter(b -> CarrierBookingJpaEntity.BOOKED.equals(b.getStatus()))
+                    .orElse(null);
         });
         if (held == null) {
             return tx.execute(s -> dispatching.cancelBooking(loadId, reason, actor));
@@ -153,33 +182,61 @@ class CarrierBookingService implements Bookings {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Cancelling a booking says why");
         }
         CarrierJpaEntity carrier = tx.execute(s -> carriers.findById(held.getCarrierId()).orElseThrow());
+        String note = cancelAtCarrier(carrier, held);
+        Dispatching.LoadDetail after = tx.execute(s -> dispatching.cancelCarrierBooking(loadId, held.getId(),
+                note == null ? reason.strip() : reason.strip() + " (" + note + ")", actor));
+        if (!LoadStatus.PLANNED.name().equals(after.status())) {
+            // Loading started while the carrier cancelled: the order is gone, the load cannot leave on it.
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Order %s was cancelled at carrier %s, but "
+                    + "load %s started loading meanwhile: it cannot be handed over on that order - unload it with a "
+                    + "controlled cancel").formatted(held.getCarrierOrderId(), carrier.getCode(), after.code()));
+        }
+        return after;
+    }
+
+    /**
+     * Cancels the order at the carrier. A refusal is looked into: an order the carrier no longer has, or has cancelled
+     * already (nobody took it, a cancel that timed out after it worked), is cancelled as far as this load is concerned.
+     * A carrier whose API settings were removed since cannot be asked: the booking is released here and the dispatcher
+     * settles the order with the carrier.
+     *
+     * @return a note for the booking's reason, or null
+     * @throws BusinessException 409 {@code CARRIER_CANCEL_REFUSED} when the carrier keeps the order (the driver picked
+     *         up); 502 when it did not answer
+     */
+    private String cancelAtCarrier(CarrierJpaEntity carrier, CarrierBookingJpaEntity held) {
+        CarrierBookingGateway.Caller caller;
         try {
-            gateway.cancel(secrets.caller(carrier, held.getId()), held.getCarrierOrderId());
+            caller = secrets.caller(carrier, held.getId());
+        } catch (BusinessException noApi) {
+            if (noApi.errorCode() != ErrorCode.CARRIER_NOT_API_BOOKING) {
+                throw noApi;
+            }
+            log.warn("Load {}: carrier {} has no API settings any more; order {} released here, to be cancelled with "
+                    + "the carrier directly", held.getLoadId(), carrier.getCode(), held.getCarrierOrderId());
+            return "carrier no longer connected through its API: cancel order " + held.getCarrierOrderId()
+                    + " with the carrier directly";
+        }
+        try {
+            gateway.cancel(caller, held.getCarrierOrderId());
+            return null;
         } catch (CarrierBookingGateway.CarrierCallFailed failed) {
+            if (failed.answered() && goneAtCarrier(caller, held.getCarrierOrderId())) {
+                return "already cancelled at the carrier";
+            }
             throw new BusinessException(failed.answered() ? ErrorCode.CARRIER_CANCEL_REFUSED
                     : ErrorCode.EXTERNAL_SERVICE_ERROR, ("Carrier %s did not cancel order %s (%s): settle it with the "
                     + "carrier").formatted(carrier.getCode(), held.getCarrierOrderId(), failed.getMessage()),
                     List.of(FieldError.of("carrier", failed.getMessage())));
         }
+    }
+
+    /** Whether the carrier has no such order any more, or holds it cancelled. Unknown counts as no. */
+    boolean goneAtCarrier(CarrierBookingGateway.Caller caller, String orderId) {
         try {
-            return tx.execute(s -> {
-                // Plan, load, then booking: the order applyCarrierBooking locks them in. The detail is read after the
-                // booking is cancelled, or it would still show the order as booked.
-                dispatching.cancelBooking(loadId, reason, actor);
-                bookings.lockById(held.getId()).ifPresent(b -> {
-                    b.cancelled(reason.strip(), clock.instant());
-                    bookings.saveAndFlush(b);
-                });
-                return dispatching.get(loadId);
-            });
-        } catch (RuntimeException moved) {
-            // The order is gone at the carrier whatever the load did meanwhile: say so on the booking.
-            tx.executeWithoutResult(s -> bookings.lockById(held.getId()).ifPresent(b -> {
-                b.cancelled(reason.strip(), clock.instant());
-            }));
-            log.warn("Load {}: order {} cancelled at carrier {}, but the booking could not be cancelled here: {}",
-                    loadId, held.getCarrierOrderId(), carrier.getCode(), moved.getMessage());
-            throw moved;
+            return gateway.orderStatus(caller, orderId).map("CANCELLED"::equals).orElse(true);
+        } catch (CarrierBookingGateway.CarrierCallFailed unknown) {
+            return false;
         }
     }
 
@@ -275,16 +332,18 @@ class CarrierBookingService implements Bookings {
         }
 
         Instant now = clock.instant();
-        // A claim whose call never came back holds the load for ABANDONED_AFTER only.
-        bookings.findLive(loadId).filter(b -> CarrierBookingJpaEntity.REQUESTED.equals(b.getStatus())
-                        && b.getRequestedAt().isBefore(now.minus(ABANDONED_AFTER)))
-                .ifPresent(b -> b.failed("The call to the carrier never came back; check the carrier's portal"));
-        bookings.flush();
+        CarrierBookingJpaEntity live = bookings.findLive(loadId).orElse(null);
+        if (live != null) {
+            throw inProgress(header.getCode(), live);
+        }
         UUID bookingId = Identifiers.newId();
         try {
             bookings.saveAndFlush(new CarrierBookingJpaEntity(bookingId, loadId, carrier.getId(),
                     service.getServiceCode(), stops, request.pickupAt(), actor.userId(), now));
         } catch (DataIntegrityViolationException taken) {
+            if (!String.valueOf(taken.getMostSpecificCause().getMessage()).contains("uk_carrier_booking_live")) {
+                throw taken;
+            }
             throw new BusinessException(ErrorCode.CARRIER_BOOKING_IN_PROGRESS,
                     "Load %s is being booked or is booked with a carrier already".formatted(header.getCode()));
         }
@@ -294,27 +353,61 @@ class CarrierBookingService implements Bookings {
 
     // ------------------------------------------------------------------ internals
 
-    /** Cancels at the carrier an order the load no longer takes; a refusal is left for the sweeper to retry. */
+    /**
+     * Cancels at the carrier an order the load no longer takes. A refusal is CANCEL_FAILED, retried by the sweeper; no
+     * answer leaves it BOOKED for a load that is not, which the sweeper cancels too.
+     */
     private void compensate(Prepared prepared, CarrierBookingGateway.Placed placed, String why) {
         Instant now = clock.instant();
-        String outcome;
+        String refused = null;
+        boolean answered = true;
         try {
             gateway.cancel(prepared.caller(), placed.orderId());
-            outcome = null;
         } catch (CarrierBookingGateway.CarrierCallFailed failed) {
-            outcome = failed.getMessage();
+            answered = failed.answered();
+            refused = failed.answered() && goneAtCarrier(prepared.caller(), placed.orderId()) ? null
+                    : failed.getMessage();
         }
-        String refused = outcome;
-        tx.executeWithoutResult(s -> bookings.lockById(prepared.bookingId()).ifPresent(b -> {
+        String outcome = refused;
+        boolean heard = answered;
+        settleClaim(prepared.bookingId(), b -> {
             b.booked(placed.orderId(), placed.trackingLink(), now);
-            if (refused == null) {
+            if (outcome == null) {
                 b.cancelled("The load changed while the carrier booked it: " + why, now);
+            } else if (heard) {
+                b.cancelRefused(outcome);
             } else {
-                b.cancelRefused(refused);
+                b.cancelUnanswered(outcome);
             }
-        }));
+        });
         log.warn("Order {} created at the carrier for a load that moved meanwhile ({}); {}", placed.orderId(), why,
                 refused == null ? "cancelled there again" : "the carrier refused to cancel it: " + refused);
+    }
+
+    /** Writes the outcome of a claim, under its lock, unless something settled it meanwhile. */
+    private void settleClaim(UUID bookingId, java.util.function.Consumer<CarrierBookingJpaEntity> outcome) {
+        tx.executeWithoutResult(s -> bookings.lockById(bookingId).filter(b ->
+                CarrierBookingJpaEntity.REQUESTED.equals(b.getStatus())
+                        || CarrierBookingJpaEntity.UNCONFIRMED.equals(b.getStatus())).ifPresent(outcome));
+    }
+
+    /** What an unconfirmed claim says on the load: why, and what to look for on the carrier's portal. */
+    static String unconfirmed(String why, String loadCode) {
+        return ("The carrier did not answer (%s) and may have created the order: look on its portal for an order with "
+                + "remark %s, cancel it there if it exists, then cancel this booking to book again").formatted(why,
+                loadCode);
+    }
+
+    static BusinessException inProgress(String loadCode, CarrierBookingJpaEntity live) {
+        return new BusinessException(ErrorCode.CARRIER_BOOKING_IN_PROGRESS, switch (live.getStatus()) {
+            case CarrierBookingJpaEntity.UNCONFIRMED -> ("Load %s has a booking the carrier never confirmed: check the "
+                    + "carrier's portal for an order with remark %s, then cancel the booking").formatted(loadCode,
+                    loadCode);
+            // A PLANNED load still holding an order: a shipment was taken off, and the sweeper cancels it now.
+            case CarrierBookingJpaEntity.BOOKED -> ("Load %s still holds an order at the carrier, being cancelled there "
+                    + "now: book again in a minute").formatted(loadCode);
+            default -> "Load %s is being booked with a carrier right now".formatted(loadCode);
+        });
     }
 
     private static BusinessException refusal(CarrierJpaEntity carrier,

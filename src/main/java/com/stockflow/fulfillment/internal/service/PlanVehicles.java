@@ -6,12 +6,14 @@ import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
+import com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanVehicleJpaEntity;
+import com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository;
@@ -61,12 +63,14 @@ class PlanVehicles {
     private final DispatchLoadShipmentJpaRepository loadMembers;
     private final DispatchLoadPackageJpaRepository loaded;
     private final DispatchLoadStore loadStore;
+    private final CarrierBookingJpaRepository carrierBookings;
+    private final Waybills waybills;
 
     @SuppressWarnings("java:S107")
     PlanVehicles(LoadPlanJpaRepository plans, LoadPlanStore planStore, LoadPlanVehicleJpaRepository vehicles,
                  LoadPlanPackageJpaRepository planMembers, DispatchLoadJpaRepository loads,
                  DispatchLoadShipmentJpaRepository loadMembers, DispatchLoadPackageJpaRepository loaded,
-                 DispatchLoadStore loadStore) {
+                 DispatchLoadStore loadStore, CarrierBookingJpaRepository carrierBookings, Waybills waybills) {
         this.plans = plans;
         this.planStore = planStore;
         this.vehicles = vehicles;
@@ -75,6 +79,8 @@ class PlanVehicles {
         this.loadMembers = loadMembers;
         this.loaded = loaded;
         this.loadStore = loadStore;
+        this.carrierBookings = carrierBookings;
+        this.waybills = waybills;
     }
 
     /** The plan of a load plan's vehicle, its row locked (taken before the vehicle's load's own lock). */
@@ -230,8 +236,10 @@ class PlanVehicles {
     /**
      * The shipment's order was cancelled (08 BR-05): off every open manifest it is on, in load id order. On a full
      * truckload being loaded, its parcels on board are to be unloaded first; a vehicle of a plan left with nothing to
-     * carry is called off, and the plan is DISPATCHED if every other vehicle left (BR-15). The plans' rows are locked
-     * by the caller before this ({@code LoadPlanReleases.releaseShipment}).
+     * carry is called off, and the plan is DISPATCHED if every other vehicle left (BR-15). A vehicle booked through a
+     * carrier's API whose order still lists the shipment as a drop-off is un-booked: 09 BR-29 cancels that order and
+     * makes a new one, so the load goes back to PLANNED and the sweeper cancels the order at the carrier. The plans'
+     * rows are locked by the caller before this ({@code LoadPlanReleases.releaseShipment}).
      */
     void withdraw(UUID shipmentId, Instant at) {
         List<UUID> loadIds = loadMembers.findByShipmentIdInAndActiveTrue(List.of(shipmentId)).stream()
@@ -245,6 +253,8 @@ class PlanVehicles {
                 }
                 if (callOffIfEmpty(load, at)) {
                     touchedPlans.add(header.getLoadPlanVehicleId());
+                } else {
+                    unbookCarrierOrder(load, at);
                 }
                 loadStore.save(load, header);
                 log.info("Shipment {} of a cancelled order taken off load {}{}", shipmentId, load.code(),
@@ -253,6 +263,23 @@ class PlanVehicles {
             });
         }
         completePlansOf(touchedPlans, at);
+    }
+
+    /** A booked load riding on a carrier order made for its old drop-offs goes back to PLANNED, its number with it. */
+    private void unbookCarrierOrder(DispatchLoad load, Instant at) {
+        if (load.status() != LoadStatus.VEHICLE_BOOKED || load.waybillNo() == null) {
+            return;
+        }
+        boolean onOrder = carrierBookings.findLive(load.id()).filter(b -> CarrierBookingJpaEntity.BOOKED
+                .equals(b.getStatus()) && load.waybillNo().equals(b.getCarrierOrderId())).isPresent();
+        if (!onOrder) {
+            return;
+        }
+        String before = load.waybillNo();
+        String reason = "A shipment was taken off: the carrier's order no longer matches the drop-offs - book again";
+        load.cancelBooking(reason, null, at);
+        waybills.record(load.id(), before, null, WaybillSource.API, null, at, reason);
+        log.info("Load {}: carrier order {} dropped, a shipment being taken off", load.code(), before);
     }
 
     /**

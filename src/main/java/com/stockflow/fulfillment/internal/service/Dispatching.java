@@ -184,9 +184,20 @@ public interface Dispatching {
 
     /**
      * The booking fell through before loading: back to PLANNED with the reason, the carrier, vehicle and waybill number
-     * cleared (the waybill history keeps the number); {@code INVALID_LOAD_TRANSITION} once loading.
+     * cleared (the waybill history keeps the number); {@code INVALID_LOAD_TRANSITION} once loading. A load whose
+     * carrier order is held, or being placed, is not un-booked here - its order is cancelled at the carrier first
+     * ({@link Bookings#cancelBooking}), so 409 {@code CARRIER_BOOKING_IN_PROGRESS}; a claim the carrier never confirmed
+     * is released by this, the dispatcher having checked the carrier's portal.
      */
     LoadDetail cancelBooking(UUID loadId, String reason, CurrentUser actor);
+
+    /**
+     * The carrier cancelled the order {@code bookingId} - at the booking service's request - and this load takes note,
+     * in the caller's transaction, under the load's locks and then the booking's: the booking CANCELLED and, while the
+     * load is still VEHICLE_BOOKED, the load back to PLANNED. A load that started loading meanwhile keeps its status (the
+     * caller tells the dispatcher); its handover is refused, its order being gone. Called only by the booking service.
+     */
+    LoadDetail cancelCarrierBooking(UUID loadId, UUID bookingId, String reason, CurrentUser actor);
 
     // ---- the waybill number (3-2; 09 §4.4, BR-23, BR-24) --------------------------------------------------------------
 

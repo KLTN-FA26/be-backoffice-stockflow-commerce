@@ -123,7 +123,12 @@ class Waybills {
         }
         String why = reason == null || reason.isBlank() ? null : reason.strip();
         changes.saveAndFlush(new WaybillChangeJpaEntity(Identifiers.newId(), loadId, before, after, source.name(),
-                source == WaybillSource.WEBHOOK ? null : Objects.requireNonNull(by, "who changed it"), at,
+                switch (source) {
+                    case WEBHOOK -> null;
+                    // The carrier's order: booked by someone, or dropped by the system when its load changed.
+                    case API -> by;
+                    default -> Objects.requireNonNull(by, "who changed it");
+                }, at,
                 why == null ? null : why.length() <= 500 ? why : why.substring(0, 497) + "..."));
     }
 }
