@@ -295,6 +295,10 @@ SELECT pg_temp.expect_fail('P16aa a second open quote request on one design', $q
     FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
 SELECT pg_temp.expect_fail('P16ab a closed quote request without when it closed', $q$
     UPDATE design.design_quote_request SET status = 'CLOSED' WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ac an open quote request naming who closed it', $q$
+    UPDATE design.design_quote_request SET closed_by = requested_by WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ad a quote request for more cartons than anyone orders', $q$
+    UPDATE design.design_quote_request SET cartons = 1000001 WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);

@@ -48,8 +48,10 @@ WITH checks(step, reference, orphans) AS (
              WHERE u.id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = u.id)))),
     ('live', 'design.design_decision.actor_id -> identity.app_user',
         (SELECT count(*) FROM design.design_decision c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.actor_id))),
-    ('live', 'design.design_quote_request.requested_by -> identity.app_user',
-        (SELECT count(*) FROM design.design_quote_request c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.requested_by))),
+    ('live', 'design.design_quote_request.{requested_by,closed_by} -> identity.app_user',
+        (SELECT count(*) FROM design.design_quote_request c WHERE EXISTS (
+            SELECT 1 FROM unnest(ARRAY[c.requested_by, c.closed_by]) u(id)
+             WHERE u.id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = u.id)))),
     ('live', 'customer.customer.user_id -> identity.app_user',
         (SELECT count(*) FROM customer.customer c WHERE c.user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.user_id))),
     ('live', 'catalog.pricing_rule.segment_id -> customer.segment',

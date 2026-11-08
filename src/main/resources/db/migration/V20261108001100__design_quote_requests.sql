@@ -5,12 +5,14 @@
 --   * design.design_quote_request - one request: the design, the cartons the customer would like (a suggestion, at
 --     least one), the delivery date they would like (if any; not before the day they asked, in Vietnam), who asked,
 --     and whether it is still open. A request is made on an approved design, or together with a draft's submission.
---     A design returned after that keeps its request open and the request follows it (B40); deleting the draft closes
---     it. At most one request per design is open at a time (uk_design_quote_request_open).
---   * design-quote-requests - who asks (CUSTOMER: CREATE), and who reads the requests and, while one is open, the
---     design it names when that design waits for review or is approved (SALES_STAFF, SALES_MANAGER: VIEW_PAGE, READ;
---     plan D7). SYSTEM_ADMIN holds all three, as every permission. Every role whose grants change moves its version
---     (ADR-0008).
+--     A design returned after that keeps its request open and the request follows it (B40). One request per design
+--     is open at a time (uk_design_quote_request_open): asking again while it is open changes what it asks. It closes
+--     when the sales staff have answered it (closed_by names them) or the customer deletes the draft; a design asks
+--     again after that, for its next order.
+--   * design-quote-requests - who asks (CREATE), who reads the requests and, while one is open, the design it names
+--     when that design waits for review or is approved (VIEW_PAGE, READ; plan D7), and who closes an answered one
+--     (UPDATE): the customer asks, the sales staff and the Sales Manager read and close. SYSTEM_ADMIN holds all four,
+--     as every permission. Every role whose grants change moves its version (ADR-0008).
 --
 -- The chat card that is to carry a request (16 §4.2) belongs to the chat module, which is not built yet; until it is,
 -- the sales staff are notified of each request and list them.
@@ -25,6 +27,7 @@ CREATE TABLE design.design_quote_request
     desired_delivery_date DATE,
     status                VARCHAR(20)  NOT NULL,
     closed_at             TIMESTAMPTZ,
+    closed_by             UUID,
     version               BIGINT       NOT NULL DEFAULT 0,
     created_at            TIMESTAMPTZ  NOT NULL,
     created_by            VARCHAR(100),
@@ -34,9 +37,12 @@ CREATE TABLE design.design_quote_request
     CONSTRAINT pk_design_quote_request PRIMARY KEY (id),
     CONSTRAINT fk_design_quote_request_draft FOREIGN KEY (draft_id) REFERENCES design.design_draft (id),
     CONSTRAINT fk_design_quote_request_requested_by FOREIGN KEY (requested_by) REFERENCES identity.app_user (id),
-    CONSTRAINT ck_design_quote_request_cartons CHECK (cartons >= 1),
+    CONSTRAINT fk_design_quote_request_closed_by FOREIGN KEY (closed_by) REFERENCES identity.app_user (id),
+    -- At least one; the upper bound only keeps a slip of the keyboard out of the sales staff's list.
+    CONSTRAINT ck_design_quote_request_cartons CHECK (cartons BETWEEN 1 AND 1000000),
     CONSTRAINT ck_design_quote_request_status CHECK (status IN ('OPEN', 'CLOSED')),
-    CONSTRAINT ck_design_quote_request_closed CHECK ((status = 'CLOSED') = (closed_at IS NOT NULL)),
+    CONSTRAINT ck_design_quote_request_closed CHECK ((status = 'CLOSED') = (closed_at IS NOT NULL)
+        AND (closed_by IS NULL OR status = 'CLOSED')),
     -- The day it was asked, in Vietnam: timezone(text, timestamptz) is immutable, so the rule holds for the row's life.
     CONSTRAINT ck_design_quote_request_delivery_date CHECK (desired_delivery_date IS NULL
         OR desired_delivery_date >= (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)
@@ -46,23 +52,25 @@ CREATE TABLE design.design_quote_request
 CREATE UNIQUE INDEX uk_design_quote_request_open ON design.design_quote_request (draft_id) WHERE status = 'OPEN';
 -- A design's requests, newest first.
 CREATE INDEX ix_design_quote_request_draft ON design.design_quote_request (draft_id, created_at DESC, id DESC);
--- The sales staff's list, newest first, by status.
-CREATE INDEX ix_design_quote_request_list ON design.design_quote_request (status, created_at DESC, id DESC);
+-- The sales staff's list, newest first: all of it, or by status.
+CREATE INDEX ix_design_quote_request_list ON design.design_quote_request (created_at DESC, id DESC);
+CREATE INDEX ix_design_quote_request_status ON design.design_quote_request (status, created_at DESC, id DESC);
 CREATE INDEX ix_design_quote_request_requested_by ON design.design_quote_request (requested_by);
+CREATE INDEX ix_design_quote_request_closed_by ON design.design_quote_request (closed_by) WHERE closed_by IS NOT NULL;
 
 
 INSERT INTO identity.permission (id, code, resource, action, version, created_at, created_by)
 SELECT gen_random_uuid(), 'design-quote-requests:' || a.action, 'design-quote-requests', a.action, 0, NOW(), 'flyway'
-FROM unnest(ARRAY['VIEW_PAGE', 'READ', 'CREATE']) AS a(action)
+FROM unnest(ARRAY['VIEW_PAGE', 'READ', 'CREATE', 'UPDATE']) AS a(action)
 ON CONFLICT (code) DO NOTHING;
 
 INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
 SELECT gen_random_uuid(), role.id, permission.id, 0, NOW(), 'flyway'
 FROM (VALUES
           ('CUSTOMER',      'CREATE'),
-          ('SALES_STAFF',   'VIEW_PAGE,READ'),
-          ('SALES_MANAGER', 'VIEW_PAGE,READ'),
-          ('SYSTEM_ADMIN',  'VIEW_PAGE,READ,CREATE')
+          ('SALES_STAFF',   'VIEW_PAGE,READ,UPDATE'),
+          ('SALES_MANAGER', 'VIEW_PAGE,READ,UPDATE'),
+          ('SYSTEM_ADMIN',  'VIEW_PAGE,READ,CREATE,UPDATE')
      ) AS g(role_code, actions)
 JOIN identity.app_role role ON role.code = g.role_code
 JOIN identity.permission permission
