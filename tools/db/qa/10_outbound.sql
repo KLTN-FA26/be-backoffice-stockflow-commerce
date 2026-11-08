@@ -562,5 +562,18 @@ SELECT pg_temp.expect_ok('F92 a booking call that got no answer', $q$
             'SocketTimeoutException', 10000, NOW()) $q$);
 SELECT pg_temp.expect_fail('F93 the call log rewritten (append-only)', $q$
     UPDATE fulfillment.carrier_api_call SET error = NULL WHERE id = md5('qa:cac:f92')::uuid $q$);
+SELECT pg_temp.expect_ok('F94 a claim the carrier never confirmed, with why', $q$
+    UPDATE fulfillment.carrier_booking SET status = 'UNCONFIRMED', last_error = 'no answer'
+     WHERE id = md5('qa:cb:f88')::uuid $q$);
+SELECT pg_temp.expect_fail('F95 a new claim while an unconfirmed one holds the load', $q$
+    INSERT INTO fulfillment.carrier_booking (id, load_id, carrier_id, service_code, stops, status, requested_by,
+                                             requested_at)
+    VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, md5('qa:carrier:f64')::uuid, 'SGN-TRUCK-1000',
+            '[{"seq":1,"shipmentCode":"SO-QA-1"}]', 'REQUESTED', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_ok('F96 the system dropping a carrier order names nobody', $q$
+    INSERT INTO fulfillment.waybill_change (id, load_id, old_waybill_no, new_waybill_no, source, changed_by,
+                                            changed_at, reason)
+    VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'WB-QA-F72', NULL, 'API', NULL, NOW(),
+            'A shipment was taken off') $q$);
 ROLLBACK;
 \echo 'PASS 09_outbound'

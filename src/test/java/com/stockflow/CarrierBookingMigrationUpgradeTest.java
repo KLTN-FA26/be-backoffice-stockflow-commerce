@@ -12,8 +12,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * V20261108001600 on the real upgrade path (kltn-docs 09 §4.2 step 6, BR-29; team plan 3-4): loads booked before the
  * carrier API existed keep everything they had and hold no order at a carrier; from then on one order is in flight or
- * held per load, one pickup point per carrier and warehouse, a booked order carries the carrier's id, and a token call is
- * logged without either body - the log cannot be rewritten.
+ * held per load - an unconfirmed one too, until released - one pickup point per carrier and warehouse, a booked order
+ * carries the carrier's id, a token call is logged without either body and the log cannot be rewritten; a waybill change
+ * of source API may name nobody, a typed one may not.
  */
 class CarrierBookingMigrationUpgradeTest {
 
@@ -87,6 +88,23 @@ class CarrierBookingMigrationUpgradeTest {
                         + "'AHA-1', booked_at = NOW() WHERE status = 'REQUESTED'");
                 RawSql.refused(db, "uk_carrier_booking_order", booking, LOAD, CARRIER, stops, "CANCELLED", "AHA-1",
                         "2026-11-09T01:00:00Z", null, USER);
+                // A call that did not come back holds the load until released, and says why.
+                RawSql.update(db, "UPDATE fulfillment.carrier_booking SET status = 'UNCONFIRMED', carrier_order_id = "
+                        + "NULL, booked_at = NULL, last_error = 'no answer' WHERE status = 'BOOKED'");
+                RawSql.refused(db, "uk_carrier_booking_live", booking, LOAD, CARRIER, stops, "REQUESTED", null, null,
+                        null, USER);
+                RawSql.refused(db, "ck_carrier_booking_failed", "UPDATE fulfillment.carrier_booking SET last_error = "
+                        + "NULL WHERE status = 'UNCONFIRMED'");
+                RawSql.update(db, "UPDATE fulfillment.carrier_booking SET status = 'FAILED' WHERE status = "
+                        + "'UNCONFIRMED'");
+                RawSql.update(db, booking, LOAD, CARRIER, stops, "REQUESTED", null, null, null, USER);
+
+                // The system dropping a carrier order names nobody; a typed change does.
+                String change = "INSERT INTO fulfillment.waybill_change (id, load_id, old_waybill_no, new_waybill_no, "
+                        + "source, changed_by, changed_at) VALUES (gen_random_uuid(), ?::uuid, 'AHA-1', NULL, ?, "
+                        + "?::uuid, NOW())";
+                RawSql.update(db, change, LOAD, "API", null);
+                RawSql.refused(db, "ck_waybill_change_who", change, LOAD, "MANUAL", null);
 
                 // The call log: a token call keeps neither body, and nothing is rewritten.
                 String call = "INSERT INTO fulfillment.carrier_api_call (id, carrier_id, operation, outcome, "
