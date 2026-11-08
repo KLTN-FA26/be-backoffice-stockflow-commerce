@@ -71,6 +71,9 @@ stockflow:
     # Off: the integration tests exercise the service layer directly, not HTTP, so the filter chain
     # would add a JWT setup step without testing anything these tests are about.
     enabled: false
+    secrets:
+      # A fixed key for tests only (32 zero-to-31 bytes), so sealed carrier secrets open across a test's requests.
+      key: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
 
 logging:
   level:

@@ -1,12 +1,15 @@
 package com.stockflow.fulfillment.internal.controller;
 
+import com.stockflow.fulfillment.internal.controller.dto.CarrierConnectionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierResponse;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierServiceCodeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ControlledCancelResponse;
 import com.stockflow.fulfillment.internal.controller.dto.LoadResponse;
 import com.stockflow.fulfillment.internal.controller.dto.LoadRowResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ManifestResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentRowResponse;
+import com.stockflow.fulfillment.internal.service.CarrierServiceCodes;
 import com.stockflow.fulfillment.internal.service.Carriers;
 import com.stockflow.fulfillment.internal.service.Dispatching;
 import com.stockflow.fulfillment.internal.service.Shipments;
@@ -17,8 +20,22 @@ import org.springframework.stereotype.Component;
 class DispatchWebMapper {
 
     CarrierResponse toResponse(Carriers.CarrierView c) {
+        Carriers.ConnectionView k = c.connection();
         return new CarrierResponse(c.id(), c.code(), c.name(), c.contactName(), c.contactPhone(), c.status(),
-                c.version());
+                new CarrierResponse.Connection(k.type(), k.webhookEnabled(), k.webhookSecretConfigured(),
+                        k.webhookAuthHeader(), k.webhookAuthValueConfigured(), k.apiEnvironment(), k.apiAccount(),
+                        k.apiKeyConfigured(), k.failureReasonMap()), c.version());
+    }
+
+    CarrierServiceCodeResponse toResponse(CarrierServiceCodes.ServiceCode c) {
+        return new CarrierServiceCodeResponse(c.vehicleTypeId(), c.vehicleTypeCode(), c.provinceCode(),
+                c.carrierCityCode(), c.serviceCode());
+    }
+
+    Carriers.ConnectionInput toInput(CarrierConnectionRequest r) {
+        return r == null ? null : new Carriers.ConnectionInput(r.connectionType(), r.webhookEnabled(),
+                r.webhookSecret(), r.webhookAuthHeader(), r.webhookAuthValue(), r.apiEnvironment(), r.apiAccount(),
+                r.apiKey(), r.failureReasonMap());
     }
 
     LoadRowResponse toResponse(Dispatching.LoadRow r) {

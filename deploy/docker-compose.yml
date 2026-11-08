@@ -151,6 +151,9 @@ services:
       RESEND_FROM: ${RESEND_FROM:-}
       RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
       RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
+      # Seals carriers' API keys and webhook secrets in the database (openssl rand -base64 32). Blank: they cannot be
+      # saved until it is set. Keep it with the database backups: without it the sealed secrets cannot be read.
+      STOCKFLOW_SECRETS_KEY: ${STOCKFLOW_SECRETS_KEY:-}
       # Off until the customer mail phase of the business documents: no customer order mail, staff and supplier
       # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
       CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}

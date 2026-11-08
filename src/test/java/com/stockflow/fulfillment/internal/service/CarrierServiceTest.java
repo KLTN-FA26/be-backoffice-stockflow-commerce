@@ -2,6 +2,8 @@ package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.SecretCipher;
+import com.stockflow.common.security.SecretCipherProperties;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
 import org.junit.jupiter.api.DisplayName;
@@ -9,7 +11,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,14 +24,30 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** The carrier catalogue of kltn-docs 09 §3: codes are unique, a change is checked against the version read. */
+/**
+ * The carrier catalogue of kltn-docs 09 §3: codes are unique, a change is checked against the version read; and each
+ * carrier's connection (§4.1 step 2, BR-21): secrets sealed and never shown, kept when left out, cleared with the
+ * connection that used them.
+ */
 class CarrierServiceTest {
 
+    private static final String KEY = Base64.getEncoder().encodeToString(new byte[32]);
+
     private final CarrierJpaRepository repository = mock(CarrierJpaRepository.class);
-    private final CarrierService service = new CarrierService(repository);
+    private final SecretCipher cipher = new SecretCipher(new SecretCipherProperties(KEY));
+    private final CarrierService service = new CarrierService(repository, cipher);
 
     private static Carriers.SaveCarrier save(String code, String name, String status, Long version) {
-        return new Carriers.SaveCarrier(code, name, "  An  ", " 0900000000 ", status, version);
+        return new Carriers.SaveCarrier(code, name, "  An  ", " 0900000000 ", status, null, version);
+    }
+
+    private static Carriers.SaveCarrier connect(Carriers.ConnectionInput connection, Long version) {
+        return new Carriers.SaveCarrier("AHA", "Ahamove", null, null, null, connection, version);
+    }
+
+    private static Carriers.ConnectionInput booking(String environment, String apiKey, String authValue) {
+        return new Carriers.ConnectionInput("API_BOOKING", null, null, "apikey", authValue, environment,
+                "84908000000", apiKey, Map.of("Khách không nghe máy", "customer_absent"));
     }
 
     private CarrierJpaEntity existing(String code, String status) {
@@ -62,7 +82,8 @@ class CarrierServiceTest {
         when(repository.findByCode("GHN-1")).thenReturn(Optional.empty());
         when(repository.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
 
-        Carriers.CarrierView view = service.create(new Carriers.SaveCarrier("GHN-1", "GHN", "  ", "", "inactive", null));
+        Carriers.CarrierView view = service.create(new Carriers.SaveCarrier("GHN-1", "GHN", "  ", "", "inactive", null,
+                null));
 
         assertThat(view.contactName()).isNull();
         assertThat(view.contactPhone()).isNull();
@@ -179,5 +200,104 @@ class CarrierServiceTest {
     @DisplayName("filtering the list by an unknown status is VALIDATION_FAILED")
     void listRefusesUnknownStatus() {
         assertThat(refusal(() -> service.list("PAUSED", null, 0, 20)).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    @DisplayName("a new carrier is MANUAL with no webhooks until a connection is given")
+    void newCarrierIsManual() {
+        when(repository.findByCode("GHN-1")).thenReturn(Optional.empty());
+        when(repository.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
+
+        Carriers.ConnectionView connection = service.create(save("GHN-1", "GHN", null, null)).connection();
+
+        assertThat(connection.type()).isEqualTo("MANUAL");
+        assertThat(connection.webhookEnabled()).isFalse();
+        assertThat(connection.failureReasonMap()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an API_BOOKING carrier's secrets are sealed under its own id and the view says only that they are set")
+    void apiBookingSealsSecrets() {
+        CarrierJpaEntity row = existing("AHA", "ACTIVE");
+        when(repository.findByCode("AHA")).thenReturn(Optional.of(row));
+        when(repository.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
+
+        Carriers.CarrierView view = service.update(row.getId(),
+                connect(booking("staging", "key-12345678", "header-credential-1234"), 0L));
+
+        assertThat(view.connection()).isEqualTo(new Carriers.ConnectionView("API_BOOKING", true, false, "apikey", true,
+                "STAGING", "84908000000", true, Map.of("Khách không nghe máy", "CUSTOMER_ABSENT")));
+        assertThat(view.toString()).doesNotContain("key-12345678").doesNotContain("header-credential-1234");
+        assertThat(row.getApiKeySealed()).startsWith("v1:").doesNotContain("key-12345678");
+        assertThat(cipher.open(row.getApiKeySealed(), "carrier:" + row.getId() + ":api-key")).isEqualTo("key-12345678");
+        assertThat(cipher.open(row.getWebhookAuthValueSealed(), "carrier:" + row.getId() + ":webhook-auth-value"))
+                .isEqualTo("header-credential-1234");
+    }
+
+    @Test
+    @DisplayName("secrets left out are kept; a new environment without a new key is refused; MANUAL clears them all")
+    void secretsAreKeptAndCleared() {
+        CarrierJpaEntity row = existing("AHA", "ACTIVE");
+        when(repository.findByCode("AHA")).thenReturn(Optional.of(row));
+        when(repository.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
+        service.update(row.getId(), connect(booking("STAGING", "key-12345678", "header-credential-1234"), 0L));
+        String sealedKey = row.getApiKeySealed();
+
+        assertThat(service.update(row.getId(), connect(booking("STAGING", null, null), 0L)).connection()
+                .apiKeyConfigured()).isTrue();
+        assertThat(row.getApiKeySealed()).isEqualTo(sealedKey);
+
+        BusinessException other = refusal(() -> service.update(row.getId(),
+                connect(booking("PRODUCTION", null, null), 0L)));
+        assertThat(other.fieldErrors()).extracting(f -> f.field()).containsExactly("apiKey");
+
+        Carriers.ConnectionView manual = service.update(row.getId(), connect(new Carriers.ConnectionInput("MANUAL",
+                null, null, null, null, null, null, null, null), 0L)).connection();
+        assertThat(manual).isEqualTo(new Carriers.ConnectionView("MANUAL", false, false, null, false, null, null,
+                false, Map.of()));
+        assertThat(row.getApiKeySealed()).isNull();
+        assertThat(row.getWebhookAuthValueSealed()).isNull();
+    }
+
+    @Test
+    @DisplayName("each missing or malformed setting is named, and nothing is sealed while any rule is broken")
+    void incompleteConnectionsAreRefused() {
+        CarrierJpaEntity row = existing("AHA", "ACTIVE");
+        when(repository.findByCode("AHA")).thenReturn(Optional.of(row));
+
+        BusinessException missing = refusal(() -> service.update(row.getId(), connect(new Carriers.ConnectionInput(
+                "API_BOOKING", null, null, null, null, null, null, null, null), 0L)));
+        assertThat(missing.fieldErrors()).extracting(f -> f.field()).containsExactlyInAnyOrder("webhookAuthHeader",
+                "webhookAuthValue", "apiEnvironment", "apiAccount", "apiKey");
+
+        BusinessException malformed = refusal(() -> service.update(row.getId(), connect(new Carriers.ConnectionInput(
+                "WEBHOOK_LOAD", true, "short", null, null, "MOON", null, " ", Map.of("x", "LATE")), 0L)));
+        assertThat(malformed.fieldErrors()).extracting(f -> f.field()).contains("webhookSecret", "apiEnvironment",
+                "apiKey", "failureReasonMap");
+
+        assertThat(refusal(() -> service.update(row.getId(), connect(new Carriers.ConnectionInput("PIGEON", null,
+                null, null, null, null, null, null, null), 0L))).fieldErrors()).extracting(f -> f.field())
+                .containsExactly("connectionType");
+        assertThat(refusal(() -> service.update(row.getId(), connect(new Carriers.ConnectionInput("MANUAL", true,
+                null, null, null, null, null, null, null), 0L))).fieldErrors()).extracting(f -> f.field())
+                .containsExactly("webhookEnabled");
+        assertThat(row.getApiKeySealed()).isNull();
+        verify(repository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("without a secrets key a connection with a secret is 503 SECRETS_UNAVAILABLE; MANUAL still saves")
+    void noKeyNoSecrets() {
+        CarrierService keyless = new CarrierService(repository, new SecretCipher(new SecretCipherProperties("")));
+        CarrierJpaEntity row = existing("AHA", "ACTIVE");
+        when(repository.findByCode("AHA")).thenReturn(Optional.of(row));
+        when(repository.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
+
+        assertThat(refusal(() -> keyless.update(row.getId(), connect(new Carriers.ConnectionInput("WEBHOOK_LOAD",
+                null, "signing-secret-123456", null, null, null, null, null, null), 0L))).errorCode())
+                .isEqualTo(ErrorCode.SECRETS_UNAVAILABLE);
+        assertThat(keyless.update(row.getId(), connect(new Carriers.ConnectionInput("MANUAL", null, null, null, null,
+                null, null, null, Map.of("Mất hàng", "LOST")), 0L)).connection().failureReasonMap())
+                .containsEntry("Mất hàng", "LOST");
     }
 }

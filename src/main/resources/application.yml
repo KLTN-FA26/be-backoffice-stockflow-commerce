@@ -574,6 +574,12 @@ stockflow:
       # cannot be read or parsed stops the application at startup.
       key-path: ${JWT_PRIVATE_KEY_PATH:}
       private-key: ${JWT_PRIVATE_KEY:}
+    secrets:
+      # The AES-256 key stored secrets are sealed with (SecretCipher): a carrier's API key, webhook secret and webhook
+      # header credential (kltn-docs 09 §4.1). Base64 of exactly 32 bytes: openssl rand -base64 32. Blank: the
+      # application starts, and saving such a secret answers 503 SECRETS_UNAVAILABLE. A malformed key stops the
+      # application at startup. Changing it makes every secret sealed with the old key unreadable - enter them again.
+      key: ${STOCKFLOW_SECRETS_KEY:}
     cors:
       # Browser origins that may call the API (CorsProperties). Patterns: a port or a subdomain may
       # be '*', the host itself may not. A deployment overrides this with

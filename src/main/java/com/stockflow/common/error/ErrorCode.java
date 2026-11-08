@@ -578,6 +578,8 @@ public enum ErrorCode {
     HANDOVER_NOT_SIGNED("Both sides must sign the manifest", 400),
     CARRIER_CODE_EXISTS("Carrier code already exists", 409),
     CARRIER_INACTIVE("This carrier is no longer in use", 409),
+    /** 3-1: service codes are kept only for a carrier the system books with through its API (kltn-docs 09 §4.1). */
+    CARRIER_NOT_API_BOOKING("This carrier is not booked through an API", 409),
     /** SCRUM-287 load planning: the vehicle-type catalogue (kltn-docs 09 §3). */
     VEHICLE_TYPE_NOT_FOUND("Vehicle type not found", 404),
     VEHICLE_TYPE_CODE_EXISTS("Vehicle type code already exists", 409),
@@ -837,6 +839,8 @@ public enum ErrorCode {
     TRANSFER_INSTRUCTIONS_UNAVAILABLE("Transfer details cannot be shown right now", 503),
     /** No webhook signing secret is configured, so no webhook can be verified; the provider retries later. */
     WEBHOOK_UNAVAILABLE("Webhooks are not accepted right now", 503),
+    /** No key to seal stored secrets with is configured (stockflow.security.secrets.key), so none can be saved. */
+    SECRETS_UNAVAILABLE("Secrets cannot be saved right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);
