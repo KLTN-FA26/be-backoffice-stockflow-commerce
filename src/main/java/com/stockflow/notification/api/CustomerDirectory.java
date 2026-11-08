@@ -25,4 +25,10 @@ public interface CustomerDirectory {
 
     /** The customer's contact for e-mail; empty when there is no such customer. */
     Optional<CustomerContact> contact(UUID customerId);
+
+    /**
+     * The customer's portal account, whose inbox the customer's in-app notices go to (3-6: "đã bàn giao vận chuyển",
+     * E23); empty for a customer that has none yet (invited, not activated) or no such customer.
+     */
+    Optional<UUID> portalAccount(UUID customerId);
 }
