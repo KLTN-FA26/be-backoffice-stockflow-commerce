@@ -830,6 +830,7 @@ Enum fulfillment.carrier_event_event_kind {
   RETURNING
   RETURNED
   ORDER_CANCELLED
+  CANCELLED_ON_REQUEST
   ORDER_COMPLETED
   OTHER
 }
