@@ -370,4 +370,45 @@ class OrderBalanceTest {
             assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
         }
     }
+
+    @Nested
+    @DisplayName("a delivery corrected by hand (09 §4.3 step 5, E17)")
+    class Correction {
+
+        @Test
+        @DisplayName("a delivery that billed nothing becomes a failure and the order follows; corrected back, delivered")
+        void unbilledDeliveryCorrected() {
+            Order order = packed(PaymentTerm.PREPAID, null);
+            order.recordHandover(handover(S1, cups(order), 10, lids(order), 5));
+            order.recordShipmentDelivered(S1, NOW, STAFF);
+            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+
+            assertThat(order.correctShipmentToFailed(S1, DeliveryFailureReason.CUSTOMER_ABSENT, null, NOW, STAFF))
+                    .isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERY_FAILED);
+            assertThat(order.correctShipmentToFailed(S1, DeliveryFailureReason.CUSTOMER_ABSENT, null, NOW, STAFF))
+                    .isFalse();
+            assertThat(order.recordShipmentDelivered(S1, NOW, STAFF)).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        }
+
+        @Test
+        @DisplayName("refused: a delivery that billed the customer; OTHER without a note; a shipment not delivered")
+        void refused() {
+            Order credit = packed(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT);
+            credit.recordHandover(handover(S1, cups(credit), 10, lids(credit), 5));
+            credit.recordShipmentDelivered(S1, NOW, STAFF);
+            assertThat(((BusinessException) catchThrowable(() -> credit.correctShipmentToFailed(S1,
+                    DeliveryFailureReason.LOST, null, NOW, STAFF))).errorCode())
+                    .isEqualTo(ErrorCode.ORDER_DELIVERY_NOT_CORRECTABLE);
+
+            Order prepaid = packed(PaymentTerm.PREPAID, null);
+            prepaid.recordHandover(handover(S1, cups(prepaid), 10, lids(prepaid), 5));
+            assertThat(((BusinessException) catchThrowable(() -> prepaid.correctShipmentToFailed(S1,
+                    DeliveryFailureReason.OTHER, " ", NOW, STAFF))).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(((BusinessException) catchThrowable(() -> prepaid.correctShipmentToFailed(S1,
+                    DeliveryFailureReason.LOST, null, NOW, STAFF))).errorCode())
+                    .isEqualTo(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION);
+        }
+    }
 }

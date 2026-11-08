@@ -656,6 +656,11 @@ public enum ErrorCode {
     CARRIER_EVENT_NOT_FOUND("Carrier event not found", 404),
     /** 3-5 (09 §4.5 step 8): only an open error-list event is resolved, once, and not while it is being handled. */
     CARRIER_EVENT_NOT_RESOLVABLE("This carrier event cannot be resolved", 409),
+    /**
+     * 3-6 (09 §4.3 step 5, E17): a delivery is corrected while its order is not completed, and only one that billed
+     * nothing (a billed delivery's receivable is taken back by the instalments, not here).
+     */
+    ORDER_DELIVERY_NOT_CORRECTABLE("This delivery can no longer be corrected", 409),
     /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
     WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
     WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),

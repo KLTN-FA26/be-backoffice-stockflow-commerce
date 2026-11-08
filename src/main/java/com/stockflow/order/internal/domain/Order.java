@@ -1281,6 +1281,44 @@ public final class Order extends AggregateRoot {
         return true;
     }
 
+    /**
+     * A delivery the carrier reported wrongly, corrected to a failure by the warehouse manager (09 §4.3 step 5, E17;
+     * 17 §5.1): the shipment DELIVERY_FAILED and the order following it, while the order is not completed. A delivery
+     * that billed the customer (a receivable was opened for it) is not corrected here: taking the bill back is the
+     * instalments' work, not this order's.
+     *
+     * @return whether this changed the order
+     * @throws BusinessException {@code ORDER_DELIVERY_NOT_CORRECTABLE} for an order past its deliveries or a billed
+     *         delivery; {@code ORDER_SHIPMENT_INVALID_TRANSITION} for a shipment not delivered
+     */
+    public boolean correctShipmentToFailed(UUID shipmentId, DeliveryFailureReason reason, String note, Instant at,
+                                           UUID by) {
+        java.util.Objects.requireNonNull(reason, "reason");
+        String trimmed = note == null || note.isBlank() ? null : note.strip();
+        if (reason == DeliveryFailureReason.OTHER && trimmed == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A failure for another reason says what it was");
+        }
+        OrderShipment shipment = requireShipment(shipmentId);
+        if (shipment.status() == OrderShipmentStatus.DELIVERY_FAILED) {
+            return false;
+        }
+        if (status != OrderStatus.DELIVERED && status != OrderStatus.SHIPPED && status != OrderStatus.DELIVERY_FAILED
+                && status != OrderStatus.PARTIALLY_FULFILLED) {
+            throw new BusinessException(ErrorCode.ORDER_DELIVERY_NOT_CORRECTABLE, ("Order %s is %s: its deliveries "
+                    + "are no longer corrected").formatted(orderNumber, status));
+        }
+        if (shipment.billedAmount().signum() > 0) {
+            throw new BusinessException(ErrorCode.ORDER_DELIVERY_NOT_CORRECTABLE, ("Shipment %s of order %s billed the "
+                    + "customer %s on delivery: the receivable must be taken back first").formatted(shipmentId,
+                    orderNumber, shipment.billedAmount().toPlainString()));
+        }
+        if (!shipment.correctedToFailed(reason, trimmed, at, by)) {
+            return false;
+        }
+        followShipments(ShipmentChange.OUTCOME, at, by);
+        return true;
+    }
+
     /** The carrier could not deliver one shipment (09 §4.3 step 2). OTHER needs a note. */
     public boolean recordShipmentDeliveryFailed(UUID shipmentId, DeliveryFailureReason reason, String note, Instant at,
                                                 UUID by) {

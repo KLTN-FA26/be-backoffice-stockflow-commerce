@@ -966,6 +966,19 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    public OrderSummary correctShipmentToFailed(UUID orderId, UUID shipmentId,
+                                                com.stockflow.order.api.DeliveryFailureReason reason, String note,
+                                                Instant at, UUID by) {
+        Order order = lockOrder(orderId);
+        if (!order.correctShipmentToFailed(shipmentId, reason, note, at, by)) {
+            return toSummary(order);
+        }
+        log.info("Order {}: shipment {} corrected to not delivered ({}), order {}", order.orderNumber(), shipmentId,
+                reason, order.status());
+        return saved(order);
+    }
+
+    @Override
     public OrderSummary recordShipmentReturned(UUID orderId, UUID shipmentId, UUID by) {
         return recordShipmentReturned(orderId, shipmentId, clock.instant(), by);
     }

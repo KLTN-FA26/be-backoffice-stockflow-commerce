@@ -97,6 +97,28 @@ public final class OrderShipment {
         return true;
     }
 
+    /**
+     * A delivery the carrier reported wrongly, corrected by the warehouse manager (09 §4.3 step 5, E17): DELIVERED →
+     * DELIVERY_FAILED. Only for a delivery that billed nothing - the caller checks.
+     *
+     * @return false when it already failed
+     */
+    boolean correctedToFailed(DeliveryFailureReason reason, String note, Instant at, UUID by) {
+        if (status == OrderShipmentStatus.DELIVERY_FAILED) {
+            return false;
+        }
+        if (status != OrderShipmentStatus.DELIVERED) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION,
+                    "Shipment %s is %s: only a delivery is corrected to a failure".formatted(id, status));
+        }
+        this.status = OrderShipmentStatus.DELIVERY_FAILED;
+        this.failureReason = Objects.requireNonNull(reason, "reason");
+        this.failureNote = note;
+        this.outcomeAt = at;
+        this.outcomeBy = by;
+        return true;
+    }
+
     /** @return false when it already came back */
     boolean returned(Instant at, UUID by) {
         if (status == OrderShipmentStatus.RETURNED) {

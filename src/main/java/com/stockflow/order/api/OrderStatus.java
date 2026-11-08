@@ -210,7 +210,9 @@ public enum OrderStatus {
             // PARTIALLY_FULFILLED: a shipment came back while the others arrived.
             case SHIPPED -> target == DELIVERED || target == DELIVERY_FAILED || target == PARTIALLY_FULFILLED;
             case DELIVERY_FAILED -> target == DELIVERED || target == RETURNED || target == PARTIALLY_FULFILLED;
-            case DELIVERED -> target == COMPLETED || target == RETURN_REQUESTED;
+            // DELIVERY_FAILED: only a delivery the warehouse manager corrected by hand, the carrier having reported it
+            // wrongly, before the order completed (09 §4.3 step 5, E17; V20261108001800).
+            case DELIVERED -> target == COMPLETED || target == RETURN_REQUESTED || target == DELIVERY_FAILED;
             // DELIVERED: the request was refused - back to waiting for the return window and the money, as any
             // delivered order (lead's decision 2026-10-21; 17 §5 wrote COMPLETED, which would skip both checks).
             case RETURN_REQUESTED -> target == RETURNED || target == DELIVERED;

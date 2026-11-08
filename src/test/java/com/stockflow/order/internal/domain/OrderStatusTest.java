@@ -37,7 +37,7 @@ class OrderStatusTest {
                     PARTIALLY_FULFILLED, PACKED, CANCELLED)),
             Map.entry(SHIPPED, EnumSet.of(DELIVERED, DELIVERY_FAILED, PARTIALLY_FULFILLED)),
             Map.entry(DELIVERY_FAILED, EnumSet.of(DELIVERED, RETURNED, PARTIALLY_FULFILLED)),
-            Map.entry(DELIVERED, EnumSet.of(COMPLETED, RETURN_REQUESTED)),
+            Map.entry(DELIVERED, EnumSet.of(COMPLETED, RETURN_REQUESTED, DELIVERY_FAILED)),
             Map.entry(RETURN_REQUESTED, EnumSet.of(RETURNED, DELIVERED)),
             Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED)),
             Map.entry(REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED)),

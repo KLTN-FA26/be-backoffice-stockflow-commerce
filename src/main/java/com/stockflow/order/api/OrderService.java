@@ -148,6 +148,16 @@ public interface OrderService {
     OrderSummary recordShipmentReturned(UUID orderId, UUID shipmentId, java.time.Instant at, UUID by);
 
     /**
+     * A delivery the carrier reported wrongly, corrected to a failure by the warehouse manager (09 §4.3 step 5, E17):
+     * the order follows, while it is not completed and the delivery billed nothing.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_DELIVERY_NOT_CORRECTABLE};
+     *         {@code ORDER_SHIPMENT_INVALID_TRANSITION}
+     */
+    OrderSummary correctShipmentToFailed(UUID orderId, UUID shipmentId, DeliveryFailureReason reason, String note,
+                                         java.time.Instant at, UUID by);
+
+    /**
      * The carrier reported the order delivered (kltn-docs 09 §4.3): SHIPPED or DELIVERY_FAILED → DELIVERED, announced
      * as {@code OrderDelivered}. Idempotent for an order already delivered. Only for an order without shipments
      * (G4-Q5): one with shipments is delivered shipment by shipment.
