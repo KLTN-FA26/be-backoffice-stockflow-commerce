@@ -794,11 +794,22 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
             resourceType = "order", resourceId = "#orderId")
     public OrderSummary recordDelivery(UUID orderId, UUID by) {
+        return deliver(orderId, clock.instant(), by);
+    }
+
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary recordDelivery(UUID orderId, Instant at, UUID by) {
+        return deliver(orderId, at, by);
+    }
+
+    private OrderSummary deliver(UUID orderId, Instant at, UUID by) {
         Order order = lockOrder(orderId);
         if (order.status() == OrderStatus.DELIVERED && order.shipments().isEmpty()) {
             return toSummary(order);
         }
-        order.markDelivered(clock.instant(), by);
+        order.markDelivered(at, by);
         log.info("Order {} delivered", order.orderNumber());
         return saved(order);
     }
@@ -808,8 +819,21 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             resourceType = "order", resourceId = "#orderId")
     public OrderSummary recordDeliveryFailure(UUID orderId, com.stockflow.order.api.DeliveryFailureReason reason,
                                               String note, UUID by) {
+        return failDelivery(orderId, reason, note, clock.instant(), by);
+    }
+
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary recordDeliveryFailure(UUID orderId, com.stockflow.order.api.DeliveryFailureReason reason,
+                                              String note, Instant at, UUID by) {
+        return failDelivery(orderId, reason, note, at, by);
+    }
+
+    private OrderSummary failDelivery(UUID orderId, com.stockflow.order.api.DeliveryFailureReason reason, String note,
+                                      Instant at, UUID by) {
         Order order = lockOrder(orderId);
-        if (!order.markDeliveryFailed(reason, note, clock.instant(), by)) {
+        if (!order.markDeliveryFailed(reason, note, at, by)) {
             return toSummary(order);
         }
         log.info("Order {}: delivery failed ({})", order.orderNumber(), reason);
@@ -818,8 +842,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     @Override
     public OrderSummary recordReturnedToOrigin(UUID orderId, UUID by) {
+        return recordReturnedToOrigin(orderId, clock.instant(), by);
+    }
+
+    @Override
+    public OrderSummary recordReturnedToOrigin(UUID orderId, Instant at, UUID by) {
         Order order = lockOrder(orderId);
-        return order.markReturnedToOrigin(clock.instant(), by) ? saved(order) : toSummary(order);
+        return order.markReturnedToOrigin(at, by) ? saved(order) : toSummary(order);
     }
 
     @Override

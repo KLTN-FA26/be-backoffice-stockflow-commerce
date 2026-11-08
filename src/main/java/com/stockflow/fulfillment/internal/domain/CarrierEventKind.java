@@ -26,7 +26,12 @@ public enum CarrierEventKind {
     RETURNED(Level.SHIPMENT),
     /** The carrier cancelled the order before the pickup (an API carrier). */
     ORDER_CANCELLED(Level.LOAD),
-    /** The carrier closed the order; each drop-off carries its own outcome, so nothing follows from it. */
+    /**
+     * The order cancelled at the system's own request (Ahamove {@code cancel_by_user}), echoed back: the booking is
+     * cancelled here by whoever asked, so nothing follows from the echo.
+     */
+    CANCELLED_ON_REQUEST(Level.LOAD),
+    /** The carrier closed the order; the outcomes of its drop-offs it carries are applied if not yet. */
     ORDER_COMPLETED(Level.LOAD),
     /** A status the mapping has no use for. */
     OTHER(Level.LOAD);

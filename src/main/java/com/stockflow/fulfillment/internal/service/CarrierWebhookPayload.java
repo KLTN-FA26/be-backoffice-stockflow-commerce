@@ -28,6 +28,8 @@ final class CarrierWebhookPayload {
     static final String MASK = "***";
     /** The column's limit (ck_carrier_event_payload), and the body limit the controller reads to. */
     static final int MAX_BYTES = 64 * 1024;
+    /** What is kept of the body of a refused call. */
+    static final int SUMMARY_CHARS = 256;
 
     private static final Set<String> SECRET_FIELDS = Set.of("api_key", "apikey", "token", "access_token",
             "refresh_token", "password", "secret", "authorization");
@@ -44,6 +46,23 @@ final class CarrierWebhookPayload {
             text = masked(text, json);
         }
         return cut(text);
+    }
+
+    /**
+     * What is kept of a refused call: its size, its SHA-256 and its first {@value #SUMMARY_CHARS} characters (masked),
+     * so it can be recognised without anyone being able to fill the log with it.
+     */
+    static String summary(byte[] body, ObjectMapper json) {
+        byte[] bytes = body == null ? new byte[0] : body;
+        String digest;
+        try {
+            digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is part of every Java runtime", unavailable);
+        }
+        String text = stored(bytes, json);
+        String start = text.length() <= SUMMARY_CHARS ? text : text.substring(0, SUMMARY_CHARS) + "...";
+        return "[refused: %d bytes, sha256 %s] %s".formatted(bytes.length, digest, start);
     }
 
     private static boolean mayHoldSecret(String text) {

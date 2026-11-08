@@ -513,29 +513,34 @@ class DispatchService implements Dispatching {
     }
 
     @Override
-    public boolean carrierOrderCancelled(UUID loadId, UUID bookingId, Instant at) {
+    public CarrierCancel carrierOrderCancelled(UUID loadId, UUID bookingId, Instant at) {
         Locked locked = lockForChange(loadId);
         DispatchLoad load = locked.load();
         // First read of the booking in this transaction: the lock returns the row as it is now.
         var booking = carrierBookings.lockById(bookingId).orElse(null);
         if (booking == null || !com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity.BOOKED
                 .equals(booking.getStatus())) {
-            return false;
+            return CarrierCancel.NOT_HELD;
         }
-        if (load.status() != LoadStatus.VEHICLE_BOOKED) {
-            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is %s: its carrier cancelled order "
-                    + "%s after loading started - settle it with the carrier").formatted(load.code(), load.status(),
+        if (load.status() != LoadStatus.VEHICLE_BOOKED && load.status() != LoadStatus.LOADING) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is %s: its carrier reports order "
+                    + "%s cancelled - settle it with the carrier").formatted(load.code(), load.status(),
                     booking.getCarrierOrderId()));
         }
         String reason = "The carrier cancelled order " + booking.getCarrierOrderId();
-        String before = load.waybillNo();
         booking.cancelled(reason, at);
         carrierBookings.saveAndFlush(booking);
+        if (load.status() == LoadStatus.LOADING) {
+            // The truck at the dock has no order any more: the load cannot be handed over on it (requireCarrierOrder).
+            log.warn("Load {}: its carrier cancelled order {} while loading", load.code(), booking.getCarrierOrderId());
+            return CarrierCancel.CANCELLED_WHILE_LOADING;
+        }
+        String before = load.waybillNo();
         load.cancelBooking(reason, null, at);
         store.save(load, locked.header());
         waybills.record(load.id(), before, null, WaybillSource.WEBHOOK, null, at, reason);
         log.info("Load {}: its carrier cancelled order {}; back to PLANNED", load.code(), booking.getCarrierOrderId());
-        return true;
+        return CarrierCancel.UNBOOKED;
     }
 
     @Override

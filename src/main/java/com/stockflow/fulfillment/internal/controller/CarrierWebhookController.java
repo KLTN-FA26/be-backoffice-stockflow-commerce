@@ -25,11 +25,14 @@ import java.util.Map;
  * credential is what the carrier was configured with (3-1): an API_BOOKING carrier's header, compared in constant time,
  * or a WEBHOOK_LOAD carrier's HMAC signature of the raw body. The body is read only up to {@value #MAX_BODY_BYTES} bytes
  * and the raw bytes are what is checked; each address gets a request budget; the idempotency filter leaves the route
- * alone, a repeat being told apart by the event log (BR-27). Every call is kept, whatever it says.</p>
+ * alone, a repeat being told apart by the event log (BR-27). Every call naming a known carrier is kept - a refused
+ * one as a summary - whatever it says.</p>
  *
- * <p>An authenticated call is answered 200 with the event's id and result - nothing about the load. A call whose
- * credential does not hold, or that names no carrier the system knows, is 401 {@code WEBHOOK_SIGNATURE_INVALID},
- * the same for both, so the route tells no one which carrier codes exist.</p>
+ * <p>An authenticated call is answered 200 with the event's id and result - nothing about the load - or 503
+ * {@code WEBHOOK_UNAVAILABLE} when it could not be handled now (a passing failure, an order whose booking is still being
+ * saved), for the carrier to send it again. A call whose credential does not hold, or that names no carrier the system
+ * knows, is 401 {@code WEBHOOK_SIGNATURE_INVALID}, the same for both, so the route tells no one which carrier codes
+ * exist.</p>
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/carrier-webhooks")
@@ -54,6 +57,10 @@ class CarrierWebhookController {
         CarrierEvents.Receipt receipt = events.receive(carrierCode, request::getHeader, body);
         if (!receipt.authenticated()) {
             throw new BusinessException(ErrorCode.WEBHOOK_SIGNATURE_INVALID);
+        }
+        if (receipt.retry()) {
+            // Kept, not handled yet: a carrier that retries on a 5xx sends it again.
+            throw new BusinessException(ErrorCode.WEBHOOK_UNAVAILABLE);
         }
         return ApiResponse.ok(Map.of("eventId", receipt.eventId(), "result", receipt.result()));
     }

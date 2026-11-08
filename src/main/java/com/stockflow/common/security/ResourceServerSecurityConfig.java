@@ -121,6 +121,21 @@ public class ResourceServerSecurityConfig {
         return new StockflowJwtAuthenticationConverter(lookup, warehouses.getIfAvailable());
     }
 
+    /** Carriers' webhooks (3-5): anonymous, their credential checked by the endpoint. */
+    static final String CARRIER_WEBHOOKS = "/api/v1/fulfillment/carrier-webhooks/";
+
+    /**
+     * The request's bearer token - except on carriers' webhooks. A carrier configured with {@code Authorization: Bearer
+     * <value>} (one of Ahamove's options, 09 §4.5 step 3) sends its own credential there, which is not this
+     * application's JWT: read as one, the call would be refused with 401 before the endpoint could check it, and never
+     * logged.
+     */
+    static org.springframework.security.oauth2.server.resource.web.BearerTokenResolver carrierWebhooksCarryNoToken() {
+        var standard = new org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver();
+        return request -> request.getRequestURI() != null && request.getRequestURI().startsWith(CARRIER_WEBHOOKS)
+                ? null : standard.resolve(request);
+    }
+
     /** Everything else: the API itself, plus the rest of actuator. CORS policy: {@link CorsConfig}. */
     @Bean
     @Order(2)
@@ -167,6 +182,7 @@ public class ResourceServerSecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/fulfillment/carrier-webhooks/*").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
+                        .bearerTokenResolver(carrierWebhooksCarryNoToken())
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(converter))
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler)

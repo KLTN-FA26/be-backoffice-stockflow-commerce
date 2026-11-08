@@ -182,8 +182,9 @@ class ShipmentService implements Shipments {
         ShipmentJpaEntity row = lock(shipmentId);
         Shipment shipment = row.toDomain();
         ShipmentStatus before = shipment.status();
+        // The failure note is 500 characters on the shipment and on the order; a carrier's wording has no limit (E22).
         String trimmed = note == null || note.isBlank() ? null : note.strip();
-        String kept = trimmed == null || trimmed.length() <= 1000 ? trimmed : trimmed.substring(0, 997) + "...";
+        String kept = trimmed == null || trimmed.length() <= 500 ? trimmed : trimmed.substring(0, 497) + "...";
         boolean changed = switch (target) {
             case DELIVERED -> shipment.carrierDelivered(at);
             case DELIVERY_FAILED -> shipment.carrierFailed(Objects.requireNonNull(reason, "reason"), kept, at);
@@ -232,9 +233,10 @@ class ShipmentService implements Shipments {
                         + "this order's outcome by hand");
             }
             return switch (target) {
-                case DELIVERED -> orders.recordDelivery(row.getOrderId(), by);
-                case DELIVERY_FAILED -> orders.recordDeliveryFailure(row.getOrderId(), orderReason(reason), note, by);
-                case RETURNED -> orders.recordReturnedToOrigin(row.getOrderId(), by);
+                case DELIVERED -> orders.recordDelivery(row.getOrderId(), at, by);
+                case DELIVERY_FAILED -> orders.recordDeliveryFailure(row.getOrderId(), orderReason(reason), note, at,
+                        by);
+                case RETURNED -> orders.recordReturnedToOrigin(row.getOrderId(), at, by);
                 default -> throw new IllegalStateException(target.name());
             };
         }

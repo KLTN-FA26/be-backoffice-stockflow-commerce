@@ -346,11 +346,11 @@ class ShipmentServiceTest {
             OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), null);
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
             when(shipments.findByOrderIdOrderByReadyAtAscIdAsc(row.getOrderId())).thenReturn(List.of(row));
-            when(orders.recordDelivery(row.getOrderId(), actor.userId())).thenReturn(order);
+            when(orders.recordDelivery(eq(row.getOrderId()), any(java.time.Instant.class), eq(actor.userId()))).thenReturn(order);
 
             service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null), actor);
 
-            verify(orders).recordDelivery(row.getOrderId(), actor.userId());
+            verify(orders).recordDelivery(eq(row.getOrderId()), any(java.time.Instant.class), eq(actor.userId()));
             verify(orders, never()).recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any());
         }
 
@@ -363,15 +363,16 @@ class ShipmentServiceTest {
             OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), List.of());
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
             when(shipments.findByOrderIdOrderByReadyAtAscIdAsc(row.getOrderId())).thenReturn(List.of(row));
-            when(orders.recordDeliveryFailure(any(), any(), any(), any())).thenReturn(order);
-            when(orders.recordReturnedToOrigin(any(), any())).thenReturn(order);
+            when(orders.recordDeliveryFailure(any(), any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+            when(orders.recordReturnedToOrigin(any(), any(java.time.Instant.class), any())).thenReturn(order);
 
             service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERY_FAILED", "LOST", null), actor);
             service.recordOutcome(row.getId(), new Shipments.Outcome("RETURNED", null, null), actor);
 
-            verify(orders).recordDeliveryFailure(row.getOrderId(), com.stockflow.order.api.DeliveryFailureReason.LOST,
-                    null, actor.userId());
-            verify(orders).recordReturnedToOrigin(row.getOrderId(), actor.userId());
+            verify(orders).recordDeliveryFailure(eq(row.getOrderId()),
+                    eq(com.stockflow.order.api.DeliveryFailureReason.LOST), eq(null), any(java.time.Instant.class),
+                    eq(actor.userId()));
+            verify(orders).recordReturnedToOrigin(eq(row.getOrderId()), any(java.time.Instant.class), eq(actor.userId()));
         }
 
         @Test
@@ -390,7 +391,7 @@ class ShipmentServiceTest {
             assertThat(refusal(() -> service.recordOutcome(row.getId(),
                     new Shipments.Outcome("DELIVERED", null, null), actor)).errorCode())
                     .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
-            verify(orders, never()).recordDelivery(any(), any());
+            verify(orders, never()).recordDelivery(any(), any(java.time.Instant.class), any());
         }
 
         @Test
@@ -403,11 +404,11 @@ class ShipmentServiceTest {
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
             when(shipments.findByOrderIdOrderByReadyAtAscIdAsc(row.getOrderId()))
                     .thenReturn(List.of(row, FulfillmentFixtures.rowIn(ShipmentStatus.CANCELLED)));
-            when(orders.recordDelivery(any(), any())).thenReturn(order);
+            when(orders.recordDelivery(any(), any(java.time.Instant.class), any())).thenReturn(order);
 
             service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null), actor);
 
-            verify(orders).recordDelivery(row.getOrderId(), actor.userId());
+            verify(orders).recordDelivery(eq(row.getOrderId()), any(java.time.Instant.class), eq(actor.userId()));
         }
     }
 }

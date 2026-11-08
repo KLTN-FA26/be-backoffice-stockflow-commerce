@@ -16,9 +16,11 @@ public interface CarrierEvents {
     /**
      * What a webhook call came to.
      *
+     * @param eventId       the event kept; null for a call naming no carrier the system knows, which is not kept
      * @param authenticated whether its credential held (an unknown carrier's call did not)
+     * @param retry         it could not be handled now: the carrier is answered 503 so that it sends it again
      */
-    record Receipt(UUID eventId, String result, boolean authenticated) { }
+    record Receipt(UUID eventId, String result, boolean authenticated, boolean retry) { }
 
     /** One call as listed: what it reported, what it was matched to, what came of it, and who resolved it. */
     record EventRow(UUID eventId, UUID carrierId, String carrierCode, Instant receivedAt, boolean signatureValid,
@@ -31,9 +33,10 @@ public interface CarrierEvents {
     record EventDetail(EventRow event, String payload) { }
 
     /**
-     * Keeps the call before anything else, checks its credential (API_BOOKING: the configured header in constant time;
-     * WEBHOOK_LOAD: the HMAC signature of the raw body), then matches it to a load and applies it. Never throws for
-     * what the call said: every outcome is a result on the event.
+     * Checks the call's credential (API_BOOKING: the configured header in constant time; WEBHOOK_LOAD: the HMAC
+     * signature of the raw body) and keeps it - in full when the credential held, as a summary when it did not, not at
+     * all for an unknown carrier - then matches it to a load and applies it. Never throws for what the call said: every
+     * outcome is a result on the event.
      *
      * @param header the call's headers by name, case-insensitive; null for one it lacks
      * @param body   the raw body, at most 64 KiB

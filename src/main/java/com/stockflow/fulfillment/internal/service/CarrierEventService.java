@@ -101,28 +101,52 @@ class CarrierEventService implements CarrierEvents {
         String code = carrierCode == null ? "" : carrierCode.strip();
         String kept = code.matches("^[!-~]{1,64}$") ? code : "?";
         CarrierJpaEntity carrier = "?".equals(kept) ? null : tx.execute(s -> carriers.findByCode(code).orElse(null));
-        String refusal = refusal(carrier, kept, header, body);
+        if (carrier == null) {
+            // No carrier of that code: not a carrier's event, so nothing is kept - an anonymous caller cannot fill the
+            // log by naming carriers that do not exist.
+            log.warn("Carrier webhook for unknown carrier '{}' refused ({} bytes)", kept, body == null ? 0 : body.length);
+            return new Receipt(null, CarrierEventResult.INVALID_SIGNATURE.name(), false, false);
+        }
+        String refusal = refusal(carrier, header, body);
         UUID eventId = Identifiers.newId();
-        String payload = CarrierWebhookPayload.stored(body, json);
-        tx.executeWithoutResult(s -> events.saveAndFlush(new CarrierEventJpaEntity(eventId,
-                carrier == null ? null : carrier.getId(), kept, now, payload, refusal == null, refusal)));
+        // A refused call is kept as its size, digest and first characters: enough to recognise, too little to fill the
+        // log with what anyone can send.
+        String payload = refusal == null ? CarrierWebhookPayload.stored(body, json)
+                : CarrierWebhookPayload.summary(body, json);
+        tx.executeWithoutResult(s -> events.saveAndFlush(new CarrierEventJpaEntity(eventId, carrier.getId(), kept, now,
+                payload, refusal == null, refusal)));
         if (refusal != null) {
             log.warn("Carrier webhook {} for '{}' refused: {}", eventId, kept, refusal);
-            return new Receipt(eventId, CarrierEventResult.INVALID_SIGNATURE.name(), false);
+            return new Receipt(eventId, CarrierEventResult.INVALID_SIGNATURE.name(), false, false);
         }
         CarrierEventResult result;
         try {
             CarrierEventApplier.Matched matched = tx.execute(s -> applier.match(eventId, carrier, body));
             result = matched == null ? tx.execute(s -> events.findById(eventId).orElseThrow().getResult())
                     : tx.execute(s -> applier.apply(eventId, carrier, matched));
+        } catch (CarrierWebhookRetry later) {
+            tx.executeWithoutResult(s -> applier.retryLater(eventId, later.getMessage()));
+            log.info("Carrier webhook {} for {}: to be sent again ({})", eventId, kept, later.getMessage());
+            return new Receipt(eventId, CarrierEventResult.RECEIVED.name(), true, true);
         } catch (RuntimeException failure) {
-            if (!(failure instanceof BusinessException)) {
-                log.error("Carrier webhook {} for {} could not be applied", eventId, kept, failure);
+            if (!(failure instanceof BusinessException) && !uniqueRace(failure)) {
+                // A deadlock, a lost connection, a lock that waited too long: not the report's fault. Left to be sent
+                // again rather than decided, so a carrier that retries delivers it.
+                log.error("Carrier webhook {} for {} could not be applied now", eventId, kept, failure);
+                tx.executeWithoutResult(s -> applier.retryLater(eventId, "Could not be applied ("
+                        + failure.getClass().getSimpleName() + "): the carrier is asked to send it again"));
+                return new Receipt(eventId, CarrierEventResult.RECEIVED.name(), true, true);
             }
             result = tx.execute(s -> applier.failed(eventId, failure));
         }
         log.info("Carrier webhook {} for {}: {}", eventId, kept, result);
-        return new Receipt(eventId, Objects.requireNonNull(result).name(), true);
+        return new Receipt(eventId, Objects.requireNonNull(result).name(), true, false);
+    }
+
+    /** Two copies of one report applied at the same moment: one of them meets {@code uk_carrier_event_applied}. */
+    private static boolean uniqueRace(RuntimeException failure) {
+        return failure instanceof org.springframework.dao.DataIntegrityViolationException taken
+                && String.valueOf(taken.getMostSpecificCause().getMessage()).contains("uk_carrier_event_applied");
     }
 
     /**
@@ -130,10 +154,7 @@ class CarrierEventService implements CarrierEvents {
      * configured header must carry the configured value; a WEBHOOK_LOAD carrier's body must be signed with its secret.
      * The reason names no value.
      */
-    private String refusal(CarrierJpaEntity carrier, String code, UnaryOperator<String> header, byte[] body) {
-        if (carrier == null) {
-            return "No carrier " + code;
-        }
+    private String refusal(CarrierJpaEntity carrier, UnaryOperator<String> header, byte[] body) {
         if (!carrier.isWebhookEnabled()) {
             return "Carrier %s does not take webhooks now".formatted(carrier.getCode());
         }

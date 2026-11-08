@@ -16,12 +16,17 @@ public interface ShipmentJpaRepository extends BaseJpaRepository<ShipmentJpaEnti
 
         String getCode();
 
+        UUID getOrderId();
+
         com.stockflow.fulfillment.internal.domain.ShipmentStatus getStatus();
     }
 
-    /** The shipments that left on the load, in id order (the order their locks are taken in). */
-    @org.springframework.data.jpa.repository.Query("select s.id as id, s.code as code, s.status as status "
-            + "from ShipmentJpaEntity s where s.loadId = :loadId order by s.id")
+    /**
+     * The shipments that left on the load, by order and then id: applying an outcome to each locks the shipment and
+     * then its order, so two loads carrying shipments of the same orders take the order locks in the same order.
+     */
+    @org.springframework.data.jpa.repository.Query("select s.id as id, s.code as code, s.orderId as orderId, "
+            + "s.status as status from ShipmentJpaEntity s where s.loadId = :loadId order by s.orderId, s.id")
     List<ShipmentState> statesOnLoad(@org.springframework.data.repository.query.Param("loadId") UUID loadId);
 
     /** A shipment's code, read without loading it. */

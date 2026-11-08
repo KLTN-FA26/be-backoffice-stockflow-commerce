@@ -165,6 +165,16 @@ public interface OrderService {
     /** The whole order came back (RTO through the returns receipt): DELIVERY_FAILED → RETURNED; without shipments. */
     OrderSummary recordReturnedToOrigin(UUID orderId, UUID by);
 
+    /** As {@link #recordDelivery(UUID, UUID)}, at the time the carrier gives ({@code by} null: its webhook, E25). */
+    OrderSummary recordDelivery(UUID orderId, java.time.Instant at, UUID by);
+
+    /** As {@link #recordDeliveryFailure(UUID, DeliveryFailureReason, String, UUID)}, at {@code at}. */
+    OrderSummary recordDeliveryFailure(UUID orderId, DeliveryFailureReason reason, String note, java.time.Instant at,
+                                       UUID by);
+
+    /** As {@link #recordReturnedToOrigin(UUID, UUID)}, at {@code at}. */
+    OrderSummary recordReturnedToOrigin(UUID orderId, java.time.Instant at, UUID by);
+
     /**
      * Put the order on hold (17 §5; WBS 3.17.6): from CONFIRMED up to PACKED, and a partly shipped order.
      * {@code CREDIT} is placed by the credit check only; OTHER needs a note.

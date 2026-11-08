@@ -217,13 +217,23 @@ public interface Dispatching {
     /** The driver gave the carrier's order back: off the load. */
     boolean carrierDriverReleased(UUID loadId);
 
+    /** What a carrier's cancel did to a load. */
+    enum CarrierCancel {
+        /** The booking CANCELLED and the load back to PLANNED, to be booked again. */
+        UNBOOKED,
+        /** The booking CANCELLED while the vehicle was loading: the load cannot leave on that order. */
+        CANCELLED_WHILE_LOADING,
+        /** The booking was no longer held: nothing changed. */
+        NOT_HELD
+    }
+
     /**
      * The carrier cancelled the order {@code bookingId} before the pickup (09 §4.5: "chuyến chưa ký bàn giao → về
-     * Planned, xoá thông tin đặt xe, báo Dispatch Staff"): the booking CANCELLED, the load back to PLANNED, the
-     * dispatchers told ({@code CarrierBookingCancelled}). A booking no longer BOOKED is left alone (false). Once
-     * loading started, {@code INVALID_LOAD_TRANSITION}.
+     * Planned, xoá thông tin đặt xe, báo Dispatch Staff"): the booking CANCELLED and, before loading, the load back to
+     * PLANNED; while loading, the load stays as it is and its handover is refused, the order being gone. The caller
+     * tells the dispatchers. Once the vehicle left, {@code INVALID_LOAD_TRANSITION}.
      */
-    boolean carrierOrderCancelled(UUID loadId, UUID bookingId, Instant at);
+    CarrierCancel carrierOrderCancelled(UUID loadId, UUID bookingId, Instant at);
 
     // ---- the waybill number (3-2; 09 §4.4, BR-23, BR-24) --------------------------------------------------------------
 

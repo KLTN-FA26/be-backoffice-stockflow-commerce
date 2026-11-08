@@ -84,6 +84,11 @@ public class CarrierEventJpaEntity extends BaseEntity {
         this.dedupeKey = dedupeKey;
     }
 
+    /** Not decided: it could not be handled now and may be when the carrier sends it again; why, meanwhile. */
+    public void pending(String why) {
+        this.resultNote = cut(why);
+    }
+
     /** What came of it; once only (the database refuses a second decision). */
     public void decide(CarrierEventResult outcome, String note, Instant at) {
         if (outcome == CarrierEventResult.RECEIVED) {

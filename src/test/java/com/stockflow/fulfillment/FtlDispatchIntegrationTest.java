@@ -1100,8 +1100,13 @@ class FtlDispatchIntegrationTest {
         hook(code, "{}", null, null).andExpect(status().isUnauthorized());
         hook("NO-SUCH-CARRIER", "{}", "apikey", AHA_CREDENTIAL).andExpect(status().isUnauthorized());
         assertThat(lastEvent(aha).path("result").asText()).isEqualTo("INVALID_SIGNATURE");
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.carrier_event WHERE carrier_id IS NULL "
-                + "AND carrier_code = 'NO-SUCH-CARRIER' AND result = 'INVALID_SIGNATURE'", Long.class)).isOne();
+        // A refused call is kept as a summary - size, digest, first characters, the echoed key masked; a call naming no
+        // carrier the system knows is not kept at all.
+        String refused = jdbc.queryForObject("SELECT payload FROM fulfillment.carrier_event WHERE carrier_id = ? "
+                + "AND result = 'INVALID_SIGNATURE' ORDER BY received_at LIMIT 1", String.class, aha);
+        assertThat(refused).startsWith("[refused: ").contains("sha256").doesNotContain("aha-key-0123456789");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.carrier_event WHERE carrier_code = "
+                + "'NO-SUCH-CARRIER'", Long.class)).isZero();
 
         // A driver takes the order: on the load; the api_key Ahamove echoes is not kept.
         String accepted = ahamove("AHA-W1", "ACCEPTED", "", "\"accept_time\":1800000000,\"supplier_name\":\"Tài xế A\","
@@ -1171,6 +1176,10 @@ class FtlDispatchIntegrationTest {
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
                 .andExpect(status().isOk());
 
+        // Our own cancel echoed back (cancel_by_user): not the carrier cancelling - nothing follows from it.
+        aha(code, ahamove("AHA-C1", "CANCELLED", "", "\"cancel_time\":1800000800,\"cancel_by_user\":true", ""))
+                .andExpect(jsonPath("$.data.result").value("IGNORED"));
+        assertThat(load(loadId).path("status").asText()).isEqualTo("VEHICLE_BOOKED");
         aha(code, ahamove("AHA-C1", "CANCELLED", "", "\"cancel_time\":1800000900,\"cancel_by_user\":false,"
                 + "\"cancel_comment\":\"Auto cancel, no driver accepted\"", ""))
                 .andExpect(jsonPath("$.data.result").value("APPLIED"));
@@ -1185,6 +1194,72 @@ class FtlDispatchIntegrationTest {
         // Echoed again after the booking is gone: about an order the load no longer holds.
         aha(code, ahamove("AHA-C1", "CANCELLED", "", "\"cancel_time\":1800000901", ""))
                 .andExpect(jsonPath("$.data.result").value("STALE"));
+    }
+
+    @Test
+    @DisplayName("3-5: a completed Ahamove order applies the drop-off outcomes it carries that were not applied yet - "
+            + "the carrier's long wording kept within the note's length (E22)")
+    void ahamoveCompletedOrder() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        String code = carrierCode(aha);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        deliverTo(shipment, "79");
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-K1", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+        loadAndSign(loadId, "51C-AHA.02");
+
+        String wording = "Khách không nghe máy ".repeat(40);
+        aha(code, ahamove("AHA-K1", "COMPLETED", "", "\"complete_time\":1800009000", "\"status\":\"FAILED\","
+                + "\"fail_time\":1800008000,\"fail_comment\":\"" + wording + "\""))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERY_FAILED");
+        Map<String, Object> failed = jdbc.queryForMap("SELECT failure_reason, failure_note, outcome_at FROM "
+                + "fulfillment.shipment WHERE id = ?", shipment);
+        assertThat(failed.get("failure_reason")).isEqualTo("OTHER");
+        assertThat((String) failed.get("failure_note")).hasSize(500).endsWith("...");
+        assertThat(((java.sql.Timestamp) failed.get("outcome_at")).toInstant())
+                .isEqualTo(Instant.ofEpochSecond(1_800_008_000L));
+        // The drop-off's own callback for it, later: already so.
+        aha(code, ahamove("AHA-K1-1", "IN PROCESS", "", "", "\"status\":\"FAILED\",\"fail_time\":1800008000"))
+                .andExpect(jsonPath("$.data.result").value("STALE"));
+    }
+
+    @Test
+    @DisplayName("3-5: a carrier set up with 'Authorization: Bearer' is not read as a sign-in token; a callback for an "
+            + "order not saved yet while a booking with the carrier is under way is asked for again (503)")
+    void ahamoveBearerAndEarlyCallbacks() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String code = "AHB" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Ahamove\",\"connection\":{\"connectionType\":\"API_BOOKING\","
+                        + "\"webhookAuthHeader\":\"Authorization\",\"webhookAuthValue\":\"Bearer aha-bearer-0123456789\","
+                        + "\"apiEnvironment\":\"STAGING\",\"apiAccount\":\"84908000001\",\"apiKey\":\"aha-key-9876543210\"}}"))
+                .andExpect(status().isCreated())).path("carrierId").asText());
+
+        hook(code, ahamove("AHA-UNKNOWN", "ACCEPTED", "", "\"accept_time\":1800000000", ""), "Authorization",
+                "Bearer aha-bearer-0123456789").andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.result").value("UNMATCHED"));
+        hook(code, "{}", "Authorization", "Bearer something-else").andExpect(status().isUnauthorized());
+
+        // A booking with this carrier is being made: a callback no load matches yet is to be sent again.
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO fulfillment.carrier_booking (id, load_id, carrier_id, service_code, stops, status,
+                                                         requested_by, requested_at)
+                VALUES (gen_random_uuid(), ?::uuid, ?, 'SGN-TRUCK-2000', '[{"seq":1}]'::jsonb, 'REQUESTED', ?, NOW())""",
+                loadId, carrier, manager));
+        hook(code, ahamove("AHA-EARLY", "ACCEPTED", "", "\"accept_time\":1800000000", ""), "Authorization",
+                "Bearer aha-bearer-0123456789").andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("WEBHOOK_UNAVAILABLE"));
+        JsonNode pending = lastEvent(carrier);
+        assertThat(pending.path("result").asText()).isEqualTo("RECEIVED");
+        assertThat(pending.path("result_note").asText()).contains("AHA-EARLY").contains("send it again");
     }
 
     @Test

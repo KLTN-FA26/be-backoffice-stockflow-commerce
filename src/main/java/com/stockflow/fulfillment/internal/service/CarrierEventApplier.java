@@ -60,7 +60,7 @@ class CarrierEventApplier {
 
     /** What was matched, carried from the first transaction to the second. */
     record Matched(CarrierReport report, UUID loadId, String loadCode, UUID warehouseId, UUID bookingId,
-                   String carrierOrderId, UUID shipmentId, String dedupeKey) { }
+                   String carrierOrderId, UUID shipmentId, String dedupeKey, List<CarrierReport> stops) { }
 
     private static final String E21_NOTE = "Returned by the carrier with no failed delivery reported first";
 
@@ -100,8 +100,9 @@ class CarrierEventApplier {
         CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();
         boolean api = CarrierConnectionType.API_BOOKING.name().equals(carrier.getConnectionType());
         CarrierReport report;
+        JsonNode tree;
         try {
-            JsonNode tree = json.readTree(body);
+            tree = json.readTree(body);
             report = api ? AhamoveWebhookReader.read(tree) : LoadWebhookReader.read(tree);
         } catch (IOException notJson) {
             return decided(event, CarrierEventResult.NEEDS_REVIEW, "The body is not JSON");
@@ -118,10 +119,23 @@ class CarrierEventApplier {
             CarrierBookingJpaRepository.BookingKey booking = bookings.findKeyByOrder(carrier.getId(), report.reference())
                     .orElse(null);
             if (booking == null) {
+                if (bookings.bookingInFlight(carrier.getId())) {
+                    // The callback may have outrun the transaction saving the order id of a booking just made.
+                    throw new CarrierWebhookRetry(("No load holds order %s of carrier %s yet, while a booking with it "
+                            + "is being made: the carrier is asked to send it again").formatted(report.reference(),
+                            carrier.getCode()));
+                }
                 return decided(event, CarrierEventResult.UNMATCHED, "No load holds order %s of carrier %s"
                         .formatted(report.reference(), carrier.getCode()));
             }
             load = loads.findFactsById(booking.getLoadId()).orElseThrow();
+            if (report.kind() == CarrierEventKind.CANCELLED_ON_REQUEST) {
+                // Our own cancel echoed back (a dispatcher's, the sweeper's, a compensation): whoever asked cancels the
+                // booking here; the echo neither un-books the load nor tells anyone the carrier cancelled.
+                event.matched(load.getWarehouseId(), load.getId(), null, null);
+                return decided(event, CarrierEventResult.IGNORED, "Order %s cancelled at the system's request"
+                        .formatted(report.reference()));
+            }
             switch (booking.getStatus()) {
                 case CarrierBookingJpaEntity.BOOKED -> {
                     bookingId = booking.getId();
@@ -184,8 +198,10 @@ class CarrierEventApplier {
         }
         String key = dedupeKey(carrier.getId(), report, body);
         event.matched(load.getWarehouseId(), load.getId(), shipmentId, key);
+        List<CarrierReport> stops = api && report.kind() == CarrierEventKind.ORDER_COMPLETED
+                ? AhamoveWebhookReader.stops(tree, report.reference()) : List.of();
         return new Matched(report, load.getId(), load.getCode(), load.getWarehouseId(), bookingId, orderId, shipmentId,
-                key);
+                key, stops);
     }
 
     // ------------------------------------------------------------------ 2. apply
@@ -219,8 +235,8 @@ class CarrierEventApplier {
             case DELIVERED, DELIVERY_FAILED -> outcome(carrier, m, at, eventId);
             case RETURNED -> returned(carrier, m, at, eventId);
             case ORDER_CANCELLED -> cancelled(carrier, m, at);
-            case ORDER_COMPLETED -> new Outcome(CarrierEventResult.IGNORED,
-                    "The order is completed; each drop-off reports its own outcome");
+            case CANCELLED_ON_REQUEST -> new Outcome(CarrierEventResult.IGNORED, "Cancelled at the system's request");
+            case ORDER_COMPLETED -> completed(carrier, m, eventId);
             case OTHER -> new Outcome(CarrierEventResult.IGNORED, "A status the system has no use for");
         };
         return decide(event, outcome.result(), outcome.note());
@@ -282,16 +298,14 @@ class CarrierEventApplier {
         List<ShipmentJpaRepository.ShipmentState> targets = m.shipmentId() != null
                 ? onLoad.stream().filter(s -> s.getId().equals(m.shipmentId())).toList()
                 : onLoad.stream().filter(s -> s.getStatus() != ShipmentStatus.DELIVERED).toList();
-        if (api) {
-            List<String> silent = targets.stream().filter(s -> s.getStatus() == ShipmentStatus.HANDED_OVER)
-                    .map(ShipmentJpaRepository.ShipmentState::getCode).toList();
-            if (!silent.isEmpty()) {
-                return new Outcome(CarrierEventResult.NEEDS_REVIEW, ("The carrier reports the order returned, but "
-                        + "reported no outcome for %s: record those by hand").formatted(String.join(", ", silent)));
-            }
-        }
+        List<String> silent = new ArrayList<>();
         int changed = 0;
         for (ShipmentJpaRepository.ShipmentState shipment : targets) {
+            if (api && shipment.getStatus() == ShipmentStatus.HANDED_OVER) {
+                // An API carrier reports each drop-off's outcome: one it never reported is not guessed (09 §4.5 table).
+                silent.add(shipment.getCode());
+                continue;
+            }
             if (shipment.getStatus() == ShipmentStatus.HANDED_OVER) {
                 shipmentOutcomes.carrierOutcome(shipment.getId(), ShipmentStatus.DELIVERY_FAILED,
                         DeliveryFailureReason.OTHER, E21_NOTE, at, eventId);
@@ -301,23 +315,76 @@ class CarrierEventApplier {
         }
         int recorded = milestones.recordFromCarrier(Identifiers.newId(), m.loadId(), "RETURNED", at, eventId,
                 clock.instant());
+        if (!silent.isEmpty()) {
+            // What could be applied was; the rest is the manager's.
+            return new Outcome(CarrierEventResult.NEEDS_REVIEW, ("RETURNED: %d shipment(s); the carrier reported no "
+                    + "outcome for %s: record those by hand").formatted(changed, String.join(", ", silent)));
+        }
         if (changed == 0 && recorded == 0) {
             return new Outcome(CarrierEventResult.IGNORED, "The goods were recorded back already");
         }
         return new Outcome(CarrierEventResult.APPLIED, "RETURNED: %d shipment(s)".formatted(changed));
     }
 
-    /** The carrier cancelled the order before the pickup: the load is PLANNED again and its dispatchers told. */
+    /**
+     * The carrier closed the order: the outcomes its drop-offs carry that were not applied yet are - Ahamove may report
+     * the last drop-off only inside the order's completion. Each as its own callback would be: its shipment, its time,
+     * its reason; one already further along is left as it is.
+     */
+    private Outcome completed(CarrierJpaEntity carrier, Matched m, UUID eventId) {
+        if (m.stops().isEmpty()) {
+            return new Outcome(CarrierEventResult.IGNORED, "The order is completed; its drop-offs carried no outcome");
+        }
+        requireLeft(m);
+        FailureReasonMap map = FailureReasonMap.of(reasons(carrier));
+        Map<UUID, CarrierReport> byShipment = new java.util.LinkedHashMap<>();
+        for (CarrierReport stop : m.stops()) {
+            bookings.shipmentAtStop(m.bookingId(), stop.stop()).ifPresent(id -> byShipment.put(id, stop));
+        }
+        int changed = 0;
+        for (Map.Entry<UUID, CarrierReport> entry : byShipment.entrySet()) {
+            CarrierReport stop = entry.getValue();
+            Instant at = stop.reportedAt() != null ? stop.reportedAt() : clock.instant();
+            ShipmentStatus status = shipments.statesOnLoad(m.loadId()).stream()
+                    .filter(s -> s.getId().equals(entry.getKey())).map(ShipmentJpaRepository.ShipmentState::getStatus)
+                    .findFirst().orElse(null);
+            boolean delivered = stop.kind() == CarrierEventKind.DELIVERED;
+            if (status == null || status == ShipmentStatus.DELIVERED || status == ShipmentStatus.RETURNED
+                    || !delivered && status == ShipmentStatus.DELIVERY_FAILED) {
+                continue;
+            }
+            FailureReasonMap.Resolution failure = delivered ? null : map.resolve(stop.failureWording());
+            String note = failure == null ? null : failure.carrierWording() != null ? failure.carrierWording()
+                    : failure.reason() == DeliveryFailureReason.OTHER ? "The carrier gave no reason" : null;
+            changed += shipmentOutcomes.carrierOutcome(entry.getKey(), delivered ? ShipmentStatus.DELIVERED
+                    : ShipmentStatus.DELIVERY_FAILED, failure == null ? null : failure.reason(), note, at, eventId)
+                    ? 1 : 0;
+        }
+        return changed > 0 ? new Outcome(CarrierEventResult.APPLIED,
+                        "Outcomes of %d drop-off(s) from the completed order".formatted(changed))
+                : new Outcome(CarrierEventResult.IGNORED, "The drop-offs' outcomes were applied already");
+    }
+
+    /**
+     * The carrier cancelled the order before the pickup: the booking is cancelled and the dispatchers told; the load is
+     * PLANNED again - or, while it was loading, stays as it is and goes to the error list too: the truck at the dock has
+     * no order any more, so it cannot be handed over on it (unload it with a controlled cancel, or book again).
+     */
     private Outcome cancelled(CarrierJpaEntity carrier, Matched m, Instant at) {
-        if (!dispatching.carrierOrderCancelled(m.loadId(), m.bookingId(), at)) {
+        Dispatching.CarrierCancel done = dispatching.carrierOrderCancelled(m.loadId(), m.bookingId(), at);
+        if (done == Dispatching.CarrierCancel.NOT_HELD) {
             return new Outcome(CarrierEventResult.STALE, "The booking of order " + m.carrierOrderId()
                     + " was no longer held");
         }
         publisher.publishEvent(new CarrierBookingCancelled(Identifiers.newId(), m.loadId(), m.loadCode(),
                 m.warehouseId(), carrier.getCode(), m.carrierOrderId(), at));
         String wording = m.report().failureWording();
-        return new Outcome(CarrierEventResult.APPLIED, "The carrier cancelled the order"
-                + (wording == null ? "" : ": " + wording) + "; the load is PLANNED again");
+        String said = wording == null ? "" : ": " + wording;
+        return done == Dispatching.CarrierCancel.UNBOOKED
+                ? new Outcome(CarrierEventResult.APPLIED, "The carrier cancelled the order" + said
+                        + "; the load is PLANNED again")
+                : new Outcome(CarrierEventResult.NEEDS_REVIEW, "The carrier cancelled the order" + said + " while load "
+                        + m.loadCode() + " was loading: it cannot leave on that order - unload it or book again");
     }
 
     /** Milestones and outcomes are a vehicle that left's (09 §4.5 step 7); before that, the error list's. */
@@ -343,9 +410,22 @@ class CarrierEventApplier {
     // ------------------------------------------------------------------ 3. a change that failed
 
     /**
+     * A call that may succeed later ({@link CarrierWebhookRetry}, or a failure that is not the load's or shipment's
+     * state refusing it): left RECEIVED, with why as its note, for a copy the carrier sends again to apply. A stranded
+     * one shows on the error list.
+     */
+    void retryLater(UUID eventId, String why) {
+        CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();
+        if (event.getResult() == CarrierEventResult.RECEIVED) {
+            event.pending(why);
+            events.saveAndFlush(event);
+        }
+    }
+
+    /**
      * The second transaction threw: a repeat that raced its twin to {@code uk_carrier_event_applied} is a DUPLICATE;
-     * anything else is NEEDS_REVIEW with its message (a business refusal names the load's or shipment's state; anything
-     * unexpected only its kind, the stack trace going to the log).
+     * a business refusal is NEEDS_REVIEW with its message (the load's or shipment's state). The caller sends anything
+     * else to {@link #retryLater}.
      */
     CarrierEventResult failed(UUID eventId, RuntimeException failure) {
         CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();

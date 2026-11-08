@@ -69,6 +69,11 @@ public interface CarrierBookingJpaRepository extends BaseJpaRepository<CarrierBo
             + "where b.carrierId = :carrierId and b.carrierOrderId = :orderId")
     Optional<BookingKey> findKeyByOrder(@Param("carrierId") UUID carrierId, @Param("orderId") String orderId);
 
+    /** Whether a call creating an order at this carrier is under way (a claim REQUESTED, not given up yet). */
+    @Query("select count(b) > 0 from CarrierBookingJpaEntity b where b.carrierId = :carrierId "
+            + "and b.status = 'REQUESTED'")
+    boolean bookingInFlight(@Param("carrierId") UUID carrierId);
+
     /** The shipment of drop-off {@code seq} of the booking's order (1 = the first after the pickup), as it was made. */
     @Query(value = """
             SELECT CAST(stop ->> 'shipmentId' AS uuid)

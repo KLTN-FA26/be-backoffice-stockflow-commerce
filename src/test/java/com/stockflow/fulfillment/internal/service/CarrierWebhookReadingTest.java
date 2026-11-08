@@ -68,6 +68,26 @@ class CarrierWebhookReadingTest {
             assertThat(cancelled.kind()).isEqualTo(CarrierEventKind.ORDER_CANCELLED);
             assertThat(cancelled.failureWording()).isEqualTo("Auto cancel, no driver accepted");
             assertThat(cancelled.reportedAt()).isEqualTo(Instant.ofEpochSecond(1_800_000_900L));
+            // Cancelled by the partner itself - this system: its own cancel echoed back.
+            assertThat(read("CANCELLED", "", ",\"cancel_by_user\":true,\"cancel_time\":1800000900").kind())
+                    .isEqualTo(CarrierEventKind.CANCELLED_ON_REQUEST);
+            // A driver giving it back carries the acceptance it undoes, when the order still has it.
+            assertThat(read("ASSIGNING", "", ",\"accept_time\":1800000100").reportedAt())
+                    .isEqualTo(Instant.ofEpochSecond(1_800_000_100L));
+        }
+
+        @Test
+        @DisplayName("a completed order's drop-offs: each with an outcome, as its own callback would read")
+        void completedStops() throws Exception {
+            java.util.List<CarrierReport> stops = AhamoveWebhookReader.stops(json("{\"_id\":\"24ABCD\","
+                    + "\"status\":\"COMPLETED\",\"path\":[{\"status\":\"\"},{\"status\":\"COMPLETED\","
+                    + "\"complete_time\":1800003000},{\"status\":\"\"},{\"status\":\"FAILED\","
+                    + "\"fail_comment\":\"Sai địa chỉ\"}]}"), "24ABCD");
+
+            assertThat(stops).extracting(CarrierReport::stop).containsExactly(1, 3);
+            assertThat(stops).extracting(CarrierReport::kind).containsExactly(CarrierEventKind.DELIVERED,
+                    CarrierEventKind.DELIVERY_FAILED);
+            assertThat(stops.get(1).failureWording()).isEqualTo("Sai địa chỉ");
         }
 
         @Test
@@ -224,6 +244,17 @@ class CarrierWebhookReadingTest {
             assertThat(broken).doesNotContain("k-1").contains("***");
             assertThat(CarrierWebhookPayload.stored("a\0b".getBytes(StandardCharsets.UTF_8), JSON)).isEqualTo("a�b");
             assertThat(CarrierWebhookPayload.stored(plain.getBytes(StandardCharsets.UTF_8), JSON)).isEqualTo(plain);
+        }
+
+        @Test
+        @DisplayName("a refused call is kept as its size, digest and first characters, the echoed key masked")
+        void summary() {
+            String body = "{\"api_key\":\"aha-key-0123456789\",\"pad\":\"" + "x".repeat(1000) + "\"}";
+            String kept = CarrierWebhookPayload.summary(body.getBytes(StandardCharsets.UTF_8), JSON);
+
+            assertThat(kept).startsWith("[refused: " + body.length() + " bytes, sha256 ").doesNotContain("aha-key")
+                    .endsWith("...");
+            assertThat(kept.length()).isLessThan(400);
         }
 
         @Test

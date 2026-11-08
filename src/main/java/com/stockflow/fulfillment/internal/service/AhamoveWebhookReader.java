@@ -23,7 +23,9 @@ import java.util.regex.Pattern;
  *   <tr><td>{@code ACCEPTED} (sub-status BOARDED or ARRIVED too)</td><td>DRIVER_ASSIGNED: {@code supplier_name},
  *       {@code supplier_id} (the driver's phone)</td><td>{@code accept_time}, or {@code board_time} once
  *       boarded</td></tr>
- *   <tr><td>{@code ASSIGNING} (after a driver gave it back)</td><td>DRIVER_RELEASED</td><td>none</td></tr>
+ *   <tr><td>{@code ASSIGNING} (after a driver gave it back)</td><td>DRIVER_RELEASED</td><td>the
+ *       {@code accept_time} of the acceptance it undoes, when the order still carries it - a release older than the
+ *       driver applied since is outdated</td></tr>
  *   <tr><td>{@code IN PROCESS}</td><td>PICKED_UP</td><td>{@code pickup_time}</td></tr>
  *   <tr><td>{@code IN PROCESS} / {@code COMPLETING}</td><td>IN_TRANSIT</td><td>none</td></tr>
  *   <tr><td>drop-off {@code COMPLETED}</td><td>DELIVERED (E25: the stop's completion is the delivery)</td>
@@ -33,13 +35,20 @@ import java.util.regex.Pattern;
  *   <tr><td>{@code COMPLETED} / {@code IN_RETURN}</td><td>RETURNING</td><td>none</td></tr>
  *   <tr><td>{@code COMPLETED} / {@code RETURNED}</td><td>RETURNED</td><td>the latest stop {@code return_time}, else
  *       {@code complete_time}</td></tr>
- *   <tr><td>{@code COMPLETED}</td><td>ORDER_COMPLETED</td><td>{@code complete_time}</td></tr>
- *   <tr><td>{@code CANCELLED}</td><td>ORDER_CANCELLED: {@code cancel_comment}</td><td>{@code cancel_time}</td></tr>
+ *   <tr><td>{@code COMPLETED}</td><td>ORDER_COMPLETED, with the outcomes its drop-offs carry
+ *       ({@link #stops})</td><td>{@code complete_time}</td></tr>
+ *   <tr><td>{@code CANCELLED}, {@code cancel_by_user} false (no driver, the driver gave it back for good)</td>
+ *       <td>ORDER_CANCELLED: {@code cancel_comment}</td><td>{@code cancel_time}</td></tr>
+ *   <tr><td>{@code CANCELLED}, {@code cancel_by_user} true (the partner - this system - cancelled it)</td>
+ *       <td>CANCELLED_ON_REQUEST</td><td>{@code cancel_time}</td></tr>
  *   <tr><td>{@code IDLE}, anything else</td><td>OTHER</td><td>none</td></tr>
  * </table>
  * <p>Times are epoch seconds, a fraction allowed; 0 means not set. "None" is a report whose time the carrier does not
  * give: it is never judged older than another. The driver's name is cut to what the load holds; a phone longer than
  * that is dropped rather than cut.</p>
+ *
+ * <p>An order id is taken to end before its last {@code -<digits>} only for a drop-off's callback; Ahamove's ids are
+ * letters and digits without a hyphen.</p>
  */
 final class AhamoveWebhookReader {
 
@@ -69,7 +78,7 @@ final class AhamoveWebhookReader {
                     "BOARDED".equals(sub) ? firstSet(body, "board_time", "accept_time") : time(body, "accept_time"),
                     null, null, cut(text(body, "supplier_name"), DRIVER_NAME_MAX), phone(text(body, "supplier_id")),
                     null);
-            case "ASSIGNING" -> CarrierReport.of(CarrierEventKind.DRIVER_RELEASED, id, null);
+            case "ASSIGNING" -> CarrierReport.of(CarrierEventKind.DRIVER_RELEASED, id, time(body, "accept_time"));
             case "IN PROCESS", "IN_PROCESS" -> "COMPLETING".equals(sub)
                     ? CarrierReport.of(CarrierEventKind.IN_TRANSIT, id, null)
                     : CarrierReport.of(CarrierEventKind.PICKED_UP, id, time(body, "pickup_time"));
@@ -79,10 +88,32 @@ final class AhamoveWebhookReader {
                 case "IN_RETURN", "IN RETURN" -> CarrierReport.of(CarrierEventKind.RETURNING, id, null);
                 default -> CarrierReport.of(CarrierEventKind.ORDER_COMPLETED, id, time(body, "complete_time"));
             };
-            case "CANCELLED" -> new CarrierReport(CarrierEventKind.ORDER_CANCELLED, id, null, null,
+            case "CANCELLED" -> new CarrierReport(body.path("cancel_by_user").asBoolean(false)
+                    ? CarrierEventKind.CANCELLED_ON_REQUEST : CarrierEventKind.ORDER_CANCELLED, id, null, null,
                     time(body, "cancel_time"), null, null, null, null, text(body, "cancel_comment"));
             default -> CarrierReport.of(CarrierEventKind.OTHER, id, null);
         };
+    }
+
+    /**
+     * The outcomes the order's drop-offs carry - path[1..], those COMPLETED or FAILED - read as each drop-off's own
+     * callback would be: a completed order applies those not applied yet (a carrier may report the last drop-off only
+     * inside the order's completion).
+     */
+    static java.util.List<CarrierReport> stops(JsonNode body, String orderId) {
+        JsonNode path = body == null ? null : body.get("path");
+        java.util.List<CarrierReport> stops = new java.util.ArrayList<>();
+        if (path != null && path.isArray()) {
+            for (int k = 1; k < path.size(); k++) {
+                if (path.get(k).isObject()) {
+                    CarrierReport stop = stop(body, orderId, k);
+                    if (stop.kind() != CarrierEventKind.OTHER) {
+                        stops.add(stop);
+                    }
+                }
+            }
+        }
+        return stops;
     }
 
     /** A callback about drop-off {@code k}: its own status, time and failure reason, read from path[k]. */
