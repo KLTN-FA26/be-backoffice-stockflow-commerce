@@ -683,6 +683,12 @@ Enum customer.customer_status_history_to_status {
   BLOCKED
 }
 
+Enum customer.default_payment_installment_milestone {
+  ON_SIGNING
+  BEFORE_DELIVERY
+  AFTER_DELIVERY
+}
+
 Enum payment.cod_remittance_status {
   PENDING
   RECEIVED
@@ -3154,6 +3160,33 @@ Table customer.customer_status_history [headercolor: #D68910] {
   last_modified_by varchar(100)
 }
 
+Table customer.default_payment_installment [headercolor: #D68910] {
+  schedule_id uuid [not null]
+  seq         int [not null]
+  name        varchar(100) [not null]
+  percent     decimal(5,2) [not null]
+  milestone   customer.default_payment_installment_milestone [not null]
+  due_days    int [not null, default: 0]
+  indexes {
+    (schedule_id, seq) [pk]
+  }
+}
+
+Table customer.default_payment_schedule [headercolor: #D68910] {
+  id               uuid [pk]
+  customer_id      uuid [not null, unique]
+  set_by           uuid [not null]
+  set_at           timestamptz [not null]
+  approved_by      uuid
+  approved_at      timestamptz
+  note             varchar(1000)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
 Table customer.segment [headercolor: #D68910] {
   id               uuid [pk]
   code             varchar(64) [not null, unique]
@@ -5050,6 +5083,10 @@ Ref: customer.customer_change_history.changed_by > identity.app_user.id
 Ref: customer.customer_change_history.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.customer_status_history.changed_by > identity.app_user.id
 Ref: customer.customer_status_history.customer_id > customer.customer.id [delete: cascade]
+Ref: customer.default_payment_installment.schedule_id > customer.default_payment_schedule.id [delete: cascade]
+Ref: customer.default_payment_schedule.approved_by > identity.app_user.id
+Ref: customer.default_payment_schedule.customer_id > customer.customer.id [delete: cascade]
+Ref: customer.default_payment_schedule.set_by > identity.app_user.id
 Ref: payment.cod_remittance.reconciled_by > identity.app_user.id
 Ref: payment.cod_remittance_line.payment_id > payment.payment.id [delete: restrict]
 Ref: payment.cod_remittance_line.remittance_id > payment.cod_remittance.id [delete: cascade]
@@ -5348,6 +5385,8 @@ TableGroup customer_group [color: #D68910] {
   customer.customer
   customer.customer_change_history
   customer.customer_status_history
+  customer.default_payment_installment
+  customer.default_payment_schedule
   customer.segment
 }
 
