@@ -3,7 +3,6 @@ package com.stockflow.design.internal.service;
 import com.stockflow.design.internal.domain.PrintSurface;
 import com.stockflow.product.api.PrintConfig;
 import java.io.IOException;
-import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 
@@ -23,16 +22,20 @@ final class PrintFileGeometry {
     private PrintFileGeometry() {
     }
 
-    /** Why {@code pdf} is not {@code template}'s print file, or null when it is. */
-    static String problem(byte[] pdf, PrintConfig template) {
-        try (PDDocument document = Loader.loadPDF(pdf)) {
+    /**
+     * Why {@code pdf} is not {@code template}'s print file, or null when it is. PDFBox reads lazily and fails on a
+     * damaged file with more than an {@code IOException} - a runtime exception, or a stack overflow on a cyclic
+     * structure, as {@code PdfContentPolicy} knows - and any of them means the file is not one the press can read.
+     */
+    static String problem(PrintFileCopy pdf, PrintConfig template) {
+        try (PDDocument document = pdf.open()) {
             return problem(document, template);
-        } catch (IOException unreadable) {
+        } catch (IOException | RuntimeException | StackOverflowError unreadable) {
             return "The print file is not a readable PDF";
         }
     }
 
-    /** {@link #problem(byte[], PrintConfig)} of a document already open. */
+    /** {@link #problem(PrintFileCopy, PrintConfig)} of a document already open. */
     static String problem(PDDocument document, PrintConfig template) {
         if (document.getNumberOfPages() != template.printAreas().size()) {
             return "The print file has " + document.getNumberOfPages() + " page(s); the template has "

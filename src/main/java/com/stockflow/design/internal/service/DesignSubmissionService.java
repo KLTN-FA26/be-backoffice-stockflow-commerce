@@ -6,6 +6,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.json.CanonicalJson;
+import com.stockflow.common.storage.FileStorage;
 import com.stockflow.contracts.DesignSubmittedForReview;
 import com.stockflow.design.api.DesignArtifactRole;
 import com.stockflow.design.internal.domain.CustomerDesignRules;
@@ -53,9 +54,9 @@ import org.springframework.transaction.support.TransactionOperations;
  *   <li>A short read checks the design, runs the layout preflight - arithmetic on a layout of at most a megabyte - and
  *       finds the files submitted with it: each must name the layout's checksum and the template's version, and the
  *       print file and the technical spec must be PDFs.</li>
- *   <li>With no transaction held, the print file - up to 50 MB - is read, checked against its checksum, and checked to
- *       be the studio's for this template ({@link PrintFileGeometry}): a file the press cannot use never reaches the
- *       Sales Manager. A failure is written to the history in a transaction of its own, committed before the 422.</li>
+ *   <li>With no transaction held, the print file - up to 50 MB - is copied to disk, checked against its checksum, and
+ *       checked to be the studio's for this template ({@link PrintFileGeometry}): a file the press cannot use never
+ *       reaches the Sales Manager. A failure is written to the history in a transaction of its own, committed before the 422.</li>
  *   <li>A short transaction locks the design and submits it - only if its version is still the one read in step 1:
  *       every change to the layout or the files moves it.</li>
  * </ol>
@@ -82,15 +83,14 @@ public class DesignSubmissionService {
     private final EntityManager entityManager;
     private final TransactionOperations tx;
     private final Clock clock;
-    private final com.stockflow.common.storage.FileStorage storage;
+    private final FileStorage storage;
 
     public DesignSubmissionService(DesignDraftJpaRepository drafts, DesignDocumentJpaRepository documents,
                                    DesignAssetJpaRepository assets, DesignArtifactJpaRepository artifacts,
                                    DesignDecisionJpaRepository decisions, PrintConfigs printConfigs,
                                    UomConversionService units, ApplicationEventPublisher events, DraftViews views,
                                    EntityManager entityManager, TransactionOperations tx, Clock clock,
-                                   com.stockflow.common.storage.FileStorage storage) {
-        this.storage = storage;
+                                   FileStorage storage) {
         this.drafts = drafts;
         this.documents = documents;
         this.assets = assets;
@@ -103,6 +103,7 @@ public class DesignSubmissionService {
         this.entityManager = entityManager;
         this.tx = tx;
         this.clock = clock;
+        this.storage = storage;
     }
 
     /** What the first read found: why the design cannot go, or the print file to check before it does. */
@@ -125,7 +126,10 @@ public class DesignSubmissionService {
         Plan plan = tx.execute(status -> plan(id, actor, version));
         List<LayoutPreflight.Issue> issues = new ArrayList<>(plan.issues());
         if (issues.isEmpty() && plan.outdatedFiles().isEmpty()) {
-            String problem = PrintFileGeometry.problem(printFile(plan), plan.template());
+            String problem;
+            try (PrintFileCopy print = PrintFileCopy.download(storage, plan.printFileKey(), plan.printFileChecksum())) {
+                problem = PrintFileGeometry.problem(print, plan.template());
+            }
             if (problem != null) {
                 issues.add(new LayoutPreflight.Issue("PRINT_FILE_INVALID", null, null, problem));
             }
@@ -193,20 +197,6 @@ public class DesignSubmissionService {
         }
         DesignArtifactJpaEntity print = files.get(DesignArtifactRole.PRINT_READY);
         return new Plan(issues, List.of(), template, print.storedFile().key(), print.getChecksum());
-    }
-
-    /** The print file's bytes, which must still be the bytes uploaded. */
-    private byte[] printFile(Plan plan) {
-        byte[] bytes;
-        try (java.io.InputStream in = storage.download(plan.printFileKey())) {
-            bytes = in.readAllBytes();
-        } catch (java.io.IOException ex) {
-            throw new com.stockflow.common.storage.StorageException("Could not read the print file", ex);
-        }
-        if (!com.stockflow.common.storage.Checksums.sha256Hex(bytes).equals(plan.printFileChecksum())) {
-            throw new BusinessException(ErrorCode.CONFLICT, "The stored print file differs from the one uploaded");
-        }
-        return bytes;
     }
 
     /** {@code PREFLIGHT_FAILED} in the history, without touching the design: its version does not move. */
