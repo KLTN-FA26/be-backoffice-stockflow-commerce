@@ -300,6 +300,13 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-carrier-events:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 3-6, kltn-docs 09 §4.3 step 5: the warehouse manager corrects an outcome the carrier reported wrongly.
             Map.entry("fulfillment-delivery-corrections:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // 4B-1, kltn-docs 18 BR-03: Sales sets the default payment schedule; an instalment after delivery is
+            // accounting's.
+            Map.entry("customer-payment-schedules:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("customer-payment-schedules:UPDATE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("customer-payment-schedules:APPROVE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),

@@ -661,6 +661,11 @@ public enum ErrorCode {
      * nothing (a billed delivery's receivable is taken back by the instalments, not here).
      */
     ORDER_DELIVERY_NOT_CORRECTABLE("This delivery can no longer be corrected", 409),
+    /**
+     * 4B-1 (18 BR-03, 14 BR-13): an instalment after delivery needs the customer's credit approved by accounting with a
+     * limit above 0 - and that credit is not taken away while the default schedule still uses it.
+     */
+    PAYMENT_SCHEDULE_NEEDS_CREDIT("Paying after delivery needs credit approved by accounting", 409),
     /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
     WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
     WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),

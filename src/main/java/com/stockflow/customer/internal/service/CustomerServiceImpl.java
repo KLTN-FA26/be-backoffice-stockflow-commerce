@@ -56,11 +56,14 @@ class CustomerServiceImpl implements CustomerService {
     private final CustomerStatusHistory history;
     private final com.stockflow.customer.internal.domain.CustomerChangeLog changes;
     private final java.time.Clock clock;
+    private final com.stockflow.customer.internal.domain.PaymentScheduleRepository schedules;
 
     CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search,
                         PortalAccountService accounts, CreditProfileRepository creditProfiles,
                         CustomerStatusHistory history, java.time.Clock clock,
-                        com.stockflow.customer.internal.domain.CustomerChangeLog changes) {
+                        com.stockflow.customer.internal.domain.CustomerChangeLog changes,
+                        com.stockflow.customer.internal.domain.PaymentScheduleRepository schedules) {
+        this.schedules = schedules;
         this.changes = changes;
         this.customers = customers;
         this.search = search;
@@ -107,6 +110,16 @@ class CustomerServiceImpl implements CustomerService {
         if (command.expectedVersion() != null && command.expectedVersion() != current) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "The terms of customer %s changed since they were read".formatted(command.customerId()));
+        }
+        // 18 BR-03 / 4B-1: credit lowered to nothing while the default schedule still pays after delivery would leave a
+        // new contract with credit nobody approved. The schedule is changed first.
+        boolean credit = command.allowCredit() && command.creditLimit() != null
+                && command.creditLimit().signum() > 0;
+        if (!credit && schedules.findByCustomerId(command.customerId())
+                .filter(com.stockflow.customer.internal.domain.PaymentSchedule::paysAfterDelivery).isPresent()) {
+            throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("The default payment schedule of "
+                    + "customer %s pays after delivery: change it before taking the credit away")
+                    .formatted(command.customerId()));
         }
         var now = clock.instant();
         CreditProfile profile = existing.map(found -> {
