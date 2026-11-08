@@ -154,11 +154,12 @@ the short version:
 | `idempotency` | any request carrying `Idempotency-Key` becomes safe to retry |
 | `ratelimit` | `@RateLimit` on an endpoint, Redis token bucket |
 | `audit` | `@Auditable` → append-only `platform.audit_log`, split retention |
-| `storage` | `FileStorage` port, S3/MinIO and local, content-type allow-list with magic-number check |
+| `storage` | `FileStorage` port, S3/MinIO and local, content-type allow-list with magic-number check; `ImageDimensions` (upright size from the header, ≤ 40 MP) |
 | `lock` | `DistributedLock`, and ShedLock so `@Scheduled` is safe on more than one instance |
 | `http` | `RestClientFactory` — timeouts, correlation propagation, call logging |
 | `validation` | `@ValidSku`, `@VietnamPhone`, `@NotBlankTrimmed` |
-| `web` | correlation ids, request logging, one exception handler for the whole platform |
+| `web` | correlation ids, request logging, per-route body caps (`stockflow.web.body-limits`, 413 before anything reads the body), one exception handler for the whole platform |
+| `json` | `CanonicalJson` — RFC 8785, the byte-for-byte JSON a browser's `JSON.stringify` with sorted keys produces, for checksums both sides compute |
 | `api` | the response envelope: `fieldErrors` a form can place, `correlationId` for support |
 | `i18n` | Vietnamese by default, English on `Accept-Language`; every `ErrorCode` translated |
 | `config` | Jackson, async MDC propagation, OpenAPI + JWT, locale, MVC, clock |

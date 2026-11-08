@@ -224,6 +224,9 @@ no test can enforce it.
 | Distributed job | `@SchedulerLock(name = "...")` on `@Scheduled` | assume one instance |
 | Ad-hoc lock | `DistributedLock` | — but prefer a row lock, see its javadoc |
 | Files | `FileStorage` | write to the filesystem |
+| Image size | `ImageDimensions.of(...)` — upright, from the header | decode the image to measure it |
+| JSON checksum both sides compute | `CanonicalJson.canonicalize(...)` + `sha256Hex` (RFC 8785) | hash `ObjectMapper` output |
+| A large JSON body | a `stockflow.web.body-limits` entry | read it whole and check its size afterwards |
 | Outbound HTTP | `RestClientFactory.forService(...)` | `RestClient.create()` — no timeout |
 | Time | inject `Clock` | `Instant.now()` — untestable |
 | The signed-in user | `@AuthenticatedUser CurrentUser user` | inject `CurrentUserProvider` and unwrap |
