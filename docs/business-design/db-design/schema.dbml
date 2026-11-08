@@ -796,6 +796,27 @@ Enum fulfillment.carrier_status {
   INACTIVE
 }
 
+Enum fulfillment.carrier_api_call_operation {
+  TOKEN
+  SERVICES
+  BOOK
+  CANCEL
+}
+
+Enum fulfillment.carrier_api_call_outcome {
+  OK
+  REFUSED
+  NO_ANSWER
+}
+
+Enum fulfillment.carrier_booking_status {
+  REQUESTED
+  BOOKED
+  FAILED
+  CANCELLED
+  CANCEL_FAILED
+}
+
 Enum fulfillment.dispatch_load_status {
   PLANNED
   VEHICLE_BOOKED
@@ -3492,6 +3513,67 @@ Table fulfillment.carrier [headercolor: #2C7873] {
   failure_reason_map        jsonb [not null, default: `'{}'::jsonb`]
 }
 
+Table fulfillment.carrier_api_call [headercolor: #2C7873] {
+  id               uuid [pk]
+  carrier_id       uuid [not null]
+  booking_id       uuid
+  operation        fulfillment.carrier_api_call_operation [not null]
+  outcome          fulfillment.carrier_api_call_outcome [not null]
+  http_status      int
+  request_body     text
+  response_body    text
+  error            varchar(1000)
+  duration_ms      int [not null]
+  called_at        timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table fulfillment.carrier_booking [headercolor: #2C7873] {
+  id               uuid [pk]
+  load_id          uuid [not null]
+  carrier_id       uuid [not null]
+  service_code     varchar(64) [not null]
+  stops            jsonb [not null]
+  order_time       timestamptz
+  status           fulfillment.carrier_booking_status [not null]
+  carrier_order_id varchar(64)
+  tracking_link    varchar(500)
+  requested_by     uuid [not null]
+  requested_at     timestamptz [not null]
+  booked_at        timestamptz
+  cancelled_at     timestamptz
+  cancel_reason    varchar(500)
+  cancel_attempts  int [not null, default: 0]
+  last_error       varchar(1000)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table fulfillment.carrier_pickup_point [headercolor: #2C7873] {
+  id               uuid [pk]
+  carrier_id       uuid [not null]
+  warehouse_id     uuid [not null]
+  province_code    varchar(20) [not null]
+  address          varchar(500) [not null]
+  contact_name     varchar(120)
+  contact_phone    varchar(32)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (carrier_id, warehouse_id) [unique]
+  }
+}
+
 Table fulfillment.carrier_service_code [headercolor: #2C7873] {
   id                uuid [pk]
   carrier_id        uuid [not null]
@@ -4903,6 +4985,13 @@ Ref: design.design_snapshot.confirmed_by > identity.app_user.id
 Ref: design.design_snapshot.draft_id > design.design_draft.id
 Ref: design.design_snapshot.(draft_id, artifact_id) > design.design_artifact.(draft_id, id)
 Ref: design.design_snapshot.reviewed_by > identity.app_user.id
+Ref: fulfillment.carrier_api_call.booking_id > fulfillment.carrier_booking.id
+Ref: fulfillment.carrier_api_call.carrier_id > fulfillment.carrier.id
+Ref: fulfillment.carrier_booking.carrier_id > fulfillment.carrier.id
+Ref: fulfillment.carrier_booking.load_id > fulfillment.dispatch_load.id
+Ref: fulfillment.carrier_booking.requested_by > identity.app_user.id
+Ref: fulfillment.carrier_pickup_point.carrier_id > fulfillment.carrier.id
+Ref: fulfillment.carrier_pickup_point.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.carrier_service_code.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_service_code.vehicle_type_id > fulfillment.vehicle_type.id
 Ref: fulfillment.dispatch_load.booked_by > identity.app_user.id
@@ -5161,6 +5250,9 @@ TableGroup design_group [color: #AA4A9E] {
 
 TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.carrier
+  fulfillment.carrier_api_call
+  fulfillment.carrier_booking
+  fulfillment.carrier_pickup_point
   fulfillment.carrier_service_code
   fulfillment.dispatch_load
   fulfillment.dispatch_load_package
