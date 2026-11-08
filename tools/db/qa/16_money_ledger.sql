@@ -1,6 +1,8 @@
 -- =============================================================================
 -- G2-3 (SCRUM-218, V20261021000200): one ledger of incoming money, deposit balance policy, carrier-collected balances.
--- kltn-docs 15 §4.2 step 3, BR-05..BR-08; 09 §4.3 step 4, BR-04. Needs the demo seed. Rolled back at the end.
+-- kltn-docs 15 §4.2 step 3, BR-05..BR-08; 09 §4.3 step 4, BR-04. Nothing is collected on delivery any more
+-- (V20261108000400: ON_DELIVERY and the COD amounts are gone); carrier receivables billed before stay, and their
+-- remittances. Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -33,9 +35,9 @@ SELECT pg_temp.expect_ok('L1 a deposit customer with a balance policy', $q$
     INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, default_payment_term,
                                          deposit_percent, approved_by, approved_at, deposit_balance_policy)
     VALUES (md5('qa:cp:l1')::uuid, 'c0000000-0000-4000-8000-000000000001', TRUE, TRUE, 'DEPOSIT', 30,
-            md5('demo:user:approver')::uuid, NOW(), 'ON_DELIVERY')
+            md5('demo:user:approver')::uuid, NOW(), 'BEFORE_DELIVERY')
     ON CONFLICT (customer_id) DO UPDATE SET allow_deposit = TRUE, deposit_percent = 30,
-                                            deposit_balance_policy = 'ON_DELIVERY' $q$);
+                                            deposit_balance_policy = 'BEFORE_DELIVERY' $q$);
 SELECT pg_temp.expect_fail('L2 deposits allowed without a balance policy', $q$
     UPDATE customer.credit_profile SET deposit_balance_policy = NULL
      WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' $q$);
@@ -45,13 +47,16 @@ SELECT pg_temp.expect_fail('L3 a balance policy without deposits', $q$
 SELECT pg_temp.expect_fail('L4 a balance policy the application does not know (CREDIT waits for G3 Q5)', $q$
     UPDATE customer.credit_profile SET deposit_balance_policy = 'CREDIT'
      WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' $q$);
+SELECT pg_temp.expect_fail('L4b terms whose carrier collects the balance (no COD, V20261108000400)', $q$
+    UPDATE customer.credit_profile SET deposit_balance_policy = 'ON_DELIVERY'
+     WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' $q$);
 
 \echo '--- the order keeps its policy (ordering.customer_order)'
-SELECT pg_temp.expect_ok('L5 a deposit order collected on delivery', $q$
+SELECT pg_temp.expect_ok('L5 a deposit order whose balance is paid before delivery', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency,
                                          placed_at, created_at, payment_term, deposit_required, balance_policy)
     VALUES (md5('qa:order:l5')::uuid, 'SO-QA-L5', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(),
-            'PENDING_PAYMENT', 10000000, 'VND', NOW(), NOW(), 'DEPOSIT', 3000000, 'ON_DELIVERY') $q$);
+            'PENDING_PAYMENT', 10000000, 'VND', NOW(), NOW(), 'DEPOSIT', 3000000, 'BEFORE_DELIVERY') $q$);
 SELECT pg_temp.expect_fail('L6 a deposit order without a balance policy', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency,
                                          placed_at, created_at, payment_term, deposit_required)
@@ -62,12 +67,15 @@ SELECT pg_temp.expect_fail('L7 a prepaid order with a balance policy', $q$
                                          placed_at, created_at, payment_term, balance_policy)
     VALUES (gen_random_uuid(), 'SO-QA-L7', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(),
             'PENDING_PAYMENT', 10000000, 'VND', NOW(), NOW(), 'PREPAID', 'BEFORE_DELIVERY') $q$);
-SELECT pg_temp.expect_fail('L8 a COD amount above the order total', $q$
-    UPDATE ordering.customer_order SET cod_amount = 10000001 WHERE id = md5('qa:order:l5')::uuid $q$);
-SELECT pg_temp.expect_ok('L9 a COD amount of the balance, ON_DELIVERY', $q$
+SELECT pg_temp.expect_fail('L8 an order whose carrier collects the balance (no COD, V20261108000400)', $q$
+    UPDATE ordering.customer_order SET balance_policy = 'ON_DELIVERY' WHERE id = md5('qa:order:l5')::uuid $q$);
+SELECT pg_temp.expect_fail('L9 an order carries no COD amount any more', $q$
     UPDATE ordering.customer_order SET cod_amount = 7000000 WHERE id = md5('qa:order:l5')::uuid $q$);
-SELECT pg_temp.expect_fail('L10 a COD amount on a balance paid before delivery', $q$
-    UPDATE ordering.customer_order SET balance_policy = 'BEFORE_DELIVERY' WHERE id = md5('qa:order:l5')::uuid $q$);
+SELECT pg_temp.expect_ok('L10 the balance put on credit instead (BALCREDIT)', $q$
+    UPDATE ordering.customer_order SET balance_policy = 'ON_CREDIT', credit_term_days = 30
+     WHERE id = md5('qa:order:l5')::uuid;
+    UPDATE ordering.customer_order SET balance_policy = 'BEFORE_DELIVERY', credit_term_days = NULL
+     WHERE id = md5('qa:order:l5')::uuid $q$);
 
 \echo '--- the ledger (payment.customer_transfer, payment.transfer_allocation)'
 SELECT pg_temp.expect_ok('L11 a transfer from the statement', $q$
