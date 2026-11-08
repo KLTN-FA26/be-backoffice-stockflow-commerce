@@ -801,6 +801,7 @@ Enum fulfillment.carrier_api_call_operation {
   SERVICES
   BOOK
   CANCEL
+  STATUS
 }
 
 Enum fulfillment.carrier_api_call_outcome {
@@ -813,6 +814,7 @@ Enum fulfillment.carrier_booking_status {
   REQUESTED
   BOOKED
   FAILED
+  UNCONFIRMED
   CANCELLED
   CANCEL_FAILED
 }
