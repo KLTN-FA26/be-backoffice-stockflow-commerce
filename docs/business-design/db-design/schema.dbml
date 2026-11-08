@@ -3659,6 +3659,23 @@ Table fulfillment.carrier_service_code [headercolor: #2C7873] {
   }
 }
 
+Table fulfillment.delivery_outcome_correction [headercolor: #2C7873] {
+  id               uuid [pk]
+  shipment_id      uuid [not null]
+  from_status      varchar(24) [not null]
+  to_status        varchar(24) [not null]
+  failure_reason   varchar(32)
+  failure_note     varchar(1000)
+  reason           varchar(500) [not null]
+  corrected_by     uuid [not null]
+  corrected_at     timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
 Table fulfillment.dispatch_load [headercolor: #2C7873] {
   id                     uuid [pk]
   code                   varchar(30) [not null, unique]
@@ -4109,6 +4126,22 @@ Table fulfillment.shipment_event [headercolor: #2C7873] {
   last_modified_at timestamptz
   last_modified_by varchar(100)
   recorded_by      uuid
+}
+
+Table fulfillment.shipment_pod_file [headercolor: #2C7873] {
+  id               uuid [pk]
+  shipment_id      uuid [not null]
+  storage_key      varchar(512) [not null, unique]
+  file_name        varchar(255) [not null]
+  content_type     varchar(100) [not null]
+  size_bytes       bigint [not null]
+  uploaded_by      uuid [not null]
+  uploaded_at      timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
 }
 
 Table fulfillment.tracking_milestone [headercolor: #2C7873] {
@@ -5085,6 +5118,8 @@ Ref: fulfillment.carrier_pickup_point.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_pickup_point.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.carrier_service_code.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_service_code.vehicle_type_id > fulfillment.vehicle_type.id
+Ref: fulfillment.delivery_outcome_correction.corrected_by > identity.app_user.id
+Ref: fulfillment.delivery_outcome_correction.shipment_id > fulfillment.shipment.id
 Ref: fulfillment.dispatch_load.booked_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.booking_cancelled_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.cancelled_by > identity.app_user.id
@@ -5162,6 +5197,8 @@ Ref: fulfillment.shipment.ready_by > identity.app_user.id
 Ref: fulfillment.shipment.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.shipment_event.recorded_by > identity.app_user.id
 Ref: fulfillment.shipment_event.shipment_id > fulfillment.shipment.id [delete: cascade]
+Ref: fulfillment.shipment_pod_file.shipment_id > fulfillment.shipment.id
+Ref: fulfillment.shipment_pod_file.uploaded_by > identity.app_user.id
 Ref: fulfillment.tracking_milestone.carrier_event_id > fulfillment.carrier_event.id
 Ref: fulfillment.tracking_milestone.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.waybill_change.changed_by > identity.app_user.id
@@ -5348,6 +5385,7 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.carrier_event
   fulfillment.carrier_pickup_point
   fulfillment.carrier_service_code
+  fulfillment.delivery_outcome_correction
   fulfillment.dispatch_load
   fulfillment.dispatch_load_package
   fulfillment.dispatch_load_shipment
@@ -5367,6 +5405,7 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.pick_line
   fulfillment.shipment
   fulfillment.shipment_event
+  fulfillment.shipment_pod_file
   fulfillment.tracking_milestone
   fulfillment.vehicle_type
   fulfillment.wave
