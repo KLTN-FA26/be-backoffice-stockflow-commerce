@@ -780,6 +780,17 @@ Enum design.design_review_round_design_outcome {
   RETURNED
 }
 
+Enum fulfillment.carrier_api_environment {
+  STAGING
+  PRODUCTION
+}
+
+Enum fulfillment.carrier_connection_type {
+  MANUAL
+  WEBHOOK_LOAD
+  API_BOOKING
+}
+
 Enum fulfillment.carrier_status {
   ACTIVE
   INACTIVE
@@ -3445,17 +3456,43 @@ Table design.design_snapshot [headercolor: #AA4A9E] {
 // =============================================================================
 
 Table fulfillment.carrier [headercolor: #2C7873] {
-  id               uuid [pk]
-  code             varchar(32) [not null, unique]
-  name             varchar(120) [not null]
-  contact_name     varchar(120)
-  contact_phone    varchar(32)
-  status           fulfillment.carrier_status [not null, default: 'ACTIVE']
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                        uuid [pk]
+  code                      varchar(32) [not null, unique]
+  name                      varchar(120) [not null]
+  contact_name              varchar(120)
+  contact_phone             varchar(32)
+  status                    fulfillment.carrier_status [not null, default: 'ACTIVE']
+  version                   bigint [not null, default: 0]
+  created_at                timestamptz [not null, default: `now()`]
+  created_by                varchar(100)
+  last_modified_at          timestamptz
+  last_modified_by          varchar(100)
+  connection_type           fulfillment.carrier_connection_type [not null, default: 'MANUAL']
+  webhook_enabled           boolean [not null, default: false]
+  webhook_secret_sealed     text
+  webhook_auth_header       varchar(64)
+  webhook_auth_value_sealed text
+  api_environment           fulfillment.carrier_api_environment
+  api_account               varchar(64)
+  api_key_sealed            text
+  failure_reason_map        jsonb [not null, default: `'{}'::jsonb`]
+}
+
+Table fulfillment.carrier_service_code [headercolor: #2C7873] {
+  id                uuid [pk]
+  carrier_id        uuid [not null]
+  vehicle_type_id   uuid [not null]
+  province_code     varchar(20) [not null]
+  carrier_city_code varchar(32) [not null]
+  service_code      varchar(64) [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null, default: `now()`]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  indexes {
+    (carrier_id, vehicle_type_id, province_code) [unique]
+  }
 }
 
 Table fulfillment.dispatch_load [headercolor: #2C7873] {
@@ -4777,6 +4814,8 @@ Ref: design.design_snapshot.confirmed_by > identity.app_user.id
 Ref: design.design_snapshot.draft_id > design.design_draft.id
 Ref: design.design_snapshot.(draft_id, artifact_id) > design.design_artifact.(draft_id, id)
 Ref: design.design_snapshot.reviewed_by > identity.app_user.id
+Ref: fulfillment.carrier_service_code.carrier_id > fulfillment.carrier.id
+Ref: fulfillment.carrier_service_code.vehicle_type_id > fulfillment.vehicle_type.id
 Ref: fulfillment.dispatch_load.booked_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.booking_cancelled_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.cancelled_by > identity.app_user.id
@@ -5025,6 +5064,7 @@ TableGroup design_group [color: #AA4A9E] {
 
 TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.carrier
+  fulfillment.carrier_service_code
   fulfillment.dispatch_load
   fulfillment.dispatch_load_package
   fulfillment.dispatch_load_shipment
