@@ -299,6 +299,33 @@ SELECT pg_temp.expect_fail('P16ac an open quote request naming who closed it', $
     UPDATE design.design_quote_request SET closed_by = requested_by WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
 SELECT pg_temp.expect_fail('P16ad a quote request for more cartons than anyone orders', $q$
     UPDATE design.design_quote_request SET cartons = 1000001 WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
+SELECT pg_temp.expect_ok('P16ae a design project of the design''s customer', $q$
+    INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
+    SELECT md5('qa:project:CUP')::uuid, d.customer_id, u.id, 'QA', 'ACTIVE', NOW()
+    FROM design.design_draft d CROSS JOIN (SELECT id FROM identity.app_user ORDER BY id LIMIT 1) u
+    WHERE d.id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16af a design project without a name', $q$
+    UPDATE design.design_project SET name = '  ' WHERE id = md5('qa:project:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ag a design project closed without when', $q$
+    UPDATE design.design_project SET status = 'ARCHIVED' WHERE id = md5('qa:project:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ah a design in another customer''s project', $q$
+    INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
+    SELECT md5('qa:project:OTHER')::uuid, c.id, u.id, 'QA', 'ACTIVE', NOW()
+    FROM customer.customer c CROSS JOIN (SELECT id FROM identity.app_user ORDER BY id LIMIT 1) u
+    WHERE c.id <> (SELECT customer_id FROM design.design_draft WHERE id = md5('qa:design:CUP')::uuid)
+    ORDER BY c.id LIMIT 1;
+    UPDATE design.design_draft SET project_id = md5('qa:project:OTHER')::uuid WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ai a library file a design could never take', $q$
+    INSERT INTO design.design_project_asset (id, project_id, storage_key, original_name, content_type, size_bytes,
+                                             checksum, width_px, height_px, created_at)
+    VALUES (gen_random_uuid(), md5('qa:project:CUP')::uuid, 'design-assets/qa.svg', 'qa.svg', 'image/svg+xml', 10,
+            repeat('a', 64), 10, 10, NOW()) $q$);
+SELECT pg_temp.expect_fail('P16aj a project quote request line for no carton', $q$
+    INSERT INTO design.design_project_quote_request (id, project_id, requested_by, created_at)
+    SELECT md5('qa:project-quote:CUP')::uuid, md5('qa:project:CUP')::uuid, u.id, NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1;
+    INSERT INTO design.design_project_quote_request_line (request_id, draft_id, cartons)
+    VALUES (md5('qa:project-quote:CUP')::uuid, md5('qa:design:CUP')::uuid, 0) $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);
