@@ -304,6 +304,8 @@ class PermissionMatrixTest {
                 // design and return. The JSON attach shares its key with the multipart upload, which takes no body.
                 Map.entry("POST /api/v1/designs/{designId}/artifacts/uploads", uploadSlot),
                 Map.entry("POST /api/v1/designs/{designId}/artifacts", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
+                Map.entry("POST /api/v1/designs/{designId}/assets/uploads", uploadSlot),
+                Map.entry("POST /api/v1/designs/{designId}/assets", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
                 Map.entry("POST /api/v1/returns/{returnId}/evidence/uploads", uploadSlot),
                 Map.entry("POST /api/v1/returns/{returnId}/evidence", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"));
     }

@@ -17,6 +17,7 @@ import com.stockflow.design.internal.domain.DesignWorkflow;
 import com.stockflow.design.internal.entity.DesignDecisionJpaEntity;
 import com.stockflow.design.internal.entity.DesignDocumentJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
+import com.stockflow.design.internal.repository.DesignAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignDecisionJpaRepository;
 import com.stockflow.design.internal.repository.DesignDocumentJpaRepository;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
@@ -61,6 +62,7 @@ public class CustomerDesignService {
 
     private final DesignDraftJpaRepository drafts;
     private final DesignDocumentJpaRepository documents;
+    private final DesignAssetJpaRepository assets;
     private final DesignDecisionJpaRepository decisions;
     private final DesignSnapshotJpaRepository snapshots;
     private final CustomerService customers;
@@ -71,11 +73,13 @@ public class CustomerDesignService {
     private final Clock clock;
 
     public CustomerDesignService(DesignDraftJpaRepository drafts, DesignDocumentJpaRepository documents,
+                                 DesignAssetJpaRepository assets,
                                  DesignDecisionJpaRepository decisions, DesignSnapshotJpaRepository snapshots,
                                  CustomerService customers, ProductService products, PrintConfigs printConfigs,
                                  DraftViews views, EntityManager entityManager, Clock clock) {
         this.drafts = drafts;
         this.documents = documents;
+        this.assets = assets;
         this.decisions = decisions;
         this.snapshots = snapshots;
         this.customers = customers;
@@ -176,7 +180,7 @@ public class CustomerDesignService {
         PrintConfig template = printConfigs.byId(draft.getTemplateId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND));
         String problem = DesignDocumentRules.problem(document,
-                frame(template, documents.assetIds(id)));
+                frame(template, assets.idsOf(id).stream().map(UUID::toString).toList()));
         if (problem != null) {
             throw invalid("document", problem, "DesignDocument");
         }
@@ -248,7 +252,7 @@ public class CustomerDesignService {
         draft.drawOn(template.variantId(), template.sku(), template.templateId(), template.code());
         draft.derivedFrom(snapshotId);
         drafts.saveAndFlush(draft);
-        documents.copyAssets(sourceId, draft.getId());
+        assets.copyAssets(sourceId, draft.getId());
         DesignDocumentJpaEntity layout = documents.findById(sourceId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "The approved design has no layout"));
         documents.save(new DesignDocumentJpaEntity(draft.getId(), layout.getDocument(), layout.getChecksum(),

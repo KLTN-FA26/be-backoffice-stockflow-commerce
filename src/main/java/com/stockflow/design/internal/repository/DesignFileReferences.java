@@ -11,8 +11,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The design files a draft revision or a confirmed snapshot names, for the orphaned-file sweep. Every revision is
- * kept, so only a file whose attaching transaction never committed is an orphan.
+ * The design files a draft revision or a confirmed snapshot names, and the images a customer uploaded into a design,
+ * for the orphaned-file sweep. Every revision and every image row is kept, so only a file whose attaching transaction
+ * never committed is an orphan.
  */
 @Component
 class DesignFileReferences implements StoredFileReferences {
@@ -25,12 +26,20 @@ class DesignFileReferences implements StoredFileReferences {
 
     @Override
     public Set<FileCategory> categories() {
-        return Set.of(FileCategory.DESIGN_RENDER);
+        return Set.of(FileCategory.DESIGN_RENDER, FileCategory.DESIGN_ASSET);
     }
 
     @Override
     public Set<String> referenced(FileCategory category, Collection<String> keys) {
-        if (category != FileCategory.DESIGN_RENDER || keys.isEmpty()) {
+        if (keys.isEmpty()) {
+            return Set.of();
+        }
+        if (category == FileCategory.DESIGN_ASSET) {
+            return new HashSet<>(jdbc.queryForList(
+                    "SELECT storage_key FROM design.design_asset WHERE storage_key IN (:keys)", Map.of("keys", keys),
+                    String.class));
+        }
+        if (category != FileCategory.DESIGN_RENDER) {
             return Set.of();
         }
         return new HashSet<>(jdbc.queryForList("""

@@ -672,6 +672,8 @@ public enum ErrorCode {
     DESIGN_DRAFT_LIMIT_REACHED("You already have the most drafts allowed; delete one first", 409),
     /** Only a draft is renamed, laid out or deleted (kltn-docs 12 BR-07, BR-08, BR-16). */
     DESIGN_NOT_DRAFT("Only a draft design can be changed", 409),
+    /** A design holds at most 100 images (Design Studio plan 2F-4). */
+    DESIGN_ASSET_LIMIT_REACHED("This design already has the most images allowed", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
