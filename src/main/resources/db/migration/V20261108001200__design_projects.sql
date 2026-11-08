@@ -127,6 +127,7 @@ CREATE TABLE design.design_review_round
 -- The Sales Manager's queue of rounds, the longest waiting first.
 CREATE INDEX ix_design_review_round_open ON design.design_review_round (submitted_at, id) WHERE closed_at IS NULL;
 CREATE INDEX ix_design_review_round_project ON design.design_review_round (project_id);
+CREATE INDEX ix_design_review_round_submitted_by ON design.design_review_round (submitted_by);
 
 CREATE TABLE design.design_review_round_design
 (
