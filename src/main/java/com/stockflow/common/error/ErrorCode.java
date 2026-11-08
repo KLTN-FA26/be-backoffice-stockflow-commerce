@@ -668,6 +668,10 @@ public enum ErrorCode {
     PRINT_CONFIG_CODE_TAKEN("This variant already has a template with this code", 409),
     /** A customer SKU is issued only from an ordinary ACTIVE variant of an approved or published product (B20). */
     CUSTOMER_SKU_SOURCE_UNAVAILABLE("This variant cannot have customer SKUs now", 409),
+    /** A customer holds at most 50 drafts at once (kltn-docs 12 B37); deleting one makes room. */
+    DESIGN_DRAFT_LIMIT_REACHED("You already have the most drafts allowed; delete one first", 409),
+    /** Only a draft is renamed, laid out or deleted (kltn-docs 12 BR-07, BR-08, BR-16). */
+    DESIGN_NOT_DRAFT("Only a draft design can be changed", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */

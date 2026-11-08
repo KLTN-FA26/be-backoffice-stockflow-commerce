@@ -1,5 +1,8 @@
 package com.stockflow.common.json;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -139,5 +142,42 @@ class CanonicalJsonTest {
         assertThatThrownBy(() -> CanonicalJson.canonicalize(deep))
                 .isInstanceOf(CanonicalJson.InvalidJsonException.class);
         assertThat(CanonicalJson.canonicalize(allowed)).isEqualTo(allowed);
+    }
+
+    @Test
+    void parseHandsBackPlainValuesThatWriteBackToTheSameCanonicalText() {
+        String input = "{\"b\": [1, 2.50, true, null], \"a\": {\"z\": \"x\"}, \"c\": 1e2}";
+
+        Object parsed = CanonicalJson.parse(input);
+
+        assertThat(parsed).isInstanceOf(Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> root = (Map<String, Object>) parsed;
+        assertThat(root.keySet()).containsExactly("a", "b", "c");
+        assertThat((List<Object>) root.get("b")).containsExactly(1.0, 2.5, true, CanonicalJson.NULL);
+        assertThat(root.get("c")).isEqualTo(100.0);
+        assertThat(CanonicalJson.canonical(parsed)).isEqualTo(CanonicalJson.canonicalize(input))
+                .isEqualTo("{\"a\":{\"z\":\"x\"},\"b\":[1,2.5,true,null],\"c\":100}");
+        assertThatThrownBy(() -> CanonicalJson.parse("{\"a\":1,\"a\":2}"))
+                .isInstanceOf(CanonicalJson.InvalidJsonException.class).hasMessage("Duplicate member name");
+    }
+
+    @Test
+    void aValueACallerBuiltIsWrittenSortedAndOnlyIfItIsJson() {
+        Map<String, Object> built = new LinkedHashMap<>();
+        built.put("z", List.of(1, 2L, 0.5f));
+        built.put("a", Map.of("k", CanonicalJson.NULL));
+
+        assertThat(CanonicalJson.canonical(built)).isEqualTo("{\"a\":{\"k\":null},\"z\":[1,2,0.5]}");
+        assertThatThrownBy(() -> CanonicalJson.canonical(Map.of(1, "x")))
+                .isInstanceOf(CanonicalJson.InvalidJsonException.class);
+        assertThatThrownBy(() -> CanonicalJson.canonical(List.of(Double.NaN)))
+                .isInstanceOf(CanonicalJson.InvalidJsonException.class);
+        assertThatThrownBy(() -> CanonicalJson.canonical(new Object()))
+                .isInstanceOf(CanonicalJson.InvalidJsonException.class);
+        assertThatThrownBy(() -> CanonicalJson.canonical(java.util.Collections.singletonList(null)))
+                .isInstanceOf(CanonicalJson.InvalidJsonException.class);
+        assertThatThrownBy(() -> CanonicalJson.canonical("\uD800"))
+                .isInstanceOf(CanonicalJson.InvalidJsonException.class);
     }
 }

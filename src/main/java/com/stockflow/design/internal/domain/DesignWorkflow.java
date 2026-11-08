@@ -28,7 +28,7 @@ public final class DesignWorkflow {
         if (!Objects.equals(actor, owner) || actor == null) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer owner may confirm this design");
         }
-        if (status != DesignStatus.SUBMITTED || current == null || !current.equals(expected) || !passed) {
+        if (status != DesignStatus.PENDING_REVIEW || current == null || !current.equals(expected) || !passed) {
             fail("The current artifact must have a valid technical review and confirmation request");
         }
     }

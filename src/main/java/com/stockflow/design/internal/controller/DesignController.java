@@ -41,7 +41,8 @@ import com.stockflow.design.api.DesignArtifactRole;
 @RestController
 @RequestMapping("/api/v1/designs/{designId}/artifacts")
 @PermissionResource(code = DesignResources.DESIGNS, group = "Design", label = "Designs", route = "/designs",
-        apiPath = "/api/v1/designs", actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE, Action.APPROVE})
+        apiPath = "/api/v1/designs", actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE,
+        Action.APPROVE})
 class DesignController {
     private final DesignArtifactService artifacts;
     private final DesignArtifactWebMapper mapper;

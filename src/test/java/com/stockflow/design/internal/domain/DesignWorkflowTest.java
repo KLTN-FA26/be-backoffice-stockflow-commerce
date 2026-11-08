@@ -17,15 +17,15 @@ class DesignWorkflowTest {
                 .isInstanceOf(BusinessException.class);
     }
     @Test void customerDecisionRequiresCurrentReviewedArtifact() {
-        assertThatCode(() -> DesignWorkflow.requireConfirmation(DesignStatus.SUBMITTED, artifact, artifact, true, owner, owner))
+        assertThatCode(() -> DesignWorkflow.requireConfirmation(DesignStatus.PENDING_REVIEW, artifact, artifact, true, owner, owner))
                 .doesNotThrowAnyException();
-        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.SUBMITTED, artifact, UUID.randomUUID(), true, owner, owner))
+        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.PENDING_REVIEW, artifact, UUID.randomUUID(), true, owner, owner))
                 .isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.SUBMITTED, artifact, artifact, false, owner, owner))
+        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.PENDING_REVIEW, artifact, artifact, false, owner, owner))
                 .isInstanceOf(BusinessException.class);
     }
     @Test void staffCannotConfirmForCustomerAndOldScreensCannotWrite() {
-        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.SUBMITTED, artifact, artifact, true, editor, owner))
+        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.PENDING_REVIEW, artifact, artifact, true, editor, owner))
                 .isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> DesignWorkflow.requireVersion(4, 3)).isInstanceOf(BusinessException.class);
     }

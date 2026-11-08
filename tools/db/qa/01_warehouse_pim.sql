@@ -214,6 +214,43 @@ SELECT pg_temp.expect_fail('P16j a customer SKU without its design snapshot and 
                                   created_at, owner_customer_id)
     VALUES (gen_random_uuid(), md5('qa:product:CUP')::uuid, 'QACUP-KH-01', 'x', 'ACTIVE', FALSE, 'CUSTOMER:QACUP-KH-01',
             1, 0, NOW(), gen_random_uuid()) $q$);
+-- A customer's draft on the cup's template, with one uploaded image (V20261108000800): rolled back with the rest.
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts, variant_id, sku,
+                                 template_id, template_code)
+SELECT md5('qa:design:CUP')::uuid, c.id, md5('qa:product:CUP')::uuid, 'DRAFT', NOW(), '{}'::jsonb,
+       md5('qa:variant:CUP')::uuid, 'QACUP-8OZ', md5('qa:template:CUP')::uuid, 'CUP-BODY'
+FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_asset (draft_id, id, storage_key, original_name, content_type, size_bytes, checksum, width_px,
+                                 height_px, created_at)
+VALUES (md5('qa:design:CUP')::uuid, md5('qa:asset:CUP')::uuid, 'design-assets/2026/11/qa.png', 'qa.png', 'image/png',
+        10, repeat('a', 64), 10, 10, NOW());
+SELECT pg_temp.expect_fail('P16k a design status the business does not name (the old SUBMITTED)', $q$
+    UPDATE design.design_draft SET status = 'SUBMITTED' WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16l a design on a SKU but on no template', $q$
+    UPDATE design.design_draft SET template_id = NULL WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16m an archived design without when it was archived', $q$
+    UPDATE design.design_draft SET status = 'ARCHIVED' WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16n a layout whose checksum is not its text''s', $q$
+    INSERT INTO design.design_document (draft_id, document, checksum, updated_at)
+    VALUES (md5('qa:design:CUP')::uuid, '{}', repeat('a', 64), NOW()) $q$);
+SELECT pg_temp.expect_fail('P16o a layout over 1,000,000 bytes', $q$
+    INSERT INTO design.design_document (draft_id, document, checksum, updated_at)
+    VALUES (md5('qa:design:CUP')::uuid, repeat('x', 1000001),
+            encode(sha256(convert_to(repeat('x', 1000001), 'UTF8')), 'hex'), NOW()) $q$);
+SELECT pg_temp.expect_fail('P16p a design image changed after it was uploaded', $q$
+    UPDATE design.design_asset SET original_name = 'other.png' WHERE draft_id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16q a design image taken away', $q$
+    DELETE FROM design.design_asset WHERE draft_id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16r a design image stored outside design-assets/', $q$
+    INSERT INTO design.design_asset (draft_id, id, storage_key, original_name, content_type, size_bytes, checksum,
+                                     width_px, height_px, created_at)
+    VALUES (md5('qa:design:CUP')::uuid, gen_random_uuid(), 'documents/2026/11/qa.png', 'qa.png', 'image/png', 10,
+            repeat('a', 64), 10, 10, NOW()) $q$);
+SELECT pg_temp.expect_fail('P16s a design image over 40 megapixels', $q$
+    INSERT INTO design.design_asset (draft_id, id, storage_key, original_name, content_type, size_bytes, checksum,
+                                     width_px, height_px, created_at)
+    VALUES (md5('qa:design:CUP')::uuid, gen_random_uuid(), 'design-assets/2026/11/big.png', 'big.png', 'image/png',
+            10, repeat('a', 64), 8000, 5001, NOW()) $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);

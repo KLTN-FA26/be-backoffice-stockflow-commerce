@@ -35,7 +35,7 @@ import static org.mockito.Mockito.when;
 @DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class, DesignPreflight.class,
-        PostgresContainer.class})
+        DraftViews.class, PostgresContainer.class})
 @Testcontainers(disabledWithoutDocker = true)
 // No test transaction: the technical review runs its preflight outside any transaction and records the decision in a
 // transaction of its own, so it must see what the test committed - as a request does.
@@ -57,6 +57,8 @@ class DesignWorkflowIntegrationTest {
     @MockitoBean com.stockflow.common.storage.FileTransfers files;
     @MockitoBean com.stockflow.identity.api.IdentityService identities;
     @MockitoBean com.stockflow.customer.api.CustomerService customers;
+    /** Customer designs are their own test (CustomerDesignIntegrationTest); none of these drafts is one. */
+    @MockitoBean CustomerDesignService customerDesigns;
     /** Real rows: the draft's customer, every actor and (since C1) its product are foreign keys. */
     private UUID owner, editor, reviewer, customer, product;
     /** The file of this test's draft: storage keys are unique, and every test commits. */

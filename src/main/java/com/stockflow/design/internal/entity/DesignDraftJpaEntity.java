@@ -8,6 +8,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
+import java.time.Instant;
 import java.util.UUID;
 import java.util.EnumMap;
 import java.util.Map;
@@ -15,7 +16,13 @@ import com.stockflow.design.api.DesignArtifactRole;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
-/** Draft persistence; artifact uploads and review decisions serialize through the same row lock. */
+/**
+ * Draft persistence; artifact uploads and review decisions serialize through the same row lock.
+ *
+ * <p>A design a customer started is drawn on one variant's customization template (kltn-docs 12 BR-01): the variant,
+ * its SKU, the template and its code are set when it is started and never change ({@code ck_design_draft_template}:
+ * all four or none - a design staff started before customers designed has none).</p>
+ */
 @Entity
 @Table(name = "design_draft", schema = "design")
 public class DesignDraftJpaEntity extends BaseEntity {
@@ -58,6 +65,44 @@ public class DesignDraftJpaEntity extends BaseEntity {
     private UUID reviewedBy;
     @Column(name = "parent_snapshot_id", updatable = false)
     private UUID parentSnapshotId;
+    @Column(name = "variant_id", updatable = false)
+    private UUID variantId;
+    @Column(name = "sku", length = 64, updatable = false)
+    private String sku;
+    @Column(name = "template_id", updatable = false)
+    private UUID templateId;
+    @Column(name = "template_code", length = 50, updatable = false)
+    private String templateCode;
+    @Column(name = "review_requested_at")
+    private Instant reviewRequestedAt;
+    @Column(name = "reviewed_at")
+    private Instant reviewedAt;
+    @Column(name = "archived_at")
+    private Instant archivedAt;
+
+    /** The variant and template a customer's design is drawn on; called once, before the draft is first saved. */
+    public void drawOn(UUID variant, String variantSku, UUID template, String code) {
+        variantId = variant;
+        sku = variantSku;
+        templateId = template;
+        templateCode = code;
+    }
+
+    public void rename(String nextName) { name = nextName; }
+
+    /** A deleted draft (BR-16): kept with its history, seen by nobody. */
+    public void archive(Instant at) {
+        status = DesignStatus.ARCHIVED;
+        archivedAt = at;
+    }
+
+    public UUID getVariantId() { return variantId; }
+    public String getSku() { return sku; }
+    public UUID getTemplateId() { return templateId; }
+    public String getTemplateCode() { return templateCode; }
+    public Instant getReviewRequestedAt() { return reviewRequestedAt; }
+    public Instant getReviewedAt() { return reviewedAt; }
+    public Instant getArchivedAt() { return archivedAt; }
     public UUID getParentSnapshotId() { return parentSnapshotId; }
     public void derivedFrom(UUID snapshotId) { parentSnapshotId = snapshotId; }
 

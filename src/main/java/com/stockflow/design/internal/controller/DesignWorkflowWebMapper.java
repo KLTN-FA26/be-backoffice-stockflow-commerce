@@ -12,7 +12,8 @@ class DesignWorkflowWebMapper {
         return new DesignDraftResponse(d.id(), d.customerId(), d.productId(), d.ownerUserId(),
                 d.assignedUserId(), d.reviewerUserId(), d.name(), d.spec(), d.status(),
                 d.currentArtifactId(), d.technicalReviewPassed(), d.reviewNotes(), d.version(),
-                d.parentSnapshotId());
+                d.parentSnapshotId(), d.productSlug(), d.sku(), d.templateCode(), d.reviewRequestedAt(),
+                d.reviewedAt(), d.updatedAt(), d.currentArtifactId());
     }
 
     DesignSnapshotResponse toResponse(DesignWorkflowService.SnapshotView s) {

@@ -8,6 +8,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.design.api.DesignService;
+import com.stockflow.design.internal.domain.DesignDecisionType;
 import com.stockflow.design.internal.domain.DesignReview;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.domain.DesignWorkflow;
@@ -50,12 +51,15 @@ public class DesignWorkflowService {
     private final com.stockflow.common.storage.FileTransfers files;
     private final DesignPreflight preflight;
     private final TransactionOperations tx;
+    private final DraftViews views;
+    private final CustomerDesignService customerDesigns;
 
     public DesignWorkflowService(DesignDraftJpaRepository drafts, DesignArtifactJpaRepository artifacts,
             DesignSnapshotJpaRepository snapshots, ProductService products, Clock clock,
             DesignDecisionJpaRepository decisions,
             DesignService designs, IdentityService identities, CustomerService customers,
-            com.stockflow.common.storage.FileTransfers files, DesignPreflight preflight, TransactionOperations tx) {
+            com.stockflow.common.storage.FileTransfers files, DesignPreflight preflight, TransactionOperations tx,
+            DraftViews views, CustomerDesignService customerDesigns) {
         this.drafts = drafts; this.artifacts = artifacts; this.snapshots = snapshots;
         this.products = products; this.clock = clock;
         this.decisions = decisions; this.designs = designs;
@@ -64,11 +68,24 @@ public class DesignWorkflowService {
         this.files = files;
         this.preflight = preflight;
         this.tx = tx;
+        this.views = views;
+        this.customerDesigns = customerDesigns;
     }
 
+    /**
+     * A design as the API shows it. {@code productSlug} is null for a product since removed; {@code sku} and
+     * {@code templateCode} are null for a design staff started before customers designed; {@code updatedAt} is when the
+     * design or its layout last changed.
+     */
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId,
             UUID assignedUserId, UUID reviewerUserId, String name, String spec, String status,
-            UUID currentArtifactId, boolean technicalReviewPassed, String reviewNotes, long version, UUID parentSnapshotId) { }
+            UUID currentArtifactId, boolean technicalReviewPassed, String reviewNotes, long version, UUID parentSnapshotId,
+            String productSlug, String sku, String templateCode, Instant reviewRequestedAt, Instant reviewedAt,
+            Instant updatedAt) { }
+
+    /** What the design list shows when no status is asked for: every design but an archived one (§4.2 step 8). */
+    private static final List<DesignStatus> LISTED = List.of(DesignStatus.DRAFT, DesignStatus.PENDING_REVIEW,
+            DesignStatus.APPROVED);
     public record SnapshotView(UUID id, UUID draftId, UUID artifactId, String checksum,
             String spec, UUID confirmedBy, Instant confirmedAt, java.util.List<SnapshotArtifactView> artifacts) { }
     public record SnapshotArtifactView(UUID artifactId, com.stockflow.design.api.DesignArtifactRole role,
@@ -86,12 +103,13 @@ public class DesignWorkflowService {
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DraftView withdraw(UUID id, UUID actor, long version, String reason) {
         var draft = access(id, actor, true);
+        staffWorkflowOnly(draft);
         DesignWorkflow.requireVersion(draft.getVersion(), version);
         if (!Objects.equals(actor, draft.getOwnerUserId()) && !Objects.equals(actor, draft.getAssignedUserId())) { forbidden(); }
-        if (draft.getStatus() != DesignStatus.SUBMITTED) { conflict("No pending confirmation"); }
+        if (draft.getStatus() != DesignStatus.PENDING_REVIEW) { conflict("No pending confirmation"); }
         decision(draft, actor, "WITHDRAWN", reason);
         draft.revise(draft.getSpec(), actor);
-        return view(drafts.saveAndFlush(draft));
+        return views.of(drafts.saveAndFlush(draft));
     }
 
     @Auditable(action = AuditAction.CREATE, resourceType = "design")
@@ -107,19 +125,35 @@ public class DesignWorkflowService {
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), customerId, productId, name, spec, DesignStatus.DRAFT);
         draft.assign(owner, designer, reviewer);
         draft.editedBy(actor);
-        return view(drafts.saveAndFlush(draft));
+        return views.of(drafts.saveAndFlush(draft));
     }
 
+    /**
+     * The designs the user works on, newest first: in {@code status} when one is given (in any case; blank is none),
+     * otherwise every one but an archived design. An archived design is listed for nobody (BR-16), so asking for
+     * {@code ARCHIVED} - or for a status that does not exist - is a 400.
+     */
     @Transactional(readOnly = true)
-    public Page<DraftView> list(UUID actor, Pageable page) {
+    public Page<DraftView> list(UUID actor, String status, Pageable page) {
         authenticated(actor);
-        return drafts.findForUser(actor, com.stockflow.common.persistence.Pages.of(page.getPageNumber(), page.getPageSize(),
-                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt", "id")))
-                .map(DesignWorkflowService::view);
+        Page<DesignDraftJpaEntity> found = drafts.findForUser(actor, statuses(status),
+                com.stockflow.common.persistence.Pages.of(page.getPageNumber(), page.getPageSize(),
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt", "id")));
+        return new org.springframework.data.domain.PageImpl<>(views.of(found.getContent()), found.getPageable(),
+                found.getTotalElements());
+    }
+
+    private static List<DesignStatus> statuses(String status) {
+        if (status == null || status.isBlank()) {
+            return LISTED;
+        }
+        return LISTED.stream().filter(s -> s.name().equalsIgnoreCase(status.strip())).findFirst().map(List::of)
+                .orElseThrow(() -> new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER,
+                        "status must be one of " + LISTED));
     }
 
     @Transactional(readOnly = true)
-    public DraftView get(UUID id, UUID actor) { return view(access(id, actor, false)); }
+    public DraftView get(UUID id, UUID actor) { return views.of(access(id, actor, false)); }
 
     @Transactional(readOnly = true)
     public SnapshotView snapshot(UUID id, UUID actor) {
@@ -130,10 +164,11 @@ public class DesignWorkflowService {
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DraftView revise(UUID id, UUID actor, long version, String spec) {
         var draft = access(id, actor, true);
+        staffWorkflowOnly(draft);
         editable(draft, actor, version);
         draft.revise(spec, actor);
         decision(draft, actor, "SPECIFICATION_CHANGED", spec);
-        return view(drafts.saveAndFlush(draft));
+        return views.of(drafts.saveAndFlush(draft));
     }
 
     /**
@@ -171,11 +206,12 @@ public class DesignWorkflowService {
             requireReviewable(draft, version, artifactId, actor);
             draft.review(actor, decision.passed(), decision.notes());
             decision(draft, actor, decision.passed() ? "TECHNICAL_ACCEPTED" : "TECHNICAL_REJECTED", notes);
-            return view(drafts.saveAndFlush(draft));
+            return views.of(drafts.saveAndFlush(draft));
         });
     }
 
     private static void requireReviewable(DesignDraftJpaEntity draft, long version, UUID artifactId, UUID actor) {
+        staffWorkflowOnly(draft);
         DesignWorkflow.requireVersion(draft.getVersion(), version);
         DesignWorkflow.requireReview(draft.getStatus(), draft.getCurrentArtifactId(), artifactId,
                 actor, draft.getOwnerUserId(), draft.getLastEditorUserId(), draft.getReviewerUserId());
@@ -199,28 +235,31 @@ public class DesignWorkflowService {
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DraftView submit(UUID id, UUID actor, long version) {
         var draft = access(id, actor, true);
+        staffWorkflowOnly(draft);
         editable(draft, actor, version);
         if (!draft.isPreflightPassed() || draft.getCurrentArtifactId() == null) { conflict("Technical review is required"); }
-        draft.transition(DesignStatus.SUBMITTED);
+        draft.transition(DesignStatus.PENDING_REVIEW);
         decision(draft, actor, "SENT_TO_CUSTOMER", "Customer confirmation requested for the current artifact and specification");
-        return view(drafts.saveAndFlush(draft));
+        return views.of(drafts.saveAndFlush(draft));
     }
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DraftView requestChanges(UUID id, UUID actor, long version, String reason) {
         var draft = access(id, actor, true);
+        staffWorkflowOnly(draft);
         DesignWorkflow.requireVersion(draft.getVersion(), version);
         if (!Objects.equals(actor, draft.getOwnerUserId())) { forbidden(); }
-        if (draft.getStatus() != DesignStatus.SUBMITTED) { conflict("No pending confirmation"); }
+        if (draft.getStatus() != DesignStatus.PENDING_REVIEW) { conflict("No pending confirmation"); }
         draft.revise(draft.getSpec(), actor);
         draft.review(null, false, reason);
         decision(draft, actor, "CUSTOMER_CHANGES_REQUESTED", reason);
-        return view(drafts.saveAndFlush(draft));
+        return views.of(drafts.saveAndFlush(draft));
     }
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public SnapshotView confirm(UUID id, UUID actor, long version, UUID artifactId) {
         var draft = access(id, actor, true);
+        staffWorkflowOnly(draft);
         if (!Objects.equals(actor, draft.getOwnerUserId())) { forbidden(); }
         var existing = snapshots.findByDraftId(id);
         if (existing.isPresent() && Objects.equals(existing.get().getArtifactId(), artifactId)) {
@@ -253,11 +292,20 @@ public class DesignWorkflowService {
         return snapshotView(snapshot);
     }
 
+    /**
+     * A revision of an approved design. A customer's own design is revised by {@link CustomerDesignService#revise}:
+     * same variant and template, the approved layout and images copied, counted against the draft limit.
+     */
     @Auditable(action = AuditAction.CREATE, resourceType = "design", resourceId = "#id")
     public DraftView fork(UUID id, UUID actor) {
         var source = access(id, actor, false);
+        if (source.getTemplateId() != null) {
+            return customerDesigns.revise(id, actor);
+        }
         if (!Objects.equals(actor, source.getOwnerUserId()) && !Objects.equals(actor, source.getAssignedUserId())) { forbidden(); }
         if (source.getStatus() != DesignStatus.APPROVED) { conflict("Only confirmed designs can be forked"); }
+        // The revision is one more draft of the customer's, whoever started the design (B37).
+        customerDesigns.requireRoomForDraft(source.getCustomerId());
         // A new upload is intentional: the draft cannot mutate or reuse the old snapshot's object key.
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), source.getCustomerId(), source.getProductId(),
                 source.getName(), source.getSpec(), DesignStatus.DRAFT);
@@ -265,15 +313,20 @@ public class DesignWorkflowService {
         draft.editedBy(actor);
         draft.derivedFrom(snapshots.findByDraftId(id).orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT)).getId());
         drafts.saveAndFlush(draft);
-        decision(draft, actor, "DERIVED_FROM_SNAPSHOT", draft.getParentSnapshotId().toString());
-        return view(drafts.saveAndFlush(draft));
+        decision(draft, actor, DesignDecisionType.DERIVED_FROM_SNAPSHOT.name(), draft.getParentSnapshotId().toString());
+        return views.of(drafts.saveAndFlush(draft));
     }
 
-    /** Called only by the separately guarded design-administration endpoint. Ownership never changes here. */
+    /**
+     * Called only by the separately guarded design-administration endpoint. Ownership never changes here. A design a
+     * customer started is theirs alone (BR-01, B38): to staff it does not exist, whatever version they quote.
+     */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DraftView assign(UUID id, UUID actor, long version, UUID designer, UUID reviewer) {
         authenticated(actor);
-        var draft = drafts.lockById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        var draft = drafts.lockById(id)
+                .filter(d -> d.getStatus() != DesignStatus.ARCHIVED && !customersOwn(d))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         DesignWorkflow.requireVersion(draft.getVersion(), version);
         if (draft.getStatus() == DesignStatus.APPROVED || snapshots.existsByDraftId(id)) { conflict("Confirmed assignments are retained; create a new draft"); }
         if (reviewer == null || reviewer.equals(draft.getOwnerUserId()) || reviewer.equals(designer)) {
@@ -283,16 +336,39 @@ public class DesignWorkflowService {
         draft.assign(draft.getOwnerUserId(), designer, reviewer);
         draft.revise(draft.getSpec(), actor);
         decision(draft, actor, "ASSIGNMENT_CHANGED", "Designer=" + designer + "; reviewer=" + reviewer);
-        return view(drafts.saveAndFlush(draft));
+        return views.of(drafts.saveAndFlush(draft));
     }
 
+    /**
+     * The design, to someone who works on it: its owner, assigned designer or reviewer - for a design a customer
+     * started, its owner only (BR-03, B38). Anyone else, and everyone once it is archived (BR-16), is told it does not
+     * exist.
+     */
     private DesignDraftJpaEntity access(UUID id, UUID actor, boolean lock) {
         authenticated(actor);
         var draft = (lock ? drafts.lockById(id) : drafts.findById(id))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        if (!Objects.equals(actor, draft.getOwnerUserId()) && !Objects.equals(actor, draft.getAssignedUserId())
-                && !Objects.equals(actor, draft.getReviewerUserId())) { throw new BusinessException(ErrorCode.NOT_FOUND); }
+        boolean works = customersOwn(draft) ? Objects.equals(actor, draft.getOwnerUserId())
+                : Objects.equals(actor, draft.getOwnerUserId()) || Objects.equals(actor, draft.getAssignedUserId())
+                        || Objects.equals(actor, draft.getReviewerUserId());
+        if (!works || draft.getStatus() == DesignStatus.ARCHIVED) { throw new BusinessException(ErrorCode.NOT_FOUND); }
         return draft;
+    }
+
+    /** A design the customer started on a template - the Design Studio's - rather than one staff started for them. */
+    private static boolean customersOwn(DesignDraftJpaEntity draft) {
+        return draft.getTemplateId() != null;
+    }
+
+    /**
+     * The staff workflow being replaced (designer, reviewer, the customer's confirmation) is not a way through a design
+     * the customer started: that one is submitted, reviewed and approved by its own steps, or its owner could confirm it
+     * without the Sales Manager ever seeing it (BR-06).
+     */
+    private static void staffWorkflowOnly(DesignDraftJpaEntity draft) {
+        if (customersOwn(draft)) {
+            throw new BusinessException(ErrorCode.CONFLICT, "A design the customer started follows its own workflow");
+        }
     }
     private void editable(DesignDraftJpaEntity draft, UUID actor, long version) {
         DesignWorkflow.requireVersion(draft.getVersion(), version);
@@ -336,11 +412,6 @@ public class DesignWorkflowService {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Reviewer must be an active sales manager");
         }
-    }
-    private static DraftView view(DesignDraftJpaEntity d) {
-        return new DraftView(d.getId(), d.getCustomerId(), d.getProductId(), d.getOwnerUserId(), d.getAssignedUserId(),
-                d.getReviewerUserId(), d.getName(), d.getSpec(), d.getStatus().name(), d.getCurrentArtifactId(),
-                d.isPreflightPassed(), d.getReviewNotes(), d.getVersion(), d.getParentSnapshotId());
     }
     private static SnapshotView snapshotView(DesignSnapshotJpaEntity s) {
         return new SnapshotView(s.getId(), s.getDraftId(), s.getArtifactId(), s.getChecksum(), s.getSpec(),

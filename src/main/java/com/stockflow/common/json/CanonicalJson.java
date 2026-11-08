@@ -49,7 +49,16 @@ public final class CanonicalJson {
     /** Deeper than any layout needs, shallow enough that a hostile body cannot exhaust the stack. */
     static final int MAX_DEPTH = 64;
 
-    private static final Object NULL = new Object();
+    /**
+     * JSON {@code null} as {@link #parse} returns it: a value, unlike a member that is absent, so a caller can tell the
+     * two apart.
+     */
+    public static final Object NULL = new Object() {
+        @Override
+        public String toString() {
+            return "null";
+        }
+    };
 
     private static final JsonFactory FACTORY = JsonFactory.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
@@ -73,6 +82,18 @@ public final class CanonicalJson {
      *         surrogate or a number no double can hold
      */
     public static String canonicalize(String json) {
+        return canonical(parse(json));
+    }
+
+    /**
+     * {@code json} read as plain Java values, so a caller can inspect a document without a JSON library of its own: an
+     * object is a {@code Map<String, Object>} sorted as the canonical form sorts it, an array a {@code List<Object>},
+     * a string a {@code String}, a number the {@code Double} the canonical form writes, a boolean a {@code Boolean} and
+     * {@code null} {@link #NULL}. The same rules as {@link #canonicalize} decide what is refused.
+     *
+     * @throws InvalidJsonException as {@link #canonicalize}
+     */
+    public static Object parse(String json) {
         if (json == null) {
             throw new InvalidJsonException("No JSON text");
         }
@@ -84,9 +105,7 @@ public final class CanonicalJson {
             if (parser.nextToken() != null) {
                 throw new InvalidJsonException("Text continues after the JSON value");
             }
-            StringBuilder out = new StringBuilder(json.length());
-            write(value, out);
-            return out.toString();
+            return value;
         } catch (StreamConstraintsException ex) {
             throw new InvalidJsonException("JSON nested deeper than " + MAX_DEPTH + " levels, or a value too long");
         } catch (JsonParseException ex) {
@@ -97,6 +116,18 @@ public final class CanonicalJson {
         } catch (IOException ex) {
             throw new InvalidJsonException("Unreadable JSON text");
         }
+    }
+
+    /**
+     * The canonical form of a value as {@link #parse} returns it, or one built of the same types: maps with string
+     * keys (written sorted, whatever their own order), lists, strings, finite numbers, booleans and {@link #NULL}.
+     *
+     * @throws InvalidJsonException for anything else, or a non-finite number
+     */
+    public static String canonical(Object value) {
+        StringBuilder out = new StringBuilder();
+        write(value, out);
+        return out.toString();
     }
 
     /** Lower-case hex SHA-256 of {@code canonical}'s UTF-8 bytes: the checksum both sides compare. */
@@ -163,15 +194,19 @@ public final class CanonicalJson {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private static void write(Object value, StringBuilder out) {
         if (value == NULL) {
             out.append("null");
         } else if (value instanceof Boolean flag) {
             out.append(flag ? "true" : "false");
-        } else if (value instanceof Double number) {
-            out.append(number(number));
+        } else if (value instanceof Number number) {
+            double finite = number.doubleValue();
+            if (Double.isNaN(finite) || Double.isInfinite(finite)) {
+                throw new InvalidJsonException("Number outside the range of a double");
+            }
+            out.append(number(finite));
         } else if (value instanceof String text) {
+            requireWellFormed(text);
             string(text, out);
         } else if (value instanceof List<?> items) {
             out.append('[');
@@ -182,10 +217,19 @@ public final class CanonicalJson {
                 write(items.get(i), out);
             }
             out.append(']');
-        } else {
+        } else if (value instanceof Map<?, ?> members) {
+            // Sorted here rather than trusted: a map a caller built keeps its own order.
+            Map<String, Object> sorted = new TreeMap<>();
+            for (Map.Entry<?, ?> member : members.entrySet()) {
+                if (!(member.getKey() instanceof String name)) {
+                    throw new InvalidJsonException("Object member name is not a string");
+                }
+                requireWellFormed(name);
+                sorted.put(name, member.getValue());
+            }
             out.append('{');
             boolean first = true;
-            for (Map.Entry<String, Object> member : ((Map<String, Object>) value).entrySet()) {
+            for (Map.Entry<String, Object> member : sorted.entrySet()) {
                 if (!first) {
                     out.append(',');
                 }
@@ -195,6 +239,8 @@ public final class CanonicalJson {
                 write(member.getValue(), out);
             }
             out.append('}');
+        } else {
+            throw new InvalidJsonException("Not a JSON value");
         }
     }
 

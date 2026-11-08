@@ -68,8 +68,10 @@ class DesignWorkflowController {
     @GetMapping
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<PageResponse<DesignDraftResponse>> list(@AuthenticatedUser CurrentUser user,
+            @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(service.list(actor(user), pageOf(page, size)).map(mapper::toResponse)));
+        return ApiResponse.ok(Pages.toResponse(service.list(actor(user), status, pageOf(page, size))
+                .map(mapper::toResponse)));
     }
     @GetMapping("/{id}")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)

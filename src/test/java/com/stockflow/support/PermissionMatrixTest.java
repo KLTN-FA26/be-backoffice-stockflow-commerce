@@ -83,6 +83,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/customers/me", "the caller's own profile (resolved from the token, no id taken from the request)"),
             Map.entry("PUT /api/v1/customers/me", "edits the caller's own profile (resolved from the token)"),
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
+            Map.entry("POST /api/v1/designs/mine", "starts a design for the caller's own customer (resolved from the "
+                    + "token; no customer id is taken from the request)"),
             Map.entry("GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/orders/payment-terms", "payment terms offered to the caller's own customer profile"),
@@ -283,6 +285,13 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/designs/{id}/change-requests", "{\"version\":0,\"reason\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/confirmation-withdrawals", "{\"version\":0,\"reason\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/confirmations", "{\"version\":0,\"artifactId\":\"" + UUID.randomUUID() + "\"}"),
+                // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
+                Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_SOFA
+                        + "\",\"sku\":\"SOFA-3S-GREY\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
+                Map.entry("PUT /api/v1/designs/{id}/name", "{\"version\":0,\"name\":\"stolen\"}"),
+                Map.entry("POST /api/v1/designs/{id}/archive", "{\"version\":0}"),
+                Map.entry("PUT /api/v1/designs/{id}/document", "{\"version\":0,\"document\":{\"schemaVersion\":1,"
+                        + "\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-GREY\",\"surfaces\":{}}}"),
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
