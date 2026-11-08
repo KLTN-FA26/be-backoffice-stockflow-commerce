@@ -59,11 +59,11 @@ class WaybillImportMigrationUpgradeTest {
                 // One stored file, several loads: an import's file kept with each load a line applied to.
                 RawSql.update(db, "INSERT INTO fulfillment.waybill_import (id, file_name, storage_key, uploaded_by, "
                         + "uploaded_at, rows_total, rows_applied, rows_rejected) VALUES "
-                        + "('00000000-0000-4000-8000-0000000000f1', 'van-don.csv', 'documents/2026/11/09/a.csv', "
+                        + "('00000000-0000-4000-8000-0000000000f1', 'van-don.csv', 'waybill-imports/2026/11/09/a.csv', "
                         + "?::uuid, NOW(), 2, 2, 0)", user);
                 assertThat(RawSql.update(db, "INSERT INTO fulfillment.load_waybill_file (id, load_id, storage_key, "
                         + "file_name, content_type, size_bytes, uploaded_by, uploaded_at, waybill_import_id) "
-                        + "SELECT gen_random_uuid(), id, 'documents/2026/11/09/a.csv', 'van-don.csv', 'text/csv', 10, "
+                        + "SELECT gen_random_uuid(), id, 'waybill-imports/2026/11/09/a.csv', 'van-don.csv', 'text/csv', 10, "
                         + "?::uuid, NOW(), '00000000-0000-4000-8000-0000000000f1' FROM fulfillment.dispatch_load", user))
                         .isEqualTo(2);
                 RawSql.refused(db, "uk_load_waybill_file_load_key", "INSERT INTO fulfillment.load_waybill_file (id, "
@@ -72,9 +72,14 @@ class WaybillImportMigrationUpgradeTest {
                         + "10, ?::uuid, NOW() FROM fulfillment.dispatch_load WHERE code = 'LD-1'", user);
                 RawSql.refused(db, "ck_waybill_import_rows", "INSERT INTO fulfillment.waybill_import (id, file_name, "
                         + "storage_key, uploaded_by, uploaded_at, rows_total, rows_applied, rows_rejected) VALUES "
-                        + "(gen_random_uuid(), 'b.csv', 'documents/2026/11/09/b.csv', ?::uuid, NOW(), 1001, 1001, 0)",
+                        + "(gen_random_uuid(), 'b.csv', 'waybill-imports/2026/11/09/b.csv', ?::uuid, NOW(), 1001, 1001, 0)",
                         user);
                 RawSql.refused(db, "trg_waybill_import_append_only", "DELETE FROM fulfillment.waybill_import");
+                // An import's file is kept with a load only as the import's.
+                RawSql.refused(db, "ck_load_waybill_file_key", "INSERT INTO fulfillment.load_waybill_file (id, "
+                        + "load_id, storage_key, file_name, content_type, size_bytes, uploaded_by, uploaded_at) "
+                        + "SELECT gen_random_uuid(), id, 'waybill-imports/2026/11/09/c.csv', 'c.csv', 'text/csv', 10, "
+                        + "?::uuid, NOW() FROM fulfillment.dispatch_load WHERE code = 'LD-1'", user);
 
                 assertThat(RawSql.texts(db, "SELECT r.code || ':' || p.action FROM identity.role_permission rp "
                         + "JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p "
