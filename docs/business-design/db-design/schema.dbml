@@ -3295,6 +3295,7 @@ Table design.design_quote_request [headercolor: #AA4A9E] {
   desired_delivery_date date
   status                design.design_quote_request_status [not null]
   closed_at             timestamptz
+  closed_by             uuid
   version               bigint [not null, default: 0]
   created_at            timestamptz [not null]
   created_by            varchar(100)
@@ -4641,6 +4642,7 @@ Ref: design.design_draft.product_id > product.products.id [delete: restrict]
 Ref: design.design_draft.reviewed_by > identity.app_user.id
 Ref: design.design_draft.template_id > product.customization_templates.id
 Ref: design.design_draft.variant_id > product.variants.id
+Ref: design.design_quote_request.closed_by > identity.app_user.id
 Ref: design.design_quote_request.draft_id > design.design_draft.id
 Ref: design.design_quote_request.requested_by > identity.app_user.id
 Ref: design.design_snapshot.confirmed_by > identity.app_user.id

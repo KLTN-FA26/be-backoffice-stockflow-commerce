@@ -27,7 +27,8 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Reading a design - the list of a user's own, one design, its history and its approved snapshot - and revising an
  * approved one. Who reads is {@link CustomerDesignRules#requireReader}: the owner, a reviewer while a customer's
- * design waits for review, and the sales staff while a quote request on it is open (BR-03, plan D7). Starting, laying out, submitting and deciding a design are
+ * design waits for review, and the sales staff while a quote request on it is open and it waits for review or is
+ * approved (BR-03, plan D7). Starting, laying out, submitting and deciding a design are
  * {@link CustomerDesignService}, {@link DesignSubmissionService} and {@link DesignReviewService}.
  */
 @Service

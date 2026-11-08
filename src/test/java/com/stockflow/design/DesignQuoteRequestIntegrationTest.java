@@ -63,8 +63,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * A customer asks the sales staff for a quote on their design, over HTTP (kltn-docs 12 §4.8; 16 §4.2 step 5; BR-15;
  * B40; plan D7): with a draft's submission - nothing sent if the preflight fails - or on an approved design; one open
- * request per design; the sales staff list the requests and read a design one is open on while it waits or once it is
- * approved; a returned design keeps its request, and deleting the draft closes it.
+ * request per design, which asking again changes; the sales staff list the requests, read a design one is open on while
+ * it waits or once it is approved, and close the ones they answered; a returned design keeps its request, and deleting
+ * the draft closes it.
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
@@ -266,6 +267,10 @@ class DesignQuoteRequestIntegrationTest {
         // Without the right to read requests, nobody but the owner and a reviewer.
         as(sales, Set.of(PermissionCode.of("design-designs", Action.READ)));
         mvc.perform(get("/api/v1/designs/" + design)).andExpect(status().isNotFound());
+        // And the whole list, every customer, with no filter at all (no parameter PostgreSQL must type).
+        as(sales, SALES);
+        mvc.perform(get("/api/v1/design-quote-requests")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + asked.requestId() + "')]").isNotEmpty());
 
         // Approved: the sales staff are told, and the request now carries the customer's SKU.
         as(manager, REVIEWER);
@@ -283,10 +288,12 @@ class DesignQuoteRequestIntegrationTest {
 
     @Test
     void nothingIsSentWhenThePreflightFailsOrTheRequestIsMalformed() throws Exception {
-        submit("{\"cartons\":0}").andExpect(status().isBadRequest());
+        submit("{\"cartons\":0}").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("quoteRequest.cartons"));
+        submit("{\"cartons\":1000001}").andExpect(status().isBadRequest());
         submit("{\"cartons\":5,\"desiredDeliveryDate\":\"" + today().minusDays(1) + "\"}")
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("desiredDeliveryDate"));
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("quoteRequest.desiredDeliveryDate"));
         // The logo far off the wall: the preflight refuses, and the request goes nowhere (§4.8 step 24).
         saveLayout(surface.uTo() + 500);
         submit("{\"cartons\":5}")
@@ -320,15 +327,13 @@ class DesignQuoteRequestIntegrationTest {
         // ...but the draft is the customer's alone again.
         mvc.perform(get("/api/v1/designs/" + design)).andExpect(status().isNotFound());
 
-        // Submitted again, the request follows the design: a second one is refused before anything happens.
+        // Submitted again with new numbers, the request follows the design and asks them: no second request.
         as(owner, Set.of());
-        submit("{\"cartons\":30}")
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("DESIGN_QUOTE_REQUEST_OPEN"))
-                .andExpect(jsonPath("$.details.requestId").value(request.toString()));
-        mvc.perform(get("/api/v1/designs/" + design)).andExpect(jsonPath("$.data.status").value("DRAFT"));
-        submit(null).andExpect(status().isOk());
+        submit("{\"cartons\":30}").andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
         assertThat(requests()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT cartons FROM design.design_quote_request WHERE id = ?", Integer.class,
+                request)).isEqualTo(30);
+        assertThat(decisions()).last().isEqualTo("QUOTE_REQUESTED");
 
         // Returned once more and deleted: the request closes with the draft.
         as(manager, REVIEWER);
@@ -344,7 +349,7 @@ class DesignQuoteRequestIntegrationTest {
     }
 
     @Test
-    void anApprovedDesignIsAskedOnItsOwnAndOnceAtATime() throws Exception {
+    void anApprovedDesignIsAskedOnItsOwnAgainWhileOpenAndAnewOnceAnswered() throws Exception {
         submit(null).andExpect(status().isOk());
         // Waiting for review, a quote is asked with the submission, not on its own.
         ask("{\"cartons\":5}").andExpect(status().isConflict())
@@ -364,10 +369,26 @@ class DesignQuoteRequestIntegrationTest {
         assertThat(recorded.matching(DesignQuoteRequested.class, e -> e.designId().toString().equals(design)))
                 .singleElement().satisfies(e -> assertThat(e.customerSku()).isEqualTo(customerSku));
         assertThat(decisions()).last().isEqualTo("QUOTE_REQUESTED");
-        ask("{\"cartons\":60}").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("DESIGN_QUOTE_REQUEST_OPEN"));
+        // Asked again while open: the same request asks the new numbers.
+        String first = data(ask("{\"cartons\":60}").andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cartons").value(60))).get("id").asText();
         mvc.perform(get("/api/v1/designs/" + design + "/quote-requests")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1));
+
+        // Answered, the salesperson closes it; closing it again changes nothing.
+        as(sales, SALES);
+        mvc.perform(post("/api/v1/design-quote-requests/" + first + "/closure")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CLOSED"))
+                .andExpect(jsonPath("$.data.closedBy").value(sales.toString()));
+        mvc.perform(post("/api/v1/design-quote-requests/" + first + "/closure")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.closedBy").value(sales.toString()));
+        mvc.perform(post("/api/v1/design-quote-requests/" + UUID.randomUUID() + "/closure"))
+                .andExpect(status().isNotFound());
+        // The design's next order: a new request.
+        as(owner, Set.of());
+        String second = data(ask("{\"cartons\":10}").andExpect(status().isCreated())).get("id").asText();
+        assertThat(second).isNotEqualTo(first);
+        mvc.perform(get("/api/v1/designs/" + design + "/quote-requests")).andExpect(jsonPath("$.data.length()").value(2));
 
         // Nobody else asks on it, nor reads its requests.
         UUID stranger = tx.execute(s -> ReferenceRows.user(entityManager));
@@ -378,5 +399,56 @@ class DesignQuoteRequestIntegrationTest {
         as(sales, SALES);
         mvc.perform(get("/api/v1/design-quote-requests").param("customerId", UUID.randomUUID().toString()))
                 .andExpect(jsonPath("$.data.items").isEmpty());
+    }
+
+    @Test
+    void theSalesStaffDoNotReadADesignWaitingForReviewThatAsksNothing() throws Exception {
+        submit(null).andExpect(status().isOk());
+        as(sales, SALES);
+        mvc.perform(get("/api/v1/designs/" + design)).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/designs/" + design + "/quote-requests")).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void aCustomerNoLongerActiveAsksNothing() throws Exception {
+        submit(null).andExpect(status().isOk());
+        as(manager, REVIEWER);
+        decide(true, null).andExpect(status().isOk());
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.customer SET status = 'INACTIVE' WHERE id = ?",
+                customerId));
+
+        as(owner, Set.of());
+        ask("{\"cartons\":5}").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_NOT_ACTIVE"));
+        assertThat(requests()).isZero();
+    }
+
+    @Test
+    void twoAsksAtOnceMakeOneRequest() throws Exception {
+        submit(null).andExpect(status().isOk());
+        as(manager, REVIEWER);
+        decide(true, null).andExpect(status().isOk());
+        as(owner, Set.of());
+
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            List<java.util.concurrent.Future<Integer>> asks = new java.util.ArrayList<>();
+            for (int cartons : new int[] {5, 7}) {
+                asks.add(pool.submit(() -> {
+                    start.await();
+                    return ask("{\"cartons\":" + cartons + "}").andReturn().getResponse().getStatus();
+                }));
+            }
+            start.countDown();
+            List<Integer> statuses = new java.util.ArrayList<>();
+            for (var answer : asks) {
+                statuses.add(answer.get(30, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            assertThat(statuses).containsExactlyInAnyOrder(201, 200);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(requests()).isEqualTo(1);
     }
 }

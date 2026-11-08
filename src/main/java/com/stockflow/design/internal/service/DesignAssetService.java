@@ -49,8 +49,8 @@ import org.springframework.transaction.support.TransactionOperations;
  * version: the layout that places the image is the change, and it is saved with the version (BR-11).</p>
  *
  * <p>Only the design's owner adds images. Whoever reads the design reads them ({@code CustomerDesignRules.requireReader}:
- * the owner, a reviewer while it waits for review, and the sales staff while a quote request on it is open); anyone
- * else, and everyone once it is archived, is told it does
+ * the owner, a reviewer while it waits for review, and the sales staff while a quote request on it is open and it waits
+ * for review or is approved); anyone else, and everyone once it is archived, is told it does
  * not exist (BR-03, B38).</p>
  */
 @Service

@@ -9,11 +9,13 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.design.internal.controller.dto.DesignQuoteRequestResponse;
+import com.stockflow.design.internal.domain.QuoteRequestRules;
 import com.stockflow.design.internal.domain.QuoteRequestStatus;
 import com.stockflow.design.internal.service.DesignQuoteRequestService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import java.time.LocalDate;
 import java.util.List;
@@ -30,15 +32,15 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Quote requests on customers' designs (kltn-docs 12 §4.8; 16 §4.2 step 5): the customer asks on an approved design
- * (a draft asks with its submission, on {@code CustomerDesignController}), and the sales staff list them. Handlers are
- * public so the permission proxy advises them.
+ * (a draft asks with its submission, on {@code CustomerDesignController}); the sales staff list them and close the ones
+ * they have answered. Handlers are public so the permission proxy advises them.
  */
 @RestController
 @RequestMapping("/api/v1")
 @Tag(name = "Design quote requests", description = "Customers asking the sales staff for a quote on their design")
 @PermissionResource(code = DesignResources.QUOTE_REQUESTS, group = "Design", label = "Design quote requests",
         route = "/design-quote-requests", apiPath = "/api/v1/design-quote-requests",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE})
 class DesignQuoteRequestController {
 
     private final DesignQuoteRequestService requests;
@@ -47,21 +49,32 @@ class DesignQuoteRequestController {
         this.requests = requests;
     }
 
-    /** What a customer asks: the cartons they would like (at least one) and, if any, the delivery date they would like. */
-    record QuoteRequestBody(@Min(1) int cartons, LocalDate desiredDeliveryDate) {
+    /** What a customer asks: the cartons they would like and, if any, the delivery date they would like. */
+    record QuoteRequestBody(@Min(1) @Max(QuoteRequestRules.MAX_CARTONS) int cartons, LocalDate desiredDeliveryDate) {
 
         DesignQuoteRequestService.QuoteRequestInput input() {
             return new DesignQuoteRequestService.QuoteRequestInput(cartons, desiredDeliveryDate);
         }
     }
 
+    /** 201 with a new request; 200 when the design's open request now asks this instead. */
     @PostMapping("/designs/{id}/quote-requests")
-    @Operation(summary = "Ask the sales staff for a quote on an approved design")
+    @Operation(summary = "Ask the sales staff for a quote on an approved design; asking again changes the open request")
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.CREATE)
     public ResponseEntity<ApiResponse<DesignQuoteRequestResponse>> request(@PathVariable UUID id,
             @Valid @RequestBody QuoteRequestBody body, @AuthenticatedUser CurrentUser user) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(toResponse(
-                requests.request(id, DesignWorkflowController.actor(user), body.input()))));
+        var asked = requests.request(id, DesignWorkflowController.actor(user), body.input());
+        return ResponseEntity.status(asked.created() ? HttpStatus.CREATED : HttpStatus.OK)
+                .body(ApiResponse.ok(toResponse(asked.request())));
+    }
+
+    /** A salesperson closes a request they have answered; the design asks again, for its next order, anew. */
+    @PostMapping("/design-quote-requests/{requestId}/closure")
+    @Operation(summary = "Close a quote request once answered")
+    @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.UPDATE)
+    public ApiResponse<DesignQuoteRequestResponse> close(@PathVariable UUID requestId,
+                                                         @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(toResponse(requests.close(requestId, DesignWorkflowController.actor(user))));
     }
 
     /** To whoever reads the design (plan D7): its owner, a reviewer while it waits, the sales staff answering it. */
@@ -89,6 +102,6 @@ class DesignQuoteRequestController {
         return new DesignQuoteRequestResponse(view.id(), view.designId(), view.designName(), view.designStatus().name(),
                 view.customerId(), view.customerName(), view.sku(), view.customerSku(), view.returnReason(),
                 view.cartons(), view.desiredDeliveryDate(), view.status().name(), view.requestedBy(),
-                view.requestedAt(), view.closedAt());
+                view.requestedAt(), view.closedAt(), view.closedBy());
     }
 }

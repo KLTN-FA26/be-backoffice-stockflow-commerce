@@ -2,12 +2,16 @@ package com.stockflow.design.internal.repository;
 
 import com.stockflow.common.persistence.BaseJpaRepository;
 import com.stockflow.design.internal.domain.QuoteRequestStatus;
+import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
 import com.stockflow.design.internal.entity.DesignQuoteRequestJpaEntity;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.criteria.Predicate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -22,16 +26,29 @@ public interface DesignQuoteRequestJpaRepository extends BaseJpaRepository<Desig
     /** The design's requests, the newest first (ix_design_quote_request_draft). */
     List<DesignQuoteRequestJpaEntity> findByDraftIdOrderByCreatedAtDescIdDesc(UUID draftId);
 
+    /** The request, locked - after its design's, as every writer of a request locks them - and read as it is now. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select r from DesignQuoteRequestJpaEntity r where r.id = :id")
+    Optional<DesignQuoteRequestJpaEntity> lockById(@Param("id") UUID id);
+
     /**
-     * The sales staff's list, the newest first: every customer's requests or one customer's, in any status or one. The
-     * customer is the design's, read in the design schema itself.
+     * The sales staff's list: every customer's requests or one customer's - the design's, read in the design schema
+     * itself - in any status or one. A specification rather than {@code (:x is null or ...)}: an absent filter then
+     * binds no parameter, whose type PostgreSQL could not infer.
      */
-    @Query(value = "select r from DesignQuoteRequestJpaEntity r where (:status is null or r.status = :status) "
-            + "and (:customerId is null or r.draftId in (select d.id from DesignDraftJpaEntity d "
-            + "where d.customerId = :customerId)) order by r.createdAt desc, r.id desc",
-            countQuery = "select count(r) from DesignQuoteRequestJpaEntity r where (:status is null "
-                    + "or r.status = :status) and (:customerId is null or r.draftId in (select d.id from "
-                    + "DesignDraftJpaEntity d where d.customerId = :customerId))")
-    Page<DesignQuoteRequestJpaEntity> list(@Param("customerId") UUID customerId,
-                                           @Param("status") QuoteRequestStatus status, Pageable page);
+    static Specification<DesignQuoteRequestJpaEntity> listed(UUID customerId, QuoteRequestStatus status) {
+        return (root, query, cb) -> {
+            List<Predicate> where = new ArrayList<>();
+            if (status != null) {
+                where.add(cb.equal(root.get("status"), status));
+            }
+            if (customerId != null) {
+                var designs = query.subquery(UUID.class);
+                var design = designs.from(DesignDraftJpaEntity.class);
+                designs.select(design.get("id")).where(cb.equal(design.get("customerId"), customerId));
+                where.add(root.get("draftId").in(designs));
+            }
+            return cb.and(where.toArray(Predicate[]::new));
+        };
+    }
 }

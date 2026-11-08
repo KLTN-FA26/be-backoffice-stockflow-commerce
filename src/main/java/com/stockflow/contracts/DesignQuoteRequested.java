@@ -18,7 +18,8 @@ import java.util.UUID;
  * @param customerSku         the customer's own SKU of an approved design; null while it waits for review
  * @param cartons             the cartons the customer would like - a suggestion (14 BR-22)
  * @param desiredDeliveryDate the delivery date they would like, or null
- * @param requestedAt         when they asked
+ * @param requestedAt         when they asked - or asked again: an open request asked again is published again, with
+ *                            what it asks now
  */
 public record DesignQuoteRequested(UUID requestId, UUID designId, UUID customerId, String designStatus, String sku,
                                    String customerSku, int cartons, LocalDate desiredDeliveryDate,

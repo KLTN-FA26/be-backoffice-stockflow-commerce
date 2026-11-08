@@ -45,7 +45,15 @@ class DesignQuoteRequestNotificationListenerTest {
         assertThat(message.title()).contains("CUP12-0312345678-01");
         assertThat(message.body()).contains("CUP12-0312345678-01", "20 thùng", "Có thể lập báo giá", "15/12/2026");
         assertThat(message.severity()).isEqualTo(InboxSeverity.INFO);
-        assertThat(message.dedupeKey()).isEqualTo("design-quote:" + event.requestId());
+        assertThat(message.dedupeKey()).isEqualTo("design-quote:" + event.requestId() + ":"
+                + event.requestedAt().toEpochMilli());
+    }
+
+    @Test
+    void anApprovedDesignIsQuotableEvenWithoutItsOwnSkuAtHand() {
+        InboxMessage message = DesignQuoteRequestNotificationListener.message(requested("APPROVED", null, null));
+
+        assertThat(message.body()).contains("CUP-12", "Có thể lập báo giá").doesNotContain("chờ duyệt");
     }
 
     @Test

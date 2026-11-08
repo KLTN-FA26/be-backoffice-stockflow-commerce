@@ -66,9 +66,12 @@ class DesignWorkflowTest {
                     .extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
         }
         // The owner and a reviewer are never asked about requests.
+        BooleanSupplier never = () -> {
+            throw new AssertionError("asked");
+        };
         assertThatCode(() -> CustomerDesignRules.requireReader(owner, owner, DesignStatus.DRAFT, true,
-                DesignReadRights.NONE, () -> {
-                    throw new AssertionError("asked");
-                })).doesNotThrowAnyException();
+                DesignReadRights.NONE, never)).doesNotThrowAnyException();
+        assertThatCode(() -> CustomerDesignRules.requireReader(sales, owner, DesignStatus.PENDING_REVIEW, true,
+                new DesignReadRights(true, true), never)).doesNotThrowAnyException();
     }
 }

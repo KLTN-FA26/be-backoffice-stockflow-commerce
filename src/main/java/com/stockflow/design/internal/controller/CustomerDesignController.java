@@ -123,8 +123,9 @@ class CustomerDesignController {
     /**
      * Submits the draft for review (kltn-docs 12 §4.3): 422 {@code DESIGN_PREFLIGHT_FAILED} with the findings when the
      * layout fails the print checks, 409 {@code DESIGN_FILES_OUTDATED} when the submitted files are not rendered from
-     * the current layout. A {@code quoteRequest} in the body is opened once the design is submitted, and refuses the
-     * submission first when it cannot be (409 {@code DESIGN_QUOTE_REQUEST_OPEN}, 400).
+     * the current layout. A {@code quoteRequest} in the body is asked once the design is submitted - or, with a request
+     * still open on a design returned after it, that request now asks this (B40) - and refuses the submission first when
+     * it cannot be asked: 400 for its fields, 409 {@code CUSTOMER_NOT_ACTIVE}. 404 for anyone but the owner.
      */
     @PostMapping("/{id}/technical-review-requests")
     @Operation(summary = "Submit the draft for review, with a quote request if any: preflight, then the Sales "

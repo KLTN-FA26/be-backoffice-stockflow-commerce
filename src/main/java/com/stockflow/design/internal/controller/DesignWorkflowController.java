@@ -23,7 +23,8 @@ import java.util.UUID;
 
 /**
  * Reading designs and revising an approved one. A design is its owner's; someone who may review designs reads one
- * while it waits for review, and the sales staff one with a quote request open on it (plan D7). Handlers are public so the permission proxy advises them; the resource is
+ * while it waits for review, and the sales staff one with a quote request open on it while it waits or once it is
+ * approved (plan D7). Handlers are public so the permission proxy advises them; the resource is
  * declared once, on {@code DesignController}.
  */
 @RestController

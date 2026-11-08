@@ -22,9 +22,13 @@ import org.springframework.stereotype.Component;
  * the chat's routing to the responsible salesperson (16 §4.1) comes with the chat module; until then every one of them
  * hears, as the general queue would.
  *
- * <p>Delivered as every staff notice ({@link StaffNotices}): in-app first, one inbox row per person per request or
- * decision, then e-mail best effort to the people newly told, so a redelivered event tells nobody twice. System text
- * only: SKUs and numbers, never the design's name, which the customer typed.</p>
+ * <p>Delivered as every staff notice ({@link StaffNotices}): in-app first, one inbox row per person per ask or
+ * decision - asking again on an open request is a new ask, with what it asks now - then e-mail best effort to the
+ * people newly told, so a redelivered event tells nobody twice. System text only: SKUs and numbers, never the design's
+ * name, which the customer typed.</p>
+ *
+ * <p>Every holder of the right hears and may read the design while the request is open (plan D7 says "the salesperson
+ * with the card"): with no chat to route a request to one salesperson yet, the right is the general queue's.</p>
  */
 @Component
 class DesignQuoteRequestNotificationListener {
@@ -74,8 +78,8 @@ class DesignQuoteRequestNotificationListener {
 
     static InboxMessage message(DesignQuoteRequested event) {
         ResourceBundle texts = texts();
-        boolean approved = "APPROVED".equals(event.designStatus()) && event.customerSku() != null;
-        String sku = LogSafe.text(approved ? event.customerSku() : event.sku());
+        boolean approved = "APPROVED".equals(event.designStatus());
+        String sku = LogSafe.text(event.customerSku() != null ? event.customerSku() : event.sku());
         String body = texts.getString(approved ? "inbox.design.quote.body.approved" : "inbox.design.quote.body.pending")
                 .formatted(sku, event.cartons());
         if (event.desiredDeliveryDate() != null) {
@@ -83,7 +87,8 @@ class DesignQuoteRequestNotificationListener {
                     .formatted(DATE.format(event.desiredDeliveryDate()));
         }
         return new InboxMessage(CATEGORY, InboxSeverity.INFO, texts.getString("inbox.design.quote.title").formatted(sku),
-                body, LINK, SOURCE_TYPE, event.designId().toString(), "design-quote:" + event.requestId());
+                body, LINK, SOURCE_TYPE, event.designId().toString(),
+                "design-quote:%s:%d".formatted(event.requestId(), event.requestedAt().toEpochMilli()));
     }
 
     static InboxMessage message(DesignReviewed event) {
