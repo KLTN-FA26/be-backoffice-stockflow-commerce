@@ -214,6 +214,9 @@ class DesignAssetServiceTest {
                 "image/png", png.length, new java.io.ByteArrayInputStream(png)), clientKey);
 
         assertThat(asset.assetId()).isNotEqualTo(direct.getAssetId());
-        verify(assets).findByDraftIdAndUploadKey(designId, owner + ":asset:key:" + clientKey);
+        // Looked up when the upload is admitted and again under the lock, always in the client keys' namespace.
+        verify(assets, org.mockito.Mockito.times(2)).findByDraftIdAndUploadKey(designId,
+                owner + ":asset:key:" + clientKey);
+        verify(assets, never()).findByDraftIdAndUploadKey(designId, owner + ":asset:upload:" + uploadId);
     }
 }
