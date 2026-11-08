@@ -272,6 +272,29 @@ SELECT pg_temp.expect_fail('P16x an approved layout without its checksum', $q$
                                         artifact_manifest, document, assets, template)
     VALUES (gen_random_uuid(), md5('qa:design:CUP')::uuid, repeat('a', 64), 'design-renders/qa.pdf', NOW(), NOW(),
             '[]'::jsonb, '{}', '[]'::jsonb, '{}'::jsonb) $q$);
+SELECT pg_temp.expect_fail('P16y a quote request for no carton', $q$
+    INSERT INTO design.design_quote_request (id, draft_id, requested_by, cartons, status, created_at)
+    SELECT gen_random_uuid(), md5('qa:design:CUP')::uuid, u.id, 0, 'OPEN', NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+-- 18:00 UTC on 8 November is 01:00 on 9 November in Vietnam: the day it was asked is the 9th.
+SELECT pg_temp.expect_fail('P16z a quote request wanting delivery before the day it was asked, in Vietnam', $q$
+    INSERT INTO design.design_quote_request (id, draft_id, requested_by, cartons, desired_delivery_date, status,
+                                             created_at)
+    SELECT gen_random_uuid(), md5('qa:design:CUP')::uuid, u.id, 1, DATE '2026-11-08', 'OPEN',
+           TIMESTAMPTZ '2026-11-08 18:00Z'
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_ok('P16z a quote request wanting delivery the day it was asked', $q$
+    INSERT INTO design.design_quote_request (id, draft_id, requested_by, cartons, desired_delivery_date, status,
+                                             created_at)
+    SELECT md5('qa:quote-request:CUP')::uuid, md5('qa:design:CUP')::uuid, u.id, 1, DATE '2026-11-09', 'OPEN',
+           TIMESTAMPTZ '2026-11-08 18:00Z'
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('P16aa a second open quote request on one design', $q$
+    INSERT INTO design.design_quote_request (id, draft_id, requested_by, cartons, status, created_at)
+    SELECT gen_random_uuid(), md5('qa:design:CUP')::uuid, u.id, 3, 'OPEN', NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('P16ab a closed quote request without when it closed', $q$
+    UPDATE design.design_quote_request SET status = 'CLOSED' WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);
