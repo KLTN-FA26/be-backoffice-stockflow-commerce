@@ -495,5 +495,40 @@ SELECT pg_temp.expect_fail('F77 a webhook change signed by someone', $q$
                                             changed_at)
     VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'WB-QA-F72', 'WB-QA-F77', 'WEBHOOK',
             md5('demo:user:approver')::uuid, NOW()) $q$);
+
+-- 3-3: an import of waybill numbers and its lines (V20261108001500).
+SELECT pg_temp.expect_ok('F78 an import of four lines, one applied', $q$
+    INSERT INTO fulfillment.waybill_import (id, file_name, storage_key, uploaded_by, uploaded_at, rows_total,
+                                            rows_applied, rows_rejected)
+    VALUES (md5('qa:imp:f78')::uuid, 'van-don.csv', 'documents/2026/11/09/qa-f78.csv', md5('demo:user:approver')::uuid,
+            NOW(), 4, 1, 3) $q$);
+SELECT pg_temp.expect_fail('F79 an import whose counts do not add up', $q$
+    INSERT INTO fulfillment.waybill_import (id, file_name, storage_key, uploaded_by, uploaded_at, rows_total,
+                                            rows_applied, rows_rejected)
+    VALUES (gen_random_uuid(), 'x.csv', 'documents/2026/11/09/qa-f79.csv', md5('demo:user:approver')::uuid, NOW(), 4, 1,
+            1) $q$);
+SELECT pg_temp.expect_fail('F80 an applied line naming no load', $q$
+    INSERT INTO fulfillment.waybill_import_row (id, import_id, line_no, load_code, waybill_no, outcome)
+    VALUES (gen_random_uuid(), md5('qa:imp:f78')::uuid, 2, 'LD-X', 'WB-X', 'NEW') $q$);
+SELECT pg_temp.expect_fail('F81 a refused line with no reason', $q$
+    INSERT INTO fulfillment.waybill_import_row (id, import_id, line_no, load_code, waybill_no, outcome)
+    VALUES (gen_random_uuid(), md5('qa:imp:f78')::uuid, 3, 'LD-X', 'WB-X', 'ERROR') $q$);
+SELECT pg_temp.expect_ok('F82 a refused line with its reason', $q$
+    INSERT INTO fulfillment.waybill_import_row (id, import_id, line_no, load_code, waybill_no, outcome, problem)
+    VALUES (gen_random_uuid(), md5('qa:imp:f78')::uuid, 4, 'LD-X', 'WB-X', 'ERROR', 'LOAD_NOT_FOUND') $q$);
+SELECT pg_temp.expect_fail('F83 an import rewritten (append-only)', $q$
+    UPDATE fulfillment.waybill_import SET rows_applied = 2, rows_rejected = 2 WHERE id = md5('qa:imp:f78')::uuid $q$);
+SELECT pg_temp.expect_ok('F84 the imported file kept with two loads', $q$
+    INSERT INTO fulfillment.load_waybill_file (id, load_id, storage_key, file_name, content_type, size_bytes,
+                                               uploaded_by, uploaded_at, waybill_import_id)
+    VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'documents/2026/11/09/qa-f78.csv', 'van-don.csv', 'text/csv',
+            10, md5('demo:user:approver')::uuid, NOW(), md5('qa:imp:f78')::uuid),
+           (gen_random_uuid(), md5('qa:load:f35')::uuid, 'documents/2026/11/09/qa-f78.csv', 'van-don.csv', 'text/csv',
+            10, md5('demo:user:approver')::uuid, NOW(), md5('qa:imp:f78')::uuid) $q$);
+SELECT pg_temp.expect_fail('F85 the same file kept twice with one load', $q$
+    INSERT INTO fulfillment.load_waybill_file (id, load_id, storage_key, file_name, content_type, size_bytes,
+                                               uploaded_by, uploaded_at)
+    VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'documents/2026/11/09/qa-f78.csv', 'van-don.csv', 'text/csv',
+            10, md5('demo:user:approver')::uuid, NOW()) $q$);
 ROLLBACK;
 \echo 'PASS 09_outbound'
