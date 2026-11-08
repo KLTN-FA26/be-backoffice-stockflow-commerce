@@ -2,6 +2,7 @@ package com.stockflow.catalog.internal.controller;
 
 import com.stockflow.catalog.internal.controller.dto.*;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
+import com.stockflow.catalog.internal.service.CatalogCustomizationService;
 import com.stockflow.catalog.internal.service.CatalogSearchService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
@@ -18,12 +19,17 @@ class StorefrontCatalogController {
     private final CatalogCommerceService service;
     private final CatalogSearchService search;
     private final CatalogCommerceWebMapper mapper;
+    private final CatalogCustomizationService customizations;
+    private final CatalogCustomizationWebMapper customizationMapper;
 
     StorefrontCatalogController(
-            CatalogCommerceService service, CatalogSearchService search, CatalogCommerceWebMapper mapper) {
+            CatalogCommerceService service, CatalogSearchService search, CatalogCommerceWebMapper mapper,
+            CatalogCustomizationService customizations, CatalogCustomizationWebMapper customizationMapper) {
         this.service = service;
         this.search = search;
         this.mapper = mapper;
+        this.customizations = customizations;
+        this.customizationMapper = customizationMapper;
     }
 
     /**
@@ -52,6 +58,19 @@ class StorefrontCatalogController {
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(ApiResponse.ok(mapper.toResponse(service.detail(slug))));
+    }
+
+    /**
+     * What a customer may design on (the storefront's P2, kltn-docs 13 BR-14): the active template of each ACTIVE
+     * variant, print areas computed from its model. A product that is not published is 404; one that is not
+     * CUSTOMIZABLE is 409 {@code PRODUCT_NOT_CUSTOMIZABLE}. No-store: a template changes when the Sales Manager edits it.
+     */
+    @GetMapping("/{slug}/customization")
+    @Operation(summary = "The customization templates a customer may design on")
+    public ResponseEntity<ApiResponse<CatalogCustomizationResponse>> customization(@PathVariable String slug) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ApiResponse.ok(customizationMapper.toResponse(customizations.customization(slug))));
     }
 
     @GetMapping("/{slug}/gallery")

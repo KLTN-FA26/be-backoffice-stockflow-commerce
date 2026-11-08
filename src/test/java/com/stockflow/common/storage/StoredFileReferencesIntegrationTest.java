@@ -34,7 +34,8 @@ class StoredFileReferencesIntegrationTest {
             }
         }
         assertThat(claimed).containsExactlyInAnyOrder(FileCategory.DESIGN_RENDER, FileCategory.PRODUCT_IMAGE_ORIGINAL,
-                FileCategory.RETURN_EVIDENCE, FileCategory.QC_EVIDENCE, FileCategory.DOCUMENT);
+                FileCategory.RETURN_EVIDENCE, FileCategory.QC_EVIDENCE, FileCategory.DOCUMENT,
+                FileCategory.PRINT_TEMPLATE);
         assertThat(claimed).doesNotContain(FileCategory.SUPPLIER_INVOICE, FileCategory.PRODUCT_IMAGE,
                 FileCategory.EXPORT, FileCategory.EVIDENCE_COPY);
     }

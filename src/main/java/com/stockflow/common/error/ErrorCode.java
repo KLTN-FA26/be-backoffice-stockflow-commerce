@@ -29,6 +29,8 @@ public enum ErrorCode {
     SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE("The minimum order quantity must be a multiple of the pack size", 400),
     SUPPLIER_ITEM_LEAD_TIME_INVALID("The lead time must be between 0 and 365 days", 400),
     VALIDATION_FAILED("Invalid request data", 400),
+    /** A customization template's model, limits or print areas cannot be printed as given (kltn-docs 01 BR-21). */
+    PRINT_CONFIG_INVALID("The customization template is not valid", 400),
     INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
     /** A field-error code on {@link #INVENTORY_POLICY_INVALID}: {@code maxQty} sits below the reorder point or the safety stock. */
     INVENTORY_MAX_QTY_BELOW_THRESHOLD(
@@ -95,6 +97,8 @@ public enum ErrorCode {
     CATEGORY_NOT_FOUND("Category not found", 404),
     BRAND_NOT_FOUND("Brand not found", 404),
     VARIANT_NOT_FOUND("Variant not found", 404),
+    /** A customization template that does not exist, or not on this variant (kltn-docs 01 §4.10). */
+    PRINT_CONFIG_NOT_FOUND("Customization template not found", 404),
     ATTRIBUTE_NOT_FOUND("Attribute not found", 404),
     ATTRIBUTE_VALUE_NOT_FOUND("Attribute value not found", 404),
     MEDIA_NOT_FOUND("Media not found", 404),
@@ -658,6 +662,10 @@ public enum ErrorCode {
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),
     DUPLICATE_KEY("A record with these values already exists", 409),
+    /** Customization templates hang off variants of CUSTOMIZABLE products only (kltn-docs 01 BR-19, 13 BR-14). */
+    PRODUCT_NOT_CUSTOMIZABLE("This product cannot be customized", 409),
+    /** A template code is unique per variant. */
+    PRINT_CONFIG_CODE_TAKEN("This variant already has a template with this code", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
