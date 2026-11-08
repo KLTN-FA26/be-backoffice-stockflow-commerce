@@ -27,7 +27,7 @@ class DesignArtifactRepositoryAdapter implements DesignArtifactRepository {
         if (userId == null) { return Optional.empty(); }
         return (forUpdate ? drafts.lockAccessible(designId, userId) : drafts.findAccessible(designId, userId))
                 .map(row -> new DesignDraft(row.getId(), row.getOwnerUserId(), row.getAssignedUserId(),
-                        row.getStatus(), row.getCurrentArtifactId(), row.getReviewerUserId()));
+                        row.getStatus(), row.getCurrentArtifactId(), row.getReviewerUserId(), row.getTemplateId()));
     }
 
     @Override
@@ -42,6 +42,7 @@ class DesignArtifactRepositoryAdapter implements DesignArtifactRepository {
     public void attach(DesignArtifact artifact) {
         var row = new DesignArtifactJpaEntity(artifact.id(), artifact.designId(), artifact.role(), artifact.file(), artifact.checksum());
         row.setUploadKey(artifact.uploadKey());
+        row.renderedFrom(artifact.documentChecksum(), artifact.templateVersion());
         artifacts.save(row);
         // Already checked and locked by the service in this transaction.
         drafts.findById(artifact.designId()).orElseThrow().attachArtifact(artifact.role(), artifact.id());
@@ -50,7 +51,8 @@ class DesignArtifactRepositoryAdapter implements DesignArtifactRepository {
     @Override
     public List<DesignArtifact> findArtifacts(UUID designId) {
         return artifacts.findByDraftIdOrderByStoredAtDescIdDesc(designId).stream()
-                .map(row -> new DesignArtifact(row.getId(), row.getDraftId(), row.getRole(), row.storedFile(), row.getChecksum(), row.getUploadKey()))
+                .map(row -> new DesignArtifact(row.getId(), row.getDraftId(), row.getRole(), row.storedFile(), row.getChecksum(),
+                        row.getUploadKey(), row.getDocumentChecksum(), row.getTemplateVersion()))
                 .toList();
     }
 }

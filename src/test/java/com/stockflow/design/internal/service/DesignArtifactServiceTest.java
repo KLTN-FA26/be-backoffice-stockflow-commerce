@@ -40,7 +40,8 @@ class DesignArtifactServiceTest {
     private final FileTransfers files = mock(FileTransfers.class);
     private final com.stockflow.common.storage.StagedUploads staged = mock(com.stockflow.common.storage.StagedUploads.class);
     private final DesignArtifactService service = new DesignArtifactService(designs, files, staged,
-            TransactionOperations.withoutTransaction(), mock(DesignPreflight.class));
+            TransactionOperations.withoutTransaction(), mock(DesignPreflight.class),
+            mock(com.stockflow.product.api.PrintConfigs.class));
     private final UUID id = UUID.randomUUID();
     private final UUID owner = UUID.randomUUID();
     private final byte[] bytes = "%PDF-1.7\nExample design artifact".getBytes(java.nio.charset.StandardCharsets.UTF_8);

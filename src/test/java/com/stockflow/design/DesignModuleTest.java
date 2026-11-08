@@ -16,7 +16,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Boots <b>only</b> the design module and the modules it declares in {@code package-info.java} (product and identity).
+ * Boots <b>only</b> the design module and the modules it declares in {@code package-info.java} (product, identity,
+ * customer and - for the carton check of a submission - inventory).
  *
  * <p>The point is the boundary: if design gains a dependency its {@code package-info.java} does not declare, this
  * context cannot start and the build says so, instead of an import nobody noticed in review. Fix the declaration
@@ -36,6 +37,7 @@ class DesignModuleTest {
     @MockitoBean com.stockflow.inventory.api.UomConversionService uomConversionServiceMock;
     @MockitoBean com.stockflow.inventory.api.ItemSpecifications itemSpecificationsMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
     // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;

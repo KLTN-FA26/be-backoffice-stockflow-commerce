@@ -45,6 +45,16 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
             + "(d.ownerUserId = :userId or (d.templateId is null and d.assignedUserId = :userId))")
     Optional<DesignDraftJpaEntity> lockAccessible(@Param("id") UUID id, @Param("userId") UUID userId);
 
+    /**
+     * The Sales Manager's queue (kltn-docs 12 §4.4): customers' designs waiting for review, the longest waiting first.
+     */
+    @Query(value = "select d from DesignDraftJpaEntity d where d.templateId is not null and "
+            + "d.status = com.stockflow.design.internal.domain.DesignStatus.PENDING_REVIEW "
+            + "order by d.reviewRequestedAt asc, d.id asc",
+            countQuery = "select count(d) from DesignDraftJpaEntity d where d.templateId is not null and "
+            + "d.status = com.stockflow.design.internal.domain.DesignStatus.PENDING_REVIEW")
+    Page<DesignDraftJpaEntity> reviewQueue(Pageable pageable);
+
     /** What the draft limit counts (B37). */
     long countByCustomerIdAndStatus(UUID customerId, DesignStatus status);
 

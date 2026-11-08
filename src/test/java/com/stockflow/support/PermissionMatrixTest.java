@@ -290,6 +290,7 @@ class PermissionMatrixTest {
                         + "\",\"sku\":\"SOFA-3S-GREY\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
                 Map.entry("PUT /api/v1/designs/{id}/name", "{\"version\":0,\"name\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/archive", "{\"version\":0}"),
+                Map.entry("POST /api/v1/designs/{id}/technical-review-requests", "{\"version\":0}"),
                 Map.entry("PUT /api/v1/designs/{id}/document", "{\"version\":0,\"document\":{\"schemaVersion\":1,"
                         + "\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-GREY\",\"surfaces\":{}}}"),
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.

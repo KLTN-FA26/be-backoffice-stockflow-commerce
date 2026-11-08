@@ -61,11 +61,13 @@ class DesignController {
     public ApiResponse<DesignArtifactResponse> upload(@PathVariable UUID designId,
             @AuthenticatedUser CurrentUser user, @RequestPart("file") MultipartFile file,
             @RequestParam(defaultValue = "CUSTOMER_PREVIEW") DesignArtifactRole role,
+            @RequestParam(required = false) String documentChecksum,
             @org.springframework.web.bind.annotation.RequestHeader(name = "Idempotency-Key", required = false) String requestKey) {
         try (var content = file.getInputStream()) {
             var upload = new FileUpload(file.getOriginalFilename(), file.getContentType(), file.getSize(), content);
             UUID actor = user == null ? null : user.userId();
-            return ApiResponse.ok(mapper.toResponse(artifacts.upload(designId, actor, role, upload, requestKey)));
+            return ApiResponse.ok(mapper.toResponse(artifacts.upload(designId, actor, role, upload, requestKey,
+                    documentChecksum)));
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
         }
@@ -90,7 +92,7 @@ class DesignController {
     public ApiResponse<DesignArtifactResponse> attachUpload(@PathVariable UUID designId,
             @AuthenticatedUser CurrentUser user, @Valid @RequestBody AttachArtifactUploadRequest request) {
         return ApiResponse.ok(mapper.toResponse(artifacts.attachUpload(designId, user == null ? null : user.userId(),
-                request.roleOrDefault(), request.uploadId())));
+                request.roleOrDefault(), request.uploadId(), request.documentChecksum())));
     }
 
     @GetMapping

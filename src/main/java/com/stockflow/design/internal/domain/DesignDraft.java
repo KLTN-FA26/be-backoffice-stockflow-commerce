@@ -4,11 +4,18 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import java.util.UUID;
 
-/** Login ids are explicit: CRM customer ids must never be assumed to be identity user ids. */
+/**
+ * Login ids are explicit: CRM customer ids must never be assumed to be identity user ids. {@code templateId} is the
+ * template a customer's design is drawn on, null for a design staff started.
+ */
 public record DesignDraft(UUID id, UUID ownerUserId, UUID assignedUserId, DesignStatus status,
-                          UUID currentArtifactId, UUID reviewerUserId) {
+                          UUID currentArtifactId, UUID reviewerUserId, UUID templateId) {
     public DesignDraft(UUID id, UUID ownerUserId, UUID assignedUserId, DesignStatus status, UUID currentArtifactId) {
-        this(id, ownerUserId, assignedUserId, status, currentArtifactId, null);
+        this(id, ownerUserId, assignedUserId, status, currentArtifactId, null, null);
+    }
+    public DesignDraft(UUID id, UUID ownerUserId, UUID assignedUserId, DesignStatus status, UUID currentArtifactId,
+                       UUID reviewerUserId) {
+        this(id, ownerUserId, assignedUserId, status, currentArtifactId, reviewerUserId, null);
     }
     public void requireAccess(UUID userId) {
         if (userId == null || (!userId.equals(ownerUserId) && !userId.equals(assignedUserId) && !userId.equals(reviewerUserId))) {

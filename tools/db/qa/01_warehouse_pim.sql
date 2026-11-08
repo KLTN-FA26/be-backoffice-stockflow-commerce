@@ -251,6 +251,18 @@ SELECT pg_temp.expect_fail('P16s a design image over 40 megapixels', $q$
                                      width_px, height_px, created_at)
     VALUES (md5('qa:design:CUP')::uuid, gen_random_uuid(), 'design-assets/2026/11/big.png', 'big.png', 'image/png',
             10, repeat('a', 64), 8000, 5001, NOW()) $q$);
+SELECT pg_temp.expect_fail('P16t a customer design pending review without when it was submitted', $q$
+    UPDATE design.design_draft SET status = 'PENDING_REVIEW' WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16u a design file naming a layout checksum that is not a SHA-256', $q$
+    INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type, size_bytes, stored_at,
+                                        checksum, created_at, artifact_role, document_checksum)
+    VALUES (gen_random_uuid(), md5('qa:design:CUP')::uuid, 'design-renders/qa.png', 'qa.png', 'image/png', 1, NOW(),
+            repeat('a', 64), NOW(), 'PRINT_READY', 'not-a-checksum') $q$);
+SELECT pg_temp.expect_fail('P16v a design file naming its layout but not the template version it was drawn on', $q$
+    INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type, size_bytes, stored_at,
+                                        checksum, created_at, artifact_role, document_checksum)
+    VALUES (gen_random_uuid(), md5('qa:design:CUP')::uuid, 'design-renders/qa2.png', 'qa.png', 'image/png', 1, NOW(),
+            repeat('a', 64), NOW(), 'PRINT_READY', repeat('b', 64)) $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);

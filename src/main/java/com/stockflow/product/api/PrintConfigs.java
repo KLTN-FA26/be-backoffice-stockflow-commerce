@@ -22,4 +22,11 @@ public interface PrintConfigs {
 
     /** A template by id, active or not. */
     Optional<PrintConfig> byId(UUID templateId);
+
+    /**
+     * Whether a design drawn on this template can still be submitted (kltn-docs 12 BR-02, BR-05): its variant is ACTIVE
+     * and an ordinary one, not a customer's own, of an approved or published CUSTOMIZABLE product. Whether the template
+     * itself is still active does not matter: a draft keeps its template (B39).
+     */
+    boolean designable(UUID templateId);
 }

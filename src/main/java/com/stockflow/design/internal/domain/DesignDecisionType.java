@@ -11,6 +11,10 @@ public enum DesignDecisionType {
     CREATED,
     /** A revision was started from an approved design; the notes name the snapshot. */
     DERIVED_FROM_SNAPSHOT,
+    /** The customer submitted the design and the preflight refused it; the notes list the findings. */
+    PREFLIGHT_FAILED,
+    /** The design passed preflight and waits for review; the notes name the layout's checksum. */
+    SUBMITTED_FOR_REVIEW,
     /** The customer deleted the draft. */
     ARCHIVED
 }

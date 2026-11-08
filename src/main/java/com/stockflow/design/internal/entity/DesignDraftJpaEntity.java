@@ -90,6 +90,12 @@ public class DesignDraftJpaEntity extends BaseEntity {
 
     public void rename(String nextName) { name = nextName; }
 
+    /** Passed preflight (kltn-docs 12 §4.3 step 12): it waits for the Sales Manager, and nothing changes it (BR-07). */
+    public void submitForReview(Instant at) {
+        status = DesignStatus.PENDING_REVIEW;
+        reviewRequestedAt = at;
+    }
+
     /** A deleted draft (BR-16): kept with its history, seen by nobody. */
     public void archive(Instant at) {
         status = DesignStatus.ARCHIVED;

@@ -9,6 +9,7 @@ import com.stockflow.design.internal.controller.dto.DesignDocumentResponse;
 import com.stockflow.design.internal.controller.dto.DesignDraftResponse;
 import com.stockflow.design.internal.controller.dto.DesignTemplateResponse;
 import com.stockflow.design.internal.service.CustomerDesignService;
+import com.stockflow.design.internal.service.DesignSubmissionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -41,12 +42,14 @@ import org.springframework.web.bind.annotation.RestController;
 class CustomerDesignController {
 
     private final CustomerDesignService service;
+    private final DesignSubmissionService submissions;
     private final DesignWorkflowWebMapper drafts;
     private final CustomerDesignWebMapper mapper;
 
-    CustomerDesignController(CustomerDesignService service, DesignWorkflowWebMapper drafts,
-                             CustomerDesignWebMapper mapper) {
+    CustomerDesignController(CustomerDesignService service, DesignSubmissionService submissions,
+                             DesignWorkflowWebMapper drafts, CustomerDesignWebMapper mapper) {
         this.service = service;
+        this.submissions = submissions;
         this.drafts = drafts;
         this.mapper = mapper;
     }
@@ -108,6 +111,19 @@ class CustomerDesignController {
     public ApiResponse<DesignDocumentResponse> saveDocument(@PathVariable UUID id, @RequestBody String body,
                                                             @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(service.saveDocument(id, actor(user), body)));
+    }
+
+    /**
+     * Submits the draft for review (kltn-docs 12 §4.3): 422 {@code DESIGN_PREFLIGHT_FAILED} with the findings when the
+     * layout fails the print checks, 409 {@code DESIGN_FILES_OUTDATED} when the submitted files are not rendered from
+     * the current layout.
+     */
+    @PostMapping("/{id}/technical-review-requests")
+    @Operation(summary = "Submit the draft for review: preflight, then the Sales Manager's queue")
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    public ApiResponse<DesignDraftResponse> submit(@PathVariable UUID id, @Valid @RequestBody VersionRequest request,
+                                                   @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(drafts.toResponse(submissions.submit(id, actor(user), request.version())));
     }
 
     @GetMapping("/{id}/template")

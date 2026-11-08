@@ -269,6 +269,18 @@ public class PrintConfigService implements PrintConfigs {
                 .map(variant -> assemble(List.of(template), Map.of(variant.getId(), variant)).get(0)));
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public boolean designable(UUID templateId) {
+        return templates.findById(templateId)
+                .flatMap(template -> variants.findById(template.getVariantId()))
+                .filter(variant -> variant.getStatus() == VariantStatus.ACTIVE && variant.getOwnerCustomerId() == null)
+                .flatMap(variant -> products.findById(variant.getProductId()))
+                .filter(product -> product.getKind() == ProductKind.CUSTOMIZABLE
+                        && (product.getStatus() == ProductStatus.APPROVED || product.getStatus() == ProductStatus.PUBLISHED))
+                .isPresent();
+    }
+
     // ---------------------------------------------------------------------------------------------
 
     private void describe(CustomizationTemplateJpaEntity template, Draft draft) {

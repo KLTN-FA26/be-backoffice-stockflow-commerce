@@ -672,6 +672,11 @@ public enum ErrorCode {
     DESIGN_DRAFT_LIMIT_REACHED("You already have the most drafts allowed; delete one first", 409),
     /** Only a draft is renamed, laid out or deleted (kltn-docs 12 BR-07, BR-08, BR-16). */
     DESIGN_NOT_DRAFT("Only a draft design can be changed", 409),
+    /**
+     * The files submitted with a design must be rendered from the layout as it is now (kltn-docs 12 BR-10): one is
+     * missing or names another layout. {@code details.roles} lists them.
+     */
+    DESIGN_FILES_OUTDATED("Render the design's files again from its current layout", 409),
     /** A design holds at most 100 images (Design Studio plan 2F-4). */
     DESIGN_ASSET_LIMIT_REACHED("This design already has the most images allowed", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
@@ -788,6 +793,11 @@ public enum ErrorCode {
     // ---- 422: understood, but semantically refused
     /** The key was reused for a DIFFERENT request. Replaying the stored response would be a lie. */
     IDEMPOTENCY_KEY_REUSED("This idempotency key was already used for a different request", 422),
+    /**
+     * The server's preflight refused a submitted design (kltn-docs 12 BR-05); it stays a draft.
+     * {@code details.issues} lists each finding as {@code {rule, surfaceCode?, elementId?, message}}.
+     */
+    DESIGN_PREFLIGHT_FAILED("The design did not pass the print checks", 422),
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),
