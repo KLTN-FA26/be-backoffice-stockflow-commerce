@@ -59,7 +59,7 @@ class OrderServiceImplLifecycleTest {
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class), holds,
             mock(CustomerService.class), mock(com.stockflow.catalog.api.CatalogService.class),
-            mock(OrderPayments.class), requests, mock(CreditChecks.class), paymentService);
+            mock(OrderPayments.class), requests, mock(CreditChecks.class), paymentService, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class));
 
     private Order loaded(Order order) {
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));

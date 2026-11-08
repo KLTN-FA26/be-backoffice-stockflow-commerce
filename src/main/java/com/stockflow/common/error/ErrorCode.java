@@ -666,6 +666,8 @@ public enum ErrorCode {
     PRODUCT_NOT_CUSTOMIZABLE("This product cannot be customized", 409),
     /** A template code is unique per variant. */
     PRINT_CONFIG_CODE_TAKEN("This variant already has a template with this code", 409),
+    /** A customer SKU is issued only from an ordinary ACTIVE variant of an approved or published product (B20). */
+    CUSTOMER_SKU_SOURCE_UNAVAILABLE("This variant cannot have customer SKUs now", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */

@@ -121,6 +121,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final CancellationRequestRepository cancellationRequests;
     private final CreditChecks creditChecks;
     private final com.stockflow.payment.api.PaymentService paymentService;
+    private final com.stockflow.product.api.CustomerSkus customerSkus;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -129,7 +130,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                      CustomerService customers,
             CatalogService catalog, OrderPayments payments,
                      CancellationRequestRepository cancellationRequests, CreditChecks creditChecks,
-                     com.stockflow.payment.api.PaymentService paymentService) {
+                     com.stockflow.payment.api.PaymentService paymentService,
+                     com.stockflow.product.api.CustomerSkus customerSkus) {
+        this.customerSkus = customerSkus;
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -199,6 +202,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                         .collect(Collectors.toMap(line -> line.sku().code(),
                                                 PlaceOrderCommand.Line::quantity, Integer::sum)))
                         : Map.<String, Money>of();
+        // Another customer's own SKU is not there for this customer (kltn-docs 13 BR-02), whoever places the order.
+        customerSkus.requireVisibleTo(command.lines().stream().map(line -> line.sku().code()).toList(),
+                command.customerId());
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
 

@@ -18,6 +18,20 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
 
     Optional<VariantJpaEntity> findBySku(String sku);
 
+    Optional<VariantJpaEntity> findByDesignSnapshotId(UUID designSnapshotId);
+
+    long countByProductIdAndOwnerCustomerId(UUID productId, UUID ownerCustomerId);
+
+    /** The SKUs among {@code skus} that belong to a customer other than {@code customerId}. */
+    @Query("select v.sku from VariantJpaEntity v where upper(v.sku) in :skus and v.ownerCustomerId is not null "
+            + "and v.ownerCustomerId <> :customerId")
+    List<String> ownedByOthers(@Param("skus") java.util.Collection<String> skus, @Param("customerId") UUID customerId);
+
+    /** A customer's own SKUs by product, then position; of one product when {@code productId} is set. */
+    @Query("select v from VariantJpaEntity v where v.ownerCustomerId = :customerId "
+            + "and (:productId is null or v.productId = :productId) order by v.productId, v.position, v.id")
+    List<VariantJpaEntity> ownedBy(@Param("customerId") UUID customerId, @Param("productId") UUID productId);
+
     List<VariantJpaEntity> findByProductIdAndStatus(UUID productId, VariantStatus status);
 
     List<VariantJpaEntity> findByProductIdOrderByPositionAscIdAsc(UUID productId);

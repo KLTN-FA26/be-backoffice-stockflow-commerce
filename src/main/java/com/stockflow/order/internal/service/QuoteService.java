@@ -96,9 +96,13 @@ class QuoteService implements Quotes {
     private final ApplicationEventPublisher events;
     private final ProductService products;
 
+    private final com.stockflow.product.api.CustomerSkus customerSkus;
+
     QuoteService(QuoteRepository quotes, QuoteSearch search, CustomerService customers,
                  DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock,
-                 CatalogService catalog, ApplicationEventPublisher events, ProductService products) {
+                 CatalogService catalog, ApplicationEventPublisher events, ProductService products,
+                 com.stockflow.product.api.CustomerSkus customerSkus) {
+        this.customerSkus = customerSkus;
         this.events = events;
         this.products = products;
         this.catalog = catalog;
@@ -544,6 +548,8 @@ class QuoteService implements Quotes {
         List<QuoteLine> lines = new ArrayList<>();
         Map<String, Integer> blankUnits = new java.util.HashMap<>();
         draft.lines().forEach(line -> blankUnits.merge(new Sku(line.blankSku()).code(), line.quantity(), Integer::sum));
+        // Another customer's own SKU is not there for this customer (kltn-docs 13 BR-02).
+        customerSkus.requireVisibleTo(blankUnits.keySet(), customerId);
         int lineNo = 1;
         for (Line line : draft.lines()) {
             Sku blank = new Sku(line.blankSku());

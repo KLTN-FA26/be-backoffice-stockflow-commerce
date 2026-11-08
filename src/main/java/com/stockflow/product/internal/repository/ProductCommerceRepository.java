@@ -56,7 +56,7 @@ order by pc.is_primary desc, pc.id limit 1
         var skus =
                 jdbc.query(
                         "select id,sku from product.variants where product_id=? and status='ACTIVE'"
-                                + " order by id",
+                                + " and owner_customer_id is null order by id",
                         (r, n) ->
                                 new PublicationProduct.PublicationSku(
                                         r.getObject(1, UUID.class), r.getString(2)),
@@ -243,7 +243,7 @@ select v.product_id,m.id,m.variant_id,v.sku,m.url,
                      order by (rendition->>'edge')::integer desc limit 1),
                     m.alt_text,m.sort_order,m.is_primary,m.created_by,m.published_by
 from product.media m join product.variants v on v.id=m.variant_id
-where v.product_id in (%s) and v.status='ACTIVE' and m.kind='IMAGE' and m.is_published
+where v.product_id in (%s) and v.status='ACTIVE' and v.owner_customer_id is null and m.kind='IMAGE' and m.is_published
 and m.published_by is not null and m.published_at is not null
 and m.created_by is not null
                 and (m.storage_key is null or jsonb_array_length(m.renditions)>0)
@@ -273,7 +273,8 @@ order by v.product_id,v.position,v.id,m.sort_order,m.id
         if (productIds.isEmpty()) return List.of();
         String placeholders = String.join(",", Collections.nCopies(productIds.size(), "?"));
         return jdbc.query(
-                "select product_id,sku,name from product.variants where status='ACTIVE' and product_id in ("
+                "select product_id,sku,name from product.variants where status='ACTIVE'"
+                        + " and owner_customer_id is null and product_id in ("
                         + placeholders + ") order by product_id,position,id",
                 (r, n) -> new ActiveVariant(r.getObject(1, UUID.class), r.getString(2), r.getString(3)),
                 productIds.toArray());

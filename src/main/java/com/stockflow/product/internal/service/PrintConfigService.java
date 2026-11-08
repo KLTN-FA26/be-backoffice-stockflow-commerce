@@ -238,7 +238,7 @@ public class PrintConfigService implements PrintConfigs {
             return List.of();
         }
         List<VariantJpaEntity> active = variants.findByProductIdOrderByPositionAscIdAsc(productId).stream()
-                .filter(v -> v.getStatus() == VariantStatus.ACTIVE)
+                .filter(v -> v.getStatus() == VariantStatus.ACTIVE && v.getOwnerCustomerId() == null)
                 .toList();
         if (active.isEmpty()) {
             return List.of();

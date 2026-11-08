@@ -34,6 +34,7 @@ class DesignModuleTest {
     @MockitoBean com.stockflow.inventory.api.InventoryService inventoryServiceMock;
     @MockitoBean com.stockflow.inventory.api.ItemPurchasingService itemPurchasingServiceMock;
     @MockitoBean com.stockflow.inventory.api.UomConversionService uomConversionServiceMock;
+    @MockitoBean com.stockflow.inventory.api.ItemSpecifications itemSpecificationsMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;

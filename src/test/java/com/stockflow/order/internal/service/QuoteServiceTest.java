@@ -65,7 +65,7 @@ class QuoteServiceTest {
             mock(org.springframework.context.ApplicationEventPublisher.class);
     private final QuoteService service = new QuoteService(quotes, search, customers, designs, quotedOrders,
             orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events,
-            mock(com.stockflow.product.api.ProductService.class));
+            mock(com.stockflow.product.api.ProductService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();

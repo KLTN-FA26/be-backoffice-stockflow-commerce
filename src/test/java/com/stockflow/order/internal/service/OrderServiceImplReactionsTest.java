@@ -55,7 +55,7 @@ class OrderServiceImplReactionsTest {
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class),
             mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
             mock(com.stockflow.catalog.api.CatalogService.class), payments, requests, mock(CreditChecks.class),
-            mock(com.stockflow.payment.api.PaymentService.class));
+            mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class));
 
     private Order found(Order order) {
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));

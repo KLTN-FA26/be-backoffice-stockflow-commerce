@@ -65,7 +65,7 @@ class QuoteServiceTransitionsTest {
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final QuoteService service = new QuoteService(quotes, search, customers,
             mock(DesignService.class), mock(QuotedOrders.class), mock(OrderService.class), new ObjectMapper(),
-            Clock.fixed(NOW, ZoneOffset.UTC), mock(com.stockflow.catalog.api.CatalogService.class), events, products);
+            Clock.fixed(NOW, ZoneOffset.UTC), mock(com.stockflow.catalog.api.CatalogService.class), events, products, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
