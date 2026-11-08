@@ -20,7 +20,7 @@
 | | |
 |---|---|
 | Mục tiêu | Backend khớp tài liệu nghiệp vụ 04–07/11: kho thành phẩm + bán sỉ B2B; khách tự thiết kế, Sales Manager duyệt; báo giá → đơn → hợp đồng + đợt thanh toán (chuyển khoản); Đơn sản xuất gửi đơn vị sản xuất ngoài hệ thống; nhập / xuất nguyên thùng LPN; mọi đơn giao nguyên chuyến, có tích hợp Ahamove |
-| Đã xong, không lập kế hoạch lại | Đợt 1, 2a, 2b, 2c, 2d, 2e (PR #257 → #262, xếp chồng, **chưa merge**) |
+| Đã xong, không lập kế hoạch lại | Đợt 1, 2a, 2b, 2c, 2d, 2e (PR #257 → #262) và **nhóm 2F — Design Studio, cả 10 gói** (PR #263 → #272). Tất cả xếp chồng, **chưa merge** |
 | Việc đầu tiên | Gói **0-1**: review và merge lần lượt #257 → #262 vào `develop`. Mọi gói khác tách nhánh từ `develop` sau đó |
 | Số gói | 62 gói (2 gói chuẩn bị + 60 gói BE: 2F 10, 3 6, 4A 10, 4B 11, 4C 7, 4D 4, 5 12), mỗi gói 1–5 ngày công, chia 7 nhóm: 2F, 3, 4A, 4B, 4C, 4D, 5 |
 | Tổng công | **~199 ngày công BE + ~65 ngày công FE**. 5 người × ~4 ngày làm thật / tuần ≈ 20 ngày công / tuần → **~10 tuần BE**, **~13 tuần cả FE** |
@@ -235,6 +235,8 @@ Mẫu mỗi gói: **Nghiệp vụ** (mục tiêu + quy tắc), **Hiện trạng*
 - **Phụ thuộc:** không · **Công:** 0,5 · **P0**
 
 ### Nhóm 2F — Design Studio
+
+> **Đã xong cả 10 gói** (PR #263 → #272, xếp chồng, chưa merge). Chi tiết, số test và các quyết định cần nghiệp vụ xác nhận: [12-progress-report.md](12-progress-report.md) §3. Hợp đồng API cho FE: `docs/design-studio-fe-contract.md`. Phần dưới giữ nguyên để tra cứu.
 
 Nguồn chính: `../2026-11-06-design-studio.md` (8 pha, D1–D8; chủ dự án đã đồng ý — `09-removal-summary.md` dòng 18) và kltn-docs 12 (bản 05/11 + dự án thiết kế 06/11), 13, 01 §4.10. Các gói dưới đây chia lại 8 pha thành phần một người làm được.
 
@@ -864,16 +866,16 @@ Không ghi dòng công cụ AI / `Co-Authored-By` (xem skill `git-commits`). Com
 |---|---|---|---|---|---|---|---|---|
 | 0-1 | Merge 6 PR xếp chồng | — | 2 | 0 | P0 | Có | Chung | |
 | 0-2 | Chốt quyết định, chia khe migration | — | 0,5 | 0 | P0 | Có | Chung | |
-| 2F-1 | Nền `common` (RFC 8785, ảnh, loại file, giới hạn body) | 0-1 | 2,5 | 0 | P0 | Có | L1 | |
-| 2F-2 | Cấu hình in + P2 | 0-1 | 4 | 2 | P0 | Có | L1 | |
-| 2F-3 | Bản thiết kế của khách | 2F-1, 2F-2 | 4 | 2 | P0 | Không | L1 | |
-| 2F-4 | Ảnh của khách | 2F-3 | 2 | 1 | P0 | Không | L1 | |
-| 2F-5 | Gửi duyệt + preflight server + hàng chờ | 2F-3, 2F-4 | 4 | 2,5 | P0 | Không | L1 | |
-| 2F-6 | Duyệt / trả lại, bộ file, snapshot; bỏ luồng cũ | 2F-5, 2F-7 | 4 | 3 | P0 | Không | L1 | |
-| 2F-7 | SKU riêng của khách | 0-1 | 3 | 0,5 | P0 | Có | L2 | |
-| 2F-8 | Yêu cầu báo giá từ bản thiết kế | 2F-6 | 2 | 1 | P0 | Không | L1 | |
-| 2F-9 | Dự án thiết kế | 2F-5, 2F-8 | 4 | 3 | P1 | Không | L1 | |
-| 2F-10 | Chạy thử A–Z + hợp đồng FE | 2F-8 | 2 | 1 | P0 | Không | L1 | |
+| 2F-1 | Nền `common` (RFC 8785, ảnh, loại file, giới hạn body) | 0-1 | 2,5 | 0 | P0 | Có | L1 | Xong, PR #263 |
+| 2F-2 | Cấu hình in + P2 | 0-1 | 4 | 2 | P0 | Có | L1 | Xong, PR #264 |
+| 2F-3 | Bản thiết kế của khách | 2F-1, 2F-2 | 4 | 2 | P0 | Không | L1 | Xong, PR #266 |
+| 2F-4 | Ảnh của khách | 2F-3 | 2 | 1 | P0 | Không | L1 | Xong, PR #267 |
+| 2F-5 | Gửi duyệt + preflight server + hàng chờ | 2F-3, 2F-4 | 4 | 2,5 | P0 | Không | L1 | Xong, PR #268 |
+| 2F-6 | Duyệt / trả lại, bộ file, snapshot; bỏ luồng cũ | 2F-5, 2F-7 | 4 | 3 | P0 | Không | L1 | Xong, PR #269 |
+| 2F-7 | SKU riêng của khách | 0-1 | 3 | 0,5 | P0 | Có | L2 | Xong, PR #265 |
+| 2F-8 | Yêu cầu báo giá từ bản thiết kế | 2F-6 | 2 | 1 | P0 | Không | L1 | Xong, PR #270 |
+| 2F-9 | Dự án thiết kế | 2F-5, 2F-8 | 4 | 3 | P1 | Không | L1 | Xong, PR #271 |
+| 2F-10 | Chạy thử A–Z + hợp đồng FE | 2F-8 | 2 | 1 | P0 | Không | L1 | Xong, PR #272 |
 | 3-1 | Cấu hình kết nối hãng | 0-1 | 2,5 | 1 | P0 | Có | L4 | |
 | 3-2 | Mã vận đơn (tay) + lịch sử + chặn bàn giao | 0-1 | 2 | 1 | P0 | Có | L4 | |
 | 3-3 | Nhập mã vận đơn từ file | 3-2 | 2,5 | 1 | P1 | Không | L4 | |

@@ -2,16 +2,17 @@
 
 Rescope theo tài liệu nghiệp vụ 04–05/11: kho thành phẩm + bán B2B. In do nhà sản xuất bên ngoài làm, hàng về đã in sẵn và đóng thùng. Mọi đơn giao nguyên chuyến xe. Khách trả bằng chuyển khoản theo các đợt của hợp đồng.
 
-Báo cáo này nói về những gì **đã làm xong** (đợt 1, 2a–2e). Phần còn lại (2f, 3, 4, 5) nằm trong kế hoạch nhóm: [11-team-plan.md](11-team-plan.md).
+Báo cáo này nói về những gì **đã làm xong**: đợt 1, 2a–2e (xoá phạm vi cũ) và **Design Studio 2F-1 → 2F-10** (khách tự thiết kế, Sales Manager duyệt). Phần còn lại (3, 4, 5) nằm trong kế hoạch nhóm: [11-team-plan.md](11-team-plan.md).
 
 ---
 
 ## 1. Tóm tắt
 
-- **Xong 6 đợt:** 1, 2a, 2b, 2c, 2d, 2e. Mỗi đợt là một PR, đã push. **Chưa merge PR nào.**
+- **Xong 6 đợt xoá:** 1, 2a, 2b, 2c, 2d, 2e. Mỗi đợt là một PR, đã push. **Chưa merge PR nào.**
+- **Xong Design Studio (nhóm 2F, 10 gói):** mỗi gói một PR, xếp chồng tiếp sau #262 (§3). **Chưa merge PR nào.**
 - **Các PR xếp chồng**, mỗi PR lấy PR trước làm base:
 
-  > develop ← #257 ← #258 ← #259 ← #260 ← #261 ← #262
+  > develop ← #257 ← #258 ← #259 ← #260 ← #261 ← #262 ← #263 ← #264 ← #265 ← #266 ← #267 ← #268 ← #269 ← #270 ← #271 ← #272
 
   Phải review và merge **đúng thứ tự** từ #257. Merge xong một PR thì đổi base của PR kế tiếp sang `develop`; GitHub tự làm việc này khi nhánh base bị xoá.
 - **Kích thước:** khoảng **+6.900 / −41.900 dòng**, gồm code, test, migration và tài liệu. Phần lớn là xoá: module sản xuất, QC, chuyển kho, gửi kiện, COD, kiểm thiết kế.
@@ -219,7 +220,45 @@ Fulfillment không còn phụ thuộc `design :: api`.
 
 ---
 
-## 3. Sau khi merge — việc trên server
+## 3. Design Studio — nhóm 2F (#263 → #272)
+
+Khách tự thiết kế bao bì trên khuôn 2D của quy cách, server tự kiểm (preflight), Sales Manager duyệt, hệ thống chốt bộ file in và sinh SKU riêng của khách (kltn-docs 12, 13, 16). Kế hoạch: [11-team-plan.md](11-team-plan.md) nhóm 2F và `../2026-11-06-design-studio.md`. Hợp đồng API cho FE: `docs/design-studio-fe-contract.md` (tiếng Anh, có trong repo từ 2F-10).
+
+| Gói | PR | Nhánh | Nội dung | Migration | Test (toàn bộ) |
+|---|---|---|---|---|---|
+| 2F-1 | [#263](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/263) | `feature/2f-1-design-common` | JSON chuẩn RFC 8785, đo kích thước ảnh, loại file thiết kế, giới hạn body | — | 4.980; 1 lỗi do script QA của gói sau, đã sửa |
+| 2F-2 | [#264](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/264) | `feature/2f-2-print-config` | Cấu hình in tính từ model ly / túi, API P2 cho storefront | `V20261108000600` | 5.001, 0 lỗi |
+| 2F-7 | [#265](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/265) | `feature/2f-7-customer-sku` | SKU riêng của khách, cấp khi bản thiết kế được duyệt | `V20261108000700` | 5.007; 1 lỗi thiếu mock, đã sửa |
+| 2F-3 | [#266](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/266) | `feature/2f-3-customer-drafts` | Khách tạo bản thiết kế, lưu bố cục, đổi tên, xoá nháp, bản sửa | `V20261108000800` | 5.032, 0 lỗi |
+| 2F-4 | [#267](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/267) | `feature/2f-4-customer-assets` | Ảnh của khách (multipart + upload thẳng S3) | — | 5.048, 0 lỗi |
+| 2F-5 | [#268](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/268) | `feature/2f-5-design-submission` | Gửi duyệt, preflight phía server, hàng chờ duyệt | `V20261108000900` | 5.070, 0 lỗi |
+| 2F-6 | [#269](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/269) | `feature/2f-6-design-approval` | Duyệt / trả lại; đóng dấu file in PDF/X-4, lệnh sản xuất, snapshot, SKU riêng; bỏ luồng nhân viên thiết kế | `V20261108001000` | 5.068, 0 lỗi |
+| 2F-8 | [#270](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/270) | `feature/2f-8-design-quote-requests` | Yêu cầu báo giá từ bản thiết kế, Sale đóng khi đã trả lời | `V20261108001100` | 5.083, 0 lỗi |
+| 2F-9 | [#271](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/271) | `feature/2f-9-design-projects` | Dự án thiết kế: thư viện tài nguyên, gửi duyệt cả bộ, lượt duyệt, báo giá cả dự án | `V20261108001200` | 5.097, 0 lỗi (chạy trên nhánh 2F-10) |
+| 2F-10 | [#272](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/272) | `feature/2f-10-design-e2e-contract` | Chạy A–Z trên MinIO thật; hợp đồng API cho FE | — | như 2F-9 |
+
+**Cách kiểm tra mỗi gói:**
+- như các đợt 2a–2e (§1);
+- full suite chạy ở một worktree riêng, song song với việc làm gói kế tiếp;
+- mỗi gói một **review độc lập**. Các lỗi thật tìm được đều đã sửa trước khi mở PR và ghi trong PR, trong đó:
+  - **2F-6:** lệnh sản xuất ghi nhầm SKU quy cách thay cho SKU riêng;
+  - **2F-8:** yêu cầu báo giá không bao giờ đóng được;
+  - **2F-9:** "Duyệt tất cả" dừng ở lỗi đầu tiên, và có nguy cơ deadlock khi đóng dự án.
+
+**Quyết định cần nghiệp vụ xác nhận** (đã ghi trong PR):
+- **B43:** thư viện chỉ nhận PNG / JPEG / WebP, vì không khuôn nào đặt được SVG / PDF.
+- **B42:** bản sửa của bản thuộc dự án đã đủ 20 bản thì đứng riêng, không bị từ chối.
+- **QD-8:** chưa có module chat, nên mọi người giữ quyền `design-quote-requests:READ` đều được báo và xem được yêu cầu, thay cho "Sale phụ trách thẻ".
+- **B35:** file in mới chỉ ghi nhận là PDF/X-4; chưa có ICC output intent cho tới khi chọn profile của nhà in.
+
+**Chưa làm:**
+- chạy cùng FE storefront thật trên trình duyệt (FE phải đổi theo hợp đồng trước, §10 của tài liệu);
+- seed demo cho Design Studio (gói 5-10);
+- báo giá / đơn dùng SKU riêng (D5, nay là 4B-2 và 4A-2).
+
+---
+
+## 4. Sau khi merge — việc trên server
 
 **Khuyến nghị: reset dữ liệu test rồi nạp seed mới.** Seed `tools/db/seed` đã hỏng từ trước trên develop (`ck_supplier_invoices_status`) và chưa theo kịp các đợt xoá. Sinh lại seed là gói 5-x trong kế hoạch.
 
@@ -232,13 +271,13 @@ Nếu giữ dữ liệu cũ, các migration tự chuyển dữ liệu như ở m
 
 ---
 
-## 4. Những phần cố ý để lại cho đợt sau
+## 5. Những phần cố ý để lại cho đợt sau
 
 Mỗi mục đều có gói tương ứng trong [11-team-plan.md](11-team-plan.md).
 
 | Còn lại | Lý do để lại | Làm ở |
 |---|---|---|
-| Thiết kế cũ (nhân viên thiết kế, khách xác nhận, yêu cầu sửa, review kỹ thuật) | Design Studio là việc xây mới 3–5 ngày, không phải xoá | 2F |
+| ~~Thiết kế cũ (nhân viên thiết kế, khách xác nhận, yêu cầu sửa, review kỹ thuật)~~ | **Đã xong ở 2F-6** (#269) | 2F |
 | Dòng in của đơn (`designSnapshotId`, `printLine`), chặn `ORDER_PRINT_GOODS_NOT_RECEIVED` | Chờ dòng đơn nêu SKU in của khách | 2F + 4A |
 | Gia công ngoài (PO `SUBCONTRACT`, `procurement.subcontract_settlement`, `warehouse.subcontractor_site`), hoá đơn / hiệu suất NCC | Nằm trong code mua hàng, xoá cả khối cùng PO | 4A |
 | Phía hãng của sổ cái tiền (`Collector.CARRIER`, `payment.cod_remittance*`), sổ cái tiền | Bỏ khi có hợp đồng + đợt thanh toán | 4B |
@@ -249,10 +288,10 @@ Mỗi mục đều có gói tương ứng trong [11-team-plan.md](11-team-plan.m
 
 ---
 
-## 5. Kiểm tra lại trên máy
+## 6. Kiểm tra lại trên máy
 
 ```bash
-git checkout refactor/rescope-02e-packing     # nhánh chứa đủ 6 đợt
+git checkout feature/2f-10-design-e2e-contract   # nhánh chứa đủ 6 đợt + 10 gói 2F
 python tools/verify.py
 mvn test -Dtest=ModularityTest
 mvn test                                      # cần Docker (Testcontainers)
