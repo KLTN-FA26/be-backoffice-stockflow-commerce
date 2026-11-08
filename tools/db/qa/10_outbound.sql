@@ -575,5 +575,32 @@ SELECT pg_temp.expect_ok('F96 the system dropping a carrier order names nobody',
                                             changed_at, reason)
     VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'WB-QA-F72', NULL, 'API', NULL, NOW(),
             'A shipment was taken off') $q$);
+
+-- 3-5: what carriers report through their webhooks, and the journey (V20261108001700).
+SELECT pg_temp.expect_ok('F97 a webhook call kept as received', $q$
+    INSERT INTO fulfillment.carrier_event (id, carrier_id, carrier_code, received_at, payload, signature_valid, result)
+    VALUES (md5('qa:ce:f97')::uuid, md5('qa:carrier:f64')::uuid, 'QA-F64', NOW(), '{"loadCode":"LD-QA-F72"}', true,
+            'RECEIVED') $q$);
+SELECT pg_temp.expect_ok('F98 the call decided for review, matched to its load', $q$
+    UPDATE fulfillment.carrier_event SET result = 'NEEDS_REVIEW', result_note = 'before the vehicle left',
+           decided_at = NOW(), load_id = md5('qa:load:f72')::uuid, warehouse_id = md5('demo:wh:HCM')::uuid
+     WHERE id = md5('qa:ce:f97')::uuid $q$);
+SELECT pg_temp.expect_fail('F99 a decided call applied again', $q$
+    UPDATE fulfillment.carrier_event SET result = 'APPLIED' WHERE id = md5('qa:ce:f97')::uuid $q$);
+SELECT pg_temp.expect_fail('F100 a call with a bad credential matched to a load', $q$
+    INSERT INTO fulfillment.carrier_event (id, carrier_id, carrier_code, received_at, payload, signature_valid, result,
+                                           result_note, decided_at, load_id, warehouse_id)
+    VALUES (gen_random_uuid(), md5('qa:carrier:f64')::uuid, 'QA-F64', NOW(), '{}', false, 'INVALID_SIGNATURE', 'x',
+            NOW(), md5('qa:load:f72')::uuid, md5('demo:wh:HCM')::uuid) $q$);
+SELECT pg_temp.expect_ok('F101 a vehicle picked up, as the carrier reported', $q$
+    INSERT INTO fulfillment.tracking_milestone (id, load_id, milestone, carrier_reported_at, source, carrier_event_id,
+                                                recorded_at)
+    VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'PICKED_UP', NOW(), 'CARRIER_WEBHOOK',
+            md5('qa:ce:f97')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F102 the same milestone twice for one load', $q$
+    INSERT INTO fulfillment.tracking_milestone (id, load_id, milestone, carrier_reported_at, source, carrier_event_id,
+                                                recorded_at)
+    VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'PICKED_UP', NOW(), 'CARRIER_WEBHOOK',
+            md5('qa:ce:f97')::uuid, NOW()) $q$);
 ROLLBACK;
 \echo 'PASS 09_outbound'
