@@ -3268,11 +3268,7 @@ Table design.design_draft [headercolor: #AA4A9E] {
   last_modified_at    timestamptz
   last_modified_by    varchar(100)
   owner_user_id       uuid
-  assigned_user_id    uuid
   current_artifact_id uuid
-  preflight_passed    boolean [not null, default: false]
-  reviewer_user_id    uuid
-  last_editor_user_id uuid
   reviewed_by         uuid
   review_notes        varchar(2000)
   parent_snapshot_id  uuid
@@ -3303,6 +3299,10 @@ Table design.design_snapshot [headercolor: #AA4A9E] {
   reviewed_by       uuid
   review_notes      varchar(2000)
   artifact_manifest jsonb [not null]
+  document          text
+  document_checksum varchar(64)
+  assets            jsonb
+  template          jsonb
 }
 
 // =============================================================================
@@ -4613,15 +4613,12 @@ Ref: design.design_decision.actor_id > identity.app_user.id
 Ref: design.design_decision.draft_id > design.design_draft.id
 Ref: design.design_decision.(draft_id, artifact_id) > design.design_artifact.(draft_id, id)
 Ref: design.design_document.draft_id > design.design_draft.id
-Ref: design.design_draft.assigned_user_id > identity.app_user.id
 Ref: design.design_draft.customer_id > customer.customer.id [delete: restrict]
 Ref: design.design_draft.(id, current_artifact_id) > design.design_artifact.(draft_id, id)
-Ref: design.design_draft.last_editor_user_id > identity.app_user.id
 Ref: design.design_draft.owner_user_id > identity.app_user.id
 Ref: design.design_draft.parent_snapshot_id > design.design_snapshot.id
 Ref: design.design_draft.product_id > product.products.id [delete: restrict]
 Ref: design.design_draft.reviewed_by > identity.app_user.id
-Ref: design.design_draft.reviewer_user_id > identity.app_user.id
 Ref: design.design_draft.template_id > product.customization_templates.id
 Ref: design.design_draft.variant_id > product.variants.id
 Ref: design.design_snapshot.confirmed_by > identity.app_user.id
