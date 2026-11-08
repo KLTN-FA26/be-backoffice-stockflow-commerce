@@ -209,6 +209,11 @@ SELECT pg_temp.expect_fail('P16h a print area code the studio does not draw', $q
 SELECT pg_temp.expect_fail('P16i a print area without a computed shape', $q$
     INSERT INTO product.print_areas (id, template_id, code, name, x_mm, y_mm, width_mm, height_mm, uv_mapping_json)
     VALUES (gen_random_uuid(), md5('qa:template:CUP')::uuid, 'FRONT', 'x', 0, 0, 250, 100, '{"meshPart": "front"}') $q$);
+SELECT pg_temp.expect_fail('P16j a customer SKU without its design snapshot and source variant', $q$
+    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
+                                  created_at, owner_customer_id)
+    VALUES (gen_random_uuid(), md5('qa:product:CUP')::uuid, 'QACUP-KH-01', 'x', 'ACTIVE', FALSE, 'CUSTOMER:QACUP-KH-01',
+            1, 0, NOW(), gen_random_uuid()) $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);
