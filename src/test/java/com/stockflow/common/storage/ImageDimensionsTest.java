@@ -87,4 +87,20 @@ class ImageDimensionsTest {
         System.arraycopy(jpeg, 2, out, 2 + app1.length, jpeg.length - 2);
         return out;
     }
+
+    /** Review of 2F-4: whatever the metadata reader throws on a crafted block is a bad image (400), not a 500. */
+    @Test
+    void metadataTheReaderTripsOverIsAValidationFailure() {
+        var hostile = new java.io.InputStream() {
+            @Override
+            public int read() {
+                throw new IllegalStateException("reader bug");
+            }
+        };
+
+        assertThatThrownBy(() -> ImageDimensions.orientation(hostile))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).errorCode())
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
 }

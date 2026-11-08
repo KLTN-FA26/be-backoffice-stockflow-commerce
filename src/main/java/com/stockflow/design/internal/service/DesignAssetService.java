@@ -113,7 +113,8 @@ public class DesignAssetService {
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#designId")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public AssetView upload(UUID designId, UUID userId, FileUpload upload, String requestKey) {
-        String key = requestKey == null ? null : userId + ":asset:" + IdempotencyKeys.validate(requestKey);
+        // ":key:" and ":upload:" keep a client's key from ever naming a direct upload's.
+        String key = requestKey == null ? null : userId + ":asset:key:" + IdempotencyKeys.validate(requestKey);
         Admission admission = tx.execute(status -> admit(designId, userId, key));
         if (admission.replay() != null) {
             try (var buffered = BufferedUpload.read(FileCategory.DESIGN_ASSET, upload)) {
@@ -209,7 +210,12 @@ public class DesignAssetService {
             Optional<DesignAssetJpaEntity> raced = key == null ? Optional.empty()
                     : assets.findByDraftIdAndUploadKey(designId, key);
             if (raced.isPresent()) {
-                // The same request committed while this one was scanning: answer with it, keep nothing of ours.
+                // The same request committed while this one was scanning: answer with it and keep nothing of ours -
+                // unless the file is the one the committed row names (a direct upload's key is the upload's own, and
+                // a retry after an expired claim prepared it again), which closing would delete from under it.
+                if (raced.get().getStorageKey().equals(file.file().key())) {
+                    prepared.adopt();
+                }
                 return onReplay.apply(view(raced.get()));
             }
             CustomerDesignRules.requireDraft(draft.getStatus());

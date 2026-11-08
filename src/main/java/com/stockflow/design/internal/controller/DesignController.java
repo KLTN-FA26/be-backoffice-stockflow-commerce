@@ -1,6 +1,7 @@
 package com.stockflow.design.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
@@ -52,9 +53,11 @@ class DesignController {
         this.mapper = mapper;
     }
 
+    /** Spooled, scanned and stored, and never deleted: a budget per user an hour, shared with the images. */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    @RateLimit(limit = 120, perSeconds = 3600, key = RateLimit.Key.USER, bucket = "design-uploads")
     public ApiResponse<DesignArtifactResponse> upload(@PathVariable UUID designId,
             @AuthenticatedUser CurrentUser user, @RequestPart("file") MultipartFile file,
             @RequestParam(defaultValue = "CUSTOMER_PREVIEW") DesignArtifactRole role,

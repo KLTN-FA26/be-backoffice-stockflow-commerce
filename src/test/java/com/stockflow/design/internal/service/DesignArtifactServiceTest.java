@@ -131,7 +131,7 @@ class DesignArtifactServiceTest {
         when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
         var artifact = new com.stockflow.design.internal.domain.DesignArtifact(UUID.randomUUID(), id,
                 new StoredFile("design-renders/old.pdf", "design.pdf", "application/pdf", bytes.length, Instant.EPOCH),
-                Checksums.sha256Hex(bytes), owner + ":CUSTOMER_PREVIEW:artifact-request-1");
+                Checksums.sha256Hex(bytes), owner + ":CUSTOMER_PREVIEW:key:artifact-request-1");
         when(designs.findArtifacts(id)).thenReturn(java.util.List.of(artifact));
         assertThat(service.upload(id, owner, upload(), "artifact-request-1")).isSameAs(artifact);
         byte[] changed = bytes.clone(); changed[changed.length - 1] = 'x';
@@ -194,7 +194,7 @@ class DesignArtifactServiceTest {
         when(designs.findDraft(id, owner, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
         var earlier = new com.stockflow.design.internal.domain.DesignArtifact(UUID.randomUUID(), id,
                 new StoredFile("design-renders/earlier.pdf", "design.pdf", "application/pdf", bytes.length, Instant.EPOCH),
-                Checksums.sha256Hex(bytes), owner + ":CUSTOMER_PREVIEW:artifact-request-2");
+                Checksums.sha256Hex(bytes), owner + ":CUSTOMER_PREVIEW:key:artifact-request-2");
         when(designs.findArtifacts(id)).thenReturn(java.util.List.of(), java.util.List.of(earlier));
         var prepared = prepared();
 

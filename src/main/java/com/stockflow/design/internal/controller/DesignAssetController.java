@@ -1,6 +1,7 @@
 package com.stockflow.design.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
@@ -50,10 +51,15 @@ class DesignAssetController {
         this.assets = assets;
     }
 
+    /**
+     * Each upload is spooled, scanned and stored, and images are never deleted: a user gets as many an hour as the
+     * direct path's slots ({@code stockflow.storage.staged-upload.per-user-per-hour}).
+     */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Upload an image into a draft (multipart part 'file'); retry with the same Idempotency-Key")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    @RateLimit(limit = 120, perSeconds = 3600, key = RateLimit.Key.USER, bucket = "design-uploads")
     public ApiResponse<DesignAssetResponse> upload(@PathVariable UUID designId, @AuthenticatedUser CurrentUser user,
             @RequestPart("file") MultipartFile file,
             @RequestHeader(name = "Idempotency-Key", required = false) String requestKey) {

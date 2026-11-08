@@ -34,7 +34,8 @@ public final class ImageDimensions {
 
     /**
      * Whether uploads of {@code category} are measured when they are prepared - before they are stored, so an image
-     * over {@link #MAX_PIXELS} is refused without ever reaching the store. A customer's design image is: the studio's
+     * over {@link #MAX_PIXELS} never reaches its category's prefix (a direct upload's bytes are in quarantine already,
+     * and are removed from there as any refused upload's). A customer's design image is: the studio's
      * print-resolution check needs its size from the server, not from the browser that sent it.
      */
     public static boolean measures(FileCategory category) {
@@ -111,7 +112,8 @@ public final class ImageDimensions {
             Integer orientation = exif == null ? null
                     : exif.getInteger(com.drew.metadata.exif.ExifIFD0Directory.TAG_ORIENTATION);
             return orientation == null || orientation < 1 || orientation > 8 ? 1 : orientation;
-        } catch (com.drew.imaging.ImageProcessingException ex) {
+        } catch (com.drew.imaging.ImageProcessingException | RuntimeException ex) {
+            // A crafted metadata block can throw anything from deep in the reader: still the file's fault, a 400.
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image metadata cannot be decoded");
         }
     }

@@ -171,4 +171,49 @@ class DesignAssetServiceTest {
                 .isEqualTo(ErrorCode.NOT_FOUND);
         verifyNoInteractions(staged);
     }
+
+    /**
+     * Review of 2F-4: a retry of a direct upload that prepared the same file again (its claim had expired) and then
+     * found the first attempt committed keeps the file: it is the one the committed row names, and closing would
+     * delete it.
+     */
+    @Test
+    void aRacedRetryOfTheSameUploadKeepsTheFileTheCommittedImageNames() {
+        PreparedFiles prepared = prepared("image/png");
+        String key = owner + ":asset:upload:" + uploadId;
+        var committed = new DesignAssetJpaEntity(designId, UUID.randomUUID(),
+                "design-assets/2026/11/08/" + uploadId + ".png", "logo.png", "image/png", 2048, "c".repeat(64), 1200,
+                800, key, Instant.now(clock), owner.toString());
+        // Not there when the retry is admitted, there when it locks the design.
+        when(assets.findByDraftIdAndUploadKey(designId, key)).thenReturn(Optional.empty(), Optional.of(committed));
+
+        var asset = service.attachUpload(designId, owner, uploadId);
+
+        assertThat(asset.assetId()).isEqualTo(committed.getAssetId());
+        verify(prepared).adopt();
+        verify(assets, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aClientKeyNeverNamesADirectUpload() throws Exception {
+        String clientKey = "upload:" + uploadId;
+        var direct = new DesignAssetJpaEntity(designId, UUID.randomUUID(), "design-assets/a.png", "logo.png",
+                "image/png", 2048, "c".repeat(64), 1200, 800, owner + ":asset:upload:" + uploadId,
+                Instant.now(clock), owner.toString());
+        when(assets.findByDraftIdAndUploadKey(designId, owner + ":asset:upload:" + uploadId))
+                .thenReturn(Optional.of(direct));
+        var prepared = mock(PreparedFiles.class);
+        when(prepared.single()).thenReturn(new PreparedFiles.PreparedFile(new StoredFile("design-assets/b.png",
+                "other.png", "image/png", 10, Instant.now(clock)), "d".repeat(64), List.of(),
+                new ImageDimensions.Size(10, 10)));
+        when(files.prepare(any(FileCategory.class), any(com.stockflow.common.storage.FileUpload.class)))
+                .thenReturn(prepared);
+        byte[] png = {(byte) 0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 0, 0, 0, 13};
+
+        var asset = service.upload(designId, owner, new com.stockflow.common.storage.FileUpload("other.png",
+                "image/png", png.length, new java.io.ByteArrayInputStream(png)), clientKey);
+
+        assertThat(asset.assetId()).isNotEqualTo(direct.getAssetId());
+        verify(assets).findByDraftIdAndUploadKey(designId, owner + ":asset:key:" + clientKey);
+    }
 }

@@ -82,8 +82,9 @@ public class DesignArtifactService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public DesignArtifact upload(UUID designId, UUID userId, DesignArtifactRole role,
                                  FileUpload upload, String requestKey) {
+        // ":key:" and ":upload:" keep a client's key from ever naming a direct upload's.
         String key = requestKey == null ? null
-                : userId + ":" + role.name() + ":" + IdempotencyKeys.validate(requestKey);
+                : userId + ":" + role.name() + ":key:" + IdempotencyKeys.validate(requestKey);
         Optional<DesignArtifact> earlier = changeableOrReplay(designId, userId, key);
         if (earlier.isPresent()) {
             try (var buffered = BufferedUpload.read(FileCategory.DESIGN_RENDER, upload)) {
@@ -178,7 +179,11 @@ public class DesignArtifactService {
             var draft = requireDraft(designId, userId, true);
             Optional<DesignArtifact> raced = artifactOf(designId, key);
             if (raced.isPresent()) {
-                // The same request committed while this one was scanning: answer with it, keep nothing of ours.
+                // The same request committed while this one was scanning: answer with it and keep nothing of ours -
+                // unless it is the very file the committed row names (a direct upload's key is the upload's own).
+                if (raced.get().file().key().equals(file.file().key())) {
+                    prepared.adopt();
+                }
                 return onReplay.apply(raced.get());
             }
             requireChangeable(draft, designId);
