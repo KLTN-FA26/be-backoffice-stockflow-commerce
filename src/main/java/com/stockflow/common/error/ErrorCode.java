@@ -640,6 +640,9 @@ public enum ErrorCode {
     WAYBILL_FROM_CARRIER_API("This carrier's waybill number comes from its booking", 409),
     /** 3-2 (09 BR-29): an API_BOOKING carrier is booked through its API, never by hand. */
     CARRIER_BOOKS_THROUGH_API("This carrier is booked through its API", 409),
+    /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
+    WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
+    WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),
     /** SCRUM-392: the parcel moved to another shipment (a left-behind split) since its label was printed: reprint it. */
     LABEL_OUTDATED("The package label is out of date; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),

@@ -645,6 +645,99 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
     }
 
+    private ResultActions importing(UUID user, String role, String path, String csv) throws Exception {
+        var file = new org.springframework.mock.web.MockMultipartFile("file", "van-don.csv", "application/vnd.ms-excel",
+                ("\uFEFFMã chuyến,Mã vận đơn,Biển số,Tên tài xế,Điện thoại tài xế\r\n" + csv)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports" + path).file(file));
+    }
+
+    /** A vehicle of its own plan, booked with {@code carrier} and no waybill number: its load. */
+    private JsonNode bookedWithoutNumber(UUID carrier) throws Exception {
+        String loadId = loadOf(confirmed(List.of(packed(ftlOrder(1), false)[0]), truck5t), 1);
+        return data(dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-100.00\"}")).andExpect(status().isOk()));
+    }
+
+    @Test
+    @DisplayName("3-3: a file of waybill numbers is previewed without writing, then imported - its valid lines "
+            + "applied, the others kept with their reason, the file kept with the loads it applied to - and a "
+            + "second file overwrites; a load of another warehouse is a refused line, not a refused file")
+    void waybillNumbersFromAFile() throws Exception {
+        JsonNode first = bookedWithoutNumber(ghn);
+        JsonNode second = bookedWithoutNumber(ghn);
+        String one = first.path("code").asText();
+        String two = second.path("code").asText();
+        String other = historyLoad("51C-HELD");
+        String held = jdbc.queryForObject("SELECT waybill_no FROM fulfillment.dispatch_load WHERE id = ?::uuid",
+                String.class, other);
+        String number = "WB-IMP-" + first.path("loadId").asText();
+        String csv = one + "," + number + ",51C-111.11,Tài,0900\r\n"
+                + two + "," + held + "\r\n"
+                + "LD-NOPE," + number + "-X\r\n"
+                + "," + number + "-Y\r\n";
+
+        JsonNode preview = data(importing(dispatcher, "WAREHOUSE_STAFF", "/preview", csv).andExpect(status().isOk()));
+        assertThat(preview.path("importId").isMissingNode() || preview.path("importId").isNull()).isTrue();
+        assertThat(preview.path("rowsTotal").asInt()).isEqualTo(4);
+        assertThat(preview.path("rowsApplied").asInt()).isEqualTo(1);
+        assertThat(preview.path("lines").findValuesAsText("outcome")).containsExactly("NEW", "ERROR", "ERROR",
+                "ERROR");
+        assertThat(preview.path("lines").get(1).path("problem").asText()).isEqualTo("DUPLICATE_IN_CARRIER");
+        assertThat(preview.path("lines").get(1).path("holderCode").asText()).isNotBlank();
+        assertThat(preview.path("lines").get(2).path("problem").asText()).isEqualTo("LOAD_NOT_FOUND");
+        assertThat(preview.path("lines").get(3).path("problem").asText()).isEqualTo("MISSING_FIELDS");
+        assertThat(load(first.path("loadId").asText()).has("waybillNo")
+                && !load(first.path("loadId").asText()).path("waybillNo").isNull()).isFalse();
+        // Another warehouse's dispatcher sees the same lines refused as out of scope, not the loads.
+        JsonNode elsewhere = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "/preview", csv)
+                .andExpect(status().isOk()));
+        assertThat(elsewhere.path("lines").get(0).path("problem").asText()).isEqualTo("LOAD_OUT_OF_SCOPE");
+        assertThat(elsewhere.path("lines").get(0).hasNonNull("loadId")).isFalse();
+
+        JsonNode imported = data(importing(dispatcher, "WAREHOUSE_STAFF", "", csv).andExpect(status().isCreated()));
+        String importId = imported.path("importId").asText();
+        assertThat(imported.path("rowsApplied").asInt()).isEqualTo(1);
+        assertThat(imported.path("rowsRejected").asInt()).isEqualTo(3);
+        JsonNode now = load(first.path("loadId").asText());
+        assertThat(now.path("waybillNo").asText()).isEqualTo(number);
+        assertThat(now.path("vehiclePlate").asText()).isEqualTo("51C-111.11");
+        assertThat(now.path("driverName").asText()).isEqualTo("Tài");
+        JsonNode history = data(dispatch(get(LOADS + "/" + first.path("loadId").asText() + "/waybill-history"))
+                .andExpect(status().isOk()));
+        assertThat(history).singleElement().satisfies(h -> {
+            assertThat(h.path("source").asText()).isEqualTo("FILE");
+            assertThat(h.path("reason").asText()).contains("van-don.csv").contains("line 2");
+        });
+        assertThat(data(dispatch(get(LOADS + "/" + first.path("loadId").asText() + "/waybill-files"))
+                .andExpect(status().isOk()))).singleElement()
+                .satisfies(f -> assertThat(f.path("contentType").asText()).isEqualTo("text/csv"));
+        assertThat(data(dispatch(get(LOADS + "/" + second.path("loadId").asText() + "/waybill-files"))
+                .andExpect(status().isOk()))).isEmpty();
+        assertThat(data(dispatch(get(BASE + "/waybill-imports/" + importId)).andExpect(status().isOk()))
+                .path("lines")).hasSize(4);
+        assertThat(data(dispatch(get(BASE + "/waybill-imports")).andExpect(status().isOk())).path("items")
+                .findValuesAsText("importId")).contains(importId);
+        as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/waybill-imports/" + importId))
+                .andExpect(status().isNotFound());
+
+        // A second file: the first load gets another number ("sẽ ghi đè"), the second its first one.
+        String csv2 = one + "," + number + "-2\r\n" + two + ",WB-IMP2-" + second.path("loadId").asText() + "\r\n";
+        JsonNode again = data(importing(dispatcher, "WAREHOUSE_STAFF", "", csv2).andExpect(status().isCreated()));
+        assertThat(again.path("lines").findValuesAsText("outcome")).containsExactly("OVERWRITE", "NEW");
+        assertThat(load(first.path("loadId").asText()).path("waybillNo").asText()).isEqualTo(number + "-2");
+
+        // Not the template's table: refused whole.
+        importing(dispatcher, "WAREHOUSE_STAFF", "/preview", "").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        oc(get(BASE + "/waybill-imports/template")).andExpect(status().isForbidden());
+        byte[] template = dispatch(get(BASE + "/waybill-imports/template")).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        assertThat(template[0]).isEqualTo((byte) 0xEF);
+        assertThat(new String(template, java.nio.charset.StandardCharsets.UTF_8).split(",")).hasSize(5);
+    }
+
     // ---- an order cancelled while its vehicle loads -------------------------------------------
 
     @Test

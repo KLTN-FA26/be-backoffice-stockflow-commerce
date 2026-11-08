@@ -61,6 +61,12 @@ public final class FulfillmentPermissions {
     public static final String WAYBILL_CORRECTIONS = "fulfillment-waybill-corrections";
 
     /**
+     * READ: the import template and past imports; CREATE: preview and import a file of waybill numbers (3-3; kltn-docs
+     * 09 §4.4 "Nhập hàng loạt từ file"; V20261108001500). Dispatchers, warehouse managers and the system admin.
+     */
+    public static final String WAYBILL_IMPORTS = "fulfillment-waybill-imports";
+
+    /**
      * UPDATE: record a delivery outcome - on its own, RETURNED only; APPROVE: also DELIVERED and DELIVERY_FAILED, which
      * move the order and bill it (kltn-docs 09 BR-02).
      */

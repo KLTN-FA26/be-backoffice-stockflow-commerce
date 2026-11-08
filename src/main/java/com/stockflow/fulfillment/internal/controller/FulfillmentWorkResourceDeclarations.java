@@ -51,6 +51,11 @@ final class FulfillmentWorkResourceDeclarations {
             apiPath = "/api/v1/fulfillment/loads", actions = {Action.UPDATE})
     static final class WaybillCorrections { private WaybillCorrections() { } }
 
+    @PermissionResource(code = FulfillmentResources.WAYBILL_IMPORTS, group = "Fulfillment",
+            label = "Waybill numbers imported from a file", route = "/fulfillment/waybill-imports",
+            apiPath = "/api/v1/fulfillment/waybill-imports", actions = {Action.READ, Action.CREATE})
+    static final class WaybillImports { private WaybillImports() { } }
+
     @PermissionResource(code = FulfillmentResources.DELIVERY_OUTCOMES, group = "Fulfillment",
             label = "Delivery outcomes", route = "/fulfillment/shipments", apiPath = "/api/v1/fulfillment/shipments",
             actions = {Action.UPDATE, Action.APPROVE})

@@ -10,7 +10,8 @@ import java.util.UUID;
 
 /**
  * A carrier's waybill document kept with a load (table {@code fulfillment.load_waybill_file}; kltn-docs 09 §4.4, BR-28:
- * optional, "PDF / ảnh / Excel của hãng"; customers never see it). The file is in the {@code documents} category.
+ * optional, "PDF / ảnh / Excel của hãng"; customers never see it). The file is in the {@code documents} category; a
+ * waybill import's file is kept with every load a line of it applied to (3-3), so one stored file may be several rows'.
  */
 @Entity
 @Table(name = "load_waybill_file", schema = "fulfillment")
@@ -23,6 +24,7 @@ public class LoadWaybillFileJpaEntity extends BaseEntity {
     @Column(name = "size_bytes", nullable = false, updatable = false) private long sizeBytes;
     @Column(name = "uploaded_by", nullable = false, updatable = false) private UUID uploadedBy;
     @Column(name = "uploaded_at", nullable = false, updatable = false) private Instant uploadedAt;
+    @Column(name = "waybill_import_id", updatable = false) private UUID waybillImportId;
 
     protected LoadWaybillFileJpaEntity() {
     }
@@ -39,6 +41,13 @@ public class LoadWaybillFileJpaEntity extends BaseEntity {
         this.uploadedAt = uploadedAt;
     }
 
+    /** The file of a waybill import, kept with a load a line of it applied to (3-3). */
+    public LoadWaybillFileJpaEntity(UUID id, UUID loadId, String storageKey, String fileName, String contentType,
+                                    long sizeBytes, UUID uploadedBy, Instant uploadedAt, UUID waybillImportId) {
+        this(id, loadId, storageKey, fileName, contentType, sizeBytes, uploadedBy, uploadedAt);
+        this.waybillImportId = waybillImportId;
+    }
+
     public UUID getLoadId() { return loadId; }
     public String getStorageKey() { return storageKey; }
     public String getFileName() { return fileName; }
@@ -46,4 +55,5 @@ public class LoadWaybillFileJpaEntity extends BaseEntity {
     public long getSizeBytes() { return sizeBytes; }
     public UUID getUploadedBy() { return uploadedBy; }
     public Instant getUploadedAt() { return uploadedAt; }
+    public UUID getWaybillImportId() { return waybillImportId; }
 }

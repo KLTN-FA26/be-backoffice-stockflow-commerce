@@ -17,7 +17,8 @@ public interface LoadWaybillFileJpaRepository extends BaseJpaRepository<LoadWayb
 
     Optional<LoadWaybillFileJpaEntity> findByIdAndLoadId(UUID id, UUID loadId);
 
-    Optional<LoadWaybillFileJpaEntity> findByStorageKey(String storageKey);
+    /** A file of this load stored under this key; one stored file may be several loads' (3-3: an import). */
+    Optional<LoadWaybillFileJpaEntity> findByStorageKeyAndLoadId(String storageKey, UUID loadId);
 
     @Query("select f.storageKey from LoadWaybillFileJpaEntity f where f.storageKey in :keys")
     List<String> storageKeysIn(@Param("keys") Collection<String> keys);

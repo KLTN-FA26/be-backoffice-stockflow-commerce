@@ -9,16 +9,18 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * The waybill documents loads keep, for the orphaned-file sweep. The {@code documents} category is shared with the
+ * The waybill documents loads keep, and the waybill files imported (3-3), for the orphaned-file sweep. The {@code documents} category is shared with the
  * documents other modules keep; the sweep asks every owner of a category, so a file is kept while any of them names it.
  */
 @Component
 class WaybillFileReferences implements StoredFileReferences {
 
     private final LoadWaybillFileJpaRepository files;
+    private final WaybillImportJpaRepository imports;
 
-    WaybillFileReferences(LoadWaybillFileJpaRepository files) {
+    WaybillFileReferences(LoadWaybillFileJpaRepository files, WaybillImportJpaRepository imports) {
         this.files = files;
+        this.imports = imports;
     }
 
     @Override
@@ -31,6 +33,9 @@ class WaybillFileReferences implements StoredFileReferences {
         if (category != FileCategory.DOCUMENT || keys.isEmpty()) {
             return Set.of();
         }
-        return new HashSet<>(files.storageKeysIn(keys));
+        // An imported file is kept by its import even when no line applied to a load.
+        Set<String> kept = new HashSet<>(files.storageKeysIn(keys));
+        kept.addAll(imports.storageKeysIn(keys));
+        return kept;
     }
 }

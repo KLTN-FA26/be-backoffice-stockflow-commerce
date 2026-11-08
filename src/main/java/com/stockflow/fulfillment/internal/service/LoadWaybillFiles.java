@@ -94,8 +94,7 @@ public class LoadWaybillFiles {
             Optional<String> key = staged.keyOf(FileCategory.DOCUMENT, by, uploaded.uploadIds().get(0));
             Optional<WaybillFile> earlier = key.flatMap(k -> tx.execute(status -> {
                 requireLoad(loadId);
-                return files.findByStorageKey(k).filter(found -> found.getLoadId().equals(loadId))
-                        .map(LoadWaybillFiles::view);
+                return files.findByStorageKeyAndLoadId(k, loadId).map(LoadWaybillFiles::view);
             }));
             if (earlier.isPresent()) {
                 return earlier.get();

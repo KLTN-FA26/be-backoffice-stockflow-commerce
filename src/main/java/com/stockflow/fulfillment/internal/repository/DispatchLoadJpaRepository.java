@@ -21,6 +21,29 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
 
     Optional<DispatchLoadJpaEntity> findByRequestId(UUID requestId);
 
+    /** The loads with these codes (3-3: the lines of a waybill import name loads by code). */
+    List<DispatchLoadJpaEntity> findByCodeIn(Collection<String> codes);
+
+    /**
+     * The ids of the loads with these codes, read without loading the entities: a row lock taken next must read the
+     * loads fresh, not hand back copies already in the persistence context.
+     */
+    @Query("select l.id from DispatchLoadJpaEntity l where l.code in :codes")
+    List<UUID> idsOfCodes(@Param("codes") Collection<String> codes);
+
+    /** The live loads of these carriers holding one of these waybill numbers (3-3: a number is one load's). */
+    default List<DispatchLoadJpaEntity> findLiveByCarriersAndWaybills(Collection<UUID> carrierIds,
+                                                                      Collection<String> waybills) {
+        return findByWaybills(carrierIds, waybills, com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED);
+    }
+
+    @Query("select l from DispatchLoadJpaEntity l where l.carrierId in :carrierIds and l.waybillNo in :waybills "
+            + "and l.status <> :cancelled")
+    List<DispatchLoadJpaEntity> findByWaybills(@Param("carrierIds") Collection<UUID> carrierIds,
+                                               @Param("waybills") Collection<String> waybills,
+                                               @Param("cancelled") com.stockflow.fulfillment.internal.domain.LoadStatus
+                                                       cancelled);
+
     /** Loads of {@code carrierId} other than {@code loadId}, not cancelled, holding {@code waybill} (09 BR-23). */
     default List<DispatchLoadJpaEntity> findLiveByCarrierAndWaybill(UUID carrierId, String waybill, UUID loadId) {
         return findByWaybill(carrierId, waybill, loadId, com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED);

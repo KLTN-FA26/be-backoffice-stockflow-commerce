@@ -57,11 +57,12 @@ public enum FileCategory {
             Set.of("application/pdf", "image/png")),
 
     /**
-     * Supplier documents kept with a purchase order: quotations, contracts, confirmations, delivery notes,
-     * certificates of conformity. A photo of a paper document too: a delivery note is signed on paper.
+     * Documents kept with a business record: a purchase order's quotations, contracts, confirmations and delivery notes;
+     * a load's waybill from its carrier, and a file of waybill numbers imported (CSV; kltn-docs 09 §4.4, BR-28). A
+     * photo of a paper document too: a delivery note is signed on paper.
      */
     DOCUMENT("documents", 25 * 1024 * 1024,
-            Set.of("application/pdf",
+            Set.of("application/pdf", "text/csv",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     "image/jpeg", "image/png")),

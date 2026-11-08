@@ -213,6 +213,12 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/fulfillment/loads/{loadId}/waybill-files", "fulfillment-shipments:READ"),
             Map.entry("GET /api/v1/fulfillment/loads/{loadId}/waybill-files/{fileId}/download-url",
                     "fulfillment-shipments:READ"),
+            // 3-3 (V20261108001500): waybill numbers imported from a file.
+            Map.entry("GET /api/v1/fulfillment/waybill-imports/template", "fulfillment-waybill-imports:READ"),
+            Map.entry("POST /api/v1/fulfillment/waybill-imports/preview", "fulfillment-waybill-imports:CREATE"),
+            Map.entry("POST /api/v1/fulfillment/waybill-imports", "fulfillment-waybill-imports:CREATE"),
+            Map.entry("GET /api/v1/fulfillment/waybill-imports", "fulfillment-waybill-imports:READ"),
+            Map.entry("GET /api/v1/fulfillment/waybill-imports/{importId}", "fulfillment-waybill-imports:READ"),
             // SCRUM-474 UNLOAD-DESIGN (V20261102020100): the controlled cancel after loading started, and the override.
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/controlled-cancellation",
                     "fulfillment-controlled-cancellations:UPDATE"),
@@ -267,6 +273,11 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-controlled-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 3-2, kltn-docs 09 BR-24: after the vehicle left, only the warehouse manager (and the admin) corrects it.
             Map.entry("fulfillment-waybill-corrections:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // 3-3, kltn-docs 09 §4.4: dispatch staff and the warehouse manager import waybill numbers.
+            Map.entry("fulfillment-waybill-imports:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-waybill-imports:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
