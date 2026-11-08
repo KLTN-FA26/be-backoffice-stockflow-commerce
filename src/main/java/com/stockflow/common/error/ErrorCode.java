@@ -682,6 +682,15 @@ public enum ErrorCode {
     DESIGN_PRINT_FILE_INVALID("The design's print file does not fit its template", 409),
     /** A design holds at most 100 images (Design Studio plan 2F-4). */
     DESIGN_ASSET_LIMIT_REACHED("This design already has the most images allowed", 409),
+    /**
+     * A quote is asked on an approved design on its own; a draft asks with its submission (kltn-docs 12 §4.8).
+     */
+    DESIGN_NOT_APPROVED("This design is not approved", 409),
+    /**
+     * A design has one open quote request at a time; a design returned after its request keeps it (kltn-docs 16
+     * §4.2, B40). {@code details.requestId} names the open one.
+     */
+    DESIGN_QUOTE_REQUEST_OPEN("This design already has an open quote request", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */

@@ -99,7 +99,7 @@ class DesignAssetController {
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<List<DesignAssetResponse>> list(@PathVariable UUID designId,
                                                       @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(assets.list(designId, actor(user), DesignWorkflowController.reviewer(user)).stream()
+        return ApiResponse.ok(assets.list(designId, actor(user), DesignWorkflowController.readRights(user)).stream()
                 .map(DesignAssetController::toResponse).toList());
     }
 
@@ -109,7 +109,7 @@ class DesignAssetController {
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ResponseEntity<ApiResponse<ArtifactDownloadResponse>> link(@PathVariable UUID designId,
             @PathVariable UUID assetId, @AuthenticatedUser CurrentUser user) {
-        var link = assets.link(designId, assetId, actor(user), DesignWorkflowController.reviewer(user));
+        var link = assets.link(designId, assetId, actor(user), DesignWorkflowController.readRights(user));
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(ApiResponse.ok(new ArtifactDownloadResponse(link.url(), link.expiresAt())));
     }

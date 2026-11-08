@@ -3,6 +3,7 @@ package com.stockflow.design.internal.domain;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 
 /**
  * A design as its files see it. Login ids are explicit: CRM customer ids must never be assumed to be identity user ids.
@@ -17,8 +18,8 @@ public record DesignDraft(UUID id, UUID ownerUserId, DesignStatus status, UUID c
     }
 
     /** Its files are read by whoever reads the design ({@link CustomerDesignRules#requireReader}). */
-    public void requireAccess(UUID userId, boolean reviewer) {
-        CustomerDesignRules.requireReader(userId, ownerUserId, status, customerDesign(), reviewer);
+    public void requireAccess(UUID userId, DesignReadRights rights, BooleanSupplier quoteRequestOpen) {
+        CustomerDesignRules.requireReader(userId, ownerUserId, status, customerDesign(), rights, quoteRequestOpen);
     }
 
     /**

@@ -49,6 +49,9 @@ import org.springframework.transaction.support.TransactionOperations;
  * through {@link DesignSubmittedForReview}. Failing, it stays a draft and the failure is written to its history
  * ({@code PREFLIGHT_FAILED}), without moving its version.
  *
+ * <p>A submission may carry a quote request (§4.8 step 24, "Gửi duyệt và yêu cầu báo giá"): checked first, opened only
+ * once the design is submitted - a failing preflight sends nothing - and quoted once approved (BR-15).</p>
+ *
  * <h2>Three steps</h2>
  * <ol>
  *   <li>A short read checks the design, runs the layout preflight - arithmetic on a layout of at most a megabyte - and
@@ -80,6 +83,7 @@ public class DesignSubmissionService {
     private final UomConversionService units;
     private final ApplicationEventPublisher events;
     private final DraftViews views;
+    private final DesignQuoteRequestService quoteRequests;
     private final EntityManager entityManager;
     private final TransactionOperations tx;
     private final Clock clock;
@@ -89,8 +93,8 @@ public class DesignSubmissionService {
                                    DesignAssetJpaRepository assets, DesignArtifactJpaRepository artifacts,
                                    DesignDecisionJpaRepository decisions, PrintConfigs printConfigs,
                                    UomConversionService units, ApplicationEventPublisher events, DraftViews views,
-                                   EntityManager entityManager, TransactionOperations tx, Clock clock,
-                                   FileStorage storage) {
+                                   DesignQuoteRequestService quoteRequests, EntityManager entityManager,
+                                   TransactionOperations tx, Clock clock, FileStorage storage) {
         this.drafts = drafts;
         this.documents = documents;
         this.assets = assets;
@@ -100,6 +104,7 @@ public class DesignSubmissionService {
         this.units = units;
         this.events = events;
         this.views = views;
+        this.quoteRequests = quoteRequests;
         this.entityManager = entityManager;
         this.tx = tx;
         this.clock = clock;
@@ -114,6 +119,7 @@ public class DesignSubmissionService {
     /**
      * Submits the design at {@code version}.
      *
+     * @param quote a quote request to open with the submission, or null
      * @throws BusinessException 422 {@code DESIGN_PREFLIGHT_FAILED} with {@code details.issues} - each
      *         {@code {rule, surfaceCode?, elementId?, message, values?}} - when the layout fails preflight or the print
      *         file is not the template's ({@code PRINT_FILE_INVALID}); 409
@@ -122,8 +128,9 @@ public class DesignSubmissionService {
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public DesignWorkflowService.DraftView submit(UUID id, UUID actor, long version) {
-        Plan plan = tx.execute(status -> plan(id, actor, version));
+    public DesignWorkflowService.DraftView submit(UUID id, UUID actor, long version,
+                                                  DesignQuoteRequestService.QuoteRequestInput quote) {
+        Plan plan = tx.execute(status -> plan(id, actor, version, quote));
         List<LayoutPreflight.Issue> issues = new ArrayList<>(plan.issues());
         if (issues.isEmpty() && plan.outdatedFiles().isEmpty()) {
             String problem;
@@ -145,16 +152,20 @@ public class DesignSubmissionService {
                     "Render the files again from the layout as it is now: " + plan.outdatedFiles(), List.of(),
                     Map.of("roles", plan.outdatedFiles()));
         }
-        return tx.execute(status -> submitLocked(id, actor, version, plan));
+        return tx.execute(status -> submitLocked(id, actor, version, plan, quote));
     }
 
-    private Plan plan(UUID id, UUID actor, long version) {
+    private Plan plan(UUID id, UUID actor, long version, DesignQuoteRequestService.QuoteRequestInput quote) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
         DesignWorkflow.requireVersion(draft.getVersion(), version);
         CustomerDesignRules.requireDraft(draft.getStatus());
         if (draft.getTemplateId() == null) {
             throw new BusinessException(ErrorCode.CONFLICT, "This design was not started on a template");
+        }
+        if (quote != null) {
+            // Before the preflight: a request that could not be opened refuses the submission, not half of it.
+            quoteRequests.requireAttachable(draft, actor, quote);
         }
         PrintConfig template = printConfigs.byId(draft.getTemplateId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND));
@@ -206,7 +217,8 @@ public class DesignSubmissionService {
     }
 
     /** Under the design's lock: submitted, if nothing moved since it was checked. */
-    private DesignWorkflowService.DraftView submitLocked(UUID id, UUID actor, long version, Plan plan) {
+    private DesignWorkflowService.DraftView submitLocked(UUID id, UUID actor, long version, Plan plan,
+                                                         DesignQuoteRequestService.QuoteRequestInput quote) {
         DesignDraftJpaEntity draft = drafts.lockById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         // The lock read may hand back a copy loaded before: read the row as it is now.
         entityManager.refresh(draft);
@@ -225,6 +237,9 @@ public class DesignSubmissionService {
         decide(draft, actor, DesignDecisionType.SUBMITTED_FOR_REVIEW, "Layout " + documents.findById(id)
                 .map(DesignDocumentJpaEntity::getChecksum).orElse("-"));
         events.publishEvent(new DesignSubmittedForReview(id, draft.getCustomerId(), draft.getSku(), now));
+        if (quote != null) {
+            quoteRequests.attach(draft, actor, quote);
+        }
         return views.of(draft);
     }
 

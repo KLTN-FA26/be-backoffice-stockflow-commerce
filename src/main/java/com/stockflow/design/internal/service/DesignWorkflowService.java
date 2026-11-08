@@ -6,6 +6,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.design.api.DesignArtifactRole;
+import com.stockflow.design.internal.domain.DesignReadRights;
 import com.stockflow.design.internal.domain.CustomerDesignRules;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
@@ -25,8 +26,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Reading a design - the list of a user's own, one design, its history and its approved snapshot - and revising an
- * approved one. Who reads is {@link CustomerDesignRules#requireReader}: the owner, and a reviewer while a customer's
- * design waits for review (BR-03, plan D7). Starting, laying out, submitting and deciding a design are
+ * approved one. Who reads is {@link CustomerDesignRules#requireReader}: the owner, a reviewer while a customer's
+ * design waits for review, and the sales staff while a quote request on it is open (BR-03, plan D7). Starting, laying out, submitting and deciding a design are
  * {@link CustomerDesignService}, {@link DesignSubmissionService} and {@link DesignReviewService}.
  */
 @Service
@@ -106,13 +107,13 @@ public class DesignWorkflowService {
     }
 
     @Transactional(readOnly = true)
-    public DraftView get(UUID id, UUID actor, boolean reviewer) {
-        return views.of(readable(id, actor, reviewer));
+    public DraftView get(UUID id, UUID actor, DesignReadRights rights) {
+        return views.of(readable(id, actor, rights));
     }
 
     @Transactional(readOnly = true)
-    public Page<DecisionView> history(UUID id, UUID actor, boolean reviewer, Pageable page) {
-        readable(id, actor, reviewer);
+    public Page<DecisionView> history(UUID id, UUID actor, DesignReadRights rights, Pageable page) {
+        readable(id, actor, rights);
         return decisions.findByDraftIdOrderByCreatedAtDescIdDesc(id, Pages.of(page.getPageNumber(),
                 page.getPageSize())).map(d -> new DecisionView(d.getActorId(), d.getArtifactId(), d.getDecision(),
                 d.getNotes(), d.getDraftVersion(), d.getCreatedAt()));
@@ -121,7 +122,7 @@ public class DesignWorkflowService {
     /** The approved design's snapshot, to its owner (approved designs are looked up by staff through snapshots). */
     @Transactional(readOnly = true)
     public SnapshotView snapshot(UUID id, UUID actor) {
-        readable(id, actor, false);
+        readable(id, actor, DesignReadRights.NONE);
         var snapshot = snapshots.findByDraftId(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         return snapshotView(snapshot, customerSkus.ofSnapshot(snapshot.getId())
                 .map(com.stockflow.product.api.CustomerSku::sku).orElse(null));
@@ -135,7 +136,7 @@ public class DesignWorkflowService {
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "design", resourceId = "#id")
     public DraftView fork(UUID id, UUID actor) {
-        var source = readable(id, actor, false);
+        var source = readable(id, actor, DesignReadRights.NONE);
         if (source.getTemplateId() != null) {
             return customerDesigns.revise(id, actor);
         }
@@ -157,11 +158,11 @@ public class DesignWorkflowService {
         return views.of(draft);
     }
 
-    private DesignDraftJpaEntity readable(UUID id, UUID actor, boolean reviewer) {
+    private DesignDraftJpaEntity readable(UUID id, UUID actor, DesignReadRights rights) {
         authenticated(actor);
         var draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireReader(actor, draft.getOwnerUserId(), draft.getStatus(),
-                draft.getTemplateId() != null, reviewer);
+                draft.getTemplateId() != null, rights, () -> drafts.hasOpenQuoteRequest(id));
         return draft;
     }
 

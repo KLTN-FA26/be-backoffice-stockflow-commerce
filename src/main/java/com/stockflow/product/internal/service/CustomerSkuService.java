@@ -171,6 +171,20 @@ public class CustomerSkuService implements CustomerSkus {
                         : variants.findById(v.getSourceVariantId()).map(VariantJpaEntity::getSku).orElse(null)));
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, CustomerSku> ofSnapshots(java.util.Collection<UUID> designSnapshotIds) {
+        if (designSnapshotIds == null || designSnapshotIds.isEmpty()) {
+            return Map.of();
+        }
+        List<VariantJpaEntity> issued = variants.findByDesignSnapshotIdIn(designSnapshotIds);
+        Map<UUID, String> sources = variants.findAllById(issued.stream().map(VariantJpaEntity::getSourceVariantId)
+                        .filter(java.util.Objects::nonNull).distinct().toList()).stream()
+                .collect(Collectors.toMap(VariantJpaEntity::getId, VariantJpaEntity::getSku));
+        return issued.stream().collect(Collectors.toMap(VariantJpaEntity::getDesignSnapshotId,
+                v -> view(v, sources.get(v.getSourceVariantId()))));
+    }
+
     /** The first free "product - customer - number" code, the customer's part shortened to fit 64 characters. */
     private String nextCode(ProductJpaEntity product, UUID customerId, String customerCode) {
         long n = variants.countByProductIdAndOwnerCustomerId(product.getId(), customerId);

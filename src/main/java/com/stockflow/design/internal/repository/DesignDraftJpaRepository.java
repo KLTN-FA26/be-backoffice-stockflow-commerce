@@ -23,6 +23,14 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
     @Query("select d from DesignDraftJpaEntity d where d.id = :id")
     Optional<DesignDraftJpaEntity> lockById(@Param("id") UUID id);
 
+    /**
+     * Whether a quote request on the design is open: what lets the sales staff read it (plan D7). Asked here, beside
+     * the design, by every read of one.
+     */
+    @Query("select count(r) > 0 from DesignQuoteRequestJpaEntity r where r.draftId = :id "
+            + "and r.status = com.stockflow.design.internal.domain.QuoteRequestStatus.OPEN")
+    boolean hasOpenQuoteRequest(@Param("id") UUID id);
+
     /** A user's own designs in the given statuses (BR-03: a design is its owner's alone). */
     @Query("select d from DesignDraftJpaEntity d where d.status in :statuses and d.ownerUserId = :userId")
     Page<DesignDraftJpaEntity> findOwnedBy(@Param("userId") UUID userId,

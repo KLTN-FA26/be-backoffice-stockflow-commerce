@@ -16,6 +16,7 @@ import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.common.storage.StagedUploads;
 import com.stockflow.common.storage.UploadSlot;
 import com.stockflow.common.storage.UploadSlotRequest;
+import com.stockflow.design.internal.domain.DesignReadRights;
 import com.stockflow.design.internal.domain.CustomerDesignRules;
 import com.stockflow.design.internal.entity.DesignAssetJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
@@ -48,7 +49,8 @@ import org.springframework.transaction.support.TransactionOperations;
  * version: the layout that places the image is the change, and it is saved with the version (BR-11).</p>
  *
  * <p>Only the design's owner adds images. Whoever reads the design reads them ({@code CustomerDesignRules.requireReader}:
- * the owner, and a reviewer while it waits for review); anyone else, and everyone once it is archived, is told it does
+ * the owner, a reviewer while it waits for review, and the sales staff while a quote request on it is open); anyone
+ * else, and everyone once it is archived, is told it does
  * not exist (BR-03, B38).</p>
  */
 @Service
@@ -161,10 +163,10 @@ public class DesignAssetService {
         }
     }
 
-    /** The design's images, newest first; to its owner, and to a reviewer while it is pending (plan D7). */
+    /** The design's images, newest first; to whoever reads the design (plan D7). */
     @Transactional(readOnly = true)
-    public List<AssetView> list(UUID designId, UUID userId, boolean reviewer) {
-        readable(designId, userId, reviewer);
+    public List<AssetView> list(UUID designId, UUID userId, DesignReadRights rights) {
+        readable(designId, userId, rights);
         return assets.findByDraftIdOrderByCreatedAtDescIdDesc(designId).stream()
                 .map(DesignAssetService::view).toList();
     }
@@ -174,8 +176,8 @@ public class DesignAssetService {
      * their own studio, every time a layout is drawn.
      */
     @Transactional(readOnly = true)
-    public DownloadLink link(UUID designId, UUID assetId, UUID userId, boolean reviewer) {
-        readable(designId, userId, reviewer);
+    public DownloadLink link(UUID designId, UUID assetId, UUID userId, DesignReadRights rights) {
+        readable(designId, userId, rights);
         DesignAssetJpaEntity asset = assets.findByDraftIdAndId(designId, assetId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         return files.viewLink(asset.getStorageKey());
@@ -254,11 +256,11 @@ public class DesignAssetService {
         return draft;
     }
 
-    private void readable(UUID designId, UUID userId, boolean reviewer) {
+    private void readable(UUID designId, UUID userId, DesignReadRights rights) {
         DesignDraftJpaEntity draft = drafts.findById(designId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireReader(userId, draft.getOwnerUserId(), draft.getStatus(),
-                draft.getTemplateId() != null, reviewer);
+                draft.getTemplateId() != null, rights, () -> drafts.hasOpenQuoteRequest(designId));
     }
 
     private void requireRoom(UUID designId) {

@@ -110,6 +110,7 @@ public class DesignReviewService {
     private final ProductionInstructionSheet instructions;
     private final ApplicationEventPublisher events;
     private final DraftViews views;
+    private final DesignQuoteRequestService quoteRequests;
     private final EntityManager entityManager;
     private final TransactionOperations tx;
     private final Clock clock;
@@ -121,7 +122,8 @@ public class DesignReviewService {
                                PrintConfigs printConfigs, CustomerSkus customerSkus, CustomerService customers,
                                ProductService products, UomConversionService units, FileStorage storage,
                                FileTransfers files, PrintReadyStamp stamp, ProductionInstructionSheet instructions,
-                               ApplicationEventPublisher events, DraftViews views, EntityManager entityManager,
+                               ApplicationEventPublisher events, DraftViews views,
+                               DesignQuoteRequestService quoteRequests, EntityManager entityManager,
                                TransactionOperations tx, Clock clock) {
         this.drafts = drafts;
         this.documents = documents;
@@ -140,6 +142,7 @@ public class DesignReviewService {
         this.instructions = instructions;
         this.events = events;
         this.views = views;
+        this.quoteRequests = quoteRequests;
         this.entityManager = entityManager;
         this.tx = tx;
         this.clock = clock;
@@ -204,7 +207,7 @@ public class DesignReviewService {
         drafts.saveAndFlush(draft);
         decide(draft, actor, DesignDecisionType.RETURNED, reason);
         events.publishEvent(new DesignReviewed(id, draft.getOwnerUserId(), "RETURNED", draft.getSku(),
-                draft.getReviewedAt()));
+                draft.getReviewedAt(), quoteRequests.openOf(id)));
         return views.of(draft);
     }
 
@@ -310,7 +313,8 @@ public class DesignReviewService {
         drafts.saveAndFlush(draft);
         decide(draft, actor, DesignDecisionType.APPROVED, "Snapshot " + snapshotId + ", SKU " + issued.sku()
                 + ", checksum " + snapshot.getChecksum() + (note == null ? "" : ". " + note));
-        events.publishEvent(new DesignReviewed(id, draft.getOwnerUserId(), "APPROVED", issued.sku(), now));
+        events.publishEvent(new DesignReviewed(id, draft.getOwnerUserId(), "APPROVED", issued.sku(), now,
+                quoteRequests.openOf(id)));
         return views.of(draft);
     }
 

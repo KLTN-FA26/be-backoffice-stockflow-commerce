@@ -100,7 +100,7 @@ class DesignController {
     public ApiResponse<List<DesignArtifactResponse>> list(@PathVariable UUID designId,
                                                          @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(artifacts.list(designId, user == null ? null : user.userId(),
-                DesignWorkflowController.reviewer(user)).stream().map(mapper::toResponse).toList());
+                DesignWorkflowController.readRights(user)).stream().map(mapper::toResponse).toList());
     }
 
     @GetMapping("/{artifactId}/preflight")
@@ -108,7 +108,7 @@ class DesignController {
     public ApiResponse<DesignPreflightResponse> preflight(@PathVariable UUID designId, @PathVariable UUID artifactId,
                                                          @AuthenticatedUser CurrentUser user) {
         var report = artifacts.preflight(designId, artifactId, user == null ? null : user.userId(),
-                DesignWorkflowController.reviewer(user));
+                DesignWorkflowController.readRights(user));
         return ApiResponse.ok(new DesignPreflightResponse(report.passed(), report.findings().stream()
                 .map(f -> new DesignPreflightResponse.Finding(f.code(), f.detail(), f.blocking())).toList()));
     }
@@ -119,6 +119,6 @@ class DesignController {
             @PathVariable UUID artifactId, @AuthenticatedUser CurrentUser user) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(mapper.toResponse(
                 artifacts.downloadLink(designId, artifactId, user == null ? null : user.userId(),
-                        DesignWorkflowController.reviewer(user)))));
+                        DesignWorkflowController.readRights(user)))));
     }
 }

@@ -38,6 +38,9 @@ public interface CustomerSkus {
     /** The SKU issued for an approved design snapshot, if any (one per snapshot: uk_variants_design_snapshot). */
     java.util.Optional<CustomerSku> ofSnapshot(java.util.UUID designSnapshotId);
 
+    /** {@link #ofSnapshot} of each of {@code designSnapshotIds}, by snapshot; a snapshot without a SKU is absent. */
+    java.util.Map<UUID, CustomerSku> ofSnapshots(java.util.Collection<UUID> designSnapshotIds);
+
     /**
      * Refuses any of {@code skus} that is another customer's own SKU, as if it did not exist (kltn-docs 13 BR-02: other
      * customers' SKUs are invisible): what every order and quote line for {@code customerId} passes through. Ordinary

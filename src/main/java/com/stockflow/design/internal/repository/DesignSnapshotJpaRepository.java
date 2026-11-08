@@ -19,6 +19,18 @@ public interface DesignSnapshotJpaRepository extends BaseJpaRepository<DesignSna
 
     boolean existsByDraftId(UUID draftId);
 
+    /** A snapshot's id and its design's, without its layout. */
+    interface SnapshotOf {
+        UUID getDraftId();
+
+        UUID getId();
+    }
+
+    /** The approved snapshots of {@code draftIds}' designs - the same eligibility as {@link #findByDraftId}. */
+    @Query("select s.draftId as draftId, s.id as id from DesignSnapshotJpaEntity s where s.draftId in :draftIds "
+            + "and s.confirmedBy is not null and s.artifactId is not null")
+    List<SnapshotOf> snapshotsOf(@Param("draftIds") Collection<UUID> draftIds);
+
     /**
      * The customer-confirmed snapshots of one customer (the same eligibility {@code DesignService.verifySnapshot}
      * applies: confirmed by the owner, with a primary artifact), newest first.

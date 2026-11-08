@@ -66,6 +66,10 @@ class CustomerDesignController {
     record VersionRequest(@PositiveOrZero long version) {
     }
 
+    /** A submission, and the quote request it carries if any ("Gửi duyệt và yêu cầu báo giá", kltn-docs 12 §4.8). */
+    record SubmitRequest(@PositiveOrZero long version, @Valid DesignQuoteRequestController.QuoteRequestBody quoteRequest) {
+    }
+
     @PostMapping("/mine")
     @Operation(summary = "Start a design on a variant's template; the customer and owner are the caller")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.CREATE)
@@ -100,7 +104,7 @@ class CustomerDesignController {
                                                                         @AuthenticatedUser CurrentUser user) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(ApiResponse.ok(mapper.toResponse(service.document(id, actor(user),
-                        DesignWorkflowController.reviewer(user)))));
+                        DesignWorkflowController.readRights(user)))));
     }
 
     /**
@@ -119,14 +123,17 @@ class CustomerDesignController {
     /**
      * Submits the draft for review (kltn-docs 12 §4.3): 422 {@code DESIGN_PREFLIGHT_FAILED} with the findings when the
      * layout fails the print checks, 409 {@code DESIGN_FILES_OUTDATED} when the submitted files are not rendered from
-     * the current layout.
+     * the current layout. A {@code quoteRequest} in the body is opened once the design is submitted, and refuses the
+     * submission first when it cannot be (409 {@code DESIGN_QUOTE_REQUEST_OPEN}, 400).
      */
     @PostMapping("/{id}/technical-review-requests")
-    @Operation(summary = "Submit the draft for review: preflight, then the Sales Manager's queue")
+    @Operation(summary = "Submit the draft for review, with a quote request if any: preflight, then the Sales "
+            + "Manager's queue")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
-    public ApiResponse<DesignDraftResponse> submit(@PathVariable UUID id, @Valid @RequestBody VersionRequest request,
+    public ApiResponse<DesignDraftResponse> submit(@PathVariable UUID id, @Valid @RequestBody SubmitRequest request,
                                                    @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(drafts.toResponse(submissions.submit(id, actor(user), request.version())));
+        return ApiResponse.ok(drafts.toResponse(submissions.submit(id, actor(user), request.version(),
+                request.quoteRequest() == null ? null : request.quoteRequest().input())));
     }
 
     /**
@@ -139,7 +146,7 @@ class CustomerDesignController {
     public ResponseEntity<ApiResponse<com.fasterxml.jackson.databind.JsonNode>> template(@PathVariable UUID id,
             @AuthenticatedUser CurrentUser user) throws com.fasterxml.jackson.core.JsonProcessingException {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(
-                json.readTree(service.template(id, actor(user), DesignWorkflowController.reviewer(user)))));
+                json.readTree(service.template(id, actor(user), DesignWorkflowController.readRights(user)))));
     }
 
     private static UUID actor(CurrentUser user) {

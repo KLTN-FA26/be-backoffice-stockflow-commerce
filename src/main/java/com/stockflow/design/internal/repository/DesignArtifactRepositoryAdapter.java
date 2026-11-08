@@ -31,6 +31,8 @@ class DesignArtifactRepositoryAdapter implements DesignArtifactRepository {
 
     @Override
     public boolean hasSnapshot(UUID designId) { return snapshots.existsByDraftId(designId); }
+    @Override
+    public boolean quoteRequestOpen(UUID designId) { return drafts.hasOpenQuoteRequest(designId); }
 
 
     @Override

@@ -12,6 +12,7 @@ import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.design.internal.domain.CustomerDesignRules;
 import com.stockflow.design.internal.domain.DesignDecisionType;
 import com.stockflow.design.internal.domain.DesignDocumentRules;
+import com.stockflow.design.internal.domain.DesignReadRights;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.domain.DesignWorkflow;
 import com.stockflow.design.internal.entity.DesignDecisionJpaEntity;
@@ -69,6 +70,7 @@ public class CustomerDesignService {
     private final ProductService products;
     private final PrintConfigs printConfigs;
     private final DraftViews views;
+    private final DesignQuoteRequestService quoteRequests;
     private final EntityManager entityManager;
     private final Clock clock;
 
@@ -76,7 +78,8 @@ public class CustomerDesignService {
                                  DesignAssetJpaRepository assets,
                                  DesignDecisionJpaRepository decisions, DesignSnapshotJpaRepository snapshots,
                                  CustomerService customers, ProductService products, PrintConfigs printConfigs,
-                                 DraftViews views, EntityManager entityManager, Clock clock) {
+                                 DraftViews views, DesignQuoteRequestService quoteRequests,
+                                 EntityManager entityManager, Clock clock) {
         this.drafts = drafts;
         this.documents = documents;
         this.assets = assets;
@@ -86,6 +89,7 @@ public class CustomerDesignService {
         this.products = products;
         this.printConfigs = printConfigs;
         this.views = views;
+        this.quoteRequests = quoteRequests;
         this.entityManager = entityManager;
         this.clock = clock;
     }
@@ -134,22 +138,27 @@ public class CustomerDesignService {
         return views.of(drafts.saveAndFlush(draft));
     }
 
-    /** Deleted while it is a draft (BR-16): archived, never removed, so its history stays. */
+    /**
+     * Deleted while it is a draft (BR-16): archived, never removed, so its history stays. A quote request still open on
+     * it - a design returned after its request - closes with it (B40).
+     */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DesignWorkflowService.DraftView archive(UUID id, UUID actor, long version) {
         DesignDraftJpaEntity draft = lockOwnDraft(id, actor, version);
-        draft.archive(clock.instant());
+        Instant now = clock.instant();
+        draft.archive(now);
         drafts.saveAndFlush(draft);
+        quoteRequests.closeOpen(id, now);
         decide(draft, actor, DesignDecisionType.ARCHIVED, "Deleted by the customer");
         return views.of(draft);
     }
 
-    /** The design's layout, at the design's current version; to its owner, and to a reviewer while it is pending. */
+    /** The design's layout, at the design's current version; to whoever reads the design (plan D7). */
     @Transactional(readOnly = true)
-    public DocumentView document(UUID id, UUID actor, boolean reviewer) {
+    public DocumentView document(UUID id, UUID actor, DesignReadRights rights) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireReader(actor, draft.getOwnerUserId(), draft.getStatus(),
-                draft.getTemplateId() != null, reviewer);
+                draft.getTemplateId() != null, rights, () -> drafts.hasOpenQuoteRequest(id));
         DesignDocumentJpaEntity layout = documents.findById(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "This design has no layout"));
         return new DocumentView(id, draft.getVersion(), layout.getDocument(), layout.getChecksum(),
@@ -206,10 +215,10 @@ public class CustomerDesignService {
      * or not it is still active (B39).
      */
     @Transactional(readOnly = true)
-    public String template(UUID id, UUID actor, boolean reviewer) {
+    public String template(UUID id, UUID actor, DesignReadRights rights) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireReader(actor, draft.getOwnerUserId(), draft.getStatus(),
-                draft.getTemplateId() != null, reviewer);
+                draft.getTemplateId() != null, rights, () -> drafts.hasOpenQuoteRequest(id));
         if (draft.getTemplateId() == null) {
             throw new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND, "This design was not started on a template");
         }

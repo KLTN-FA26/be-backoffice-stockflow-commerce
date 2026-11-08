@@ -10,6 +10,7 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.design.internal.controller.dto.DesignDecisionResponse;
 import com.stockflow.design.internal.controller.dto.DesignDraftResponse;
 import com.stockflow.design.internal.controller.dto.DesignSnapshotResponse;
+import com.stockflow.design.internal.domain.DesignReadRights;
 import com.stockflow.design.internal.service.DesignWorkflowService;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,7 +23,7 @@ import java.util.UUID;
 
 /**
  * Reading designs and revising an approved one. A design is its owner's; someone who may review designs reads one
- * while it waits for review (plan D7). Handlers are public so the permission proxy advises them; the resource is
+ * while it waits for review, and the sales staff one with a quote request open on it (plan D7). Handlers are public so the permission proxy advises them; the resource is
  * declared once, on {@code DesignController}.
  */
 @RestController
@@ -48,7 +49,7 @@ class DesignWorkflowController {
     @GetMapping("/{id}")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<DesignDraftResponse> get(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(service.get(id, actor(user), reviewer(user))));
+        return ApiResponse.ok(mapper.toResponse(service.get(id, actor(user), readRights(user))));
     }
 
     @GetMapping("/{id}/history")
@@ -56,7 +57,7 @@ class DesignWorkflowController {
     public ApiResponse<PageResponse<DesignDecisionResponse>> history(@PathVariable UUID id,
             @AuthenticatedUser CurrentUser user, @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(service.history(id, actor(user), reviewer(user), pageOf(page, size))
+        return ApiResponse.ok(Pages.toResponse(service.history(id, actor(user), readRights(user), pageOf(page, size))
                 .map(mapper::toResponse)));
     }
 
@@ -74,9 +75,13 @@ class DesignWorkflowController {
 
     static UUID actor(CurrentUser user) { return user == null ? null : user.userId(); }
 
-    /** Whether the caller may review designs: such a reader also reads a design waiting for review. */
-    static boolean reviewer(CurrentUser user) {
-        return user != null && user.can(DesignResources.DESIGNS, Action.APPROVE);
+    /**
+     * What the caller may read beyond their own designs (plan D7): a reviewer reads a design waiting for review, and
+     * whoever reads quote requests reads a design one is open on while it waits or once it is approved.
+     */
+    static DesignReadRights readRights(CurrentUser user) {
+        return user == null ? DesignReadRights.NONE : new DesignReadRights(
+                user.can(DesignResources.DESIGNS, Action.APPROVE), user.can(DesignResources.QUOTE_REQUESTS, Action.READ));
     }
 
     /** Validated here, not clamped by Spring's resolver: an oversized request is a 400, never a short page. */

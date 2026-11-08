@@ -20,5 +20,7 @@ public enum DesignDecisionType {
     /** The Sales Manager approved the design; the notes name the snapshot, the customer's SKU and the checksum. */
     APPROVED,
     /** The customer deleted the draft. */
-    ARCHIVED
+    ARCHIVED,
+    /** The customer asked for a quote on it; the notes give the cartons and the delivery date they would like. */
+    QUOTE_REQUESTED
 }

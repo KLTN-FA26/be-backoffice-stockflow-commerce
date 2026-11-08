@@ -20,6 +20,8 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
 
     Optional<VariantJpaEntity> findByDesignSnapshotId(UUID designSnapshotId);
 
+    List<VariantJpaEntity> findByDesignSnapshotIdIn(java.util.Collection<UUID> designSnapshotIds);
+
     long countByProductIdAndOwnerCustomerId(UUID productId, UUID ownerCustomerId);
 
     /** The SKUs among {@code skus} that belong to a customer other than {@code customerId}. */
