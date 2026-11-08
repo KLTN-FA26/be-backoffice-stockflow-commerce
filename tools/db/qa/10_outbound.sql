@@ -5,7 +5,8 @@
 -- shipments (G4-5, V20261021000300; docs 08 BR-01/03/04, 09 §5); a load plan's vehicle, its loading and the handover
 -- (SCRUM-392; docs 09 §4.2, BR-01/03/08 - every order ships as a full truckload, parcel loads and COD were removed by
 -- V20261108000400); damage found at packing among picked units (R8,
--- V20261101030000/030100). Needs the demo seed.
+-- V20261101030000/030100); a carrier's connection settings and service codes (3-1, V20261108001300; docs 09 §4.1
+-- step 2, BR-21). Needs the demo seed.
 -- Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -421,5 +422,39 @@ SELECT pg_temp.expect_fail('F63 goods going back to the supplier into a location
                                           from_status, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'SUPPLIER_RETURN', 'SOFA-3S-GREY', 'HCM-QC01', 'HCM-A01-2-B', 1, 'DAMAGED',
             'DAMAGE_REPORT', md5('qa:dmg:f50')::uuid, NOW()) $q$);
+
+-- 3-1: what each kind of carrier connection needs (V20261108001300).
+INSERT INTO fulfillment.carrier (id, code, name, status) VALUES (md5('qa:carrier:f64')::uuid, 'QA-AHA', 'QA Ahamove',
+                                                                  'ACTIVE');
+SELECT pg_temp.expect_fail('F64 a manual carrier with webhooks enabled', $q$
+    UPDATE fulfillment.carrier SET webhook_enabled = TRUE WHERE id = md5('qa:carrier:f64')::uuid $q$);
+SELECT pg_temp.expect_fail('F65 a signing carrier without its secret', $q$
+    UPDATE fulfillment.carrier SET connection_type = 'WEBHOOK_LOAD' WHERE id = md5('qa:carrier:f64')::uuid $q$);
+SELECT pg_temp.expect_fail('F66 a secret stored in clear', $q$
+    UPDATE fulfillment.carrier SET connection_type = 'WEBHOOK_LOAD', webhook_secret_sealed = 'my-signing-secret'
+    WHERE id = md5('qa:carrier:f64')::uuid $q$);
+SELECT pg_temp.expect_fail('F67 a carrier booked through its API without the webhook header credential', $q$
+    UPDATE fulfillment.carrier SET connection_type = 'API_BOOKING', api_environment = 'STAGING',
+           api_account = '84908000000', api_key_sealed = 'v1:AAAAAAAAAAAAAAAAAAAAAAAA'
+    WHERE id = md5('qa:carrier:f64')::uuid $q$);
+SELECT pg_temp.expect_ok('F68 a carrier booked through its API with everything it needs', $q$
+    UPDATE fulfillment.carrier SET connection_type = 'API_BOOKING', webhook_enabled = TRUE, api_environment = 'STAGING',
+           api_account = '84908000000', api_key_sealed = 'v1:AAAAAAAAAAAAAAAAAAAAAAAA', webhook_auth_header = 'apikey',
+           webhook_auth_value_sealed = 'v1:BBBBBBBBBBBBBBBBBBBBBBBB',
+           failure_reason_map = '{"Khách không nghe máy": "CUSTOMER_ABSENT"}'
+    WHERE id = md5('qa:carrier:f64')::uuid $q$);
+SELECT pg_temp.expect_fail('F69 a failure reason mapped to no internal reason', $q$
+    UPDATE fulfillment.carrier SET failure_reason_map = '{"Xe hỏng": "BROKEN_TRUCK"}'
+    WHERE id = md5('qa:carrier:f64')::uuid $q$);
+SELECT pg_temp.expect_ok('F70 a service code for a truck size in a city', $q$
+    INSERT INTO fulfillment.carrier_service_code (id, carrier_id, vehicle_type_id, province_code, carrier_city_code,
+                                                  service_code)
+    VALUES (md5('qa:svc:f70')::uuid, md5('qa:carrier:f64')::uuid,
+            (SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-1T25'), '79', 'SGN', 'SGN-TRUCK-1000') $q$);
+SELECT pg_temp.expect_fail('F71 a second service code for the same truck size in the same city', $q$
+    INSERT INTO fulfillment.carrier_service_code (id, carrier_id, vehicle_type_id, province_code, carrier_city_code,
+                                                  service_code)
+    VALUES (gen_random_uuid(), md5('qa:carrier:f64')::uuid,
+            (SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-1T25'), '79', 'SGN', 'SGN-TRUCK-OTHER') $q$);
 ROLLBACK;
 \echo 'PASS 09_outbound'
