@@ -260,7 +260,7 @@ class DesignReviewIntegrationTest {
     void anApprovedDesignIsFrozenStampedAndGivenItsOwnSku() throws Exception {
         as(manager, true);
         decide(version() - 1, true, null).andExpect(status().isConflict());
-        decide(version(), true, null)
+        decide(version(), true, "In đúng màu Pantone 186C")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));
 
@@ -295,9 +295,28 @@ class DesignReviewIntegrationTest {
             PDRectangle trim = stamped.getPage(0).getTrimBox();
             assertThat((double) trim.getWidth()).isCloseTo(surface.trimBounds().width() * 72 / 25.4, within(0.01));
             assertThat(stamped.getDocumentCatalog().getMetadata()).isNotNull();
+            // Named by its template and design: the variant's SKU is not the customer's.
+            assertThat(stamped.getDocumentInformation().getTitle()).isEqualTo("Print file CUP12-BODY, design " + design)
+                    .doesNotContain(sku);
+        }
+
+        // The production instruction names the SKU the customer was issued, not the variant it was drawn on.
+        String sheetKey = jdbc.queryForObject("SELECT storage_key FROM design.design_artifact WHERE id = ?::uuid",
+                String.class, snapshot.get("artifacts").findParents("role").stream()
+                        .filter(a -> a.get("role").asText().equals("PRODUCTION_INSTRUCTION")).findFirst().orElseThrow()
+                        .get("artifactId").asText());
+        try (var in = storage.download(sheetKey); PDDocument sheet = Loader.loadPDF(in.readAllBytes())) {
+            String text = new org.apache.pdfbox.text.PDFTextStripper().getText(sheet);
+            assertThat(text.lines().filter(line -> line.contains("SKU riêng của khách")))
+                    .singleElement().asString().contains(customerSku);
+            assertThat(text.lines().filter(line -> line.startsWith("Quy cách")))
+                    .anySatisfy(line -> assertThat(line).contains(sku));
         }
 
         assertThat(decisions()).last().isEqualTo("APPROVED");
+        // The Sales Manager's note stays in the history with the decision (BR-13).
+        assertThat(jdbc.queryForObject("SELECT notes FROM design.design_decision WHERE draft_id = ?::uuid AND "
+                + "decision = 'APPROVED'", String.class, design)).contains(customerSku, "In đúng màu Pantone 186C");
         assertThat(recorded.matching(DesignReviewed.class, e -> e.designId().toString().equals(design)))
                 .singleElement().satisfies(event -> {
                     assertThat(event.outcome()).isEqualTo("APPROVED");

@@ -116,6 +116,21 @@ public class CustomerSkuService implements CustomerSkus {
     }
 
     @Override
+    @Transactional
+    public String nextSku(String sourceSku, UUID customerId, String customerCode) {
+        if (sourceSku == null || customerId == null || customerCode == null
+                || !CUSTOMER_CODE.matcher(customerCode).matches()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A customer SKU needs a customer, a customer code and a source variant");
+        }
+        VariantJpaEntity source = variants.findBySku(sourceSku)
+                .orElseThrow(() -> new BusinessException(ErrorCode.VARIANT_NOT_FOUND));
+        ProductJpaEntity product = products.lockById(source.getProductId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
+        return nextCode(product, customerId, customerCode);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public void requireVisibleTo(java.util.Collection<String> skus, UUID customerId) {
         if (skus == null || skus.isEmpty()) {

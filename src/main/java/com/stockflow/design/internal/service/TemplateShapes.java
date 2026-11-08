@@ -12,8 +12,9 @@ import java.util.Map;
 /**
  * A customization template in the shape of one template of the storefront's P2
  * ({@code GET /catalog/products/{slug}/customization}), plus {@code active}: what the studio reads to draw a design.
- * One shape for the template as it is now and for the template frozen in an approved design's snapshot, which is this
- * very text - so an approved design reopens exactly as it was approved (kltn-docs 12 B39, BR-08).
+ * One shape for the template as it is now and for the template frozen in an approved design's snapshot - the same JSON,
+ * though the snapshot's column stores it in its own key order and spacing, and no checksum covers it - so an approved
+ * design reopens exactly as it was approved (kltn-docs 12 B39, BR-08).
  */
 final class TemplateShapes {
 

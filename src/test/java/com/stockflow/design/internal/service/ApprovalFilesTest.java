@@ -17,10 +17,12 @@ import com.stockflow.product.api.PrintConfig;
 import com.stockflow.product.api.ProductModel;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -68,10 +70,19 @@ class ApprovalFilesTest {
         }
     }
 
+    /** {@code pdf} stamped for {@code template}, through files on disk as the approval does. */
+    private static byte[] stamped(byte[] pdf, PrintConfig template, String title) throws Exception {
+        try (PrintFileCopy in = PrintFileCopy.empty(); PrintFileCopy out = PrintFileCopy.empty()) {
+            Files.write(in.path(), pdf);
+            new PrintReadyStamp().stamp(in, template, title, out);
+            return Files.readAllBytes(out.path());
+        }
+    }
+
     @Test
     void aPrintFileThatFitsIsStampedWithItsBoxesAndThePdfxIdentification() throws Exception {
-        byte[] stamped = new PrintReadyStamp().stamp(pdf(new double[] {206, 306}, new double[] {206, 306}), bag(),
-                "Print file CUP-12-0312345678-01");
+        byte[] stamped = stamped(pdf(new double[] {206, 306}, new double[] {206, 306}), bag(),
+                "Print file CUP12-BODY");
 
         try (PDDocument document = Loader.loadPDF(stamped)) {
             for (PDPage page : document.getPages()) {
@@ -93,8 +104,7 @@ class ApprovalFilesTest {
     void onACupTheTrimBoxIsTheWallsBoundingBoxInsideTheBleed() throws Exception {
         PrintConfig cup = cup();
         PrintSurface wall = PrintSurface.of(cup.model(), cup.printAreas().get(0));
-        byte[] stamped = new PrintReadyStamp().stamp(pdf(new double[] {wall.flatWidth(), wall.flatHeight()}), cup,
-                "Print file");
+        byte[] stamped = stamped(pdf(new double[] {wall.flatWidth(), wall.flatHeight()}), cup, "Print file");
 
         try (PDDocument document = Loader.loadPDF(stamped)) {
             PDRectangle trim = document.getPage(0).getTrimBox();
@@ -109,13 +119,47 @@ class ApprovalFilesTest {
     }
 
     @Test
+    void aCropBoxTighterThanThePageAndAnArtBoxDoNotSurviveTheStamp() throws Exception {
+        byte[] original;
+        try (var document = new PDDocument()) {
+            for (int i = 0; i < 2; i++) {
+                var page = new PDPage(new PDRectangle(206 * PT, 306 * PT));
+                page.setCropBox(new PDRectangle(3 * PT, 3 * PT, 200 * PT, 300 * PT));
+                page.setArtBox(new PDRectangle(10 * PT, 10 * PT, 100 * PT, 100 * PT));
+                document.addPage(page);
+            }
+            var out = new ByteArrayOutputStream();
+            document.save(out);
+            original = out.toByteArray();
+        }
+
+        try (PDDocument document = Loader.loadPDF(stamped(original, bag(), "x"))) {
+            for (PDPage page : document.getPages()) {
+                assertThat((double) page.getCropBox().getWidth()).isCloseTo(206 * PT, within(0.01));
+                assertThat((double) page.getCropBox().getHeight()).isCloseTo(306 * PT, within(0.01));
+                assertThat(page.getCOSObject().containsKey(COSName.ART_BOX)).isFalse();
+            }
+        }
+    }
+
+    @Test
     void aPrintFileThatDoesNotFitIsRefusedRatherThanStamped() throws Exception {
-        PrintReadyStamp stamp = new PrintReadyStamp();
-        assertThatThrownBy(() -> stamp.stamp(pdf(new double[] {206, 306}), bag(), "x"))
+        assertThatThrownBy(() -> stamped(pdf(new double[] {206, 306}), bag(), "x"))
                 .extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.DESIGN_PRINT_FILE_INVALID);
-        assertThatThrownBy(() -> stamp.stamp(pdf(new double[] {210, 297}, new double[] {206, 306}), bag(), "x"))
+        assertThatThrownBy(() -> stamped(pdf(new double[] {210, 297}, new double[] {206, 306}), bag(), "x"))
                 .extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.DESIGN_PRINT_FILE_INVALID);
-        assertThatThrownBy(() -> stamp.stamp("not a pdf".getBytes(), bag(), "x"))
+        assertThatThrownBy(() -> stamped("not a pdf".getBytes(), bag(), "x"))
+                .extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.DESIGN_PRINT_FILE_INVALID);
+        // A page tree claiming a page it does not have: PDFBox fails with a runtime exception, never a 500 here.
+        byte[] lying;
+        try (var document = new PDDocument()) {
+            document.addPage(new PDPage(new PDRectangle(206 * PT, 306 * PT)));
+            document.getPages().getCOSObject().setInt(COSName.COUNT, 2);
+            var out = new ByteArrayOutputStream();
+            document.save(out);
+            lying = out.toByteArray();
+        }
+        assertThatThrownBy(() -> stamped(lying, bag(), "x"))
                 .extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.DESIGN_PRINT_FILE_INVALID);
     }
 

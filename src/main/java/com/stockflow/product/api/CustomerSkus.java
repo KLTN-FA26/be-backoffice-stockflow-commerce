@@ -24,6 +24,17 @@ public interface CustomerSkus {
      */
     CustomerSku issue(IssueCustomerSkuCommand command);
 
+    /**
+     * The code {@link #issue} gives the next SKU of {@code customerId} on {@code sourceSku}'s product, with that product
+     * locked until the caller's transaction ends - the lock {@code issue} takes - so nothing else issues on it
+     * meanwhile and the code stays the one issued. For a document that must name the SKU and be frozen before the SKU
+     * can exist: the production instruction of an approval, which the snapshot the SKU names holds (kltn-docs 12 §4.5).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code VARIANT_NOT_FOUND} for an unknown source SKU;
+     *         {@code VALIDATION_FAILED} for a customer code a SKU cannot hold
+     */
+    String nextSku(String sourceSku, UUID customerId, String customerCode);
+
     /** The SKU issued for an approved design snapshot, if any (one per snapshot: uk_variants_design_snapshot). */
     java.util.Optional<CustomerSku> ofSnapshot(java.util.UUID designSnapshotId);
 

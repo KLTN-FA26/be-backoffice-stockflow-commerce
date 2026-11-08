@@ -8,12 +8,14 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.json.CanonicalJson;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.storage.Checksums;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileStorage;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.common.storage.RecordRetention;
+import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.contracts.DesignReviewed;
 import com.stockflow.customer.api.CustomerService;
@@ -46,6 +48,7 @@ import jakarta.persistence.EntityManager;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -72,9 +75,14 @@ import org.springframework.transaction.support.TransactionOperations;
  * <h2>Approving is one step (BR-09)</h2>
  * <p>The files are checked, the print file stamped for the press, the production instruction drawn, the snapshot
  * written with the layout and the images, every file and image retained, and the customer's SKU issued - or none of
- * it: if anything fails, the design stays pending review. The slow part (reading and stamping the print file, drawing
- * and storing the new files) runs with no transaction held; a short transaction then locks the design, checks that
- * nothing moved meanwhile, and does the rest.</p>
+ * it: if anything fails, the design stays pending review. The slow part - copying the print file (up to 50 MB) to
+ * disk, stamping it and storing the stamped copy - runs with no transaction held; a short transaction then locks the
+ * design, checks that nothing moved meanwhile, and does the rest.</p>
+ *
+ * <p>The production instruction is drawn inside that transaction: it names the customer's SKU, which is issued there
+ * for the snapshot the instruction is frozen in. The SKU's code is read first with its product locked until the
+ * approval commits ({@link CustomerSkus#nextSku}), the one-page sheet drawn and stored - a rollback deletes it - and
+ * the code checked once the SKU is issued.</p>
  */
 @Service
 @Transactional(readOnly = true)
@@ -161,16 +169,30 @@ public class DesignReviewService {
             }
             return tx.execute(status -> returnDesign(id, actor, version, reason));
         }
+        String note = notes == null || notes.isBlank() ? null : notes.strip();
+        if (note != null && note.length() > REASON_MAX) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A note on an approval is at most " + REASON_MAX + " characters");
+        }
         Approval approval = tx.execute(status -> approval(id, actor, version));
-        byte[] printFile = verifiedPrintFile(approval);
-        byte[] stamped = stamp.stamp(printFile, approval.template(), "Print file " + approval.sku());
-        byte[] sheet = instructions.render(new ProductionInstructionSheet.Facts(approval.sku(), approval.productName(),
-                approval.sourceSku(), approval.template(), approval.carton(), approval.layoutChecksum(),
-                com.stockflow.common.storage.Checksums.sha256Hex(stamped), actor, clock.instant()));
-        try (PreparedFiles print = files.prepare(FileCategory.DESIGN_RENDER, upload(stamped, "print-ready.pdf"));
-             PreparedFiles instruction = files.prepare(FileCategory.DESIGN_RENDER,
-                     upload(sheet, "production-instruction.pdf"))) {
-            return tx.execute(status -> approve(id, actor, approval, print, instruction));
+        try (PrintFileCopy submitted = PrintFileCopy.download(storage, approval.printReady().key(),
+                approval.printReadyChecksum());
+             PrintFileCopy stamped = PrintFileCopy.empty()) {
+            // Titled by its template and design: the customer's SKU exists only once the approval commits.
+            stamp.stamp(submitted, approval.template(), "Print file " + approval.template().code() + ", design " + id,
+                    stamped);
+            long size = stamped.size();
+            if (size > FileCategory.DESIGN_RENDER.maxBytes()) {
+                throw new BusinessException(ErrorCode.DESIGN_PRINT_FILE_INVALID, "Stamped, the print file is larger than "
+                        + FileCategory.DESIGN_RENDER.maxBytes() / (1024 * 1024) + " MB");
+            }
+            try (InputStream content = Files.newInputStream(stamped.path());
+                 PreparedFiles print = files.prepare(FileCategory.DESIGN_RENDER,
+                         new FileUpload("print-ready.pdf", "application/pdf", size, content))) {
+                return tx.execute(status -> approve(id, actor, note, approval, print));
+            }
+        } catch (IOException ex) {
+            throw new StorageException("Could not read the stamped print file", ex);
         }
     }
 
@@ -190,8 +212,8 @@ public class DesignReviewService {
 
     /** What the approval reads first, and checks again under the lock: nothing it was decided on may have moved. */
     private record Approval(long version, String layoutChecksum, Map<DesignArtifactRole, UUID> files,
-                            StoredFile printReady, String printReadyChecksum, PrintConfig template, String sku,
-                            String sourceSku, String productName, UomConversion carton) {
+                            StoredFile printReady, String printReadyChecksum, PrintConfig template,
+                            String productName, UomConversion carton) {
     }
 
     private Approval approval(UUID id, UUID actor, long version) {
@@ -215,7 +237,8 @@ public class DesignReviewService {
                     || !Long.valueOf(template.version()).equals(file.getTemplateVersion())) {
                 // The template was edited after the design was submitted: its files no longer fit it. Return it.
                 throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED, "The submitted " + role
-                        + " file no longer matches the layout or the template");
+                        + " file no longer matches the layout or the template", List.of(),
+                        Map.of("roles", List.of(role.name())));
             }
         }
         DesignArtifactJpaEntity print = artifacts.findById(submitted.get(DesignArtifactRole.PRINT_READY)).orElseThrow();
@@ -227,25 +250,11 @@ public class DesignReviewService {
                 List.of()).stream().filter(unit -> unit.active() && !unit.base() && unit.factor() > 1)
                 .max(Comparator.comparingInt(UomConversion::factor)).orElse(null);
         return new Approval(draft.getVersion(), layout.getChecksum(), submitted, print.storedFile(),
-                print.getChecksum(), template, draft.getSku(), draft.getSku(), productName, carton);
+                print.getChecksum(), template, productName, carton);
     }
 
-    /** The print file's bytes, which must still be the bytes submitted: stored and checked against their checksum. */
-    private byte[] verifiedPrintFile(Approval approval) {
-        byte[] bytes;
-        try (InputStream in = storage.download(approval.printReady().key())) {
-            bytes = in.readAllBytes();
-        } catch (IOException ex) {
-            throw new com.stockflow.common.storage.StorageException("Could not read the print file", ex);
-        }
-        if (!com.stockflow.common.storage.Checksums.sha256Hex(bytes).equals(approval.printReadyChecksum())) {
-            throw new BusinessException(ErrorCode.CONFLICT, "The stored print file differs from the one submitted");
-        }
-        return bytes;
-    }
-
-    private DesignWorkflowService.DraftView approve(UUID id, UUID actor, Approval approval, PreparedFiles print,
-                                                    PreparedFiles instruction) {
+    private DesignWorkflowService.DraftView approve(UUID id, UUID actor, String note, Approval approval,
+                                                    PreparedFiles print) {
         DesignDraftJpaEntity draft = lockPending(id, approval.version());
         DesignDocumentJpaEntity layout = documents.findById(id).orElseThrow();
         if (!layout.getChecksum().equals(approval.layoutChecksum()) || !draft.getCurrentArtifacts().entrySet()
@@ -260,8 +269,15 @@ public class DesignReviewService {
         }
         DesignArtifactJpaEntity stampedFile = newArtifact(id, DesignArtifactRole.PRINT_READY, print,
                 approval.layoutChecksum(), approval.template().version());
-        DesignArtifactJpaEntity sheetFile = newArtifact(id, DesignArtifactRole.PRODUCTION_INSTRUCTION, instruction,
-                approval.layoutChecksum(), approval.template().version());
+        // The code of the SKU issued below, its product locked from here until this commits.
+        String customerCode = customers.findById(draft.getCustomerId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).code();
+        String customerSku = customerSkus.nextSku(draft.getSku(), draft.getCustomerId(), customerCode);
+        byte[] sheet = instructions.render(new ProductionInstructionSheet.Facts(customerSku, approval.productName(),
+                draft.getSku(), approval.template(), approval.carton(), approval.layoutChecksum(),
+                stampedFile.getChecksum(), actor, now));
+        DesignArtifactJpaEntity sheetFile = drawnArtifact(id, DesignArtifactRole.PRODUCTION_INSTRUCTION, sheet,
+                "production-instruction.pdf", approval.layoutChecksum(), approval.template().version());
         draft.attachArtifact(DesignArtifactRole.PRINT_READY, stampedFile.getId());
         draft.attachArtifact(DesignArtifactRole.PRODUCTION_INSTRUCTION, sheetFile.getId());
 
@@ -276,22 +292,24 @@ public class DesignReviewService {
                 bundle, layout.getDocument(), layout.getChecksum(), placed, TemplateShapes.json(approval.template()),
                 actor, now));
 
-        String customerCode = customers.findById(draft.getCustomerId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).code();
         CustomerSku issued = customerSkus.issue(new IssueCustomerSkuCommand(snapshotId, draft.getCustomerId(),
                 customerCode, draft.getSku(), draft.getName()));
+        if (!issued.sku().equals(customerSku)) {
+            // Its product is locked since the code was read: only something issuing around that lock gets here.
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "The customer's SKU changed while the design was being approved; approve it again");
+        }
 
         // From here what was approved is what is printed: no file or image of it can be overwritten or deleted for the
         // confirmed-design retention period once this commits (S3 Object Lock).
         bundle.forEach(file -> files.retainAfterCommit(file.storedFile().key(), RecordRetention.CONFIRMED_DESIGN));
         placed.forEach(asset -> files.retainAfterCommit(asset.storageKey(), RecordRetention.CONFIRMED_DESIGN));
         print.adopt();
-        instruction.adopt();
 
         draft.approve(actor, now);
         drafts.saveAndFlush(draft);
         decide(draft, actor, DesignDecisionType.APPROVED, "Snapshot " + snapshotId + ", SKU " + issued.sku()
-                + ", checksum " + snapshot.getChecksum());
+                + ", checksum " + snapshot.getChecksum() + (note == null ? "" : ". " + note));
         events.publishEvent(new DesignReviewed(id, draft.getOwnerUserId(), "APPROVED", issued.sku(), now));
         return views.of(draft);
     }
@@ -300,6 +318,17 @@ public class DesignReviewService {
                                                 String layoutChecksum, long templateVersion) {
         PreparedFiles.PreparedFile file = prepared.single();
         var row = new DesignArtifactJpaEntity(Identifiers.newId(), designId, role, file.file(), file.sha256());
+        row.renderedFrom(layoutChecksum, templateVersion);
+        return artifacts.saveAndFlush(row);
+    }
+
+    /** A PDF drawn in the approval's transaction, stored so that a rollback deletes it again. */
+    private DesignArtifactJpaEntity drawnArtifact(UUID designId, DesignArtifactRole role, byte[] pdf, String name,
+                                                  String layoutChecksum, long templateVersion) {
+        String checksum = Checksums.sha256Hex(pdf);
+        StoredFile file = files.store(FileCategory.DESIGN_RENDER, new FileUpload(name, "application/pdf", pdf.length,
+                new ByteArrayInputStream(pdf), checksum));
+        var row = new DesignArtifactJpaEntity(Identifiers.newId(), designId, role, file, checksum);
         row.renderedFrom(layoutChecksum, templateVersion);
         return artifacts.saveAndFlush(row);
     }
@@ -351,9 +380,5 @@ public class DesignReviewService {
 
     private void decide(DesignDraftJpaEntity draft, UUID actor, DesignDecisionType type, String notes) {
         decisions.save(new DesignDecisionJpaEntity(draft, actor, type.name(), notes));
-    }
-
-    private static FileUpload upload(byte[] bytes, String name) {
-        return new FileUpload(name, "application/pdf", bytes.length, new ByteArrayInputStream(bytes));
     }
 }
