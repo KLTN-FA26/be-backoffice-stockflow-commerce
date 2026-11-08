@@ -765,6 +765,8 @@ public enum ErrorCode {
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
     /** A provider webhook larger than any real delivery report: read no further (SCRUM-352). */
     WEBHOOK_PAYLOAD_TOO_LARGE("The webhook body is too large", 413),
+    /** A JSON body over its route's cap (stockflow.web.body-limits): a design document past 1,000,000 bytes. */
+    REQUEST_BODY_TOO_LARGE("The request body is too large", 413),
     UNSUPPORTED_MEDIA_TYPE("This file type is not accepted", 415),
 
     // ---- 422: understood, but semantically refused

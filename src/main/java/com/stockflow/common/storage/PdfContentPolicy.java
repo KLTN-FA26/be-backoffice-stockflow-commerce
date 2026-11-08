@@ -98,7 +98,7 @@ final class PdfContentPolicy {
         if (!"application/pdf".equals(ContentTypePolicy.normalise(contentType))) {
             return;
         }
-        boolean printFile = category == FileCategory.DESIGN_RENDER;
+        boolean printFile = category == FileCategory.DESIGN_RENDER || category == FileCategory.PRINT_TEMPLATE;
         try (PDDocument document = Loader.loadPDF(file.toFile(), "", null, null,
                 IOUtils.createTempFileOnlyStreamCache())) {
             if (printFile && document.isEncrypted()) {

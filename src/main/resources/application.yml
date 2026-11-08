@@ -494,6 +494,13 @@ stockflow:
   web:
     request-log:
       enabled: true
+    # Per-route caps on a request body (RequestBodyLimitFilter), enforced before the idempotency filter or Jackson
+    # reads it. A customer's design document is at most 1,000,000 bytes (kltn-docs 12; design.design_document checks
+    # it too).
+    body-limits:
+      - method: PUT
+        pattern: /api/v1/designs/{id}/document
+        max-bytes: 1000000
 
   inventory:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.

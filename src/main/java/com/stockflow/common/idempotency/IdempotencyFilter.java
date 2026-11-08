@@ -5,6 +5,7 @@ import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.web.RequestBodyTooLargeException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -157,7 +158,14 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
             return;
         }
 
-        CachedBodyRequest buffered = CachedBodyRequest.wrap(request);
+        CachedBodyRequest buffered;
+        try {
+            buffered = CachedBodyRequest.wrap(request);
+        } catch (RequestBodyTooLargeException tooLarge) {
+            // A route capped by RequestBodyLimitFilter: the cap bites while the body is buffered, before any claim.
+            writeError(response, ErrorCode.REQUEST_BODY_TOO_LARGE, ErrorCode.REQUEST_BODY_TOO_LARGE.defaultMessage());
+            return;
+        }
         String caller = IdempotencyKeys.callerNamespace(
                 currentUserProvider.current().map(u -> u.userId()).orElse(null));
         String fingerprint = IdempotencyKeys.fingerprint(

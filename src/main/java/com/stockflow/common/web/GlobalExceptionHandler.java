@@ -226,6 +226,12 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ApiResponse<Void>> handleUnreadable(HttpMessageNotReadableException ex) {
+        if (RequestBodyTooLargeException.causedBy(ex)) {
+            // A capped route's body overflowed while Jackson read it (RequestBodyLimitFilter): too large, not malformed.
+            log.warn("Request body over its route's limit");
+            return respond(ErrorCode.REQUEST_BODY_TOO_LARGE,
+                    messages.forCode(ErrorCode.REQUEST_BODY_TOO_LARGE), null);
+        }
         log.warn("Unreadable request body: {}", ex.getClass().getSimpleName());
         return respond(ErrorCode.MALFORMED_REQUEST,
                 messages.forCode(ErrorCode.MALFORMED_REQUEST), null);

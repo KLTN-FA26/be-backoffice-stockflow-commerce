@@ -39,6 +39,24 @@ public enum FileCategory {
             Set.of("image/jpeg", "image/png", "image/webp", "application/pdf")),
 
     /**
+     * An image a customer places in a design of their own (kltn-docs 12 BR-04): a logo, a photo, a pattern - kept as
+     * uploaded, at print resolution, so the size limit is a design render's. Private, never re-encoded and never shown
+     * from a CDN: the bytes are what the producer prints, and a customer's artwork is nobody else's to see. Each
+     * customization template narrows the types further; this is the widest set any template may allow.
+     */
+    DESIGN_ASSET("design-assets", 50 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp")),
+
+    /**
+     * A reference die-line the Sales Manager attaches to a customization template (kltn-docs 01 §4.10): what the
+     * printed area looks like flat, for the customer to compare against. Only a reference - the print area itself is
+     * computed from the template's model - so a PDF or a PNG; no SVG, whose embedded scripts would need a sanitizer
+     * nobody has written.
+     */
+    PRINT_TEMPLATE("print-templates", 20 * 1024 * 1024,
+            Set.of("application/pdf", "image/png")),
+
+    /**
      * Supplier documents kept with a purchase order: quotations, contracts, confirmations, delivery notes,
      * certificates of conformity. A photo of a paper document too: a delivery note is signed on paper.
      */
