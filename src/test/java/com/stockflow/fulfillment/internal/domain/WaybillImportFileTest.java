@@ -70,6 +70,37 @@ class WaybillImportFileTest {
     }
 
     @Test
+    @DisplayName("Excel set to the Vietnamese region: the comma heading kept in one cell, the lines with semicolons")
+    void vietnameseRegionExcel() {
+        List<WaybillImportFile.Row> rows = WaybillImportFile.parse(withBom(
+                "Mã chuyến,Mã vận đơn,Biển số,Tên tài xế,Điện thoại tài xế;;;;\r\nLD-1;WB-1;51C-1;Tài;0900\r\n"
+                        + "LD-2;WB-2;;;\r\n"));
+
+        assertThat(rows).containsExactly(new WaybillImportFile.Row(2, "LD-1", "WB-1", "51C-1", "Tài", "0900"),
+                new WaybillImportFile.Row(3, "LD-2", "WB-2", null, null, null));
+    }
+
+    @Test
+    @DisplayName("old Mac line breaks (CR alone) count lines as Excel does")
+    void carriageReturnsOnly() {
+        assertThat(WaybillImportFile.parse(utf8("h1,h2\rLD-1,WB-1\r\rLD-2,WB-2\r")))
+                .extracting(WaybillImportFile.Row::line).containsExactly(2, 4);
+    }
+
+    @Test
+    @DisplayName("the extract keeps the heading and only the lines asked for, each where the parse finds it again")
+    void extract() {
+        byte[] file = withBom("Mã chuyến,Mã vận đơn\r\nLD-1,WB-1\r\nLD-2,\"WB,2\"\r\nLD-3,WB-3\r\n");
+
+        byte[] extract = WaybillImportFile.extract(file, java.util.Set.of(3));
+
+        assertThat(new String(extract, StandardCharsets.UTF_8)).startsWith("\uFEFFMã chuyến,Mã vận đơn\r\n")
+                .doesNotContain("LD-1").doesNotContain("LD-3");
+        assertThat(WaybillImportFile.parse(extract)).singleElement()
+                .satisfies(r -> assertThat(r.waybillNo()).isEqualTo("WB,2"));
+    }
+
+    @Test
     @DisplayName("quoted cells keep the delimiter, doubled quotes and line breaks")
     void quoting() {
         List<WaybillImportFile.Row> rows = WaybillImportFile.parse(utf8("h1,h2,h3,h4\n"
@@ -83,8 +114,13 @@ class WaybillImportFileTest {
     }
 
     @Test
-    @DisplayName("not UTF-8, empty, no data line, a quote left open, over 1,000 lines or 1 MB: refused whole")
+    @DisplayName("not UTF-8, a NUL, empty, no data line, a quote left open, over 1,000 lines, 10,000 lines of any kind or "
+            + "1 MB: refused whole")
     void malformed() {
+        assertThatThrownBy(() -> WaybillImportFile.parse(utf8("h1,h2\nLD-1,WB\u00001\n")))
+                .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("NUL");
+        assertThatThrownBy(() -> WaybillImportFile.parse(utf8("h1,h2\nLD-1,WB-1\n" + "\n".repeat(20_000))))
+                .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("10000");
         assertThatThrownBy(() -> WaybillImportFile.parse(new byte[] {'a', ',', (byte) 0xC3, (byte) 0x28, '\n'}))
                 .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("UTF-8");
         assertThatThrownBy(() -> WaybillImportFile.parse(new byte[0])).isInstanceOf(WaybillImportFile.Malformed.class);

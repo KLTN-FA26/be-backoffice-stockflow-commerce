@@ -83,7 +83,8 @@ class DispatchVehicleHandoverTest {
             mock(DispatchLoadPackageJpaRepository.class), store, mock(LoadNumbers.class), shipments, locks, packages,
             packageLines, mock(PickJpaRepository.class), carriers, timeline, mock(ShipmentContext.class), orders,
             warehouses, mock(IdentityService.class), planVehicles, mock(LeftBehindParcels.class),
-            new Waybills(loads, mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class)),
+            new Waybills(loads, mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class),
+                    mock(jakarta.persistence.EntityManager.class, org.mockito.Mockito.RETURNS_DEEP_STUBS)),
             mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class),
             Clock.fixed(NOW, ZoneOffset.UTC));
 

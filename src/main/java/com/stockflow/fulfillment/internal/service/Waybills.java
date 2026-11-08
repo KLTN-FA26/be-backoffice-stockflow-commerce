@@ -25,16 +25,42 @@ import java.util.function.Supplier;
  * within its carrier among loads not cancelled, an API_BOOKING carrier's number comes from its booking API and from
  * nothing else, and every change is written to the history. Runs in its caller's transaction, under the load's row lock
  * the caller holds.
+ *
+ * <p>A number is checked under a transaction-scoped advisory lock on (carrier, number), taken by every path that gives
+ * a load a number: two loads given one number at once - each under its own load lock - are then checked one after the
+ * other, and the second sees the first's number instead of meeting the unique index. An import takes the locks of all
+ * its numbers, sorted, after its load locks; a single load takes one, after its own: no two paths can wait on each
+ * other in a circle.</p>
  */
 @Component
 class Waybills {
 
     private final DispatchLoadJpaRepository loads;
     private final WaybillChangeJpaRepository changes;
+    private final jakarta.persistence.EntityManager entityManager;
 
-    Waybills(DispatchLoadJpaRepository loads, WaybillChangeJpaRepository changes) {
+    Waybills(DispatchLoadJpaRepository loads, WaybillChangeJpaRepository changes,
+             jakarta.persistence.EntityManager entityManager) {
         this.loads = loads;
         this.changes = changes;
+        this.entityManager = entityManager;
+    }
+
+    /** A number of a carrier, as its advisory lock names it. */
+    record Number(UUID carrierId, String waybillNo) implements Comparable<Number> {
+        @Override
+        public int compareTo(Number other) {
+            int byCarrier = carrierId.compareTo(other.carrierId);
+            return byCarrier != 0 ? byCarrier : waybillNo.compareTo(other.waybillNo);
+        }
+    }
+
+    /** Takes the advisory locks of these numbers, in their natural order, until the transaction ends. */
+    void lock(java.util.Collection<Number> numbers) {
+        numbers.stream().distinct().sorted().forEach(n -> entityManager
+                .createNativeQuery("SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))) AS locked")
+                .setParameter("key", "waybill:" + n.carrierId() + ":" + n.waybillNo())
+                .getSingleResult());
     }
 
     /**
@@ -60,6 +86,7 @@ class Waybills {
         if (number == null) {
             return;
         }
+        lock(List.of(new Number(carrierId, number)));
         List<DispatchLoadJpaEntity> others = loads.findLiveByCarrierAndWaybill(carrierId, number, loadId);
         if (!others.isEmpty()) {
             DispatchLoadJpaEntity other = others.get(0);

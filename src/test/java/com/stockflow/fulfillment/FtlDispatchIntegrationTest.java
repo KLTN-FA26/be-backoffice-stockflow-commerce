@@ -722,11 +722,23 @@ class FtlDispatchIntegrationTest {
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/waybill-imports/" + importId))
                 .andExpect(status().isNotFound());
 
-        // A second file: the first load gets another number ("sẽ ghi đè"), the second its first one.
+        // A second file: the first load would get another number ("sẽ ghi đè"), the second its first one. The
+        // overwrite applies only once the dispatcher confirms the line the preview showed (BR-25).
         String csv2 = one + "," + number + "-2\r\n" + two + ",WB-IMP2-" + second.path("loadId").asText() + "\r\n";
-        JsonNode again = data(importing(dispatcher, "WAREHOUSE_STAFF", "", csv2).andExpect(status().isCreated()));
-        assertThat(again.path("lines").findValuesAsText("outcome")).containsExactly("OVERWRITE", "NEW");
+        assertThat(data(importing(dispatcher, "WAREHOUSE_STAFF", "/preview", csv2).andExpect(status().isOk()))
+                .path("lines").findValuesAsText("outcome")).containsExactly("OVERWRITE", "NEW");
+        JsonNode unconfirmed = data(importing(dispatcher, "WAREHOUSE_STAFF", "", csv2)
+                .andExpect(status().isCreated()));
+        assertThat(unconfirmed.path("lines").findValuesAsText("outcome")).containsExactly("ERROR", "NEW");
+        assertThat(unconfirmed.path("lines").get(0).path("problem").asText()).isEqualTo("OVERWRITE_NOT_CONFIRMED");
+        assertThat(load(first.path("loadId").asText()).path("waybillNo").asText()).isEqualTo(number);
+        JsonNode again = data(importing(dispatcher, "WAREHOUSE_STAFF", "?overwriteLines=2", csv2)
+                .andExpect(status().isCreated()));
+        assertThat(again.path("lines").findValuesAsText("outcome")).containsExactly("OVERWRITE", "SAME");
         assertThat(load(first.path("loadId").asText()).path("waybillNo").asText()).isEqualTo(number + "-2");
+        // The second load's line changed nothing the second time: no second copy of the file is kept with it.
+        assertThat(data(dispatch(get(LOADS + "/" + second.path("loadId").asText() + "/waybill-files"))
+                .andExpect(status().isOk()))).hasSize(1);
 
         // Not the template's table: refused whole.
         importing(dispatcher, "WAREHOUSE_STAFF", "/preview", "").andExpect(status().isBadRequest())

@@ -81,11 +81,15 @@ class WaybillImportController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Import a file: its valid lines are applied, the others kept with their reason, the file kept "
-            + "as a waybill file of every load a line applied to. 400 WAYBILL_IMPORT_INVALID_FILE")
+            + "with every load a line changed. A line overwriting a load's number applies only when its line number is "
+            + "in overwriteLines (the overwrites the preview showed and the dispatcher confirmed). 400 "
+            + "WAYBILL_IMPORT_INVALID_FILE")
     @RequiresPermission(resource = FulfillmentResources.WAYBILL_IMPORTS, action = Action.CREATE)
     public ApiResponse<WaybillImportResponse> importFile(@RequestPart("file") MultipartFile file,
-                                                         @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(toResponse(imports.importFile(read(file), file.getOriginalFilename(), actor)));
+            @RequestParam(required = false) java.util.Set<Integer> overwriteLines,
+            @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(toResponse(imports.importFile(read(file), file.getOriginalFilename(), overwriteLines,
+                actor)));
     }
 
     @GetMapping

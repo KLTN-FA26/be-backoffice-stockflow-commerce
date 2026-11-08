@@ -18,7 +18,8 @@ public interface WaybillImports {
     /**
      * One line and what it comes to.
      *
-     * @param outcome     NEW, OVERWRITE (the load has another number - "sẽ ghi đè"), SAME or ERROR
+     * @param outcome     NEW, OVERWRITE (the load has another number - "sẽ ghi đè": confirm it to apply it), SAME
+     *                    or ERROR
      * @param problem     why it is not applied (see {@code WaybillImportCheck.Problem}); null unless ERROR
      * @param holderCode  for DUPLICATE_IN_CARRIER, the load holding the number
      */
@@ -50,10 +51,13 @@ public interface WaybillImports {
      * Applies the file's valid lines, under the loads' locks and against the loads as they are then (a preview may be
      * stale), keeps the file and records the import.
      *
+     * @param overwriteLines the lines whose overwrite the preview showed and the dispatcher confirmed (BR-25); a line
+     *                       that would overwrite another number and is not among them is refused
+     *                       (OVERWRITE_NOT_CONFIRMED) - also one that became an overwrite after the preview
      * @throws com.stockflow.common.error.BusinessException 400 {@code WAYBILL_IMPORT_INVALID_FILE}; 503
      *         {@code STORAGE_ERROR} when the file cannot be kept
      */
-    ImportView importFile(byte[] file, String fileName, CurrentUser actor);
+    ImportView importFile(byte[] file, String fileName, java.util.Set<Integer> overwriteLines, CurrentUser actor);
 
     /** The imports the caller made, and those with a line on a load of their warehouses; newest first. */
     PageResponse<ImportRow> list(int page, int size, CurrentUser actor);

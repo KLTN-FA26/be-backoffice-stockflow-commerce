@@ -58,11 +58,11 @@ public enum FileCategory {
 
     /**
      * Documents kept with a business record: a purchase order's quotations, contracts, confirmations and delivery notes;
-     * a load's waybill from its carrier, and a file of waybill numbers imported (CSV; kltn-docs 09 §4.4, BR-28). A
-     * photo of a paper document too: a delivery note is signed on paper.
+     * a load's waybill from its carrier (kltn-docs 09 §4.4, BR-28). A photo of a paper document too: a delivery note is
+     * signed on paper.
      */
     DOCUMENT("documents", 25 * 1024 * 1024,
-            Set.of("application/pdf", "text/csv",
+            Set.of("application/pdf",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     "image/jpeg", "image/png")),
@@ -96,6 +96,13 @@ public enum FileCategory {
      * originals; what a reviewer is shown.
      */
     EVIDENCE_COPY("evidence-copies", 10 * 1024 * 1024, Set.of("image/jpeg")),
+
+    /**
+     * A file of waybill numbers imported from the system's template, and the extract of it kept with a warehouse's loads
+     * (3-3; kltn-docs 09 §4.4 step 4, QD-17: CSV UTF-8). A category of its own: CSV has no signature to check, so it is
+     * not let into a category whose every other type is checked.
+     */
+    WAYBILL_IMPORT("waybill-imports", 2 * 1024 * 1024, Set.of("text/csv")),
 
     /** Generated reports awaiting download. Short-lived; the retention job clears them. */
     EXPORT("exports", 100 * 1024 * 1024,

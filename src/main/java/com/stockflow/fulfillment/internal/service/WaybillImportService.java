@@ -61,9 +61,11 @@ import java.util.stream.Collectors;
  * See {@link WaybillImports}.
  *
  * <p>An import keeps the file first, with no transaction held, then applies it in one short transaction: the loads the
- * file names are locked in id order (the order load-plan operations lock them in, so the two cannot deadlock), read
- * again, checked again, and the valid lines applied through the load itself ({@code DispatchLoad.recordWaybill}) -
- * the same rules as a number typed on the load's screen. One transaction, not one per line: the import record, its
+ * file names in the importer's warehouses are locked in id order (the order load-plan operations lock them in, so the
+ * two cannot deadlock) - a load of another warehouse is never locked by someone who cannot act on it - then the
+ * advisory locks of the file's numbers (as every path giving a number takes them: a number taken meanwhile is a refused
+ * line, not a refused file); the loads are read again, checked again, and the valid lines applied through the load
+ * itself ({@code DispatchLoad.recordWaybill}) - the same rules as a number typed on the load's screen. One transaction, not one per line: the import record, its
  * lines, the loads' numbers, their history and their waybill files are all there or none is. A line refused here may
  * have passed the preview: the preview is a picture of a moment.</p>
  */
@@ -121,7 +123,9 @@ class WaybillImportService implements WaybillImports {
     @Transactional(readOnly = true)
     public Preview preview(byte[] file, CurrentUser actor) {
         List<WaybillImportFile.Row> rows = parse(file);
-        List<WaybillImportCheck.Verdict> verdicts = check(rows, loads.findByCodeIn(codes(rows)));
+        Set<String> codes = codes(rows);
+        List<WaybillImportCheck.Verdict> verdicts = check(rows, codes.isEmpty() ? List.of()
+                : loads.findByCodeIn(codes), null);
         int applicable = (int) verdicts.stream().filter(WaybillImportCheck.Verdict::applies).count();
         return new Preview(rows.size(), applicable, rows.size() - applicable,
                 verdicts.stream().map(WaybillImportService::line).toList());
@@ -130,19 +134,52 @@ class WaybillImportService implements WaybillImports {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "waybill-import", resourceId = "#result?.id()")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public ImportView importFile(byte[] file, String fileName, CurrentUser actor) {
+    public ImportView importFile(byte[] file, String fileName, Set<Integer> overwriteLines, CurrentUser actor) {
         if (actor == null || actor.userId() == null) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         List<WaybillImportFile.Row> rows = parse(file);
         String name = fileName == null || fileName.isBlank() ? "waybills.csv" : fileName.strip();
+        Set<String> codes = codes(rows);
+        Optional<AssignedWarehouses> restriction = WarehouseScope.restriction();
+        // A load never changes warehouse, so which warehouse each line is of can be read before the transaction.
+        List<DispatchLoadJpaRepository.LoadPlace> places = tx.execute(s -> codes.isEmpty() ? List.of()
+                : loads.placesOfCodes(codes));
+        Map<String, UUID> warehouseOf = places.stream().filter(pl -> visible(restriction, pl.getWarehouseId()))
+                .collect(Collectors.toMap(DispatchLoadJpaRepository.LoadPlace::getCode,
+                        DispatchLoadJpaRepository.LoadPlace::getWarehouseId));
+        // The file itself goes with the import; a load gets it whole only if every line is of the load's warehouse,
+        // otherwise the extract of its warehouse's lines - no load shows another warehouse's lines.
+        Set<UUID> warehouses = new java.util.LinkedHashSet<>(warehouseOf.values());
+        boolean oneWarehouse = warehouses.size() == 1
+                && rows.stream().allMatch(r -> r.loadCode() != null && warehouseOf.containsKey(r.loadCode()));
+        List<FileUpload> uploads = new ArrayList<>();
         // The file was read as CSV text above, whatever type the browser declared (Windows says vnd.ms-excel).
-        IncomingFiles incoming = IncomingFiles.sent(List.of(new FileUpload(name, CSV, file.length,
-                new ByteArrayInputStream(file))));
-        try (PreparedFiles prepared = incoming.prepare(FileCategory.DOCUMENT, transfers, staged)) {
-            StoredFile stored = prepared.single().file();
+        uploads.add(new FileUpload(name, CSV, file.length, new ByteArrayInputStream(file)));
+        List<UUID> extracted = new ArrayList<>();
+        if (!oneWarehouse) {
+            for (UUID warehouse : warehouses) {
+                Set<Integer> lines = rows.stream().filter(r -> r.loadCode() != null
+                        && warehouse.equals(warehouseOf.get(r.loadCode()))).map(WaybillImportFile.Row::line)
+                        .collect(Collectors.toSet());
+                byte[] extract = WaybillImportFile.extract(file, lines);
+                uploads.add(new FileUpload(name, CSV, extract.length, new ByteArrayInputStream(extract)));
+                extracted.add(warehouse);
+            }
+        }
+        try (PreparedFiles prepared = IncomingFiles.sent(uploads).prepare(FileCategory.WAYBILL_IMPORT, transfers,
+                staged)) {
+            StoredFile original = prepared.files().get(0).file();
+            Map<UUID, StoredFile> fileOf = new HashMap<>();
+            for (int i = 0; i < extracted.size(); i++) {
+                fileOf.put(extracted.get(i), prepared.files().get(i + 1).file());
+            }
+            for (UUID warehouse : warehouses) {
+                fileOf.putIfAbsent(warehouse, original);
+            }
+            Set<Integer> confirmed = overwriteLines == null ? Set.of() : Set.copyOf(overwriteLines);
             ImportView view = tx.execute(status -> {
-                ImportView applied = apply(rows, stored, name, actor);
+                ImportView applied = apply(rows, places, restriction, original, fileOf, name, confirmed, actor);
                 prepared.adopt();
                 return applied;
             });
@@ -151,16 +188,30 @@ class WaybillImportService implements WaybillImports {
         }
     }
 
-    /** Under the loads' locks: check again, apply the valid lines, record the import. */
-    private ImportView apply(List<WaybillImportFile.Row> rows, StoredFile stored, String name, CurrentUser actor) {
-        List<UUID> ids = loads.idsOfCodes(codes(rows)).stream().sorted().toList();
+    /**
+     * Under the loads' locks - the importer's loads only, in id order - and the advisory locks of the file's numbers:
+     * check again, apply the valid lines, record the import.
+     */
+    private ImportView apply(List<WaybillImportFile.Row> rows, List<DispatchLoadJpaRepository.LoadPlace> places,
+                             Optional<AssignedWarehouses> restriction, StoredFile original,
+                             Map<UUID, StoredFile> fileOf, String name, Set<Integer> confirmed, CurrentUser actor) {
         List<DispatchLoadJpaEntity> locked = new ArrayList<>();
-        for (UUID id : ids) {
-            loads.lockById(id).ifPresent(locked::add);
-        }
+        places.stream().filter(pl -> visible(restriction, pl.getWarehouseId()))
+                .map(DispatchLoadJpaRepository.LoadPlace::getId).sorted()
+                .forEach(id -> loads.lockById(id).ifPresent(locked::add));
         Map<UUID, DispatchLoadJpaEntity> byId = locked.stream()
                 .collect(Collectors.toMap(DispatchLoadJpaEntity::getId, Function.identity()));
-        List<WaybillImportCheck.Verdict> verdicts = check(rows, locked);
+        Map<String, DispatchLoadJpaEntity> byCode = locked.stream()
+                .collect(Collectors.toMap(DispatchLoadJpaEntity::getCode, Function.identity()));
+        List<Waybills.Number> numbers = new ArrayList<>();
+        for (WaybillImportFile.Row row : rows) {
+            DispatchLoadJpaEntity load = row.loadCode() == null ? null : byCode.get(row.loadCode());
+            if (load != null && load.getCarrierId() != null && row.waybillNo() != null) {
+                numbers.add(new Waybills.Number(load.getCarrierId(), row.waybillNo()));
+            }
+        }
+        waybills.lock(numbers);
+        List<WaybillImportCheck.Verdict> verdicts = check(rows, locked, confirmed);
         Instant now = clock.instant();
         UUID importId = Identifiers.newId();
         int applied = 0;
@@ -178,12 +229,14 @@ class WaybillImportService implements WaybillImports {
                 waybills.saving(() -> store.save(load, header));
                 waybills.record(load.id(), before, load.waybillNo(), WaybillSource.FILE, actor.userId(), now,
                         "File " + name + ", line " + row.line());
+                // Kept with a load the file changed: a line that changed nothing adds no copy.
+                StoredFile kept = fileOf.getOrDefault(header.getWarehouseId(), original);
+                files.add(new LoadWaybillFileJpaEntity(Identifiers.newId(), load.id(), kept.key(), name, CSV,
+                        kept.sizeBytes(), actor.userId(), now, importId));
             }
-            files.add(new LoadWaybillFileJpaEntity(Identifiers.newId(), load.id(), stored.key(), name, CSV,
-                    stored.sizeBytes(), actor.userId(), now, importId));
         }
-        WaybillImportJpaEntity record = imports.saveAndFlush(new WaybillImportJpaEntity(importId, name, stored.key(),
-                actor.userId(), now, rows.size(), applied, rows.size() - applied));
+        WaybillImportJpaEntity record = imports.saveAndFlush(new WaybillImportJpaEntity(importId, name,
+                original.key(), actor.userId(), now, rows.size(), applied, rows.size() - applied));
         importRows.saveAll(verdicts.stream().map(v -> new WaybillImportRowJpaEntity(Identifiers.newId(), importId,
                 v.row().line(), v.row().loadCode(), v.row().waybillNo(), v.row().vehiclePlate(), v.row().driverName(),
                 v.row().driverPhone(), v.load() == null ? null : v.load().loadId(), v.outcome().name(),
@@ -243,9 +296,12 @@ class WaybillImportService implements WaybillImports {
                 .collect(Collectors.toSet());
     }
 
-    /** The lines checked against {@code found} - the loads the file names - and the numbers live loads hold. */
+    /**
+     * The lines checked against {@code found} - the loads the file names - and the numbers live loads hold; a holder of
+     * another warehouse is not named.
+     */
     private List<WaybillImportCheck.Verdict> check(List<WaybillImportFile.Row> rows,
-                                                   Collection<DispatchLoadJpaEntity> found) {
+                                                   Collection<DispatchLoadJpaEntity> found, Set<Integer> confirmed) {
         Optional<AssignedWarehouses> restriction = WarehouseScope.restriction();
         Map<UUID, CarrierJpaEntity> carrierById = found.stream().map(DispatchLoadJpaEntity::getCarrierId)
                 .filter(Objects::nonNull).distinct().collect(Collectors.collectingAndThen(Collectors.toSet(),
@@ -257,18 +313,18 @@ class WaybillImportService implements WaybillImports {
             facts.put(l.getCode(), new WaybillImportCheck.LoadFacts(l.getId(), l.getCode(), l.getStatus(),
                     l.getCarrierId(), carrier != null
                     && CarrierConnectionType.API_BOOKING.name().equals(carrier.getConnectionType()),
-                    l.getWaybillNo(), restriction.isEmpty() || restriction.get().ids().contains(l.getWarehouseId())));
+                    l.getWaybillNo(), visible(restriction, l.getWarehouseId())));
         }
         Set<String> numbers = rows.stream().map(WaybillImportFile.Row::waybillNo).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
-        Map<UUID, Map<String, String>> taken = new HashMap<>();
+        Map<UUID, Map<String, WaybillImportCheck.Holder>> taken = new HashMap<>();
         if (!numbers.isEmpty() && !carrierById.isEmpty()) {
             for (DispatchLoadJpaEntity holder : loads.findLiveByCarriersAndWaybills(carrierById.keySet(), numbers)) {
-                taken.computeIfAbsent(holder.getCarrierId(), c -> new HashMap<>())
-                        .put(holder.getWaybillNo(), holder.getCode());
+                taken.computeIfAbsent(holder.getCarrierId(), c -> new HashMap<>()).put(holder.getWaybillNo(),
+                        new WaybillImportCheck.Holder(holder.getCode(), visible(restriction, holder.getWarehouseId())));
             }
         }
-        return WaybillImportCheck.check(rows, facts, taken);
+        return WaybillImportCheck.check(rows, facts, taken, confirmed);
     }
 
     private static Line line(WaybillImportCheck.Verdict v) {
@@ -281,6 +337,10 @@ class WaybillImportService implements WaybillImports {
     private static ImportView view(WaybillImportJpaEntity i, List<Line> lines) {
         return new ImportView(i.getId(), i.getFileName(), i.getUploadedBy(), i.getUploadedAt(), i.getRowsTotal(),
                 i.getRowsApplied(), i.getRowsRejected(), lines);
+    }
+
+    private static boolean visible(Optional<AssignedWarehouses> restriction, UUID warehouseId) {
+        return restriction.isEmpty() || restriction.get().ids().contains(warehouseId);
     }
 
     /** An IN list with nothing in it is not valid SQL everywhere: an id no row has stands in. */

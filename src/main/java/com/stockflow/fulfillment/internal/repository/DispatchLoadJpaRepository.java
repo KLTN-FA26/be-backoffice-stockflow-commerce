@@ -25,11 +25,21 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
     List<DispatchLoadJpaEntity> findByCodeIn(Collection<String> codes);
 
     /**
-     * The ids of the loads with these codes, read without loading the entities: a row lock taken next must read the
-     * loads fresh, not hand back copies already in the persistence context.
+     * The id, code and warehouse of the loads with these codes, read without loading the entities: a row lock taken next
+     * must read the loads fresh, not hand back copies already in the persistence context.
      */
-    @Query("select l.id from DispatchLoadJpaEntity l where l.code in :codes")
-    List<UUID> idsOfCodes(@Param("codes") Collection<String> codes);
+    @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId from DispatchLoadJpaEntity l "
+            + "where l.code in :codes")
+    List<LoadPlace> placesOfCodes(@Param("codes") Collection<String> codes);
+
+    /** A load's id, code and warehouse, read without the entity. */
+    interface LoadPlace {
+        UUID getId();
+
+        String getCode();
+
+        UUID getWarehouseId();
+    }
 
     /** The live loads of these carriers holding one of these waybill numbers (3-3: a number is one load's). */
     default List<DispatchLoadJpaEntity> findLiveByCarriersAndWaybills(Collection<UUID> carrierIds,

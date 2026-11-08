@@ -25,12 +25,12 @@ class WaybillFileReferences implements StoredFileReferences {
 
     @Override
     public Set<FileCategory> categories() {
-        return Set.of(FileCategory.DOCUMENT);
+        return Set.of(FileCategory.DOCUMENT, FileCategory.WAYBILL_IMPORT);
     }
 
     @Override
     public Set<String> referenced(FileCategory category, Collection<String> keys) {
-        if (category != FileCategory.DOCUMENT || keys.isEmpty()) {
+        if ((category != FileCategory.DOCUMENT && category != FileCategory.WAYBILL_IMPORT) || keys.isEmpty()) {
             return Set.of();
         }
         // An imported file is kept by its import even when no line applied to a load.
