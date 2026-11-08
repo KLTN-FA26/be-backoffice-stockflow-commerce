@@ -961,7 +961,7 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Resolve the hold the coordinator or QC raised (17 §5): back to the status it was held from, then on with
+     * Resolve the hold the coordinator raised (17 §5): back to the status it was held from, then on with
      * whatever its shipments reported meanwhile. A credit hold is decided through credit approval
      * ({@code ORDER_CREDIT_HOLD_USE_APPROVAL}); an order not on hold is {@code ORDER_NOT_ON_HOLD}.
      */
@@ -974,29 +974,7 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_CREDIT_HOLD_USE_APPROVAL,
                     "Order %s waits for a credit decision; decide it through credit approval".formatted(orderNumber));
         }
-        if (holdReason == HoldReason.DESIGN_MISMATCH) {
-            // The package is held too: QC or the warehouse manager reverify it, which resolves both together.
-            throw new BusinessException(ErrorCode.ORDER_DESIGN_HOLD_USE_REVERIFICATION,
-                    "Order %s waits for a design reverification at packing".formatted(orderNumber));
-        }
         resumeFromHold(note, by, at);
-    }
-
-    /**
-     * QC reverified the printed design (BR-DSG-003): a DESIGN_MISMATCH hold is resolved back where it was held from.
-     *
-     * @return false when the order was not on a design hold (nothing to resolve on the order)
-     */
-    public boolean resolveDesignHold(String note, UUID by, Instant at) {
-        if (status != OrderStatus.ON_HOLD) {
-            return false;
-        }
-        if (holdReason != HoldReason.DESIGN_MISMATCH) {
-            throw new InvalidOrderTransitionException(orderNumber, status,
-                    "it is held for %s: resolve that hold first".formatted(holdReason));
-        }
-        resumeFromHold(note, by, at);
-        return true;
     }
 
     private void resumeFromHold(String note, UUID by, Instant at) {

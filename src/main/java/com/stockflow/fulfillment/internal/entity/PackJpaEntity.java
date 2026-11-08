@@ -35,9 +35,6 @@ public class PackJpaEntity extends BaseEntity {
     private UUID startedBy;
     @Column(name = "packed_by")
     private UUID packedBy;
-    /** The request id of a completion a design check put on hold: the same request again gets the same answer. */
-    @Column(name = "held_request_id")
-    private UUID heldRequestId;
 
     protected PackJpaEntity() {
     }
@@ -55,8 +52,6 @@ public class PackJpaEntity extends BaseEntity {
     public Instant getStartedAt() { return startedAt; }
     public UUID getStartedBy() { return startedBy; }
     public UUID getPackedBy() { return packedBy; }
-    public UUID getHeldRequestId() { return heldRequestId; }
-    public void holdFor(UUID requestId) { this.heldRequestId = requestId; }
 
     /** The order was cancelled (SCRUM-460): any label made for the parcel is void with it. */
     public void cancel() { status = PackStatus.CANCELLED; }

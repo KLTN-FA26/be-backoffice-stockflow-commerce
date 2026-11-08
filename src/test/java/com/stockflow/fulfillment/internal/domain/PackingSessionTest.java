@@ -248,25 +248,23 @@ class PackingSessionTest {
         session.ship(rest, UUID.randomUUID(), PACKER, NOW);
         assertThat(session.status()).isEqualTo(PackStatus.PACKED);
         assertThat(session.packedBy()).isEqualTo(PACKER);
-        assertThat(session.printLinesIn(rest.lines().keySet())).extracting(PackingSession.Line::orderLineId)
-                .containsExactly(PRINTED);
+        assertThat(rest.lines()).as("the printed cups ship like any other line: no design is checked (08 §1)")
+                .containsEntry(PRINTED, 4);
     }
 
     @Test
-    @DisplayName("a design hold stops packing until re-verified; cancelling voids what did not ship")
-    void holdAndCancel() {
+    @DisplayName("cancelling voids what did not ship; cancelled packing can be neither worked on nor taken again")
+    void cancel() {
         var session = session();
         var a = session.openPackage(UUID.randomUUID(), null, NOW);
         session.scan(UUID.randomUUID(), a.id(), "LID-90", null, null, 1, null, PACKER, NOW);
-        session.hold();
-        assertThat(code(catchThrowable(() -> session.requireWorkable(PACKER, false))))
-                .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
-        assertThat(code(catchThrowable(() -> session.start(PACKER, false, NOW)))).isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
-        session.resume();
         session.requireWorkable(PACKER, false);
         var voided = session.cancel(OTHER, NOW);
         assertThat(voided).containsExactly(a);
         assertThat(session.status()).isEqualTo(PackStatus.CANCELLED);
+        assertThat(code(catchThrowable(() -> session.requireWorkable(PACKER, false))))
+                .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+        assertThat(code(catchThrowable(() -> session.start(PACKER, false, NOW)))).isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
     }
 
     @Test

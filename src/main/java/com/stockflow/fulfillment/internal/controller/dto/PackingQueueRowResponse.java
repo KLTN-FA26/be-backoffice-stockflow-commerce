@@ -6,9 +6,9 @@ import java.util.UUID;
 /**
  * One order waiting at the packing table (SCRUM-281).
  *
- * @param status        the row's packing status - {@code PENDING} (nobody took it yet), {@code PACKING} (at a table),
- *                      {@code ON_HOLD} (a design check): the field the {@code status} filter of
- *                      {@code GET /packing-queue} matches (E2E QA 2026-10-21: rows had none)
+ * @param status        the row's packing status - {@code PENDING} (nobody took it yet) or {@code PACKING} (at a
+ *                      table): the field the {@code status} filter of {@code GET /packing-queue} matches (E2E QA
+ *                      2026-10-21: rows had none)
  * @param packStatus    the same value, under the name the task and the packing session use
  * @param pickerName    who picked it
  * @param packerId      who took it at the packing table; null while nobody has

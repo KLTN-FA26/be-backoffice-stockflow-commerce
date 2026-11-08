@@ -302,8 +302,6 @@ public final class PackingSession {
             case PACKED -> {
                 return false;
             }
-            case ON_HOLD -> throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
-                    "Packing is on hold for a design check; a warehouse manager re-verifies it first");
             default -> throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "Packing is " + status);
         }
     }
@@ -688,22 +686,6 @@ public final class PackingSession {
         }
     }
 
-    /** A printed design did not match its snapshot (BR-DSG-003, 08 BR-02): a warehouse manager decides. */
-    public void hold() {
-        if (status != PackStatus.PACKING && status != PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "Packing is " + status);
-        }
-        status = PackStatus.ON_HOLD;
-    }
-
-    /** Re-verified (08 §5 Verification Failed → In Progress): the packer completes it again. */
-    public void resume() {
-        if (status != PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The package has no design-integrity hold");
-        }
-        status = PackStatus.PACKING;
-    }
-
     /** The order was cancelled: parcels that did not ship are voided with their labels (08 BR-05). */
     public List<Parcel> cancel(UUID actor, Instant now) {
         List<Parcel> voided = new ArrayList<>();
@@ -755,11 +737,6 @@ public final class PackingSession {
     /** Units of the line in parcels already in a shipment. */
     public int shippedOf(UUID orderLineId) {
         return parcels.stream().filter(p -> p.live() && p.shipped()).mapToInt(p -> p.quantityOf(orderLineId)).sum();
-    }
-
-    /** The print lines among {@code orderLineIds}: what a design check covers for a shipment. */
-    public List<Line> printLinesIn(Collection<UUID> orderLineIds) {
-        return orderLineIds.stream().map(lines::get).filter(Objects::nonNull).filter(Line::printLine).toList();
     }
 
     public Optional<Parcel> parcel(UUID packageId) {

@@ -28,12 +28,6 @@ public final class FulfillmentPermissions {
      */
     public static final String PACKING = "fulfillment-packing";
 
-    /**
-     * READ: tasks held for a design-integrity check and their confirmed design files; UPDATE: re-verify and release
-     * the hold.
-     */
-    public static final String DESIGN_REVERIFICATION = "fulfillment-design-reverification";
-
     /** UPDATE: add and edit carriers in the carrier catalogue. */
     public static final String CARRIERS = "fulfillment-carriers";
 

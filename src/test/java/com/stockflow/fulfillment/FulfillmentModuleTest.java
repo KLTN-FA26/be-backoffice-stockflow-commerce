@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Boots <b>only</b> the fulfillment module and the modules it declares in {@code package-info.java} (order, inventory, warehouse, design and identity).
+ * Boots <b>only</b> the fulfillment module and the modules it declares in {@code package-info.java} (order, inventory, warehouse and identity).
  *
  * <p>The point is the boundary: if fulfillment gains a dependency its {@code package-info.java} does not declare, this
  * context cannot start and the build says so, instead of an import nobody noticed in review. Fix the declaration
@@ -42,6 +42,8 @@ class FulfillmentModuleTest {
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
     @MockitoBean com.stockflow.product.api.ProductService productServiceMock;
+    // Order's, not fulfillment's, since packing no longer checks designs (V20261108000500).
+    @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
 
     @Test
     @DisplayName("fulfillment starts and answers through its api with the other modules absent")

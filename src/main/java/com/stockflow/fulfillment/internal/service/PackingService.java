@@ -10,9 +10,7 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.PackingCompletion;
-import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
 import com.stockflow.fulfillment.internal.domain.KitPart;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
@@ -22,13 +20,11 @@ import com.stockflow.fulfillment.internal.domain.PickLineStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
-import com.stockflow.fulfillment.internal.entity.DesignVerificationJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
-import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackingSessionStore;
@@ -92,8 +88,7 @@ class PackingService implements Packing {
     /** The order statuses packing may change parcels in: released, picking, or the rest of a split order. */
     private static final Set<OrderStatus> PACKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
             OrderStatus.PARTIALLY_FULFILLED);
-    private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.PACKING,
-            PackStatus.ON_HOLD);
+    private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.PACKING);
     /** The most picked-but-unpacked tasks the queue reads at once; far above what one warehouse has waiting. */
     private static final int QUEUE_WORKING_SET = Pages.MAX_PAGE_SIZE * 10;
 
@@ -102,13 +97,11 @@ class PackingService implements Packing {
     private final PackJpaRepository packs;
     private final PackageJpaRepository packages;
     private final ShipmentJpaRepository shipments;
-    private final DesignVerificationJpaRepository verifications;
     private final PackingSessionStore store;
     private final com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans;
     private final OrderService orders;
     private final InventoryService inventory;
     private final InventoryControlService itemControls;
-    private final DesignService designs;
     private final IdentityService identities;
     private final WarehouseService warehouses;
     private final ShipmentTimeline timeline;
@@ -123,11 +116,10 @@ class PackingService implements Packing {
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
                    PackageJpaRepository packages, ShipmentJpaRepository shipments,
-                   DesignVerificationJpaRepository verifications,
                    PackingSessionStore store,
                    com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans,
                    OrderService orders, InventoryService inventory,
-                   InventoryControlService itemControls, DesignService designs,
+                   InventoryControlService itemControls,
                    IdentityService identities, WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
                    com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans,
@@ -137,13 +129,11 @@ class PackingService implements Packing {
         this.packs = packs;
         this.packages = packages;
         this.shipments = shipments;
-        this.verifications = verifications;
         this.store = store;
         this.scans = scans;
         this.orders = orders;
         this.inventory = inventory;
         this.itemControls = itemControls;
-        this.designs = designs;
         this.identities = identities;
         this.warehouses = warehouses;
         this.timeline = timeline;
@@ -179,8 +169,7 @@ class PackingService implements Packing {
             return cb.exists(waiting);
         });
         // Oldest pick first: the goods have waited longest at the packing area. The orders' own status decides the
-        // rest (spec §5.5): an order on hold for anything but its design check, or one packing can no longer work on,
-        // is left out. Orders live in another module, so the candidates - picked, not yet packed, in the caller's
+        // rest (spec §5.5): an order on hold, or one packing can no longer work on, is left out. Orders live in another module, so the candidates - picked, not yet packed, in the caller's
         // warehouses: a bounded working set - are read whole, asked about in one call, and paged here.
         List<PickJpaEntity> candidates = picks.findAll(Specification.allOf(filters),
                 org.springframework.data.domain.PageRequest.of(0, QUEUE_WORKING_SET,
@@ -436,7 +425,7 @@ class PackingService implements Packing {
 
     // ------------------------------------------------------------------ completing
 
-    /** What a completion did: the shipment made, or null when a design check put packing on hold. */
+    /** What a completion did: the shipment made, or null when nothing was made (a retried completion). */
     record Completed(UUID shipmentId, OrderSummary order) { }
 
     /**
@@ -454,11 +443,6 @@ class PackingService implements Packing {
                 return new Completed(replay.get().getId(), ctx.order());
             }
         }
-        if (request.requestId() != null && ctx.pack().getStatus() == PackStatus.ON_HOLD
-                && request.requestId().equals(ctx.pack().getHeldRequestId())) {
-            // The same completion again after its design check put packing on hold: the same answer.
-            return new Completed(null, ctx.order());
-        }
         if (ctx.pack().getStatus() == PackStatus.PACKED) {
             // Completed before: answered as it is (a retried completion), with the last shipment it made.
             List<ShipmentJpaEntity> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId());
@@ -471,17 +455,6 @@ class PackingService implements Packing {
         // PACK-PARTIAL (lead's decision 2026-10-21): Sales decides on the order whether part of it may ship.
         PackingSession.Completion completion = session.complete(request.partial(), request.note(),
                 allowsPartialShipment(ctx.order()), actor.userId(), now);
-        // BR-DSG-003, 08 BR-02: the printed goods leaving now are checked against their design first.
-        List<PackingSession.Line> printed = session.printLinesIn(completion.lines().keySet());
-        if (!verifyDesigns(ctx.pack(), ctx.order(), printed.stream().map(PackingSession.Line::orderLineId).toList(),
-                actor.userId())) {
-            session.hold();
-            ctx.pack().holdFor(request.requestId());
-            store.save(session, ctx.pack());
-            orders.putOnDesignHold(ctx.order().orderId(), "DESIGN_MISMATCH");
-            log.warn("Packing of order {} held: a printed design does not match", ctx.pick().getOrderNumber());
-            return new Completed(null, ctx.order());
-        }
         OrderSummary after;
         if (completion.partial()) {
             // Part of the order: it is no longer cancelled (decision 2026-10-17); its status follows the handover.
@@ -501,32 +474,6 @@ class PackingService implements Packing {
         log.info("Order {}: shipment {} ready to dispatch, {} package(s){}", ctx.pick().getOrderNumber(),
                 shipment.code(), shipment.packageCount(), completion.partial() ? ", part of the order" : "");
         return new Completed(shipment.id(), after);
-    }
-
-    /**
-     * A warehouse manager re-verifies held packing (08 §5 Verification Failed → In Progress): every print line
-     * of the order is checked again; all matching, the order's design hold is resolved and the packer completes again.
-     *
-     * @return whether packing is back in progress
-     */
-    public boolean reverify(UUID taskId, String resolutionNote, CurrentUser actor) {
-        PickJpaEntity pick = lockPick(taskId);
-        WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        PackJpaEntity pack = requirePack(pick);
-        if (pack.getStatus() != PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The package has no design-integrity hold");
-        }
-        OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
-        List<UUID> printLines = order.lines().stream().filter(line -> line.designSnapshotId() != null)
-                .map(OrderSummary.LineSummary::lineId).toList();
-        if (!verifyDesigns(pack, order, printLines, actor.userId())) {
-            return false;
-        }
-        orders.resolveDesignHold(order.orderId(), actor.userId(), resolutionNote);
-        PackingSession session = load(new Context(pick, pack, order));
-        session.resume();
-        store.save(session, pack);
-        return true;
     }
 
     /**
@@ -709,13 +656,9 @@ class PackingService implements Packing {
         return new Context(pick, requirePack(pick), order);
     }
 
-    /** Shown in the queue: an order packing may work on, or one held only for its design check (a manager's work). */
+    /** Shown in the queue: an order packing may work on. */
     private static boolean queueable(com.stockflow.order.api.OrderHoldState state) {
-        if (state == null) {
-            return false;
-        }
-        return PACKABLE.contains(state.status()) || (state.status() == OrderStatus.ON_HOLD
-                && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH);
+        return state != null && PACKABLE.contains(state.status());
     }
 
     private static boolean allowsPartialShipment(OrderSummary order) {
@@ -814,27 +757,6 @@ class PackingService implements Packing {
             serials.add(serial);
         }
     }
-
-    /**
-     * BR-DSG-003: the design file of each print line among {@code lineIds} against the checksum the order confirmed.
-     * Every attempt is kept ({@code design_verification}, append-only), matching or not.
-     */
-    private boolean verifyDesigns(PackJpaEntity pack, OrderSummary order, List<UUID> lineIds, UUID actor) {
-        boolean allMatch = true;
-        for (var line : order.lines()) {
-            if (line.designSnapshotId() == null || !lineIds.contains(line.lineId())) {
-                continue;
-            }
-            var check = designs.verifyForFulfillment(line.designSnapshotId(), line.designChecksum());
-            var result = check.matching() ? DesignVerificationResult.MATCH : DesignVerificationResult.MISMATCH;
-            verifications.save(new DesignVerificationJpaEntity(Identifiers.newId(), pack.getId(), order.orderId(),
-                    line.lineId(), line.designSnapshotId(), check.expectedChecksum(), check.actualChecksum(), result,
-                    actor, clock.instant()));
-            allMatch &= check.matching();
-        }
-        return allMatch;
-    }
-
 
     private Session view(Context ctx, PackingSession session) {
         Map<UUID, String> skus = skus(session);

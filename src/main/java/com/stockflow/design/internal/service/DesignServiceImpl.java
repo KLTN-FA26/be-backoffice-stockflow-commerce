@@ -37,8 +37,8 @@ import org.springframework.transaction.annotation.Transactional;
  *       file of the bundle here - as this class once did, up to 50 MB a file, inside the checkout
  *       transaction - bought no rule anything and blocked the order on the object store.</li>
  *   <li><b>Metadata</b> ({@link #verifyForFulfillment}, {@link #fulfillmentDownload}): wherever a file is
- *       used - confirming, previewing, handing it to the warehouse or the print shop, packing
- *       (BR-DSG-003). {@link FileStorage#stat} returns the SHA-256 the store computed when the object
+ *       used - confirming and previewing it in the design workflow. The warehouse no longer checks or
+ *       downloads designs (kltn-docs 08 §1, V20261108000500). {@link FileStorage#stat} returns the SHA-256 the store computed when the object
  *       was written; any later write recomputes it, so a match proves the object unchanged without a
  *       download.</li>
  *   <li><b>Bytes</b> ({@link #verifyForPrinting}): prepress, the last gate before ink (BR-PRD-02). Every

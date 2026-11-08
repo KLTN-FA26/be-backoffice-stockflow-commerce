@@ -681,25 +681,6 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("a design hold is not resolved by the coordinator; reverification resolves it, or does nothing "
-                + "when the order is not held, and refuses while it is held for something else")
-        void designHold() {
-            Order order = picking(PaymentTerm.PREPAID);
-            order.putOnHold(HoldReason.DESIGN_MISMATCH, null, null, NOW);
-            assertThat(code(catchThrowable(() -> order.resolveHold("ok", STAFF, NOW))))
-                    .isEqualTo(ErrorCode.ORDER_DESIGN_HOLD_USE_REVERIFICATION);
-            assertThat(order.resolveDesignHold("QC: khớp", STAFF, NOW)).isTrue();
-            assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
-            assertThat(order.resolveDesignHold("QC: khớp", STAFF, NOW)).as("not held: nothing to do").isFalse();
-            order.putOnHold(HoldReason.ADDRESS, null, STAFF, NOW);
-            assertThat(code(catchThrowable(() -> order.resolveDesignHold("QC", STAFF, NOW))))
-                    .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
-            assertThat(code(catchThrowable(() -> order.putOnHold(HoldReason.DESIGN_MISMATCH, null, null, NOW))))
-                    .as("a design mismatch on an order held for another reason is refused").isEqualTo(
-                            ErrorCode.ORDER_INVALID_TRANSITION);
-        }
-
-        @Test
         @DisplayName("units that came back are shipped again: packed, handed over, SHIPPED - no dead end")
         void returnedUnitsShipAgain() {
             Order order = packed(PaymentTerm.PREPAID);

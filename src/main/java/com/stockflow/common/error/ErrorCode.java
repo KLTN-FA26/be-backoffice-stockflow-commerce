@@ -411,8 +411,6 @@ public enum ErrorCode {
     ORDER_NOT_ON_HOLD("This order is not on hold", 409),
     /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
     ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
-    /** G3-2 review: a design-mismatch hold is resolved by QC reverifying the package, which releases both. */
-    ORDER_DESIGN_HOLD_USE_REVERIFICATION("A design hold is resolved by reverifying the package", 409),
     /** G4-Q5: an order with shipments records its delivery outcome per shipment, not for the whole order. */
     ORDER_DELIVERY_VIA_SHIPMENT("This order's delivery is recorded per shipment", 409),
     /** G3-Q4: money due before the goods leave has not all arrived; the handover waits for it. */

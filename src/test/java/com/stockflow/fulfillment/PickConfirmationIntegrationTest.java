@@ -350,7 +350,7 @@ class PickConfirmationIntegrationTest {
                 .andExpect(jsonPath("$.data.shortQty").value(1));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
         assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().holdReason())
-                .as("X-SHORT: held for stock, not for a design").isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
+                .as("X-SHORT: held for stock").isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
         assertThat(onHand(location, SOFA)).as("nothing deducted").isEqualTo(before);
         assertThat(ledgerRows("PICK", lineId)).isZero();
         // X-SHORT step 03: a blind recount of that bin and SKU, opened once even if the short is reported again.

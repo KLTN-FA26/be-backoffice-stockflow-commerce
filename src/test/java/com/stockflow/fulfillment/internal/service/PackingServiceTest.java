@@ -10,10 +10,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.Role;
-import com.stockflow.design.api.DesignService;
-import com.stockflow.design.api.DesignVerification;
 import com.stockflow.fulfillment.api.PackingCompletion;
-import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.PackageType;
@@ -22,13 +19,11 @@ import com.stockflow.fulfillment.internal.domain.PickLineStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
-import com.stockflow.fulfillment.internal.entity.DesignVerificationJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
-import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository;
@@ -87,9 +82,9 @@ import static org.mockito.Mockito.when;
 
 /**
  * The packing station (kltn-docs 08): who may work a session, that packing follows the order's status, the label (no
- * amount on it: nothing is collected on delivery, 09 BR-08), completing packing into a shipment (full or partial), the
- * design check of printed goods (BR-DSG-003, 08 BR-02) and the cancellation of an order (08 BR-05). The parcel rules
- * are {@code PackingSessionTest}'s.
+ * amount on it: nothing is collected on delivery, 09 BR-08), completing packing into a shipment (full or partial),
+ * printed goods packed like any other - by SKU and count, no design check (08 §1) - and the cancellation of an order
+ * (08 BR-05). The parcel rules are {@code PackingSessionTest}'s.
  */
 class PackingServiceTest {
 
@@ -98,13 +93,11 @@ class PackingServiceTest {
     private final PackJpaRepository packs = mock(PackJpaRepository.class);
     private final PackageJpaRepository packages = mock(PackageJpaRepository.class);
     private final ShipmentJpaRepository shipments = mock(ShipmentJpaRepository.class);
-    private final DesignVerificationJpaRepository verifications = mock(DesignVerificationJpaRepository.class);
     private final PackingSessionStore store = mock(PackingSessionStore.class);
     private final PackageScanJpaRepository scans = mock(PackageScanJpaRepository.class);
     private final OrderService orders = mock(OrderService.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final InventoryControlService itemControls = mock(InventoryControlService.class);
-    private final DesignService designs = mock(DesignService.class);
     private final IdentityService identities = mock(IdentityService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final ShipmentTimeline timeline = mock(ShipmentTimeline.class);
@@ -112,7 +105,7 @@ class PackingServiceTest {
     private final LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
     private final PlanVehicles planVehicles = mock(PlanVehicles.class);
     private final PackingService service = new PackingService(picks, pickLines, packs, packages, shipments,
-            verifications, store, scans, orders, inventory, itemControls, designs, identities, warehouses, timeline,
+            store, scans, orders, inventory, itemControls, identities, warehouses, timeline,
             Clock.fixed(NOW, ZoneOffset.UTC), 6000, audit, loadPlans, planVehicles,
             mock(PickListService.class), org.springframework.transaction.support.TransactionOperations.withoutTransaction());
 
@@ -150,8 +143,6 @@ class PackingServiceTest {
                 null, true)));
         when(shipments.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
         when(shipments.findByPackIdOrderByReadyAtAscIdAsc(any())).thenReturn(List.of());
-        when(designs.verifyForFulfillment(any(), any())).thenAnswer(call -> new DesignVerification(call.getArgument(0),
-                call.getArgument(1), call.getArgument(1), true));
     }
 
     @AfterEach
@@ -728,8 +719,8 @@ class PackingServiceTest {
     }
 
     @Nested
-    @DisplayName("the design check of printed goods (BR-DSG-003, 08 BR-02)")
-    class DesignCheck {
+    @DisplayName("printed goods: packed by SKU and count like any other, no design check (08 §1)")
+    class PrintedGoods {
 
         private final UUID snapshot = UUID.randomUUID();
         private final UUID printLine = UUID.randomUUID();
@@ -764,84 +755,13 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("a printed line that matches its confirmed design ships; the check is kept as MATCH evidence")
-        void matchingDesignShips() {
+        @DisplayName("a printed line packed in full ships with the rest of the order")
+        void printedLineShips() {
             PackingService.Completed done = service.complete(pick.getId(), PackingCompletion.whole(), actor);
 
             assertThat(done.shipmentId()).isNotNull();
-            ArgumentCaptor<DesignVerificationJpaEntity> evidence = ArgumentCaptor.forClass(DesignVerificationJpaEntity.class);
-            verify(verifications).save(evidence.capture());
-            assertThat(evidence.getValue().getResult()).isEqualTo(DesignVerificationResult.MATCH);
-            verify(designs).verifyForFulfillment(snapshot, "sha-confirmed");
-        }
-
-        @Test
-        @DisplayName("a mismatch holds packing and the order for QC, keeps MISMATCH evidence and makes no shipment")
-        void mismatchHoldsPacking() {
-            when(designs.verifyForFulfillment(any(), any())).thenReturn(
-                    new DesignVerification(snapshot, "sha-confirmed", "sha-other", false));
-            UUID requestId = UUID.randomUUID();
-
-            PackingService.Completed done = service.complete(pick.getId(),
-                    new PackingCompletion(requestId, false, null), actor);
-
-            assertThat(done.shipmentId()).isNull();
-            assertThat(session.status()).isEqualTo(PackStatus.ON_HOLD);
-            assertThat(pack.getHeldRequestId()).isEqualTo(requestId);
-            verify(orders).putOnDesignHold(orderId, "DESIGN_MISMATCH");
-            verify(shipments, never()).saveAndFlush(any());
-            ArgumentCaptor<DesignVerificationJpaEntity> evidence = ArgumentCaptor.forClass(DesignVerificationJpaEntity.class);
-            verify(verifications).save(evidence.capture());
-            assertThat(evidence.getValue().getResult()).isEqualTo(DesignVerificationResult.MISMATCH);
-        }
-
-        @Test
-        @DisplayName("the same completion again after the hold answers the same: no shipment, nothing checked twice")
-        void completionAfterTheHoldIsIdempotent() {
-            UUID requestId = UUID.randomUUID();
-            pack.apply(PackStatus.ON_HOLD, NOW, packer, null, null);
-            pack.holdFor(requestId);
-
-            PackingService.Completed done = service.complete(pick.getId(), new PackingCompletion(requestId, false, null),
-                    actor);
-
-            assertThat(done.shipmentId()).isNull();
-            verifyNoInteractions(designs, verifications);
-        }
-
-        @Test
-        @DisplayName("re-verifying a pack that has no hold is PICK_TASK_STATE_CONFLICT")
-        void reverifyNeedsAHold() {
-            assertThat(refusal(() -> service.reverify(pick.getId(), "ok", manager)).errorCode())
-                    .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
-        }
-
-        @Test
-        @DisplayName("re-verified and matching: the order's design hold is resolved and packing resumes")
-        void reverifyResumes() {
-            pack.apply(PackStatus.ON_HOLD, NOW, packer, null, null);
-            session.hold();
-
-            boolean resumed = service.reverify(pick.getId(), "reprinted", manager);
-
-            assertThat(resumed).isTrue();
-            verify(orders).resolveDesignHold(orderId, manager.userId(), "reprinted");
-            assertThat(session.status()).isEqualTo(PackStatus.PACKING);
-            verify(store).save(session, pack);
-        }
-
-        @Test
-        @DisplayName("re-verified and still not matching: the hold stays")
-        void reverifyStillMismatching() {
-            pack.apply(PackStatus.ON_HOLD, NOW, packer, null, null);
-            session.hold();
-            when(designs.verifyForFulfillment(any(), any())).thenReturn(
-                    new DesignVerification(snapshot, "sha-confirmed", "sha-other", false));
-
-            assertThat(service.reverify(pick.getId(), "again", manager)).isFalse();
-
-            verify(orders, never()).resolveDesignHold(any(), any(), any());
-            assertThat(session.status()).isEqualTo(PackStatus.ON_HOLD);
+            assertThat(session.status()).isEqualTo(PackStatus.PACKED);
+            verify(orders).markPacked(orderId, packer);
         }
     }
 
@@ -997,30 +917,30 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("orders on hold for anything but their design check, or no longer packable, are left out; counts exclude voided parcels and cancelled shipments")
+        @DisplayName("orders on hold, or no longer packable, are left out; counts exclude voided parcels and cancelled shipments")
         void queueRows() {
             UUID ok = UUID.randomUUID();
-            UUID heldForDesign = UUID.randomUUID();
+            UUID restOfSplit = UUID.randomUUID();
             UUID heldForPayment = UUID.randomUUID();
             UUID cancelled = UUID.randomUUID();
             UUID stillInProduction = UUID.randomUUID();
-            List<PickJpaEntity> candidates = new ArrayList<>(List.of(picked(ok), picked(heldForDesign),
+            List<PickJpaEntity> candidates = new ArrayList<>(List.of(picked(ok), picked(restOfSplit),
                     picked(heldForPayment), picked(cancelled), picked(stillInProduction)));
             when(picks.findAll(any(org.springframework.data.jpa.domain.Specification.class),
                     any(org.springframework.data.domain.Pageable.class)))
                     .thenReturn(new org.springframework.data.domain.PageImpl<>(candidates));
             when(orders.holdStates(any())).thenReturn(List.of(
                     new OrderHoldState(ok, OrderStatus.PICKING, null, false),
-                    new OrderHoldState(heldForDesign, OrderStatus.ON_HOLD, HoldReason.DESIGN_MISMATCH, false),
+                    new OrderHoldState(restOfSplit, OrderStatus.PARTIALLY_FULFILLED, null, false),
                     new OrderHoldState(heldForPayment, OrderStatus.ON_HOLD, HoldReason.PAYMENT, false),
                     new OrderHoldState(cancelled, OrderStatus.CANCELLED, null, false),
                     new OrderHoldState(stillInProduction, OrderStatus.IN_PRODUCTION, null, true)));
             PackJpaEntity okPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(0).getId(), PackStatus.PACKING,
                     null);
             okPack.apply(PackStatus.PACKING, NOW, packer, null, null);
-            PackJpaEntity designPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(1).getId(), PackStatus.ON_HOLD,
+            PackJpaEntity restPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(1).getId(), PackStatus.PENDING,
                     null);
-            when(packs.findByPickIdIn(any())).thenReturn(List.of(okPack, designPack));
+            when(packs.findByPickIdIn(any())).thenReturn(List.of(okPack, restPack));
             PackageJpaEntity sealed = FulfillmentFixtures.parcel(UUID.randomUUID(), 1, "40", "30", "25", "5");
             PackageJpaEntity open = new PackageJpaEntity(UUID.randomUUID(), okPack.getId(), 2, "PKG-2");
             PackageJpaEntity voided = new PackageJpaEntity(UUID.randomUUID(), okPack.getId(), 3, "PKG-3");
@@ -1037,7 +957,7 @@ class PackingServiceTest {
 
             var page = service.queue(null, null, 0, 20, actor);
 
-            assertThat(page.items()).extracting(Packing.QueueRow::orderId).containsExactly(ok, heldForDesign);
+            assertThat(page.items()).extracting(Packing.QueueRow::orderId).containsExactly(ok, restOfSplit);
             Packing.QueueRow row = page.items().getFirst();
             assertThat(row.packStatus()).isEqualTo("PACKING");
             assertThat(row.packageCount()).as("the voided parcel is not counted").isEqualTo(2);

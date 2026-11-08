@@ -615,7 +615,7 @@ class PackingStationIntegrationTest {
     }
 
     @Test
-    @DisplayName("review #4: an order held for anything but its design check leaves the packing queue and cannot be "
+    @DisplayName("review #4: an order on hold leaves the packing queue and cannot be "
             + "packed; resolved, it is back")
     void heldOrdersLeaveTheQueue() throws Exception {
         OrderSummary order = paidOrder(sofa(1));

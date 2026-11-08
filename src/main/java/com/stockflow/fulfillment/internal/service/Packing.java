@@ -22,9 +22,9 @@ import java.util.UUID;
 public interface Packing {
 
     /**
-     * Picked tasks waiting at the packing table, oldest pick first (SCRUM-281): those whose packing is PENDING,
-     * PACKING or ON_HOLD, or the one status asked for, and whose order packing may work on (not on hold, except for
-     * its design check). Limited to the caller's warehouses and to {@code warehouseId}.
+     * Picked tasks waiting at the packing table, oldest pick first (SCRUM-281): those whose packing is PENDING or
+     * PACKING, or the one status asked for, and whose order packing may work on (not on hold). Limited to the caller's
+     * warehouses and to {@code warehouseId}.
      *
      * @throws com.stockflow.common.error.BusinessException {@code OUT_OF_DATA_SCOPE}; {@code UNSUPPORTED_PARAMETER}
      */

@@ -74,7 +74,7 @@ class OrderReleaseController {
 
     /**
      * G3-2 / G3-Q9: the coordinator holds an order (kltn-docs 17 §5, 09 edge): from CONFIRMED up to PACKED, and a
-     * partly shipped order. CREDIT and DESIGN_MISMATCH are the system's and refused here.
+     * partly shipped order. CREDIT is the system's and refused here.
      */
     @PostMapping("/{orderId}/hold")
     @Operation(summary = "Put an order on hold with a reason (PAYMENT, ADDRESS, INVENTORY, CUSTOMER, FRAUD, OTHER)")

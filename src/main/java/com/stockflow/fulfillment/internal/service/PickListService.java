@@ -308,7 +308,7 @@ class PickListService implements PickLists {
                     "Only a SHORT line with an allocation is reallocated; it is " + shortLine.status());
         }
         // Pick, then order, then stock rows. A cancellation locks the order before the stock rows it releases; taking
-        // the order only at the end (replaceHold, resolveDesignHold) would wait on it while holding those rows.
+        // the order only at the end (replaceHold) would wait on it while holding those rows.
         orders.lockedStatus(pick.getOrderId());
         List<StockReservation> allocated = inventory.reallocate(new ReallocateStockCommand(pick.getOrderId(),
                 shortLine.reservationId(), UUID.nameUUIDFromBytes(("reallocate:" + lineId)

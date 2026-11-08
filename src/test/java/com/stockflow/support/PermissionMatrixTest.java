@@ -147,8 +147,6 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/confirmation", "fulfillment-picking:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/put-back", "fulfillment-picking:UPDATE"),
             Map.entry("GET /api/v1/fulfillment/put-backs", "fulfillment-picking:READ"),
-            Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/lines/{lineId}/design-artifacts/{role}/download-url",
-                    "fulfillment-packages:READ"),
             Map.entry("GET /api/v1/fulfillment/packing-queue", "fulfillment-packages:READ"),
             Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/packing-session", "fulfillment-packages:READ"),
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packing-start", "fulfillment-packing:UPDATE"),
@@ -162,8 +160,6 @@ class PermissionMatrixTest {
             Map.entry("DELETE /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}", "fulfillment-packing:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packing-completion", "fulfillment-packing:UPDATE"),
             Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/label", "fulfillment-packing:READ"),
-            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/design-integrity-reverification",
-                    "fulfillment-design-reverification:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/carriers", "fulfillment-carriers:UPDATE"),
             Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}", "fulfillment-carriers:UPDATE"),
             // SCRUM-287 PR B (V20261022000700): born permission-guarded; listed so the guards cannot drift.
@@ -230,9 +226,6 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-packing:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-packing:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-packing:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("fulfillment-design-reverification:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            // QC-REVERIFY-1022 (V20261022000600): only the warehouse manager releases a design hold.
-            Map.entry("fulfillment-design-reverification:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-carriers:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-vehicle-types:VIEW_PAGE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),

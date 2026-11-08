@@ -32,11 +32,6 @@ final class FulfillmentWorkResourceDeclarations {
             actions = {Action.READ, Action.UPDATE, Action.APPROVE})
     static final class Packing { private Packing() { } }
 
-    @PermissionResource(code = FulfillmentResources.DESIGN_REVERIFICATION, group = "Fulfillment",
-            label = "Design-integrity holds: see and re-verify", route = "/fulfillment/packages",
-            apiPath = "/api/v1/fulfillment/tasks", actions = {Action.READ, Action.UPDATE})
-    static final class DesignReverification { private DesignReverification() { } }
-
     @PermissionResource(code = FulfillmentResources.CARRIERS, group = "Fulfillment", label = "Carrier catalogue",
             route = "/fulfillment/carriers", apiPath = "/api/v1/fulfillment/carriers", actions = {Action.UPDATE})
     static final class Carriers { private Carriers() { } }

@@ -119,7 +119,7 @@ public interface OrderService {
 
     /**
      * The status and hold reason of each of {@code orderIds} that exists, in one read (G4-5: the packing queue leaves
-     * out orders held for anything but their design check, and orders packing can no longer work on).
+     * out orders on hold, and orders packing can no longer work on).
      */
     java.util.List<OrderHoldState> holdStates(java.util.Collection<UUID> orderIds);
 
@@ -188,9 +188,6 @@ public interface OrderService {
     OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, CancellationFee fee,
                                 UUID by);
 
-    /** A printed design did not match at packing (BR-DSG-003): ON_HOLD for QC, reason DESIGN_MISMATCH. */
-    void putOnDesignHold(UUID orderId, String reason);
-
     /**
      * Fulfillment completed a package of the order. Joins the caller's transaction and takes the order's row lock,
      * so a cancellation in flight either came first ({@code ORDER_CANCELLED}: the package is not completed, nothing
@@ -212,9 +209,6 @@ public interface OrderService {
      * Empty for an unknown order.
      */
     Optional<OrderStatus> lockedStatus(UUID orderId);
-
-    /** QC reverified the design: the DESIGN_MISMATCH hold is resolved back to where it was held from. */
-    void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 
     /**
      * SCRUM-245/WBS 3.17.7. One customer's own order history, newest first, paginated. {@code

@@ -11,8 +11,7 @@ import java.util.UUID;
  * The packing session of one task: the order's lines with what is packed of them, the packages, and the shipments
  * completed so far.
  *
- * @param packStatus {@code PENDING}, {@code PACKING}, {@code ON_HOLD} (a design check), {@code PACKED} or
- *                   {@code CANCELLED}
+ * @param packStatus {@code PENDING}, {@code PACKING}, {@code PACKED} or {@code CANCELLED}
  * @param packerId   who took the order at the packing table; null while PENDING
  * @param paymentDue money the order's terms want before its goods leave (G3-Q4): the handover will be refused until
  *                   it is paid. Absent when nothing is due

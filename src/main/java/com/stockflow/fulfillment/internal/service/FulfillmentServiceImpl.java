@@ -8,20 +8,15 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.design.api.DesignArtifactRole;
-import com.stockflow.design.api.DesignService;
-import com.stockflow.fulfillment.api.FulfillmentArtifactAccess;
 import com.stockflow.fulfillment.api.FulfillmentAssignee;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTask;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.api.PackingCompletion;
-import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
-import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.order.api.OrderService;
@@ -62,9 +57,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private final PickJpaRepository picks;
     private final PackJpaRepository packs;
-    private final DesignVerificationJpaRepository verifications;
     private final OrderService orders;
-    private final DesignService designs;
     private final Clock clock;
     private final IdentityService identities;
     private final InventoryService inventory;
@@ -72,16 +65,13 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final PickListService pickLists;
     private final PackingService packing;
 
-    FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs,
-            DesignVerificationJpaRepository verifications, OrderService orders,
-            DesignService designs, IdentityService identities, InventoryService inventory,
+    FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs, OrderService orders,
+            IdentityService identities, InventoryService inventory,
             WarehouseService warehouses, PickListService pickLists, PackingService packing, Clock clock) {
         this.packing = packing;
         this.picks = picks;
         this.packs = packs;
-        this.verifications = verifications;
         this.orders = orders;
-        this.designs = designs;
         this.identities = identities;
         this.inventory = inventory;
         this.warehouses = warehouses;
@@ -140,17 +130,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
             filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), query.assignedUserId()));
         }
         // Whose tasks (data scope, not access - the endpoint's permission decided that): every task of the caller's
-        // warehouses with oversight, those on a design hold for whoever re-verifies designs, otherwise the caller's own.
+        // warehouses with oversight, otherwise the caller's own.
         if (actor.can(FulfillmentPermissions.TASK_OVERSIGHT, Action.READ)) {
             // no further filter
-        } else if (actor.can(FulfillmentPermissions.DESIGN_REVERIFICATION, Action.READ)) {
-            filters.add((root, q, cb) -> {
-                var held = q.subquery(UUID.class);
-                var pack = held.from(PackJpaEntity.class);
-                held.select(pack.get("pickId")).where(cb.equal(pack.get("pickId"), root.get("id")),
-                        cb.equal(pack.get("status"), PackStatus.ON_HOLD));
-                return cb.exists(held);
-            });
         } else {
             actor.require(FulfillmentPermissions.PICK_LISTS, Action.READ);
             filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), actor.userId()));
@@ -237,34 +219,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return toTask(picks.save(pick));
     }
 
-    /** Audited: the customer's design file leaves the system for the warehouse. */
-    @Override
-    @Transactional(readOnly = true)
-    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.EXPORT,
-            resourceType = "fulfillment-task", resourceId = "#taskId", details = "{orderLineId: #orderLineId, role: #role}")
-    public FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
-                                                       CurrentUser actor) {
-        var pick = requirePick(taskId);
-        TaskAccess.requireArtifactAccess(pick, actor);
-        var line = requireOrderInFulfilment(pick).lines().stream()
-                .filter(value -> value.lineId().equals(orderLineId))
-                .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        if (line.designSnapshotId() == null || line.designChecksum() == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "Order line has no confirmed design");
-        }
-        DesignArtifactRole parsedRole;
-        try {
-            parsedRole = DesignArtifactRole.valueOf(role.toUpperCase(java.util.Locale.ROOT));
-        } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown design artifact role");
-        }
-        var artifact = designs.fulfillmentDownload(
-                line.designSnapshotId(), line.designChecksum(), parsedRole);
-        return new FulfillmentArtifactAccess(artifact.artifactId(), artifact.role().name(),
-                artifact.originalName(), artifact.contentType(), artifact.sizeBytes(), artifact.checksum(),
-                artifact.url(), artifact.expiresAt());
-    }
-
     @Override
     public FulfillmentTask completePacking(UUID taskId, CurrentUser actor) {
         return completePacking(taskId, PackingCompletion.whole(), actor);
@@ -279,13 +233,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
         FulfillmentTask task = toTask(requirePick(taskId));
         return outcome.shipmentId() == null ? task
                 : withPaymentWarning(task, outcome.order()).withShipment(outcome.shipmentId());
-    }
-
-    @Override
-    public FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor) {
-        require(actor, FulfillmentPermissions.DESIGN_REVERIFICATION, Action.UPDATE);
-        packing.reverify(taskId, resolutionNote, actor);
-        return toTask(requirePick(taskId));
     }
 
     private FulfillmentTask toTask(PickJpaEntity pick) {
@@ -309,17 +256,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
             log.warn("Fulfillment task {} (order {}) has no pack row; shown as packing not started", pick.getId(),
                     pick.getOrderNumber());
         }
-        var evidence = pack == null ? List.<FulfillmentTask.IntegrityEvidence>of()
-                : verifications.findByPackIdOrderByVerifiedAtDesc(pack.getId()).stream()
-                .map(value -> new FulfillmentTask.IntegrityEvidence(value.getOrderLineId(), value.getSnapshotId(),
-                        value.getExpectedChecksum(), value.getActualChecksum(),
-                        value.getResult() == DesignVerificationResult.MATCH, value.getVerifiedAt()))
-                .toList();
         return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
                 pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(),
                 (pack == null ? PackStatus.PENDING : pack.getStatus()).name(),
                 pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack == null ? null : pack.getPackedAt(),
-                evidence, lines);
+                lines);
     }
 
     /**

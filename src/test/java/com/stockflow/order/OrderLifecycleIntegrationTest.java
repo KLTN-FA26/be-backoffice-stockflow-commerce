@@ -522,23 +522,6 @@ class OrderLifecycleIntegrationTest {
         assertThat(refundsOf(order)).hasSize(2);
     }
 
-    @Test
-    @DisplayName("a design hold is QC's: the coordinator cannot resolve it, and a mismatch on an order held for "
-            + "another reason is refused (the packing completion rolls back)")
-    void designHoldBelongsToQc() {
-        OrderSummary order = picking(PaymentTerm.PREPAID, 1);
-        orders.putOnDesignHold(order.orderId(), "DESIGN_MISMATCH");
-        assertThat(code(catchThrowable(() -> orders.resolveHold(order.orderId(), "ok", staff))))
-                .isEqualTo(ErrorCode.ORDER_DESIGN_HOLD_USE_REVERIFICATION);
-        orders.resolveDesignHold(order.orderId(), staff, "QC: khớp checksum");
-        assertThat(statusOf(order)).isEqualTo(OrderStatus.PICKING);
-        orders.resolveDesignHold(order.orderId(), staff, "QC again");   // not held: nothing to do, no error
-        orders.putOnHold(order.orderId(), HoldReason.ADDRESS, "sai phường", staff);
-        assertThat(code(catchThrowable(() -> orders.putOnDesignHold(order.orderId(), "DESIGN_MISMATCH"))))
-                .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
-        assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().holdReason()).isEqualTo(HoldReason.ADDRESS);
-    }
-
     /** Both calls released at once, each in its own transaction; what each returned or threw. */
     private List<Object> race(Callable<Object> first, Callable<Object> second) throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(2);

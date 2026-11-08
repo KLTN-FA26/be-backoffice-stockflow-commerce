@@ -15,7 +15,6 @@ import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.controller.dto.AssigneeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ConfirmPickRequest;
-import com.stockflow.fulfillment.internal.controller.dto.FulfillmentArtifactAccessResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
@@ -53,7 +52,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
-/** Task-scoped warehouse flow with a non-bypassable design-integrity gate. */
+/** Task-scoped warehouse flow: tasks, picking and packing completion. Designs are not checked here (kltn-docs 08). */
 @RestController
 @RequestMapping("/api/v1/fulfillment")
 @PermissionResource(code = FulfillmentResources.PICK_LISTS, group = "Fulfillment", label = "Pick lists",
@@ -292,20 +291,11 @@ class FulfillmentController {
                 .toList());
     }
 
-    @GetMapping("/tasks/{taskId}/lines/{lineId}/design-artifacts/{role}/download-url")
-    @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.READ)
-    public ResponseEntity<ApiResponse<FulfillmentArtifactAccessResponse>> artifactDownload(
-            @PathVariable UUID taskId, @PathVariable UUID lineId, @PathVariable String role,
-            @AuthenticatedUser CurrentUser actor) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(ApiResponse.ok(mapper.toResponse(fulfillment.artifactDownload(taskId, lineId, role, actor))));
-    }
-
     /**
      * Completes packing (G4-5, docs 08 step 7-9): every sealed package not shipped yet becomes one shipment,
      * READY_TO_DISPATCH ({@code shipmentId} in the answer). Without a body, everything the order wants must be packed
-     * (409 PACKING_INCOMPLETE); {@code partial} ships what is sealed and leaves the rest for later. A printed design
-     * that no longer matches answers 200 with {@code packStatus} ON_HOLD and no shipment. Completed again, the same.
+     * (409 PACKING_INCOMPLETE); {@code partial} ships what is sealed and leaves the rest for later. Completed again,
+     * the same.
      */
     @PostMapping("/tasks/{taskId}/packing-completion")
     @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
@@ -318,17 +308,8 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.completePacking(taskId, completion, actor)));
     }
 
-    @PostMapping("/tasks/{taskId}/design-integrity-reverification")
-    @RequiresPermission(resource = FulfillmentResources.DESIGN_REVERIFICATION, action = Action.UPDATE)
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
-    public ApiResponse<FulfillmentTaskResponse> reverify(@PathVariable UUID taskId,
-            @Valid @RequestBody ReverificationRequest request, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(fulfillment.reverifyDesignIntegrity(taskId, request.resolutionNote(), actor)));
-    }
-
     record CreateTaskRequest(@NotNull UUID orderId, @NotNull UUID assignedUserId) { }
     record ShortPickRequest(@NotBlank @Size(max = 64) String locationCode,
                             @NotNull @jakarta.validation.constraints.PositiveOrZero Integer foundQuantity) { }
     record AssignmentRequest(@NotNull UUID assignedUserId) { }
-    record ReverificationRequest(@NotBlank @Size(max = 1000) String resolutionNote) { }
 }

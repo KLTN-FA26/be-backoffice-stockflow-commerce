@@ -6,14 +6,11 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
-import com.stockflow.fulfillment.internal.entity.DesignVerificationJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
-import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.order.api.OrderService;
@@ -35,7 +32,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,9 +47,7 @@ class FulfillmentServiceImplTest {
 
     private final PickJpaRepository picks = mock(PickJpaRepository.class);
     private final PackJpaRepository packs = mock(PackJpaRepository.class);
-    private final DesignVerificationJpaRepository evidence = mock(DesignVerificationJpaRepository.class);
     private final OrderService orders = mock(OrderService.class);
-    private final DesignService designs = mock(DesignService.class);
     private final IdentityService identities = mock(IdentityService.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
@@ -61,19 +55,8 @@ class FulfillmentServiceImplTest {
     private final PackingService packing = mock(PackingService.class);
     private final Instant now = Instant.parse("2026-09-18T08:00:00Z");
     private final FulfillmentServiceImpl service = new FulfillmentServiceImpl(
-            picks, packs, evidence, orders, designs, identities, inventory, warehouses, pickLists, packing,
+            picks, packs, orders, identities, inventory, warehouses, pickLists, packing,
             Clock.fixed(now, ZoneOffset.UTC));
-    private final List<DesignVerificationJpaEntity> recorded = new ArrayList<>();
-
-    @BeforeEach
-    void retainVerificationEvidence() {
-        when(evidence.save(any())).thenAnswer(call -> {
-            DesignVerificationJpaEntity value = call.getArgument(0);
-            recorded.add(value);
-            return value;
-        });
-        when(evidence.findByPackIdOrderByVerifiedAtDesc(any())).thenAnswer(call -> List.copyOf(recorded));
-    }
 
     /**
      * G4-5: completing packing is the packing service's (its rules are PackingSessionTest's, its flow the packing
@@ -102,10 +85,11 @@ class FulfillmentServiceImplTest {
         assertThat(result.paymentDue().amountDueBeforeHandover()).isEqualByComparingTo("700");
     }
 
+    /** A completion retried on packing finished before any shipment was recorded made none: none in the answer. */
     @Test
-    void aDesignHoldAnswersWithoutAShipment() {
+    void aCompletionThatMadeNoShipmentAnswersWithoutOne() {
         var pick = pickedTask(UUID.randomUUID());
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.ON_HOLD, null);
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PACKED, now);
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
         when(packing.complete(eq(pick.getId()), any(), any()))
@@ -113,17 +97,16 @@ class FulfillmentServiceImplTest {
 
         var result = service.completePacking(pick.getId(), user(UUID.randomUUID(), Role.WAREHOUSE_MANAGER));
 
-        assertThat(result.packStatus()).isEqualTo("ON_HOLD");
+        assertThat(result.packStatus()).isEqualTo("PACKED");
         assertThat(result.shipmentId()).isNull();
         assertThat(result.paymentDue()).isNull();
     }
 
     @Test
-    void onlyAManagerReverifiesAndOnlyWarehouseStaffPack() {
+    void onlyWarehouseStaffPack() {
         var pick = pickedTask(UUID.randomUUID());
-        assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note",
-                user(UUID.randomUUID(), Role.WAREHOUSE_STAFF))).isInstanceOf(BusinessException.class);
-        verify(packing, never()).reverify(any(), any(), any());
+        assertThat(refusal(() -> service.completePacking(pick.getId(), coordinator())).errorCode())
+                .isEqualTo(ErrorCode.FORBIDDEN);
         verify(packing, never()).complete(any(), any(), any());
     }
 
@@ -137,44 +120,30 @@ class FulfillmentServiceImplTest {
 
         var unrelated = user(UUID.randomUUID(), Role.WAREHOUSE_STAFF);
         assertThat(refusal(() -> service.findTask(pick.getId(), unrelated)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
-        assertThat(refusal(() -> service.artifactDownload(pick.getId(), UUID.randomUUID(), "PRINT_READY", unrelated))
-                .errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
-        verify(designs, never()).fulfillmentDownload(any(), any(), any());
     }
 
     /**
-     * G4-5 (FE #58): once picking is done the packer - any staff member of the task's warehouse - reads the task and
-     * the locked design files the printed goods are checked against (docs 08 step 2); staff of another warehouse do
-     * not.
+     * G4-5 (FE #58): once picking is done the packer - any staff member of the task's warehouse - reads the task;
+     * staff of another warehouse do not.
      */
     @Test
-    void thePackerOfTheTasksWarehouseReadsItAndItsDesignFilesOthersDoNot() {
+    void thePackerOfTheTasksWarehouseReadsItOthersDoNot() {
         UUID picker = UUID.randomUUID();
         var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
         pick.assign(picker, now.minusSeconds(120));
         pick.start(picker, now.minusSeconds(60));
         pick.complete(picker, now.minusSeconds(30));
         var order = order(pick.getOrderId(), "e".repeat(64));
-        var line = order.lines().getFirst();
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(),
                 pick.getId(), PackStatus.PACKING, null)));
         when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
-        when(designs.fulfillmentDownload(line.designSnapshotId(), line.designChecksum(),
-                com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW)).thenReturn(
-                new com.stockflow.design.api.FulfillmentArtifact(UUID.randomUUID(),
-                        com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW, "preview.png", "image/png", 10,
-                        "f".repeat(64), "https://files/preview", now.plusSeconds(300)));
         var packer = staffOf(HCM);
         var elsewhere = staffOf(HN);
 
         assertThat(asScoped(packer, () -> service.findTask(pick.getId(), packer)).taskId()).isEqualTo(pick.getId());
-        assertThat(asScoped(packer, () -> service.artifactDownload(pick.getId(), line.lineId(), "customer_preview",
-                packer)).url()).isEqualTo("https://files/preview");
         assertThat(refusal(() -> asScoped(elsewhere, () -> service.findTask(pick.getId(), elsewhere))).errorCode())
                 .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
-        assertThat(refusal(() -> asScoped(elsewhere, () -> service.artifactDownload(pick.getId(), line.lineId(),
-                "customer_preview", elsewhere))).errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
     }
 
     private CurrentUser staffOf(UUID... warehouseIds) {
@@ -183,30 +152,24 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
-    void aCancelledOrderCannotBePickedPackedReverifiedOrDownloaded() {
+    void aCancelledOrderCannotBePicked() {
         UUID assigned = UUID.randomUUID();
         var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", UUID.randomUUID(), PickStatus.PENDING);
         pick.assign(assigned, now.minusSeconds(120));
         var live = order(pick.getOrderId(), "d".repeat(64));
         var cancelled = new OrderSummary(live.orderId(), live.orderNumber(), live.customerId(), OrderStatus.CANCELLED,
                 live.total(), live.lines(), live.placedAt(), null, null, null, null, null, null, null, null);
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.ON_HOLD, null);
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PENDING, null);
         when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
         when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(cancelled));
         var worker = user(assigned, Role.WAREHOUSE_STAFF);
-        var manager = user(UUID.randomUUID(), Role.WAREHOUSE_MANAGER);
 
         assertThatThrownBy(() -> service.startPicking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.completePicking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> service.artifactDownload(pick.getId(), live.lines().getFirst().lineId(), "PRINT_READY", manager))
-                .isInstanceOf(BusinessException.class);
 
         assertThat(pick.getStatus()).isEqualTo(PickStatus.PENDING);
-        verify(designs, never()).fulfillmentDownload(any(), any(), any());
-        verify(orders, never()).putOnDesignHold(any(), any());
-        verify(orders, never()).resolveDesignHold(any(), any(), any());
     }
 
     // ---- SCRUM-466: a task carries its order number and warehouse --------------------------------
@@ -621,9 +584,7 @@ class FulfillmentServiceImplTest {
                     code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, update),
                     code.apply(FulfillmentPermissions.TASK_OVERSIGHT, read),
                     code.apply(FulfillmentPermissions.PICKING, update), code.apply(FulfillmentPermissions.PACKING, update),
-                    code.apply(FulfillmentPermissions.PACKING, approve),
-                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, read),
-                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, update));
+                    code.apply(FulfillmentPermissions.PACKING, approve));
             case ORDER_COORDINATOR -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
                     code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, create),
                     code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, update),

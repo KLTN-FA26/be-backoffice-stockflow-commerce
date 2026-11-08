@@ -1015,38 +1015,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         });
     }
 
-    @Override
-    public void putOnDesignHold(UUID orderId, String reason) {
-        var order = lockOrder(orderId);
-        if (order.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH) { return; }
-        // Held for another reason (ADDRESS, ...): refused (409), so the packing completion that found the mismatch
-        // rolls back - package and evidence included - rather than holding a package nothing would ever release
-        // (review of G3-2). The coordinator resolves their hold; packing is completed again then.
-        order.putOnHold(com.stockflow.order.api.HoldReason.DESIGN_MISMATCH, null, null, clock.instant());
-        repository.save(order);
-        events.publishEventsOf(order);
-        holds.save(new OrderHoldJpaEntity(Identifiers.newId(), orderId,
-                com.stockflow.order.api.HoldReason.DESIGN_MISMATCH.name(), clock.instant()));
-    }
-
-    @Override
-    public void resolveDesignHold(UUID orderId, UUID resolvedBy, String note) {
-        var order = lockOrder(orderId);
-        // Not held (any more): nothing to do on the order, the package is still completed by the caller. Held for
-        // another reason: 409 from the aggregate - that hold is resolved first (review of G3-2).
-        boolean resolved = order.resolveDesignHold(note, resolvedBy, clock.instant());
-        holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId)
-                .filter(hold -> com.stockflow.order.api.HoldReason.DESIGN_MISMATCH.name().equals(hold.getReason()))
-                .ifPresent(hold -> {
-                    hold.resolve(resolvedBy, note, clock.instant());
-                    holds.save(hold);
-                });
-        if (resolved) {
-            repository.save(order);
-            events.publishEventsOf(order);
-        }
-    }
-
     /**
      * Same input, same id, every time.
      *
