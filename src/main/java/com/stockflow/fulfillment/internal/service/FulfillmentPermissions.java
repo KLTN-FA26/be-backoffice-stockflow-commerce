@@ -47,13 +47,10 @@ public final class FulfillmentPermissions {
     public static final String LOAD_ESTIMATES = "fulfillment-load-estimates";
 
     /**
-     * CREATE: open a load; UPDATE: choose a shipment's carrier, put shipments on a load, scan and unscan parcels, and
-     * sign the manifest (handover).
+     * UPDATE: book a load plan's vehicle (and cancel the booking), start loading, scan and unscan parcels, scan off a
+     * parcel to unload, and sign the manifest (handover). Loads are born from confirmed plans: nothing opens one.
      */
     public static final String DISPATCH = "fulfillment-dispatch";
-
-    /** UPDATE: call a load off before it left. */
-    public static final String LOAD_CANCELLATIONS = "fulfillment-load-cancellations";
 
     /**
      * UPDATE: call a load plan, or one of its vehicles, off AFTER loading started - the controlled cancel, with a reason

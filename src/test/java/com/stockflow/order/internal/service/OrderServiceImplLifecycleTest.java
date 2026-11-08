@@ -216,7 +216,7 @@ class OrderServiceImplLifecycleTest {
     }
 
     @Test
-    @DisplayName("packing started is recorded once (LP-1: packing locks the delivery mode)")
+    @DisplayName("packing started is recorded once")
     void factsAreRecordedOnce() {
         Order order = loaded(OrderFixtures.releasedPrepaid());
 
@@ -224,7 +224,6 @@ class OrderServiceImplLifecycleTest {
         service.recordPackingStarted(order.id().value());
 
         assertThat(order.packingStartedAt()).isEqualTo(NOW);
-        assertThat(order.deliveryModeLocked()).isTrue();
         verify(repository, org.mockito.Mockito.times(1)).save(order);
     }
 

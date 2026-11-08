@@ -33,9 +33,7 @@ class PackingWebMapper {
                                 lot.packed())).toList(), line.packageCount(), line.kitSuggested())).toList(),
                 session.packages().stream().map(this::toResponse).toList(),
                 session.shipments().stream().map(s -> new PackingSessionResponse.Shipment(s.shipmentId(), s.code(),
-                        s.status(), s.deliveryMode(), s.packageCount(), s.codAmount(), s.currency(), s.partial(),
-                        s.partialNote(),
-                        s.readyAt())).toList(),
+                        s.status(), s.packageCount(), s.partial(), s.partialNote(), s.readyAt())).toList(),
                 session.paymentDue() == null ? null : new PackingSessionResponse.PaymentDue(
                         session.paymentDue().amountDueBeforeHandover(), session.paymentDue().currency()));
     }
@@ -62,8 +60,8 @@ class PackingWebMapper {
     PackageLabelResponse toResponse(Packing.Label label) {
         var r = label.recipient();
         return new PackageLabelResponse(label.labelCode(), label.packageId(), label.orderNumber(), label.shipmentId(),
-                label.shipmentCode(), label.packageNo(), label.packageCount(), label.provisional(), label.codAmount(),
-                label.currency(), new PackageLabelResponse.Recipient(r.recipientName(), r.phone(), r.line1(),
+                label.shipmentCode(), label.packageNo(), label.packageCount(), label.provisional(),
+                new PackageLabelResponse.Recipient(r.recipientName(), r.phone(), r.line1(),
                 r.line2(), r.wardName(), r.provinceName(), r.countryCode(), r.postalCode()),
                 label.returnWarehouseName(), label.returnAddress(), label.packageType(), label.weightKg(),
                 label.lengthCm(), label.widthCm(), label.heightCm(), label.dimWeightKg(), label.fragile(),

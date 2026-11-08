@@ -71,19 +71,19 @@ class CreditProfileTest {
     @Test
     @DisplayName("G2-3: deposits come with a balance policy, BEFORE_DELIVERY unless told; none without deposits")
     void balancePolicy() {
-        CreditProfile deposit = CreditProfile.create(CUSTOMER, true, true, false, CommercialTerm.DEPOSIT,
-                new BigDecimal("30"), null, null, ACCOUNTANT, NOW, null);
+        CreditProfile deposit = CreditProfile.create(CUSTOMER, true, true, true, CommercialTerm.DEPOSIT,
+                new BigDecimal("30"), new BigDecimal("50000000"), 30, ACCOUNTANT, NOW, null);
         assertThat(deposit.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.BEFORE_DELIVERY);
-        deposit.change(true, true, false, CommercialTerm.DEPOSIT, new BigDecimal("30"), null, null,
-                DepositBalancePolicy.ON_DELIVERY, ACCOUNTANT, NOW, null);
-        assertThat(deposit.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.ON_DELIVERY);
-        deposit.change(true, true, false, CommercialTerm.DEPOSIT, new BigDecimal("40"), null, null, ACCOUNTANT, NOW,
-                "share changed, policy not sent");
-        assertThat(deposit.depositBalancePolicy()).as("kept when not sent").isEqualTo(DepositBalancePolicy.ON_DELIVERY);
+        deposit.change(true, true, true, CommercialTerm.DEPOSIT, new BigDecimal("30"), new BigDecimal("50000000"), 30,
+                DepositBalancePolicy.ON_CREDIT, ACCOUNTANT, NOW, null);
+        assertThat(deposit.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.ON_CREDIT);
+        deposit.change(true, true, true, CommercialTerm.DEPOSIT, new BigDecimal("40"), new BigDecimal("50000000"), 30,
+                ACCOUNTANT, NOW, "share changed, policy not sent");
+        assertThat(deposit.depositBalancePolicy()).as("kept when not sent").isEqualTo(DepositBalancePolicy.ON_CREDIT);
         deposit.change(true, false, false, CommercialTerm.PREPAID, null, null, null, ACCOUNTANT, NOW, null);
         assertThat(deposit.depositBalancePolicy()).as("no deposits, no balance").isNull();
         assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, false, false, CommercialTerm.PREPAID, null, null,
-                null, DepositBalancePolicy.ON_DELIVERY, ACCOUNTANT, NOW, null)))
+                null, DepositBalancePolicy.BEFORE_DELIVERY, ACCOUNTANT, NOW, null)))
                 .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
     }
 

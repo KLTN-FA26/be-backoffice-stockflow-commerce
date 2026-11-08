@@ -178,9 +178,9 @@ class TransferInstructionsIntegrationTest {
     }
 
     @Test
-    @DisplayName("a deposit order whose balance the carrier collects owes only the deposit; nothing after it")
-    void depositWithBalanceOnDelivery() throws Exception {
-        terms(DepositBalancePolicy.ON_DELIVERY);
+    @DisplayName("a deposit order whose balance goes on credit owes only the deposit; nothing after it")
+    void depositWithBalanceOnCredit() throws Exception {
+        terms(DepositBalancePolicy.ON_CREDIT);
         JsonNode order = place("DEPOSIT");
         instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(3750000));
         transfer(order, 3_750_000);

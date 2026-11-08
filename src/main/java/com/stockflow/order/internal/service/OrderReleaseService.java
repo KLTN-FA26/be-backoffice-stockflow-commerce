@@ -42,12 +42,11 @@ class OrderReleaseService implements OrderReleases {
     private final InventoryService inventory;
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final OrderStockAllocation allocation;
-    private final DeliveryModeHistory deliveryModes;
 
     OrderReleaseService(OrderRepository repository, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
                         InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
-                        OrderStockAllocation allocation, DeliveryModeHistory deliveryModes) {
+                        OrderStockAllocation allocation) {
         this.allocation = allocation;
         this.repository = repository;
         this.warehouses = warehouses;
@@ -56,7 +55,6 @@ class OrderReleaseService implements OrderReleases {
         this.clock = clock;
         this.inventory = inventory;
         this.paymentService = paymentService;
-        this.deliveryModes = deliveryModes;
     }
 
     /** Declared here, not as an interface default: the class's {@code @Transactional} must cover it (a default
@@ -64,29 +62,8 @@ class OrderReleaseService implements OrderReleases {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
     public OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy) {
-        return releaseLocked(orderId, warehouseId, null, null, releasedBy);
-    }
-
-    @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
-    public OrderSummary release(UUID orderId, UUID warehouseId, com.stockflow.order.api.DeliveryMode deliveryMode,
-                                com.stockflow.common.security.CurrentUser actor) {
-        java.util.Objects.requireNonNull(actor, "actor");
-        return releaseLocked(orderId, warehouseId, deliveryMode, actor, actor.userId());
-    }
-
-    /** @param actor whose permissions a delivery mode is checked against; only read when {@code deliveryMode} is set */
-    private OrderSummary releaseLocked(UUID orderId, UUID warehouseId,
-                                       com.stockflow.order.api.DeliveryMode deliveryMode,
-                                       com.stockflow.common.security.CurrentUser actor, UUID releasedBy) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
-        if (deliveryMode != null && deliveryMode != order.deliveryMode()) {
-            // LP-1 (review of #157): releasing does not by itself let the caller choose the mode. Decided here, under
-            // the order's row lock, so a change made meanwhile by someone allowed to is never undone by someone who
-            // is not; keeping the order's own mode needs nothing more.
-            actor.require(OrderPermissions.DELIVERY_MODES, com.stockflow.common.security.Action.UPDATE);
-        }
         String warehouseCode = warehouses.codeOf(warehouseId).orElseThrow(() ->
                 new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
         if (order.hasPrintLines()) {
@@ -106,11 +83,6 @@ class OrderReleaseService implements OrderReleases {
         // this warehouse, FEFO - every line. All or nothing: a warehouse that cannot cover a line refuses the release,
         // and the order stays as it was.
         allocation.allocate(order, warehouseCode);
-        if (deliveryMode != null) {
-            // LP-1: the coordinator's choice at release, recorded at the status the order was released to. A refusal
-            // (LP-2, DELIVERY_MODE_FTL_NO_COD) rolls the whole release back: nothing is released.
-            deliveryModes.apply(order, deliveryMode, null, releasedBy);
-        }
         // From release on the order's holds must not expire (kltn-docs 14 BR-07, SCRUM-465). Idempotent for an
         // order already paid and pinned.
         inventory.pinReservations(orderId);

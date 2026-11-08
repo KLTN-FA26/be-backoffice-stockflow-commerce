@@ -49,7 +49,6 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -191,7 +190,7 @@ class FtlDispatchIntegrationTest {
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 
-    /** A paid order of the demo customer for {@code sofas} sofas, released at HCM as a full truckload (LP-1). */
+    /** A paid order of the demo customer for {@code sofas} sofas, released at HCM (every order is a full truckload). */
     private OrderSummary ftlOrder(int sofas) throws Exception {
         stock(sofas);
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
@@ -205,8 +204,8 @@ class FtlDispatchIntegrationTest {
                 PaymentMethod.BANK_TRANSFER)));
         Await.until("order confirmed", ASYNC,
                 () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        oc(body(post(ORDERS + "/" + order.orderId() + "/release"), "{\"warehouseId\":\"" + HCM
-                + "\",\"deliveryMode\":\"FULL_TRUCKLOAD\"}")).andExpect(status().isOk());
+        oc(body(post(ORDERS + "/" + order.orderId() + "/release"), "{\"warehouseId\":\"" + HCM + "\"}"))
+                .andExpect(status().isOk());
         return order;
     }
 
@@ -350,19 +349,17 @@ class FtlDispatchIntegrationTest {
         JsonNode first = load(v1);
         JsonNode second = load(v2);
         for (JsonNode l : List.of(first, second)) {
-            assertThat(l.path("mode").asText()).isEqualTo("FULL_TRUCKLOAD");
             assertThat(l.path("status").asText()).isEqualTo("PLANNED");
             assertThat(l.path("loadPlanCode").asText()).isEqualTo(plan.path("code").asText());
             assertThat(l.path("vehicleTypeCode").asText()).isEqualTo("TRUCK-1T25");
             assertThat(l.path("shipments")).singleElement().satisfies(s -> assertThat(s.path("shipmentId").asText())
                     .isEqualTo(shipment.toString()));
             assertThat(l.path("expectedPackageCount").asInt()).isEqualTo(2);
-            assertThat(l.path("codTotal").decimalValue()).isEqualByComparingTo("0");
         }
         assertThat(first.path("vehicleSeq").asInt()).isEqualTo(1);
         assertThat(labels(first)).doesNotContainAnyElementsOf(labels(second));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.dispatch_load_shipment WHERE shipment_id = ? "
-                + "AND active AND mode = 'FULL_TRUCKLOAD'", Integer.class, shipment)).isEqualTo(2);
+                + "AND active", Integer.class, shipment)).isEqualTo(2);
 
         // Booking (09 §4.2 step 5); loading only once booked.
         dispatch(post(LOADS + "/" + v1 + "/loading-start")).andExpect(status().isConflict())
@@ -412,14 +409,11 @@ class FtlDispatchIntegrationTest {
         assertThat(notWhole.path("message").asText()).contains(part2).contains("kit part 2/2");
         scanOnto(v1, part2).andExpect(status().isOk());
 
-        // The per-vehicle manifest: only this vehicle's parcels, COD 0.
+        // The per-vehicle manifest: only this vehicle's parcels.
         JsonNode manifest = data(dispatch(get(LOADS + "/" + v1 + "/manifest")).andExpect(status().isOk()));
-        assertThat(manifest.path("mode").asText()).isEqualTo("FULL_TRUCKLOAD");
         assertThat(manifest.path("vehicleSeq").asInt()).isEqualTo(1);
         assertThat(manifest.path("loadPlanCode").asText()).isEqualTo(plan.path("code").asText());
         assertThat(manifest.path("packageCount").asInt()).isEqualTo(2);
-        assertThat(manifest.path("codTotal").decimalValue()).isEqualByComparingTo("0");
-        assertThat(manifest.path("shipments").get(0).path("codAmount").decimalValue()).isEqualByComparingTo("0");
         assertThat(manifest.path("shipments").get(0).path("orderNumber").asText()).isEqualTo(order.orderNumber());
         assertThat(manifest.path("shipments").get(0).path("packages").findValuesAsText("labelCode"))
                 .containsExactlyInAnyOrderElementsOf(mine);
@@ -444,11 +438,10 @@ class FtlDispatchIntegrationTest {
             scanOnto(v2, label).andExpect(status().isOk());
         }
         assertThat(data(handOver(v2).andExpect(status().isOk())).path("status").asText()).isEqualTo("DISPATCHED");
-        Map<String, Object> handed = jdbc.queryForMap("SELECT status, load_id, carrier_id, cod_amount FROM "
+        Map<String, Object> handed = jdbc.queryForMap("SELECT status, load_id, carrier_id FROM "
                 + "fulfillment.shipment WHERE id = ?", shipment);
         assertThat(handed).containsEntry("status", "HANDED_OVER").containsEntry("load_id", UUID.fromString(v2))
                 .containsEntry("carrier_id", ghtk);
-        assertThat((BigDecimal) handed.get("cod_amount")).isEqualByComparingTo("0");
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
         assertThat(planStatus(plan)).isEqualTo("DISPATCHED");
         assertThat(data(dispatch(get(PLANS + "/" + plan.path("loadPlanId").asText())).andExpect(status().isOk()))
@@ -467,15 +460,12 @@ class FtlDispatchIntegrationTest {
 
     @Test
     @DisplayName("LP-11: reopening a plan cancels its booked vehicle with the reason; confirmed again, a new PLANNED "
-            + "load carries the shipment and is booked again; a plan's manifest is not edited by hand "
-            + "(LOAD_MANAGED_BY_PLAN); a parcel load is not booked")
+            + "load carries the shipment and is booked again; the cancelled load is not booked again")
     void reopeningCancelsBookings() throws Exception {
         UUID shipment = packed(ftlOrder(1), false)[0];
         JsonNode plan = confirmed(List.of(shipment), truck5t);
         String loadId = loadOf(plan, 1);
         book(loadId, ghn, "51C-333.33");
-        dispatch(delete(LOADS + "/" + loadId + "/shipments/" + shipment)).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_MANAGED_BY_PLAN"));
 
         JsonNode now = data(dispatch(get(PLANS + "/" + plan.path("loadPlanId").asText())).andExpect(status().isOk()));
         plan = step(now, "/reopening", "{\"expectedVersion\":" + now.path("version").asLong()
@@ -497,15 +487,6 @@ class FtlDispatchIntegrationTest {
         assertThat(load(again).path("shipments")).singleElement().satisfies(s -> assertThat(s.path("shipmentId")
                 .asText()).isEqualTo(shipment.toString()));
         assertThat(book(again, ghn, null).path("status").asText()).isEqualTo("VEHICLE_BOOKED");
-
-        // A parcel load opened for GHN is not a plan's vehicle.
-        String parcelLoad = data(dispatch(body(post(LOADS), "{\"requestId\":\"" + UUID.randomUUID()
-                + "\",\"warehouseId\":\"" + HCM + "\",\"carrierId\":\"" + ghn + "\",\"shipmentIds\":[]}"))
-                .andExpect(status().isCreated())).path("loadId").asText();
-        dispatch(body(post(LOADS + "/" + parcelLoad + "/booking"), "{\"carrierId\":\"" + ghn + "\"}"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
-        dispatch(post(LOADS + "/" + parcelLoad + "/loading-start")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
     }
 
     // ---- an order cancelled while its vehicle loads -------------------------------------------
@@ -608,10 +589,10 @@ class FtlDispatchIntegrationTest {
         UUID rest = jdbc.queryForObject("SELECT shipment_id FROM fulfillment.package WHERE id = ?::uuid", UUID.class,
                 stays);
         assertThat(rest).isNotEqualTo(shipment);
-        assertThat(jdbc.queryForMap("SELECT status, delivery_mode, package_count, partial, order_id FROM "
+        assertThat(jdbc.queryForMap("SELECT status, package_count, partial, order_id FROM "
                 + "fulfillment.shipment WHERE id = ?", rest)).containsEntry("status", "READY_TO_DISPATCH")
-                .containsEntry("delivery_mode", "FULL_TRUCKLOAD").containsEntry("package_count", 1)
-                .containsEntry("partial", true).containsEntry("order_id", order.orderId());
+                .containsEntry("package_count", 1).containsEntry("partial", true)
+                .containsEntry("order_id", order.orderId());
         assertThat(jdbc.queryForObject("SELECT package_count FROM fulfillment.shipment WHERE id = ?", Integer.class,
                 shipment)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT label_outdated_at IS NOT NULL FROM fulfillment.package WHERE id = "
@@ -922,16 +903,21 @@ class FtlDispatchIntegrationTest {
                 loadId)).isEqualTo("PLANNED");
     }
 
-    // ---- loads list: mode filter, plan code search; label flags (the FE gaps of the dispatch screens) ----------
+    // ---- loads list: status filter, plan code search; label flags (the FE gaps of the dispatch screens) --------
 
-    /** A parcel load straight into the table (a parcel load needs parcel shipments, which this context has none of). */
-    private String parcelLoad(String plate) {
+    /**
+     * A load of the parcel shipping that was removed (V20261108000400), straight into the table: it has no plan's vehicle,
+     * which only a closed load may lack, so it is history - signed and gone.
+     */
+    private String historyLoad(String plate) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, mode, carrier_id,
-                    vehicle_plate, status, loading_started_at)
-                VALUES (?, ?, gen_random_uuid(), ?, 'PARCEL', ?, ?, 'LOADING', NOW())""",
-                id, "LD-TEST-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate));
+                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate,
+                    status, loading_started_at, dispatched_at, dispatched_by, carrier_representative, shipment_count,
+                    package_count)
+                VALUES (?, ?, gen_random_uuid(), ?, ?, ?, 'DISPATCHED', NOW(), NOW(), ?, 'Tai', 1, 1)""",
+                id, "LD-TEST-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate,
+                dispatcher));
         return id.toString();
     }
 
@@ -945,62 +931,60 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("GET loads?mode: FULL_TRUCKLOAD / PARCEL (any case) filter in the query - totalElements, totalPages "
-            + "and the pages of a size 1 walk are those of the filtered set; combined with status; no mode: both; an "
-            + "unknown mode is 400 UNSUPPORTED_PARAMETER on field mode")
-    void listFiltersByMode() throws Exception {
+    @DisplayName("GET loads?status: PLANNED / DISPATCHED (any case) filter in the query - totalElements, totalPages and "
+            + "the pages of a size 1 walk are those of the filtered set; no status: every load; an unknown status is "
+            + "400 UNSUPPORTED_PARAMETER on field status")
+    void listFiltersByStatus() throws Exception {
         UUID shipment = packed(ftlOrder(2), true)[0];
-        confirmed(List.of(shipment), truck1t25);                       // two FTL vehicles, PLANNED
-        parcelLoad("51D-001.01");
-        parcelLoad("51D-002.02");
-        int ftl = count("mode = 'FULL_TRUCKLOAD'");
-        int parcel = count("mode = 'PARCEL'");
-        assertThat(ftl).isGreaterThanOrEqualTo(2);
-        assertThat(parcel).isGreaterThanOrEqualTo(2);
+        confirmed(List.of(shipment), truck1t25);                       // two vehicles, PLANNED
+        historyLoad("51D-001.01");
+        historyLoad("51D-002.02");
+        int planned = count("status = 'PLANNED'");
+        int dispatched = count("status = 'DISPATCHED'");
+        int all = count("TRUE");
+        assertThat(planned).isGreaterThanOrEqualTo(2);
+        assertThat(dispatched).isGreaterThanOrEqualTo(2);
 
-        JsonNode onlyFtl = loadsPage("&mode=FULL_TRUCKLOAD&size=1");
-        assertThat(onlyFtl.path("totalElements").asInt()).isEqualTo(ftl);
-        assertThat(onlyFtl.path("totalPages").asInt()).isEqualTo(ftl);
-        assertThat(onlyFtl.path("items")).hasSize(1);
-        assertThat(onlyFtl.path("hasNext").asBoolean()).isTrue();
+        JsonNode onlyPlanned = loadsPage("&status=PLANNED&size=1");
+        assertThat(onlyPlanned.path("totalElements").asInt()).isEqualTo(planned);
+        assertThat(onlyPlanned.path("totalPages").asInt()).isEqualTo(planned);
+        assertThat(onlyPlanned.path("items")).hasSize(1);
+        assertThat(onlyPlanned.path("hasNext").asBoolean()).isTrue();
         List<String> seen = new ArrayList<>();
-        for (int page = 0; page < ftl; page++) {
-            JsonNode one = loadsPage("&mode=FULL_TRUCKLOAD&size=1&page=" + page);
+        for (int page = 0; page < planned; page++) {
+            JsonNode one = loadsPage("&status=PLANNED&size=1&page=" + page);
             assertThat(one.path("items")).hasSize(1);
-            assertThat(one.path("items").get(0).path("mode").asText()).isEqualTo("FULL_TRUCKLOAD");
+            assertThat(one.path("items").get(0).path("status").asText()).isEqualTo("PLANNED");
             seen.add(one.path("items").get(0).path("loadId").asText());
         }
-        assertThat(seen).doesNotHaveDuplicates().hasSize(ftl);
-        assertThat(loadsPage("&mode=FULL_TRUCKLOAD&size=1&page=" + ftl).path("items")).isEmpty();
+        assertThat(seen).doesNotHaveDuplicates().hasSize(planned);
+        assertThat(loadsPage("&status=PLANNED&size=1&page=" + planned).path("items")).isEmpty();
 
-        JsonNode onlyParcel = loadsPage("&mode=parcel&size=2");
-        assertThat(onlyParcel.path("totalElements").asInt()).isEqualTo(parcel);
-        assertThat(onlyParcel.path("items")).allSatisfy(l -> assertThat(l.path("mode").asText()).isEqualTo("PARCEL"));
-        assertThat(onlyParcel.path("items").get(0).hasNonNull("loadPlanCode")).isFalse();
+        JsonNode onlyDispatched = loadsPage("&status=dispatched&size=2");
+        assertThat(onlyDispatched.path("totalElements").asInt()).isEqualTo(dispatched);
+        assertThat(onlyDispatched.path("items")).allSatisfy(l -> assertThat(l.path("status").asText())
+                .isEqualTo("DISPATCHED"));
 
-        assertThat(loadsPage("&size=1").path("totalElements").asInt()).isEqualTo(ftl + parcel);
-        assertThat(loadsPage("&mode=").path("totalElements").asInt()).isEqualTo(ftl + parcel);
-        assertThat(loadsPage("&mode=FULL_TRUCKLOAD&status=PLANNED").path("totalElements").asInt())
-                .isEqualTo(count("mode = 'FULL_TRUCKLOAD' AND status = 'PLANNED'"));
-        assertThat(loadsPage("&mode=PARCEL&status=PLANNED").path("totalElements").asInt()).isZero();
+        assertThat(loadsPage("&size=1").path("totalElements").asInt()).isEqualTo(all);
+        assertThat(loadsPage("&status=").path("totalElements").asInt()).isEqualTo(all);
 
-        JsonNode bad = body(dispatch(get(LOADS + "?mode=TRAIN")).andExpect(status().isBadRequest())
+        JsonNode bad = body(dispatch(get(LOADS + "?status=TRAIN")).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("UNSUPPORTED_PARAMETER")));
         assertThat(bad.path("fieldErrors")).singleElement().satisfies(f -> assertThat(f.path("field").asText())
-                .isEqualTo("mode"));
+                .isEqualTo("status"));
     }
 
     @Test
     @DisplayName("GET loads?search also matches the load plan's code (case-insensitive, partial) through the vehicle: "
             + "both vehicles of the plan and no other load; load code and plate matches unchanged; one query, so the "
-            + "count and the pages stay right with mode")
+            + "count and the pages stay right with status")
     void listSearchesByPlanCode() throws Exception {
         UUID shipment = packed(ftlOrder(2), true)[0];
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
         String planCode = plan.path("code").asText();
         String v1 = loadOf(plan, 1);
         String v2 = loadOf(plan, 2);
-        String other = parcelLoad("51E-777.77");
+        String other = historyLoad("51E-777.77");
 
         JsonNode byPlan = loadsPage("&search=" + planCode);
         assertThat(byPlan.path("totalElements").asInt()).isEqualTo(2);
@@ -1013,16 +997,18 @@ class FtlDispatchIntegrationTest {
         assertThat(paged.path("totalElements").asInt()).isEqualTo(2);
         assertThat(paged.path("totalPages").asInt()).isEqualTo(2);
         assertThat(paged.path("items")).hasSize(1);
-        assertThat(loadsPage("&search=" + planCode + "&mode=PARCEL").path("totalElements").asInt()).isZero();
-        assertThat(loadsPage("&search=" + planCode + "&mode=FULL_TRUCKLOAD").path("totalElements").asInt())
+        assertThat(loadsPage("&search=" + planCode + "&status=DISPATCHED").path("totalElements").asInt()).isZero();
+        assertThat(loadsPage("&search=" + planCode + "&status=PLANNED").path("totalElements").asInt())
                 .isEqualTo(2);
 
-        // The existing matches: the load's own code and the plate (a parcel load has no plan).
+        // The existing matches: the load's own code and the plate (a load of the removed parcel shipping has no plan).
         assertThat(loadsPage("&search=" + load(v1).path("code").asText()).path("items").findValuesAsText("loadId"))
                 .containsExactly(v1);
         book(v2, ghn, "51F-123.45");
         assertThat(loadsPage("&search=51F-123").path("items").findValuesAsText("loadId")).containsExactly(v2);
-        assertThat(loadsPage("&search=51E-777").path("items").findValuesAsText("loadId")).containsExactly(other);
+        JsonNode byPlate = loadsPage("&search=51E-777");
+        assertThat(byPlate.path("items").findValuesAsText("loadId")).containsExactly(other);
+        assertThat(byPlate.path("items").get(0).hasNonNull("loadPlanCode")).isFalse();
         assertThat(loadsPage("&search=LP-NO-SUCH-PLAN").path("totalElements").asInt()).isZero();
         // The % of a search term is literal, not a wildcard.
         assertThat(loadsPage("&search=%25").path("totalElements").asInt()).isZero();
@@ -1114,21 +1100,21 @@ class FtlDispatchIntegrationTest {
     // ---- the database, a second time (V20261022001400) ---------------------------------------
 
     @Test
-    @DisplayName("V20261022001400: a manifest row takes its load's mode (another is refused); a plan's vehicle is "
-            + "booked before it loads; a vehicle with a parcel left to unload does not turn DISPATCHED")
+    @DisplayName("V20261022001400 / V20261108000400: a load still open is a plan's vehicle (one of no plan is refused); "
+            + "a plan's vehicle is booked before it loads; a vehicle with a parcel left to unload does not turn "
+            + "DISPATCHED")
     void theDatabaseNets() throws Exception {
         UUID shipment = packed(ftlOrder(1), false)[0];
         JsonNode plan = confirmed(List.of(shipment), truck5t);
         String loadId = loadOf(plan, 1);
-        assertThat(jdbc.queryForObject("SELECT mode FROM fulfillment.dispatch_load_shipment WHERE load_id = ?::uuid",
-                String.class, loadId)).isEqualTo("FULL_TRUCKLOAD");
-        Throwable otherMode = catchThrowable(() -> jdbc.update("""
-                INSERT INTO fulfillment.dispatch_load_shipment (id, load_id, shipment_id, mode, added_at, added_by)
-                VALUES (gen_random_uuid(), ?::uuid, ?, 'PARCEL', NOW(), ?)""", loadId, shipment, dispatcher));
-        assertThat(otherMode).hasMessageContaining("tg_dispatch_load_shipment_mode");
+        Throwable noPlan = catchThrowable(() -> jdbc.update("""
+                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, status)
+                VALUES (gen_random_uuid(), ?, gen_random_uuid(), ?, 'PLANNED')""",
+                "LD-TEST-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM));
+        assertThat(noPlan).hasMessageContaining("ck_dispatch_load_vehicle");
         Throwable unbooked = catchThrowable(() -> jdbc.update("UPDATE fulfillment.dispatch_load SET status = 'LOADING', "
                 + "carrier_id = ?, loading_started_at = NOW() WHERE id = ?::uuid", ghn, loadId));
-        assertThat(unbooked).hasMessageContaining("ck_dispatch_load_ftl_booked");
+        assertThat(unbooked).hasMessageContaining("ck_dispatch_load_vehicle_booked");
 
         book(loadId, ghn, "51C-666.66");
         dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());

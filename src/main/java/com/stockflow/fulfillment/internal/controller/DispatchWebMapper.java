@@ -22,20 +22,20 @@ class DispatchWebMapper {
     }
 
     LoadRowResponse toResponse(Dispatching.LoadRow r) {
-        return new LoadRowResponse(r.loadId(), r.code(), r.warehouseId(), r.mode(), r.status(), r.carrierId(),
-                r.carrierName(), r.vehiclePlate(), r.driverName(), r.shipmentCount(), r.packageCount(), r.codTotal(),
+        return new LoadRowResponse(r.loadId(), r.code(), r.warehouseId(), r.status(), r.carrierId(),
+                r.carrierName(), r.vehiclePlate(), r.driverName(), r.shipmentCount(), r.packageCount(),
                 r.loadingStartedAt(), r.dispatchedAt(), r.version(), r.loadPlanId(), r.loadPlanCode(), r.vehicleSeq());
     }
 
     LoadResponse toResponse(Dispatching.LoadDetail d) {
-        return new LoadResponse(d.loadId(), d.code(), d.warehouseId(), d.mode(), d.status(), d.carrierId(),
+        return new LoadResponse(d.loadId(), d.code(), d.warehouseId(), d.status(), d.carrierId(),
                 d.carrierCode(), d.carrierName(), d.vehiclePlate(), d.driverName(), d.driverPhone(),
                 d.loadingStartedAt(), d.loadingStartedBy(), d.dispatchedAt(), d.dispatchedBy(), d.dispatchedByName(),
                 d.carrierRepresentative(), d.signatureRef(), d.handoverNote(), d.cancelledAt(), d.cancelReason(),
-                d.shipmentCount(), d.expectedPackageCount(), d.loadedPackageCount(), d.codTotal(), d.currency(),
+                d.shipmentCount(), d.expectedPackageCount(), d.loadedPackageCount(),
                 d.version(), d.shipments().stream().map(s -> new LoadResponse.Shipment(s.shipmentId(), s.code(),
                         s.orderId(), s.orderNumber(), s.taskId(), s.status(), s.packageCount(), s.loadedCount(),
-                        s.labelCodAmount(), s.codAmount(), s.currency(), s.packages().stream().map(p -> new LoadResponse.Parcel(
+                        s.packages().stream().map(p -> new LoadResponse.Parcel(
                                 p.packageId(), p.labelCode(), p.weightKg(), p.loaded(), p.loadedAt(), p.loadedBy(),
                                 PackingWebMapper.kit(p.kit()), p.labelOutdatedAt() != null, p.labelOutdatedAt()))
                         .toList())).toList(), d.loadPlanId(), d.loadPlanCode(), d.vehicleSeq(),
@@ -57,19 +57,18 @@ class DispatchWebMapper {
                 m.driverName(), m.driverPhone(), m.carrierRepresentative(), m.signatureRef(), m.handoverNote(),
                 m.dispatchedAt(), m.dispatchedByName(), m.shipments().stream().map(s -> new ManifestResponse.Shipment(
                         s.shipmentCode(), s.orderNumber(), s.recipientName(), s.recipientPhone(), s.deliveryAddress(),
-                        s.packageCount(), s.weightKg(), s.codAmount(), s.codChangedSinceLabel(),
+                        s.packageCount(), s.weightKg(),
                         s.packages().stream().map(p -> new ManifestResponse.Parcel(p.labelCode(), p.weightKg(),
                                 p.lengthCm(), p.widthCm(), p.heightCm(), p.loaded(), PackingWebMapper.kit(p.kit()),
                                 p.labelOutdatedAt() != null, p.labelOutdatedAt()))
                                 .toList())).toList(),
-                m.shipmentCount(), m.packageCount(), m.totalWeightKg(), m.codTotal(), m.currency(), m.printedAt(),
-                m.mode(), m.loadPlanCode(), m.vehicleSeq(), m.vehicleTypeCode());
+                m.shipmentCount(), m.packageCount(), m.totalWeightKg(), m.printedAt(), m.loadPlanCode(),
+                m.vehicleSeq(), m.vehicleTypeCode());
     }
 
     ShipmentRowResponse toResponse(Shipments.ShipmentRow r) {
         return new ShipmentRowResponse(r.shipmentId(), r.code(), r.orderId(), r.orderNumber(), r.taskId(),
-                r.warehouseId(), r.status(), r.deliveryMode(), r.packageCount(), r.codAmount(), r.currency(),
-                r.carrierId(), r.carrierName(),
+                r.warehouseId(), r.status(), r.packageCount(), r.carrierId(), r.carrierName(),
                 r.loadId(), r.loadCode(), r.partial(), r.readyAt(), r.handedOverAt(), r.outcomeAt(),
                 r.failureReason(), r.wholeOrderHandover(), r.version());
     }

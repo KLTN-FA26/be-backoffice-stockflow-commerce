@@ -24,6 +24,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DispatchLoadMigrationTest {
 
     private static final String BEFORE = "20261021000300";
+    /**
+     * Up to the migration before V20261108000400, which drops the COD and delivery-mode columns these assertions read
+     * (parcel shipping and COD were removed); that removal has its own upgrade test,
+     * {@code ParcelShippingRemovalMigrationUpgradeTest}.
+     */
+    private static final String UPGRADED = "20261108000300";
     private static final String HCM = "md5('demo:wh:HCM')::uuid";
     private static final String EDITOR = "md5('demo:user:editor')::uuid";
 
@@ -87,7 +93,7 @@ class DispatchLoadMigrationTest {
                                 'DELIVERED', 'SO-MIG-LOAD-S6', %s, NOW(), NOW(), NOW(), NOW())"""
                         .formatted(HCM, HCM, HCM, HCM, HCM, HCM));
 
-                assertThat(flyway(pg, null).migrate().migrationsExecuted).isPositive();
+                assertThat(flyway(pg, UPGRADED).migrate().migrationsExecuted).isPositive();
 
                 assertThat(rows(sql, """
                         SELECT s.code, s.whole_order_handover, c.code, c.name FROM fulfillment.shipment s

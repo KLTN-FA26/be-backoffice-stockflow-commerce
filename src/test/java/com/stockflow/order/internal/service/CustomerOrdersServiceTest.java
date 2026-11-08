@@ -182,7 +182,6 @@ class CustomerOrdersServiceTest {
                     .satisfies(entry -> assertThat(entry.status()).isEqualTo(OrderStatus.READY_TO_FULFILL));
             assertThat(detail.cancellationRequest()).isNull();
             assertThat(detail.shipments()).isEmpty();
-            assertThat(detail.deliveryMode()).isNotNull();
         }
 
         @Test

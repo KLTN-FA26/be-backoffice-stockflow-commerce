@@ -51,8 +51,9 @@ import java.util.UUID;
  *       RECEIVABLE_ALLOCATION), so the order knows what it has been paid.</li>
  *   <li>G2-3: a transfer may name orders it pays, with the amount for each ({@link OrderAllocator}); the rest pays the
  *       receivables named, or - when neither orders nor receivables are named - the earliest due first.</li>
- *   <li>G2-3: a delivered deposit order whose balance the carrier collected (ON_DELIVERY) becomes a carrier-collected
- *       receivable, due on the delivery day; the customer's transfers and credit never touch it.</li>
+ *   <li>G2-3: a carrier-collected receivable - the balance a carrier collected on delivery before COD was removed
+ *       (V20261108000400) - is paid by the carrier's remittance; the customer's transfers and credit never touch it.
+ *       No new one is opened.</li>
  * </ul>
  *
  * <p>Locks are always taken orders first, then receivables, then transfers, so a delivery, an allocation and a
@@ -178,9 +179,9 @@ public class ReceivableService {
      * delivered shipment, for what the order billed for it ({@code billedAmount}); an event without it - the whole
      * order delivered, written before G3-2 - bills what the order still owes, as before.
      *
-     * <p>G2-3: a deposit order whose balance the carrier collects (ON_DELIVERY) bills what the carrier collected on
-     * delivery - the amount fixed at the handover (15 BR-08) - as a carrier-collected receivable due that day; the
-     * carrier's remittance pays it (09 §4.3 step 4). A deposit order paid before delivery bills nothing.</p>
+     * <p>G2-3: a deposit order paid before delivery bills nothing. Nothing is collected on delivery (09 BR-08): no
+     * carrier-collected receivable is opened any more; those opened before V20261108000400 are still paid by the
+     * carrier's remittance.</p>
      *
      * <p>BALCREDIT: a deposit order whose balance goes on credit (ON_CREDIT) bills what the order billed for the delivery
      * - the goods less the deposit not yet used - as the customer's DEPOSIT_BALANCE receivable, due after their days to
@@ -192,7 +193,6 @@ public class ReceivableService {
         }
         boolean credit = "CREDIT".equals(event.paymentTerm());
         boolean deposit = "DEPOSIT".equals(event.paymentTerm());
-        boolean carrierCollects = deposit && "ON_DELIVERY".equals(event.balancePolicy());
         // BALCREDIT: the balance of a deposit order on credit is billed per delivery as a credit order's is, due after
         // the customer's days to pay, the customer's own debt (counted in their credit position).
         boolean balanceOnCredit = deposit && "ON_CREDIT".equals(event.balancePolicy());
@@ -205,21 +205,13 @@ public class ReceivableService {
             return;
         }
         LocalDate deliveryDay = LocalDate.ofInstant(event.deliveredAt(), BUSINESS_ZONE);
-        if (deposit && !carrierCollects && !balanceOnCredit) {
+        if (deposit && !balanceOnCredit) {
             balanceDeliveredUnpaid(event, deliveryDay);
             return;
         }
         BigDecimal owed = event.billedAmount() != null ? event.billedAmount()
                 : event.orderTotal().subtract(event.paidAmount() == null ? BigDecimal.ZERO : event.paidAmount());
         if (owed.signum() <= 0) {
-            return;
-        }
-        if (carrierCollects) {
-            Receivable balance = book.save(Receivable.openCarrierCollected(event.orderId(), event.customerId(), owed,
-                    event.currency(), event.deliveredAt(), deliveryDay).forShipment(event.shipmentId())
-                    .forOrderNumber(event.orderNumber()));
-            log.info("Receivable {} opened for order {}: the carrier collected {} {} on delivery", balance.id(),
-                    event.orderNumber(), owed, event.currency());
             return;
         }
         int days = event.creditTermDays() == null ? 0 : event.creditTermDays();

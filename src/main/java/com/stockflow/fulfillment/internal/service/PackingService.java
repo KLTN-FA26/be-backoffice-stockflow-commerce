@@ -12,7 +12,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.PackingCompletion;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
 import com.stockflow.fulfillment.internal.domain.KitPart;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
@@ -45,7 +44,6 @@ import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.warehouse.api.WarehouseService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,7 +63,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
 import java.util.Locale;
@@ -115,9 +112,6 @@ class PackingService implements Packing {
     private final IdentityService identities;
     private final WarehouseService warehouses;
     private final ShipmentTimeline timeline;
-    private final com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers;
-    private final com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads;
-    private final com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore;
     private final Clock clock;
     private final int dimDivisor;
     private final com.stockflow.common.audit.AuditTrail audit;
@@ -134,10 +128,7 @@ class PackingService implements Packing {
                    com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans,
                    OrderService orders, InventoryService inventory,
                    InventoryControlService itemControls, DesignService designs,
-                   IdentityService identities, WarehouseService warehouses, ShipmentTimeline timeline,
-                   com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
-                   com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
-                   com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
+                   IdentityService identities, WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
                    com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans,
                    PlanVehicles planVehicles, PickListService pickLists, TransactionOperations tx) {
@@ -156,9 +147,6 @@ class PackingService implements Packing {
         this.identities = identities;
         this.warehouses = warehouses;
         this.timeline = timeline;
-        this.loadMembers = loadMembers;
-        this.loads = loads;
-        this.loadStore = loadStore;
         this.clock = clock;
         this.dimDivisor = dimDivisor;
         this.audit = audit;
@@ -269,8 +257,8 @@ class PackingService implements Packing {
         PackingSession.Parcel parcel = session.openPackage(Identifiers.newId(), packageType(type), kitOverrideReason,
                 clock.instant());
         auditKitOverride(parcel, null, actor);
-        // LP-1: packing started - the order's delivery mode is locked from now on (under the order's row lock, after
-        // the pick's, as completion takes them).
+        // Packing started: the order records it (under the order's row lock, after the pick's, as completion takes
+        // them).
         orders.recordPackingStarted(ctx.order().orderId());
         store.save(session, ctx.pack());
         return parcelView(parcel, skus(session));
@@ -292,7 +280,7 @@ class PackingService implements Packing {
         UUID groupId = Identifiers.newId();
         List<PackingSession.Parcel> kit = session.openKit(groupId, ids, request.orderLineId(), request.partCount(),
                 packageType(request.packageType()), clock.instant());
-        // LP-1: a kit opens packages as openPackage does - packing started, the delivery mode is locked from now on.
+        // A kit opens packages as openPackage does: packing started.
         orders.recordPackingStarted(ctx.order().orderId());
         store.save(session, ctx.pack());
         Map<UUID, String> skus = skus(session);
@@ -397,9 +385,8 @@ class PackingService implements Packing {
     }
 
     /**
-     * The label as it prints now. For a shipment waiting for dispatch the COD is what the carrier would collect if it
-     * left now, and printing records it on the shipment (09 BR-04): the handover is refused while the order fixes
-     * another figure than the last label printed ({@code LABEL_OUTDATED}), so a reprint is what lets it go.
+     * The label as it prints now. Nothing is collected on delivery (09 BR-08): the label carries no amount. Printed
+     * again, a label outdated by a shipment split is current again.
      */
     @Override
     public Label label(UUID taskId, UUID packageId, CurrentUser actor) {
@@ -425,29 +412,6 @@ class PackingService implements Packing {
             together = session.parcels().stream()
                     .filter(p -> p.status() == PackageStatus.SEALED && p.shipmentId() == null).toList();
         }
-        List<ShipmentHandover.Line> contents = handoverLines(together);
-        BigDecimal cod;
-        if (shipment != null && shipment.getStatus() != ShipmentStatus.READY_TO_DISPATCH) {
-            cod = shipment.getCodAmount();
-        } else if (shipment != null && contents.isEmpty()) {
-            // Parcels packed before they recorded their contents leave as the whole order: its balance (G4-2a).
-            cod = order.lifecycle() == null || order.lifecycle().amountDueOnDelivery() == null ? shipment.getCodAmount()
-                    : order.lifecycle().amountDueOnDelivery();
-        } else {
-            cod = orders.codFor(order.orderId(), contents, pendingLines(session,
-                    shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()), shipment));
-        }
-        if (shipment != null && shipment.getStatus() == ShipmentStatus.READY_TO_DISPATCH) {
-            Shipment printed = shipment.toDomain();
-            if (printed.labelPrinted(cod, clock.instant())) {
-                log.info("Shipment {}: label reprinted, the carrier now collects {}", shipment.getCode(), cod);
-            }
-            // Before the shipment's row changes: the load's lock first, the order the handover takes them in. Also when
-            // the figure did not change here: a load that copied an older one is brought in line by the reprint.
-            relabelOnLoad(shipment.getId(), cod);
-            shipment.apply(printed);
-            shipments.saveAndFlush(shipment);
-        }
         // SCRUM-392: printed again, a label outdated by a shipment split is current again.
         packages.findById(packageId).filter(p -> p.getLabelOutdatedAt() != null).ifPresent(p -> {
             p.markLabelOutdated(null);
@@ -464,7 +428,7 @@ class PackingService implements Packing {
         Map<UUID, String> skus = skus(session);
         return new Label(parcel.labelCode(), parcel.id(), order.orderNumber(), shipment == null ? null : shipment.getId(),
                 shipment == null ? null : shipment.getCode(), together.indexOf(parcel) + 1, together.size(),
-                shipment == null, cod, order.total().currency().getCurrencyCode(), recipient,
+                shipment == null, recipient,
                 warehouse.map(w -> w.name()).orElse(null), warehouse.map(w -> w.address()).orElse(null),
                 parcel.type().name(), m.weightKg(), m.lengthCm(), m.widthCm(), m.heightCm(), parcel.dimWeightKg(),
                 parcel.fragile(), parcel.rotatable(), contents(parcel, skus), parcel.kit());
@@ -526,18 +490,10 @@ class PackingService implements Packing {
         } else {
             after = orders.markPacked(ctx.order().orderId(), actor.userId());
         }
-        List<ShipmentHandover.Line> lines = completion.lines().entrySet().stream()
-                .map(e -> new ShipmentHandover.Line(e.getKey(), e.getValue())).toList();
-        // The money paid ahead goes to the shipments waiting for dispatch first, in the order they were made.
-        BigDecimal cod = orders.codFor(ctx.order().orderId(), lines, pendingLines(session,
-                shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()), null));
         long before = shipments.countByOrderId(ctx.order().orderId());
-        // LP-1: the shipment travels as the order does - locked since its first package was opened.
-        DeliveryMode mode = deliveryModeOf(after);
         Shipment shipment = Shipment.ready(Identifiers.newId(), ctx.order().orderNumber() + "-S" + (before + 1),
                 ctx.order().orderId(), ctx.pack().getId(), ctx.pick().getWarehouseId(), request.requestId(),
-                mode, completion.parcels().size(), cod,
-                completion.partial() ? request.note().trim() : null, actor.userId(), now);
+                completion.parcels().size(), completion.partial() ? request.note().trim() : null, actor.userId(), now);
         shipments.saveAndFlush(ShipmentJpaEntity.of(shipment));
         timeline.record(shipment, null, ctx.order(), null, null, null);
         session.ship(completion, shipment.id(), actor.userId(), now);
@@ -762,12 +718,6 @@ class PackingService implements Packing {
                 && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH);
     }
 
-    /** LP-1: the order's delivery mode in fulfillment's words (the same names); PARCEL on a row without it. */
-    static DeliveryMode deliveryModeOf(OrderSummary order) {
-        return order.lifecycle() == null ? DeliveryMode.PARCEL
-                : DeliveryMode.valueOf(order.lifecycle().deliveryMode().name());
-    }
-
     private static boolean allowsPartialShipment(OrderSummary order) {
         return order.lifecycle() != null && order.lifecycle().allowPartialShipment();
     }
@@ -886,49 +836,6 @@ class PackingService implements Packing {
     }
 
 
-    /**
-     * E2E QA 2026-10-21 (F2): a label reprinted with another COD while its shipment is on an open load - the
-     * {@code LABEL_OUTDATED} way out - updates the load's copy of the label's figure, so the load, the handover answer
-     * and the signed manifest show what the parcels say. The load's lock is taken before the shipment's row changes,
-     * the order the handover takes them in.
-     */
-    private void relabelOnLoad(UUID shipmentId, BigDecimal cod) {
-        loadMembers.findByShipmentIdInAndActiveTrue(List.of(shipmentId)).stream().findFirst().ifPresent(member ->
-                loads.lockById(member.getLoadId()).ifPresent(header -> {
-                    var load = loadStore.load(header);
-                    if (load.relabel(shipmentId, cod)) {
-                        loadStore.save(load, header);
-                        log.info("Load {}: label COD of shipment {} is now {}", load.code(), shipmentId, cod);
-                    }
-                }));
-    }
-
-    /**
-     * The units of the shipments waiting for dispatch that were made before {@code before} (all of them when null): the
-     * paid-ahead money is theirs first (09 BR-04), at the label as at the handover.
-     */
-    private static List<ShipmentHandover.Line> pendingLines(PackingSession session, List<ShipmentJpaEntity> made,
-                                                            ShipmentJpaEntity before) {
-        java.util.Set<UUID> earlier = new java.util.HashSet<>();
-        for (ShipmentJpaEntity row : made) {
-            if (before != null && row.getId().equals(before.getId())) {
-                break;
-            }
-            if (row.getStatus() == ShipmentStatus.READY_TO_DISPATCH) {
-                earlier.add(row.getId());
-            }
-        }
-        return handoverLines(session.parcels().stream().filter(p -> p.status() == PackageStatus.SEALED
-                && p.shipmentId() != null && earlier.contains(p.shipmentId())).toList());
-    }
-
-    private static List<ShipmentHandover.Line> handoverLines(List<PackingSession.Parcel> parcels) {
-        Map<UUID, Integer> totals = new LinkedHashMap<>();
-        parcels.forEach(parcel -> parcel.lineTotals().forEach((line, quantity) -> totals.merge(line, quantity,
-                Integer::sum)));
-        return totals.entrySet().stream().map(e -> new ShipmentHandover.Line(e.getKey(), e.getValue())).toList();
-    }
-
     private Session view(Context ctx, PackingSession session) {
         Map<UUID, String> skus = skus(session);
         List<Line> lines = session.lines().stream().map(line -> {
@@ -951,9 +858,7 @@ class PackingService implements Packing {
         List<Parcel> parcels = session.parcels().stream().map(parcel -> parcelView(parcel, skus)).toList();
         List<ShipmentSummary> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()).stream()
                 .map(row -> new ShipmentSummary(row.getId(), row.getCode(), row.getStatus().name(),
-                        row.getDeliveryMode().name(), row.getPackageCount(), row.getCodAmount(),
-                        ctx.order().total().currency().getCurrencyCode(), row.isPartial(),
-                        row.getPartialNote(), row.getReadyAt())).toList();
+                        row.getPackageCount(), row.isPartial(), row.getPartialNote(), row.getReadyAt())).toList();
         String packerName = session.startedBy() == null ? null
                 : identities.displayNames(List.of(session.startedBy())).get(session.startedBy());
         return new Session(ctx.pick().getId(), ctx.order().orderId(), ctx.order().orderNumber(),

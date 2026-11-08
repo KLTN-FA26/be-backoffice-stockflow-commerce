@@ -1,6 +1,5 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.Shipment;
@@ -53,8 +52,8 @@ class LeftBehindParcelsTest {
     void aConfirmedPlanThatLeftOneParcelBehind() {
         scenario = FulfillmentFixtures.confirmedPlanLeavingOneBehind();
         Shipment shipment = Shipment.restore(new Shipment.Snapshot(scenario.shipmentId(), "SO-0042-S1", UUID.randomUUID(),
-                null, FulfillmentFixtures.WAREHOUSE, UUID.randomUUID(), DeliveryMode.FULL_TRUCKLOAD, 3,
-                java.math.BigDecimal.ZERO, false, null, ShipmentStatus.READY_TO_DISPATCH, NOW, null, null, null, null,
+                null, FulfillmentFixtures.WAREHOUSE, UUID.randomUUID(), 3, false, null,
+                ShipmentStatus.READY_TO_DISPATCH, NOW, null, null, null, null,
                 null, null, null, null, null));
         row = ShipmentJpaEntity.of(shipment);
         when(locks.lock(Set.of(scenario.shipmentId()))).thenReturn(List.of(row));

@@ -9,7 +9,6 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.fulfillment.internal.controller.dto.AssignCarrierRequest;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentRowResponse;
@@ -20,7 +19,6 @@ import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -29,8 +27,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * Shipments in the back office (G4-2a; kltn-docs 09 §5): the list dispatch builds loads from, a shipment's parcels and
- * timeline, the carrier chosen for it, and the outcome recorded when the carrier reports back (§4.3).
+ * Shipments in the back office (G4-2a; kltn-docs 09 §5): the list load plans are built from, a shipment's parcels and
+ * timeline, and the outcome recorded when the carrier reports back (§4.3).
  *
  * <p>Outcomes have a resource of their own, {@code fulfillment-delivery-outcomes}: UPDATE records one, and on its own
  * only RETURNED (09 §5 "Warehouse": the warehouse manager may record a shipment back at the warehouse until the
@@ -68,16 +66,6 @@ class ShipmentController {
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
     public ApiResponse<ShipmentResponse> get(@PathVariable UUID shipmentId) {
         return ApiResponse.ok(mapper.toResponse(shipments.get(shipmentId)));
-    }
-
-    @PutMapping("/{shipmentId}/carrier")
-    @Operation(summary = "Choose the carrier of a shipment waiting for dispatch (null clears it); 409 "
-            + "SHIPMENT_ON_ANOTHER_LOAD, SHIPMENT_STATE_CONFLICT, CARRIER_INACTIVE")
-    @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
-    @Auditable(action = AuditAction.UPDATE, resourceType = "shipment", resourceId = "#shipmentId")
-    public ApiResponse<ShipmentResponse> assignCarrier(@PathVariable UUID shipmentId,
-            @RequestBody AssignCarrierRequest request, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(shipments.assignCarrier(shipmentId, request.carrierId(), actor)));
     }
 
     @PostMapping("/{shipmentId}/delivery-outcome")

@@ -119,7 +119,7 @@ class OrderFlowFollowupsTest {
             assertThat(order.status()).isEqualTo(OrderStatus.PACKED);
 
             order.recordHandover(new ShipmentHandover(S1, List.of(new ShipmentHandover.Line(cups, 10)), NOW, STAFF,
-                    List.of(), null, List.of(new ShipmentHandover.Line(lids, 5))));
+                    null, List.of(new ShipmentHandover.Line(lids, 5))));
             order.recordHandover(handover(S2, lids, 5));
             assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
         }
@@ -154,7 +154,7 @@ class OrderFlowFollowupsTest {
             assertThat(code(catchThrowable(() -> order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null,
                     BalancePolicy.ON_CREDIT)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThat(code(catchThrowable(() -> order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), 30,
-                    BalancePolicy.ON_DELIVERY)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                    BalancePolicy.BEFORE_DELIVERY)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
             order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), 30, BalancePolicy.ON_CREDIT);
             assertThat(order.balanceOnCredit()).isTrue();
             assertThat(order.creditTermDays()).isEqualTo(30);
@@ -162,17 +162,14 @@ class OrderFlowFollowupsTest {
         }
 
         @Test
-        @DisplayName("only the deposit before the handover; no COD; each delivery bills its goods less the deposit not "
-                + "yet used; DELIVERED until the receivables are paid")
+        @DisplayName("only the deposit before the handover; each delivery bills its goods less the deposit not yet "
+                + "used; DELIVERED until the receivables are paid")
         void billedOnDelivery() {
             Order order = mixed(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT, true);
             assertThat(order.amountDueBeforeHandover()).isZero();
-            assertThat(order.amountDueOnDelivery()).isZero();
-            assertThat(order.codFor(Map.of(stock(order), 10), Map.of(), null)).isZero();
             assertThat(order.creditAmount()).isEqualByComparingTo("2100000");
 
             order.recordHandover(handover(S1, stock(order), 10));
-            assertThat(order.shipments().getFirst().codAmount()).isZero();
             order.recordShipmentDelivered(S1, NOW, STAFF);
             assertThat(deliveries(order)).singleElement().satisfies(d -> {
                 assertThat(d.billedAmount()).as("1 000 000 of goods, the 900 000 deposit pays them first")
@@ -215,7 +212,8 @@ class OrderFlowFollowupsTest {
             Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
                     Order.line(new Sku("HOP-PIZZA"), 10, Money.vnd(200_000), null),
                     Order.line(new Sku("LY-IN"), 4, Money.vnd(2_000_000), UUID.randomUUID())), NOW);
-            order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null, null, policy);
+            order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null,
+                    policy == BalancePolicy.ON_CREDIT ? 30 : null, policy);
             order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
             order.decidePartialShipment(true);
             order.submit();
@@ -282,12 +280,11 @@ class OrderFlowFollowupsTest {
         }
 
         @Test
-        @DisplayName("1: deposit 3M of 10M (carrier collects), 2M stock shipped with no COD, prints closed with a 2M "
-                + "fee: the deposit keeps 1M of it, 1M is owed, nothing refunded")
+        @DisplayName("1: deposit 3M of 10M (balance on credit), 2M stock shipped on the deposit, prints closed with a "
+                + "2M fee: the deposit keeps 1M of it, 1M is owed, nothing refunded")
         void depositKeepsTheFeeFirst() {
-            Order order = tenMillion(PaymentTerm.DEPOSIT, BalancePolicy.ON_DELIVERY);
+            Order order = tenMillion(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT);
             order.recordHandover(handover(S1, stock(order), 10));
-            assertThat(order.shipments().getFirst().codAmount()).isZero();
             printingStarted(order);
             order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null, fee(2_000_000), STAFF, NOW);
             var closed = closure(order);
@@ -305,7 +302,7 @@ class OrderFlowFollowupsTest {
             Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
                     Order.line(new Sku("HOP"), 2, Money.vnd(30), null),
                     Order.line(new Sku("LY-IN"), 1, Money.vnd(50), UUID.randomUUID())), NOW);   // 110
-            order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null, BalancePolicy.ON_DELIVERY);
+            order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), 30, BalancePolicy.ON_CREDIT);
             order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
             order.decidePartialShipment(true);
             order.submit();

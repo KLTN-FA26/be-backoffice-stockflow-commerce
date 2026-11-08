@@ -65,12 +65,9 @@ public record CustomerOrderDetailResponse(
         CancellationRequest cancellationRequest,
 
         @Schema(description = "G4-2a: the shipments handed over to a carrier, oldest first (kltn-docs 09 BR-05); empty "
-                + "until the first handover. Nothing is tracked between handover and the outcome staff record")
-        List<Shipment> shipments,
-
-        @Schema(example = "PARCEL", description = "SCRUM-209: how the order travels, PARCEL or FULL_TRUCKLOAD, as the "
-                + "coordinator set it; null when not set. Shipments carry their own mode too")
-        String deliveryMode
+                + "until the first handover. Every order ships as a full truckload (09 BR-08). Nothing is tracked "
+                + "between handover and the outcome staff record")
+        List<Shipment> shipments
 ) {
 
     @Schema(name = "CustomerOrderShipment")
@@ -84,8 +81,6 @@ public record CustomerOrderDetailResponse(
             int packageCount,
             @Schema(example = "Giao Hàng Nhanh")
             String carrierName,
-            @Schema(example = "PARCEL", description = "PARCEL or FULL_TRUCKLOAD")
-            String deliveryMode,
             Instant handedOverAt,
             @Schema(description = "When staff recorded the latest outcome; null while with the carrier")
             Instant outcomeAt,

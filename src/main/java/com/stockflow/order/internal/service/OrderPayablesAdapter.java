@@ -48,7 +48,7 @@ class OrderPayablesAdapter implements OrderPayables {
                 order.status().name(), order.paymentTerm().name(),
                 order.balancePolicy() == null ? null : order.balancePolicy().name(),
                 order.total().currency().getCurrencyCode(), order.billable(), order.depositRequired(),
-                order.codInTransit(), order.status() == OrderStatus.CANCELLED ? null : order.confirmationThreshold(),
+                order.status() == OrderStatus.CANCELLED ? null : order.confirmationThreshold(),
                 holdable);
     }
 }

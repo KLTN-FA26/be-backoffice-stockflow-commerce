@@ -3,11 +3,9 @@ package com.stockflow.fulfillment.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.DataScope;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
-import com.stockflow.fulfillment.internal.entity.DispatchLoadShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
@@ -49,8 +47,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Shipments at dispatch (kltn-docs 09 §4.1 step 2, §4.3, §5, BR-02, BR-05): the carrier chosen before the handover,
- * the outcome staff record when the carrier reports back, and the order told in the same transaction.
+ * Shipments at dispatch (kltn-docs 09 §4.3, §5, BR-02, BR-05): reading them, the outcome staff record when the carrier
+ * reports back, and the order told in the same transaction.
  */
 class ShipmentServiceTest {
 
@@ -81,13 +79,6 @@ class ShipmentServiceTest {
         return row;
     }
 
-    private CarrierJpaEntity carrier(String status) {
-        CarrierJpaEntity carrier = new CarrierJpaEntity(UUID.randomUUID(), "GHN");
-        carrier.apply("GHN", "GHN Express", null, null, status);
-        when(carriers.findById(carrier.getId())).thenReturn(Optional.of(carrier));
-        return carrier;
-    }
-
     @Nested
     @DisplayName("reading")
     class Reading {
@@ -115,11 +106,11 @@ class ShipmentServiceTest {
         @Test
         @DisplayName("the detail names its parcels, carrier, load and the people who recorded each step")
         void detailAssemblesTheView() {
-            Shipment s = FulfillmentFixtures.readyShipment(DeliveryMode.PARCEL, 2, "250000");
+            Shipment s = FulfillmentFixtures.readyShipment(2);
             UUID carrierId = UUID.randomUUID();
             UUID loadId = UUID.randomUUID();
             UUID by = UUID.randomUUID();
-            s.handOver(loadId, carrierId, null, false, by, NOW);
+            s.handOver(loadId, carrierId, false, by, NOW);
             ShipmentJpaEntity row = FulfillmentFixtures.row(s);
             when(shipments.findById(row.getId())).thenReturn(Optional.of(row));
             CarrierJpaEntity ghn = new CarrierJpaEntity(carrierId, "GHN");
@@ -134,16 +125,13 @@ class ShipmentServiceTest {
                     row.getId(), "HANDED_OVER", NOW, null, by);
             when(events.findByShipmentIdOrderByOccurredAtAscIdAsc(row.getId())).thenReturn(List.of(step));
             when(identities.displayNames(List.of(by))).thenReturn(java.util.Map.of(by, "Dispatcher An"));
-            when(context.currencies(any())).thenReturn(java.util.Map.of(row.getOrderId(), "VND"));
 
             Shipments.ShipmentDetail detail = service.get(row.getId());
 
             assertThat(detail.shipment().status()).isEqualTo("HANDED_OVER");
             assertThat(detail.shipment().carrierName()).isEqualTo("GHN Express");
             assertThat(detail.shipment().loadCode()).isEqualTo("LD-0001");
-            assertThat(detail.shipment().currency()).isEqualTo("VND");
             assertThat(detail.shipment().packageCount()).isEqualTo(2);
-            assertThat(detail.shipment().codAmount()).isEqualByComparingTo("250000");
             assertThat(detail.timeline()).singleElement().satisfies(t -> {
                 assertThat(t.recordedByName()).isEqualTo("Dispatcher An");
                 assertThat(t.status()).isEqualTo("HANDED_OVER");
@@ -183,122 +171,7 @@ class ShipmentServiceTest {
             assertThat(page.items()).singleElement().satisfies(r -> {
                 assertThat(r.orderNumber()).isEqualTo("SO-0042");
                 assertThat(r.status()).isEqualTo("READY_TO_DISPATCH");
-                assertThat(r.currency()).isNull();
             });
-        }
-    }
-
-    @Nested
-    @DisplayName("choosing the carrier before the handover (09 §4.1 step 2)")
-    class AssigningACarrier {
-
-        @Test
-        @DisplayName("a shipment that does not exist is SHIPMENT_NOT_FOUND")
-        void unknownShipment() {
-            when(locks.lock(any())).thenReturn(List.of());
-
-            assertThat(refusal(() -> service.assignCarrier(UUID.randomUUID(), UUID.randomUUID(), actor)).errorCode())
-                    .isEqualTo(ErrorCode.SHIPMENT_NOT_FOUND);
-        }
-
-        @Test
-        @DisplayName("an unknown carrier is CARRIER_NOT_FOUND")
-        void unknownCarrier() {
-            ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.READY_TO_DISPATCH));
-            UUID carrierId = UUID.randomUUID();
-            when(carriers.findById(carrierId)).thenReturn(Optional.empty());
-
-            assertThat(refusal(() -> service.assignCarrier(row.getId(), carrierId, actor)).errorCode())
-                    .isEqualTo(ErrorCode.CARRIER_NOT_FOUND);
-        }
-
-        @Test
-        @DisplayName("an INACTIVE carrier takes no new shipment: CARRIER_INACTIVE")
-        void inactiveCarrier() {
-            ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.READY_TO_DISPATCH));
-            CarrierJpaEntity carrier = carrier("INACTIVE");
-
-            assertThat(refusal(() -> service.assignCarrier(row.getId(), carrier.getId(), actor)).errorCode())
-                    .isEqualTo(ErrorCode.CARRIER_INACTIVE);
-            verify(shipments, never()).saveAndFlush(any());
-        }
-
-        @Test
-        @DisplayName("an active carrier is recorded on the shipment waiting for dispatch")
-        void assignsTheCarrier() {
-            ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.READY_TO_DISPATCH));
-            CarrierJpaEntity carrier = carrier("ACTIVE");
-
-            Shipments.ShipmentDetail detail = service.assignCarrier(row.getId(), carrier.getId(), actor);
-
-            assertThat(row.getCarrierId()).isEqualTo(carrier.getId());
-            verify(shipments).saveAndFlush(row);
-            assertThat(detail.shipment().shipmentId()).isEqualTo(row.getId());
-        }
-
-        @Test
-        @DisplayName("null clears the carrier")
-        void nullClearsTheCarrier() {
-            Shipment s = FulfillmentFixtures.readyShipment();
-            s.assignCarrier(UUID.randomUUID());
-            ShipmentJpaEntity row = locked(FulfillmentFixtures.row(s));
-
-            service.assignCarrier(row.getId(), null, actor);
-
-            assertThat(row.getCarrierId()).isNull();
-            verify(shipments).saveAndFlush(row);
-            verify(carriers, never()).findById(any());
-        }
-
-        @Test
-        @DisplayName("choosing the carrier it already has changes and saves nothing")
-        void sameCarrierIsANoOp() {
-            CarrierJpaEntity carrier = carrier("ACTIVE");
-            Shipment s = FulfillmentFixtures.readyShipment();
-            s.assignCarrier(carrier.getId());
-            ShipmentJpaEntity row = locked(FulfillmentFixtures.row(s));
-
-            service.assignCarrier(row.getId(), carrier.getId(), actor);
-
-            verify(shipments, never()).saveAndFlush(any());
-        }
-
-        @Test
-        @DisplayName("a shipment on a load cannot move to another carrier: SHIPMENT_ON_ANOTHER_LOAD")
-        void onALoadTheCarrierIsFixed() {
-            Shipment s = FulfillmentFixtures.readyShipment();
-            s.assignCarrier(UUID.randomUUID());
-            ShipmentJpaEntity row = locked(FulfillmentFixtures.row(s));
-            CarrierJpaEntity other = carrier("ACTIVE");
-            UUID loadId = UUID.randomUUID();
-            when(members.findByShipmentIdInAndActiveTrue(Set.of(row.getId()))).thenReturn(List.of(
-                    new DispatchLoadShipmentJpaEntity(UUID.randomUUID(), loadId, row.getId(), DeliveryMode.PARCEL)));
-            when(loads.findById(loadId)).thenReturn(Optional.empty());
-
-            BusinessException thrown = refusal(() -> service.assignCarrier(row.getId(), other.getId(), actor));
-
-            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.SHIPMENT_ON_ANOTHER_LOAD);
-            verify(shipments, never()).saveAndFlush(any());
-        }
-
-        @Test
-        @DisplayName("once handed over, its carrier is not changed: SHIPMENT_STATE_CONFLICT")
-        void afterHandoverTheCarrierIsFixed() {
-            ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.HANDED_OVER));
-            CarrierJpaEntity other = carrier("ACTIVE");
-
-            assertThat(refusal(() -> service.assignCarrier(row.getId(), other.getId(), actor)).errorCode())
-                    .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
-        }
-
-        @Test
-        @DisplayName("a shipment of another warehouse is OUT_OF_DATA_SCOPE")
-        void outOfScope() {
-            ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.READY_TO_DISPATCH));
-
-            WithCurrentUser.run(FulfillmentFixtures.userOf(OTHER_WAREHOUSE), DataScope.WAREHOUSE, () ->
-                    assertThat(refusal(() -> service.assignCarrier(row.getId(), null, actor)).errorCode())
-                            .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
         }
     }
 
@@ -308,7 +181,7 @@ class ShipmentServiceTest {
 
         private OrderSummary orderKnowing(ShipmentJpaEntity row) {
             var known = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO,
-                    BigDecimal.ZERO, NOW, null, null, List.of(), BigDecimal.ZERO, null);
+                    BigDecimal.ZERO, NOW, null, null, List.of(), null);
             OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), List.of(known));
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
             return order;
@@ -462,7 +335,7 @@ class ShipmentServiceTest {
         @DisplayName("a shipment handed over as the whole order, unknown to the order, delivers the order itself")
         void wholeOrderPath() {
             Shipment s = FulfillmentFixtures.readyShipment();
-            s.handOver(UUID.randomUUID(), UUID.randomUUID(), null, true, UUID.randomUUID(), NOW);
+            s.handOver(UUID.randomUUID(), UUID.randomUUID(), true, UUID.randomUUID(), NOW);
             ShipmentJpaEntity row = locked(FulfillmentFixtures.row(s));
             OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), null);
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
@@ -479,7 +352,7 @@ class ShipmentServiceTest {
         @DisplayName("the whole-order path maps a failure and a return to the order's own outcomes")
         void wholeOrderFailureAndReturn() {
             Shipment s = FulfillmentFixtures.readyShipment();
-            s.handOver(UUID.randomUUID(), UUID.randomUUID(), null, true, UUID.randomUUID(), NOW);
+            s.handOver(UUID.randomUUID(), UUID.randomUUID(), true, UUID.randomUUID(), NOW);
             ShipmentJpaEntity row = locked(FulfillmentFixtures.row(s));
             OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), List.of());
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
@@ -499,7 +372,7 @@ class ShipmentServiceTest {
         @DisplayName("a whole-order shipment beside another live shipment is SHIPMENT_STATE_CONFLICT: record by hand")
         void wholeOrderBesideOthersIsRefused() {
             Shipment s = FulfillmentFixtures.readyShipment();
-            s.handOver(UUID.randomUUID(), UUID.randomUUID(), null, true, UUID.randomUUID(), NOW);
+            s.handOver(UUID.randomUUID(), UUID.randomUUID(), true, UUID.randomUUID(), NOW);
             ShipmentJpaEntity row = locked(FulfillmentFixtures.row(s));
             OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), List.of());
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
@@ -518,7 +391,7 @@ class ShipmentServiceTest {
         @DisplayName("a cancelled sibling does not block the whole-order outcome")
         void cancelledSiblingsDoNotCount() {
             Shipment s = FulfillmentFixtures.readyShipment();
-            s.handOver(UUID.randomUUID(), UUID.randomUUID(), null, true, UUID.randomUUID(), NOW);
+            s.handOver(UUID.randomUUID(), UUID.randomUUID(), true, UUID.randomUUID(), NOW);
             ShipmentJpaEntity row = locked(FulfillmentFixtures.row(s));
             OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), List.of());
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));

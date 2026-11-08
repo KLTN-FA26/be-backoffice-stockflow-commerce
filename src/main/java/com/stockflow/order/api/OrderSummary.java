@@ -63,16 +63,8 @@ public record OrderSummary(
      * @param amountDue              what the customer still owes on it, never below zero
      * @param amountDueBeforeHandover what must be paid before the goods may leave (G3-Q4): fulfillment warns at
      *                               packing and the handover is refused while it is above zero
-     * @param amountDueOnDelivery    what carriers are to collect on delivery (G2-3, ON_DELIVERY): the balance not
-     *                               yet paid; 0 for every other policy and term
-     * @param wholeOrderCodAmount    what the carrier collects for an order handed over whole, without shipments
-     *                               recorded on it ({@code markShipped}): fixed at that handover; 0 otherwise (G4-2a)
      * @param allowPartialShipment   Sales allowed the order to ship in parts (PACK-PARTIAL, lead's decision
      *                               2026-10-21): packing may complete part of it and part of it may be handed over
-     * @param deliveryMode           how it travels (LP-1, lead's decision 2026-10-22): PARCEL unless the Order
-     *                               Coordinator chose a full truckload; packing copies it onto every shipment
-     * @param deliveryModeLocked     packing started (or the order is past it, cancelled or closed): the delivery mode
-     *                               can no longer change
      * @param goodsLeftAt            SCRUM-392: when goods of the order first left on a load plan's vehicle, before a
      *                               shipment of it is handed over - from then it is not cancelled (review of #162)
      * @param replacesReturnRequestId SCRUM-260: the return this free order ships replacement goods for; null for an
@@ -82,14 +74,11 @@ public record OrderSummary(
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
                             Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
                             BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
-                            BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount, boolean allowPartialShipment,
-                            DeliveryMode deliveryMode, boolean deliveryModeLocked,
-                            Instant goodsLeftAt, UUID replacesReturnRequestId) {
+                            boolean allowPartialShipment, Instant goodsLeftAt, UUID replacesReturnRequestId) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipments = shipments == null ? List.of() : List.copyOf(shipments);
-            deliveryMode = deliveryMode == null ? DeliveryMode.PARCEL : deliveryMode;
         }
 
         /**
@@ -100,13 +89,10 @@ public record OrderSummary(
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
                          Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
                          BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment, DeliveryMode deliveryMode,
-                         boolean deliveryModeLocked, Instant goodsLeftAt) {
+                         List<Shipment> shipments, boolean allowPartialShipment, Instant goodsLeftAt) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
                     completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment,
-                    deliveryMode, deliveryModeLocked, goodsLeftAt, null);
+                    shipments, allowPartialShipment, goodsLeftAt, null);
         }
 
         /** Without goodsLeftAt (callers written before SCRUM-392): no goods left on a vehicle yet. */
@@ -114,26 +100,10 @@ public record OrderSummary(
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
                          Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
                          BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment, DeliveryMode deliveryMode,
-                         boolean deliveryModeLocked) {
+                         List<Shipment> shipments, boolean allowPartialShipment) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
                     completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment,
-                    deliveryMode, deliveryModeLocked, null);
-        }
-
-        /** Without the delivery mode (callers written before LP-1): a parcel order, still open. */
-        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
-                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment) {
-            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment,
-                    DeliveryMode.PARCEL, false, null);
+                    shipments, allowPartialShipment, null);
         }
 
         /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed. */
@@ -141,31 +111,10 @@ public record OrderSummary(
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
                          Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
                          BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount) {
-            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, false);
-        }
-
-        /** Without the whole-order COD (callers written before G4-2a). */
-        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
-                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery) {
-            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, null);
-        }
-
-        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
-                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
                          List<Shipment> shipments) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
                     completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, null);
+                    shipments, false);
         }
     }
 
@@ -178,29 +127,20 @@ public record OrderSummary(
     }
 
     /**
-     * One shipment of the order, as the order knows it (from its handover).
+     * One shipment of the order, as the order knows it (from its handover). Nothing is collected on delivery
+     * (kltn-docs 09 BR-08).
      *
-     * @param codAmount what the carrier collects on delivering it (G2-3, ON_DELIVERY): fixed at the handover, printed on
-     *                  the label and the manifest (15 BR-08, 09 BR-04); 0 otherwise
-     * @param carriage  number, parcels, carrier and mode as fulfillment handed it over (G4-2a); null before that
+     * @param carriage number, parcels and carrier as fulfillment handed it over (G4-2a); null before that
      */
     public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
                            Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                           List<ShipmentLine> lines, BigDecimal codAmount, ShipmentHandover.Carriage carriage) {
+                           List<ShipmentLine> lines, ShipmentHandover.Carriage carriage) {
 
         public Shipment {
             lines = lines == null ? List.of() : List.copyOf(lines);
-            codAmount = codAmount == null ? BigDecimal.ZERO : codAmount;
         }
 
         /** Without the carriage (G4-2a): callers written before it. */
-        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
-                        Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                        List<ShipmentLine> lines, BigDecimal codAmount) {
-            this(shipmentId, status, amount, billedAmount, handedOverAt, outcomeAt, failureReason, lines, codAmount,
-                    null);
-        }
-
         public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
                         Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
                         List<ShipmentLine> lines) {

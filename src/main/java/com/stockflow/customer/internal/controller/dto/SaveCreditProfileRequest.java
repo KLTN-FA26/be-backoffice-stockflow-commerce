@@ -25,7 +25,7 @@ public record SaveCreditProfileRequest(
         @Schema(description = "The version read (GET returns -1 while no terms are set); required when the customer "
                 + "already has terms, otherwise 400 VALIDATION_FAILED; a stale one is 409 OPTIMISTIC_LOCK") Long expectedVersion,
         @Schema(description = "How a deposit order's balance is collected: BEFORE_DELIVERY (by transfer, before the "
-                + "handover), ON_DELIVERY (the carrier collects it) or ON_CREDIT (a receivable on the customer's credit, due "
+                + "handover) or ON_CREDIT (a receivable on the customer's credit, due "
                 + "after creditTermDays; needs allowCredit); only with allowDeposit. Omit to keep the current "
                 + "policy (BEFORE_DELIVERY for new deposit terms)", example = "BEFORE_DELIVERY")
         com.stockflow.customer.api.DepositBalancePolicy depositBalancePolicy

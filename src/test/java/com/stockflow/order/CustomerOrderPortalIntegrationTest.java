@@ -9,14 +9,12 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.order.api.CancellationReasonCode;
-import com.stockflow.order.api.DeliveryMode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.service.CustomerOrders;
-import com.stockflow.order.internal.service.DeliveryModes;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
@@ -68,7 +66,6 @@ class CustomerOrderPortalIntegrationTest {
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
     @Autowired CustomerOrders customerOrders;
-    @Autowired DeliveryModes deliveryModes;
     @Autowired CreditChecks creditChecks;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -348,7 +345,6 @@ class CustomerOrderPortalIntegrationTest {
                 .andExpect(jsonPath("$.data.total").value(30_000_000))
                 .andExpect(jsonPath("$.data.currency").value("VND"))
                 .andExpect(jsonPath("$.data.deliveryState").value("NOT_SHIPPED"))
-                .andExpect(jsonPath("$.data.deliveryMode").value("PARCEL"))
                 .andExpect(jsonPath("$.data.payment.status").value("UNPAID"))
                 .andExpect(jsonPath("$.data.payment.paidAmount").value(0))
                 .andExpect(jsonPath("$.data.lines.length()").value(2))
@@ -366,21 +362,6 @@ class CustomerOrderPortalIntegrationTest {
         assertThat(body).doesNotContain("reservationIds").doesNotContain("designChecksum").doesNotContain("createdBy")
                 .doesNotContain("lastModifiedBy").doesNotContain("warehouseId").doesNotContain("contactEmail")
                 .doesNotContain("contactPhone").doesNotContain("customerId");
-    }
-
-    @Test
-    @DisplayName("SCRUM-209: the detail carries the order-level delivery mode the coordinator set")
-    void detailDeliveryMode() throws Exception {
-        deliveryModes.change(oneLine.orderId(), DeliveryMode.FULL_TRUCKLOAD, "whole truck", staffUser);
-
-        mvc.perform(get("/api/v1/orders/me/" + oneLine.orderId()).header("Authorization", customerA()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.deliveryMode").value("FULL_TRUCKLOAD"));
-        // Another order is untouched, and another customer still cannot read it.
-        mvc.perform(get("/api/v1/orders/me/" + twoLines.orderId()).header("Authorization", customerA()))
-                .andExpect(jsonPath("$.data.deliveryMode").value("PARCEL"));
-        mvc.perform(get("/api/v1/orders/me/" + oneLine.orderId()).header("Authorization", token(userB, "CUSTOMER")))
-                .andExpect(status().isNotFound());
     }
 
     private void receivable(UUID customer, UUID order, String orderNumber, int amount) {

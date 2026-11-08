@@ -133,32 +133,6 @@ class ShipmentService implements Shipments {
     }
 
     @Override
-    public ShipmentDetail assignCarrier(UUID shipmentId, UUID carrierId, CurrentUser actor) {
-        ShipmentJpaEntity row = lock(shipmentId);
-        if (carrierId != null) {
-            CarrierJpaEntity carrier = carriers.findById(carrierId)
-                    .orElseThrow(() -> new BusinessException(ErrorCode.CARRIER_NOT_FOUND));
-            if (!carrier.isActive()) {
-                throw new BusinessException(ErrorCode.CARRIER_INACTIVE,
-                        "Carrier %s is no longer in use".formatted(carrier.getCode()));
-            }
-        }
-        members.findByShipmentIdInAndActiveTrue(Set.of(shipmentId)).stream().findFirst().ifPresent(on -> {
-            if (!Objects.equals(carrierId, row.getCarrierId())) {
-                throw new BusinessException(ErrorCode.SHIPMENT_ON_ANOTHER_LOAD, "Shipment %s is on load %s; take it "
-                        .formatted(row.getCode(), loads.findById(on.getLoadId()).map(DispatchLoadJpaEntity::getCode)
-                                .orElse("?")) + "off before choosing another carrier");
-            }
-        });
-        Shipment shipment = row.toDomain();
-        if (shipment.assignCarrier(carrierId)) {
-            row.apply(shipment);
-            shipments.saveAndFlush(row);
-        }
-        return detail(row);
-    }
-
-    @Override
     public ShipmentDetail recordOutcome(UUID shipmentId, Outcome outcome, CurrentUser actor) {
         ShipmentJpaEntity row = lock(shipmentId);
         Shipment shipment = row.toDomain();
@@ -280,11 +254,9 @@ class ShipmentService implements Shipments {
             loads.findByIdIn(Set.copyOf(loadOf.values())).forEach(l -> loadCodes.put(l.getId(), l.getCode()));
         }
         Map<UUID, UUID> tasks = context.tasks(found);
-        Map<UUID, String> currencies = context.currencies(found.stream().map(ShipmentJpaEntity::getOrderId).toList());
         return found.stream().map(s -> new ShipmentRow(s.getId(), s.getCode(), s.getOrderId(),
                 numbers.get(s.getOrderId()), tasks.get(s.getId()), s.getWarehouseId(), s.getStatus().name(),
-                s.getDeliveryMode().name(), s.getPackageCount(), s.getCodAmount(), currencies.get(s.getOrderId()),
-                s.getCarrierId(), carrierNames.get(s.getCarrierId()),
+                s.getPackageCount(), s.getCarrierId(), carrierNames.get(s.getCarrierId()),
                 loadOf.get(s.getId()), loadCodes.get(loadOf.get(s.getId())), s.isPartial(), s.getReadyAt(),
                 s.getHandedOverAt(), s.getOutcomeAt(), s.getFailureReason() == null ? null : s.getFailureReason().name(),
                 s.isWholeOrderHandover(), s.getVersion())).toList();

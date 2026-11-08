@@ -12,7 +12,6 @@ import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
-import com.stockflow.order.api.DeliveryMode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -20,7 +19,6 @@ import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.order.internal.service.CreditHoldService;
-import com.stockflow.order.internal.service.DeliveryModes;
 import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.payment.internal.service.ReceivableService;
 import com.stockflow.support.Await;
@@ -55,10 +53,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * FTL-CREDIT (owner decision, SCRUM-193): a customer on credit terms is exempt from "fully paid before the handover"
- * as long as the order is within their limit - a full-truckload order on CREDIT is checked against the limit and held
- * like any other credit order, and its goods leave unpaid; a full-truckload order on prepaid or deposit terms still
- * does not leave with its balance unpaid (15 §4.1-4.2, G3-Q4). Against a real database.
+ * FTL-CREDIT (owner decision, SCRUM-193): every order ships as a full truckload (kltn-docs 09 BR-08), and a customer on
+ * credit terms is exempt from "fully paid before the handover" as long as the order is within their limit - an order
+ * on CREDIT is checked against the limit and held like any other credit order, and its goods leave unpaid; an order on
+ * prepaid or deposit terms still does not leave with its balance unpaid (15 §4.1-4.2, G3-Q4). Against a real database.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -71,7 +69,6 @@ class FullTruckloadOnCreditIntegrationTest {
 
     @Autowired OrderService orders;
     @Autowired OrderReleases releases;
-    @Autowired DeliveryModes deliveryModes;
     @Autowired CreditHoldService creditHolds;
     @Autowired CustomerService customers;
     @Autowired ReceivableService receivables;
@@ -139,44 +136,34 @@ class FullTruckloadOnCreditIntegrationTest {
     }
 
     @Test
-    @DisplayName("FTL-CREDIT: a full-truckload order on CREDIT within the limit is CONFIRMED by the credit check, takes "
-            + "the mode, and its goods leave with nothing paid")
+    @DisplayName("FTL-CREDIT: an order on CREDIT within the limit is CONFIRMED by the credit check, and its goods leave "
+            + "with nothing paid")
     void creditFullTruckloadLeavesUnpaid() {
         OrderSummary order = place(PaymentTerm.CREDIT, 2);                  // 10M of the 20M limit
         assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
-
-        OrderSummary ftl = deliveryModes.change(order.orderId(), DeliveryMode.FULL_TRUCKLOAD, "whole truck", staff);
-        assertThat(ftl.lifecycle().deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
-        assertThat(ftl.status()).isEqualTo(OrderStatus.CONFIRMED);
 
         packed(order.orderId());
         assertThat(reload(order.orderId()).lifecycle().amountDueBeforeHandover()).as("credit owes on its due date").isZero();
         OrderSummary shipped = handOver(order, 2);
         assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
-        assertThat(shipped.lifecycle().deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
     }
 
     @Test
-    @DisplayName("FTL-CREDIT: over the limit the full-truckload credit order is held like any other, and approval "
-            + "confirms it with the mode kept")
+    @DisplayName("FTL-CREDIT: over the limit the credit order is held like any other, and approval confirms it")
     void creditFullTruckloadOverTheLimitIsHeld() {
         OrderSummary order = place(PaymentTerm.CREDIT, 5);                  // 25M > 20M
         assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
-        deliveryModes.change(order.orderId(), DeliveryMode.FULL_TRUCKLOAD, "whole truck", staff);
-        assertThat(reload(order.orderId()).status()).as("the mode does not lift the hold").isEqualTo(OrderStatus.ON_HOLD);
 
         OrderSummary approved = creditHolds.approve(order.orderId(), "approved over the limit", staff);
         assertThat(approved.status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(approved.lifecycle().deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
     }
 
     @Test
-    @DisplayName("FTL-CREDIT: a full-truckload DEPOSIT order paid before delivery still does not leave with its balance "
-            + "unpaid (409 ORDER_BALANCE_NOT_PAID); once the balance is in it does")
+    @DisplayName("FTL-CREDIT: a DEPOSIT order paid before delivery still does not leave with its balance unpaid (409 "
+            + "ORDER_BALANCE_NOT_PAID); once the balance is in it does")
     void depositFullTruckloadStillLeavesPaid() {
         OrderSummary order = place(PaymentTerm.DEPOSIT, 2);                 // 10M, deposit 3M, balance 7M before delivery
         assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
-        deliveryModes.change(order.orderId(), DeliveryMode.FULL_TRUCKLOAD, "whole truck", staff);
         payDeposit(order, 3_000_000);
         Await.until("deposit confirms it", ASYNC, () -> reload(order.orderId()).status() == OrderStatus.CONFIRMED);
         packed(order.orderId());

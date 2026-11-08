@@ -17,7 +17,7 @@ import java.util.UUID;
 public record OrderPaymentsResponse(UUID orderId, String orderNumber, UUID customerId, String status,
                                     String paymentTerm, String balancePolicy, String currency, BigDecimal billable,
                                     BigDecimal depositRequired, BigDecimal collected, BigDecimal outstandingReceivables,
-                                    BigDecimal codInTransit, BigDecimal mayStillTake, List<Movement> movements,
+                                    BigDecimal mayStillTake, List<Movement> movements,
                                     List<ReceivableResponse> receivables, List<Refund> refunds) {
 
     /** One allocation or reversal, with the statement line it came from. */

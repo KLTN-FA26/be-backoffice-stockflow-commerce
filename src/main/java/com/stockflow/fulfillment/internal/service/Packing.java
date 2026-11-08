@@ -124,9 +124,9 @@ public interface Packing {
 
     /**
      * What the internal label of a sealed parcel prints (08 step 6): order, shipment, package n of N, recipient and
-     * address, the warehouse to return to, the COD amount (09 BR-04), weight, size and the fragile / rotatable flags.
-     * Before the parcel is in a shipment, n/N and the COD amount are {@code provisional}: they count the sealed parcels
-     * that would ship together now.
+     * address, the warehouse to return to, weight, size and the fragile / rotatable flags - no amount: nothing is
+     * collected on delivery (09 BR-08). Before the parcel is in a shipment, n/N is {@code provisional}: it counts the
+     * sealed parcels that would ship together now.
      */
     Label label(UUID taskId, UUID packageId, CurrentUser actor);
 
@@ -194,9 +194,8 @@ public interface Packing {
                   com.stockflow.fulfillment.internal.domain.KitPart kit, String kitOverrideReason,
                   Instant labelOutdatedAt) { }
 
-    record ShipmentSummary(UUID shipmentId, String code, String status, String deliveryMode, int packageCount,
-                           BigDecimal codAmount, String currency, boolean partial, String partialNote,
-                           Instant readyAt) { }
+    record ShipmentSummary(UUID shipmentId, String code, String status, int packageCount, boolean partial,
+                           String partialNote, Instant readyAt) { }
 
     /** Money the order must receive before its goods may be handed over (G3-Q4): the packer's early warning. */
     record PaymentDue(BigDecimal amountDueBeforeHandover, String currency) { }
@@ -209,8 +208,7 @@ public interface Packing {
                    String provinceName, String countryCode, String postalCode) { }
 
     record Label(String labelCode, UUID packageId, String orderNumber, UUID shipmentId, String shipmentCode,
-                 int packageNo, int packageCount, boolean provisional, BigDecimal codAmount, String currency,
-                 Address recipient, String returnWarehouseName, String returnAddress, String packageType,
+                 int packageNo, int packageCount, boolean provisional, Address recipient, String returnWarehouseName, String returnAddress, String packageType,
                  BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                  BigDecimal dimWeightKg, boolean fragile, boolean rotatable, List<Content> contents,
                  com.stockflow.fulfillment.internal.domain.KitPart kit) { }

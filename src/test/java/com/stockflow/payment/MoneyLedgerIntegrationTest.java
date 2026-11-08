@@ -61,8 +61,9 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * G2-3 (SCRUM-218) against a real database: one ledger of incoming money (decision G3-Q3) pays prepaid and deposit
- * orders as well as receivables, the handover waits for the balance (G3-Q4), and the carrier's remittance pays what it
- * collected on delivery. kltn-docs 15 BR-02, BR-04..BR-09; 09 §4.3 step 4, BR-04.
+ * orders as well as receivables, the handover waits for the balance (G3-Q4), and a carrier's remittance pays what it
+ * collected on delivery before nothing was collected on delivery any more (09 BR-08: V20261108000400 kept those
+ * receivables). kltn-docs 15 BR-02, BR-04..BR-09; 09 §4.3 step 4.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -188,6 +189,37 @@ class MoneyLedgerIntegrationTest {
     private long unallocated(UUID transfer) {
         return jdbc.queryForObject("SELECT unallocated_amount::bigint FROM payment.customer_transfer WHERE id = ?",
                 Long.class, transfer);
+    }
+
+    /**
+     * A 10M deposit order (deposit 3M paid) handed over in two shipments of 5M whose balance a carrier owes: 2M and 5M,
+     * the CARRIER DEPOSIT_BALANCE receivables of {@code s1} and {@code s2}. Nothing opens one any more (09 BR-08), but
+     * V20261108000400 kept those opened before and a carrier's remittance still pays them, so they are written here
+     * directly at the handover - the deliveries then bill the same 2M and 5M on the order and find payment's side
+     * already billed. The balance goes on credit only so that the goods may leave on the deposit.
+     *
+     * @return the receivables of {@code s1} and {@code s2}
+     */
+    private UUID[] handedOverWithCarrierReceivables(OrderSummary order, UUID s1, UUID s2) {
+        transfer(ref(), 3_000_000, List.of(pay(order, 3_000_000)));
+        awaitStatus(order, OrderStatus.CONFIRMED);
+        releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, accountant);
+        orders.startPicking(order.orderId(), accountant);
+        orders.recordHandover(order.orderId(), handover(order, s1, 1));
+        orders.markPacked(order.orderId(), accountant);
+        OrderSummary shipped = orders.recordHandover(order.orderId(), handover(order, s2, 1));
+        assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
+        return new UUID[] {carrierReceivable(order, s1, 2_000_000), carrierReceivable(order, s2, 5_000_000)};
+    }
+
+    private UUID carrierReceivable(OrderSummary order, UUID shipment, long amount) {
+        UUID id = UUID.randomUUID();
+        tx.executeWithoutResult(st -> jdbc.update("""
+                INSERT INTO payment.receivable (id, order_id, customer_id, kind, collector, amount, paid_amount,
+                                                currency, issued_at, due_date, status, order_number, shipment_id)
+                VALUES (?, ?, ?, 'DEPOSIT_BALANCE', 'CARRIER', ?, 0, 'VND', NOW(), ?, 'OPEN', ?, ?)""",
+                id, order.orderId(), customer, amount, TODAY, order.orderNumber(), shipment));
+        return id;
     }
 
     private static ErrorCode code(Throwable thrown) {
@@ -388,45 +420,16 @@ class MoneyLedgerIntegrationTest {
     }
 
     @Test
-    @DisplayName("ON_DELIVERY, split: each shipment's COD fixed at the handover; delivery opens a carrier receivable "
-            + "the customer's money never pays; the carrier's remittance does, once; the order completes only paid")
+    @DisplayName("a carrier-collected receivable of a split order: the customer's money never pays it and it is not "
+            + "their debt; the carrier's remittance does, once; what is billed to the carrier no transfer pays twice")
     void splitShipmentCarrierCollects() {
-        terms(customer, DepositBalancePolicy.ON_DELIVERY);
-        OrderSummary order = place(PaymentTerm.DEPOSIT, 2);            // 10M, deposit 3M
-        assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.ON_DELIVERY);
-        // 15 BR-08: what is collected on delivery is the balance after the deposit, shown so before the deposit is in
-        // (E2E QA 2026-10-21: it showed the whole 10M), and unchanged once it is.
-        assertThat(order.lifecycle().amountDueOnDelivery()).isEqualByComparingTo("7000000");
-        transfer(ref(), 3_000_000, List.of(pay(order, 3_000_000)));
-        awaitStatus(order, OrderStatus.CONFIRMED);
-        assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().amountDueOnDelivery())
-                .isEqualByComparingTo("7000000");
-        releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, accountant);
-        orders.startPicking(order.orderId(), accountant);
+        OrderSummary order = place(customer, PaymentTerm.DEPOSIT, 2, BalancePolicy.ON_CREDIT);   // 10M, deposit 3M
         UUID s1 = UUID.randomUUID();
         UUID s2 = UUID.randomUUID();
-        orders.recordHandover(order.orderId(), handover(order, s1, 1));     // 5M: COD 2M
-        orders.markPacked(order.orderId(), accountant);
-        OrderSummary shipped = orders.recordHandover(order.orderId(), handover(order, s2, 1));   // 5M: COD 5M
-        assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
-        assertThat(shipped.lifecycle().shipments()).extracting(OrderSummary.Shipment::codAmount)
-                .usingElementComparator(BigDecimal::compareTo)
-                .containsExactly(new BigDecimal("2000000"), new BigDecimal("5000000"));
-
-        // While the carrier carries it, a transfer cannot pay the balance as well.
+        UUID receivable = handedOverWithCarrierReceivables(order, s1, s2)[0];
         var credit = transfer(ref(), 7_000_000, List.of());
-        assertThat(code(catchThrowable(() -> ledger.allocate(new MoneyLedgerService.AllocateCommand(
-                credit.transfer().id(), order.orderId(), null, BigDecimal.ONE, accountant)))))
-                .isEqualTo(ErrorCode.ALLOCATION_EXCEEDS_AMOUNT_DUE);
 
         orders.recordShipmentDelivered(order.orderId(), s1, accountant);
-        Await.until("carrier receivable", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 1);
-        UUID receivable = jdbc.queryForObject("SELECT id FROM payment.receivable WHERE order_id = ?", UUID.class,
-                order.orderId());
-        assertThat(jdbc.queryForObject("SELECT kind || ' ' || collector || ' ' || amount::bigint || ' ' || due_date "
-                + "FROM payment.receivable WHERE id = ?", String.class, receivable))
-                .isEqualTo("DEPOSIT_BALANCE CARRIER 2000000 " + TODAY);
         assertThat(payments.creditPosition(customer).outstandingReceivables())
                 .as("not the customer's debt").isZero();
         assertThat(code(catchThrowable(() -> receivables.recordTransfer(new ReceivableService.RecordTransferCommand(
@@ -453,8 +456,6 @@ class MoneyLedgerIntegrationTest {
 
         orders.recordShipmentDelivered(order.orderId(), s2, accountant);
         awaitStatus(order, OrderStatus.DELIVERED);
-        Await.until("second carrier receivable", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 2);
         var history = ledger.orderPayments(order.orderId());
         assertThat(history.collected()).isEqualByComparingTo("5000000");
         assertThat(history.outstandingReceivables()).isEqualByComparingTo("5000000");
@@ -463,8 +464,8 @@ class MoneyLedgerIntegrationTest {
     }
 
     @Test
-    @DisplayName("a remittance on a receivable the customer pays is RECEIVABLE_NOT_CARRIER_COLLECTED; Sales cannot "
-            + "let the carrier collect for a customer whose terms say before delivery")
+    @DisplayName("a remittance on a receivable the customer pays is RECEIVABLE_NOT_CARRIER_COLLECTED; a prepaid order "
+            + "takes no balance policy; Sales may tighten a customer's balance on credit to before delivery")
     void carrierAndPolicyRefusals() {
         OrderSummary credit = place(PaymentTerm.CREDIT, 1);
         releases.release(credit.orderId(), DemoData.WAREHOUSE_HCM, accountant);
@@ -480,11 +481,9 @@ class MoneyLedgerIntegrationTest {
                 .CarrierRemittanceCommand(receivable, "GHN", "GHN-X", BigDecimal.ONE, TODAY, null, accountant)))))
                 .isEqualTo(ErrorCode.RECEIVABLE_NOT_CARRIER_COLLECTED);
 
-        assertThat(code(catchThrowable(() -> place(customer, PaymentTerm.DEPOSIT, 1, BalancePolicy.ON_DELIVERY))))
-                .isEqualTo(ErrorCode.BALANCE_POLICY_NOT_ALLOWED);
         assertThat(code(catchThrowable(() -> place(customer, PaymentTerm.PREPAID, 1, BalancePolicy.BEFORE_DELIVERY))))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        terms(customer, DepositBalancePolicy.ON_DELIVERY);
+        terms(customer, DepositBalancePolicy.ON_CREDIT);
         assertThat(place(customer, PaymentTerm.DEPOSIT, 1, BalancePolicy.BEFORE_DELIVERY).payment().balancePolicy())
                 .as("Sales may tighten it").isEqualTo(BalancePolicy.BEFORE_DELIVERY);
     }
@@ -513,23 +512,14 @@ class MoneyLedgerIntegrationTest {
     @DisplayName("review 2 + 7: one GHN statement line remits two shipments of one order, each once; a paid "
             + "receivable takes no remittance")
     void oneStatementTwoShipments() {
-        terms(customer, DepositBalancePolicy.ON_DELIVERY);
-        OrderSummary order = place(PaymentTerm.DEPOSIT, 2);            // 10M, deposit 3M
-        transfer(ref(), 3_000_000, List.of(pay(order, 3_000_000)));
-        awaitStatus(order, OrderStatus.CONFIRMED);
-        releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, accountant);
-        orders.startPicking(order.orderId(), accountant);
+        OrderSummary order = place(customer, PaymentTerm.DEPOSIT, 2, BalancePolicy.ON_CREDIT);   // 10M, deposit 3M
         UUID s1 = UUID.randomUUID();
         UUID s2 = UUID.randomUUID();
-        orders.recordHandover(order.orderId(), handover(order, s1, 1));     // COD 2M
-        orders.markPacked(order.orderId(), accountant);
-        orders.recordHandover(order.orderId(), handover(order, s2, 1));     // COD 5M
+        UUID[] carrier = handedOverWithCarrierReceivables(order, s1, s2);
         orders.recordShipmentDelivered(order.orderId(), s1, accountant);
         orders.recordShipmentDelivered(order.orderId(), s2, accountant);
-        Await.until("two carrier receivables", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 2);
-        UUID r1 = jdbc.queryForObject("SELECT id FROM payment.receivable WHERE shipment_id = ?", UUID.class, s1);
-        UUID r2 = jdbc.queryForObject("SELECT id FROM payment.receivable WHERE shipment_id = ?", UUID.class, s2);
+        UUID r1 = carrier[0];
+        UUID r2 = carrier[1];
         var first = ledger.recordCarrierRemittance(new MoneyLedgerService.CarrierRemittanceCommand(r1, "GHN",
                 "GHN-DS-3", BigDecimal.valueOf(2_000_000), TODAY, null, accountant));
         var secondShipment = ledger.recordCarrierRemittance(new MoneyLedgerService.CarrierRemittanceCommand(r2, "GHN",
@@ -567,31 +557,6 @@ class MoneyLedgerIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT kind || ' ' || collector || ' ' || amount::bigint || ' ' || due_date "
                 + "FROM payment.receivable WHERE order_id = ?", String.class, order.orderId()))
                 .isEqualTo("DEPOSIT_BALANCE CUSTOMER 907000 " + TODAY);
-    }
-
-    @Test
-    @DisplayName("review 5: COD at the handover counts a 2M allocation the order has not heard of: deposit 3M + 2M, "
-            + "a 5M shipment collects nothing")
-    void codCountsTheLedger() {
-        terms(customer, DepositBalancePolicy.ON_DELIVERY);
-        OrderSummary order = place(PaymentTerm.DEPOSIT, 2);            // 10M
-        transfer(ref(), 3_000_000, List.of(pay(order, 3_000_000)));
-        awaitStatus(order, OrderStatus.CONFIRMED);
-        releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, accountant);
-        orders.startPicking(order.orderId(), accountant);
-        // Money in the ledger whose PaymentCaptured the order has not processed: written directly, no event.
-        UUID t = UUID.randomUUID();
-        tx.executeWithoutResult(st -> {
-            jdbc.update("""
-                    INSERT INTO payment.customer_transfer (id, customer_id, reference, amount, unallocated_amount,
-                                                           currency, received_on, recorded_by, recorded_at)
-                    VALUES (?, ?, ?, 2000000, 0, 'VND', CURRENT_DATE, ?, NOW())""", t, customer, ref(), accountant);
-            jdbc.update("""
-                    INSERT INTO payment.transfer_allocation (id, transfer_id, order_id, amount, allocated_at)
-                    VALUES (?, ?, ?, 2000000, NOW())""", UUID.randomUUID(), t, order.orderId());
-        });
-        OrderSummary shipped = orders.recordHandover(order.orderId(), handover(order, UUID.randomUUID(), 1));
-        assertThat(shipped.lifecycle().shipments().getFirst().codAmount()).isZero();
     }
 
     @Test
@@ -641,9 +606,9 @@ class MoneyLedgerIntegrationTest {
     @Test
     @DisplayName("review 11: terms saved without a balance policy keep the one they had")
     void termsKeepTheirPolicy() {
-        terms(customer, DepositBalancePolicy.ON_DELIVERY);
+        terms(customer, DepositBalancePolicy.ON_CREDIT);
         terms(customer, null);
-        assertThat(customers.creditTerms(customer).depositBalancePolicy()).isEqualTo(DepositBalancePolicy.ON_DELIVERY);
+        assertThat(customers.creditTerms(customer).depositBalancePolicy()).isEqualTo(DepositBalancePolicy.ON_CREDIT);
     }
 
     /** Both calls released at once, each in its own transaction; what each returned or threw. */

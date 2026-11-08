@@ -165,14 +165,11 @@ final class OrderWebMapper {
                                 shipment.failureReason() == null ? null : shipment.failureReason().name(),
                                 shipment.lines().stream()
                                         .map(line -> new OrderResponse.ShipmentLine(line.lineId(), line.quantity()))
-                                        .toList(), shipment.codAmount()))
+                                        .toList()))
                         .toList(),
-                lifecycle == null ? null : lifecycle.amountDueOnDelivery(),
                 lifecycle == null ? null : lifecycle.allowPartialShipment(),
                 // Printing is outside the system: whatever an order holds is in stock, so the goods are ready.
-                lifecycle == null ? null : Boolean.TRUE,
-                lifecycle == null ? null : lifecycle.deliveryMode().name(),
-                lifecycle == null ? null : lifecycle.deliveryModeLocked());
+                lifecycle == null ? null : Boolean.TRUE);
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(

@@ -101,7 +101,7 @@ class CustomerEmailComposerTest {
     void shipmentChangeWithoutEventId() {
         var base = shipment(customer, "DELIVERY_FAILED", "OTHER", "GHN");
         var event = new com.stockflow.contracts.ShipmentStatusChanged(null, base.shipmentId(), base.shipmentCode(),
-                base.orderId(), base.orderNumber(), customer, base.warehouseId(), base.deliveryMode(),
+                base.orderId(), base.orderNumber(), customer, base.warehouseId(),
                 base.previousStatus(), base.status(), base.failureReasonCode(), base.packageCount(), base.carrierName(),
                 base.loadCode(), base.recordedBy(), base.occurredAt());
         String reference = composer.shipmentChanged(event).orElseThrow().reference();

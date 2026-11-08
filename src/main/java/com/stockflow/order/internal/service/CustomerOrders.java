@@ -116,11 +116,11 @@ public interface CustomerOrders {
      * One shipment of the order as the customer reads it (G4-2a, kltn-docs 09 BR-05): from its handover to the carrier
      * on. Who handed it over or recorded its outcome, the note on a failure, the money it carries: none of it is here.
      *
-     * @param shipmentCode  null for a shipment recorded before G4-2a (as are packageCount 0, carrier and mode)
+     * @param shipmentCode  null for a shipment recorded before G4-2a (as are packageCount 0 and the carrier)
      * @param failureReason set once a delivery failed (kept after a retry delivered it, as the history does)
      */
     record Shipment(String shipmentCode, com.stockflow.order.api.OrderShipmentStatus status, int packageCount,
-                    String carrierName, String deliveryMode, Instant handedOverAt, Instant outcomeAt,
+                    String carrierName, Instant handedOverAt, Instant outcomeAt,
                     com.stockflow.order.api.DeliveryFailureReason failureReason) {
     }
 
@@ -129,13 +129,12 @@ public interface CustomerOrders {
      *                         {@code UNDER_REVIEW}, never the internal reason
      * @param timeline         oldest first
      * @param shipments        handed over to a carrier, oldest first; empty before the first handover
-     * @param deliveryMode     SCRUM-209: PARCEL or FULL_TRUCKLOAD as the order carries it; null without a lifecycle
      */
     record Detail(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup,
                   String holdReasonPublic, PaymentTerm paymentTerm, BigDecimal total, String currency,
                   Instant placedAt, OrderSummary.AddressSummary shippingAddress, Payment payment, List<Line> lines,
                   List<TimelineEntry> timeline, DeliveryState deliveryState, AllowedActions allowedActions,
-                  CancellationRequestView cancellationRequest, List<Shipment> shipments, String deliveryMode) {
+                  CancellationRequestView cancellationRequest, List<Shipment> shipments) {
 
         public Detail {
             shipments = shipments == null ? List.of() : List.copyOf(shipments);

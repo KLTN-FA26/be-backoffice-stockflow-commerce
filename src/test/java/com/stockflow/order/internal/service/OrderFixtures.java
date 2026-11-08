@@ -34,7 +34,7 @@ final class OrderFixtures {
                 Order.line(new Sku("LID-90"), 5, Money.vnd(20_000), null)), NOW);
         order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null,
                 term == PaymentTerm.CREDIT ? 30 : null,
-                term == PaymentTerm.DEPOSIT ? com.stockflow.order.api.BalancePolicy.ON_DELIVERY : null);
+                term == PaymentTerm.DEPOSIT ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY : null);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         return order;
     }

@@ -50,11 +50,11 @@ public record PlaceOrderRequest(
         BigDecimal depositPercent,
 
         @Schema(description = "DEPOSIT orders: how the balance is collected. BEFORE_DELIVERY makes the customer pay it "
-                + "before the handover even if their terms let the carrier collect it; ON_CREDIT puts it on the "
-                + "customer's credit (they must be allowed CREDIT; checked against their credit limit and overdue "
-                + "receivables - 409 BALANCE_CREDIT_LIMIT_EXCEEDED / CUSTOMER_CREDIT_OVERDUE, with the credit left in "
-                + "the error's details); ON_DELIVERY only for a customer whose terms say so. A policy the customer may "
-                + "not use is 409 BALANCE_POLICY_NOT_ALLOWED; omit for the customer's terms (G2-3). The ones a customer "
+                + "before the handover; ON_CREDIT puts it on the customer's credit (they must be allowed CREDIT; "
+                + "checked against their credit limit and overdue receivables - 409 BALANCE_CREDIT_LIMIT_EXCEEDED / "
+                + "CUSTOMER_CREDIT_OVERDUE, with the credit left in the error's details). Nothing is collected on "
+                + "delivery. A policy the customer may not use is 409 BALANCE_POLICY_NOT_ALLOWED; omit for the "
+                + "customer's terms (G2-3). The ones a customer "
                 + "may pick are listed by GET /orders/payment-terms as allowedBalancePolicies", example = "BEFORE_DELIVERY")
         com.stockflow.order.api.BalancePolicy balancePolicy,
 

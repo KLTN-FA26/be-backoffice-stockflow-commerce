@@ -2,7 +2,6 @@ package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.contracts.ShipmentStatusChanged;
 import com.stockflow.fulfillment.internal.domain.DeliveryFailureReason;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.entity.ShipmentEventJpaEntity;
@@ -40,7 +39,7 @@ class ShipmentTimelineTest {
     @Test
     @DisplayName("a shipment just born is announced from nothing to READY_TO_DISPATCH, with the order number given")
     void newShipmentHasNoPreviousStatus() {
-        Shipment shipment = FulfillmentFixtures.readyShipment(DeliveryMode.PARCEL, 3, "0");
+        Shipment shipment = FulfillmentFixtures.readyShipment(3);
 
         timeline.record(shipment, null, null, "SO-0042", null, null);
 
@@ -73,7 +72,7 @@ class ShipmentTimelineTest {
         Shipment shipment = FulfillmentFixtures.readyShipment();
         shipment.pullRecorded();
         UUID by = UUID.randomUUID();
-        shipment.handOver(UUID.randomUUID(), UUID.randomUUID(), null, false, by, NOW);
+        shipment.handOver(UUID.randomUUID(), UUID.randomUUID(), false, by, NOW);
         shipment.recordDelivered(by, NOW.plusSeconds(60));
 
         timeline.record(shipment, ShipmentStatus.READY_TO_DISPATCH, null, "SO-1", "GHN Express", "LD-7");
@@ -96,7 +95,7 @@ class ShipmentTimelineTest {
         Shipment shipment = FulfillmentFixtures.readyShipment();
         shipment.pullRecorded();
         UUID by = UUID.randomUUID();
-        shipment.handOver(UUID.randomUUID(), UUID.randomUUID(), null, false, by, NOW);
+        shipment.handOver(UUID.randomUUID(), UUID.randomUUID(), false, by, NOW);
         shipment.recordFailed(DeliveryFailureReason.REFUSED, "no", by, NOW.plusSeconds(5));
 
         timeline.record(shipment, ShipmentStatus.READY_TO_DISPATCH, null, "SO-1", null, null);

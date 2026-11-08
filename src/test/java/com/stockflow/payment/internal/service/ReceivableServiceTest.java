@@ -32,6 +32,7 @@ import java.util.UUID;
 
 import static com.stockflow.payment.internal.service.PaymentFixtures.NOW;
 import static com.stockflow.payment.internal.service.PaymentFixtures.TODAY;
+import static com.stockflow.payment.internal.service.PaymentFixtures.carrierCollected;
 import static com.stockflow.payment.internal.service.PaymentFixtures.codeOf;
 import static com.stockflow.payment.internal.service.PaymentFixtures.order;
 import static com.stockflow.payment.internal.service.PaymentFixtures.receivable;
@@ -165,22 +166,6 @@ class ReceivableServiceTest {
             service.orderDelivered(new OrderDelivered(UUID.randomUUID(), "SO-2", null, "CREDIT", BigDecimal.TEN,
                     BigDecimal.ZERO, "VND", 0, NOW));
             verify(book, never()).save(any(Receivable.class));
-        }
-
-        @Test
-        @DisplayName("BR-08 / G2-3: a deposit order whose balance the carrier collects bills a carrier-collected "
-                + "DEPOSIT_BALANCE due on the delivery day, never allocated from the customer's credit")
-        void carrierCollectedBalance() {
-            OrderDelivered event = delivered("DEPOSIT", "1000000", "230000", 30, NOW, null, "770000", "ON_DELIVERY");
-
-            service.orderDelivered(event);
-
-            Receivable r = savedReceivable();
-            assertThat(r.carrierCollected()).isTrue();
-            assertThat(r.kind()).isEqualTo("DEPOSIT_BALANCE");
-            assertThat(r.amount()).isEqualByComparingTo("770000");
-            assertThat(r.dueDate()).as("due the delivery day, the credit days do not apply").isEqualTo(TODAY);
-            verify(book, never()).lockWithCredit(any());
         }
 
         @Test
@@ -437,10 +422,10 @@ class ReceivableServiceTest {
         }
 
         @Test
-        @DisplayName("09 §2: a receivable the carrier collects cannot be named in the customer's transfer")
+        @DisplayName("09 §2: a receivable a carrier collects (billed before nothing was collected on delivery any more) "
+                + "cannot be named in the customer's transfer")
         void carrierCollectedCannotBeNamed() {
-            Receivable cod = Receivable.openCarrierCollected(UUID.randomUUID(), customer, BigDecimal.TEN, "VND", NOW,
-                    TODAY);
+            Receivable cod = carrierCollected(customer, "10", TODAY);
             when(book.findReceivable(cod.id())).thenReturn(Optional.of(cod));
             assertThat(codeOf(() -> service.recordTransfer(command("10", List.of(cod.id()), null))))
                     .isEqualTo(ErrorCode.RECEIVABLE_CARRIER_COLLECTED);

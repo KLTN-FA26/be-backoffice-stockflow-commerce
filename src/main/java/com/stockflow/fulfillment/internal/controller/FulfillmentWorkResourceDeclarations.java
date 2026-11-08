@@ -42,14 +42,9 @@ final class FulfillmentWorkResourceDeclarations {
     static final class Carriers { private Carriers() { } }
 
     @PermissionResource(code = FulfillmentResources.DISPATCH, group = "Fulfillment",
-            label = "Dispatch: loads, loading and handover", route = "/fulfillment/loads",
-            apiPath = "/api/v1/fulfillment/loads", actions = {Action.CREATE, Action.UPDATE})
+            label = "Dispatch: booking, loading and handover", route = "/fulfillment/loads",
+            apiPath = "/api/v1/fulfillment/loads", actions = {Action.UPDATE})
     static final class Dispatch { private Dispatch() { } }
-
-    @PermissionResource(code = FulfillmentResources.LOAD_CANCELLATIONS, group = "Fulfillment",
-            label = "Load cancellation", route = "/fulfillment/loads", apiPath = "/api/v1/fulfillment/loads",
-            actions = {Action.UPDATE})
-    static final class LoadCancellations { private LoadCancellations() { } }
 
     @PermissionResource(code = FulfillmentResources.CONTROLLED_CANCELLATIONS, group = "Fulfillment",
             label = "Controlled cancel after loading started", route = "/fulfillment/loads",

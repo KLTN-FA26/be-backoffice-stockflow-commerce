@@ -18,9 +18,7 @@ import java.util.UUID;
  * shipments, and payment then bills {@code orderTotal - paidAmount} as before.</p>
  *
  * <p>G2-3: {@code balancePolicy} (nullable, added as the contract rules allow) names how a DEPOSIT order's balance is
- * collected. {@code ON_DELIVERY}: {@code billedAmount} is what the carrier collected for the shipment (fixed at the
- * handover, printed on the label, 15 BR-08 / 09 BR-04), and payment opens a carrier-collected receivable for it.
- * {@code ON_CREDIT} (BALCREDIT): {@code billedAmount} is the balance the delivery bills - the goods less the deposit not
+ * collected: {@code BEFORE_DELIVERY} (paid before the handover: nothing to bill) or {@code ON_CREDIT} (BALCREDIT): {@code billedAmount} is the balance the delivery bills - the goods less the deposit not
  * yet used - and payment opens the customer's receivable for it, due after {@code creditTermDays}.</p>
  *
  * Consumers receive it in-process through {@code @ApplicationModuleListener}; delivery is made

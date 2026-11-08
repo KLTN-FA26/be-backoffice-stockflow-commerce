@@ -44,7 +44,7 @@ final class PaymentWebMapper {
         var o = p.order();
         return new OrderPaymentsResponse(o.orderId(), o.orderNumber(), o.customerId(), o.status(), o.paymentTerm(),
                 o.balancePolicy(), o.currency(), o.billable(), o.depositRequired(), p.collected(),
-                p.outstandingReceivables(), o.codInTransit(), p.mayStillTake(),
+                p.outstandingReceivables(), p.mayStillTake(),
                 p.allocations().stream().map(a -> {
                     CustomerTransfer t = p.transfers().get(a.transferId());
                     return new OrderPaymentsResponse.Movement(a.id(), a.transferId(), t.reference(),

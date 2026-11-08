@@ -76,11 +76,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * G4-2a (SCRUM-288/292/293) through the real filter chain, permission aspect, warehouse scope and database: a parcel
- * load opened for one carrier, parcels scanned against its manifest (every wrong scan refused with its own code, a
- * retried scan harmless), the signature that hands the shipments over and moves the order in the same transaction with
- * the COD fixed per shipment (09 BR-03/04), the outcomes the coordinator records and what they bill, and the
- * customer's view of their shipments (BR-05).
+ * G4-2a (SCRUM-288/292/293) through the real filter chain, permission aspect, warehouse scope and database: a load
+ * plan's vehicle booked with a carrier and loading, parcels scanned against its manifest (every wrong scan refused with
+ * its own code, a retried scan harmless), the signature that hands the shipments over and moves the order in the same
+ * transaction (09 BR-03), the outcomes the coordinator records and what they bill, and the customer's view of their
+ * shipments (BR-05). Every order ships as a full truckload through a load plan and nothing is collected on delivery
+ * (kltn-docs 09 BR-08): the plan is only the way onto a vehicle here, {@link LoadPlanIntegrationTest} tests it.
  *
  * <p>Its own context, hence its own database: shipped orders keep their stock.</p>
  */
@@ -88,13 +89,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({PostgresContainer.class, RedisContainer.class, RecordedEvents.class})
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000",
-        "stockflow.test.context=dispatch-handover"})
+        "stockflow.fulfillment.load-planning.solver-budget=PT2S",
+        "stockflow.fulfillment.load-planning.solver-wall-limit=PT2S", "stockflow.test.context=dispatch-handover"})
 class DispatchHandoverIntegrationTest {
 
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String BASE = "/api/v1/fulfillment";
+    private static final String PLANS = BASE + "/load-plans";
     /** KIT-FORCE: the sofa ships as 2 boxes; packed in an ordinary package, it needs a reason. */
     private static final String ONE_CARTON = "{\"kitOverrideReason\":\"test: packed as one carton\"}";
     private static final String MEASURES = "{\"weightKg\":52.5,\"lengthCm\":215,\"widthCm\":95,\"heightCm\":90}";
@@ -124,6 +127,7 @@ class DispatchHandoverIntegrationTest {
     private UUID customer;
     private UUID ghn;
     private UUID ghtk;
+    private UUID truck5t;
 
     @BeforeEach
     void setUp() {
@@ -141,6 +145,7 @@ class DispatchHandoverIntegrationTest {
         customerOf(otherCustomerUser);
         ghn = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHN'", UUID.class);
         ghtk = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHTK'", UUID.class);
+        truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
     }
 
     // ---- fixtures ----------------------------------------------------------------------------
@@ -280,14 +285,50 @@ class DispatchHandoverIntegrationTest {
                 String.class, shipment);
     }
 
-    private JsonNode openLoad(UUID carrier, UUID... shipments) throws Exception {
-        StringBuilder ids = new StringBuilder();
-        for (UUID s : shipments) {
-            ids.append(ids.isEmpty() ? "" : ",").append('"').append(s).append('"');
+    private static String ids(UUID... ids) {
+        StringBuilder out = new StringBuilder();
+        for (UUID id : ids) {
+            out.append(out.isEmpty() ? "" : ",").append('"').append(id).append('"');
         }
-        return data(dispatch(body(post(BASE + "/loads"), "{\"requestId\":\"" + UUID.randomUUID()
-                + "\",\"warehouseId\":\"" + HCM + "\",\"carrierId\":\"" + carrier + "\",\"shipmentIds\":[" + ids
-                + "],\"vehiclePlate\":\"51C-123.45\"}")).andExpect(status().isCreated())
+        return "[" + out + "]";
+    }
+
+    private String planBody(UUID requestId, UUID... shipments) {
+        return "{\"requestId\":\"" + requestId + "\",\"warehouseId\":\"" + HCM + "\",\"shipmentIds\":" + ids(shipments)
+                + ",\"vehicleTypeIds\":[\"" + truck5t + "\"],\"selectionMode\":\"SINGLE_TYPE\"}";
+    }
+
+    /**
+     * These shipments' load plan on one 5 t truck, its vehicle booked with {@code carrier} and loading: the vehicle's
+     * load, LOADING. Every order leaves this way (09 BR-08).
+     */
+    private JsonNode vehicle(UUID carrier, UUID... shipments) throws Exception {
+        return loading(plannedVehicle(shipments), carrier);
+    }
+
+    /** These shipments' load plan, calculated and confirmed: its vehicle's load, PLANNED. */
+    private String plannedVehicle(UUID... shipments) throws Exception {
+        return confirmed(data(dispatch(body(post(PLANS), planBody(UUID.randomUUID(), shipments)))
+                .andExpect(status().isCreated())).path("loadPlanId").asText());
+    }
+
+    /** The plan calculated and confirmed, one 5 t truck carrying all of it: that vehicle's load, PLANNED. */
+    private String confirmed(String planId) throws Exception {
+        JsonNode plan = data(dispatch(get(PLANS + "/" + planId)).andExpect(status().isOk()));
+        for (String step : List.of("/calculation", "/confirmation")) {
+            plan = data(dispatch(body(post(PLANS + "/" + planId + step), "{\"expectedVersion\":"
+                    + plan.path("version").asLong() + "}")).andExpect(status().isOk()));
+        }
+        assertThat(plan.path("status").asText()).isEqualTo("CONFIRMED");
+        assertThat(plan.path("vehicles")).as("one truck carries it all").hasSize(1);
+        return plan.path("vehicles").get(0).path("load").path("loadId").asText();
+    }
+
+    /** The vehicle booked with {@code carrier} (09 §4.2 step 5) and loading: its load, LOADING. */
+    private JsonNode loading(String loadId, UUID carrier) throws Exception {
+        dispatch(body(post(BASE + "/loads/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-123.45\"}")).andExpect(status().isOk());
+        return data(dispatch(post(BASE + "/loads/" + loadId + "/loading-start")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("LOADING")));
     }
 
@@ -320,8 +361,8 @@ class DispatchHandoverIntegrationTest {
     }
 
     private Map<String, Object> shipmentRow(UUID shipment) {
-        return jdbc.queryForMap("SELECT status, carrier_id, load_id, cod_amount::bigint AS cod, handed_over_by "
-                + "FROM fulfillment.shipment WHERE id = ?", shipment);
+        return jdbc.queryForMap("SELECT status, carrier_id, load_id, handed_over_by FROM fulfillment.shipment "
+                + "WHERE id = ?", shipment);
     }
 
     private static ErrorCode code(Throwable thrown) {
@@ -332,30 +373,24 @@ class DispatchHandoverIntegrationTest {
     // ---- the whole flow ------------------------------------------------------------------------
 
     @Test
-    @DisplayName("prepaid stock order: load for its carrier, every scan rule, signature hands it over (order SHIPPED), "
-            + "repeat harmless, manifest, customer view, delivered (order DELIVERED), who may do what")
+    @DisplayName("prepaid stock order: its load plan's vehicle booked with a carrier and loading, every scan rule, "
+            + "signature hands it over (order SHIPPED), repeat harmless, manifest, customer view, delivered (order "
+            + "DELIVERED), who may do what")
     void aStockOrderLeavesOnASignedManifest() throws Exception {
         OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 12_000_000);
         UUID shipment = ship(pickedTask(order), false, 1, 1);
         List<String> parcels = labels(shipment);
         assertThat(statusOf(order)).isEqualTo(OrderStatus.PACKED);
 
-        // 09 §4.1 step 2: the dispatcher chooses its carrier; a load opened for it takes it by default.
+        // 09 §4.2 step 5: the shipment waits at dispatch; its plan's vehicle is booked with GHN and starts loading.
         dispatch(get(BASE + "/shipments?status=READY_TO_DISPATCH&warehouseId=" + HCM + "&size=200"))
                 .andExpect(status().isOk());
-        dispatch(body(put(BASE + "/shipments/" + shipment + "/carrier"), "{\"carrierId\":\"" + ghn + "\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.shipment.carrierName").value("Giao Hàng Nhanh"));
-        String requestId = UUID.randomUUID().toString();
-        String open = "{\"requestId\":\"" + requestId + "\",\"warehouseId\":\"" + HCM + "\",\"carrierId\":\"" + ghn
-                + "\"}";
-        JsonNode load = data(dispatch(body(post(BASE + "/loads"), open)).andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.shipmentCount").value(1))
-                .andExpect(jsonPath("$.data.expectedPackageCount").value(2))
-                .andExpect(jsonPath("$.data.carrierCode").value("GHN")));
+        JsonNode load = vehicle(ghn, shipment);
+        assertThat(load.path("shipmentCount").asInt()).isEqualTo(1);
+        assertThat(load.path("expectedPackageCount").asInt()).isEqualTo(2);
+        assertThat(load.path("carrierCode").asText()).isEqualTo("GHN");
         String loadId = load.path("loadId").asText();
         assertThat(load.path("code").asText()).matches("LD-\\d{8}-\\d{4}");
-        dispatch(body(post(BASE + "/loads"), open)).andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.loadId").value(loadId));
 
         // Who may load: not the coordinator (reads only), not a customer, not another warehouse.
         oc(get(BASE + "/loads/" + loadId)).andExpect(status().isOk());
@@ -400,8 +435,7 @@ class DispatchHandoverIntegrationTest {
         JsonNode dispatched = data(handOver(loadId).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DISPATCHED"))
                 .andExpect(jsonPath("$.data.carrierRepresentative").value("Nguyen Van Tai"))
-                .andExpect(jsonPath("$.data.shipments[0].status").value("HANDED_OVER"))
-                .andExpect(jsonPath("$.data.shipments[0].codAmount").value(0)));
+                .andExpect(jsonPath("$.data.shipments[0].status").value("HANDED_OVER")));
         assertThat(shipmentRow(shipment)).containsEntry("status", "HANDED_OVER").containsEntry("carrier_id", ghn)
                 .containsEntry("load_id", UUID.fromString(loadId)).containsEntry("handed_over_by", dispatcher);
         OrderSummary shipped = orders.findById(order.orderId()).orElseThrow();
@@ -473,44 +507,37 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
-    @DisplayName("deposit ON_DELIVERY in two shipments on two loads, the later one first: each handed over with the "
-            + "COD its label printed (09 BR-04); delivered, each opens its carrier-collected receivable")
-    void codStaysWhatTheLabelsSaid() throws Exception {
-        OrderSummary order = order(PaymentTerm.DEPOSIT, DepositBalancePolicy.ON_DELIVERY, 2, 5_000_000); // 10M, 3M paid
+    @DisplayName("a credit order in two shipments on two vehicles, the later one first: PARTIALLY_FULFILLED, then "
+            + "SHIPPED, each shipment with its own vehicle's carrier; delivered one by one, each opens its receivable")
+    void twoShipmentsLeaveOnTwoVehicles() throws Exception {
+        OrderSummary order = order(PaymentTerm.CREDIT, null, 2, 5_000_000);                    // 10M on credit
         UUID task = pickedTask(order);
         UUID s1 = ship(task, true, 1);
         UUID s2 = ship(task, false, 1);
-        long label1 = ((Number) shipmentRow(s1).get("cod")).longValue();
-        long label2 = ((Number) shipmentRow(s2).get("cod")).longValue();
-        assertThat(label1).isEqualTo(2_000_000L);
-        assertThat(label2).isEqualTo(5_000_000L);
 
         // The second shipment goes first, with another carrier.
-        String loadB = openLoad(ghtk, s2).path("loadId").asText();
+        String loadB = vehicle(ghtk, s2).path("loadId").asText();
         scan(loadB, labels(s2).getFirst()).andExpect(status().isOk());
-        handOver(loadB).andExpect(status().isOk()).andExpect(jsonPath("$.data.codTotal").value(5_000_000));
+        handOver(loadB).andExpect(status().isOk());
         assertThat(statusOf(order)).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        String loadA = openLoad(ghn, s1).path("loadId").asText();
+        String loadA = vehicle(ghn, s1).path("loadId").asText();
         scan(loadA, labels(s1).getFirst()).andExpect(status().isOk());
-        handOver(loadA).andExpect(status().isOk()).andExpect(jsonPath("$.data.codTotal").value(2_000_000));
+        handOver(loadA).andExpect(status().isOk());
         assertThat(statusOf(order)).isEqualTo(OrderStatus.SHIPPED);
-        assertThat(((Number) shipmentRow(s1).get("cod")).longValue()).isEqualTo(label1);
-        assertThat(((Number) shipmentRow(s2).get("cod")).longValue()).isEqualTo(label2);
-        assertThat(jdbc.queryForList("SELECT cod_amount::bigint FROM ordering.order_shipment WHERE order_id = ? "
-                + "ORDER BY handed_over_at", Long.class, order.orderId())).containsExactly(5_000_000L, 2_000_000L);
-        JsonNode manifest = data(dispatch(get(BASE + "/loads/" + loadA + "/manifest")));
-        assertThat(manifest.path("codTotal").decimalValue()).isEqualByComparingTo("2000000");
-        assertThat(manifest.path("shipments").get(0).path("codChangedSinceLabel").asBoolean()).isFalse();
+        assertThat(shipmentRow(s1)).containsEntry("carrier_id", ghn).containsEntry("load_id", UUID.fromString(loadA));
+        assertThat(shipmentRow(s2)).containsEntry("carrier_id", ghtk).containsEntry("load_id", UUID.fromString(loadB));
+        assertThat(jdbc.queryForList("SELECT id FROM ordering.order_shipment WHERE order_id = ? ORDER BY handed_over_at",
+                UUID.class, order.orderId())).containsExactly(s2, s1);
 
         outcome(s1, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
         assertThat(statusOf(order)).as("one of two delivered").isEqualTo(OrderStatus.SHIPPED);
         outcome(s2, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
         assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
-        Await.until("carrier-collected receivables", ASYNC, () -> jdbc.queryForObject(
+        Await.until("a receivable per shipment", ASYNC, () -> jdbc.queryForObject(
                 "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 2);
         assertThat(jdbc.queryForList("SELECT shipment_id::text || ':' || amount::bigint FROM payment.receivable "
                 + "WHERE order_id = ?", String.class, order.orderId()))
-                .containsExactlyInAnyOrder(s1 + ":2000000", s2 + ":5000000");
+                .containsExactlyInAnyOrder(s1 + ":5000000", s2 + ":5000000");
     }
 
     @Test
@@ -519,7 +546,7 @@ class DispatchHandoverIntegrationTest {
     void unpaidOrHeldOrdersDoNotLeave() throws Exception {
         OrderSummary order = order(PaymentTerm.DEPOSIT, DepositBalancePolicy.BEFORE_DELIVERY, 1, 4_000_000);
         UUID shipment = ship(pickedTask(order), false, 1);
-        String load = openLoad(ghn, shipment).path("loadId").asText();
+        String load = vehicle(ghn, shipment).path("loadId").asText();
         scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
         handOver(load).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_BALANCE_NOT_PAID"))
@@ -535,7 +562,7 @@ class DispatchHandoverIntegrationTest {
 
         OrderSummary held = order(PaymentTerm.PREPAID, null, 1, 3_000_000);
         UUID heldShipment = ship(pickedTask(held), false, 1);
-        String heldLoad = openLoad(ghn, heldShipment).path("loadId").asText();
+        String heldLoad = vehicle(ghn, heldShipment).path("loadId").asText();
         scan(heldLoad, labels(heldShipment).getFirst()).andExpect(status().isOk());
         oc(body(post("/api/v1/orders/" + held.orderId() + "/hold"), "{\"reasonCode\":\"ADDRESS\","
                 + "\"note\":\"ward missing\"}")).andExpect(status().isOk());
@@ -548,27 +575,17 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
-    @DisplayName("the wrong parcel: of another carrier, open (not sealed), on another load, of a shipment not on the "
-            + "manifest - each refused with its own code; a shipment of another carrier is refused on the manifest")
+    @DisplayName("the wrong parcel: open (not sealed), of a shipment in no load plan, in another load plan, on board "
+            + "another vehicle - each refused with its own code; each vehicle hands over its own")
     void wrongParcelsAreRefused() throws Exception {
         OrderSummary order = order(PaymentTerm.PREPAID, null, 3, 1_000_000);
         UUID task = pickedTask(order);
         UUID a = ship(task, true, 1);
         UUID b = ship(task, true, 1);
-        dispatch(body(put(BASE + "/shipments/" + b + "/carrier"), "{\"carrierId\":\"" + ghtk + "\"}"))
-                .andExpect(status().isOk());
-        String load = openLoad(ghn, a).path("loadId").asText();
-        scan(load, labels(b).getFirst()).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PACKAGE_OTHER_CARRIER"));
-        dispatch(body(post(BASE + "/loads/" + load + "/shipments"), "{\"shipmentIds\":[\"" + b + "\"]}"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("SHIPMENT_OTHER_CARRIER"));
-        String other = openLoad(ghtk, b).path("loadId").asText();
-        scan(other, labels(b).getFirst()).andExpect(status().isOk());
-        // b's parcel is on the GHTK load; its carrier changes only after it is taken off.
-        dispatch(body(put(BASE + "/shipments/" + b + "/carrier"), "{\"carrierId\":\"" + ghn + "\"}"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("SHIPMENT_ON_ANOTHER_LOAD"));
-        dispatch(body(post(BASE + "/loads/" + load + "/shipments"), "{\"shipmentIds\":[\"" + b + "\"]}"))
-                .andExpect(status().isConflict());
+        JsonNode first = vehicle(ghn, a);
+        JsonNode second = vehicle(ghtk, b);
+        String load = first.path("loadId").asText();
+        String other = second.path("loadId").asText();
 
         // An open parcel: its label exists but it is not sealed.
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
@@ -579,7 +596,7 @@ class DispatchHandoverIntegrationTest {
         scan(load, openLabel).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_READY"));
 
-        // A parcel of a shipment waiting for dispatch but not on this manifest.
+        // A parcel of a shipment waiting for dispatch but in no load plan.
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/scans"),
                 "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
                 .andExpect(status().isOk());
@@ -589,38 +606,27 @@ class DispatchHandoverIntegrationTest {
                 + "/packing-completion"), "{}")).andExpect(status().isOk())).path("shipmentId").asText());
         scan(load, labels(c).getFirst()).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_IN_LOAD"));
-        // b's parcel is on the other load.
-        dispatch(delete(BASE + "/loads/" + other + "/shipments/" + b)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipmentCount").value(0));
-        scan(other, labels(b).getFirst()).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_IN_LOAD"));
-        dispatch(body(post(BASE + "/loads/" + other + "/shipments"), "{\"shipmentIds\":[\"" + b + "\"]}"))
-                .andExpect(status().isOk());
+        // b's parcel is in another load plan, which the refusal names.
+        scan(load, labels(b).getFirst()).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_IN_LOAD"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                        second.path("loadPlanCode").asText())));
         scan(other, labels(b).getFirst()).andExpect(status().isOk());
-        dispatch(body(post(BASE + "/loads/" + load + "/shipments"), "{\"shipmentIds\":[\"" + c + "\"]}"))
-                .andExpect(status().isOk());
-        String third = openLoad(ghn).path("loadId").asText();
-        scan(third, labels(a).getFirst()).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_IN_LOAD"));
+        // a's parcel is on board its own vehicle: another vehicle is told which.
         scan(load, labels(a).getFirst()).andExpect(status().isOk());
-        scan(third, labels(a).getFirst()).andExpect(status().isConflict())
+        scan(other, labels(a).getFirst()).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_ALREADY_LOADED"))
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
-                        jdbc.queryForObject("SELECT code FROM fulfillment.dispatch_load WHERE id = ?::uuid",
-                                String.class, load))));
-        // The empty third load: nothing to sign; the manager calls it off.
-        handOver(third).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LOAD_EMPTY"));
-        dispatch(body(post(BASE + "/loads/" + third + "/cancellation"), "{\"reason\":\"opened twice\"}"))
-                .andExpect(status().isForbidden());
-        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/loads/" + third + "/cancellation"),
-                "{\"reason\":\"opened twice\"}")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("CANCELLED"));
+                        first.path("code").asText())));
 
-        // a and c leave with GHN; the order has one unit left on b (GHTK): partly fulfilled, then shipped.
-        scan(load, labels(c).getFirst()).andExpect(status().isOk());
+        // a leaves with GHN, b with GHTK; c, in no plan yet, keeps the order partly fulfilled until it leaves too.
         handOver(load).andExpect(status().isOk());
         assertThat(statusOf(order)).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         handOver(other).andExpect(status().isOk());
+        assertThat(statusOf(order)).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        String last = vehicle(ghn, c).path("loadId").asText();
+        scan(last, labels(c).getFirst()).andExpect(status().isOk());
+        handOver(last).andExpect(status().isOk());
         assertThat(statusOf(order)).isEqualTo(OrderStatus.SHIPPED);
     }
 
@@ -634,7 +640,7 @@ class DispatchHandoverIntegrationTest {
         UUID second = ship(task, false, 1);
         outcome(first, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("SHIPMENT_STATE_CONFLICT"));
-        String load = openLoad(ghn, first, second).path("loadId").asText();
+        String load = vehicle(ghn, first, second).path("loadId").asText();
         scan(load, labels(first).getFirst()).andExpect(status().isOk());
         scan(load, labels(second).getFirst()).andExpect(status().isOk());
         handOver(load).andExpect(status().isOk());
@@ -666,7 +672,7 @@ class DispatchHandoverIntegrationTest {
 
         OrderSummary credit = order(PaymentTerm.CREDIT, null, 1, 2_000_000);
         UUID creditShipment = ship(pickedTask(credit), false, 1);
-        String creditLoad = openLoad(ghn, creditShipment).path("loadId").asText();
+        String creditLoad = vehicle(ghn, creditShipment).path("loadId").asText();
         scan(creditLoad, labels(creditShipment).getFirst()).andExpect(status().isOk());
         handOver(creditLoad).andExpect(status().isOk());
         outcome(creditShipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
@@ -677,13 +683,12 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
-    @DisplayName("two dispatchers: scanning the same load at once both land; signing at once hands over once; two "
-            + "loads claiming one shipment - one wins, the other 409")
+    @DisplayName("two dispatchers: scanning the same load at once both land; signing at once hands over once")
     void twoDispatchersOnOneLoad() throws Exception {
         OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
         UUID shipment = ship(pickedTask(order), false, 1, 1);
         List<String> parcels = labels(shipment);
-        String load = openLoad(ghn, shipment).path("loadId").asText();
+        String load = vehicle(ghn, shipment).path("loadId").asText();
 
         // Tokens are minted first: the mocked decoder is stubbed per token and Mockito stubbing is not thread-safe.
         String first = token(dispatcher, "WAREHOUSE_STAFF");
@@ -707,33 +712,21 @@ class DispatchHandoverIntegrationTest {
                 + "status = 'HANDED_OVER'", Long.class, shipment)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_shipment WHERE id = ?", Long.class,
                 shipment)).isEqualTo(1L);
-
-        OrderSummary contested = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
-        UUID one = ship(pickedTask(contested), false, 1);
-        String[] bodies = new String[2];
-        for (int i = 0; i < 2; i++) {
-            bodies[i] = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM + "\",\"carrierId\":\""
-                    + ghn + "\",\"shipmentIds\":[\"" + one + "\"]}";
-        }
-        String fifth = token(dispatcher, "WAREHOUSE_STAFF");
-        String sixth = token(secondDispatcher, "WAREHOUSE_STAFF");
-        List<Integer> opened = race(() -> withToken(fifth, body(post(BASE + "/loads"), bodies[0])),
-                () -> withToken(sixth, body(post(BASE + "/loads"), bodies[1])));
-        assertThat(opened).containsExactlyInAnyOrder(201, 409);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.dispatch_load_shipment WHERE shipment_id = ? "
-                + "AND active", Long.class, one)).isEqualTo(1L);
+        // Two plans claiming one shipment at once (one wins, the other 409): LoadPlanIntegrationTest, BR-09.
     }
 
     @Test
     @DisplayName("an order cancelled between packing and the handover: refused by the order (packed, decision "
-            + "2026-10-17); were it cancelled, its shipment leaves the load and the signature goes without it")
+            + "2026-10-17); were it cancelled, its shipment leaves the vehicle's manifest, its parcel on board stays "
+            + "locked until it is unloaded, and the signature goes without it")
     void cancelledBetweenPackingAndHandover() throws Exception {
         OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
         UUID shipment = ship(pickedTask(order), false, 1);
         OrderSummary other = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
         UUID stays = ship(pickedTask(other), false, 1);
-        String load = openLoad(ghn, shipment, stays).path("loadId").asText();
-        scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
+        String load = vehicle(ghn, shipment, stays).path("loadId").asText();
+        String doomed = labels(shipment).getFirst();
+        scan(load, doomed).andExpect(status().isOk());
         scan(load, labels(stays).getFirst()).andExpect(status().isOk());
 
         assertThat(code(catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,
@@ -741,14 +734,22 @@ class DispatchHandoverIntegrationTest {
                         "too late", null, null)))))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
 
         // The fulfillment side of a cancellation (data written before the rule, or a future path): the shipment
-        // waiting for dispatch is cancelled and leaves the manifest with its parcel.
+        // waiting for dispatch is cancelled and leaves the manifest; its parcel is to be unloaded before the vehicle
+        // leaves, and nothing else takes it meanwhile.
         tx.executeWithoutResult(s -> publisher.publishEvent(new OrderCancelled(order.orderId(), order.orderNumber(),
                 customer, "PACKED", "OTHER", "test", BigDecimal.ZERO, BigDecimal.ZERO, "VND", coordinator,
                 Instant.now(), BigDecimal.ZERO)));
         Await.until("the shipment cancelled", ASYNC, () -> "CANCELLED".equals(shipmentRow(shipment).get("status")));
         dispatch(get(BASE + "/loads/" + load)).andExpect(jsonPath("$.data.shipmentCount").value(1))
-                .andExpect(jsonPath("$.data.loadedPackageCount").value(1));
-        scan(load, labels(shipment).getFirst()).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.data.loadedPackageCount").value(1))
+                .andExpect(jsonPath("$.data.pendingUnloads.length()").value(1));
+        scan(load, doomed).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PACKAGE_UNLOAD_PENDING"));
+        handOver(load).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_UNLOAD_PENDING"));
+        dispatch(body(post(BASE + "/loads/" + load + "/unloads"), "{\"packageCode\":\"" + doomed + "\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.pendingUnloads.length()").value(0));
+        scan(load, doomed).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_READY"));
         handOver(load).andExpect(status().isOk()).andExpect(jsonPath("$.data.shipmentCount").value(1));
         assertThat(shipmentRow(stays)).containsEntry("status", "HANDED_OVER");
@@ -757,42 +758,24 @@ class DispatchHandoverIntegrationTest {
 
     // ---- review of G4-2a -----------------------------------------------------------------------------
 
-    private UUID taskOf(UUID shipment) {
-        return jdbc.queryForObject("SELECT k.pick_id FROM fulfillment.pack k JOIN fulfillment.shipment s "
-                + "ON s.pack_id = k.id WHERE s.id = ?", UUID.class, shipment);
-    }
-
-    private JsonNode printLabel(UUID shipment) throws Exception {
-        UUID parcel = jdbc.queryForObject("SELECT id FROM fulfillment.package WHERE shipment_id = ? ORDER BY package_no "
-                + "LIMIT 1", UUID.class, shipment);
-        return data(as(picker, "WAREHOUSE_STAFF", get(BASE + "/tasks/" + taskOf(shipment) + "/packages/" + parcel
-                + "/label")).andExpect(status().isOk()));
-    }
-
-    private long cod(UUID shipment) {
-        return ((Number) shipmentRow(shipment).get("cod")).longValue();
-    }
-
     @Test
     @DisplayName("review #1: parcels packed before they recorded contents (V20261021000300 shapes) leave as the whole "
-            + "order - marked so, COD the order's figure - and their outcomes take the whole-order path; the customer "
-            + "sees one shipment")
+            + "order - marked so - and their outcomes take the whole-order path; the customer sees one shipment; the "
+            + "credit order's delivery opens its one receivable")
     void parcelsWithoutContentsLeaveAsTheWholeOrder() throws Exception {
-        OrderSummary order = order(PaymentTerm.DEPOSIT, DepositBalancePolicy.ON_DELIVERY, 1, 2_000_000); // COD 1.4M
+        OrderSummary order = order(PaymentTerm.CREDIT, null, 1, 2_000_000);
         UUID shipment = ship(pickedTask(order), false, 1);
         // What V20261021000300 made of a pack completed by the old flow: a sealed parcel with no recorded contents.
         tx.executeWithoutResult(t -> jdbc.update("DELETE FROM fulfillment.package_line WHERE package_id IN "
                 + "(SELECT id FROM fulfillment.package WHERE shipment_id = ?)", shipment));
-        String load = openLoad(ghn, shipment).path("loadId").asText();
+        String load = vehicle(ghn, shipment).path("loadId").asText();
         scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
-        handOver(load).andExpect(status().isOk()).andExpect(jsonPath("$.data.codTotal").value(1_400_000));
+        handOver(load).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT whole_order_handover FROM fulfillment.shipment WHERE id = ?",
                 Boolean.class, shipment)).isTrue();
-        assertThat(cod(shipment)).isEqualTo(1_400_000L);
         OrderSummary shipped = orders.findById(order.orderId()).orElseThrow();
         assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
         assertThat(shipped.lifecycle().shipments()).isEmpty();
-        assertThat(shipped.lifecycle().wholeOrderCodAmount()).isEqualByComparingTo("1400000");
         as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.shipments.length()").value(1))
                 .andExpect(jsonPath("$.data.shipments[0].status").value("HANDED_OVER"));
@@ -805,41 +788,12 @@ class DispatchHandoverIntegrationTest {
                 .andExpect(jsonPath("$.data.shipments[0].failureReason").value("CUSTOMER_ABSENT"));
         outcome(shipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
         assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
-        Await.until("the carrier-collected receivable", ASYNC, () -> jdbc.queryForObject(
+        Await.until("the order's receivable", ASYNC, () -> jdbc.queryForObject(
                 "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 1);
         assertThat(jdbc.queryForObject("SELECT amount::bigint FROM payment.receivable WHERE order_id = ?", Long.class,
-                order.orderId())).isEqualTo(1_400_000L);
+                order.orderId())).isEqualTo(2_000_000L);
         as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.shipments[0].status").value("DELIVERED"));
-    }
-
-    @Test
-    @DisplayName("review #2: S1 on load B and S2 on load A of one deposit order signed at once - each takes its "
-            + "label's COD, the advance counted once (no over-collection)")
-    void concurrentSignaturesCountTheAdvanceOnce() throws Exception {
-        OrderSummary order = order(PaymentTerm.DEPOSIT, DepositBalancePolicy.ON_DELIVERY, 5, 1_000_000); // 1.5M ahead
-        UUID task = pickedTask(order);
-        UUID s1 = ship(task, true, 1);      // 1M of goods, all of it paid ahead: COD 0
-        UUID s2 = ship(task, false, 4);     // 4M, 0.5M of the advance left: COD 3.5M
-        assertThat(cod(s1)).isZero();
-        assertThat(cod(s2)).isEqualTo(3_500_000L);
-        String loadA = openLoad(ghn, s2).path("loadId").asText();
-        String loadB = openLoad(ghtk, s1).path("loadId").asText();
-        scan(loadA, labels(s2).getFirst()).andExpect(status().isOk());
-        scan(loadB, labels(s1).getFirst()).andExpect(status().isOk());
-        String sign = "{\"version\":%d,\"carrierRepresentative\":\"Tai\",\"vehiclePlate\":\"51C\",\"signed\":true}";
-        String a = token(dispatcher, "WAREHOUSE_STAFF");
-        String b = token(secondDispatcher, "WAREHOUSE_STAFF");
-        String bodyA = sign.formatted(version(loadA));
-        String bodyB = sign.formatted(version(loadB));
-        List<Integer> signed = race(() -> withToken(a, body(post(BASE + "/loads/" + loadA + "/handover"), bodyA)),
-                () -> withToken(b, body(post(BASE + "/loads/" + loadB + "/handover"), bodyB)));
-        assertThat(signed).containsOnly(200);
-        assertThat(cod(s1)).isZero();
-        assertThat(cod(s2)).isEqualTo(3_500_000L);
-        assertThat(jdbc.queryForObject("SELECT SUM(cod_amount)::bigint FROM ordering.order_shipment WHERE order_id = ?",
-                Long.class, order.orderId())).as("the balance, collected once").isEqualTo(3_500_000L);
-        assertThat(statusOf(order)).isEqualTo(OrderStatus.SHIPPED);
     }
 
     @Test
@@ -853,8 +807,8 @@ class DispatchHandoverIntegrationTest {
         UUID o2a = ship(t2, true, 1);
         UUID o1b = ship(t1, false, 1);
         UUID o2b = ship(t2, false, 1);
-        String l1 = openLoad(ghn, o1a, o2b).path("loadId").asText();
-        String l2 = openLoad(ghtk, o2a, o1b).path("loadId").asText();
+        String l1 = vehicle(ghn, o1a, o2b).path("loadId").asText();
+        String l2 = vehicle(ghtk, o2a, o1b).path("loadId").asText();
         for (UUID s : List.of(o1a, o2b)) {
             scan(l1, labels(s).getFirst()).andExpect(status().isOk());
         }
@@ -874,38 +828,18 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
-    @DisplayName("review #4 (09 BR-04): money arrived after the label was printed - the signature is refused "
-            + "LABEL_OUTDATED naming the shipment until the label is reprinted with the order's figure")
-    void anOutdatedLabelStopsTheHandover() throws Exception {
-        OrderSummary order = order(PaymentTerm.DEPOSIT, DepositBalancePolicy.ON_DELIVERY, 1, 2_000_000); // 0.6M paid
-        UUID shipment = ship(pickedTask(order), false, 1);
-        assertThat(printLabel(shipment).path("codAmount").decimalValue()).isEqualByComparingTo("1400000");
-        pay(order, new BigDecimal("400000"));
-        String load = openLoad(ghn, shipment).path("loadId").asText();
-        scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
-        String code = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class, shipment);
-        handOver(load).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LABEL_OUTDATED"))
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(code)));
-        assertThat(statusOf(order)).as("nothing moved").isEqualTo(OrderStatus.PACKED);
-        assertThat(printLabel(shipment).path("codAmount").decimalValue()).isEqualByComparingTo("1000000");
-        handOver(load).andExpect(status().isOk()).andExpect(jsonPath("$.data.codTotal").value(1_000_000));
-        assertThat(cod(shipment)).isEqualTo(1_000_000L);
-    }
-
-    @Test
-    @DisplayName("review: a scan without scanId is accepted (one is made); two opens with one requestId at once both "
-            + "answer the same load")
-    void scanIdOptionalAndConcurrentOpenReplays() throws Exception {
+    @DisplayName("review: a scan without scanId is accepted (one is made); two load plans created with one requestId at "
+            + "once both answer the same plan")
+    void scanIdOptionalAndConcurrentPlanReplays() throws Exception {
         OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
         UUID shipment = ship(pickedTask(order), false, 1);
-        String open = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM + "\",\"carrierId\":\""
-                + ghn + "\",\"shipmentIds\":[\"" + shipment + "\"]}";
+        String create = planBody(UUID.randomUUID(), shipment);
         String a = token(dispatcher, "WAREHOUSE_STAFF");
         String b = token(secondDispatcher, "WAREHOUSE_STAFF");
-        List<String> loads = race(() -> opened(a, open), () -> opened(b, open));
-        assertThat(loads).allSatisfy(r -> assertThat(r).startsWith("201:"));
-        assertThat(loads.get(0)).isEqualTo(loads.get(1));
-        String load = loads.getFirst().substring(4);
+        List<String> plans = race(() -> created(a, create), () -> created(b, create));
+        assertThat(plans).allSatisfy(r -> assertThat(r).startsWith("201:"));
+        assertThat(plans.get(0)).isEqualTo(plans.get(1));
+        String load = loading(confirmed(plans.getFirst().substring(4)), ghn).path("loadId").asText();
         dispatch(body(post(BASE + "/loads/" + load + "/scans"), "{\"packageCode\":\"" + labels(shipment).getFirst()
                 + "\"}")).andExpect(status().isOk()).andExpect(jsonPath("$.data.loadedPackageCount").value(1));
         dispatch(body(post(BASE + "/loads/" + load + "/scans"), "{\"packageCode\":\"" + labels(shipment).getFirst()
@@ -913,8 +847,8 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
-    @DisplayName("FE #61: SYSTEM_ADMIN passes every role gate (carrier edit, load, scan, sign, cancel, outcome); "
-            + "shipments carry their task (label reprint) and the currency of their COD")
+    @DisplayName("FE #61: SYSTEM_ADMIN passes every role gate (carrier edit, load plan, booking and its cancellation, "
+            + "loading, scan, sign, outcome); shipments carry their task (label reprint)")
     void systemAdminAndShipmentContext() throws Exception {
         UUID admin = staff("SYSTEM_ADMIN");
         OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
@@ -925,16 +859,27 @@ class DispatchHandoverIntegrationTest {
         as(admin, "SYSTEM_ADMIN", body(put(BASE + "/carriers/" + carrier.path("carrierId").asText()),
                 "{\"code\":\"SYSADM\",\"name\":\"Admin carrier 2\",\"version\":" + carrier.path("version").asLong()
                         + "}")).andExpect(status().isOk());
-        as(admin, "SYSTEM_ADMIN", body(put(BASE + "/shipments/" + shipment + "/carrier"), "{\"carrierId\":\"" + ghn
-                + "\"}")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipment.taskId").value(task.toString()))
-                .andExpect(jsonPath("$.data.shipment.currency").value("VND"));
-        JsonNode load = data(as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads"), "{\"requestId\":\""
-                + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM + "\",\"carrierId\":\"" + ghn + "\"}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.shipments[0].taskId").value(task.toString()))
-                .andExpect(jsonPath("$.data.shipments[0].currency").value("VND")));
-        String loadId = load.path("loadId").asText();
+        as(admin, "SYSTEM_ADMIN", get(BASE + "/shipments/" + shipment)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shipment.taskId").value(task.toString()));
+        JsonNode plan = data(as(admin, "SYSTEM_ADMIN", body(post(PLANS), planBody(UUID.randomUUID(), shipment)))
+                .andExpect(status().isCreated()));
+        String planId = plan.path("loadPlanId").asText();
+        for (String step : List.of("/calculation", "/confirmation")) {
+            plan = data(as(admin, "SYSTEM_ADMIN", body(post(PLANS + "/" + planId + step), "{\"expectedVersion\":"
+                    + plan.path("version").asLong() + "}")).andExpect(status().isOk()));
+        }
+        assertThat(plan.path("vehicles")).hasSize(1);
+        String loadId = plan.path("vehicles").get(0).path("load").path("loadId").asText();
+        String booking = "{\"carrierId\":\"" + ghn + "\",\"vehiclePlate\":\"51C-123.45\"}";
+        as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/booking"), booking))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("VEHICLE_BOOKED"));
+        as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/booking-cancellation"),
+                "{\"reason\":\"test\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PLANNED"));
+        as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/booking"), booking))
+                .andExpect(status().isOk());
+        as(admin, "SYSTEM_ADMIN", post(BASE + "/loads/" + loadId + "/loading-start")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shipments[0].taskId").value(task.toString()));
         as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/scans"), "{\"packageCode\":\""
                 + labels(shipment).getFirst() + "\"}")).andExpect(status().isOk());
         as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/handover"), "{\"version\":"
@@ -943,17 +888,13 @@ class DispatchHandoverIntegrationTest {
         as(admin, "SYSTEM_ADMIN", body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"),
                 "{\"outcome\":\"DELIVERED\"}")).andExpect(status().isOk());
         dispatch(get(BASE + "/shipments?orderId=" + order.orderId())).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].taskId").value(task.toString()))
-                .andExpect(jsonPath("$.data.items[0].currency").value("VND"));
-        String empty = openLoad(ghn).path("loadId").asText();
-        as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + empty + "/cancellation"), "{\"reason\":\"test\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"));
+                .andExpect(jsonPath("$.data.items[0].taskId").value(task.toString()));
         assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
     }
 
     @Test
     @DisplayName("carriers: the manager declares and edits them (409 on a taken code, stale version); staff read only; "
-            + "an inactive carrier takes no new load")
+            + "a vehicle is not booked with an inactive carrier (nor an unknown one, nor from another warehouse)")
     void theCarrierCatalogue() throws Exception {
         dispatch(get(BASE + "/carriers?size=50")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(4)));
@@ -971,15 +912,20 @@ class DispatchHandoverIntegrationTest {
                 "{\"code\":\"AHA\",\"name\":\"Ahamove\",\"status\":\"INACTIVE\",\"version\":"
                         + aha.path("version").asLong() + "}")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("INACTIVE"));
-        dispatch(body(post(BASE + "/loads"), "{\"requestId\":\"" + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM
-                + "\",\"carrierId\":\"" + aha.path("carrierId").asText() + "\"}")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("CARRIER_INACTIVE"));
-        dispatch(body(post(BASE + "/loads"), "{\"requestId\":\"" + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM
-                + "\",\"carrierId\":\"" + UUID.randomUUID() + "\"}")).andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.errorCode").value("CARRIER_NOT_FOUND"));
-        as(dispatcherElsewhere, "WAREHOUSE_STAFF", body(post(BASE + "/loads"), "{\"requestId\":\"" + UUID.randomUUID()
-                + "\",\"warehouseId\":\"" + HCM + "\",\"carrierId\":\"" + ghn + "\"}"))
+
+        // A load plan's vehicle is booked with a carrier in use only.
+        stock(1);
+        UUID shipment = ship(pickedTask(order(PaymentTerm.PREPAID, null, 1, 1_000_000)), false, 1);
+        String loadId = plannedVehicle(shipment);
+        String booking = BASE + "/loads/" + loadId + "/booking";
+        dispatch(body(post(booking), "{\"carrierId\":\"" + aha.path("carrierId").asText() + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_INACTIVE"));
+        dispatch(body(post(booking), "{\"carrierId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("CARRIER_NOT_FOUND"));
+        as(dispatcherElsewhere, "WAREHOUSE_STAFF", body(post(booking), "{\"carrierId\":\"" + ghn + "\"}"))
                 .andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.dispatch_load WHERE id = ?::uuid", String.class,
+                loadId)).isEqualTo("PLANNED");
     }
 
     // ---- E2E QA 2026-10-21 ---------------------------------------------------------------------------
@@ -996,11 +942,11 @@ class DispatchHandoverIntegrationTest {
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 
-    /** Opens, labels, loads and delivers one credit order: its delivery opens one receivable. */
+    /** Packs, plans, loads and delivers one credit order: its delivery opens one receivable. */
     private OrderSummary deliveredOnCredit(long price) throws Exception {
         OrderSummary order = order(PaymentTerm.CREDIT, null, 1, price);
         UUID shipment = ship(pickedTask(order), false, 1);
-        String load = openLoad(ghn, shipment).path("loadId").asText();
+        String load = vehicle(ghn, shipment).path("loadId").asText();
         scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
         handOver(load).andExpect(status().isOk());
         outcome(shipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
@@ -1043,44 +989,6 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
-    @DisplayName("E2E F2: the label reprinted after LABEL_OUTDATED (630 000 -> 430 000) is what the load, the handover "
-            + "answer and the signed manifest show - no 'COD changed since label'; a load holding an older copy is "
-            + "corrected at the signature")
-    void aReprintedLabelIsWhatTheManifestShows() throws Exception {
-        stock(1);
-        OrderSummary order = order(PaymentTerm.DEPOSIT, DepositBalancePolicy.ON_DELIVERY, 1, 900_000); // 270 000 paid
-        UUID shipment = ship(pickedTask(order), false, 1);
-        assertThat(printLabel(shipment).path("codAmount").decimalValue()).isEqualByComparingTo("630000");
-        String load = openLoad(ghn, shipment).path("loadId").asText();
-        dispatch(get(BASE + "/loads/" + load)).andExpect(jsonPath("$.data.shipments[0].labelCodAmount").value(630_000));
-        pay(order, new BigDecimal("200000"));
-        scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
-        handOver(load).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LABEL_OUTDATED"));
-
-        assertThat(printLabel(shipment).path("codAmount").decimalValue()).isEqualByComparingTo("430000");
-        dispatch(get(BASE + "/loads/" + load)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipments[0].labelCodAmount").value(430_000))
-                .andExpect(jsonPath("$.data.codTotal").value(430_000));
-        assertThat(jdbc.queryForObject("SELECT label_cod_amount::bigint FROM fulfillment.dispatch_load_shipment "
-                + "WHERE shipment_id = ? AND active", Long.class, shipment)).isEqualTo(430_000L);
-        JsonNode before = data(dispatch(get(BASE + "/loads/" + load + "/manifest")));
-        assertThat(before.path("shipments").get(0).path("codAmount").decimalValue()).isEqualByComparingTo("430000");
-
-        // A load recorded before reprints refreshed it still holds the old figure: the signature corrects it.
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE fulfillment.dispatch_load_shipment SET label_cod_amount = 630000 WHERE shipment_id = ?",
-                shipment));
-        handOver(load).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipments[0].labelCodAmount").value(430_000))
-                .andExpect(jsonPath("$.data.shipments[0].codAmount").value(430_000))
-                .andExpect(jsonPath("$.data.codTotal").value(430_000));
-        JsonNode manifest = data(dispatch(get(BASE + "/loads/" + load + "/manifest")));
-        assertThat(manifest.path("shipments").get(0).path("codAmount").decimalValue()).isEqualByComparingTo("430000");
-        assertThat(manifest.path("shipments").get(0).path("codChangedSinceLabel").asBoolean()).isFalse();
-        assertThat(cod(shipment)).isEqualTo(430_000L);
-    }
-
-    @Test
     @DisplayName("E2E: a second cancellation request (the first rejected) closes as EXPIRED, with a note the customer "
             + "reads, when the order is packed - it can no longer be approved; handover and delivery leave it so")
     void aPendingCancellationRequestClosesWhenTheOrderIsPacked() throws Exception {
@@ -1108,7 +1016,7 @@ class DispatchHandoverIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_CANCELLATION_REQUEST_NOT_PENDING"));
 
-        String load = openLoad(ghn, shipment).path("loadId").asText();
+        String load = vehicle(ghn, shipment).path("loadId").asText();
         scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
         handOver(load).andExpect(status().isOk());
         outcome(shipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
@@ -1192,11 +1100,10 @@ class DispatchHandoverIntegrationTest {
         assertThat(row.apply("&status=PENDING")).isNull();
     }
 
-    private String opened(String token, String open) throws Exception {
-        var response = mvc.perform(body(post(BASE + "/loads"), open).header("Authorization", token)).andReturn()
-                .getResponse();
-        return response.getStatus() + ":" + json.readTree(response.getContentAsString()).path("data").path("loadId")
-                .asText();
+    private String created(String token, String plan) throws Exception {
+        var response = mvc.perform(body(post(PLANS), plan).header("Authorization", token)).andReturn().getResponse();
+        return response.getStatus() + ":" + json.readTree(response.getContentAsString()).path("data")
+                .path("loadPlanId").asText();
     }
 
     private int withToken(String token, MockHttpServletRequestBuilder request) throws Exception {
@@ -1254,7 +1161,7 @@ class DispatchHandoverIntegrationTest {
         List<String> labels = labels(shipment);
         assertThat(labels).hasSize(2);
 
-        String load = openLoad(ghn, shipment).path("loadId").asText();
+        String load = vehicle(ghn, shipment).path("loadId").asText();
         scan(load, labels.get(0)).andExpect(status().isOk());
         handOver(load).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_NOT_FULLY_LOADED"))
@@ -1307,7 +1214,7 @@ class DispatchHandoverIntegrationTest {
         UUID s1 = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
                 + "/packing-completion"), "{\"partial\":true,\"note\":\"one sofa now\"}")).andExpect(status().isOk()))
                 .path("shipmentId").asText());
-        String load = openLoad(ghn, s1).path("loadId").asText();
+        String load = vehicle(ghn, s1).path("loadId").asText();
         labels(s1).forEach(code -> {
             try {
                 scan(load, code).andExpect(status().isOk());

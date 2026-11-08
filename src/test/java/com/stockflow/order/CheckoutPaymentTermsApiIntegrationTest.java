@@ -203,13 +203,14 @@ class CheckoutPaymentTermsApiIntegrationTest {
 
     @Test
     @DisplayName("SCRUM-193: overdueAmount sums what is still unpaid on the customer's OVERDUE receivables and "
-            + "oldestOverdueDueDate is the earliest due date; open, paid and carrier-collected ones do not count")
+            + "oldestOverdueDueDate is the earliest due date; open, paid and carrier-collected ones (billed before "
+            + "nothing was collected on delivery any more) do not count")
     void overdueAmountAndOldestDueDate() throws Exception {
         terms(false, true, CommercialTerm.CREDIT);
         receivable("OVERDUE", "CUSTOMER", 1_000_000, 200_000, -10);     // 800k unpaid, the oldest
         receivable("OVERDUE", "CUSTOMER", 500_000, 0, -3);              // 500k unpaid
         receivable("OPEN", "CUSTOMER", 9_000_000, 0, 15);               // not due yet
-        receivable("OVERDUE", "CARRIER", 7_000_000, 0, -30);            // the carrier's to collect, not the customer's
+        receivable("OVERDUE", "CARRIER", 7_000_000, 0, -30);            // the carrier's to remit, not the customer's
         String oldest = java.time.LocalDate.now().minusDays(10).toString();
 
         http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
@@ -249,7 +250,7 @@ class CheckoutPaymentTermsApiIntegrationTest {
 
     @Test
     @DisplayName("SCRUM-193: payment-terms lists the balance policies the customer may pick: none without deposits; "
-            + "paid first and the credit one with credit; their own ON_DELIVERY when their terms say so")
+            + "paid first and the credit one with credit; paid first only without credit")
     void allowedBalancePolicies() throws Exception {
         http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.allowedBalancePolicies.length()").value(0));
@@ -259,10 +260,10 @@ class CheckoutPaymentTermsApiIntegrationTest {
                 .andExpect(jsonPath("$.data.allowedBalancePolicies.length()").value(2))
                 .andExpect(jsonPath("$.data.allowedBalancePolicies[0]").value("BEFORE_DELIVERY"))
                 .andExpect(jsonPath("$.data.allowedBalancePolicies[1]").value("ON_CREDIT"));
-        depositTerms(false, null, com.stockflow.customer.api.DepositBalancePolicy.ON_DELIVERY);
+        depositTerms(false, null, com.stockflow.customer.api.DepositBalancePolicy.BEFORE_DELIVERY);
         http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.allowedBalancePolicies.length()").value(2))
-                .andExpect(jsonPath("$.data.allowedBalancePolicies[1]").value("ON_DELIVERY"));
+                .andExpect(jsonPath("$.data.allowedBalancePolicies.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedBalancePolicies[0]").value("BEFORE_DELIVERY"));
     }
 
     @Test
@@ -304,14 +305,13 @@ class CheckoutPaymentTermsApiIntegrationTest {
     }
 
     @Test
-    @DisplayName("SCRUM-193: a policy the customer's terms do not allow is 409 BALANCE_POLICY_NOT_ALLOWED; a balance "
-            + "policy on a term with no balance is a 400")
+    @DisplayName("SCRUM-193: a policy the customer's terms do not allow is 409 BALANCE_POLICY_NOT_ALLOWED; ON_DELIVERY, "
+            + "which no longer exists (09 BR-08), and a balance policy on a term with no balance are a 400")
     void aPolicyNotAllowedIsRefused() throws Exception {
         depositTerms(false, null, com.stockflow.customer.api.DepositBalancePolicy.BEFORE_DELIVERY);
         place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"ON_CREDIT\"").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("BALANCE_POLICY_NOT_ALLOWED"));
-        place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"ON_DELIVERY\"").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("BALANCE_POLICY_NOT_ALLOWED"));
+        place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"ON_DELIVERY\"").andExpect(status().isBadRequest());
         place(",\"paymentTerm\":\"PREPAID\",\"balancePolicy\":\"BEFORE_DELIVERY\"")
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         JsonNode own = placedBody(place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"BEFORE_DELIVERY\"")

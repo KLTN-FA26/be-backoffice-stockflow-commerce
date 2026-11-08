@@ -138,7 +138,7 @@ class OrderEventListenersTest {
 
             assertThat(payable.status()).isEqualTo(OrderStatus.CONFIRMED.name());
             assertThat(payable.paymentTerm()).isEqualTo("DEPOSIT");
-            assertThat(payable.balancePolicy()).isEqualTo("ON_DELIVERY");
+            assertThat(payable.balancePolicy()).isEqualTo("BEFORE_DELIVERY");
             assertThat(payable.currency()).isEqualTo("VND");
             assertThat(payable.billable()).isEqualByComparingTo("1100000");
             assertThat(payable.confirmationThreshold()).isEqualByComparingTo("330000");

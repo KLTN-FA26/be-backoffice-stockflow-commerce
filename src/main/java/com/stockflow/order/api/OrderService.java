@@ -118,19 +118,6 @@ public interface OrderService {
     void requirePlanCarriesTheRest(UUID orderId, java.util.List<ShipmentHandover.Line> inPlan);
 
     /**
-     * What the carrier would collect for a shipment of these units if it were handed over now (G4-5: the package label
-     * and the shipment, 08 step 6, 09 BR-04): the sum {@link #recordHandover} fixes, from the same formula and the
-     * payment ledger. {@code earlierPending}: the units of the order's shipments made before this one and not handed
-     * over yet - the money paid ahead goes to them first, as it will at their handovers. Read-only; 0 for an order whose
-     * carrier collects nothing (not an ON_DELIVERY deposit order).
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code VALIDATION_FAILED} for a line not
-     *         on the order
-     */
-    java.math.BigDecimal codFor(UUID orderId, java.util.List<ShipmentHandover.Line> lines,
-                                java.util.List<ShipmentHandover.Line> earlierPending);
-
-    /**
      * The status and hold reason of each of {@code orderIds} that exists, in one read (G4-5: the packing queue leaves
      * out orders held for anything but their design check, and orders packing can no longer work on).
      */
@@ -212,10 +199,8 @@ public interface OrderService {
     void recordPacked(UUID orderId);
 
     /**
-     * LP-1 (lead's decision 2026-10-22): fulfillment opened a package of the order - packing started, and the order's
-     * delivery mode is locked from now on. Joins the caller's transaction and takes the order's row lock, so a change of
-     * the mode in flight either came first (packing goes on with the new mode) or is refused afterwards
-     * ({@code DELIVERY_MODE_LOCKED}). Idempotent.
+     * Fulfillment opened a package of the order: packing started. Joins the caller's transaction and takes the order's
+     * row lock. Idempotent.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_CANCELLED}
      */

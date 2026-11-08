@@ -309,9 +309,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     /**
     * G2-3 (15 §4.2 step 3, "theo chính sách của khách"): a deposit order's balance is collected as the customer's terms
-     * say. Staff may tighten it to BEFORE_DELIVERY - goods leave only paid - but not collect on delivery for a customer
-     * whose terms do not allow it ({@code BALANCE_POLICY_NOT_ALLOWED}). ON_CREDIT (BALCREDIT) needs a customer allowed
-     * credit, whether their terms or Sales chose it. Other terms have no balance to collect.
+     * say. Staff may tighten it to BEFORE_DELIVERY - goods leave only paid. ON_CREDIT (BALCREDIT) needs a customer
+     * allowed credit, whether their terms or Sales chose it ({@code BALANCE_POLICY_NOT_ALLOWED}). Nothing is collected
+     * on delivery (09 BR-08). Other terms have no balance to collect.
      */
     static com.stockflow.order.api.BalancePolicy balancePolicyFor(PaymentTerm term,
                                                                   com.stockflow.order.api.BalancePolicy requested,
@@ -335,33 +335,21 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             }
             return chosen;
         }
-        if (requested == null || requested == customers) {
-            return customers;
-        }
-        if (requested == com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY) {
-            return requested;
-        }
-        throw new BusinessException(ErrorCode.BALANCE_POLICY_NOT_ALLOWED,
-                "Customer %s pays the balance of a deposit order %s".formatted(terms.customerId(), customers));
+        return com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY;
     }
 
     /**
      * The balance policies a customer may place a deposit order on - exactly those {@link #balancePolicyFor} accepts
-     * from them: paying before delivery (always, it only tightens), their own configured policy, and the balance on
-     * credit when they are allowed credit. Empty when deposits are not allowed. Offered by the payment-terms read so a
-     * storefront shows only what will not be refused.
+     * from them: paying before delivery (always), and the balance on credit when they are allowed credit. Empty when
+     * deposits are not allowed. Offered by the payment-terms read so a storefront shows only what will not be
+     * refused.
      */
     static List<com.stockflow.order.api.BalancePolicy> allowedBalancePolicies(CreditTerms terms) {
         if (!terms.allowDeposit()) {
             return List.of();
         }
-        var own = terms.depositBalancePolicy() == null ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY
-                : com.stockflow.order.api.BalancePolicy.valueOf(terms.depositBalancePolicy().name());
         List<com.stockflow.order.api.BalancePolicy> allowed = new ArrayList<>();
         allowed.add(com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY);
-        if (own == com.stockflow.order.api.BalancePolicy.ON_DELIVERY) {
-            allowed.add(own);
-        }
         if (terms.allowCredit()) {
             allowed.add(com.stockflow.order.api.BalancePolicy.ON_CREDIT);
         }
@@ -395,7 +383,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 details.put("oldestOverdueDueDate", position.oldestOverdueDueDate().toString());
             }
             throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE, ("Customer %s has overdue receivables: the "
-                    + "balance of a deposit order cannot go on credit; choose BEFORE_DELIVERY or ON_DELIVERY")
+                    + "balance of a deposit order cannot go on credit; choose BEFORE_DELIVERY")
                     .formatted(terms.customerId()), List.of(new com.stockflow.common.api.FieldError("balancePolicy",
                     "the customer is overdue", "CreditOverdue")), details);
         }
@@ -521,7 +509,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         Order order = lockOrder(orderId);
         if (order.recordPackingStarted(clock.instant())) {
             repository.save(order);
-            log.info("Order {}: packing started, delivery mode {} locked", order.orderNumber(), order.deliveryMode());
+            log.info("Order {}: packing started", order.orderNumber());
         }
     }
 
@@ -888,15 +876,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return repository.holdStates(orderIds == null ? java.util.List.of() : java.util.Set.copyOf(orderIds));
     }
 
-    @Override
-    @Transactional(readOnly = true)
-    public java.math.BigDecimal codFor(UUID orderId, java.util.List<com.stockflow.order.api.ShipmentHandover.Line> lines,
-                                       java.util.List<com.stockflow.order.api.ShipmentHandover.Line> earlierPending) {
-        Order order = repository.findById(new OrderId(orderId))
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        return order.codFor(quantities(lines), quantities(earlierPending), ledgerOf(order));
-    }
-
     private static java.util.Map<UUID, Integer> quantities(
             java.util.List<com.stockflow.order.api.ShipmentHandover.Line> lines) {
         java.util.Map<UUID, Integer> quantities = new java.util.LinkedHashMap<>();
@@ -908,7 +887,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     /**
      * G2-3: the order's money as payment's ledger has it, read under the order's lock (taken by the caller): every
-     * allocation takes that lock first, so one committed just before the handover is counted in the COD and the gate.
+     * allocation takes that lock first, so one committed just before the handover is counted by the gate.
      */
     private Order.LedgerMoney ledgerOf(Order order) {
         com.stockflow.payment.api.OrderLedger ledger = paymentService.ledgerOf(order.id().value());
@@ -1133,14 +1112,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                         s.handedOverAt(), s.outcomeAt(), s.failureReason(),
                         s.quantities().entrySet().stream()
                                 .map(e -> new OrderSummary.ShipmentLine(e.getKey(), e.getValue())).toList(),
-                        s.codAmount(), s.carriage()))
+                        s.carriage()))
                 .toList();
         return new OrderSummary.Lifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(),
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
-                order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount(),
-                order.allowPartialShipment(), order.deliveryMode(),
-                order.deliveryModeLocked(), order.goodsLeftAt(), order.replacesReturnRequestId());
+                order.amountDueBeforeHandover(), progress, shipments, order.allowPartialShipment(), order.goodsLeftAt(),
+                order.replacesReturnRequestId());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

@@ -43,9 +43,8 @@ final class CustomerOrderWebMapper {
                         detail.cancellationRequest().note(), detail.cancellationRequest().requestedAt(),
                         detail.cancellationRequest().decidedAt(), detail.cancellationRequest().decisionNote()),
                 detail.shipments().stream().map(s -> new CustomerOrderDetailResponse.Shipment(s.shipmentCode(),
-                        s.status().name(), s.packageCount(), s.carrierName(), s.deliveryMode(), s.handedOverAt(),
-                        s.outcomeAt(), s.failureReason() == null ? null : s.failureReason().name())).toList(),
-                detail.deliveryMode());
+                        s.status().name(), s.packageCount(), s.carrierName(), s.handedOverAt(),
+                        s.outcomeAt(), s.failureReason() == null ? null : s.failureReason().name())).toList());
     }
 
     private static CustomerOrderDetailResponse.Payment toResponse(CustomerOrders.Payment payment) {

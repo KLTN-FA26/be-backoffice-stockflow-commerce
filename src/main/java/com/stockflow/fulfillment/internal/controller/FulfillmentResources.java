@@ -19,7 +19,6 @@ final class FulfillmentResources {
     static final String LOAD_PLANS = "fulfillment-load-plans";
     static final String LOAD_ESTIMATES = FulfillmentPermissions.LOAD_ESTIMATES;
     static final String DISPATCH = FulfillmentPermissions.DISPATCH;
-    static final String LOAD_CANCELLATIONS = FulfillmentPermissions.LOAD_CANCELLATIONS;
     static final String CONTROLLED_CANCELLATIONS = FulfillmentPermissions.CONTROLLED_CANCELLATIONS;
     static final String DELIVERY_OUTCOMES = FulfillmentPermissions.DELIVERY_OUTCOMES;
 

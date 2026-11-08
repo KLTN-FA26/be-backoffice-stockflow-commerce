@@ -3,6 +3,7 @@ package com.stockflow.payment.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.payment.api.PayableOrder;
+import com.stockflow.payment.internal.domain.Collector;
 import com.stockflow.payment.internal.domain.CustomerTransfer;
 import com.stockflow.payment.internal.domain.Receivable;
 import com.stockflow.payment.internal.domain.ReceivableBook;
@@ -26,7 +27,7 @@ final class PaymentFixtures {
 
     static PayableOrder order(UUID id, UUID customerId, String status, String term, String billable) {
         return new PayableOrder(id, "SO-" + id.toString().substring(0, 4), customerId, status, term, null, "VND",
-                new BigDecimal(billable), null, BigDecimal.ZERO, null, true);
+                new BigDecimal(billable), null, null, true);
     }
 
     static CustomerTransfer transfer(UUID customerId, String amount) {
@@ -36,6 +37,14 @@ final class PaymentFixtures {
 
     static Receivable receivable(UUID customerId, String amount, LocalDate due) {
         return Receivable.open(UUID.randomUUID(), customerId, new BigDecimal(amount), "VND", NOW, due);
+    }
+
+    /**
+     * A deposit balance a carrier collected on delivery, as one billed before nothing was collected on delivery any
+     * more (09 BR-08) reads back: no code path opens one now, but those already open stay the carrier's to remit.
+     */
+    static Receivable carrierCollected(UUID customerId, String amount, LocalDate due) {
+        return receivable(customerId, amount, due).withKind("DEPOSIT_BALANCE").collectedBy(Collector.CARRIER);
     }
 
     static ReceivableBook.Allocation allocation(UUID transferId, UUID orderId, UUID receivableId, String amount) {

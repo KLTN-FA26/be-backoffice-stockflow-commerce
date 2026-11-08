@@ -465,14 +465,10 @@ public enum ErrorCode {
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
     ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
-    /** LP-1 (lead's decision 2026-10-22): the delivery mode is locked once packing of the order started. */
-    DELIVERY_MODE_LOCKED("The delivery mode can no longer be changed on this order", 409),
     /**
-     * LP-2 (lead's decision 2026-10-22): a full truckload is never paid by a carrier collecting on delivery
-     * ({@code ck_shipment_ftl_no_cod}); Sales changes the balance policy, or the order stays a parcel shipment.
+     * G2-3: a carrier remittance names a receivable the customer pays themselves. Only receivables billed before COD
+     * was removed (V20261108000400) are the carrier's.
      */
-    DELIVERY_MODE_FTL_NO_COD("A full-truckload order cannot have its balance collected on delivery", 409),
-    /** G2-3: a carrier remittance names a receivable the customer pays themselves. */
     RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
     /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */
     RECEIVABLE_CARRIER_COLLECTED("The carrier collects this amount; record the carrier's remittance instead", 409),
@@ -622,8 +618,6 @@ public enum ErrorCode {
     PLACEMENT_RULE_VIOLATION("A placement breaks a loading rule", 422),
     /** Docs 09 edge "bỏ kiện & tính lại": parcels were taken out of a vehicle; recalculate it before confirming. */
     LOAD_PLAN_NEEDS_RECALCULATION("A vehicle of this load plan lost parcels and must be recalculated first", 409),
-    /** A load of a load plan's vehicle changes only through its plan (reopen, cancel, recalculate). */
-    LOAD_MANAGED_BY_PLAN("This load belongs to a load plan; change it through the plan", 409),
     /** Docs 09 BR-09: a parcel in a load plan is not voided, re-opened or re-measured. */
     PACKAGE_IN_LOAD_PLAN("This package is in a load plan; take it out of the plan first", 409),
     /** Docs 09 edge: a parcel of another shipment, warehouse or load scanned by mistake; the message names where it belongs. */
@@ -631,17 +625,13 @@ public enum ErrorCode {
     PACKAGE_ALREADY_LOADED("This package is already on another load", 409),
     /** Docs 09 BR-01: not sealed, in no shipment, or its shipment no longer waits for dispatch (cancelled, left). */
     PACKAGE_NOT_READY("The package is not ready to hand over", 409),
-    PACKAGE_OTHER_CARRIER("This package goes with another carrier", 409),
-    /** Docs 09 BR-08: a full truckload is loaded from its load plan, not onto a parcel load. */
-    PACKAGE_REQUIRES_LOAD_PLAN("Full-truckload packages go through a load plan", 409),
     SHIPMENT_NOT_FOR_LOAD("This shipment does not leave on this load", 409),
-    SHIPMENT_OTHER_CARRIER("This shipment goes with another carrier", 409),
     SHIPMENT_ON_ANOTHER_LOAD("This shipment is on another load", 409),
     /** Docs 09 BR-03: a shipment leaves with all its parcels; take it off the manifest to let the rest go. */
     LOAD_NOT_FULLY_LOADED("Some packages on the manifest are not scanned yet", 409),
     LOAD_EMPTY("Nothing is on this load's manifest", 409),
-    /** Docs 09 BR-04: the COD the order fixes at the handover is not the one on the parcels' label: reprint it. */
-    LABEL_OUTDATED("The package label shows another COD amount than the order now fixes; reprint it", 409),
+    /** SCRUM-392: the parcel moved to another shipment (a left-behind split) since its label was printed: reprint it. */
+    LABEL_OUTDATED("The package label is out of date; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),

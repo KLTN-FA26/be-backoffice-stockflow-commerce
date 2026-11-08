@@ -196,7 +196,7 @@ class ControlledUnloadIntegrationTest {
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 
-    /** A paid order of the demo customer for {@code sofas} sofas, released at HCM as a full truckload (LP-1). */
+    /** A paid order of the demo customer for {@code sofas} sofas, released at HCM (every order is a full truckload). */
     private OrderSummary ftlOrder(int sofas) throws Exception {
         stock(sofas);
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
@@ -210,8 +210,8 @@ class ControlledUnloadIntegrationTest {
                 PaymentMethod.BANK_TRANSFER)));
         Await.until("order confirmed", ASYNC,
                 () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        oc(body(post(ORDERS + "/" + order.orderId() + "/release"), "{\"warehouseId\":\"" + HCM
-                + "\",\"deliveryMode\":\"FULL_TRUCKLOAD\"}")).andExpect(status().isOk());
+        oc(body(post(ORDERS + "/" + order.orderId() + "/release"), "{\"warehouseId\":\"" + HCM + "\"}"))
+                .andExpect(status().isOk());
         return order;
     }
 
@@ -535,8 +535,8 @@ class ControlledUnloadIntegrationTest {
     @Test
     @DisplayName("point 3: once a vehicle has left (DISPATCHED) the whole plan cannot be cancelled "
             + "(LOAD_PLAN_VEHICLE_DISPATCHED) - the other vehicle is cancelled on its own and the plan stays CONFIRMED; "
-            + "a left vehicle, a vehicle not loading yet and a parcel load are not cancelled under control "
-            + "(INVALID_LOAD_TRANSITION); the plain cancel is still refused (BR-14)")
+            + "a left vehicle, a vehicle not loading yet and a load of no plan (the removed parcel shipping) are not "
+            + "cancelled under control (INVALID_LOAD_TRANSITION); the plain cancel is still refused (BR-14)")
     void wholePlanRefusedOnceAVehicleLeft() throws Exception {
         UUID shipment = packed(ftlOrder(2), true)[0];
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
@@ -566,18 +566,23 @@ class ControlledUnloadIntegrationTest {
         // Not loading yet: its booking is cancelled the old way, not under control.
         cancelVehicle(result.path("replacement").path("loadId").asText(), XE_HONG).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
-        cancelVehicle(parcelLoad("51C-999.99"), XE_HONG).andExpect(status().isConflict())
+        cancelVehicle(historyLoad("51C-999.99"), XE_HONG).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
     }
 
-    /** A parcel load straight into the table (a parcel load needs parcel shipments, which this context has none of). */
-    private String parcelLoad(String plate) {
+    /**
+     * A load of the parcel shipping that was removed (V20261108000400), straight into the table: it has no plan's vehicle,
+     * which only a closed load may lack, so it is history - signed and gone.
+     */
+    private String historyLoad(String plate) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, mode, carrier_id,
-                    vehicle_plate, status, loading_started_at)
-                VALUES (?, ?, gen_random_uuid(), ?, 'PARCEL', ?, ?, 'LOADING', NOW())""",
-                id, "LD-UL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate));
+                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate,
+                    status, loading_started_at, dispatched_at, dispatched_by, carrier_representative, shipment_count,
+                    package_count)
+                VALUES (?, ?, gen_random_uuid(), ?, ?, ?, 'DISPATCHED', NOW(), NOW(), ?, 'Tai', 1, 1)""",
+                id, "LD-UL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate,
+                dispatcher));
         return id.toString();
     }
 
@@ -985,7 +990,8 @@ class ControlledUnloadIntegrationTest {
     @Test
     @DisplayName("UNLOAD-DROP refusals: a vehicle carrying parcels of a shipment that also left on the other vehicle is not "
             + "dropped (LOAD_PLAN_VEHICLE_SHARES_ORDER, nothing changes); a booked vehicle (cancel its booking first), a "
-            + "vehicle being loaded (cancel it under control) and a parcel load are INVALID_LOAD_TRANSITION")
+            + "vehicle being loaded (cancel it under control) and a load of no plan (the removed parcel shipping) are "
+            + "INVALID_LOAD_TRANSITION")
     void aDropIsRefusedWhenItWouldSplitAShipmentOrTheVehicleIsNotPlanned() throws Exception {
         UUID shipment = packed(ftlOrder(2), true)[0];
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
@@ -1010,7 +1016,7 @@ class ControlledUnloadIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
         dropVehicle(v1, note).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
-        dropVehicle(parcelLoad("51C-999.99"), note).andExpect(status().isConflict())
+        dropVehicle(historyLoad("51C-999.99"), note).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
         assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
     }

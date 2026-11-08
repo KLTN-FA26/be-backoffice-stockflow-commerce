@@ -1,15 +1,8 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.security.Action;
-import com.stockflow.common.security.CurrentUser;
-import com.stockflow.common.security.DataScope;
-import com.stockflow.common.security.PermissionCode;
-import com.stockflow.common.security.PermissionDeniedException;
-import com.stockflow.common.security.Role;
 import com.stockflow.contracts.OrderReleased;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.order.api.DeliveryMode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -28,7 +21,6 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 import static com.stockflow.order.internal.service.OrderFixtures.NOW;
@@ -36,7 +28,6 @@ import static com.stockflow.order.internal.service.OrderFixtures.STAFF;
 import static com.stockflow.order.internal.service.OrderFixtures.WAREHOUSE;
 import static com.stockflow.order.internal.service.OrderFixtures.codeOf;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -46,8 +37,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * Releasing an order (SCRUM-423, kltn-docs 17 §4.2): no credit for an overdue customer (15 §4.3 step 4, 17 BR-02), stock
- * allocated on the warehouse's bins, no order with print lines until their goods are received, and the delivery mode
- * only for someone allowed to choose it (LP-1).
+ * allocated on the warehouse's bins, and no order with print lines until their goods are received.
  */
 class OrderReleaseServiceTest {
 
@@ -58,10 +48,9 @@ class OrderReleaseServiceTest {
     private final InventoryService inventory = mock(InventoryService.class);
     private final PaymentService paymentService = mock(PaymentService.class);
     private final OrderStockAllocation allocation = mock(OrderStockAllocation.class);
-    private final DeliveryModeHistory deliveryModes = mock(DeliveryModeHistory.class);
     private final OrderSummary summary = mock(OrderSummary.class);
     private final OrderReleaseService service = new OrderReleaseService(repository, warehouses, events,
-            orders, Clock.fixed(NOW, ZoneOffset.UTC), inventory, paymentService, allocation, deliveryModes);
+            orders, Clock.fixed(NOW, ZoneOffset.UTC), inventory, paymentService, allocation);
 
     @BeforeEach
     void knownWarehouse() {
@@ -73,11 +62,6 @@ class OrderReleaseServiceTest {
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
         when(orders.findById(order.id().value())).thenReturn(Optional.of(summary));
         return order;
-    }
-
-    private static CurrentUser user(PermissionCode... permissions) {
-        return new CurrentUser(STAFF, "coordinator", Set.of(Role.CUSTOMER), Set.of(permissions), DataScope.ALL,
-                Set.of());
     }
 
     @Test
@@ -189,42 +173,5 @@ class OrderReleaseServiceTest {
 
         assertThat(codeOf(() -> service.release(order.id().value(), WAREHOUSE, STAFF)))
                 .isEqualTo(ErrorCode.CUSTOMER_CREDIT_OVERDUE);
-    }
-
-    @Test
-    @DisplayName("choosing another delivery mode at release needs the delivery-modes permission (LP-1)")
-    void aDifferentModeNeedsThePermission() {
-        Order order = loaded(OrderFixtures.confirmedPrepaid());
-        DeliveryMode other = order.deliveryMode() == DeliveryMode.FULL_TRUCKLOAD ? DeliveryMode.PARCEL
-                : DeliveryMode.FULL_TRUCKLOAD;
-
-        assertThatThrownBy(() -> service.release(order.id().value(), WAREHOUSE, other, user()))
-                .isInstanceOf(PermissionDeniedException.class);
-        assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
-        verify(deliveryModes, never()).apply(any(), any(), any(), any());
-    }
-
-    @Test
-    @DisplayName("with the permission the mode is applied under the same lock, after the stock is allocated")
-    void aDifferentModeIsAppliedForSomeoneAllowed() {
-        Order order = loaded(OrderFixtures.confirmedPrepaid());
-        DeliveryMode other = order.deliveryMode() == DeliveryMode.FULL_TRUCKLOAD ? DeliveryMode.PARCEL
-                : DeliveryMode.FULL_TRUCKLOAD;
-        CurrentUser allowed = user(PermissionCode.of(OrderPermissions.DELIVERY_MODES, Action.UPDATE));
-
-        service.release(order.id().value(), WAREHOUSE, other, allowed);
-
-        verify(deliveryModes).apply(order, other, null, allowed.userId());
-        assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
-    }
-
-    @Test
-    @DisplayName("keeping the order's own delivery mode needs no permission")
-    void theOwnModeNeedsNoPermission() {
-        Order order = loaded(OrderFixtures.confirmedPrepaid());
-
-        service.release(order.id().value(), WAREHOUSE, order.deliveryMode(), user());
-
-        assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
     }
 }

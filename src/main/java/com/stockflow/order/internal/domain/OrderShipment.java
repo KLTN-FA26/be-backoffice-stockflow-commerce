@@ -22,9 +22,8 @@ import java.util.UUID;
  * delivery billed a credit order (a receivable): at most {@code amount}, less when money the customer paid ahead
  * covers part of it. Returned goods are never billed.</p>
  *
- * <p>G2-3: {@code codAmount} is what the carrier collects on delivering it, for a deposit order whose balance the
- * carrier collects (ON_DELIVERY): fixed at the handover (it is printed on the label and the manifest, kltn-docs 15
- * BR-08, 09 BR-04) and billed at delivery as a carrier-collected receivable.</p>
+ * <p>Nothing is collected on delivery (kltn-docs 09 BR-08): the carrier carries the goods, the customer pays by
+ * transfer.</p>
  */
 public final class OrderShipment {
 
@@ -39,8 +38,7 @@ public final class OrderShipment {
     private DeliveryFailureReason failureReason;
     private String failureNote;
     private BigDecimal billedAmount;
-    private final BigDecimal codAmount;
-    /** G4-2a: number, parcels, carrier and mode, as the customer reads them; null on shipments recorded before. */
+    /** G4-2a: number, parcels and carrier, as the customer reads them; null on shipments recorded before. */
     private final com.stockflow.order.api.ShipmentHandover.Carriage carriage;
 
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
@@ -53,15 +51,7 @@ public final class OrderShipment {
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
                          UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
                          DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount,
-                         BigDecimal codAmount) {
-        this(id, quantities, amount, handedOverAt, handedOverBy, status, outcomeAt, outcomeBy, failureReason,
-                failureNote, billedAmount, codAmount, null);
-    }
-
-    public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
-                         UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
-                         DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount,
-                         BigDecimal codAmount, com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
+                         com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
         this.carriage = carriage;
         this.id = Objects.requireNonNull(id, "id");
         this.quantities = Collections.unmodifiableMap(new LinkedHashMap<>(quantities));
@@ -74,16 +64,12 @@ public final class OrderShipment {
         this.failureReason = failureReason;
         this.failureNote = failureNote;
         this.billedAmount = billedAmount == null ? BigDecimal.ZERO : billedAmount;
-        this.codAmount = codAmount == null ? BigDecimal.ZERO : codAmount;
-        if (this.codAmount.signum() < 0 || this.codAmount.compareTo(amount) > 0) {
-            throw new IllegalArgumentException("A shipment's COD lies between 0 and its value");
-        }
     }
 
     static OrderShipment handedOver(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant at, UUID by,
-                                    BigDecimal codAmount, com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
+                                    com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
         return new OrderShipment(id, quantities, amount, at, by, OrderShipmentStatus.HANDED_OVER, null, null, null,
-                null, BigDecimal.ZERO, codAmount, carriage);
+                null, BigDecimal.ZERO, carriage);
     }
 
     /** @return false when it already was delivered */
@@ -150,6 +136,5 @@ public final class OrderShipment {
     public DeliveryFailureReason failureReason() { return failureReason; }
     public String failureNote() { return failureNote; }
     public BigDecimal billedAmount() { return billedAmount; }
-    public BigDecimal codAmount() { return codAmount; }
     public com.stockflow.order.api.ShipmentHandover.Carriage carriage() { return carriage; }
 }

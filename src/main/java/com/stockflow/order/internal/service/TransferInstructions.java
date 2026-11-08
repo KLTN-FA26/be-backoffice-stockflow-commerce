@@ -18,7 +18,7 @@ public interface TransferInstructions {
         TO_CONFIRM,
         /** The goods leave only once it is in (G3-Q4): the balance of an order paid before delivery. */
         BEFORE_DELIVERY,
-        /** Nothing to transfer now: credit terms, a balance paid on delivery or on credit, or all paid. */
+        /** Nothing to transfer now: credit terms, a balance on credit, or all paid. */
         NONE
     }
 

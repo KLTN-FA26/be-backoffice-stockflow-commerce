@@ -1,7 +1,6 @@
 package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
@@ -26,7 +25,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -355,16 +353,15 @@ class PlanVehiclesTest {
         private DispatchLoad openLoadWith(UUID shipment) {
             DispatchLoad load = DispatchLoad.planFullTruckload(UUID.randomUUID(), "LD-0001", UUID.randomUUID(), WAREHOUSE,
                     vehicle.id());
-            load.addShipment(new DispatchLoad.ShipmentFacts(shipment, "SO-1-S1", WAREHOUSE, DeliveryMode.FULL_TRUCKLOAD,
-                    ShipmentStatus.READY_TO_DISPATCH, null, null), BigDecimal.ZERO, UUID.randomUUID(), NOW);
+            load.addShipment(new DispatchLoad.ShipmentFacts(shipment, "SO-1-S1", WAREHOUSE,
+                    ShipmentStatus.READY_TO_DISPATCH, null), UUID.randomUUID(), NOW);
             return load;
         }
 
         private DispatchLoadJpaEntity stored(DispatchLoad load) {
             DispatchLoadJpaEntity row = new DispatchLoadJpaEntity(load.snapshot());
             when(loadMembers.findByShipmentIdInAndActiveTrue(List.of(shipmentId))).thenReturn(List.of(
-                    new DispatchLoadShipmentJpaEntity(UUID.randomUUID(), load.id(), shipmentId,
-                            DeliveryMode.FULL_TRUCKLOAD)));
+                    new DispatchLoadShipmentJpaEntity(UUID.randomUUID(), load.id(), shipmentId)));
             when(loads.lockById(any())).thenReturn(Optional.of(row));
             when(loadStore.load(row)).thenReturn(load);
             return row;
@@ -402,24 +399,13 @@ class PlanVehiclesTest {
         void anotherShipmentRemains() {
             DispatchLoad load = openLoadWith(shipmentId);
             load.addShipment(new DispatchLoad.ShipmentFacts(UUID.randomUUID(), "SO-2-S1", WAREHOUSE,
-                    DeliveryMode.FULL_TRUCKLOAD, ShipmentStatus.READY_TO_DISPATCH, null, null), BigDecimal.ZERO,
-                    UUID.randomUUID(), NOW);
+                    ShipmentStatus.READY_TO_DISPATCH, null), UUID.randomUUID(), NOW);
             stored(load);
 
             planVehicles.withdraw(shipmentId, NOW);
 
             assertThat(load.status()).isNotEqualTo(LoadStatus.CANCELLED);
             assertThat(load.activeShipments()).hasSize(1);
-        }
-
-        @Test
-        @DisplayName("a parcel load emptied by a cancellation is left to the dispatcher")
-        void parcelLoadsAreNotCalledOff() {
-            DispatchLoad parcelLoad = DispatchLoad.openParcel(UUID.randomUUID(), "LD-0002", UUID.randomUUID(), WAREHOUSE,
-                    UUID.randomUUID(), null, null, null, UUID.randomUUID(), NOW);
-
-            assertThat(PlanVehicles.callOffIfEmpty(parcelLoad, NOW)).isFalse();
-            assertThat(parcelLoad.status()).isEqualTo(LoadStatus.LOADING);
         }
 
         @Test

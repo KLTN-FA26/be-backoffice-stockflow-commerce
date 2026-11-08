@@ -115,20 +115,20 @@ class OrderAllocatorTest {
     // ---- mayStillTake
 
     @Test
-    @DisplayName("mayStillTake = billable - collected - receivables outstanding - COD in transit")
+    @DisplayName("mayStillTake = billable - collected - receivables outstanding")
     void mayStillTake() {
         ledger("300", "200");
-        PayableOrder order = new PayableOrder(orderId, "SO-1", customer, "SHIPPED", "DEPOSIT", "ON_DELIVERY", "VND",
-                new BigDecimal("1000"), new BigDecimal("300"), new BigDecimal("150"), null, false);
-        assertThat(allocator.mayStillTake(order)).isEqualByComparingTo("350");
+        PayableOrder order = new PayableOrder(orderId, "SO-1", customer, "SHIPPED", "DEPOSIT", "ON_CREDIT", "VND",
+                new BigDecimal("1000"), new BigDecimal("300"), null, false);
+        assertThat(allocator.mayStillTake(order)).isEqualByComparingTo("500");
     }
 
     @Test
-    @DisplayName("mayStillTake: a null COD-in-transit counts as zero, and the room is never below zero")
+    @DisplayName("mayStillTake: the room is never below zero")
     void mayStillTakeFloorsAtZero() {
         ledger("900", "300");
         PayableOrder order = new PayableOrder(orderId, "SO-1", customer, "CONFIRMED", "PREPAID", null, "VND",
-                new BigDecimal("1000"), null, null, null, true);
+                new BigDecimal("1000"), null, null, true);
         assertThat(allocator.mayStillTake(order)).isEqualByComparingTo("0");
     }
 
@@ -151,7 +151,7 @@ class OrderAllocatorTest {
     void currencyMismatch() {
         CustomerTransfer t = transfer(customer, "1000");
         PayableOrder usd = new PayableOrder(orderId, "SO-1", customer, "CONFIRMED", "PREPAID", null, "USD",
-                new BigDecimal("1000"), null, BigDecimal.ZERO, null, true);
+                new BigDecimal("1000"), null, null, true);
         assertThat(codeOf(() -> allocator.allocate(t, usd, BigDecimal.TEN, null)))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(t.unallocatedAmount()).isEqualByComparingTo("1000");
@@ -209,14 +209,14 @@ class OrderAllocatorTest {
     }
 
     @Test
-    @DisplayName("allocate: receivables outstanding and COD in transit are billed already, a transfer does not pay them twice")
+    @DisplayName("allocate: receivables outstanding are billed already, a transfer does not pay them twice")
     void doesNotPayBilledMoneyTwice() {
         ledger("0", "400");
         CustomerTransfer t = transfer(customer, "1000");
-        PayableOrder o = new PayableOrder(orderId, "SO-1", customer, "SHIPPED", "DEPOSIT", "ON_DELIVERY", "VND",
-                new BigDecimal("1000"), new BigDecimal("300"), new BigDecimal("500"), null, false);
-        assertThat(allocator.mayStillTake(o)).isEqualByComparingTo("100");
-        assertThat(codeOf(() -> allocator.allocate(t, o, new BigDecimal("101"), null)))
+        PayableOrder o = new PayableOrder(orderId, "SO-1", customer, "SHIPPED", "DEPOSIT", "ON_CREDIT", "VND",
+                new BigDecimal("1000"), new BigDecimal("300"), null, false);
+        assertThat(allocator.mayStillTake(o)).isEqualByComparingTo("600");
+        assertThat(codeOf(() -> allocator.allocate(t, o, new BigDecimal("601"), null)))
                 .isEqualTo(ErrorCode.ALLOCATION_EXCEEDS_AMOUNT_DUE);
     }
 

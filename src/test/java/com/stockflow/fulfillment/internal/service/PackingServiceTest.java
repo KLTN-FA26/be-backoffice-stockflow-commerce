@@ -13,7 +13,6 @@ import com.stockflow.common.security.Role;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.design.api.DesignVerification;
 import com.stockflow.fulfillment.api.PackingCompletion;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
@@ -30,9 +29,6 @@ import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
-import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
-import com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository;
-import com.stockflow.fulfillment.internal.repository.DispatchLoadStore;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository;
@@ -90,9 +86,10 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * The packing station (kltn-docs 08, 09 BR-04): who may work a session, that packing follows the order's status, the
- * label and its COD, completing packing into a shipment (full or partial), the design check of printed goods
- * (BR-DSG-003, 08 BR-02) and the cancellation of an order (08 BR-05). The parcel rules are {@code PackingSessionTest}'s.
+ * The packing station (kltn-docs 08): who may work a session, that packing follows the order's status, the label (no
+ * amount on it: nothing is collected on delivery, 09 BR-08), completing packing into a shipment (full or partial), the
+ * design check of printed goods (BR-DSG-003, 08 BR-02) and the cancellation of an order (08 BR-05). The parcel rules
+ * are {@code PackingSessionTest}'s.
  */
 class PackingServiceTest {
 
@@ -111,15 +108,12 @@ class PackingServiceTest {
     private final IdentityService identities = mock(IdentityService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final ShipmentTimeline timeline = mock(ShipmentTimeline.class);
-    private final DispatchLoadShipmentJpaRepository loadMembers = mock(DispatchLoadShipmentJpaRepository.class);
-    private final DispatchLoadJpaRepository loads = mock(DispatchLoadJpaRepository.class);
-    private final DispatchLoadStore loadStore = mock(DispatchLoadStore.class);
     private final AuditTrail audit = mock(AuditTrail.class);
     private final LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
     private final PlanVehicles planVehicles = mock(PlanVehicles.class);
     private final PackingService service = new PackingService(picks, pickLines, packs, packages, shipments,
             verifications, store, scans, orders, inventory, itemControls, designs, identities, warehouses, timeline,
-            loadMembers, loads, loadStore, Clock.fixed(NOW, ZoneOffset.UTC), 6000, audit, loadPlans, planVehicles,
+            Clock.fixed(NOW, ZoneOffset.UTC), 6000, audit, loadPlans, planVehicles,
             mock(PickListService.class), org.springframework.transaction.support.TransactionOperations.withoutTransaction());
 
     private final UUID packer = UUID.randomUUID();
@@ -177,8 +171,7 @@ class PackingServiceTest {
     private OrderSummary order(OrderStatus status, boolean allowPartial, boolean printReady, HoldReason hold) {
         var line = new OrderSummary.LineSummary(lineId, "SKU-A", 10, Money.vnd(10_000), Money.vnd(100_000), List.of());
         var lifecycle = new OrderSummary.Lifecycle(hold, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
-                new BigDecimal("100000"), new BigDecimal("100000"), BigDecimal.ZERO, List.of(), List.of(), BigDecimal.ZERO,
-                BigDecimal.ZERO, allowPartial);
+                new BigDecimal("100000"), new BigDecimal("100000"), BigDecimal.ZERO, List.of(), List.of(), allowPartial);
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), status, Money.vnd(100_000), List.of(line), NOW,
                 null, null, null, "Ms Lan", null, "0900000001", null, null, null, WAREHOUSE, NOW, null, null, lifecycle);
     }
@@ -335,8 +328,8 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("opening a parcel locks the order's delivery mode (LP-1) and saves the session")
-        void openingLocksTheDeliveryMode() {
+        @DisplayName("opening a parcel tells the order packing started and saves the session")
+        void openingRecordsPackingStarted() {
             Packing.Parcel parcel = service.openPackage(pick.getId(), "bag", actor);
 
             assertThat(parcel.packageType()).isEqualTo("BAG");
@@ -486,7 +479,7 @@ class PackingServiceTest {
     }
 
     @Nested
-    @DisplayName("the label (09 BR-04: label, manifest and order agree on the COD)")
+    @DisplayName("the label (08 step 6)")
     class Labels {
 
         private PackingSession.Parcel sealed;
@@ -515,18 +508,15 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("a parcel not yet in a shipment gets a provisional label with the COD the order would fix now")
+        @DisplayName("a parcel not yet in a shipment gets a provisional label, counting the sealed parcels that would ship "
+                + "together now")
         void provisionalLabel() {
-            when(orders.codFor(eq(orderId), any(), any())).thenReturn(new BigDecimal("40000"));
-
             Packing.Label label = service.label(pick.getId(), sealed.id(), actor);
 
             assertThat(label.provisional()).isTrue();
-            assertThat(label.codAmount()).isEqualByComparingTo("40000");
             assertThat(label.shipmentId()).isNull();
             assertThat(label.packageNo()).isEqualTo(1);
             assertThat(label.packageCount()).isEqualTo(1);
-            assertThat(label.currency()).isEqualTo("VND");
             assertThat(label.returnWarehouseName()).isEqualTo("HCM warehouse");
             assertThat(label.recipient().recipientName()).isEqualTo("Ms Lan");
             assertThat(label.recipient().phone()).isEqualTo("0900000001");
@@ -542,7 +532,6 @@ class PackingServiceTest {
             when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, base.orderNumber(),
                     base.customerId(), base.status(), base.total(), base.lines(), base.placedAt(), null, null, null,
                     "Ms Lan", null, "0900000001", address, null, null, WAREHOUSE, NOW, null, null, base.lifecycle())));
-            when(orders.codFor(any(), any(), any())).thenReturn(BigDecimal.ZERO);
 
             Packing.Address recipient = service.label(pick.getId(), sealed.id(), actor).recipient();
 
@@ -553,12 +542,9 @@ class PackingServiceTest {
             assertThat(recipient.provinceName()).isEqualTo("HCM");
         }
 
-        private ShipmentJpaEntity shipmentOfTheParcel(ShipmentStatus status, String cod) {
+        private ShipmentJpaEntity shipmentOfTheParcel() {
             Shipment s = Shipment.ready(UUID.randomUUID(), "SO-0001-S1", orderId, pack.getId(), WAREHOUSE,
-                    UUID.randomUUID(), DeliveryMode.PARCEL, 1, new BigDecimal(cod), null, packer, NOW);
-            if (status == ShipmentStatus.HANDED_OVER) {
-                s.handOver(UUID.randomUUID(), UUID.randomUUID(), null, false, packer, NOW);
-            }
+                    UUID.randomUUID(), 1, null, packer, NOW);
             ShipmentJpaEntity row = FulfillmentFixtures.row(s);
             session.ship(new PackingSession.Completion(List.of(sealed), Map.of(lineId, 10), false, List.of()), row.getId(),
                     packer, NOW);
@@ -567,37 +553,23 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("printing the label of a shipment waiting for dispatch records the COD the carrier would collect")
-        void printingRecordsTheCod() {
-            ShipmentJpaEntity row = shipmentOfTheParcel(ShipmentStatus.READY_TO_DISPATCH, "10000");
-            when(orders.codFor(eq(orderId), any(), any())).thenReturn(new BigDecimal("25000"));
+        @DisplayName("the label of a parcel in a shipment names the shipment; printing it changes nothing on the shipment")
+        void labelOfAShippedParcel() {
+            ShipmentJpaEntity row = shipmentOfTheParcel();
 
             Packing.Label label = service.label(pick.getId(), sealed.id(), actor);
 
             assertThat(label.provisional()).isFalse();
+            assertThat(label.shipmentId()).isEqualTo(row.getId());
             assertThat(label.shipmentCode()).isEqualTo("SO-0001-S1");
-            assertThat(label.codAmount()).isEqualByComparingTo("25000");
-            assertThat(row.getLabelCodAmount()).isEqualByComparingTo("25000");
-            assertThat(row.getCodAmount()).isEqualByComparingTo("25000");
-            verify(shipments).saveAndFlush(row);
-        }
-
-        @Test
-        @DisplayName("a shipment already handed over prints the COD it left with, whatever the order says now")
-        void handedOverKeepsItsCod() {
-            ShipmentJpaEntity row = shipmentOfTheParcel(ShipmentStatus.HANDED_OVER, "10000");
-
-            Packing.Label label = service.label(pick.getId(), sealed.id(), actor);
-
-            assertThat(label.codAmount()).isEqualByComparingTo("10000");
-            verify(orders, never()).codFor(any(), any(), any());
-            verify(shipments, never()).saveAndFlush(row);
+            assertThat(label.packageNo()).isEqualTo(1);
+            assertThat(label.packageCount()).isEqualTo(1);
+            verify(shipments, never()).saveAndFlush(any());
         }
 
         @Test
         @DisplayName("reprinting a label outdated by a shipment split makes it current again")
         void reprintClearsOutdated() {
-            when(orders.codFor(any(), any(), any())).thenReturn(BigDecimal.ZERO);
             PackageJpaEntity row = new PackageJpaEntity(sealed.id(), pack.getId(), 1, sealed.labelCode());
             row.markLabelOutdated(NOW.minusSeconds(30));
             when(packages.findById(sealed.id())).thenReturn(Optional.of(row));
@@ -617,7 +589,6 @@ class PackingServiceTest {
         void started() {
             packing(packer);
             when(orders.markPacked(eq(orderId), any())).thenAnswer(call -> order(OrderStatus.PACKED, false, true, null));
-            when(orders.codFor(eq(orderId), any(), any())).thenReturn(new BigDecimal("30000"));
         }
 
         @Test
@@ -634,10 +605,8 @@ class PackingServiceTest {
             assertThat(done.shipmentId()).isEqualTo(shipment.getId());
             assertThat(shipment.getCode()).isEqualTo("SO-0001-S1");
             assertThat(shipment.getStatus()).isEqualTo(ShipmentStatus.READY_TO_DISPATCH);
-            assertThat(shipment.getCodAmount()).isEqualByComparingTo("30000");
             assertThat(shipment.getPackageCount()).isEqualTo(1);
             assertThat(shipment.isPartial()).isFalse();
-            assertThat(shipment.getDeliveryMode()).isEqualTo(DeliveryMode.PARCEL);
             assertThat(session.status()).isEqualTo(PackStatus.PACKED);
             verify(orders).markPacked(orderId, packer);
             verify(timeline).record(any(Shipment.class), eq(null), any(OrderSummary.class), eq(null), eq(null), eq(null));
@@ -658,32 +627,11 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("the shipment travels as the order does: a full truckload order makes a full-truckload shipment")
-        void deliveryModeFollowsTheOrder() {
-            sealedParcel(10);
-            OrderSummary base = order(OrderStatus.PACKED, false, true, null);
-            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
-                    BigDecimal.ZERO, BigDecimal.ZERO, false, com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD,
-                    true);
-            when(orders.markPacked(eq(orderId), any())).thenReturn(new OrderSummary(orderId, "SO-0001", base.customerId(),
-                    OrderStatus.PACKED, base.total(), base.lines(), NOW, null, null, null, null, null, null, null, null,
-                    null, WAREHOUSE, NOW, null, null, lifecycle));
-            when(orders.codFor(any(), any(), any())).thenReturn(BigDecimal.ZERO);
-
-            service.complete(pick.getId(), PackingCompletion.whole(), actor);
-
-            ArgumentCaptor<ShipmentJpaEntity> saved = ArgumentCaptor.forClass(ShipmentJpaEntity.class);
-            verify(shipments).saveAndFlush(saved.capture());
-            assertThat(saved.getValue().getDeliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
-        }
-
-        @Test
         @DisplayName("a request id seen before answers with the shipment it made; for another task it is CONFLICT")
         void requestIdReplay() {
             UUID requestId = UUID.randomUUID();
             Shipment made = Shipment.ready(UUID.randomUUID(), "SO-0001-S1", orderId, pack.getId(), WAREHOUSE, requestId,
-                    DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null, packer, NOW);
+                    1, null, packer, NOW);
             ShipmentJpaEntity row = FulfillmentFixtures.row(made);
             when(shipments.findByRequestId(requestId)).thenReturn(Optional.of(row));
 
@@ -694,7 +642,7 @@ class PackingServiceTest {
             verify(orders, never()).markPacked(any(), any());
 
             Shipment other = Shipment.ready(UUID.randomUUID(), "SO-0002-S1", UUID.randomUUID(), UUID.randomUUID(),
-                    WAREHOUSE, requestId, DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null, packer, NOW);
+                    WAREHOUSE, requestId, 1, null, packer, NOW);
             when(shipments.findByRequestId(requestId)).thenReturn(Optional.of(FulfillmentFixtures.row(other)));
             assertThat(refusal(() -> service.complete(pick.getId(), new PackingCompletion(requestId, false, null), actor))
                     .errorCode()).isEqualTo(ErrorCode.CONFLICT);
@@ -705,9 +653,9 @@ class PackingServiceTest {
         void completedBefore() {
             pack.apply(PackStatus.PACKED, NOW, packer, NOW, packer);
             Shipment first = Shipment.ready(UUID.randomUUID(), "SO-0001-S1", orderId, pack.getId(), WAREHOUSE, null,
-                    DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null, packer, NOW);
+                    1, null, packer, NOW);
             Shipment last = Shipment.ready(UUID.randomUUID(), "SO-0001-S2", orderId, pack.getId(), WAREHOUSE, null,
-                    DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null, packer, NOW);
+                    1, null, packer, NOW);
             when(shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())).thenReturn(List.of(
                     FulfillmentFixtures.row(first), FulfillmentFixtures.row(last)));
 
@@ -739,7 +687,6 @@ class PackingServiceTest {
         void partialShipment() {
             sealedParcel(6);
             orderIs(OrderStatus.PICKING, true, null);
-            when(orders.codFor(eq(orderId), any(), any())).thenReturn(BigDecimal.ZERO);
             when(shipments.countByOrderId(orderId)).thenReturn(0L);
 
             PackingService.Completed done = service.complete(pick.getId(),
@@ -793,7 +740,7 @@ class PackingServiceTest {
                     List.of(), snapshot, "sha-confirmed");
             var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
                     BigDecimal.ZERO, new BigDecimal("140000"), new BigDecimal("140000"), BigDecimal.ZERO, List.of(),
-                    List.of(), BigDecimal.ZERO, BigDecimal.ZERO, false);
+                    List.of(), false);
             return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(140_000),
                     List.of(stock, printed), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
                     null, null, lifecycle);
@@ -814,7 +761,6 @@ class PackingServiceTest {
             session.seal(parcel.id(), new PackingSession.Measures(new BigDecimal("8"), new BigDecimal("40"),
                     new BigDecimal("30"), new BigDecimal("25")), null, null, null, 6000, packer, NOW);
             when(orders.markPacked(eq(orderId), any())).thenReturn(printedOrder());
-            when(orders.codFor(any(), any(), any())).thenReturn(BigDecimal.ZERO);
         }
 
         @Test
@@ -1006,8 +952,7 @@ class PackingServiceTest {
             var printed = new OrderSummary.LineSummary(lineId, "CUP-PRINT", 4, Money.vnd(10_000), Money.vnd(40_000),
                     holds, UUID.randomUUID(), "sha");
             var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
-                    BigDecimal.ZERO, BigDecimal.ZERO, true);
+                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(), true);
             when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-0001",
                     UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(40_000), List.of(printed), NOW, null, null, null,
                     null, null, null, null, null, null, WAREHOUSE, NOW, null, null, lifecycle)));

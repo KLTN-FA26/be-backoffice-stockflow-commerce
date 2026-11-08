@@ -36,6 +36,7 @@ import java.util.UUID;
 import static com.stockflow.payment.internal.service.PaymentFixtures.NOW;
 import static com.stockflow.payment.internal.service.PaymentFixtures.TODAY;
 import static com.stockflow.payment.internal.service.PaymentFixtures.allocation;
+import static com.stockflow.payment.internal.service.PaymentFixtures.carrierCollected;
 import static com.stockflow.payment.internal.service.PaymentFixtures.codeOf;
 import static com.stockflow.payment.internal.service.PaymentFixtures.order;
 import static com.stockflow.payment.internal.service.PaymentFixtures.receivable;
@@ -168,11 +169,11 @@ class MoneyLedgerServiceTest {
         }
 
         @Test
-        @DisplayName("a customer's bank transfer never pays what the carrier collected (09 §2)")
+        @DisplayName("a customer's bank transfer never pays what a carrier collected (09 §2; receivables billed before "
+                + "nothing was collected on delivery any more)")
         void carrierCollectedRefusesBankTransfer() {
             CustomerTransfer t = knownTransfer("1000");
-            Receivable cod = Receivable.openCarrierCollected(UUID.randomUUID(), customer, new BigDecimal("500"), "VND",
-                    NOW, TODAY);
+            Receivable cod = carrierCollected(customer, "500", TODAY);
             when(book.lockReceivable(cod.id())).thenReturn(Optional.of(cod));
             assertThat(codeOf(() -> service.allocate(new AllocateCommand(t.id(), null, cod.id(), null, by))))
                     .isEqualTo(ErrorCode.RECEIVABLE_CARRIER_COLLECTED);
@@ -276,7 +277,7 @@ class MoneyLedgerServiceTest {
 
         private PayableOrder lockOrder(String status, String term, BigDecimal threshold) {
             PayableOrder o = new PayableOrder(orderId, "SO-9", customer, status, term, null, "VND",
-                    new BigDecimal("1000"), null, BigDecimal.ZERO, threshold, true);
+                    new BigDecimal("1000"), null, threshold, true);
             when(orders.lockForPayment(orderId)).thenReturn(Optional.of(o));
             return o;
         }
@@ -460,7 +461,7 @@ class MoneyLedgerServiceTest {
                     new BigDecimal("400"), NOW, by, null, null);
             when(book.findAllocation(a.id())).thenReturn(Optional.of(a));
             PayableOrder o = new PayableOrder(r.orderId(), "SO-C", customer, "DELIVERED", "CREDIT", null, "VND",
-                    new BigDecimal("400"), null, BigDecimal.ZERO, null, false);
+                    new BigDecimal("400"), null, null, false);
             when(orders.lockForPayment(r.orderId())).thenReturn(Optional.of(o));
             when(book.lockReceivable(r.id())).thenReturn(Optional.of(r));
             when(book.recordReversal(any(), any(), any(), anyString())).thenReturn(allocation(t.id(), r.orderId(), r.id(), "-400"));
@@ -539,9 +540,9 @@ class MoneyLedgerServiceTest {
     @Nested
     class CarrierRemittance {
 
+        /** A carrier-collected receivable billed before nothing was collected on delivery any more (09 BR-08). */
         private Receivable cod(String amount) {
-            Receivable r = Receivable.openCarrierCollected(UUID.randomUUID(), customer, new BigDecimal(amount), "VND",
-                    NOW, TODAY);
+            Receivable r = carrierCollected(customer, amount, TODAY);
             when(book.lockReceivable(r.id())).thenReturn(Optional.of(r));
             when(orders.find(r.orderId())).thenReturn(Optional.of(order(r.orderId(), customer, "DELIVERED", "DEPOSIT", amount)));
             when(book.recordAllocation(any(), any(), any(), any(), any(), any())).thenAnswer(call ->

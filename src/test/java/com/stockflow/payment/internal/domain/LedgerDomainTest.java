@@ -102,15 +102,4 @@ class LedgerDomainTest {
         r.unallocate(new BigDecimal("1"), TODAY.plusDays(11));
         assertThat(r.status()).as("past due again").isEqualTo(ReceivableStatus.OVERDUE);
     }
-
-    @Test
-    @DisplayName("a carrier-collected balance is a DEPOSIT_BALANCE the carrier pays, due on the delivery day")
-    void carrierCollected() {
-        Receivable r = Receivable.openCarrierCollected(UUID.randomUUID(), UUID.randomUUID(), new BigDecimal("770000"),
-                "VND", NOW, TODAY);
-        assertThat(r.kind()).isEqualTo("DEPOSIT_BALANCE");
-        assertThat(r.collector()).isEqualTo(Collector.CARRIER);
-        assertThat(r.carrierCollected()).isTrue();
-        assertThat(r.dueDate()).isEqualTo(TODAY);
-    }
 }

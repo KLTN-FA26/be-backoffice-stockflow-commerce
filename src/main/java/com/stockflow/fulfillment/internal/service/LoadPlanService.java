@@ -10,7 +10,6 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanReleaseReason;
@@ -193,8 +192,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         WarehouseScope.requireWarehouse(warehouseId);
         source(sourceType);
         List<ShipmentJpaEntity> waiting = shipments.findAll(Specification.allOf(List.of(
-                Specs.eq("warehouseId", warehouseId), Specs.eq("status", ShipmentStatus.READY_TO_DISPATCH),
-                Specs.eq("deliveryMode", DeliveryMode.FULL_TRUCKLOAD))), Sort.by("readyAt", "id"));
+                Specs.eq("warehouseId", warehouseId), Specs.eq("status", ShipmentStatus.READY_TO_DISPATCH))),
+                Sort.by("readyAt", "id"));
         if (waiting.isEmpty()) {
             return List.of();
         }
@@ -396,9 +395,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("Shipment %s is %s; only one waiting "
                         + "for dispatch is planned").formatted(s.getCode(), s.getStatus()));
             }
-            if (s.getDeliveryMode() != DeliveryMode.FULL_TRUCKLOAD || !s.getWarehouseId().equals(plan.warehouseId())) {
-                throw new BusinessException(ErrorCode.SHIPMENT_NOT_FOR_LOAD, ("Shipment %s is not a full truckload of "
-                        + "this plan's warehouse (09 BR-08)").formatted(s.getCode()));
+            if (!s.getWarehouseId().equals(plan.warehouseId())) {
+                throw new BusinessException(ErrorCode.SHIPMENT_NOT_FOR_LOAD, ("Shipment %s leaves from another "
+                        + "warehouse than this plan's").formatted(s.getCode()));
             }
             List<PackageJpaEntity> sealed = packages.findByShipmentIdOrderByPackageNoAsc(id).stream()
                     .filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
@@ -718,7 +717,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     /**
      * 09 §4.2 step 4-5 (SCRUM-392): one PLANNED dispatch load per vehicle, its manifest the shipments whose parcels the
      * plan placed on it. A shipment spanning vehicles is on each of their manifests (LP-3) - only vehicles of this
-     * plan; a shipment on any other load is refused ({@code SHIPMENT_ON_ANOTHER_LOAD}, as at a parcel load).
+     * plan; a shipment on a load of another plan is refused ({@code SHIPMENT_ON_ANOTHER_LOAD}).
      */
     private void openVehicleLoads(LoadPlan plan, List<LoadPlan.Vehicle> vehicles, Map<UUID, LoadPlanParcels.Parcel> held,
                                   UUID by, Instant at) {
@@ -728,7 +727,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         vehicles.forEach(v -> v.placements().forEach(p -> allShipments.add(shipmentOf.get(p.packageId()))));
         Map<UUID, ShipmentJpaEntity> rows = shipments.findAllById(allShipments).stream()
                 .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
-        // Open manifests elsewhere (none for a shipment waiting for this plan; a parcel load would be one).
+        // Open manifests elsewhere (none for a shipment waiting for this plan; another plan's vehicle would be one).
         Map<UUID, UUID> elsewhere = new HashMap<>();
         loadMembers.findByShipmentIdInAndActiveTrue(allShipments).forEach(m -> elsewhere.put(m.getShipmentId(),
                 m.getLoadId()));
@@ -746,8 +745,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 String other = elsewhere.containsKey(shipmentId) ? elsewhereCodes.getOrDefault(elsewhere.get(shipmentId),
                         "?") : null;
                 load.addShipment(new DispatchLoad.ShipmentFacts(row.getId(), row.getCode(), row.getWarehouseId(),
-                        row.getDeliveryMode(), row.getStatus(), row.getCarrierId(), other), row.getLabelCodAmount(),
-                        by, at);
+                        row.getStatus(), other), by, at);
             }
             loadStore.insert(load);
         }
@@ -992,9 +990,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     /**
      * LP-4 / PACK-PARTIAL: an order that does not allow partial shipments leaves whole with this plan - nothing of it
      * left behind on the tray, and every unit it still wants placed in this plan: not packed yet, or packed in a
-     * shipment in no plan or in another plan, is a partial shipment too (the rule of the parcel loads,
-     * {@link PartialShipments}). Orders whose parcels carry no contents (packed before contents were recorded) are
-     * not counted, as at the parcel loads.
+     * shipment in no plan or in another plan, is a partial shipment too ({@link PartialShipments}). Orders whose
+     * parcels carry no contents (packed before contents were recorded) are not counted.
      */
     private void requirePartialAllowed(LoadPlan plan, Map<UUID, LoadPlanParcels.Parcel> held) {
         Map<UUID, OrderSummary> refused = new TreeMap<>();

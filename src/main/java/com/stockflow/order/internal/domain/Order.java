@@ -5,7 +5,6 @@ import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.DeliveryFailureReason;
-import com.stockflow.order.api.DeliveryMode;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
@@ -102,10 +101,8 @@ public final class Order extends AggregateRoot {
     private BigDecimal paidAmount = BigDecimal.ZERO;
     private Instant paidInFullAt;
     private Integer creditTermDays;
-    /** G2-3: how a deposit order's balance is collected; null for other terms. */
+    /** G2-3: how a deposit order's balance is collected (by transfer before delivery, or on credit); null else. */
     private BalancePolicy balancePolicy;
-    /** G2-3: what the carrier collects on a whole-order handover (ON_DELIVERY, no shipments recorded). */
-    private BigDecimal codAmount = BigDecimal.ZERO;
     private UUID warehouseId;
     private Instant releasedAt;
     private UUID releasedBy;
@@ -150,13 +147,9 @@ public final class Order extends AggregateRoot {
      */
     private Instant fulfilmentStartedAt;
     /**
-     * LP-1 (lead's decision 2026-10-22): how the order travels - parcels by default, or a full truckload the Order
-     * Coordinator chose at release or since. Locked once packing started ({@link #deliveryModeLocked()}).
-     */
-    private DeliveryMode deliveryMode = DeliveryMode.PARCEL;
-    /**
-     * LP-1: when fulfillment opened the order's first package, in the same transaction under this order's row lock
-     * ({@link #recordPackingStarted}). From then on the delivery mode is what packing copies onto the shipments.
+     * When fulfillment opened the order's first package, in the same transaction under this order's row lock
+     * ({@link #recordPackingStarted}). Every order ships as a full truckload (kltn-docs 09 BR-08): there is no
+     * delivery mode to choose or lock.
      */
     private Instant packingStartedAt;
     /**
@@ -404,11 +397,6 @@ public final class Order extends AggregateRoot {
         }
         BalancePolicy resolved = chosen == PaymentTerm.DEPOSIT
                 ? (policy == null ? BalancePolicy.BEFORE_DELIVERY : policy) : null;
-        if (resolved == BalancePolicy.ON_DELIVERY && deliveryMode == DeliveryMode.FULL_TRUCKLOAD) {
-            // LP-2: the other way round of changeDeliveryMode - a full truckload has no carrier collecting on delivery.
-            throw new BusinessException(ErrorCode.DELIVERY_MODE_FTL_NO_COD, ("Order %s goes as a full truckload: its "
-                    + "balance cannot be collected on delivery").formatted(orderNumber));
-        }
         this.paymentTerm = chosen;
         this.depositRequired = deposit;
         this.creditTermDays = creditTermDays;
@@ -653,7 +641,7 @@ public final class Order extends AggregateRoot {
         transitionTo(OrderStatus.DELIVERED, by, null, now);
         this.deliveryFailureReason = null;
         this.deliveredAt = now;
-        BigDecimal billed = carrierCollects() ? billCarrier(codAmount) : billNow(billable());
+        BigDecimal billed = billNow(billable());
         registerDelivered(null, billed, now);
     }
 
@@ -706,8 +694,8 @@ public final class Order extends AggregateRoot {
 
     /**
      * @param ledger the money payment's ledger holds for the order, read under the order's lock in this transaction
-     *               (G2-3): it counts an allocation committed a moment ago that the order has not heard of yet, so the
-     *               carrier is never told to collect money already paid. Null: the order's own count.
+     *               (G2-3): it counts an allocation committed a moment ago that the order has not heard of yet, so
+     *               money just paid lets the goods leave. Null: the order's own count.
      */
     public boolean markShipped(Instant handedOverAt, UUID by, LedgerMoney ledger) {
         java.util.Objects.requireNonNull(handedOverAt, "handedOverAt");
@@ -719,8 +707,6 @@ public final class Order extends AggregateRoot {
         requireHandoverPaid(ledger);
         transitionTo(OrderStatus.SHIPPED, by, null, handedOverAt);
         this.shippedAt = handedOverAt;
-        // G2-3: the carrier collects what is left on delivery - fixed now, as the label and the manifest print it.
-        this.codAmount = carrierCollects() ? billable().subtract(paid(ledger)).max(BigDecimal.ZERO) : BigDecimal.ZERO;
         return true;
     }
 
@@ -895,62 +881,7 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * LP-1 / LP-2 (lead's decisions 2026-10-22): the Order Coordinator chooses how the order travels - at release, or
-     * since, until packing starts. A full truckload is refused while the carrier would collect the balance on delivery
-     * ({@code DELIVERY_MODE_FTL_NO_COD}): Sales changes the balance policy first.
-     *
-     * @return whether this changed the order
-     * @throws BusinessException {@code DELIVERY_MODE_LOCKED} once packing started, or the order is past packing,
-     *         cancelled or closed; {@code DELIVERY_MODE_FTL_NO_COD}
-     */
-    public boolean changeDeliveryMode(DeliveryMode mode) {
-        java.util.Objects.requireNonNull(mode, "mode");
-        if (deliveryModeLocked()) {
-            throw new BusinessException(ErrorCode.DELIVERY_MODE_LOCKED, ("Order %s is %s%s: how it travels can no "
-                    + "longer change").formatted(orderNumber, status,
-                    packingStartedAt != null || packedAt != null ? " and its packing started" : ""));
-        }
-        if (mode == DeliveryMode.FULL_TRUCKLOAD && carrierCollects()) {
-            throw new BusinessException(ErrorCode.DELIVERY_MODE_FTL_NO_COD, ("Order %s has its balance collected on "
-                    + "delivery: a full truckload needs another balance policy first").formatted(orderNumber));
-        }
-        if (deliveryMode == mode) {
-            return false;
-        }
-        this.deliveryMode = mode;
-        return true;
-    }
-
-    /** LP-1: whether the delivery mode can no longer change - see {@link #deliveryModeLocked(OrderStatus, OrderStatus,
-     *  Instant, Instant)}. */
-    public boolean deliveryModeLocked() {
-        return deliveryModeLocked(status, statusBeforeHold, packingStartedAt, packedAt);
-    }
-
-    /**
-     * LP-1: the delivery mode is open until packing starts - the order's first package opened, or (rows packed before
-     * LP-1) a package completed - and only while the order is not yet past packing: up to PICKING, or on hold from
-     * there (a credit hold, which names no status to go back to, included). PARTIALLY_FULFILLED and later, cancelled
-     * and closed orders are locked whatever their packing facts say. Also the list row's reading.
-     */
-    public static boolean deliveryModeLocked(OrderStatus status, OrderStatus statusBeforeHold, Instant packingStarted,
-                                             Instant packed) {
-        if (packingStarted != null || packed != null) {
-            return true;
-        }
-        OrderStatus effective = status == OrderStatus.ON_HOLD ? statusBeforeHold : status;
-        if (effective == null) {
-            return false;
-        }
-        return switch (effective) {
-            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING -> false;
-            default -> true;
-        };
-    }
-
-    /**
-     * LP-1: fulfillment opened a package of the order - packing started, the delivery mode is locked from now on.
-     * Idempotent.
+     * Fulfillment opened a package of the order: packing started. Idempotent.
      *
      * @return whether this was the first package
      */
@@ -967,12 +898,10 @@ public final class Order extends AggregateRoot {
         return true;
     }
 
-    public DeliveryMode deliveryMode() { return deliveryMode; }
     public Instant packingStartedAt() { return packingStartedAt; }
 
-    /** Rehydration of the delivery mode and when packing started. */
-    public void restoreDeliveryMode(DeliveryMode mode, Instant packingStarted) {
-        this.deliveryMode = mode == null ? DeliveryMode.PARCEL : mode;
+    /** Rehydration of when packing started. */
+    public void restorePackingStarted(Instant packingStarted) {
         this.packingStartedAt = packingStarted;
     }
 
@@ -1317,45 +1246,12 @@ public final class Order extends AggregateRoot {
                             .formatted(orderNumber, outstandingUnits() - leaving - leavingWith)
                             + "together, or ask Sales to allow partial shipment on the order");
         }
-        // G2-3: what the carrier collects for this shipment, fixed at the handover (15 BR-08): its value less the money
-        // paid ahead that the shipments before it have not used.
-        BigDecimal cod = codOf(value.amount(), valueOf(quantitiesOf(handover.earlierPending())), ledger);
         shipments.add(OrderShipment.handedOver(handover.shipmentId(), quantities, value.amount(),
-                handover.handedOverAt(), handover.handedOverBy(), cod, handover.carriage()));
+                handover.handedOverAt(), handover.handedOverBy(), handover.carriage()));
         // Goods handed over were packed: from here the order goes through a return, never a cancellation.
         recordPacked(handover.handedOverAt());
         followShipments(ShipmentChange.HANDED_OVER, handover.handedOverAt(), handover.handedOverBy());
         return true;
-    }
-
-    /**
-     * What the carrier would collect for a shipment of these units if it were handed over now (G4-5: the package
-     * label, 08 step 6, 09 BR-04): the same sum {@link #recordHandover} fixes on an ON_DELIVERY deposit order, 0
-     * otherwise. The money paid ahead goes to shipments in the order they were made: the shipments handed over first,
-     * then {@code earlierPending} - the units of shipments made before this one and still waiting - and only what is
-     * left lowers this one. It changes only if money arrives meanwhile; the handover fixes it.
-     */
-    public BigDecimal codFor(Map<UUID, Integer> quantities, Map<UUID, Integer> earlierPending, LedgerMoney ledger) {
-        return codOf(valueOf(quantities), valueOf(earlierPending), ledger);
-    }
-
-    private BigDecimal valueOf(Map<UUID, Integer> quantities) {
-        Money value = Money.zero(total().currency());
-        for (Map.Entry<UUID, Integer> entry : quantities.entrySet()) {
-            OrderLine line = findLine(entry.getKey()).orElseThrow(() -> new BusinessException(
-                    ErrorCode.VALIDATION_FAILED, "Line %s is not on order %s".formatted(entry.getKey(), orderNumber)));
-            value = value.plus(line.unitPrice().times(entry.getValue()));
-        }
-        return value.amount();
-    }
-
-    /** {@code value} less the money paid ahead left after the shipments handed over and {@code heldBack}. */
-    private BigDecimal codOf(BigDecimal value, BigDecimal heldBack, LedgerMoney ledger) {
-        if (!carrierCollects()) {
-            return BigDecimal.ZERO;
-        }
-        BigDecimal ahead = availablePaidAhead(ledger).subtract(heldBack).max(BigDecimal.ZERO);
-        return value.subtract(ahead).max(BigDecimal.ZERO);
     }
 
     private static Map<UUID, Integer> quantitiesOf(List<ShipmentHandover.Line> lines) {
@@ -1400,7 +1296,7 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION,
                     "Shipment %s is %s and cannot become DELIVERED".formatted(shipmentId, shipment.status()));
         }
-        BigDecimal billed = carrierCollects() ? billCarrier(shipment.codAmount()) : billNow(shipment.amount());
+        BigDecimal billed = billNow(shipment.amount());
         shipment.delivered(at, by, billed);
         registerDelivered(shipmentId, billed, at);
         followShipments(ShipmentChange.OUTCOME, at, by);
@@ -1669,8 +1565,8 @@ public final class Order extends AggregateRoot {
     /**
      * What must be paid before the goods may leave (G3-Q4: blocked at the handover, warned at packing; G2-3). A prepaid
      * order owes everything before (15 §4.1); a credit order owes on its due date (15 §4.3). A deposit order paid
-     * before delivery owes its balance before (15 §4.2 step 3); one whose carrier collects the balance owes only the
-     * deposit (normally in long before: it was confirmed by it).
+     * before delivery owes its balance before (15 §4.2 step 3); one whose balance goes on credit owes only the deposit
+     * (normally in long before: it was confirmed by it). Nothing is collected on delivery (09 BR-08).
      */
     public BigDecimal amountDueBeforeHandover() {
         return amountDueBeforeHandover(null);
@@ -1681,10 +1577,9 @@ public final class Order extends AggregateRoot {
         BigDecimal due = billable().subtract(paid).max(BigDecimal.ZERO);
         return switch (paymentTerm) {
             case PREPAID -> due;
-            // The balance is collected on delivery - by the carrier (ON_DELIVERY) or as a receivable (ON_CREDIT): only
-            // the deposit is wanted before the goods leave.
-            case DEPOSIT -> carrierCollects() || balanceOnCredit()
-                    ? depositRequired.subtract(paid).max(BigDecimal.ZERO).min(due) : due;
+            // The balance becomes a receivable on delivery (ON_CREDIT): only the deposit is wanted before the goods
+            // leave.
+            case DEPOSIT -> balanceOnCredit() ? depositRequired.subtract(paid).max(BigDecimal.ZERO).min(due) : due;
             case CREDIT -> BigDecimal.ZERO;
         };
     }
@@ -1706,45 +1601,6 @@ public final class Order extends AggregateRoot {
         return ledger == null || ledger.collected() == null ? paidAmount : paidAmount.max(ledger.collected());
     }
 
-    /**
-     * What carriers are to collect on delivery (G2-3): the balance of an ON_DELIVERY order, else 0.
-     *
-     * <p>kltn-docs 15 BR-08: the amount collected on delivery is what the order still owes <i>after the deposit</i>
-     * ("phần còn phải thu của đơn (đã trừ cọc)"); the deposit itself is paid before - it confirms the order (15 §4.2,
-     * BR-02) and the handover is refused without it ({@link #amountDueBeforeHandover}). So until the deposit is in,
-     * the deposit is counted as paid here: an order of 900,000 with a 270,000 deposit shows 630,000 to collect on
-     * delivery from the start, not 900,000 (E2E QA 2026-10-21), and the figure only falls when more than the deposit
-     * is paid. Once the deposit is in, it is simply the unpaid balance, as before.</p>
-     */
-    public BigDecimal amountDueOnDelivery() {
-        if (!carrierCollects()) {
-            return BigDecimal.ZERO;
-        }
-        BigDecimal deposit = depositRequired == null ? BigDecimal.ZERO : depositRequired;
-        return billable().subtract(paidAmount.max(deposit)).max(BigDecimal.ZERO);
-    }
-
-    /**
-     * What carriers are collecting now for goods they carry (G2-3): the COD of shipments handed over and not yet
-     * delivered or returned, or of a whole-order handover still in transit. A transfer must not pay it as well.
-     */
-    public BigDecimal codInTransit() {
-        if (!carrierCollects()) {
-            return BigDecimal.ZERO;
-        }
-        if (shipments.isEmpty()) {
-            return status == OrderStatus.SHIPPED || status == OrderStatus.DELIVERY_FAILED ? codAmount : BigDecimal.ZERO;
-        }
-        return shipments.stream()
-                .filter(s -> s.status() == OrderShipmentStatus.HANDED_OVER
-                        || s.status() == OrderShipmentStatus.DELIVERY_FAILED)
-                .map(OrderShipment::codAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    private boolean carrierCollects() {
-        return paymentTerm == PaymentTerm.DEPOSIT && balancePolicy == BalancePolicy.ON_DELIVERY;
-    }
-
     /** BALCREDIT: a deposit order whose balance becomes the customer's receivable on delivery. */
     public boolean balanceOnCredit() {
         return paymentTerm == PaymentTerm.DEPOSIT && balancePolicy == BalancePolicy.ON_CREDIT;
@@ -1760,28 +1616,6 @@ public final class Order extends AggregateRoot {
             return total().amount();
         }
         return balanceOnCredit() ? total().amount().subtract(depositRequired).max(BigDecimal.ZERO) : BigDecimal.ZERO;
-    }
-
-    /**
-     * Money paid ahead (not against a receivable) that no shipment still out or delivered has counted on (G2-3,
-     * ON_DELIVERY): it pays the earliest shipments first, as for credit orders (G3-2). A shipment that came back
-     * gives back what it counted on.
-     */
-    private BigDecimal availablePaidAhead(LedgerMoney ledger) {
-        BigDecimal paidAhead = paidAmount.subtract(receivablePaidAmount).max(BigDecimal.ZERO);
-        if (ledger != null && ledger.paidAhead() != null) {
-            paidAhead = paidAhead.max(ledger.paidAhead());
-        }
-        BigDecimal counted = shipments.stream().filter(s -> !s.isReturned())
-                .map(s -> s.amount().subtract(s.codAmount())).reduce(BigDecimal.ZERO, BigDecimal::add);
-        return paidAhead.subtract(counted).max(BigDecimal.ZERO);
-    }
-
-    /** A delivery the carrier collected for bills exactly what it collected (09 BR-04): payment opens its receivable. */
-    private BigDecimal billCarrier(BigDecimal collected) {
-        BigDecimal billed = collected == null ? BigDecimal.ZERO : collected;
-        this.billedAmount = billedAmount.add(billed);
-        return billed;
     }
 
     private void requireHandoverPaid(LedgerMoney ledger) {
@@ -2211,14 +2045,12 @@ public final class Order extends AggregateRoot {
         this.cancellationFeeReason = reason;
         this.cancellationFeeDetail = detail;
     }
-    /** Rehydration of the balance policy and a whole-order handover's COD (G2-3). */
-    public void restoreBalance(BalancePolicy policy, BigDecimal cod) {
+    /** Rehydration of the balance policy (G2-3). */
+    public void restoreBalance(BalancePolicy policy) {
         this.balancePolicy = policy;
-        this.codAmount = cod == null ? BigDecimal.ZERO : cod;
     }
 
     public BalancePolicy balancePolicy() { return balancePolicy; }
-    public BigDecimal codAmount() { return codAmount; }
     public BigDecimal paidAmount() { return paidAmount; }
     public Instant paidInFullAt() { return paidInFullAt; }
     public Integer creditTermDays() { return creditTermDays; }

@@ -77,18 +77,6 @@ public final class Receivable extends AggregateRoot {
         return fee;
     }
 
-    /**
-     * G2-3: the balance of a deposit order the carrier collected on delivery (kltn-docs 09 §2, 15 BR-08): due on the
-     * delivery day, paid by the carrier's remittance, never by the customer's transfers.
-     */
-    public static Receivable openCarrierCollected(UUID orderId, UUID customerId, BigDecimal amount, String currency,
-                                                  Instant deliveredAt, LocalDate deliveryDay) {
-        Receivable balance = open(orderId, customerId, amount, currency, deliveredAt, deliveryDay);
-        balance.kind = "DEPOSIT_BALANCE";
-        balance.collector = Collector.CARRIER;
-        return balance;
-    }
-
     public Receivable collectedBy(Collector who) {
         this.collector = Objects.requireNonNull(who, "collector");
         return this;

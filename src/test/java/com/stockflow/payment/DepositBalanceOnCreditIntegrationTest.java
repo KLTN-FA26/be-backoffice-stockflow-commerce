@@ -143,7 +143,7 @@ class DepositBalanceOnCreditIntegrationTest {
 
     @Test
     @DisplayName("within the limit: placed on the deposit, the 7M balance counted at once; deposit paid, released, "
-            + "packed, handed over with no COD and delivered → a 7M DEPOSIT_BALANCE receivable due in 30 days; "
+            + "packed, handed over and delivered → a 7M DEPOSIT_BALANCE receivable due in 30 days; "
             + "exposure still 7M - counted once")
     void withinTheLimitBecomesAReceivable() {
         OrderSummary order = place(PaymentTerm.DEPOSIT, 2, null);         // 10M, deposit 3M, balance 7M
@@ -165,13 +165,11 @@ class DepositBalanceOnCreditIntegrationTest {
         orders.startPicking(order.orderId(), accountant);
         OrderSummary packed = orders.markPacked(order.orderId(), accountant);
         assertThat(packed.lifecycle().amountDueBeforeHandover()).as("only the deposit, paid").isZero();
-        assertThat(packed.lifecycle().amountDueOnDelivery()).as("nothing for the carrier").isZero();
 
         UUID shipment = com.stockflow.support.ShipmentRows.ready(jdbc, tx, order.orderId(), UUID.randomUUID());
         OrderSummary shipped = orders.recordHandover(order.orderId(), new ShipmentHandover(shipment,
                 List.of(new ShipmentHandover.Line(order.lines().getFirst().lineId(), 2)), Instant.now(), accountant));
         assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
-        assertThat(shipped.lifecycle().shipments().getFirst().codAmount()).isZero();
         assertThat(exposure()).isEqualByComparingTo("7000000");
 
         orders.recordShipmentDelivered(order.orderId(), shipment, accountant);

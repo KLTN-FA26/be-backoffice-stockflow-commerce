@@ -70,8 +70,8 @@ public record OrderResponse(
         Integer creditTermDays,
 
         @Schema(example = "BEFORE_DELIVERY", description = "A deposit order's way of collecting the balance: "
-                + "BEFORE_DELIVERY (by transfer, before the handover), ON_DELIVERY (the carrier collects it) or "
-                + "ON_CREDIT (a receivable on delivery, due after creditTermDays); null for other terms (G2-3)")
+                + "BEFORE_DELIVERY (by transfer, before the handover) or ON_CREDIT (a receivable on delivery, due "
+                + "after creditTermDays); null for other terms (G2-3). Nothing is collected on delivery")
         String balancePolicy,
 
         @Schema(description = "Set when the order is CANCELLED")
@@ -125,10 +125,6 @@ public record OrderResponse(
         @Schema(description = "The shipments handed to the carrier, oldest first (split shipments, G4-Q3)")
         List<Shipment> shipments,
 
-        @Schema(description = "What carriers are to collect on delivery: the unpaid balance of an ON_DELIVERY deposit "
-                + "order, 0 otherwise (G2-3)")
-        BigDecimal amountDueOnDelivery,
-
         @Schema(description = "Sales allowed the order to ship in parts (PACK-PARTIAL): packing may complete part of "
                 + "it, and part of it may be handed over. False by default; set with PUT "
                 + "/orders/{orderId}/partial-shipment; null on rows that do not carry it")
@@ -137,18 +133,7 @@ public record OrderResponse(
         @Schema(deprecated = true, description = "Always true: printing is done outside the system, so an order's "
                 + "goods are in stock before it is released. Kept for clients that still read it; null on rows that "
                 + "do not carry it")
-        Boolean printLinesReady,
-
-        @Schema(example = "PARCEL", description = "How the order travels (LP-1): PARCEL (parcels through a carrier, the "
-                + "default) or FULL_TRUCKLOAD (a whole truck or container, planned in 3D). Chosen by the Order "
-                + "Coordinator at release or with PUT /orders/{orderId}/delivery-mode; packing copies it onto every "
-                + "shipment; null on rows that do not carry it")
-        String deliveryMode,
-
-        @Schema(description = "Packing started (its first package was opened), or the order is past packing, cancelled "
-                + "or closed: the delivery mode can no longer change (409 DELIVERY_MODE_LOCKED); null on rows that do "
-                + "not carry it")
-        Boolean deliveryModeLocked
+        Boolean printLinesReady
 ) {
 
     @Schema(name = "OrderShipment")
@@ -161,9 +146,7 @@ public record OrderResponse(
             Instant handedOverAt,
             Instant outcomeAt,
             String failureReason,
-            List<ShipmentLine> lines,
-            @Schema(description = "What the carrier collects on delivering it (ON_DELIVERY), fixed at the handover; "
-                    + "the amount printed on the label (kltn-docs 15 BR-08)") BigDecimal codAmount) {
+            List<ShipmentLine> lines) {
     }
 
     @Schema(name = "OrderShipmentLine")

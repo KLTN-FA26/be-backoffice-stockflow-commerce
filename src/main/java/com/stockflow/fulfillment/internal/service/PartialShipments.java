@@ -9,7 +9,7 @@ import java.util.UUID;
 /**
  * PACK-PARTIAL (lead's decision 2026-10-21, #150) as fulfillment applies it wherever goods leave: an order whose Sales
  * did not allow partial shipments leaves whole - every unit it still wants, not yet shipped or closed, leaves together.
- * Shared by the parcel loads (DispatchService) and the load plans (LP-4, SCRUM-287 PR D).
+ * Shared by the load plans (LP-4, SCRUM-287 PR D) and the vehicles' handover (DispatchService).
  */
 final class PartialShipments {
 

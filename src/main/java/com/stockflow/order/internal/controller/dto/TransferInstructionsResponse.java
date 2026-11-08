@@ -20,7 +20,7 @@ public record TransferInstructionsResponse(
                 + "so the accountant can match the statement line to the order")
         String transferReference,
         @Schema(description = "Still due now, never below zero: the deposit (or prepayment) while it is unpaid, else "
-                + "the balance due before delivery, else 0 (credit, balance paid on delivery or on credit, all paid)")
+                + "the balance due before delivery, else 0 (credit, balance on credit, all paid)")
         BigDecimal amountDue,
         @Schema(example = "VND") String currency,
         @Schema(example = "TO_CONFIRM", description = "TO_CONFIRM (the order waits for it), BEFORE_DELIVERY (the goods "

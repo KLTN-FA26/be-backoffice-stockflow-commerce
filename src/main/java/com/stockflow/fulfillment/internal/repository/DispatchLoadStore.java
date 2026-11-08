@@ -42,7 +42,7 @@ public class DispatchLoadStore {
     public DispatchLoad load(DispatchLoadJpaEntity header) {
         List<DispatchLoad.Member> onManifest = members.findByLoadIdOrderByAddedAtAscIdAsc(header.getId()).stream()
                 .map(r -> new DispatchLoad.Member(r.getShipmentId(), r.isActive(), r.getAddedAt(), r.getAddedBy(),
-                        r.getRemovedAt(), r.getRemovedBy(), r.getLabelCodAmount(), r.getCodAmount()))
+                        r.getRemovedAt(), r.getRemovedBy()))
                 .toList();
         List<DispatchLoad.Loaded> onVehicle = parcels.findByLoadIdOrderByLoadedAtAscIdAsc(header.getId()).stream()
                 .map(r -> new DispatchLoad.Loaded(r.getPackageId(), r.getShipmentId(), r.getScanId(), r.getLoadedAt(),
@@ -54,11 +54,11 @@ public class DispatchLoadStore {
                         r.getOverrideNote()))
                 .toList();
         return DispatchLoad.restore(new DispatchLoad.Snapshot(header.getId(), header.getCode(), header.getRequestId(),
-                header.getWarehouseId(), header.getMode(), header.getCarrierId(), header.getLoadPlanVehicleId(),
+                header.getWarehouseId(), header.getCarrierId(), header.getLoadPlanVehicleId(),
                 header.getVehiclePlate(), header.getDriverName(), header.getDriverPhone(), header.getStatus(),
                 header.getLoadingStartedAt(), header.getLoadingStartedBy(), header.getDispatchedAt(),
                 header.getDispatchedBy(), header.getCarrierRepresentative(), header.getSignatureRef(),
-                header.getHandoverNote(), header.getCodTotal(), header.getCancelledAt(), header.getCancelledBy(),
+                header.getHandoverNote(), header.getCancelledAt(), header.getCancelledBy(),
                 header.getCancelReason(), header.getVersion(), onManifest, onVehicle, header.getBookedAt(),
                 header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelledBy(),
                 header.getBookingCancelReason(), toUnload, header.getCancelReasonCode()));
@@ -104,11 +104,10 @@ public class DispatchLoadStore {
         for (DispatchLoad.Member m : s.members()) {
             DispatchLoadShipmentJpaEntity row = manifest.get(m.shipmentId());
             if (row == null) {
-                row = new DispatchLoadShipmentJpaEntity(Identifiers.newId(), s.id(), m.shipmentId(), s.mode());
+                row = new DispatchLoadShipmentJpaEntity(Identifiers.newId(), s.id(), m.shipmentId());
             }
             boolean wasActive = row.isActive();
-            row.apply(m.active(), m.addedAt(), m.addedBy(), m.removedAt(), m.removedBy(), m.labelCodAmount(),
-                    m.codAmount());
+            row.apply(m.active(), m.addedAt(), m.addedBy(), m.removedAt(), m.removedBy());
             (m.active() && !wasActive ? shipmentsOn : shipmentsOff).add(row);
         }
         // Off before on: a parcel off the vehicle before its shipment leaves the manifest, a shipment on the manifest

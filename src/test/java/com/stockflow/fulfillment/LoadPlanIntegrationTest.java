@@ -195,7 +195,7 @@ class LoadPlanIntegrationTest {
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 
-    /** A paid order of the demo customer for {@code sofas} sofas, released at HCM as a full truckload (LP-1). */
+    /** A paid order of the demo customer for {@code sofas} sofas, released at HCM (every order is a full truckload). */
     private OrderSummary ftlOrder(int sofas) throws Exception {
         stock(sofas);
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
@@ -209,8 +209,8 @@ class LoadPlanIntegrationTest {
                 PaymentMethod.BANK_TRANSFER)));
         Await.until("order confirmed", ASYNC,
                 () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        oc(body(post(ORDERS + "/" + order.orderId() + "/release"), "{\"warehouseId\":\"" + HCM
-                + "\",\"deliveryMode\":\"FULL_TRUCKLOAD\"}")).andExpect(status().isOk());
+        oc(body(post(ORDERS + "/" + order.orderId() + "/release"), "{\"warehouseId\":\"" + HCM + "\"}"))
+                .andExpect(status().isOk());
         return order;
     }
 
@@ -322,7 +322,7 @@ class LoadPlanIntegrationTest {
         UUID shipmentA = packed(orderA, true)[0];
         UUID shipmentB = packed(orderB, false)[0];
 
-        // Candidates: whole full-truckload shipments with their sealed parcels, sizes in mm (LP-5, LP2-1).
+        // Candidates: whole shipments waiting for dispatch with their sealed parcels, sizes in mm (LP-5, LP2-1).
         JsonNode candidates = data(dispatch(get(BASE + "/load-plan-candidates?warehouseId=" + HCM))
                 .andExpect(status().isOk()));
         Map<String, JsonNode> byShipment = new LinkedHashMap<>();
@@ -469,15 +469,15 @@ class LoadPlanIntegrationTest {
                 + ",\"note\":\"carton goes on the next truck\"}");
         assertThat(plan.path("unplacedAcknowledgement").path("note").asText()).isEqualTo("carton goes on the next truck");
 
-        // Confirmed: one PLANNED full-truckload dispatch load for the vehicle; the carton is free again.
+        // Confirmed: one PLANNED dispatch load for the vehicle; the carton is free again.
         plan = step(plan, "/confirmation", version(plan));
         assertThat(plan.path("status").asText()).isEqualTo("CONFIRMED");
         assertThat(plan.path("packageCount").asInt()).isEqualTo(4);
         assertThat(plan.path("vehicles").get(0).path("load").path("status").asText()).isEqualTo("PLANNED");
         UUID vehicleId = UUID.fromString(plan.path("vehicles").get(0).path("loadPlanVehicleId").asText());
-        Map<String, Object> load = jdbc.queryForMap("SELECT id, mode, status, carrier_id, code FROM "
+        Map<String, Object> load = jdbc.queryForMap("SELECT id, status, carrier_id, code FROM "
                 + "fulfillment.dispatch_load WHERE load_plan_vehicle_id = ?", vehicleId);
-        assertThat(load).containsEntry("mode", "FULL_TRUCKLOAD").containsEntry("status", "PLANNED");
+        assertThat(load).containsEntry("status", "PLANNED");
         assertThat(load.get("carrier_id")).isNull();
         assertThat((String) load.get("code")).startsWith("LD-");
         assertThat(jdbc.queryForObject("SELECT release_reason FROM fulfillment.load_plan_package WHERE package_id = "
@@ -656,13 +656,6 @@ class LoadPlanIntegrationTest {
         Throwable byHand = catchThrowable(() -> jdbc.update(
                 "UPDATE fulfillment.package SET height_cm = 10 WHERE id = ?", parcel));
         assertThat(byHand).hasMessageContaining("tg_package_in_load_plan");
-
-        // Review of #161: a plan's load changes only through the plan.
-        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/loads/" + loadId + "/cancellation"),
-                "{\"reason\":\"no truck\"}")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_MANAGED_BY_PLAN"));
-        dispatch(body(post(BASE + "/loads/" + loadId + "/shipments"), "{\"shipmentIds\":[\"" + kept[0] + "\"]}"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LOAD_MANAGED_BY_PLAN"));
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.dispatch_load WHERE id = ?", String.class,
                 loadId)).isEqualTo("PLANNED");
 

@@ -9,13 +9,10 @@ import java.util.UUID;
  *
  * @param status                the order's status, e.g. {@code PENDING_PAYMENT}, {@code CANCELLED}
  * @param paymentTerm           {@code PREPAID}, {@code DEPOSIT} or {@code CREDIT}
- * @param balancePolicy         how a deposit order's balance is collected ({@code BEFORE_DELIVERY}, {@code ON_DELIVERY},
- *                              {@code ON_CREDIT});
- *                              null for other terms
+ * @param balancePolicy         how a deposit order's balance is collected ({@code BEFORE_DELIVERY} or
+ *                              {@code ON_CREDIT}); null for other terms. Nothing is collected on delivery (no COD)
  * @param billable              what the order is worth to the customer now: its total less units closed out of it
  * @param depositRequired       null unless DEPOSIT
- * @param codInTransit          what carriers are collecting on delivery for goods handed over and not yet delivered
- *                              or returned (ON_DELIVERY): money the customer pays the carrier, not by transfer
  * @param confirmationThreshold the money a confirmed order must keep to stay confirmed - everything for PREPAID, the
  *                              deposit for DEPOSIT - while it is past PENDING_PAYMENT and before its goods leave; null
  *                              when taking money back cannot un-confirm it (pending, credit, shipped and later)
@@ -31,7 +28,6 @@ public record PayableOrder(
         String currency,
         BigDecimal billable,
         BigDecimal depositRequired,
-        BigDecimal codInTransit,
         BigDecimal confirmationThreshold,
         boolean holdable
 ) {

@@ -1,19 +1,14 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.order.api.DeliveryMode;
-import com.stockflow.order.api.DeliveryModeChange;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PartialShipmentDecision;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
-import com.stockflow.order.internal.entity.OrderDeliveryModeChangeJpaEntity;
 import com.stockflow.order.internal.entity.OrderPartialShipmentDecisionJpaEntity;
-import com.stockflow.order.internal.repository.OrderDeliveryModeChangeJpaRepository;
 import com.stockflow.order.internal.repository.OrderPartialShipmentDecisionJpaRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -37,8 +32,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * The three small services that lock the order's row, ask the aggregate and write a history row: partial-shipment
- * decisions (PACK-PARTIAL), delivery-mode changes (LP-1, LP-2) and reservation bookkeeping (kltn-docs 14 BR-07).
+ * The small services that lock the order's row and ask the aggregate: partial-shipment decisions (PACK-PARTIAL), which
+ * also write a history row, and reservation bookkeeping (kltn-docs 14 BR-07).
  */
 class OrderRowLockServicesTest {
 
@@ -127,97 +122,6 @@ class OrderRowLockServicesTest {
                 assertThat(d.note()).isEqualTo("ok");
                 assertThat(d.decidedBy()).isEqualTo(STAFF);
                 assertThat(d.decidedAt()).isEqualTo(NOW);
-            });
-        }
-    }
-
-    @Nested
-    @DisplayName("delivery mode (LP-1, LP-2)")
-    class DeliveryModes {
-
-        private final OrderDeliveryModeChangeJpaRepository changes = mock(OrderDeliveryModeChangeJpaRepository.class);
-        private final DeliveryModeHistory history = new DeliveryModeHistory(changes, clock);
-        private final DeliveryModeService service = new DeliveryModeService(repository, changes, history, orders);
-
-        @Test
-        @DisplayName("changing the mode saves the order and writes a row with the previous mode and the order's status")
-        void changeIsRecorded() {
-            Order order = locked(OrderFixtures.releasedPrepaid());
-            assertThat(order.deliveryMode()).isNotEqualTo(DeliveryMode.FULL_TRUCKLOAD);
-
-            assertThat(service.change(order.id().value(), DeliveryMode.FULL_TRUCKLOAD, "whole truck", STAFF))
-                    .isSameAs(summary);
-
-            assertThat(order.deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
-            verify(repository).save(order);
-            ArgumentCaptor<OrderDeliveryModeChangeJpaEntity> row =
-                    ArgumentCaptor.forClass(OrderDeliveryModeChangeJpaEntity.class);
-            verify(changes).save(row.capture());
-            assertThat(row.getValue().getDeliveryMode()).isEqualTo("FULL_TRUCKLOAD");
-            assertThat(row.getValue().getPreviousMode()).isNotEqualTo("FULL_TRUCKLOAD");
-            assertThat(row.getValue().getOrderStatus()).isEqualTo("READY_TO_FULFILL");
-            assertThat(row.getValue().getChangedBy()).isEqualTo(STAFF);
-            assertThat(row.getValue().getChangedAt()).isEqualTo(NOW);
-        }
-
-        @Test
-        @DisplayName("choosing the mode the order already has records nothing")
-        void sameModeAgain() {
-            Order order = locked(OrderFixtures.releasedPrepaid());
-
-            service.change(order.id().value(), order.deliveryMode(), null, STAFF);
-
-            verify(repository, never()).save(any());
-            verify(changes, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("once packing started the mode is locked (DELIVERY_MODE_LOCKED), nothing is written")
-        void lockedOncePackingStarted() {
-            Order order = locked(OrderFixtures.releasedPrepaid());
-            order.recordPackingStarted(NOW);
-
-            assertThat(codeOf(() -> service.change(order.id().value(), DeliveryMode.FULL_TRUCKLOAD, null, STAFF)))
-                    .isEqualTo(ErrorCode.DELIVERY_MODE_LOCKED);
-            verify(changes, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("a full truckload is refused while the carrier would collect the balance (LP-2)")
-        void fullTruckloadNeedsNoCod() {
-            Order order = OrderFixtures.draft(PaymentTerm.DEPOSIT, UUID.randomUUID());
-            order.submit();
-            locked(order);
-
-            assertThat(codeOf(() -> service.change(order.id().value(), DeliveryMode.FULL_TRUCKLOAD, null, STAFF)))
-                    .isEqualTo(ErrorCode.DELIVERY_MODE_FTL_NO_COD);
-            verify(changes, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("an unknown order is NOT_FOUND")
-        void unknownOrder() {
-            when(repository.findByIdForUpdate(any(OrderId.class))).thenReturn(Optional.empty());
-
-            assertThat(codeOf(() -> service.change(UUID.randomUUID(), DeliveryMode.FULL_TRUCKLOAD, null, STAFF)))
-                    .isEqualTo(ErrorCode.NOT_FOUND);
-        }
-
-        @Test
-        @DisplayName("the change history maps both modes and the status back to enums")
-        void historyIsMapped() {
-            UUID orderId = UUID.randomUUID();
-            when(changes.findByOrderIdOrderByChangedAtAscIdAsc(orderId)).thenReturn(List.of(
-                    new OrderDeliveryModeChangeJpaEntity(UUID.randomUUID(), orderId, "FULL_TRUCKLOAD",
-                            DeliveryMode.PARCEL.name(), "CONFIRMED", "n", STAFF, NOW)));
-
-            List<DeliveryModeChange> list = service.changes(orderId);
-
-            assertThat(list).singleElement().satisfies(c -> {
-                assertThat(c.deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
-                assertThat(c.previousMode()).isEqualTo(DeliveryMode.PARCEL);
-                assertThat(c.orderStatus()).isEqualTo(OrderStatus.CONFIRMED);
-                assertThat(c.changedBy()).isEqualTo(STAFF);
             });
         }
     }

@@ -2,7 +2,6 @@ package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
@@ -257,14 +256,14 @@ class PlanVehicles {
     }
 
     /**
-     * A full truckload with no shipment left on its manifest and nothing left to unload is called off (it does not hold
-     * the plan's BR-15 back). Parcel loads are left to the dispatcher.
+     * A vehicle with no shipment left on its manifest and nothing left to unload is called off (it does not hold the
+     * plan's BR-15 back).
      *
      * @return whether it was called off
      */
     static boolean callOffIfEmpty(DispatchLoad load, Instant at) {
-        return load.mode() == DeliveryMode.FULL_TRUCKLOAD && load.status().isOpen() && load.activeShipments().isEmpty()
-                && load.pendingUnloads().isEmpty() && load.cancel(AUTO_CANCELLED, null, at);
+        return load.status().isOpen() && load.activeShipments().isEmpty() && load.pendingUnloads().isEmpty()
+                && load.cancel(AUTO_CANCELLED, null, at);
     }
 
     /**

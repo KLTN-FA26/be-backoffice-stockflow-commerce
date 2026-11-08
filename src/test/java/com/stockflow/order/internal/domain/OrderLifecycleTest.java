@@ -42,16 +42,16 @@ class OrderLifecycleTest {
     private static final UUID S3 = UUID.randomUUID();
 
     /**
-     * 10 cups at 100 000 and 5 lids at 20 000: 1 100 000 VND. A deposit order's balance is collected by the carrier
-     * (G2-3, ON_DELIVERY), so it leaves with its deposit only; {@code OrderBalanceTest} covers BEFORE_DELIVERY.
+     * 10 cups at 100 000 and 5 lids at 20 000: 1 100 000 VND. A deposit order's balance goes on credit (BALCREDIT,
+     * ON_CREDIT), so it leaves with its deposit only; {@code OrderBalanceTest} covers BEFORE_DELIVERY.
      */
     private static Order order(PaymentTerm term) {
         Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
                 Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null),
                 Order.line(new Sku("LID-90"), 5, Money.vnd(20_000), null)), NOW);
         order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null,
-                term == PaymentTerm.CREDIT ? 30 : null,
-                term == PaymentTerm.DEPOSIT ? com.stockflow.order.api.BalancePolicy.ON_DELIVERY : null);
+                term == PaymentTerm.CREDIT || term == PaymentTerm.DEPOSIT ? 30 : null,
+                term == PaymentTerm.DEPOSIT ? com.stockflow.order.api.BalancePolicy.ON_CREDIT : null);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         // Split shipments throughout: Sales allowed them (PACK-PARTIAL); OrderPartialShipmentTest covers the refusals.
         order.decidePartialShipment(true);
@@ -161,11 +161,22 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("a cancelled order is not packed (ORDER_CANCELLED)")
+        @DisplayName("a cancelled order is not packed, and nothing of it starts packing (ORDER_CANCELLED)")
         void cancelledIsNotPacked() {
             Order order = picking(PaymentTerm.PREPAID);
             order.cancel(CancellationReasonCode.OUT_OF_STOCK, null, null, STAFF, NOW);
             assertThat(code(catchThrowable(() -> order.markPacked(NOW, STAFF)))).isEqualTo(ErrorCode.ORDER_CANCELLED);
+            assertThat(code(catchThrowable(() -> order.recordPackingStarted(NOW)))).isEqualTo(ErrorCode.ORDER_CANCELLED);
+        }
+
+        @Test
+        @DisplayName("the first package opened records when packing started, once; the status does not move")
+        void packingStarted() {
+            Order order = picking(PaymentTerm.PREPAID);
+            assertThat(order.recordPackingStarted(NOW)).isTrue();
+            assertThat(order.recordPackingStarted(NOW.plusSeconds(60))).as("idempotent").isFalse();
+            assertThat(order.packingStartedAt()).isEqualTo(NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
         }
     }
 
@@ -589,15 +600,18 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("a deposit order whose carrier collects the balance leaves with its deposit (G2-3); the carrier "
-                + "collects the rest")
-        void depositCarrierCollectsTheBalance() {
+        @DisplayName("a deposit order whose balance goes on credit leaves with its deposit (BALCREDIT); its delivery "
+                + "bills the rest")
+        void depositOnCreditLeavesWithItsDeposit() {
             Order order = packed(PaymentTerm.DEPOSIT);
             assertThat(order.amountDue()).isEqualByComparingTo("770000");
             assertThat(order.amountDueBeforeHandover()).isZero();
             order.recordHandover(everything(order, S1));
             assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
-            assertThat(order.shipments().getFirst().codAmount()).isEqualByComparingTo("770000");
+            order.pullDomainEvents();
+            order.recordShipmentDelivered(S1, NOW, STAFF);
+            assertThat(deliveries(order)).singleElement()
+                    .satisfies(e -> assertThat(e.billedAmount()).isEqualByComparingTo("770000"));
         }
     }
 
@@ -649,8 +663,8 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("deposit (carrier collects): one shipment delivered, the other back, the rest closed: the "
-                + "balance of what arrived is due - billed to the carrier as its COD - nothing refunded")
+        @DisplayName("deposit (balance on credit): one shipment delivered, the other back, the rest closed: the "
+                + "balance of what arrived is due - billed as a receivable - nothing refunded")
         void depositDeliveredAndReturned() {
             Order order = packed(PaymentTerm.DEPOSIT);   // 330 000 received
             order.recordHandover(handover(S1, cups(order), 5));
@@ -662,7 +676,7 @@ class OrderLifecycleTest {
             assertThat(order.billable()).isEqualByComparingTo("500000");
             assertThat(order.amountDue()).isEqualByComparingTo("170000");
             assertThat(order.remainderRefundAmount()).isZero();
-            assertThat(order.billedAmount()).as("S1's COD: 500 000 less the 330 000 deposit")
+            assertThat(order.billedAmount()).as("S1's bill: 500 000 less the 330 000 deposit")
                     .isEqualByComparingTo("170000");
         }
 

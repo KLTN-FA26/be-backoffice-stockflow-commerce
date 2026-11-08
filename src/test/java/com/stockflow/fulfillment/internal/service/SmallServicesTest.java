@@ -10,7 +10,6 @@ import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.order.api.FulfillmentCandidate;
 import com.stockflow.order.api.FulfillmentCandidates;
-import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.WithCurrentUser;
@@ -79,18 +78,14 @@ class SmallServicesTest {
     @DisplayName("a shipment's task is the pick of its pack; a shipment made without a pack has none")
     void tasksOfShipments() {
         PackJpaRepository packs = mock(PackJpaRepository.class);
-        OrderService orders = mock(OrderService.class);
-        ShipmentContext context = new ShipmentContext(packs, orders);
+        ShipmentContext context = new ShipmentContext(packs);
         UUID pickId = UUID.randomUUID();
         PackJpaEntity pack = new PackJpaEntity(UUID.randomUUID(), pickId, PackStatus.PACKED, NOW);
         ShipmentJpaEntity withPack = FulfillmentFixtures.row(com.stockflow.fulfillment.internal.domain.Shipment.ready(
-                UUID.randomUUID(), "S1", UUID.randomUUID(), pack.getId(), WAREHOUSE, null,
-                com.stockflow.fulfillment.internal.domain.DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null,
-                UUID.randomUUID(), NOW));
+                UUID.randomUUID(), "S1", UUID.randomUUID(), pack.getId(), WAREHOUSE, null, 1, null, UUID.randomUUID(),
+                NOW));
         ShipmentJpaEntity noPack = FulfillmentFixtures.row(com.stockflow.fulfillment.internal.domain.Shipment.ready(
-                UUID.randomUUID(), "S2", UUID.randomUUID(), null, WAREHOUSE, null,
-                com.stockflow.fulfillment.internal.domain.DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null,
-                UUID.randomUUID(), NOW));
+                UUID.randomUUID(), "S2", UUID.randomUUID(), null, WAREHOUSE, null, 1, null, UUID.randomUUID(), NOW));
         when(packs.findAllById(Set.of(pack.getId()))).thenReturn(List.of(pack));
 
         Map<UUID, UUID> tasks = context.tasks(List.of(withPack, noPack));
@@ -98,26 +93,6 @@ class SmallServicesTest {
         assertThat(tasks).containsOnly(Map.entry(withPack.getId(), pickId));
         assertThat(context.tasks(List.of(noPack))).isEmpty();
         verify(packs, org.mockito.Mockito.times(1)).findAllById(any());
-    }
-
-    @Test
-    @DisplayName("an order's currency is its total's, once per distinct order; VND when the order cannot be read (15)")
-    void currencies() {
-        PackJpaRepository packs = mock(PackJpaRepository.class);
-        OrderService orders = mock(OrderService.class);
-        ShipmentContext context = new ShipmentContext(packs, orders);
-        UUID known = UUID.randomUUID();
-        UUID gone = UUID.randomUUID();
-        OrderSummary order = FulfillmentFixtures.order(known, null);
-        when(orders.findById(known)).thenReturn(Optional.of(new OrderSummary(known, "SO-1", order.customerId(),
-                OrderStatus.PACKED, new Money(new BigDecimal("10"), java.util.Currency.getInstance("USD")), List.of(), NOW,
-                null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null, null)));
-        when(orders.findById(gone)).thenReturn(Optional.empty());
-
-        Map<UUID, String> currencies = context.currencies(List.of(known, known, gone));
-
-        assertThat(currencies).containsEntry(known, "USD").containsEntry(gone, ShipmentContext.DEFAULT_CURRENCY);
-        verify(orders, org.mockito.Mockito.times(1)).findById(known);
     }
 
     @Test
@@ -146,7 +121,7 @@ class SmallServicesTest {
                 List.of());
         var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(new OrderSummary.LineProgress(line, shipped, 0,
-                closed)), List.of(), BigDecimal.ZERO, BigDecimal.ZERO, allowPartial);
+                closed)), List.of(), allowPartial);
         return new OrderSummary(id, "SO-1", UUID.randomUUID(), OrderStatus.PACKED, Money.vnd(1000L * quantity),
                 List.of(summary), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null,
                 lifecycle);

@@ -45,8 +45,7 @@ class ShipmentTimeline {
             publisher.publishEvent(new ShipmentStatusChanged(Identifiers.newId(), shipment.id(), shipment.code(),
                     shipment.orderId(), order != null ? order.orderNumber() : orderNumber,
                     order == null ? null : order.customerId(),
-                    shipment.warehouseId(), shipment.deliveryMode().name(),
-                    previous == null ? null : previous.name(), step.status().name(),
+                    shipment.warehouseId(), previous == null ? null : previous.name(), step.status().name(),
                     step.status() == ShipmentStatus.DELIVERY_FAILED && shipment.failureReason() != null
                             ? shipment.failureReason().name() : null,
                     shipment.packageCount(), carrierName, loadCode, step.by(), step.at()));

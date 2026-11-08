@@ -25,10 +25,10 @@ import java.util.UUID;
  * ledger, under the order's row lock ({@link OrderPayables#lockForPayment}), so two allocations to one order never fit
  * into the same gap:</p>
  * <pre>
- *   billable - collected (net allocations, earlier payments, less refunds) - receivables outstanding - COD in transit
+ *   billable - collected (net allocations, earlier payments, less refunds) - receivables outstanding
  * </pre>
- * <p>Receivables outstanding are billed already (a credit delivery, a carrier-collected balance); COD in transit is what
- * a carrier collects for goods it is carrying. Neither is paid twice by a transfer.</p>
+ * <p>Receivables outstanding are billed already (a credit delivery, a carrier-collected balance billed before COD
+ * went): a transfer does not pay them twice. Nothing is collected on delivery any more (V20261108000400).</p>
  *
  * <p>The order learns of the money from {@code PaymentCaptured} (source {@code ORDER_ALLOCATION}), after commit: it
  * confirms a prepaid order paid in full and a deposit order whose deposit is in (15 BR-02).</p>
@@ -91,7 +91,6 @@ class OrderAllocator {
         return order.billable()
                 .subtract(book.collectedFor(order.orderId()))
                 .subtract(book.outstandingReceivablesOf(order.orderId()))
-                .subtract(order.codInTransit() == null ? BigDecimal.ZERO : order.codInTransit())
                 .max(BigDecimal.ZERO);
     }
 

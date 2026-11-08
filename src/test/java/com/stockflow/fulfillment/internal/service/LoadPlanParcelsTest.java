@@ -160,8 +160,7 @@ class LoadPlanParcelsTest {
         OrderSummary order = FulfillmentFixtures.orderWith(UUID.randomUUID(), OrderStatus.PACKED, List.of(a, b), null);
         ShipmentJpaEntity shipment = ShipmentJpaEntity.of(com.stockflow.fulfillment.internal.domain.Shipment.ready(
                 shipmentId, "SO-1-S1", order.orderId(), null, FulfillmentFixtures.WAREHOUSE, UUID.randomUUID(),
-                com.stockflow.fulfillment.internal.domain.DeliveryMode.FULL_TRUCKLOAD, 3, BigDecimal.ZERO, null,
-                UUID.randomUUID(), NOW));
+                3, null, UUID.randomUUID(), NOW));
         PackageJpaEntity mixed = parcel(shipmentId, 1, "40", "40", "30", "5");
         PackageJpaEntity single = parcel(shipmentId, 2, "40", "40", "30", "5");
         PackageJpaEntity empty = parcel(shipmentId, 3, "40", "40", "30", "5");
@@ -195,8 +194,7 @@ class LoadPlanParcelsTest {
         OrderSummary order = FulfillmentFixtures.orderWith(UUID.randomUUID(), OrderStatus.PACKED, List.of(line), null);
         ShipmentJpaEntity shipment = ShipmentJpaEntity.of(com.stockflow.fulfillment.internal.domain.Shipment.ready(
                 shipmentId, "SO-1-S1", order.orderId(), null, FulfillmentFixtures.WAREHOUSE, UUID.randomUUID(),
-                com.stockflow.fulfillment.internal.domain.DeliveryMode.FULL_TRUCKLOAD, 3, BigDecimal.ZERO, null,
-                UUID.randomUUID(), NOW));
+                3, null, UUID.randomUUID(), NOW));
         when(shipments.findAllById(any())).thenReturn(List.of(shipment));
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
 
@@ -209,12 +207,10 @@ class LoadPlanParcelsTest {
         UUID orderId = UUID.randomUUID();
         ShipmentJpaEntity one = ShipmentJpaEntity.of(com.stockflow.fulfillment.internal.domain.Shipment.ready(
                 UUID.randomUUID(), "S1", orderId, null, FulfillmentFixtures.WAREHOUSE, null,
-                com.stockflow.fulfillment.internal.domain.DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null,
-                UUID.randomUUID(), NOW));
+                1, null, UUID.randomUUID(), NOW));
         ShipmentJpaEntity two = ShipmentJpaEntity.of(com.stockflow.fulfillment.internal.domain.Shipment.ready(
                 UUID.randomUUID(), "S2", orderId, null, FulfillmentFixtures.WAREHOUSE, null,
-                com.stockflow.fulfillment.internal.domain.DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null,
-                UUID.randomUUID(), NOW));
+                1, null, UUID.randomUUID(), NOW));
         when(orders.findById(orderId)).thenReturn(Optional.of(FulfillmentFixtures.order(orderId, null)));
 
         Map<UUID, OrderSummary> read = parcels.ordersOf(List.of(one, two));

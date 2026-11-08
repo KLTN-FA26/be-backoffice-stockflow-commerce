@@ -79,7 +79,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * G4-5 (SCRUM-278/281/282) through the real filter chain, permission aspect, warehouse scope and database: the packing
  * queue, scan-to-verify (wrong item, over-scan, lot), packages with weight and size, the label, completing into a
  * shipment READY_TO_DISPATCH and the order PACKED; two packers on one order; undoing a package; the deposit order's
- * payment warning and the COD amount on the label (kltn-docs 08, 09 §5, BR-04).
+ * payment warning (kltn-docs 08, 09 §5). Nothing is collected on delivery (09 BR-08), so a label carries no amount.
  *
  * <p>Its own context, hence its own database: packed orders cannot be cancelled, so their stock does not come back,
  * and the shared demo stock of the other suites is left alone.</p>
@@ -304,7 +304,8 @@ class PackingStationIntegrationTest {
 
     @Test
     @DisplayName("stock order: queue, scan-to-verify with every refusal, two packages sealed with weight and size, label, "
-            + "shipment READY_TO_DISPATCH, order PACKED, idempotent completion, no cancellation afterwards")
+            + "shipment READY_TO_DISPATCH, order PACKED, idempotent completion, no cancellation afterwards; the first "
+            + "package opened records on the order that packing started")
     void aStockOrderShipsInTwoPackages() throws Exception {
         OrderSummary order = paidOrder(sofa(2), table(1));
         UUID sofaLine = order.lines().stream().filter(l -> l.sku().equals(SOFA.code())).findFirst().orElseThrow().lineId();
@@ -319,7 +320,11 @@ class PackingStationIntegrationTest {
                 .andExpect(jsonPath("$.data.packerId").value(packerHcm.toString()))
                 .andExpect(jsonPath("$.data.lines.length()").value(2))
                 .andExpect(jsonPath("$.data.paymentDue").doesNotExist());
+        String packingStarted = "SELECT packing_started_at IS NOT NULL FROM ordering.customer_order WHERE id = ?";
+        assertThat(jdbc.queryForObject(packingStarted, Boolean.class, order.orderId()))
+                .as("starting the session opens no package").isFalse();
         UUID first = openPackage(task);
+        assertThat(jdbc.queryForObject(packingStarted, Boolean.class, order.orderId())).isTrue();
 
         // SCRUM-282: every wrong scan is refused with its own code and writes nothing.
         scanAs(packerHcm, task, first, scan(UUID.randomUUID(), "NOT-IN-ORDER", null, 1))
@@ -359,7 +364,6 @@ class PackingStationIntegrationTest {
         packer(get(BASE + "/tasks/" + task + "/packages/" + second + "/label")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.provisional").value(true))
                 .andExpect(jsonPath("$.data.packageNo").value(2)).andExpect(jsonPath("$.data.packageCount").value(2))
-                .andExpect(jsonPath("$.data.codAmount").value(0))
                 .andExpect(jsonPath("$.data.rotatable").value(false));
 
         JsonNode done = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk())
@@ -368,12 +372,11 @@ class PackingStationIntegrationTest {
         assertThat(shipment).isNotBlank();
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
         assertThat(jdbc.queryForMap("""
-                SELECT status, package_count, partial, code, warehouse_id, delivery_mode, ready_by FROM fulfillment.shipment
+                SELECT status, package_count, partial, code, warehouse_id, ready_by FROM fulfillment.shipment
                  WHERE id = ?::uuid""", shipment))
                 .containsEntry("status", "READY_TO_DISPATCH").containsEntry("package_count", 2)
                 .containsEntry("partial", false).containsEntry("code", order.orderNumber() + "-S1")
-                .containsEntry("warehouse_id", HCM).containsEntry("delivery_mode", "PARCEL")
-                .containsEntry("ready_by", packerHcm);
+                .containsEntry("warehouse_id", HCM).containsEntry("ready_by", packerHcm);
         assertThat(sum("SELECT count(*) FROM fulfillment.shipment_event WHERE shipment_id = ?::uuid "
                 + "AND status = 'READY_TO_DISPATCH' AND recorded_by = ?", shipment, packerHcm)).isEqualTo(1);
         assertThat(sum("SELECT COALESCE(SUM(quantity), 0) FROM fulfillment.package_line WHERE order_line_id = ?",
@@ -542,10 +545,10 @@ class PackingStationIntegrationTest {
     }
 
     @Test
-    @DisplayName("09 BR-04: an order whose carrier collects the balance prints it on the label, split per shipment; a "
-            + "partial shipment needs a reason")
-    void theLabelCarriesTheCodAmount() throws Exception {
-        OrderSummary order = depositOrder(DepositBalancePolicy.ON_DELIVERY, 2);            // 10M, deposit 3M, COD 7M
+    @DisplayName("a partial shipment needs a reason; completed again with its requestId it answers the same shipment; "
+            + "its label counts its own packages; the order, part packed, is still picking")
+    void aPartialShipmentNeedsAReason() throws Exception {
+        OrderSummary order = paidOrder(sofa(2));
         UUID task = pickedTask(order);
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.paymentDue").doesNotExist());
@@ -562,49 +565,17 @@ class PackingStationIntegrationTest {
                 .andExpect(jsonPath("$.data.packStatus").value("PACKING"))).path("shipmentId").asText();
         packer(post(BASE + "/tasks/" + task + "/packing-completion").contentType("application/json").content(partial))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.shipmentId").value(firstShipment));
-        // 5M of goods, 3M paid ahead: the carrier collects 2M for the first shipment, 5M for the second.
-        JsonNode label = data(packer(get(BASE + "/tasks/" + task + "/packages/" + first + "/label"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.packageCount").value(1)));
-        assertThat(label.path("codAmount").decimalValue()).isEqualByComparingTo("2000000");
-        assertThat(jdbc.queryForObject("SELECT cod_amount::bigint FROM fulfillment.shipment WHERE id = ?::uuid",
-                Long.class, firstShipment)).isEqualTo(2_000_000L);
+        assertThat(sum("SELECT count(*) FROM fulfillment.shipment WHERE order_id = ?", order.orderId())).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT partial, partial_note FROM fulfillment.shipment WHERE id = ?::uuid",
+                firstShipment)).containsEntry("partial", true).containsEntry("partial_note", "Customer wants one now");
+        packer(get(BASE + "/tasks/" + task + "/packages/" + first + "/label")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.provisional").value(false))
+                .andExpect(jsonPath("$.data.packageNo").value(1)).andExpect(jsonPath("$.data.packageCount").value(1));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("part packed: still picking")
                 .isEqualTo(OrderStatus.PICKING);
     }
 
     // ---- review of G4-5 ---------------------------------------------------------------------------------
-
-    private long cod(String shipmentId) {
-        return jdbc.queryForObject("SELECT cod_amount::bigint FROM fulfillment.shipment WHERE id = ?::uuid", Long.class,
-                shipmentId);
-    }
-
-    @Test
-    @DisplayName("review #2: 10M ON_DELIVERY, 3M ahead - S1 4M carries COD 1M; S2 6M completed before S1 is handed over "
-            + "carries 6M (the advance is S1's), on the shipments and on the labels")
-    void theAdvanceIsCountedOnceAcrossWaitingShipments() throws Exception {
-        OrderSummary order = depositOrder(DepositBalancePolicy.ON_DELIVERY, 10, 1_000_000);
-        UUID task = pickedTask(order);
-        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        UUID first = openPackage(task);
-        scanAs(packerHcm, task, first, scan(UUID.randomUUID(), SOFA.code(), null, 4)).andExpect(status().isOk());
-        seal(task, first, MEASURES).andExpect(status().isOk());
-        String s1 = data(packer(post(BASE + "/tasks/" + task + "/packing-completion").contentType("application/json")
-                .content("{\"partial\":true,\"note\":\"four now\"}")).andExpect(status().isOk())).path("shipmentId")
-                .asText();
-        UUID second = openPackage(task);
-        scanAs(packerHcm, task, second, scan(UUID.randomUUID(), SOFA.code(), null, 6)).andExpect(status().isOk());
-        seal(task, second, MEASURES).andExpect(status().isOk());
-        String s2 = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk()))
-                .path("shipmentId").asText();
-
-        assertThat(cod(s1)).isEqualTo(1_000_000L);
-        assertThat(cod(s2)).isEqualTo(6_000_000L);
-        assertThat(data(packer(get(BASE + "/tasks/" + task + "/packages/" + first + "/label"))).path("codAmount")
-                .decimalValue()).isEqualByComparingTo("1000000");
-        assertThat(data(packer(get(BASE + "/tasks/" + task + "/packages/" + second + "/label"))).path("codAmount")
-                .decimalValue()).isEqualByComparingTo("6000000");
-    }
 
     @Test
     @DisplayName("review #3/#6: a removal retried with its scanId removes once; a scan retried after the package was "
@@ -666,7 +637,7 @@ class PackingStationIntegrationTest {
 
     @Test
     @DisplayName("FE #58: the packer, not the picker, reads the task once picking is done; not before; staff of another "
-            + "warehouse are refused; the session's shipments carry the COD currency")
+            + "warehouse are refused; the session lists the shipment it made")
     void thePackerReadsTheTask() throws Exception {
         OrderSummary order = paidOrder(sofa(1));
         UUID task = UUID.fromString(data(as(coordinator, "ORDER_COORDINATOR", post(BASE + "/tasks")
@@ -696,8 +667,9 @@ class PackingStationIntegrationTest {
         seal(task, parcel, MEASURES).andExpect(status().isOk());
         packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk());
         packer(get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipments[0].currency").value("VND"))
-                .andExpect(jsonPath("$.data.shipments[0].codAmount").value(0));
+                .andExpect(jsonPath("$.data.shipments.length()").value(1))
+                .andExpect(jsonPath("$.data.shipments[0].status").value("READY_TO_DISPATCH"))
+                .andExpect(jsonPath("$.data.shipments[0].packageCount").value(1));
     }
 
     // ---- kits ("bộ", SCRUM-287 PR K, LP2-5/LP2-6) -------------------------------------------------------------
@@ -730,10 +702,10 @@ class PackingStationIntegrationTest {
     @Test
     @DisplayName("LP2-6 a kit of 2 (sofa A+B) on a deposit order: opened at once, only part 1 takes the unit, every part "
             + "sealed with its own size; an incomplete kit blocks completion, partial or not (KIT_INCOMPLETE); voiding "
-            + "a part voids the kit; two shipments of whole kits; units, package_line and COD counted once")
+            + "a part voids the kit; two shipments of whole kits; units and package_line counted once")
     void aKitOfTwoShipsWhole() throws Exception {
         stock(2);
-        OrderSummary order = depositOrder(DepositBalancePolicy.ON_DELIVERY, 2);        // 10M, deposit 3M, COD 7M
+        OrderSummary order = depositOrder(DepositBalancePolicy.BEFORE_DELIVERY, 2);    // 10M, deposit 3M
         UUID sofaLine = lineOf(order, SOFA);
         UUID task = pickedTask(order);
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk())
@@ -818,11 +790,6 @@ class PackingStationIntegrationTest {
         assertThat(sum("SELECT COALESCE(SUM(pl.quantity), 0) FROM fulfillment.package_line pl JOIN fulfillment.package p "
                 + "ON p.id = pl.package_id WHERE pl.order_line_id = ? AND p.status = 'SEALED'", sofaLine)).isEqualTo(2);
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
-        // 09 BR-04: 5M of goods each, 3M paid ahead - S1 collects 2M, S2 5M; parts 2 add nothing.
-        assertThat(cod(s1)).isEqualTo(2_000_000L);
-        assertThat(cod(s2)).isEqualTo(5_000_000L);
-        assertThat(data(packer(get(BASE + "/tasks/" + task + "/packages/" + b + "/label"))).path("codAmount")
-                .decimalValue()).isEqualByComparingTo("2000000");
         // The shipment's view carries the kit of every parcel.
         packer(get(BASE + "/shipments/" + s1)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.packages[*].kit.groupId").value(org.hamcrest.Matchers.everyItem(

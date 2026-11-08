@@ -19,16 +19,15 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * G2-3 on the aggregate alone: the balance policy of a deposit order at the handover (decision G3-Q4), what the
- * carrier collects per shipment (15 BR-08, 09 BR-04), and money taken back by a reversal (15 BR-06) - never silently
- * un-confirming the order.
+ * G2-3 on the aggregate alone: the balance policy of a deposit order at the handover (decision G3-Q4), what each
+ * delivery bills when the balance goes on credit (BALCREDIT; nothing is collected on delivery, 09 BR-08), and money
+ * taken back by a reversal (15 BR-06) - never silently un-confirming the order.
  */
 class OrderBalanceTest {
 
@@ -44,7 +43,8 @@ class OrderBalanceTest {
         Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
                 Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null),
                 Order.line(new Sku("LID-90"), 5, Money.vnd(20_000), null)), NOW);
-        order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null, null, policy);
+        order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null,
+                policy == BalancePolicy.ON_CREDIT ? 30 : null, policy);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         order.decidePartialShipment(true);     // split shipments throughout (PACK-PARTIAL)
         order.submit();
@@ -103,32 +103,23 @@ class OrderBalanceTest {
             order.applyTerms(PaymentTerm.PREPAID, null);
             assertThat(order.balancePolicy()).isNull();
             assertThat(code(catchThrowable(() -> order.applyTerms(PaymentTerm.PREPAID, null, null,
-                    BalancePolicy.ON_DELIVERY)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                    BalancePolicy.BEFORE_DELIVERY)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
     }
 
     @Test
-    @DisplayName("E2E QA 2026-10-21 (15 BR-08): before the deposit is in, ON_DELIVERY already shows the balance after "
-            + "the deposit (total - deposit), not the whole total; a part of the deposit changes nothing; money beyond "
-            + "the deposit lowers it; BEFORE_DELIVERY and other terms collect nothing on delivery")
-    void amountDueOnDeliveryCountsTheDepositFromTheStart() {
-        Order order = placed(PaymentTerm.DEPOSIT, BalancePolicy.ON_DELIVERY);       // 1 100 000, deposit 330 000
+    @DisplayName("ON_CREDIT: before the deposit is in, the deposit (not the whole total) is what the goods wait for; "
+            + "a part of it lowers that; once it is in, nothing more is wanted before the handover")
+    void onCreditWantsOnlyTheDepositBeforeTheHandover() {
+        Order order = placed(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT);         // 1 100 000, deposit 330 000
         assertThat(order.depositReceivedAt()).isNull();
-        assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("770000");
         assertThat(order.amountDueBeforeHandover()).as("the deposit is still owed before the goods leave")
                 .isEqualByComparingTo("330000");
         order.recordPayment(Money.vnd(100_000), NOW);
-        assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("770000");
+        assertThat(order.amountDueBeforeHandover()).isEqualByComparingTo("230000");
         order.recordPayment(Money.vnd(230_000), NOW);
         assertThat(order.depositReceivedAt()).isNotNull();
-        assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("770000");
-        order.recordPayment(Money.vnd(200_000), NOW);
-        assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("570000");
-        order.recordPayment(Money.vnd(570_000), NOW);
-        assertThat(order.amountDueOnDelivery()).isZero();
-
-        assertThat(placed(PaymentTerm.DEPOSIT, BalancePolicy.BEFORE_DELIVERY).amountDueOnDelivery()).isZero();
-        assertThat(placed(PaymentTerm.PREPAID, null).amountDueOnDelivery()).isZero();
+        assertThat(order.amountDueBeforeHandover()).isZero();
     }
 
     @Nested
@@ -142,7 +133,6 @@ class OrderBalanceTest {
             Order order = packed(PaymentTerm.DEPOSIT, BalancePolicy.BEFORE_DELIVERY);
             assertThat(order.depositReceivedAt()).isNotNull();
             assertThat(order.amountDueBeforeHandover()).isEqualByComparingTo("770000");
-            assertThat(order.amountDueOnDelivery()).isZero();
             assertThat(code(catchThrowable(() -> order.markShipped(NOW, STAFF))))
                     .isEqualTo(ErrorCode.ORDER_BALANCE_NOT_PAID);
             assertThat(code(catchThrowable(() -> order.recordHandover(handover(S1, cups(order), 2)))))
@@ -152,87 +142,51 @@ class OrderBalanceTest {
             order.recordPayment(Money.vnd(270_000), NOW);
             assertThat(order.amountDueBeforeHandover()).isZero();
             assertThat(order.markShipped(NOW, STAFF)).isTrue();
-            assertThat(order.codAmount()).isZero();
         }
 
         @Test
-        @DisplayName("G4-5 review: shipments made while others wait keep the advance in the order they were made - 10M, "
-                + "3M ahead: S1 4M is COD 1M, S2 6M made before S1 leaves is COD 6M, at the label and at either handover")
-        void advanceGoesToShipmentsInTheOrderTheyWereMade() {
-            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
-                    Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(1_000_000), null)), NOW);
-            order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null, BalancePolicy.ON_DELIVERY);
-            order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-            order.decidePartialShipment(true);
-            order.submit();
-            order.recordPayment(Money.vnd(3_000_000), NOW);
-            order.release(HCM, "HCM", STAFF, NOW);
-            order.startPicking(STAFF, NOW);
-            order.markPacked(NOW, STAFF);
-            UUID cups = cups(order);
-
-            assertThat(order.codFor(Map.of(cups, 4), Map.of(), null)).isEqualByComparingTo("1000000");
-            assertThat(order.codFor(Map.of(cups, 6), Map.of(cups, 4), null)).as("S1 waits and keeps the 3M")
-                    .isEqualByComparingTo("6000000");
-
-            // S2 leaves first: it is told S1 was made before it and still waits - the label's 6M, not 3M.
-            order.recordHandover(new ShipmentHandover(S2, List.of(new ShipmentHandover.Line(cups, 6)), NOW, STAFF,
-                    List.of(new ShipmentHandover.Line(cups, 4))));
-            order.recordHandover(handover(S1, cups, 4));
-            assertThat(order.shipments()).extracting(OrderShipment::codAmount)
-                    .usingComparatorForType(java.math.BigDecimal::compareTo, java.math.BigDecimal.class)
-                    .containsExactly(new BigDecimal("6000000"), new BigDecimal("1000000"));
-            assertThat(order.codInTransit()).as("the balance, once").isEqualByComparingTo("7000000");
-        }
-
-        @Test
-        @DisplayName("ON_DELIVERY, split: the deposit lets the goods go; each shipment's COD is its value less the money "
-                + "paid ahead the earlier ones did not use; delivery bills exactly the COD; a return bills nothing")
-        void onDeliverySplit() {
-            Order order = packed(PaymentTerm.DEPOSIT, BalancePolicy.ON_DELIVERY);
+        @DisplayName("ON_CREDIT, split: the deposit lets the goods go; each delivery bills its value less the money paid "
+                + "ahead the earlier deliveries did not use; a return bills nothing")
+        void onCreditSplit() {
+            Order order = packed(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT);
             assertThat(order.amountDueBeforeHandover()).isZero();
-            assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("770000");
 
             order.recordHandover(handover(S1, cups(order), 5));                   // 500 000
             order.recordHandover(handover(S2, cups(order), 5, lids(order), 5));   // 600 000
-            assertThat(order.shipments().get(0).codAmount()).isEqualByComparingTo("170000");
-            assertThat(order.shipments().get(1).codAmount()).isEqualByComparingTo("600000");
-            assertThat(order.codInTransit()).isEqualByComparingTo("770000");
 
             order.pullDomainEvents();
             order.recordShipmentDelivered(S1, NOW, STAFF);
             assertThat(deliveries(order)).singleElement().satisfies(e -> {
                 assertThat(e.billedAmount()).isEqualByComparingTo("170000");
-                assertThat(e.balancePolicy()).isEqualTo("ON_DELIVERY");
+                assertThat(e.balancePolicy()).isEqualTo("ON_CREDIT");
                 assertThat(e.shipmentId()).isEqualTo(S1);
             });
-            assertThat(order.codInTransit()).isEqualByComparingTo("600000");
 
             order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
-            assertThat(order.codInTransit()).as("still with the carrier").isEqualByComparingTo("600000");
             order.recordShipmentReturned(S2, NOW, STAFF);
-            assertThat(order.codInTransit()).isZero();
             assertThat(order.billedAmount()).isEqualByComparingTo("170000");
 
-            // Shipped again later: the deposit is all used by S1, so the whole value is collected.
-            order.recordHandover(handover(UUID.randomUUID(), cups(order), 5, lids(order), 5));
-            assertThat(order.shipments().get(2).codAmount()).isEqualByComparingTo("600000");
+            // Shipped again later: the deposit is all used by S1, so the whole value is billed.
+            UUID again = UUID.randomUUID();
+            order.recordHandover(handover(again, cups(order), 5, lids(order), 5));
+            order.pullDomainEvents();
+            order.recordShipmentDelivered(again, NOW, STAFF);
+            assertThat(deliveries(order)).singleElement()
+                    .satisfies(e -> assertThat(e.billedAmount()).isEqualByComparingTo("600000"));
         }
 
         @Test
-        @DisplayName("ON_DELIVERY, whole order: the COD is what is left, fixed at the handover and billed at delivery")
-        void onDeliveryWholeOrder() {
-            Order order = packed(PaymentTerm.DEPOSIT, BalancePolicy.ON_DELIVERY);
+        @DisplayName("ON_CREDIT, whole order: delivery bills what is left after the deposit; completed only once the "
+                + "receivable is paid")
+        void onCreditWholeOrder() {
+            Order order = packed(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT);
             order.markShipped(NOW, STAFF);
-            assertThat(order.codAmount()).isEqualByComparingTo("770000");
-            assertThat(order.codInTransit()).isEqualByComparingTo("770000");
             order.pullDomainEvents();
             order.markDelivered(NOW, STAFF);
             assertThat(deliveries(order)).singleElement()
                     .satisfies(e -> assertThat(e.billedAmount()).isEqualByComparingTo("770000"));
-            assertThat(order.codInTransit()).isZero();
             assertThat(order.complete(NOW.plusSeconds(86_400 * 30L), java.time.Duration.ofDays(7), false))
-                    .as("not until the carrier's money arrives").isFalse();
+                    .as("not until the receivable is paid").isFalse();
             order.recordPayment(Money.vnd(770_000), NOW, true);
             assertThat(order.complete(NOW.plusSeconds(86_400 * 30L), java.time.Duration.ofDays(7), false)).isTrue();
         }
@@ -244,7 +198,52 @@ class OrderBalanceTest {
             assertThat(unpaid.amountDueBeforeHandover()).isEqualByComparingTo("1100000");
             Order prepaid = packed(PaymentTerm.PREPAID, null);
             assertThat(prepaid.amountDueBeforeHandover()).isZero();
-            assertThat(prepaid.codInTransit()).isZero();
+        }
+    }
+
+    @Nested
+    @DisplayName("the gate alone (SCRUM-392 LP-3: goods leave on a load plan's vehicle before the handover is recorded)")
+    class Gate {
+
+        @Test
+        @DisplayName("CREDIT: nothing is due before the handover and the goods may leave unpaid")
+        void creditLeavesUnpaid() {
+            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                    Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null)), NOW);
+            order.applyTerms(PaymentTerm.CREDIT, null, 30);
+            order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+            order.submitOnCredit(true);
+            order.release(HCM, "HCM", STAFF, NOW);
+            order.startPicking(STAFF, NOW);
+            assertThat(order.amountDueBeforeHandover()).isZero();
+            order.requireHandoverAllowed(null);
+        }
+
+        @Test
+        @DisplayName("DEPOSIT paid before delivery: the unpaid balance refuses it (409 ORDER_BALANCE_NOT_PAID) until it "
+                + "is in")
+        void depositNeedsItsBalance() {
+            Order order = packed(PaymentTerm.DEPOSIT, BalancePolicy.BEFORE_DELIVERY);     // 330 000 of 1 100 000
+            assertThat(code(catchThrowable(() -> order.requireHandoverAllowed(null))))
+                    .isEqualTo(ErrorCode.ORDER_BALANCE_NOT_PAID);
+            order.recordPayment(Money.vnd(770_000), NOW);
+            order.requireHandoverAllowed(null);
+        }
+
+        @Test
+        @DisplayName("DEPOSIT with the balance on credit: only the deposit is wanted")
+        void depositOnCreditOwesOnlyTheDeposit() {
+            Order order = packed(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT);
+            assertThat(order.amountDueBeforeHandover()).isZero();
+            order.requireHandoverAllowed(null);
+        }
+
+        @Test
+        @DisplayName("PREPAID: paid in full to be confirmed, and a ledger short of it does not lower what was paid")
+        void prepaidIsPaid() {
+            Order order = packed(PaymentTerm.PREPAID, null);
+            assertThat(order.amountDueBeforeHandover()).isZero();
+            order.requireHandoverAllowed(new Order.LedgerMoney(BigDecimal.ONE, BigDecimal.ONE));
         }
     }
 
@@ -328,27 +327,6 @@ class OrderBalanceTest {
     @Nested
     @DisplayName("review of G2-3")
     class Review {
-
-        @Test
-        @DisplayName("COD at the handover counts the ledger's money the order has not heard of yet (no double "
-                + "collection): 3M deposit counted, 2M allocated a moment ago - a 5M shipment collects nothing")
-        void codFromTheLedger() {
-            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
-                    Order.line(new Sku("CUP"), 2, Money.vnd(5_000_000), null)), NOW);
-            order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null, BalancePolicy.ON_DELIVERY);
-            order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-            order.decidePartialShipment(true);
-            order.submit();
-            order.recordPayment(Money.vnd(3_000_000), NOW);
-            order.release(HCM, "HCM", STAFF, NOW);
-            order.startPicking(STAFF, NOW);
-            Order.LedgerMoney ledger = new Order.LedgerMoney(new BigDecimal("5000000"), new BigDecimal("5000000"));
-            order.recordHandover(handover(S1, order.lines().getFirst().id(), 1), ledger);
-            assertThat(order.shipments().getFirst().codAmount()).isZero();
-            order.markPacked(NOW, STAFF);
-            order.recordHandover(handover(S2, order.lines().getFirst().id(), 1), ledger);
-            assertThat(order.shipments().get(1).codAmount()).isEqualByComparingTo("5000000");
-        }
 
         @Test
         @DisplayName("BEFORE_DELIVERY: the ledger's money opens the gate before the order's count catches up")

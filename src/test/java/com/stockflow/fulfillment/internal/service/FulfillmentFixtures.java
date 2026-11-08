@@ -6,7 +6,6 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
@@ -44,15 +43,15 @@ final class FulfillmentFixtures {
                 Set.of(), Set.of(warehouses));
     }
 
-    /** A READY_TO_DISPATCH parcel shipment of one parcel, no COD. */
+    /** A READY_TO_DISPATCH shipment of two parcels. */
     static Shipment readyShipment() {
-        return readyShipment(DeliveryMode.PARCEL, 2, "0");
+        return readyShipment(2);
     }
 
-    static Shipment readyShipment(DeliveryMode mode, int packages, String cod) {
+    static Shipment readyShipment(int packages) {
         UUID id = UUID.randomUUID();
         return Shipment.ready(id, "SO-0001-S1", UUID.randomUUID(), UUID.randomUUID(), WAREHOUSE, UUID.randomUUID(),
-                mode, packages, new BigDecimal(cod), null, UUID.randomUUID(), NOW.minusSeconds(3600));
+                packages, null, UUID.randomUUID(), NOW.minusSeconds(3600));
     }
 
     /** The shipment as a row, in the given status (read through the real transitions). */
@@ -68,17 +67,17 @@ final class FulfillmentFixtures {
         UUID load = UUID.randomUUID();
         switch (status) {
             case READY_TO_DISPATCH -> { }
-            case HANDED_OVER -> s.handOver(load, carrier, null, false, by, NOW);
+            case HANDED_OVER -> s.handOver(load, carrier, false, by, NOW);
             case DELIVERED -> {
-                s.handOver(load, carrier, null, false, by, NOW);
+                s.handOver(load, carrier, false, by, NOW);
                 s.recordDelivered(by, NOW);
             }
             case DELIVERY_FAILED -> {
-                s.handOver(load, carrier, null, false, by, NOW);
+                s.handOver(load, carrier, false, by, NOW);
                 s.recordFailed(com.stockflow.fulfillment.internal.domain.DeliveryFailureReason.REFUSED, null, by, NOW);
             }
             case RETURNED -> {
-                s.handOver(load, carrier, null, false, by, NOW);
+                s.handOver(load, carrier, false, by, NOW);
                 s.recordFailed(com.stockflow.fulfillment.internal.domain.DeliveryFailureReason.REFUSED, null, by, NOW);
                 s.recordReturned(by, NOW);
             }

@@ -3,7 +3,6 @@ package com.stockflow.fulfillment.internal.service;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
@@ -32,11 +31,13 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.warehouse.api.WarehouseService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -62,8 +63,8 @@ import static org.mockito.Mockito.when;
 /**
  * A full truckload's vehicle signing (kltn-docs 09 §4.2 step 5, BR-14, BR-15; SCRUM-392): every parcel the plan placed on
  * the vehicle is on board, a shipment is handed over at its LAST vehicle's signature, the order is told that goods left,
- * and the plan is DISPATCHED when the last vehicle has left. The parcel loads' signature is
- * {@code DispatchServiceTest}'s.
+ * and the plan is DISPATCHED when the last vehicle has left. Every order ships this way (09 BR-08); the rest of dispatch
+ * is {@code DispatchServiceTest}'s.
  */
 class DispatchVehicleHandoverTest {
 
@@ -107,15 +108,14 @@ class DispatchVehicleHandoverTest {
         DispatchLoad load = DispatchLoad.planFullTruckload(UUID.randomUUID(), "LD-V" + vehicle.seq(), UUID.randomUUID(),
                 WAREHOUSE, vehicle.id());
         load.addShipment(new DispatchLoad.ShipmentFacts(shipmentKey, "SHP-" + shipmentKey.toString().substring(0, 4),
-                WAREHOUSE, DeliveryMode.FULL_TRUCKLOAD, ShipmentStatus.READY_TO_DISPATCH, null, null), BigDecimal.ZERO,
-                actor.userId(), NOW);
+                WAREHOUSE, ShipmentStatus.READY_TO_DISPATCH, null), actor.userId(), NOW);
         load.book(ghn.getId(), "51C-" + vehicle.seq(), "An", null, actor.userId(), NOW);
         load.startLoading(actor.userId(), NOW);
         if (scanAll) {
             for (LoadPlan.Placed placed : vehicle.placements()) {
                 load.scan(UUID.randomUUID(), new DispatchLoad.ParcelFacts(placed.packageId(), "PKG-" + placed.packageId(),
                         PackageStatus.SEALED, new DispatchLoad.ShipmentFacts(shipmentKey, "SHP", WAREHOUSE,
-                        DeliveryMode.FULL_TRUCKLOAD, ShipmentStatus.READY_TO_DISPATCH, null, null), null,
+                        ShipmentStatus.READY_TO_DISPATCH, null), null,
                         new DispatchLoad.Placement(true, plan.code(), vehicle.seq(), null)), actor.userId(), NOW);
             }
         }
@@ -160,10 +160,9 @@ class DispatchVehicleHandoverTest {
 
     private OrderSummary orderAllowingParts(UUID orderId, ShipmentJpaEntity row) {
         var shipment = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO,
-                BigDecimal.ZERO, NOW, null, null, List.of(), BigDecimal.ZERO, null);
+                BigDecimal.ZERO, NOW, null, null, List.of(), null);
         var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(shipment), BigDecimal.ZERO,
-                BigDecimal.ZERO, true);
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(shipment), true);
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), OrderStatus.SHIPPED, Money.vnd(100_000), List.of(),
                 NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null, lifecycle);
     }
@@ -181,7 +180,7 @@ class DispatchVehicleHandoverTest {
             plan = planned.plan();
             plan.confirm(planned.dispatcher(), NOW, planned.cartons());
             Shipment s = Shipment.ready(planned.shipmentId(), "SO-0001-S1", UUID.randomUUID(), UUID.randomUUID(), WAREHOUSE,
-                    null, DeliveryMode.FULL_TRUCKLOAD, cubes, BigDecimal.ZERO, null, actor.userId(), NOW);
+                    null, cubes, null, actor.userId(), NOW);
             row = FulfillmentFixtures.row(s);
             when(locks.ordersOf(any())).thenReturn(List.of(row.getOrderId()));
             when(locks.lockOfOrders(any())).thenReturn(List.of(row));
@@ -207,6 +206,22 @@ class DispatchVehicleHandoverTest {
 
             assertThat(refusal(() -> service.handOver(v.load().id(), new Dispatching.Handover(99L, "Mr Hung", null, null,
                     null, true, null), actor)).errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+            assertThat(refusal(() -> service.handOver(v.load().id(), new Dispatching.Handover(null, "Mr Hung", null, null,
+                    null, true, null), actor)).errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+        }
+
+        @Test
+        @DisplayName("an unsigned manifest does not leave: HANDOVER_NOT_SIGNED, no order told")
+        void notSigned() {
+            confirmedPlan(2, 1);
+            sealedWithContents();
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
+
+            assertThat(refusal(() -> service.handOver(v.load().id(), new Dispatching.Handover(v.header().getVersion(),
+                    "Mr Hung", null, null, null, false, null), actor)).errorCode())
+                    .isEqualTo(ErrorCode.HANDOVER_NOT_SIGNED);
+            verify(orders, never()).recordGoodsLeft(any(), any(), any());
+            verify(orders, never()).recordHandover(any(), any());
         }
 
         @Test
@@ -231,12 +246,13 @@ class DispatchVehicleHandoverTest {
             var thrown = refusal(() -> service.handOver(v.load().id(), signed(v.header()), actor));
 
             assertThat(thrown.errorCode()).isEqualTo(ErrorCode.LOAD_NOT_FULLY_LOADED);
-            assertThat(thrown.getMessage()).contains("the plan placed them on this vehicle");
+            assertThat(thrown.getMessage()).contains("PKG-1").contains("the plan placed them on this vehicle");
             verify(orders, never()).recordGoodsLeft(any(), any(), any());
         }
 
         @Test
-        @DisplayName("the only vehicle leaves: the order is told goods left and the shipment is handed over, then the plan is DISPATCHED")
+        @DisplayName("the only vehicle leaves: the order is told goods left, then the units, the carrier and the carriage "
+                + "of the shipment, which is handed over; then the plan is DISPATCHED")
         void lastVehicleHandsTheShipmentOver() {
             confirmedPlan(2, 1);
             sealedWithContents();
@@ -248,12 +264,69 @@ class DispatchVehicleHandoverTest {
             assertThat(v.load().status()).isEqualTo(LoadStatus.DISPATCHED);
             assertThat(detail.status()).isEqualTo("DISPATCHED");
             verify(orders).recordGoodsLeft(eq(row.getOrderId()), eq(NOW), any());
-            verify(orders).recordHandover(eq(row.getOrderId()), any());
+            ArgumentCaptor<ShipmentHandover> told = ArgumentCaptor.forClass(ShipmentHandover.class);
+            verify(orders).recordHandover(eq(row.getOrderId()), told.capture());
+            assertThat(told.getValue().lines()).hasSize(2).allSatisfy(l -> assertThat(l.quantity()).isEqualTo(3));
+            assertThat(told.getValue().carriage().shipmentCode()).isEqualTo(row.getCode());
+            assertThat(told.getValue().carriage().carrierName()).isEqualTo("GHN Express");
+            assertThat(told.getValue().carriage().packageCount()).isEqualTo(2);
             assertThat(row.getStatus()).isEqualTo(ShipmentStatus.HANDED_OVER);
             assertThat(row.getCarrierId()).isEqualTo(ghn.getId());
             verify(timeline).record(any(Shipment.class), eq(ShipmentStatus.READY_TO_DISPATCH), any(OrderSummary.class),
                     eq(null), eq("GHN Express"), eq("LD-V1"));
             verify(planVehicles).completeIfDispatched(any(), eq(plan), eq(NOW));
+        }
+
+        @Test
+        @DisplayName("a vehicle already DISPATCHED answers as it is: nothing is told to any order again")
+        void signedTwice() {
+            confirmedPlan(2, 1);
+            sealedWithContents();
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
+            Dispatching.Handover signature = signed(v.header());
+            service.handOver(v.load().id(), signature, actor);
+            org.mockito.Mockito.clearInvocations(orders);
+
+            assertThat(service.handOver(v.load().id(), signature, actor).status()).isEqualTo("DISPATCHED");
+
+            verify(orders, never()).recordGoodsLeft(any(), any(), any());
+            verify(orders, never()).recordHandover(any(), any());
+        }
+
+        @Test
+        @DisplayName("the order's refusal of the handover reaches the dispatcher with its code, naming the shipment")
+        void orderRefusalOfTheHandoverIsNamed() {
+            confirmedPlan(2, 1);
+            sealedWithContents();
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
+            org.mockito.Mockito.doThrow(new com.stockflow.common.error.BusinessException(
+                    ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED, "part of the order stays behind"))
+                    .when(orders).recordHandover(any(), any());
+
+            var thrown = refusal(() -> service.handOver(v.load().id(), signed(v.header()), actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED);
+            assertThat(thrown.getMessage()).startsWith("Shipment " + row.getCode() + ": part of the order stays behind");
+            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).contains("shipmentCode");
+            assertThat(thrown.getCause()).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        }
+
+        @Test
+        @DisplayName("a shipment whose parcels record no contents leaves as the whole order")
+        void wholeOrderHandover() {
+            confirmedPlan(2, 1);
+            sealedParcels(plan, planned.shipmentId());
+            when(packageLines.findByPackageIdIn(any())).thenReturn(List.of());
+            Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
+            when(orders.markShipped(eq(row.getOrderId()), any(), any()))
+                    .thenReturn(orderAllowingParts(row.getOrderId(), row));
+
+            service.handOver(v.load().id(), signed(v.header()), actor);
+
+            verify(orders).markShipped(row.getOrderId(), NOW, actor.userId());
+            verify(orders, never()).recordHandover(any(), any());
+            assertThat(row.isWholeOrderHandover()).isTrue();
+            assertThat(row.getStatus()).isEqualTo(ShipmentStatus.HANDED_OVER);
         }
 
         @Test
@@ -323,8 +396,7 @@ class DispatchVehicleHandoverTest {
             DispatchLoad load = DispatchLoad.planFullTruckload(UUID.randomUUID(), "LD-V1", UUID.randomUUID(), WAREHOUSE,
                     vehicle.id());
             load.addShipment(new DispatchLoad.ShipmentFacts(planned.shipmentId(), row.getCode(), WAREHOUSE,
-                    DeliveryMode.FULL_TRUCKLOAD, ShipmentStatus.READY_TO_DISPATCH, null, null), BigDecimal.ZERO,
-                    actor.userId(), NOW);
+                    ShipmentStatus.READY_TO_DISPATCH, null), actor.userId(), NOW);
             load.book(ghn.getId(), "51C", null, null, actor.userId(), NOW);
             DispatchLoadJpaEntity header = new DispatchLoadJpaEntity(load.snapshot());
             header.apply(load.snapshot());

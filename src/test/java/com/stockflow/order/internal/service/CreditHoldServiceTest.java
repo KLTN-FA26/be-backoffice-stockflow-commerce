@@ -9,7 +9,6 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
-import com.stockflow.order.api.DeliveryMode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -142,16 +141,17 @@ class CreditHoldServiceTest {
         }
 
         @Test
-        @DisplayName("the balance policies offered follow the customer's terms: before delivery, their own, on credit")
+        @DisplayName("the balance policies offered follow the customer's terms: before delivery, and on credit when "
+                + "credit is allowed")
         void balancePolicies() {
             UUID customer = UUID.randomUUID();
             when(customers.creditTerms(customer)).thenReturn(
-                    terms(customer, true, true, true, "5000000", DepositBalancePolicy.ON_DELIVERY));
+                    terms(customer, true, true, true, "5000000", DepositBalancePolicy.BEFORE_DELIVERY));
             when(paymentService.creditPosition(customer)).thenReturn(new CreditPosition(BigDecimal.ZERO, false));
             when(creditChecks.undeliveredCreditExposure(customer, null)).thenReturn(BigDecimal.ZERO);
 
             assertThat(service.position(customer).allowedBalancePolicies()).containsExactly(
-                    BalancePolicy.BEFORE_DELIVERY, BalancePolicy.ON_DELIVERY, BalancePolicy.ON_CREDIT);
+                    BalancePolicy.BEFORE_DELIVERY, BalancePolicy.ON_CREDIT);
         }
     }
 
@@ -326,42 +326,6 @@ class CreditHoldServiceTest {
                     STAFF);
 
             assertThat(order.balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
-        }
-
-        @Test
-        @DisplayName("a full-truckload order whose customer's default is ON_DELIVERY pays before delivery (LP-2), and the note says so")
-        void fullTruckloadGivesWayToBeforeDelivery() {
-            Order order = onCreditHold();
-            order.changeDeliveryMode(DeliveryMode.FULL_TRUCKLOAD);
-            openHold(order);
-            when(customers.creditTerms(order.customerId())).thenReturn(
-                    terms(order.customerId(), true, true, true, "1000000", DepositBalancePolicy.ON_DELIVERY));
-
-            service.refuse(order.id().value(), CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT, null, "deposit",
-                    STAFF);
-
-            assertThat(order.balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
-            ArgumentCaptor<CreditChecks.Check> check = ArgumentCaptor.forClass(CreditChecks.Check.class);
-            verify(creditChecks).record(check.capture());
-            assertThat(check.getValue().note()).startsWith("deposit").contains("LP-2");
-        }
-
-        @Test
-        @DisplayName("a long note is cut so the decision, with the LP-2 remark, fits the 1000-character columns")
-        void aLongNoteIsCut() {
-            Order order = onCreditHold();
-            order.changeDeliveryMode(DeliveryMode.FULL_TRUCKLOAD);
-            openHold(order);
-            when(customers.creditTerms(order.customerId())).thenReturn(
-                    terms(order.customerId(), true, true, true, "1000000", DepositBalancePolicy.ON_DELIVERY));
-
-            service.refuse(order.id().value(), CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT, null, "x".repeat(990),
-                    STAFF);
-
-            ArgumentCaptor<CreditChecks.Check> check = ArgumentCaptor.forClass(CreditChecks.Check.class);
-            verify(creditChecks).record(check.capture());
-            assertThat(check.getValue().note()).hasSizeLessThanOrEqualTo(980);
-            assertThat(check.getValue().note()).endsWith("does not apply (LP-2)]");
         }
 
         @Test

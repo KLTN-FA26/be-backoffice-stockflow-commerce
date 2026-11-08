@@ -68,10 +68,6 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     @Column(name = "billed_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal billedAmount = BigDecimal.ZERO;
 
-    /** G2-3: what the carrier collects on delivering it, fixed at the handover. */
-    @Column(name = "cod_amount", nullable = false, precision = 19, scale = 4, updatable = false)
-    private BigDecimal codAmount = BigDecimal.ZERO;
-
     /** G4-2a: what the customer portal shows of the shipment, written once at the handover. */
     @Column(name = "shipment_code", updatable = false, length = 48)
     private String shipmentCode;
@@ -82,9 +78,6 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     @Column(name = "carrier_name", updatable = false, length = 120)
     private String carrierName;
 
-    @Column(name = "delivery_mode", updatable = false, length = 16)
-    private String deliveryMode;
-
     protected OrderShipmentJpaEntity() {
     }
 
@@ -93,7 +86,6 @@ public class OrderShipmentJpaEntity extends BaseEntity {
             this.shipmentCode = carriage.shipmentCode();
             this.packageCount = carriage.packageCount();
             this.carrierName = carriage.carrierName();
-            this.deliveryMode = carriage.deliveryMode();
         }
         return this;
     }
@@ -102,7 +94,7 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     public com.stockflow.order.api.ShipmentHandover.Carriage getCarriage() {
         return shipmentCode == null && packageCount == null ? null
                 : new com.stockflow.order.api.ShipmentHandover.Carriage(shipmentCode,
-                        packageCount == null ? 0 : packageCount, carrierName, deliveryMode);
+                        packageCount == null ? 0 : packageCount, carrierName);
     }
 
     public OrderShipmentJpaEntity(UUID id, UUID orderId, Map<UUID, Integer> quantities, BigDecimal amount,
@@ -113,11 +105,6 @@ public class OrderShipmentJpaEntity extends BaseEntity {
         this.amount = amount;
         this.handedOverAt = handedOverAt;
         this.handedOverBy = handedOverBy;
-    }
-
-    public OrderShipmentJpaEntity withCod(BigDecimal cod) {
-        this.codAmount = cod == null ? BigDecimal.ZERO : cod;
-        return this;
     }
 
     public void apply(OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy, DeliveryFailureReason failureReason,
@@ -141,5 +128,4 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     public DeliveryFailureReason getFailureReason() { return failureReason; }
     public String getFailureNote() { return failureNote; }
     public BigDecimal getBilledAmount() { return billedAmount; }
-    public BigDecimal getCodAmount() { return codAmount; }
 }

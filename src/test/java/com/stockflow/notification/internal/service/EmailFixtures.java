@@ -39,7 +39,7 @@ final class EmailFixtures {
 
     static ShipmentStatusChanged shipment(UUID customerId, String status, String failureReason, String carrier) {
         return new ShipmentStatusChanged(UUID.randomUUID(), UUID.randomUUID(), "SO-20261024-0001-S1",
-                UUID.randomUUID(), "SO-20261024-0001", customerId, UUID.randomUUID(), "PARCEL", "READY_TO_DISPATCH",
+                UUID.randomUUID(), "SO-20261024-0001", customerId, UUID.randomUUID(), "READY_TO_DISPATCH",
                 status, failureReason, 3, carrier, "LD-20261024-0001", UUID.randomUUID(),
                 Instant.parse("2026-10-24T07:05:00Z"));
     }

@@ -30,15 +30,15 @@ class OrderPaidInFullOnWorthTest {
     private static final UUID SALES = UUID.randomUUID();
 
     /**
-     * 10 plain cups at 100 000 and 100 printed cups at 20 000 - 3 000 000 VND - on deposit terms (900 000), the
-     * customer paying {@code paid} in all, released, printing started, and the plain cups handed over first: closing
-     * the rest then leaves the order worth 1 000 000.
+     * 10 plain cups at 100 000 and 100 printed cups at 20 000 - 3 000 000 VND - on deposit terms (900 000) with the
+     * balance on credit, so goods leave on the deposit alone; the customer paying {@code paid} in all, released,
+     * printing started, and the plain cups handed over first: closing the rest then leaves the order worth 1 000 000.
      */
     private static Order plainCupsShippedFirst(long paid) {
         Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 2), 4), UUID.randomUUID(), UUID.randomUUID(),
                 List.of(Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null),
                         Order.line(new Sku("CUP-12OZ-PRINT"), 100, Money.vnd(20_000), UUID.randomUUID())), NOW);
-        order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null, BalancePolicy.ON_DELIVERY);
+        order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), 30, BalancePolicy.ON_CREDIT);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         order.decidePartialShipment(true);
         order.submit();

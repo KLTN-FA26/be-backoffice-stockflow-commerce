@@ -38,13 +38,13 @@ class BalancePolicyForTest {
     }
 
     @Test
-    @DisplayName("tightening to BEFORE_DELIVERY stays allowed; ON_DELIVERY for an ON_CREDIT customer is not")
+    @DisplayName("tightening to BEFORE_DELIVERY stays allowed; a customer with no policy pays before delivery; other "
+            + "terms have none")
     void otherPolicies() {
         assertThat(OrderServiceImpl.balancePolicyFor(PaymentTerm.DEPOSIT, BalancePolicy.BEFORE_DELIVERY,
                 terms(true, DepositBalancePolicy.ON_CREDIT))).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
-        assertThat(catchThrowableOfType(BusinessException.class, () -> OrderServiceImpl.balancePolicyFor(
-                PaymentTerm.DEPOSIT, BalancePolicy.ON_DELIVERY, terms(true, DepositBalancePolicy.ON_CREDIT)))
-                .errorCode()).isEqualTo(ErrorCode.BALANCE_POLICY_NOT_ALLOWED);
+        assertThat(OrderServiceImpl.balancePolicyFor(PaymentTerm.DEPOSIT, null, terms(false, null)))
+                .isEqualTo(BalancePolicy.BEFORE_DELIVERY);
         assertThat(OrderServiceImpl.balancePolicyFor(PaymentTerm.CREDIT, null,
                 terms(true, DepositBalancePolicy.ON_CREDIT))).isNull();
     }
@@ -54,7 +54,7 @@ class BalancePolicyForTest {
     void allowedListMatchesWhatIsAccepted() {
         for (boolean credit : new boolean[] {false, true}) {
             for (DepositBalancePolicy own : credit ? DepositBalancePolicy.values()
-                    : new DepositBalancePolicy[] {DepositBalancePolicy.BEFORE_DELIVERY, DepositBalancePolicy.ON_DELIVERY}) {
+                    : new DepositBalancePolicy[] {DepositBalancePolicy.BEFORE_DELIVERY}) {
                 CreditTerms terms = terms(credit, own);
                 var allowed = OrderServiceImpl.allowedBalancePolicies(terms);
                 for (BalancePolicy asked : BalancePolicy.values()) {
@@ -74,12 +74,12 @@ class BalancePolicyForTest {
     }
 
     @Test
-    @DisplayName("SCRUM-193: the list in the order paid first, then own policy, then credit; empty without deposits")
+    @DisplayName("SCRUM-193: the list in the order paid first, then credit; empty without deposits")
     void allowedListShape() {
         assertThat(OrderServiceImpl.allowedBalancePolicies(terms(true, DepositBalancePolicy.ON_CREDIT)))
                 .containsExactly(BalancePolicy.BEFORE_DELIVERY, BalancePolicy.ON_CREDIT);
-        assertThat(OrderServiceImpl.allowedBalancePolicies(terms(false, DepositBalancePolicy.ON_DELIVERY)))
-                .containsExactly(BalancePolicy.BEFORE_DELIVERY, BalancePolicy.ON_DELIVERY);
+        assertThat(OrderServiceImpl.allowedBalancePolicies(terms(false, DepositBalancePolicy.BEFORE_DELIVERY)))
+                .containsExactly(BalancePolicy.BEFORE_DELIVERY);
         assertThat(OrderServiceImpl.allowedBalancePolicies(CreditTerms.prepaidOnly(UUID.randomUUID()))).isEmpty();
     }
 }

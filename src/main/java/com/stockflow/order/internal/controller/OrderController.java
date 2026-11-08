@@ -79,7 +79,6 @@ class OrderController {
     private final com.stockflow.identity.api.IdentityService identities;
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
-    private final com.stockflow.order.internal.service.DeliveryModes deliveryModes;
     private final com.stockflow.order.internal.service.DuplicateOrders duplicateOrders;
 
     OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
@@ -87,11 +86,9 @@ class OrderController {
                     com.stockflow.order.internal.service.TransferInstructions transferInstructions,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
-                    com.stockflow.order.internal.service.DeliveryModes deliveryModes,
                     com.stockflow.order.internal.service.DuplicateOrders duplicateOrders) {
         this.duplicateOrders = duplicateOrders;
         this.partialShipments = partialShipments;
-        this.deliveryModes = deliveryModes;
         this.identities = identities;
         this.orderService = orderService;
         this.customerService = customerService;
@@ -342,13 +339,10 @@ class OrderController {
         }
         // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - entries of
         // their own type (PARTIAL_SHIPMENT_DECISION), not status changes.
-        // LP-1: so are the coordinator's changes of the delivery mode (DELIVERY_MODE_CHANGE).
         List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
-        List<com.stockflow.order.api.DeliveryModeChange> modeChanges = deliveryModes.changes(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
-                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
-                        modeChanges.stream().map(com.stockflow.order.api.DeliveryModeChange::changedBy))
+                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy))
                 .flatMap(stream -> stream)
                 .filter(java.util.Objects::nonNull).distinct().toList());
         return ApiResponse.ok(java.util.stream.Stream.of(changes.stream()
@@ -357,11 +351,7 @@ class OrderController {
                                 change.actorId() == null ? null : names.get(change.actorId()))),
                 decisions.stream().map(decision -> OrderStatusChangeResponse.partialShipmentDecision(
                         decision.allowed(), decision.note(), decision.decidedAt(), decision.decidedBy(),
-                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))),
-                modeChanges.stream().map(change -> OrderStatusChangeResponse.deliveryModeChange(
-                        change.deliveryMode().name(), change.previousMode().name(), change.note(),
-                        change.changedAt(), change.changedBy(),
-                        change.changedBy() == null ? null : names.get(change.changedBy()))))
+                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))))
                 .flatMap(stream -> stream)
                 .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());

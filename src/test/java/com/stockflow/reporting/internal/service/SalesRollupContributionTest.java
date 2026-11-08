@@ -57,7 +57,7 @@ class SalesRollupContributionTest {
     void replacementOrderIsLeftOut() {
         OrderSummary plain = order(OrderStatus.CONFIRMED, Money.vnd(0), Instant.parse("2026-10-24T05:00:00Z"));
         var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, null, null,
-                null, null, List.of(), List.of(), null, null, false, null, false, null, UUID.randomUUID());
+                null, null, List.of(), List.of(), false, null, UUID.randomUUID());
         OrderSummary replacement = new OrderSummary(plain.orderId(), plain.orderNumber(), plain.customerId(),
                 plain.status(), plain.total(), plain.lines(), plain.placedAt(), null, null, null, null, null, null, null,
                 null, null, null, null, null, null, lifecycle);
