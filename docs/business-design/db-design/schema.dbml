@@ -947,6 +947,13 @@ Enum fulfillment.waybill_change_source {
   API
 }
 
+Enum fulfillment.waybill_import_row_outcome {
+  NEW
+  OVERWRITE
+  SAME
+  ERROR
+}
+
 Enum catalog.promotion_type {
   PERCENTAGE
   FIXED_AMOUNT
@@ -3743,19 +3750,23 @@ Table fulfillment.load_plan_vehicle_type [headercolor: #2C7873] {
 }
 
 Table fulfillment.load_waybill_file [headercolor: #2C7873] {
-  id               uuid [pk]
-  load_id          uuid [not null]
-  storage_key      varchar(512) [not null, unique]
-  file_name        varchar(255) [not null]
-  content_type     varchar(100) [not null]
-  size_bytes       bigint [not null]
-  uploaded_by      uuid [not null]
-  uploaded_at      timestamptz [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                uuid [pk]
+  load_id           uuid [not null]
+  storage_key       varchar(512) [not null]
+  file_name         varchar(255) [not null]
+  content_type      varchar(100) [not null]
+  size_bytes        bigint [not null]
+  uploaded_by       uuid [not null]
+  uploaded_at       timestamptz [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null, default: `now()`]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  waybill_import_id uuid
+  indexes {
+    (load_id, storage_key) [unique]
+  }
 }
 
 Table fulfillment.pack [headercolor: #2C7873] {
@@ -3999,6 +4010,44 @@ Table fulfillment.waybill_change [headercolor: #2C7873] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table fulfillment.waybill_import [headercolor: #2C7873] {
+  id               uuid [pk]
+  file_name        varchar(255) [not null]
+  storage_key      varchar(512) [not null, unique]
+  uploaded_by      uuid [not null]
+  uploaded_at      timestamptz [not null]
+  rows_total       int [not null]
+  rows_applied     int [not null]
+  rows_rejected    int [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table fulfillment.waybill_import_row [headercolor: #2C7873] {
+  id               uuid [pk]
+  import_id        uuid [not null]
+  line_no          int [not null]
+  load_code        varchar(64)
+  waybill_no       varchar(255)
+  vehicle_plate    varchar(255)
+  driver_name      varchar(255)
+  driver_phone     varchar(255)
+  load_id          uuid
+  outcome          fulfillment.waybill_import_row_outcome [not null]
+  problem          varchar(32)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (import_id, line_no) [unique]
+  }
 }
 
 // =============================================================================
@@ -4895,6 +4944,7 @@ Ref: fulfillment.load_plan_vehicle_type.load_plan_id > fulfillment.load_plan.id 
 Ref: fulfillment.load_plan_vehicle_type.vehicle_type_id > fulfillment.vehicle_type.id [delete: restrict]
 Ref: fulfillment.load_waybill_file.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.load_waybill_file.uploaded_by > identity.app_user.id
+Ref: fulfillment.load_waybill_file.waybill_import_id > fulfillment.waybill_import.id
 Ref: fulfillment.pack.packed_by > identity.app_user.id
 Ref: fulfillment.pack.pick_id > fulfillment.pick.id
 Ref: fulfillment.pack.started_by > identity.app_user.id
@@ -4934,6 +4984,9 @@ Ref: fulfillment.shipment_event.recorded_by > identity.app_user.id
 Ref: fulfillment.shipment_event.shipment_id > fulfillment.shipment.id [delete: cascade]
 Ref: fulfillment.waybill_change.changed_by > identity.app_user.id
 Ref: fulfillment.waybill_change.load_id > fulfillment.dispatch_load.id
+Ref: fulfillment.waybill_import.uploaded_by > identity.app_user.id
+Ref: fulfillment.waybill_import_row.import_id > fulfillment.waybill_import.id
+Ref: fulfillment.waybill_import_row.load_id > fulfillment.dispatch_load.id
 Ref: catalog.catalog_entry.sku > product.variants.sku [delete: restrict]
 Ref: catalog.customer_price.customer_id > customer.customer.id [delete: cascade]
 Ref: catalog.customer_price.sku > product.variants.sku [delete: restrict]
@@ -5131,6 +5184,8 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.vehicle_type
   fulfillment.wave
   fulfillment.waybill_change
+  fulfillment.waybill_import
+  fulfillment.waybill_import_row
 }
 
 TableGroup catalog_group [color: #1B998B] {
