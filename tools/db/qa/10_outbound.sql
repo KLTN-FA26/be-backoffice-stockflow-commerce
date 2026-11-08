@@ -530,5 +530,37 @@ SELECT pg_temp.expect_fail('F85 the same file kept twice with one load', $q$
                                                uploaded_by, uploaded_at)
     VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'waybill-imports/2026/11/09/qa-f78.csv', 'van-don.csv', 'text/csv',
             10, md5('demo:user:approver')::uuid, NOW()) $q$);
+
+-- 3-4: booking through a carrier's API - pickup points, orders at the carrier, the call log (V20261108001600).
+SELECT pg_temp.expect_ok('F86 a pickup point of the carrier at a warehouse', $q$
+    INSERT INTO fulfillment.carrier_pickup_point (id, carrier_id, warehouse_id, province_code, address)
+    VALUES (gen_random_uuid(), md5('qa:carrier:f64')::uuid, md5('demo:wh:HCM')::uuid, '79',
+            '1 Lê Lợi, Bến Nghé, Quận 1, Hồ Chí Minh') $q$);
+SELECT pg_temp.expect_fail('F87 a second pickup point of the carrier at that warehouse', $q$
+    INSERT INTO fulfillment.carrier_pickup_point (id, carrier_id, warehouse_id, province_code, address)
+    VALUES (gen_random_uuid(), md5('qa:carrier:f64')::uuid, md5('demo:wh:HCM')::uuid, '79', '2 Lê Lợi') $q$);
+SELECT pg_temp.expect_ok('F88 an order claimed at the carrier for a load', $q$
+    INSERT INTO fulfillment.carrier_booking (id, load_id, carrier_id, service_code, stops, status, requested_by,
+                                             requested_at)
+    VALUES (md5('qa:cb:f88')::uuid, md5('qa:load:f72')::uuid, md5('qa:carrier:f64')::uuid, 'SGN-TRUCK-1000',
+            '[{"seq":1,"shipmentCode":"SO-QA-1"}]', 'REQUESTED', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F89 a second order in flight for the same load', $q$
+    INSERT INTO fulfillment.carrier_booking (id, load_id, carrier_id, service_code, stops, status, requested_by,
+                                             requested_at)
+    VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, md5('qa:carrier:f64')::uuid, 'SGN-TRUCK-1000',
+            '[{"seq":1,"shipmentCode":"SO-QA-1"}]', 'REQUESTED', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F90 an order booked without the carrier''s id', $q$
+    UPDATE fulfillment.carrier_booking SET status = 'BOOKED', booked_at = NOW() WHERE id = md5('qa:cb:f88')::uuid $q$);
+SELECT pg_temp.expect_fail('F91 a token call logged with its key', $q$
+    INSERT INTO fulfillment.carrier_api_call (id, carrier_id, operation, outcome, http_status, request_body,
+                                              duration_ms, called_at)
+    VALUES (gen_random_uuid(), md5('qa:carrier:f64')::uuid, 'TOKEN', 'OK', 200, '{"api_key":"k"}', 10, NOW()) $q$);
+SELECT pg_temp.expect_ok('F92 a booking call that got no answer', $q$
+    INSERT INTO fulfillment.carrier_api_call (id, carrier_id, booking_id, operation, outcome, request_body, error,
+                                              duration_ms, called_at)
+    VALUES (md5('qa:cac:f92')::uuid, md5('qa:carrier:f64')::uuid, md5('qa:cb:f88')::uuid, 'BOOK', 'NO_ANSWER', '{}',
+            'SocketTimeoutException', 10000, NOW()) $q$);
+SELECT pg_temp.expect_fail('F93 the call log rewritten (append-only)', $q$
+    UPDATE fulfillment.carrier_api_call SET error = NULL WHERE id = md5('qa:cac:f92')::uuid $q$);
 ROLLBACK;
 \echo 'PASS 09_outbound'
