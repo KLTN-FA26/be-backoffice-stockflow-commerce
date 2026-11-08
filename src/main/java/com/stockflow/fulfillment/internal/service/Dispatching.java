@@ -166,7 +166,8 @@ public interface Dispatching {
      *
      * @throws com.stockflow.common.error.BusinessException {@code INVALID_LOAD_TRANSITION} (loading started),
      *         {@code INVALID_LOAD_PLAN_TRANSITION} (the plan is not CONFIRMED), {@code CARRIER_NOT_FOUND},
-     *         {@code CARRIER_INACTIVE}, {@code WAYBILL_DUPLICATE}, {@code WAYBILL_FROM_CARRIER_API}
+     *         {@code CARRIER_INACTIVE}, {@code WAYBILL_DUPLICATE}, {@code CARRIER_BOOKS_THROUGH_API} (an
+     *         API_BOOKING carrier is booked through its API, 09 BR-29)
      */
     LoadDetail book(UUID loadId, Booking booking, CurrentUser actor);
 

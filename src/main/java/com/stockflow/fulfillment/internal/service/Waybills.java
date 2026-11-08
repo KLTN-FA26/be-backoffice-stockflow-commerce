@@ -4,18 +4,21 @@ import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.fulfillment.internal.domain.CarrierConnectionType;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.WaybillChangeJpaEntity;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
 import com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * What every way of setting a load's waybill number shares (kltn-docs 09 §4.4, BR-23, BR-24): the number is unique
@@ -49,8 +52,9 @@ class Waybills {
     }
 
     /**
-     * @throws BusinessException 409 {@code WAYBILL_DUPLICATE} naming the other load when another live load of the same
-     *         carrier has {@code number} (BR-23; E19: within one carrier)
+     * @throws BusinessException 409 {@code WAYBILL_DUPLICATE} when another live load of the same carrier has
+     *         {@code number} (BR-23; E19: within one carrier); the other load is named only when it is of a warehouse
+     *         the caller may see
      */
     void requireUnique(UUID carrierId, String number, UUID loadId) {
         if (number == null) {
@@ -58,9 +62,30 @@ class Waybills {
         }
         List<DispatchLoadJpaEntity> others = loads.findLiveByCarrierAndWaybill(carrierId, number, loadId);
         if (!others.isEmpty()) {
-            throw new BusinessException(ErrorCode.WAYBILL_DUPLICATE, "Waybill %s is load %s's already"
-                    .formatted(number, others.get(0).getCode()),
-                    List.of(FieldError.of("waybillNo", "load " + others.get(0).getCode() + " has it")));
+            DispatchLoadJpaEntity other = others.get(0);
+            boolean visible = WarehouseScope.restriction().map(r -> r.ids().contains(other.getWarehouseId()))
+                    .orElse(true);
+            String holder = visible ? "load " + other.getCode() : "another load of this carrier";
+            throw new BusinessException(ErrorCode.WAYBILL_DUPLICATE, "Waybill %s is %s's already"
+                    .formatted(number, holder), List.of(FieldError.of("waybillNo", holder + " has it")));
+        }
+    }
+
+    /**
+     * Saves through {@code save}; two loads given the same number at once, each under its own lock, pass
+     * {@link #requireUnique} together and the second meets {@code uk_dispatch_load_waybill}: that is the same refusal,
+     * 409 {@code WAYBILL_DUPLICATE}, not an integrity error.
+     */
+    <T> T saving(Supplier<T> save) {
+        try {
+            return save.get();
+        } catch (DataIntegrityViolationException raced) {
+            String message = raced.getMostSpecificCause().getMessage();
+            if (message != null && message.contains("\"uk_dispatch_load_waybill\"")) {
+                throw new BusinessException(ErrorCode.WAYBILL_DUPLICATE,
+                        "Another load of this carrier took the waybill number meanwhile");
+            }
+            throw raced;
         }
     }
 

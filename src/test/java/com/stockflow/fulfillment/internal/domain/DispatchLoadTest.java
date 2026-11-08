@@ -169,11 +169,15 @@ class DispatchLoadTest {
         assertThat(noNumber.recordWaybill("WB-9", null, null, null, null)).isTrue();
         assertThat(noNumber.handOver(SIGNED, Map.of(s1, Set.of(parcel)), Map.of(), DISPATCHER, NOW)).containsExactly(s1);
 
-        // After the vehicle left: a correction says why; the plate on the manifest cannot be removed.
+        // After the vehicle left: a correction says why, and changes the number only - the plate and driver are on
+        // the signed manifest.
         assertThat(code(() -> noNumber.recordWaybill("WB-10", null, null, null, " ")))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(code(() -> noNumber.recordWaybill("WB-10", "", null, null, "Hãng gửi lại mã")))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(() -> noNumber.recordWaybill("WB-10", null, "Tài xế khác", null, "Hãng gửi lại mã")))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(noNumber.recordWaybill("WB-9", null, null, null, null)).isFalse();
         assertThat(noNumber.recordWaybill("WB-10", null, null, null, "Hãng gửi lại mã")).isTrue();
         assertThat(noNumber.waybillNo()).isEqualTo("WB-10");
         assertThat(DispatchLoad.restore(noNumber.snapshot()).waybillNo()).isEqualTo("WB-10");

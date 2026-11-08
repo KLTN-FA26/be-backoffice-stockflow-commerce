@@ -396,20 +396,17 @@ public final class DispatchLoad {
     /**
      * The carrier's waybill number for this vehicle, with the vehicle's plate and driver when known (09 §4.4: typed, or
      * imported from the system's file template). Recorded once a carrier is booked; before the vehicle leaves, the
-     * dispatcher may change it freely; after it left it is a correction and says why (BR-24 - who may make it is the
-     * service's check). A plate, driver or phone left null keeps the one recorded. The same values again change
-     * nothing.
+     * dispatcher may change it, with the plate and driver; after it left it is a correction of the number alone, and
+     * says why (BR-24 - who may make it is the service's check): the plate and driver are on the signed manifest. A
+     * plate, driver or phone left null keeps the one recorded. The same values again change nothing.
      *
      * @return whether it changed the load
      * @throws BusinessException {@code INVALID_LOAD_TRANSITION} when no carrier is booked (PLANNED) or the load is
-     *         CANCELLED; {@code VALIDATION_FAILED} for a malformed number or a correction without a reason
+     *         CANCELLED; {@code VALIDATION_FAILED} for a malformed number, a correction without a reason, or one that
+     *         changes the plate or driver
      */
     public boolean recordWaybill(String waybill, String plate, String driver, String phone, String reason) {
-        if (status == LoadStatus.PLANNED || status == LoadStatus.CANCELLED || carrierId == null) {
-            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, (status == LoadStatus.CANCELLED
-                    ? "Load %s is cancelled: a waybill number is recorded on a live load"
-                    : "Load %s has no carrier booked yet: book the vehicle first").formatted(code));
-        }
+        requireWaybillRecordable();
         String number = waybill(waybill);
         String newPlate = plate == null ? vehiclePlate : trimmed(plate);
         String newDriver = driver == null ? driverName : trimmed(driver);
@@ -422,15 +419,30 @@ public final class DispatchLoad {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Load %s has left the warehouse: correcting its "
                     + "waybill says why").formatted(code));
         }
-        if (status == LoadStatus.DISPATCHED && newPlate == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Load %s left with a plate on its manifest: it cannot be removed".formatted(code));
+        // The plate and driver are on the manifest both sides signed: a correction changes the carrier's number only.
+        if (status == LoadStatus.DISPATCHED && (!Objects.equals(newPlate, vehiclePlate)
+                || !Objects.equals(newDriver, driverName) || !Objects.equals(newPhone, driverPhone))) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Load %s left with the vehicle on its signed "
+                    + "manifest: a correction changes the waybill number only").formatted(code));
         }
         waybillNo = number;
         vehiclePlate = newPlate;
         driverName = newDriver;
         driverPhone = newPhone;
         return true;
+    }
+
+    /**
+     * A waybill number can be recorded on this load at all: a carrier is booked and the load is live or left.
+     *
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} when no carrier is booked (PLANNED) or it is CANCELLED
+     */
+    public void requireWaybillRecordable() {
+        if (status == LoadStatus.PLANNED || status == LoadStatus.CANCELLED || carrierId == null) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, (status == LoadStatus.CANCELLED
+                    ? "Load %s is cancelled: a waybill number is recorded on a live load"
+                    : "Load %s has no carrier booked yet: book the vehicle first").formatted(code));
+        }
     }
 
     /** {@code raw}, trimmed, when it is a waybill number; otherwise {@code VALIDATION_FAILED}. */

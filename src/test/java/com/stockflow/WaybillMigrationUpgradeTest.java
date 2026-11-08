@@ -56,8 +56,6 @@ class WaybillMigrationUpgradeTest {
                 // A load leaving from now on carries one; a number goes with its carrier.
                 RawSql.refused(db, "ck_dispatch_load_dispatched_waybill", dispatched(null, "LD-NEW-1",
                         "00000000-0000-4000-8000-0000000000c1", null), warehouse);
-                RawSql.refused(db, "ck_dispatch_load_waybill_carrier", "UPDATE fulfillment.dispatch_load SET "
-                        + "carrier_id = NULL WHERE id = '00000000-0000-4000-8000-0000000000d1'");
                 RawSql.refused(db, "ck_dispatch_load_waybill_no", "UPDATE fulfillment.dispatch_load SET "
                         + "waybill_no = 'OLD 1' WHERE id = '00000000-0000-4000-8000-0000000000d1'");
 
@@ -70,6 +68,11 @@ class WaybillMigrationUpgradeTest {
                         warehouse);
                 RawSql.refused(db, "uk_dispatch_load_waybill", "UPDATE fulfillment.dispatch_load SET waybill_no = "
                         + "'OLD-1', carrier_id = '00000000-0000-4000-8000-0000000000c1' WHERE code = 'LD-B-1'");
+                // A cancelled load may have no carrier, but not a number without one (the only rule refusing this).
+                RawSql.refused(db, "ck_dispatch_load_waybill_carrier", "UPDATE fulfillment.dispatch_load SET "
+                        + "carrier_id = NULL WHERE code = 'LD-CXL-1'");
+                assertThat(RawSql.update(db, "UPDATE fulfillment.dispatch_load SET carrier_id = NULL, waybill_no = "
+                        + "NULL WHERE code = 'LD-CXL-1'")).isEqualTo(1);
 
                 // The history: who and why, append-only.
                 RawSql.update(db, "INSERT INTO fulfillment.waybill_change (id, load_id, old_waybill_no, "

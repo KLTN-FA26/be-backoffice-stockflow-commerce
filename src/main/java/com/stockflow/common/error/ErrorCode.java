@@ -638,6 +638,8 @@ public enum ErrorCode {
     WAYBILL_DUPLICATE("Another load of this carrier has this waybill number", 409),
     /** 3-2 (09 §4.4 (4)): an API_BOOKING carrier's number comes from its booking API, never typed or imported. */
     WAYBILL_FROM_CARRIER_API("This carrier's waybill number comes from its booking", 409),
+    /** 3-2 (09 BR-29): an API_BOOKING carrier is booked through its API, never by hand. */
+    CARRIER_BOOKS_THROUGH_API("This carrier is booked through its API", 409),
     /** SCRUM-392: the parcel moved to another shipment (a left-behind split) since its label was printed: reprint it. */
     LABEL_OUTDATED("The package label is out of date; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),

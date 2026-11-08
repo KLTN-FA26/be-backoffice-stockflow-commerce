@@ -10,6 +10,7 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.fulfillment.internal.domain.CarrierConnectionType;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
@@ -369,16 +370,21 @@ class DispatchService implements Dispatching {
             throw new BusinessException(ErrorCode.CARRIER_INACTIVE,
                     "Carrier %s is no longer in use".formatted(carrier.getCode()));
         }
-        if (booking.waybillNo() != null) {
-            waybills.requireTypeable(carrier);
+        if (CarrierConnectionType.API_BOOKING.name().equals(carrier.getConnectionType())) {
+            // 09 BR-29: the system creates the carrier's order itself; a booking typed in would leave the load without
+            // the number only that order gives, and the signature would wait for it forever.
+            throw new BusinessException(ErrorCode.CARRIER_BOOKS_THROUGH_API, ("Carrier %s is booked through its API, "
+                    + "not by hand").formatted(carrier.getCode()));
         }
+        String given = booking.waybillNo() == null || booking.waybillNo().isBlank() ? null : booking.waybillNo();
         DispatchLoadJpaEntity header = locked.header();
         String before = load.waybillNo();
         Instant now = clock.instant();
         if (load.book(carrier.getId(), booking.vehiclePlate(), booking.driverName(), booking.driverPhone(),
-                booking.waybillNo(), actor.userId(), now)) {
+                given, actor.userId(), now)) {
             waybills.requireUnique(carrier.getId(), load.waybillNo(), load.id());
-            header = store.save(load, header);
+            DispatchLoadJpaEntity current = header;
+            header = waybills.saving(() -> store.save(load, current));
             waybills.record(load.id(), before, load.waybillNo(), WaybillSource.MANUAL, actor.userId(), now,
                     load.waybillNo() == null ? "Booked with carrier " + carrier.getCode() : null);
             log.info("Load {} booked with carrier {}", load.code(), carrier.getCode());
@@ -406,10 +412,9 @@ class DispatchService implements Dispatching {
     public LoadDetail recordWaybill(UUID loadId, WaybillEntry entry, CurrentUser actor) {
         Locked locked = lockForChange(loadId);
         DispatchLoad load = locked.load();
-        if (load.carrierId() != null) {
-            waybills.requireTypeable(carriers.findById(load.carrierId())
-                    .orElseThrow(() -> new BusinessException(ErrorCode.CARRIER_NOT_FOUND)));
-        }
+        load.requireWaybillRecordable();
+        waybills.requireTypeable(carriers.findById(load.carrierId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.CARRIER_NOT_FOUND)));
         if (load.status() == LoadStatus.DISPATCHED) {
             // BR-24: after the vehicle left only the warehouse manager corrects it - a permission, never a role.
             actor.require(FulfillmentPermissions.WAYBILL_CORRECTIONS, com.stockflow.common.security.Action.UPDATE);
@@ -420,7 +425,8 @@ class DispatchService implements Dispatching {
                 entry.reason())) {
             waybills.requireUnique(load.carrierId(), load.waybillNo(), load.id());
             Instant now = clock.instant();
-            header = store.save(load, header);
+            DispatchLoadJpaEntity current = header;
+            header = waybills.saving(() -> store.save(load, current));
             waybills.record(load.id(), before, load.waybillNo(), WaybillSource.MANUAL, actor.userId(), now,
                     entry.reason());
             log.info("Load {}: waybill {} recorded{}", load.code(), load.waybillNo(),

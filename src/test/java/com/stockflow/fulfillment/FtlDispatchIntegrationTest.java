@@ -556,6 +556,10 @@ class FtlDispatchIntegrationTest {
                 .andExpect(status().isForbidden());
         UUID manager = staff("WAREHOUSE_MANAGER", HCM);
         waybill(manager, "WAREHOUSE_MANAGER", loadId, number + "-FIX", null).andExpect(status().isBadRequest());
+        // The plate and driver are on the signed manifest: a correction changes the number only.
+        as(manager, "WAREHOUSE_MANAGER", body(put(LOADS + "/" + loadId + "/waybill"), "{\"waybillNo\":\"" + number
+                + "-FIX\",\"driverName\":\"Someone else\",\"reason\":\"the carrier sent another\"}"))
+                .andExpect(status().isBadRequest());
         waybill(manager, "WAREHOUSE_MANAGER", loadId, number + "-FIX", "the carrier sent another")
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.waybillNo").value(number + "-FIX"));
 
@@ -587,10 +591,13 @@ class FtlDispatchIntegrationTest {
         assertThat(history.get(1).path("oldWaybillNo").asText()).isEqualTo(number);
         assertThat(history.get(1).hasNonNull("newWaybillNo")).isFalse();
         assertThat(history.get(1).path("reason").asText()).contains("xe không tới");
-        // The number is free again, here or for another load of the carrier.
+        // Booked again, a blank number is no number; then given again.
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn
+                + "\",\"waybillNo\":\" \"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.waybillNo").doesNotExist());
         assertThat(book(loadId, ghn, "51C-888.88").path("waybillNo").asText()).isEqualTo(number);
 
-        // A carrier booked through its API gives the number; nobody types it.
+        // A carrier booked through its API is never booked by hand (09 BR-29), and nobody types its number.
         UUID aha = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO fulfillment.carrier (id, code, name, status, connection_type, webhook_enabled,
@@ -600,7 +607,16 @@ class FtlDispatchIntegrationTest {
                 aha, "AHA" + aha.toString().substring(28).toUpperCase()));
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha
                 + "\",\"waybillNo\":\"AHA-TYPED\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKS_THROUGH_API"));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKS_THROUGH_API"));
+        // A load the carrier's API booked (3-4) - set here by hand - takes no typed number either.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE fulfillment.dispatch_load SET carrier_id = ? WHERE id = "
+                + "?::uuid", aha, loadId));
+        waybill(dispatcher, "WAREHOUSE_STAFF", loadId, "AHA-TYPED", null).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("WAYBILL_FROM_CARRIER_API"));
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE fulfillment.dispatch_load SET carrier_id = ? WHERE id = "
+                + "?::uuid", ghn, loadId));
 
         // The carrier's waybill file, kept with the load and fetched by a short-lived link.
         var file = new org.springframework.mock.web.MockMultipartFile("file", "van-don.pdf", "application/pdf",
