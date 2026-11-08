@@ -83,7 +83,7 @@ com.stockflow
 ├── warehouse/       Warehouses, zones, bins, capacity                → schema warehouse
 ├── order/           Cart, orders, amendments, RMA                    → schema ordering
 ├── payment/         Payments, deposits, refunds, reconciliation      → schema payment
-├── fulfillment/     Picking, packing, shipments, tracking            → schema fulfillment
+├── fulfillment/     Picking, packing, load plans, truckload dispatch → schema fulfillment
 ├── procurement/     Suppliers, POs, goods receipt                    → schema procurement
 ├── design/          Design studio, templates, snapshots, print jobs  → schema design
 ├── chat/            Conversations, messages, agent assignment        → schema chat

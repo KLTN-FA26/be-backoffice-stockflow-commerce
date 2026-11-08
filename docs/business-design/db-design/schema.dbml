@@ -502,11 +502,6 @@ Enum ordering.customer_order_cancellation_reason_code {
   OTHER
 }
 
-Enum ordering.customer_order_delivery_mode {
-  PARCEL
-  FULL_TRUCKLOAD
-}
-
 Enum ordering.customer_order_payment_term {
   PREPAID
   DEPOSIT
@@ -571,11 +566,6 @@ Enum ordering.order_hold_reason {
   CUSTOMER
   FRAUD
   OTHER
-}
-
-Enum ordering.order_shipment_delivery_mode {
-  PARCEL
-  FULL_TRUCKLOAD
 }
 
 Enum ordering.order_shipment_status {
@@ -766,22 +756,12 @@ Enum fulfillment.design_verification_result {
   MISMATCH
 }
 
-Enum fulfillment.dispatch_load_mode {
-  PARCEL
-  FULL_TRUCKLOAD
-}
-
 Enum fulfillment.dispatch_load_status {
   PLANNED
   VEHICLE_BOOKED
   LOADING
   DISPATCHED
   CANCELLED
-}
-
-Enum fulfillment.dispatch_load_shipment_mode {
-  PARCEL
-  FULL_TRUCKLOAD
 }
 
 Enum fulfillment.dispatch_load_unload_reason_code {
@@ -873,11 +853,6 @@ Enum fulfillment.pick_line_status {
   SHORT
   CANCELLED
   PUT_BACK
-}
-
-Enum fulfillment.shipment_delivery_mode {
-  PARCEL
-  FULL_TRUCKLOAD
 }
 
 Enum fulfillment.shipment_status {
@@ -2591,13 +2566,11 @@ Table ordering.customer_order [headercolor: #C0392B] {
   receivable_paid_amount        decimal(19,4) [not null, default: 0]
   remainder_refund_amount       decimal(19,4) [not null, default: 0]
   balance_policy                varchar(16)
-  cod_amount                    decimal(19,4) [not null, default: 0]
   allow_partial_shipment        boolean [not null, default: false]
   remainder_fee_amount          decimal(19,4) [not null, default: 0]
   remainder_fee_retained_amount decimal(19,4) [not null, default: 0]
   remainder_fee_paid_amount     decimal(19,4) [not null, default: 0]
   fulfilment_started_at         timestamptz
-  delivery_mode                 ordering.customer_order_delivery_mode [not null, default: 'PARCEL']
   packing_started_at            timestamptz
   goods_left_at                 timestamptz
   replaces_return_request_id    uuid
@@ -2634,22 +2607,6 @@ Table ordering.order_credit_check [headercolor: #C0392B] {
   decided_by       uuid
   decided_at       timestamptz
   note             varchar(1000)
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table ordering.order_delivery_mode_change [headercolor: #C0392B] {
-  id               uuid [pk]
-  order_id         uuid [not null]
-  delivery_mode    varchar(16) [not null]
-  previous_mode    varchar(16) [not null]
-  order_status     varchar(32) [not null]
-  note             varchar(500)
-  changed_by       uuid
-  changed_at       timestamptz [not null]
   version          bigint [not null, default: 0]
   created_at       timestamptz [not null, default: `now()`]
   created_by       varchar(100)
@@ -2740,11 +2697,9 @@ Table ordering.order_shipment [headercolor: #C0392B] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-  cod_amount       decimal(19,4) [not null, default: 0]
   shipment_code    varchar(48)
   package_count    int
   carrier_name     varchar(120)
-  delivery_mode    ordering.order_shipment_delivery_mode
 }
 
 Table ordering.order_shipment_line [headercolor: #C0392B] {
@@ -3350,7 +3305,6 @@ Table fulfillment.dispatch_load [headercolor: #2C7873] {
   code                   varchar(30) [not null, unique]
   request_id             uuid [not null, unique]
   warehouse_id           uuid [not null]
-  mode                   fulfillment.dispatch_load_mode [not null, default: 'PARCEL']
   carrier_id             uuid
   load_plan_vehicle_id   uuid
   vehicle_plate          varchar(20)
@@ -3368,7 +3322,6 @@ Table fulfillment.dispatch_load [headercolor: #2C7873] {
   handover_note          varchar(500)
   shipment_count         int [not null, default: 0]
   package_count          int [not null, default: 0]
-  cod_total              decimal(19,4) [not null, default: 0]
   cancelled_at           timestamptz
   cancelled_by           uuid
   cancel_reason          varchar(500)
@@ -3413,14 +3366,11 @@ Table fulfillment.dispatch_load_shipment [headercolor: #2C7873] {
   added_by         uuid [not null]
   removed_at       timestamptz
   removed_by       uuid
-  label_cod_amount decimal(19,4)
-  cod_amount       decimal(19,4)
   version          bigint [not null, default: 0]
   created_at       timestamptz [not null, default: `now()`]
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-  mode             fulfillment.dispatch_load_shipment_mode [not null]
   indexes {
     (load_id, shipment_id) [unique]
   }
@@ -3746,9 +3696,7 @@ Table fulfillment.shipment [headercolor: #2C7873] {
   code                 varchar(48) [not null, unique]
   request_id           uuid [unique]
   warehouse_id         uuid [not null]
-  delivery_mode        fulfillment.shipment_delivery_mode [not null, default: 'PARCEL']
   package_count        int [not null, default: 1]
-  cod_amount           decimal(19,4) [not null, default: 0]
   partial              boolean [not null, default: false]
   partial_note         varchar(500)
   ready_at             timestamptz [not null]
@@ -3764,8 +3712,6 @@ Table fulfillment.shipment [headercolor: #2C7873] {
   carrier_id           uuid
   load_id              uuid
   whole_order_handover boolean [not null, default: false]
-  label_cod_amount     decimal(19,4) [not null, default: 0]
-  label_printed_at     timestamptz
 }
 
 Table fulfillment.shipment_event [headercolor: #2C7873] {
@@ -4549,8 +4495,6 @@ Ref: ordering.order_cancellation_request.order_id > ordering.customer_order.id [
 Ref: ordering.order_cancellation_request.requested_by > identity.app_user.id
 Ref: ordering.order_credit_check.decided_by > identity.app_user.id
 Ref: ordering.order_credit_check.order_id > ordering.customer_order.id [delete: cascade]
-Ref: ordering.order_delivery_mode_change.changed_by > identity.app_user.id
-Ref: ordering.order_delivery_mode_change.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_hold.order_id > ordering.customer_order.id
 Ref: ordering.order_hold.raised_by > identity.app_user.id
 Ref: ordering.order_hold.resolved_by > identity.app_user.id
@@ -4848,7 +4792,6 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.customer_order
   ordering.order_cancellation_request
   ordering.order_credit_check
-  ordering.order_delivery_mode_change
   ordering.order_hold
   ordering.order_line
   ordering.order_line_reservation

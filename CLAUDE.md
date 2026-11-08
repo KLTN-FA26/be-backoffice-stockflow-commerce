@@ -5,7 +5,9 @@ A finished-goods warehouse and B2B sales platform for a Vietnamese business whos
 are printed to its wholesale customers' designs (decided 2026-10-06: B2B only). Since 2026-11-07 the
 printing is done by producers outside the system: goods arrive printed, in cartons, and are picked from
 stock like any other; the in-house production module is gone (`V20261108000100`). Stock never changes
-warehouse: transfer orders between warehouses are gone too (`V20261108000300`).
+warehouse: transfer orders between warehouses are gone too (`V20261108000300`). Every order ships as a full
+truckload through a load plan and nothing is collected on delivery: parcel shipping, the delivery-mode choice and
+COD are gone (`V20261108000400`).
 
 Read this before touching anything. It is short on purpose; it says what is not obvious from the
 code, and points at the code for the rest.
