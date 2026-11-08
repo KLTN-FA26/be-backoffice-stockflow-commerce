@@ -63,7 +63,7 @@ CREATE TABLE fulfillment.carrier_event
         'UNMATCHED', 'INVALID_SIGNATURE', 'NEEDS_REVIEW')),
     CONSTRAINT ck_carrier_event_kind CHECK (event_kind IS NULL OR event_kind IN ('WAYBILL', 'DRIVER_ASSIGNED',
         'DRIVER_RELEASED', 'PICKED_UP', 'IN_TRANSIT', 'DELIVERED', 'DELIVERY_FAILED', 'RETURNING', 'RETURNED',
-        'ORDER_CANCELLED', 'ORDER_COMPLETED', 'OTHER')),
+        'ORDER_CANCELLED', 'CANCELLED_ON_REQUEST', 'ORDER_COMPLETED', 'OTHER')),
     CONSTRAINT ck_carrier_event_code CHECK (carrier_code ~ '^[!-~]{1,64}$'),
     CONSTRAINT ck_carrier_event_payload CHECK (octet_length(payload) <= 65536),
     -- A call whose credential did not hold is the error list's, whatever it says; nothing is matched for it.
