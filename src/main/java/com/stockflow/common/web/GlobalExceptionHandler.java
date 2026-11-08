@@ -224,6 +224,13 @@ public class GlobalExceptionHandler {
      * of the payload — which may include whatever secret the client sent, putting it in both a
      * response and a log.</p>
      */
+    /** A capped body overflowing while a handler reads the stream itself (RequestBodyLimitFilter): 413, not a 500. */
+    @ExceptionHandler(RequestBodyTooLargeException.class)
+    public ResponseEntity<ApiResponse<Void>> handleBodyTooLarge(RequestBodyTooLargeException ex) {
+        log.warn("Request body over its route's limit");
+        return respond(ErrorCode.REQUEST_BODY_TOO_LARGE, messages.forCode(ErrorCode.REQUEST_BODY_TOO_LARGE), null);
+    }
+
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ApiResponse<Void>> handleUnreadable(HttpMessageNotReadableException ex) {
         if (RequestBodyTooLargeException.causedBy(ex)) {

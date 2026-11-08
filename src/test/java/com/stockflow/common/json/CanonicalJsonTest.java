@@ -124,6 +124,14 @@ class CanonicalJsonTest {
     }
 
     @Test
+    void refusalsSayWhyWithoutRepeatingTheInput() {
+        assertThatThrownBy(() -> CanonicalJson.canonicalize("{\"secret-name\": 1, \"secret-name\": 2}"))
+                .hasMessage("Duplicate member name");
+        assertThatThrownBy(() -> CanonicalJson.canonicalize("{\"a\": secret-token}"))
+                .hasMessage("Malformed JSON text");
+    }
+
+    @Test
     void nestingIsBounded() {
         String deep = "[".repeat(CanonicalJson.MAX_DEPTH + 1) + "]".repeat(CanonicalJson.MAX_DEPTH + 1);
         String allowed = "[".repeat(CanonicalJson.MAX_DEPTH) + "]".repeat(CanonicalJson.MAX_DEPTH);

@@ -11,6 +11,8 @@ import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.context.annotation.Role;
 import org.springframework.core.annotation.Order;
@@ -26,24 +28,30 @@ import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Caps the body of the routes listed in {@link RequestBodyLimitProperties}, before anything reads it.
  *
- * <p>Two checks, because a client need not announce the size: a declared {@code Content-Length} over the limit is
- * answered 413 at once, without reading a byte; otherwise the body is wrapped so that reading past the limit throws
- * {@link RequestBodyTooLargeException} - a chunked body is caught as it streams, not after it has been buffered. The
- * idempotency filter ({@code @Order(20)}) and Jackson both read through the wrapper and answer that exception with
- * 413 too.</p>
+ * <p>Three checks. A capped route takes JSON only: a form or multipart body is refused with 415, because neither is read
+ * through {@link HttpServletRequest#getInputStream} - Spring's form-content filter copies a form body into memory whole,
+ * and the container parses multipart parts from the raw stream - so neither could be capped. A declared
+ * {@code Content-Length} over the limit is answered 413 at once, without reading a byte. Otherwise the body is wrapped
+ * so that reading past the limit throws {@link RequestBodyTooLargeException}: a chunked body is caught as it streams,
+ * not after it has been buffered. The idempotency filter, Jackson and a handler reading the stream itself all meet that
+ * exception, and each is answered 413.</p>
  *
- * <p>{@code @Order(15)}: after the request log (10), so a refused request is still logged, and before the idempotency
- * filter (20), which would otherwise buffer the whole body to fingerprint it.</p>
+ * <p>{@code @Order(-9950)}: after the correlation id filter (so a refusal carries one), before Spring's form-content
+ * filter (-9900) and Spring Security (-100), and so before anything that could read the body. A refused request never
+ * reaches the request log (order 10), so this filter logs it.</p>
  */
 @Component
-@Order(15)
+@Order(-9950)
 // ROLE_INFRASTRUCTURE + final: see IdempotencyFilter's javadoc - a servlet filter must not be proxied.
 @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
 public final class RequestBodyLimitFilter extends OncePerRequestFilter {
+
+    private static final Logger log = LoggerFactory.getLogger(RequestBodyLimitFilter.class);
 
     private record Route(String method, PathPattern pattern, long maxBytes) {
     }
@@ -71,8 +79,12 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         long limit = limitOf(request);
+        if (!isJson(request.getContentType())) {
+            refuse(request, response, ErrorCode.UNSUPPORTED_MEDIA_TYPE);
+            return;
+        }
         if (request.getContentLengthLong() > limit) {
-            refuse(request, response);
+            refuse(request, response, ErrorCode.REQUEST_BODY_TOO_LARGE);
             return;
         }
         chain.doFilter(new CappedRequest(request, limit), response);
@@ -96,8 +108,18 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
         return -1;
     }
 
-    private void refuse(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        ErrorCode code = ErrorCode.REQUEST_BODY_TOO_LARGE;
+    /** {@code application/json} or a {@code +json} type, parameters aside. */
+    private static boolean isJson(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
+        String type = contentType.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
+        return type.equals("application/json") || (type.startsWith("application/") && type.endsWith("+json"));
+    }
+
+    private void refuse(HttpServletRequest request, HttpServletResponse response, ErrorCode code) throws IOException {
+        log.warn("{} {} refused before its body was read: {}", request.getMethod(), request.getRequestURI(),
+                code.name());
         response.setStatus(code.httpStatus());
         response.setContentType("application/json");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
@@ -110,6 +132,7 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
 
         private final long limit;
         private ServletInputStream stream;
+        private BufferedReader reader;
 
         CappedRequest(HttpServletRequest request, long limit) {
             super(request);
@@ -124,11 +147,22 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
             return stream;
         }
 
+        /** One reader for the request, as the servlet contract has it; an unknown charset reads as UTF-8. */
         @Override
         public BufferedReader getReader() throws IOException {
-            String encoding = getCharacterEncoding();
-            Charset charset = encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding);
-            return new BufferedReader(new InputStreamReader(getInputStream(), charset));
+            if (reader == null) {
+                Charset charset = StandardCharsets.UTF_8;
+                String encoding = getCharacterEncoding();
+                if (encoding != null) {
+                    try {
+                        charset = Charset.forName(encoding);
+                    } catch (IllegalArgumentException unknown) {
+                        charset = StandardCharsets.UTF_8;
+                    }
+                }
+                reader = new BufferedReader(new InputStreamReader(getInputStream(), charset));
+            }
+            return reader;
         }
     }
 

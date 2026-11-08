@@ -88,9 +88,12 @@ public final class CanonicalJson {
             write(value, out);
             return out.toString();
         } catch (StreamConstraintsException ex) {
-            throw new InvalidJsonException("JSON nested deeper than " + MAX_DEPTH + " levels");
+            throw new InvalidJsonException("JSON nested deeper than " + MAX_DEPTH + " levels, or a value too long");
         } catch (JsonParseException ex) {
-            throw new InvalidJsonException(ex.getOriginalMessage());
+            // Fixed messages: the parser's own repeat parts of the input.
+            String reason = ex.getOriginalMessage();
+            throw new InvalidJsonException(reason != null && reason.startsWith("Duplicate field")
+                    ? "Duplicate member name" : "Malformed JSON text");
         } catch (IOException ex) {
             throw new InvalidJsonException("Unreadable JSON text");
         }

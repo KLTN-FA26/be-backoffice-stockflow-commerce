@@ -55,6 +55,7 @@ class RequestBodyLimitFilterTest {
                 return -1;
             }
         };
+        chunked.setContentType("application/json");
         chunked.setContent("01234567890".getBytes(StandardCharsets.UTF_8));
         var chain = new MockFilterChain();
 
@@ -73,6 +74,51 @@ class RequestBodyLimitFilterTest {
 
         HttpServletRequest passed = (HttpServletRequest) chain.getRequest();
         assertThat(new String(passed.getInputStream().readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("0123456789");
+    }
+
+    @Test
+    void aCappedRouteTakesJsonOnlyBecauseNoOtherBodyCouldBeCapped() throws Exception {
+        for (String type : new String[] {"application/x-www-form-urlencoded", "multipart/form-data; boundary=x",
+                "text/plain"}) {
+            var request = request("PUT", DOCUMENT, "a=1");
+            request.setContentType(type);
+            var response = new MockHttpServletResponse();
+            var chain = new MockFilterChain();
+
+            filter.doFilter(request, response, chain);
+
+            assertThat(response.getStatus()).as(type).isEqualTo(415);
+            assertThat(chain.getRequest()).as(type).isNull();
+        }
+        var chain = new MockFilterChain();
+        var vendorJson = request("PUT", DOCUMENT, "{}");
+        vendorJson.setContentType("application/vnd.stockflow+json; charset=UTF-8");
+        filter.doFilter(vendorJson, new MockHttpServletResponse(), chain);
+        assertThat(chain.getRequest()).isNotNull();
+    }
+
+    @Test
+    void theReaderIsOneReaderAndAnUnknownCharsetReadsAsUtf8() throws Exception {
+        var request = request("PUT", DOCUMENT, "{\"a\":1}");
+        request.setCharacterEncoding("no-such-charset");
+        var chain = new MockFilterChain();
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        HttpServletRequest passed = (HttpServletRequest) chain.getRequest();
+        assertThat(passed.getReader()).isSameAs(passed.getReader());
+        assertThat(passed.getReader().readLine()).isEqualTo("{\"a\":1}");
+    }
+
+    @Test
+    void aHandlerReadingTheStreamItselfIsAnsweredTooLargeNotAServerError() {
+        var source = new StaticMessageSource();
+        var handler = new GlobalExceptionHandler(new Messages(source), source);
+
+        var response = handler.handleBodyTooLarge(new RequestBodyTooLargeException(10));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(413);
+        assertThat(response.getBody().errorCode()).isEqualTo("REQUEST_BODY_TOO_LARGE");
     }
 
     @Test
