@@ -49,10 +49,13 @@ import java.util.UUID;
 class DispatchController {
 
     private final Dispatching dispatching;
+    private final com.stockflow.fulfillment.internal.service.Bookings bookings;
     private final DispatchWebMapper mapper;
 
-    DispatchController(Dispatching dispatching, DispatchWebMapper mapper) {
+    DispatchController(Dispatching dispatching, com.stockflow.fulfillment.internal.service.Bookings bookings,
+                       DispatchWebMapper mapper) {
         this.dispatching = dispatching;
+        this.bookings = bookings;
         this.mapper = mapper;
     }
 
@@ -125,23 +128,29 @@ class DispatchController {
     @Operation(summary = "A confirmed load plan's vehicle booked with a carrier (outside the system): PLANNED -> "
             + "VEHICLE_BOOKED; again before loading replaces the booking. 404 CARRIER_NOT_FOUND; 409 "
             + "INVALID_LOAD_TRANSITION (loading started), INVALID_LOAD_PLAN_TRANSITION (plan not CONFIRMED), "
-            + "CARRIER_INACTIVE, WAYBILL_DUPLICATE (the waybill number, if given), CARRIER_BOOKS_THROUGH_API")
+            + "CARRIER_INACTIVE, WAYBILL_DUPLICATE (the waybill number, if given). An API_BOOKING carrier (3-4) is booked "
+            + "through its API: give pickupAt and the stops' order, not the plate, driver or number - 422 "
+            + "CARRIER_PICKUP_NOT_CONFIGURED, CARRIER_SERVICE_NOT_CONFIGURED, CARRIER_STOP_OUT_OF_AREA, "
+            + "CARRIER_BOOKING_FAILED (the carrier's reason); 409 CARRIER_BOOKING_IN_PROGRESS; 502 when it does not "
+            + "answer")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> book(@PathVariable UUID loadId, @Valid @RequestBody BookingRequest request,
                                           @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(dispatching.book(loadId, new Dispatching.Booking(request.carrierId(),
-                request.vehiclePlate(), request.driverName(), request.driverPhone(), request.waybillNo()), actor)));
+        return ApiResponse.ok(mapper.toResponse(bookings.book(loadId, new com.stockflow.fulfillment.internal.service
+                .Bookings.Request(request.carrierId(), request.vehiclePlate(), request.driverName(),
+                request.driverPhone(), request.waybillNo(), request.pickupAt(), request.stopShipmentIds()), actor)));
     }
 
     @PostMapping("/{loadId}/booking-cancellation")
     @Operation(summary = "The booking fell through before loading: back to PLANNED with the reason, to book again. "
-            + "409 INVALID_LOAD_TRANSITION once loading started")
+            + "An order at an API_BOOKING carrier is cancelled there first: 409 CARRIER_CANCEL_REFUSED when the carrier "
+            + "will not (the driver picked up). 409 INVALID_LOAD_TRANSITION once loading started")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> cancelBooking(@PathVariable UUID loadId,
             @Valid @RequestBody CancelLoadRequest request, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(dispatching.cancelBooking(loadId, request.reason(), actor)));
+        return ApiResponse.ok(mapper.toResponse(bookings.cancelBooking(loadId, request.reason(), actor)));
     }
 
     @PostMapping("/{loadId}/loading-start")

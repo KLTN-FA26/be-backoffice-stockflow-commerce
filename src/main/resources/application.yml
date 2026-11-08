@@ -554,6 +554,13 @@ stockflow:
       # machine cannot hang a request; when it passes, the planner returns the best plan found so far, flagged
       # budgetExhausted (LoadPlanRequest.wallLimit).
       solver-wall-limit: PT12S
+    ahamove:
+      # Ahamove's partner API v3 (3-4). Which one a carrier calls is its own setting (STAGING / PRODUCTION), as are its
+      # account and key (sealed on the carrier).
+      staging-url: ${AHAMOVE_STAGING_URL:https://partner-apistg.ahamove.com}
+      production-url: ${AHAMOVE_PRODUCTION_URL:https://partner-api.ahamove.com}
+      # The reason sent when an order is cancelled. Ahamove accepts only reasons from its own list of user reasons.
+      cancel-comment: ${AHAMOVE_CANCEL_COMMENT:Khách hàng muốn hủy đơn}
 
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the

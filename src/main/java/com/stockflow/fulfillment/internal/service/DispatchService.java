@@ -105,6 +105,7 @@ class DispatchService implements Dispatching {
     private final LeftBehindParcels leftBehind;
     private final Waybills waybills;
     private final com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges;
+    private final com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository carrierBookings;
     private final Clock clock;
 
     @SuppressWarnings("java:S107")
@@ -118,6 +119,7 @@ class DispatchService implements Dispatching {
                     IdentityService identities, PlanVehicles planVehicles, LeftBehindParcels leftBehind,
                     Waybills waybills,
                     com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges,
+                    com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository carrierBookings,
                     Clock clock) {
         this.loads = loads;
         this.members = members;
@@ -139,6 +141,7 @@ class DispatchService implements Dispatching {
         this.leftBehind = leftBehind;
         this.waybills = waybills;
         this.waybillChanges = waybillChanges;
+        this.carrierBookings = carrierBookings;
         this.clock = clock;
     }
 
@@ -376,6 +379,11 @@ class DispatchService implements Dispatching {
             throw new BusinessException(ErrorCode.CARRIER_BOOKS_THROUGH_API, ("Carrier %s is booked through its API, "
                     + "not by hand").formatted(carrier.getCode()));
         }
+        if (carrierBookings.findLive(loadId).isPresent()) {
+            // Rebooked by hand, the order at the API carrier would be held there with no load to cancel it for.
+            throw new BusinessException(ErrorCode.CARRIER_BOOKING_IN_PROGRESS, ("Load %s is being booked or is booked "
+                    + "through a carrier's API: cancel that booking first").formatted(load.code()));
+        }
         String given = booking.waybillNo() == null || booking.waybillNo().isBlank() ? null : booking.waybillNo();
         DispatchLoadJpaEntity header = locked.header();
         String before = load.waybillNo();
@@ -432,6 +440,32 @@ class DispatchService implements Dispatching {
             log.info("Load {}: waybill {} recorded{}", load.code(), load.waybillNo(),
                     load.status() == LoadStatus.DISPATCHED ? " (correction after dispatch)" : "");
         }
+        return detail(header, load);
+    }
+
+    @Override
+    public LoadDetail applyCarrierBooking(UUID loadId, UUID carrierId, UUID bookingId, String orderId,
+                                          String trackingLink, CurrentUser actor) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        if (locked.plan() == null || load.status() != LoadStatus.PLANNED) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is %s now: it was booked or "
+                    + "called off while the carrier took the order").formatted(load.code(), load.status()));
+        }
+        PlanVehicles.requireConfirmed(locked.plan());
+        var booking = carrierBookings.lockById(bookingId)
+                .filter(b -> com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity.REQUESTED
+                        .equals(b.getStatus()))
+                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT,
+                        "The booking of load %s was given up meanwhile".formatted(load.code())));
+        Instant now = clock.instant();
+        load.book(carrierId, null, null, null, orderId, actor.userId(), now);
+        waybills.requireUnique(carrierId, load.waybillNo(), load.id());
+        DispatchLoadJpaEntity current = locked.header();
+        DispatchLoadJpaEntity header = waybills.saving(() -> store.save(load, current));
+        waybills.record(load.id(), null, load.waybillNo(), WaybillSource.API, actor.userId(), now, null);
+        booking.booked(orderId, trackingLink, now);
+        carrierBookings.saveAndFlush(booking);
         return detail(header, load);
     }
 
@@ -1013,7 +1047,10 @@ class DispatchService implements Dispatching {
                 pendingUnloads(load), load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null,
                 header.getCancelReasonCode() == null ? null : header.getCancelReasonCode().name(),
                 replacement == null ? null : replacement.getId(), replacement == null ? null : replacement.getCode(),
-                header.getWaybillNo(), carrier == null ? null : carrier.getConnectionType());
+                header.getWaybillNo(), carrier == null ? null : carrier.getConnectionType(),
+                carrierBookings.findByLoads(List.of(header.getId())).stream().findFirst()
+                        .map(b -> new CarrierBookingView(b.getStatus(), b.getCarrierOrderId(), b.getTrackingLink(),
+                                b.getRequestedAt(), b.getBookedAt(), b.getLastError())).orElse(null));
     }
 
     /**

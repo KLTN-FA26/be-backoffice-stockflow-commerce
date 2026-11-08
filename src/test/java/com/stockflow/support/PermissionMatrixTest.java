@@ -173,6 +173,9 @@ class PermissionMatrixTest {
             // 3-1 (V20261108001300): an API_BOOKING carrier's service codes, read as the catalogue is, kept as it is.
             Map.entry("GET /api/v1/fulfillment/carriers/{carrierId}/service-codes", "fulfillment-shipments:READ"),
             Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}/service-codes", "fulfillment-carriers:UPDATE"),
+            Map.entry("GET /api/v1/fulfillment/carriers/{carrierId}/services", "fulfillment-carriers:UPDATE"),
+            Map.entry("GET /api/v1/fulfillment/carriers/{carrierId}/pickup-points", "fulfillment-shipments:READ"),
+            Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}/pickup-points", "fulfillment-carriers:UPDATE"),
             // SCRUM-287 PR B (V20261022000700): born permission-guarded; listed so the guards cannot drift.
             Map.entry("GET /api/v1/fulfillment/vehicle-types", "fulfillment-vehicle-types:READ"),
             Map.entry("GET /api/v1/fulfillment/vehicle-types/{vehicleTypeId}", "fulfillment-vehicle-types:READ"),

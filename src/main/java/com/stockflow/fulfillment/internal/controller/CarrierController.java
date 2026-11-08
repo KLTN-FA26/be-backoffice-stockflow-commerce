@@ -7,7 +7,9 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierPickupPointsRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierRequest;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierServiceOptionResponse;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierResponse;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierServiceCodeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierServiceCodesRequest;
@@ -43,12 +45,55 @@ class CarrierController {
 
     private final Carriers carriers;
     private final CarrierServiceCodes serviceCodes;
+    private final com.stockflow.fulfillment.internal.service.CarrierPickupPoints pickupPoints;
+    private final com.stockflow.fulfillment.internal.service.Bookings bookings;
     private final DispatchWebMapper mapper;
 
-    CarrierController(Carriers carriers, CarrierServiceCodes serviceCodes, DispatchWebMapper mapper) {
+    CarrierController(Carriers carriers, CarrierServiceCodes serviceCodes,
+                      com.stockflow.fulfillment.internal.service.CarrierPickupPoints pickupPoints,
+                      com.stockflow.fulfillment.internal.service.Bookings bookings, DispatchWebMapper mapper) {
         this.carriers = carriers;
         this.serviceCodes = serviceCodes;
+        this.pickupPoints = pickupPoints;
+        this.bookings = bookings;
         this.mapper = mapper;
+    }
+
+    @GetMapping("/{carrierId}/services")
+    @Operation(summary = "An API_BOOKING carrier's truck services in a city, asked of its API (to choose service codes "
+            + "from). 409 CARRIER_NOT_API_BOOKING; 422 CARRIER_BOOKING_FAILED; 502 when it does not answer")
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
+    public ApiResponse<List<CarrierServiceOptionResponse>> services(@PathVariable UUID carrierId,
+                                                                    @RequestParam String cityId) {
+        return ApiResponse.ok(bookings.services(carrierId, cityId).stream()
+                .map(s -> new CarrierServiceOptionResponse(s.id(), s.name(), s.cityId())).toList());
+    }
+
+    @GetMapping("/{carrierId}/pickup-points")
+    @Operation(summary = "Where an API_BOOKING carrier picks up at each warehouse")
+    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
+    public ApiResponse<List<CarrierPickupPointsRequest.Point>> pickupPoints(@PathVariable UUID carrierId) {
+        return ApiResponse.ok(pickupPoints.list(carrierId).stream().map(CarrierController::toPoint).toList());
+    }
+
+    @PutMapping("/{carrierId}/pickup-points")
+    @Operation(summary = "Replace an API_BOOKING carrier's pickup points (one per warehouse: the address as the carrier "
+            + "reads it, the contact, the province); 409 CARRIER_NOT_API_BOOKING")
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "carrier", resourceId = "#carrierId")
+    public ApiResponse<List<CarrierPickupPointsRequest.Point>> replacePickupPoints(@PathVariable UUID carrierId,
+            @Valid @RequestBody CarrierPickupPointsRequest request) {
+        return ApiResponse.ok(pickupPoints.replace(carrierId, request.pickupPoints().stream()
+                        .map(p -> new com.stockflow.fulfillment.internal.service.CarrierPickupPoints.PickupPoint(
+                                p.warehouseId(), p.provinceCode(), p.address(), p.contactName(), p.contactPhone()))
+                        .toList())
+                .stream().map(CarrierController::toPoint).toList());
+    }
+
+    private static CarrierPickupPointsRequest.Point toPoint(
+            com.stockflow.fulfillment.internal.service.CarrierPickupPoints.PickupPoint p) {
+        return new CarrierPickupPointsRequest.Point(p.warehouseId(), p.provinceCode(), p.address(), p.contactName(),
+                p.contactPhone());
     }
 
     @GetMapping

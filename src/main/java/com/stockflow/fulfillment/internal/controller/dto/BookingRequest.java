@@ -13,10 +13,15 @@ import java.util.UUID;
  * @param vehiclePlate the booked vehicle's plate, if known
  * @param waybillNo    the carrier's waybill number, if it gave one (3-2); left out, the number the load has is kept
  *                     while the carrier stays the same
+ * @param pickupAt     API_BOOKING carrier (3-4): when the driver should pick up; left out, as soon as possible
+ * @param stopShipmentIds API_BOOKING carrier: the load's shipments in the order they are delivered (E26); left out,
+ *                     the manifest's order
  */
 public record BookingRequest(@NotNull UUID carrierId,
                              @Size(max = 20) String vehiclePlate,
                              @Size(max = 120) String driverName,
                              @Size(max = 32) String driverPhone,
-                             @Size(max = 64) String waybillNo) {
+                             @Size(max = 64) String waybillNo,
+                             java.time.Instant pickupAt,
+                             @Size(max = 200) java.util.List<@NotNull UUID> stopShipmentIds) {
 }

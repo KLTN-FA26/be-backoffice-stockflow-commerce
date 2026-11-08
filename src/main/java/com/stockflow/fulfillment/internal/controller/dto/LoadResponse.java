@@ -42,7 +42,16 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String st
                            String cancelReasonCode,
                            @JsonInclude(JsonInclude.Include.NON_NULL) UUID replacementLoadId,
                            @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode,
-                           String waybillNo, String carrierConnectionType) {
+                           String waybillNo, String carrierConnectionType,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) CarrierBooking carrierBooking) {
+
+    /**
+     * The load's latest order at an API_BOOKING carrier (3-4): REQUESTED, BOOKED, FAILED, CANCELLED or CANCEL_FAILED
+     * (the carrier would not cancel it after the load was called off - settle it with the carrier).
+     */
+    public record CarrierBooking(String status, String carrierOrderId, String trackingLink,
+                                 java.time.Instant requestedAt, java.time.Instant bookedAt, String lastError) {
+    }
 
     /**
      * A parcel still to take off the vehicle: its order was cancelled (SCRUM-392) or the vehicle was called off under

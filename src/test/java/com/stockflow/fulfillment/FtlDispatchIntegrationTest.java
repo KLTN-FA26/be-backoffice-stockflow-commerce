@@ -92,6 +92,9 @@ class FtlDispatchIntegrationTest {
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
+    /** 3-4: the carrier's API, faked - no test calls Ahamove. */
+    @MockitoBean com.stockflow.fulfillment.internal.service.CarrierBookingGateway carrierGateway;
+    @Autowired com.stockflow.fulfillment.internal.service.CarrierBookingSweeper bookingSweeper;
     @Autowired OrderService orders;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -597,7 +600,7 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.data.waybillNo").doesNotExist());
         assertThat(book(loadId, ghn, "51C-888.88").path("waybillNo").asText()).isEqualTo(number);
 
-        // A carrier booked through its API is never booked by hand (09 BR-29), and nobody types its number.
+        // A carrier booked through its API gives the number itself (09 BR-29, 3-4): nobody types it.
         UUID aha = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO fulfillment.carrier (id, code, name, status, connection_type, webhook_enabled,
@@ -606,10 +609,8 @@ class FtlDispatchIntegrationTest {
                         'v1:AAAAAAAAAAAAAAAAAAAAAAAA', 'apikey', 'v1:BBBBBBBBBBBBBBBBBBBBBBBB')""",
                 aha, "AHA" + aha.toString().substring(28).toUpperCase()));
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha
-                + "\",\"waybillNo\":\"AHA-TYPED\"}")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKS_THROUGH_API"));
-        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKS_THROUGH_API"));
+                + "\",\"waybillNo\":\"AHA-TYPED\"}")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         // A load the carrier's API booked (3-4) - set here by hand - takes no typed number either.
         tx.executeWithoutResult(s -> jdbc.update("UPDATE fulfillment.dispatch_load SET carrier_id = ? WHERE id = "
                 + "?::uuid", aha, loadId));
@@ -748,6 +749,167 @@ class FtlDispatchIntegrationTest {
                 .andReturn().getResponse().getContentAsByteArray();
         assertThat(template[0]).isEqualTo((byte) 0xEF);
         assertThat(new String(template, java.nio.charset.StandardCharsets.UTF_8).split(",")).hasSize(5);
+    }
+
+    // ---- booking through the carrier's API (3-4; 09 §4.2 step 6, BR-29, E24) -------------------
+
+    /** An API_BOOKING carrier with a service code for 5 t trucks and a pickup point at HCM, both in province 79. */
+    private UUID apiCarrier(UUID manager) throws Exception {
+        String code = "AHA" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Ahamove\",\"connection\":{\"connectionType\":\"API_BOOKING\","
+                        + "\"webhookAuthHeader\":\"apikey\",\"webhookAuthValue\":\"webhook-credential-0123456789\","
+                        + "\"apiEnvironment\":\"STAGING\",\"apiAccount\":\"84908000000\",\"apiKey\":\"aha-key-0123456789\"}}"))
+                .andExpect(status().isCreated())).path("carrierId").asText());
+        as(manager, "WAREHOUSE_MANAGER", body(put(BASE + "/carriers/" + carrier + "/service-codes"),
+                "{\"codes\":[{\"vehicleTypeId\":\"" + truck5t + "\",\"provinceCode\":\"79\","
+                        + "\"carrierCityCode\":\"SGN\",\"serviceCode\":\"SGN-TRUCK-2000\"}]}"))
+                .andExpect(status().isOk());
+        as(manager, "WAREHOUSE_MANAGER", body(put(BASE + "/carriers/" + carrier + "/pickup-points"),
+                "{\"pickupPoints\":[{\"warehouseId\":\"" + HCM + "\",\"provinceCode\":\"79\","
+                        + "\"address\":\"1 Lê Lợi, Bến Nghé, Quận 1, Hồ Chí Minh\",\"contactName\":\"Kho HCM\","
+                        + "\"contactPhone\":\"0909000111\"}]}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].provinceCode").value("79"));
+        return carrier;
+    }
+
+    /** The shipment's order delivered to {@code province}. */
+    private void deliverTo(UUID shipment, String province) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE ordering.customer_order SET shipping_recipient_name = 'Lan', shipping_phone = '0912345678',
+                    shipping_line1 = '2 Hai Bà Trưng', shipping_ward_code = '26740', shipping_ward_name = 'Bến Nghé',
+                    shipping_province_code = ?,
+                    shipping_province_name = 'Hồ Chí Minh', shipping_country_code = 'VN'
+                 WHERE id = (SELECT order_id FROM fulfillment.shipment WHERE id = ?)""", province, shipment));
+    }
+
+    @Test
+    @DisplayName("3-4: an API_BOOKING carrier is booked through its API with no transaction open - the warehouse the "
+            + "pickup, each shipment a drop-off - and its order id becomes the waybill number; a refusal leaves the "
+            + "load PLANNED; a cancel cancels the order there first; a load called off has its order cancelled by "
+            + "the sweep")
+    void bookingThroughTheCarriersApi() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck5t);
+        String loadId = loadOf(plan, 1);
+        String loadCode = load(loadId).path("code").asText();
+        String shipmentCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
+                shipment);
+        String book = "{\"carrierId\":\"" + aha + "\",\"pickupAt\":\"2026-11-20T01:00:00Z\",\"stopShipmentIds\":[\""
+                + shipment + "\"]}";
+
+        // A drop-off outside the province the carrier picks up in (E24): refused before any call.
+        deliverTo(shipment, "01");
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), book)).andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("CARRIER_STOP_OUT_OF_AREA"));
+        deliverTo(shipment, "79");
+        // The plate, driver and number are the carrier's to give.
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha
+                + "\",\"waybillNo\":\"AHA-TYPED\"}")).andExpect(status().isBadRequest());
+
+        // The carrier refuses: the load stays PLANNED, the booking says why.
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenThrow(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.CarrierCallFailed(true, "SERVICE_NOT_VALID_AT_PICKUP",
+                "406 SERVICE_NOT_VALID_AT_PICKUP: not served at the pickup"));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), book)).andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKING_FAILED"));
+        assertThat(load(loadId).path("status").asText()).isEqualTo("PLANNED");
+        assertThat(load(loadId).path("carrierBooking").path("status").asText()).isEqualTo("FAILED");
+        assertThat(load(loadId).path("carrierBooking").path("lastError").asText())
+                .contains("SERVICE_NOT_VALID_AT_PICKUP");
+
+        // The carrier takes it: asked with nothing open, the order id is the waybill number.
+        java.util.concurrent.atomic.AtomicReference<Boolean> inTransaction = new java.util.concurrent.atomic
+                .AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<com.stockflow.fulfillment.internal.service.CarrierBookingGateway
+                .Order> sent = new java.util.concurrent.atomic.AtomicReference<>();
+        org.mockito.Mockito.reset(carrierGateway);
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+                    inTransaction.set(org.springframework.transaction.support.TransactionSynchronizationManager
+                            .isActualTransactionActive());
+                    sent.set(call.getArgument(1));
+                    return new com.stockflow.fulfillment.internal.service.CarrierBookingGateway.Placed("AHA-24ABCD",
+                            "https://expressstg.ahamove.com/s/24ABCD");
+                });
+        JsonNode booked = data(dispatch(body(post(LOADS + "/" + loadId + "/booking"), book))
+                .andExpect(status().isOk()));
+        assertThat(inTransaction.get()).isFalse();
+        assertThat(booked.path("status").asText()).isEqualTo("VEHICLE_BOOKED");
+        assertThat(booked.path("waybillNo").asText()).isEqualTo("AHA-24ABCD");
+        assertThat(booked.path("carrierBooking").path("status").asText()).isEqualTo("BOOKED");
+        assertThat(booked.path("carrierBooking").path("trackingLink").asText()).contains("24ABCD");
+        assertThat(sent.get().serviceCode()).isEqualTo("SGN-TRUCK-2000");
+        assertThat(sent.get().remarks()).isEqualTo(loadCode);
+        assertThat(sent.get().pickupAt()).isEqualTo(Instant.parse("2026-11-20T01:00:00Z"));
+        assertThat(sent.get().route()).hasSize(2);
+        assertThat(sent.get().route().get(0).address()).startsWith("1 Lê Lợi");
+        assertThat(sent.get().route().get(1).trackingNumber()).isEqualTo(shipmentCode);
+        assertThat(sent.get().route().get(1).address()).contains("2 Hai Bà Trưng").contains("Bến Nghé");
+        JsonNode history = data(dispatch(get(LOADS + "/" + loadId + "/waybill-history")).andExpect(status().isOk()));
+        assertThat(history.get(history.size() - 1).path("source").asText()).isEqualTo("API");
+        // Booked through the API, it is not booked again, nor given a typed number.
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), book)).andExpect(status().isConflict());
+        waybill(dispatcher, "WAREHOUSE_STAFF", loadId, "AHA-TYPED", null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_FROM_CARRIER_API"));
+        // Nor rebooked by hand with another carrier: the order there would be held for no load.
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn
+                + "\",\"vehiclePlate\":\"51C-999.99\",\"waybillNo\":\"WB-OVER\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKING_IN_PROGRESS"));
+        assertThat(load(loadId).path("waybillNo").asText()).isEqualTo("AHA-24ABCD");
+
+        // Cancelled: the carrier first. Refused (the driver picked up): nothing changes here.
+        org.mockito.Mockito.doThrow(new com.stockflow.fulfillment.internal.service.CarrierBookingGateway
+                .CarrierCallFailed(true, "INVALID_ORDER_STATUS", "406 INVALID_ORDER_STATUS"))
+                .when(carrierGateway).cancel(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(
+                        "AHA-24ABCD"));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking-cancellation"), "{\"reason\":\"đổi giờ\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_CANCEL_REFUSED"));
+        assertThat(load(loadId).path("status").asText()).isEqualTo("VEHICLE_BOOKED");
+        org.mockito.Mockito.doNothing().when(carrierGateway).cancel(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+        JsonNode cancelled = data(dispatch(body(post(LOADS + "/" + loadId + "/booking-cancellation"),
+                "{\"reason\":\"đổi giờ\"}")).andExpect(status().isOk()));
+        assertThat(cancelled.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(cancelled.has("waybillNo") && !cancelled.path("waybillNo").isNull()).isFalse();
+        assertThat(cancelled.path("carrierBooking").path("status").asText()).isEqualTo("CANCELLED");
+
+        // Booked again, then the plan reopened: the load is called off and the sweep cancels the order there.
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-24ABCE", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), book)).andExpect(status().isOk());
+        JsonNode now = data(dispatch(get(PLANS + "/" + plan.path("loadPlanId").asText())).andExpect(status().isOk()));
+        step(now, "/reopening", "{\"expectedVersion\":" + now.path("version").asLong() + ",\"reason\":\"đổi xe\"}");
+        org.mockito.Mockito.clearInvocations(carrierGateway);
+        bookingSweeper.settle();
+        org.mockito.Mockito.verify(carrierGateway).cancel(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq("AHA-24ABCE"));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.carrier_booking WHERE carrier_order_id = "
+                + "'AHA-24ABCE'", String.class)).isEqualTo("CANCELLED");
+        // Every call is the gateway's to log; none of it holds the key in clear.
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.carrier_api_call WHERE request_body LIKE "
+                + "'%aha-key-0123456789%'", Long.class)).isZero();
+    }
+
+    @Test
+    @DisplayName("3-4: the carrier's truck services are asked of its API; a carrier that does not book through one has "
+            + "none")
+    void carrierServicesFromItsApi() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        org.mockito.Mockito.when(carrierGateway.services(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq("SGN"))).thenReturn(List.of(new com.stockflow.fulfillment.internal
+                .service.CarrierBookingGateway.ServiceOption("SGN-TRUCK-1000", "Xe tải 1 tấn", "SGN")));
+
+        as(manager, "WAREHOUSE_MANAGER", get(BASE + "/carriers/" + aha + "/services").param("cityId", "SGN"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].serviceCode").value("SGN-TRUCK-1000"));
+        as(manager, "WAREHOUSE_MANAGER", get(BASE + "/carriers/" + ghn + "/services").param("cityId", "SGN"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_NOT_API_BOOKING"));
+        dispatch(get(BASE + "/carriers/" + aha + "/services").param("cityId", "SGN")).andExpect(status().isForbidden());
     }
 
     // ---- an order cancelled while its vehicle loads -------------------------------------------

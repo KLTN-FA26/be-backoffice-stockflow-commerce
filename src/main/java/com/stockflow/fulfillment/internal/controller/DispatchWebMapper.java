@@ -62,7 +62,10 @@ class DispatchWebMapper {
                 d.pendingUnloads().stream().map(u -> new LoadResponse.PendingUnload(u.packageId(), u.labelCode(),
                         u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt(), u.reasonCode())).toList(),
                 d.carrierBookingToCancel(), d.cancelReasonCode(), d.replacementLoadId(), d.replacementLoadCode(),
-                d.waybillNo(), d.carrierConnectionType());
+                d.waybillNo(), d.carrierConnectionType(), d.carrierBooking() == null ? null
+                        : new LoadResponse.CarrierBooking(d.carrierBooking().status(), d.carrierBooking().carrierOrderId(),
+                        d.carrierBooking().trackingLink(), d.carrierBooking().requestedAt(),
+                        d.carrierBooking().bookedAt(), d.carrierBooking().lastError()));
     }
 
     ControlledCancelResponse toResponse(Dispatching.ControlledCancelResult r) {

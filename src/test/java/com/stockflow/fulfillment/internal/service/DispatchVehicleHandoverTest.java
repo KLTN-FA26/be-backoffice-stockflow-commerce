@@ -86,6 +86,7 @@ class DispatchVehicleHandoverTest {
             new Waybills(loads, mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class),
                     mock(jakarta.persistence.EntityManager.class, org.mockito.Mockito.RETURNS_DEEP_STUBS)),
             mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class),
+            mock(com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository.class),
             Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final CurrentUser actor = FulfillmentFixtures.user();

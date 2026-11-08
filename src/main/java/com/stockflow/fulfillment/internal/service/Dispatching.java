@@ -60,7 +60,18 @@ public interface Dispatching {
                       Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt, UUID bookedBy,
                       Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads,
                       boolean carrierBookingToCancel, String cancelReasonCode, UUID replacementLoadId,
-                      String replacementLoadCode, String waybillNo, String carrierConnectionType) { }
+                      String replacementLoadCode, String waybillNo, String carrierConnectionType,
+                      CarrierBookingView carrierBooking) { }
+
+    /**
+     * The load's latest order at an API_BOOKING carrier (3-4), null when it never had one.
+     *
+     * @param status      REQUESTED, BOOKED, FAILED, CANCELLED or CANCEL_FAILED (the carrier would not cancel it after
+     *                    the load was called off: settle it with the carrier)
+     * @param lastError   the carrier's reason for a refusal
+     */
+    record CarrierBookingView(String status, String carrierOrderId, String trackingLink, Instant requestedAt,
+                              Instant bookedAt, String lastError) { }
 
     /**
      * The answer to the controlled cancel of one vehicle: the load, now CANCELLED, and the PLANNED load that took its
@@ -193,6 +204,18 @@ public interface Dispatching {
 
     /** Every change of the load's waybill number, oldest first. */
     List<WaybillChange> waybillHistory(UUID loadId);
+
+    /**
+     * The third step of booking through a carrier's API ({@link Bookings#book}), in the caller's transaction: under the
+     * load's locks, a load still PLANNED in a confirmed plan is booked with the carrier, the order id as its waybill
+     * number (history source API), and the claimed booking marked BOOKED. Called only by the booking service.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_LOAD_TRANSITION} or
+     *         {@code INVALID_LOAD_PLAN_TRANSITION} when the load moved since the booking was claimed;
+     *         {@code WAYBILL_DUPLICATE}; {@code CONFLICT} when the claim is no longer REQUESTED
+     */
+    LoadDetail applyCarrierBooking(UUID loadId, UUID carrierId, UUID bookingId, String orderId, String trackingLink,
+                                   CurrentUser actor);
 
     /** The booked vehicle arrived: LOADING (BR-14: the plan is locked from now on). */
     LoadDetail startLoading(UUID loadId, CurrentUser actor);

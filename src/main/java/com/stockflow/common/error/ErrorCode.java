@@ -640,6 +640,18 @@ public enum ErrorCode {
     WAYBILL_FROM_CARRIER_API("This carrier's waybill number comes from its booking", 409),
     /** 3-2 (09 BR-29): an API_BOOKING carrier is booked through its API, never by hand. */
     CARRIER_BOOKS_THROUGH_API("This carrier is booked through its API", 409),
+    /** 3-4 (09 BR-29): the carrier's API refused the order; the message carries the carrier's reason. */
+    CARRIER_BOOKING_FAILED("The carrier refused the booking", 422),
+    /** 3-4: the carrier has no pickup point at the load's warehouse. */
+    CARRIER_PICKUP_NOT_CONFIGURED("The carrier has no pickup point at this warehouse", 422),
+    /** 3-4: no service code for the load's vehicle type in the pickup's province. */
+    CARRIER_SERVICE_NOT_CONFIGURED("The carrier has no service for this vehicle type here", 422),
+    /** 3-4 (09 E24): a drop-off lies outside the province the carrier picks up in. */
+    CARRIER_STOP_OUT_OF_AREA("A drop-off lies outside the carrier's service area", 422),
+    /** 3-4: the load is being booked, or is booked, with a carrier's API already. */
+    CARRIER_BOOKING_IN_PROGRESS("This load is already being booked with the carrier", 409),
+    /** 3-4 (09 BR-29): the carrier would not cancel the order (the driver picked up): settle it with the carrier. */
+    CARRIER_CANCEL_REFUSED("The carrier did not cancel the order", 409),
     /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
     WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
     WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),
