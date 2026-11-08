@@ -37,7 +37,7 @@ import java.util.UUID;
  * never see it, 17 BR-27). In the {@code documents} category: a PDF, or a photo of the signed paper.
  *
  * <p>As the waybill files are: checked, scanned and stored with no transaction held, then recorded in a short one, if
- * the shipment left the warehouse - a POD is about a delivery.</p>
+ * the shipment is delivered - a POD is the proof of a delivery - and the file is a PDF or an image.</p>
  */
 @Service
 @Transactional
@@ -104,6 +104,11 @@ public class ShipmentPodFiles {
             StoredFile stored = prepared.single().file();
             return tx.execute(status -> {
                 requireAttachable(shipmentId);
+                // The documents category also takes Word and Excel; a proof of delivery is a PDF or a photo of the paper.
+                if (!"application/pdf".equals(stored.contentType())
+                        && (stored.contentType() == null || !stored.contentType().startsWith("image/"))) {
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A proof of delivery is a PDF or an image");
+                }
                 ShipmentPodFileJpaEntity saved = files.saveAndFlush(new ShipmentPodFileJpaEntity(Identifiers.newId(),
                         shipmentId, stored.key(), stored.originalName(), stored.contentType(), stored.sizeBytes(), by,
                         clock.instant()));
@@ -140,9 +145,10 @@ public class ShipmentPodFiles {
 
     private void requireAttachable(UUID shipmentId) {
         ShipmentJpaEntity shipment = requireShipment(shipmentId);
-        if (shipment.getStatus() == ShipmentStatus.READY_TO_DISPATCH || shipment.getStatus() == ShipmentStatus.CANCELLED) {
+        if (shipment.getStatus() != ShipmentStatus.DELIVERED) {
             throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("Shipment %s is %s: a proof of delivery is "
-                    + "kept with a shipment that left").formatted(shipment.getCode(), shipment.getStatus()));
+                    + "kept with a delivered shipment (09 §4.3 step 2)").formatted(shipment.getCode(),
+                    shipment.getStatus()));
         }
     }
 

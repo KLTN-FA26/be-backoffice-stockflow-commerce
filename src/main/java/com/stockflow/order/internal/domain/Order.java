@@ -661,6 +661,11 @@ public final class Order extends AggregateRoot {
         if (status == OrderStatus.DELIVERY_FAILED) {
             return false;
         }
+        if (status == OrderStatus.DELIVERED) {
+            // DELIVERED -> DELIVERY_FAILED is the warehouse manager's correction of a shipment the carrier reported
+            // wrongly (correctShipmentToFailed, E17), never a failure recorded for the whole order.
+            throw new InvalidOrderTransitionException(orderNumber, status, OrderStatus.DELIVERY_FAILED);
+        }
         transitionTo(OrderStatus.DELIVERY_FAILED, by, withNote(reason.name(), trimmed), now);
         this.deliveryFailureReason = reason;
         return true;
@@ -1316,6 +1321,10 @@ public final class Order extends AggregateRoot {
             return false;
         }
         followShipments(ShipmentChange.OUTCOME, at, by);
+        if (status != OrderStatus.DELIVERED) {
+            // No longer delivered: the time it was shows nowhere.
+            this.deliveredAt = null;
+        }
         return true;
     }
 

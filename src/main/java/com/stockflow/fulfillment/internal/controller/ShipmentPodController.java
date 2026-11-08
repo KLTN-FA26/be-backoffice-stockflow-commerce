@@ -53,7 +53,7 @@ class ShipmentPodController {
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Keep a proof of delivery with a shipment that left (multipart: file; PDF or image)")
+    @Operation(summary = "Keep a proof of delivery with a delivered shipment (multipart: file; PDF or image)")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_OUTCOMES, action = Action.UPDATE)
     public ApiResponse<PodFileResponse> attach(@PathVariable UUID shipmentId, @RequestPart("file") MultipartFile file,
                                                    @AuthenticatedUser CurrentUser actor) {

@@ -194,6 +194,11 @@ class ShipmentService implements Shipments {
         ShipmentStatus before = shipment.status();
         Instant now = clock.instant();
         UUID by = actor.userId();
+        if (target == ShipmentStatus.DELIVERY_FAILED && before == ShipmentStatus.DELIVERED && !knownToOrder(row)) {
+            // Left as the whole order before shipments were recorded: its delivery is the order's own, not a shipment's.
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("Shipment %s left as the whole order before "
+                    + "shipments were recorded: its delivery cannot be corrected here").formatted(row.getCode()));
+        }
         if (!shipment.correctOutcome(target, reason, note, by, now)) {
             return detail(row);
         }
@@ -228,6 +233,11 @@ class ShipmentService implements Shipments {
     public boolean carrierOutcome(UUID shipmentId, ShipmentStatus target, DeliveryFailureReason reason, String note,
                                   Instant at, UUID carrierEventId) {
         ShipmentJpaEntity row = lock(shipmentId);
+        // E17, under the shipment's lock: a correction committed while the report was being matched still wins.
+        if (!corrections.correctedAmong(List.of(shipmentId)).isEmpty()) {
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("The outcome of %s was corrected by hand: "
+                    + "the carrier's report is not applied (E17)").formatted(row.getCode()));
+        }
         Shipment shipment = row.toDomain();
         ShipmentStatus before = shipment.status();
         // The failure note is 500 characters on the shipment and on the order; a carrier's wording has no limit (E22).
@@ -253,6 +263,14 @@ class ShipmentService implements Shipments {
         log.info("Shipment {}: {} -> {} as its carrier reported (order now {})", row.getCode(), before, target,
                 order == null ? "?" : order.status());
         return true;
+    }
+
+    /** Whether the order records this shipment (one handed over as the whole order, before loads, does not). */
+    private boolean knownToOrder(ShipmentJpaEntity row) {
+        return !row.isWholeOrderHandover() && orders.findById(row.getOrderId())
+                .map(o -> o.lifecycle() != null && o.lifecycle().shipments().stream()
+                        .anyMatch(s -> s.shipmentId().equals(row.getId())))
+                .orElse(false);
     }
 
     /**

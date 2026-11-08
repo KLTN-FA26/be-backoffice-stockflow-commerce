@@ -276,18 +276,30 @@ class CarrierEventApplier {
         DeliveryFailureReason reason = failure == null ? null : failure.reason();
         String note = failure == null ? null : failure.carrierWording() != null ? failure.carrierWording()
                 : reason == DeliveryFailureReason.OTHER ? "The carrier gave no reason" : null;
-        List<UUID> targets = m.shipmentId() != null ? List.of(m.shipmentId()) : leftOn(m);
-        if (targets.isEmpty()) {
-            return new Outcome(CarrierEventResult.NEEDS_REVIEW, "No shipment left on load " + m.loadCode());
+        List<String> skipped = new ArrayList<>();
+        List<UUID> targets;
+        if (m.shipmentId() != null) {
+            requireNotCorrected(List.of(m.shipmentId()));
+            targets = List.of(m.shipmentId());
+        } else {
+            List<ShipmentJpaRepository.ShipmentState> onLoad = shipments.statesOnLoad(m.loadId());
+            if (onLoad.isEmpty()) {
+                return new Outcome(CarrierEventResult.NEEDS_REVIEW, "No shipment left on load " + m.loadCode());
+            }
+            skipped.addAll(corrections.correctedAmong(onLoad.stream().map(ShipmentJpaRepository.ShipmentState::getId)
+                    .toList()));
+            targets = onLoad.stream().filter(s -> !skipped.contains(s.getCode()))
+                    .map(ShipmentJpaRepository.ShipmentState::getId).toList();
         }
-        requireNotCorrected(targets);
         int changed = 0;
         for (UUID shipment : targets) {
             changed += shipmentOutcomes.carrierOutcome(shipment, target, reason, note, at, eventId) ? 1 : 0;
         }
-        return changed > 0 ? new Outcome(CarrierEventResult.APPLIED, "%s: %d shipment(s)%s".formatted(target, changed,
-                        reason == null ? "" : " (" + reason + ")"))
-                : new Outcome(CarrierEventResult.IGNORED, "The shipments were " + target + " already");
+        String untouched = skipped.isEmpty() ? "" : "; corrected by hand, not touched (E17): " + String.join(", ",
+                skipped);
+        return changed > 0 ? new Outcome(CarrierEventResult.APPLIED, "%s: %d shipment(s)%s%s".formatted(target,
+                        changed, reason == null ? "" : " (" + reason + ")", untouched))
+                : new Outcome(CarrierEventResult.IGNORED, "The shipments were " + target + " already" + untouched);
     }
 
     /**
@@ -303,7 +315,14 @@ class CarrierEventApplier {
         List<ShipmentJpaRepository.ShipmentState> targets = m.shipmentId() != null
                 ? onLoad.stream().filter(s -> s.getId().equals(m.shipmentId())).toList()
                 : onLoad.stream().filter(s -> s.getStatus() != ShipmentStatus.DELIVERED).toList();
-        requireNotCorrected(targets.stream().map(ShipmentJpaRepository.ShipmentState::getId).toList());
+        List<String> skipped = new ArrayList<>();
+        if (m.shipmentId() != null) {
+            requireNotCorrected(List.of(m.shipmentId()));
+        } else if (!targets.isEmpty()) {
+            skipped.addAll(corrections.correctedAmong(targets.stream().map(ShipmentJpaRepository.ShipmentState::getId)
+                    .toList()));
+            targets = targets.stream().filter(s -> !skipped.contains(s.getCode())).toList();
+        }
         List<String> silent = new ArrayList<>();
         int changed = 0;
         for (ShipmentJpaRepository.ShipmentState shipment : targets) {
@@ -326,10 +345,12 @@ class CarrierEventApplier {
             return new Outcome(CarrierEventResult.NEEDS_REVIEW, ("RETURNED: %d shipment(s); the carrier reported no "
                     + "outcome for %s: record those by hand").formatted(changed, String.join(", ", silent)));
         }
+        String untouched = skipped.isEmpty() ? "" : "; corrected by hand, not touched (E17): " + String.join(", ",
+                skipped);
         if (changed == 0 && recorded == 0) {
-            return new Outcome(CarrierEventResult.IGNORED, "The goods were recorded back already");
+            return new Outcome(CarrierEventResult.IGNORED, "The goods were recorded back already" + untouched);
         }
-        return new Outcome(CarrierEventResult.APPLIED, "RETURNED: %d shipment(s)".formatted(changed));
+        return new Outcome(CarrierEventResult.APPLIED, "RETURNED: %d shipment(s)%s".formatted(changed, untouched));
     }
 
     /**
@@ -424,10 +445,6 @@ class CarrierEventApplier {
                     + "%s was corrected by hand: the carrier's report is not applied (E17)").formatted(
                     String.join(", ", corrected)));
         }
-    }
-
-    private List<UUID> leftOn(Matched m) {
-        return shipments.statesOnLoad(m.loadId()).stream().map(ShipmentJpaRepository.ShipmentState::getId).toList();
     }
 
     private static Map<String, DeliveryFailureReason> reasons(CarrierJpaEntity carrier) {

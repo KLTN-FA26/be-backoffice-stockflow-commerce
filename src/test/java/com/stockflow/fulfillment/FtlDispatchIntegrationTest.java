@@ -1388,13 +1388,56 @@ class FtlDispatchIntegrationTest {
         });
         as(someoneElse[1], "CUSTOMER", get(vehicles)).andExpect(status().isNotFound());
 
-        // The proof of delivery, once the goods left: kept, listed for staff.
+        // The proof of delivery is a delivered shipment's: refused while it is on its way, kept once delivered - a PDF
+        // or a photo, not a spreadsheet.
+        as(manager, "WAREHOUSE_MANAGER", org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/shipments/" + shipment + "/pod-files").file(pod))
+                .andExpect(status().isConflict());
+        oc(body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"), "{\"outcome\":\"DELIVERED\"}"))
+                .andExpect(status().isOk());
+        as(manager, "WAREHOUSE_MANAGER", org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/shipments/" + shipment + "/pod-files").file(new org.springframework.mock.web
+                        .MockMultipartFile("file", "bien-ban.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", onePagePdf())))
+                .andExpect(status().is4xxClientError());
         JsonNode kept = data(as(manager, "WAREHOUSE_MANAGER", org.springframework.test.web.servlet.request
                 .MockMvcRequestBuilders.multipart(BASE + "/shipments/" + shipment + "/pod-files").file(pod))
                 .andExpect(status().isCreated()));
         assertThat(kept.path("shipmentId").asText()).isEqualTo(shipment.toString());
         assertThat(data(dispatch(get(BASE + "/shipments/" + shipment + "/pod-files")).andExpect(status().isOk())))
                 .singleElement().satisfies(f -> assertThat(f.path("fileName").asText()).isEqualTo("bien-ban.pdf"));
+    }
+
+    @Test
+    @DisplayName("3-6: a shipment across two vehicles (LP-3): each vehicle is shown to the customer as it leaves and "
+            + "told in the portal's inbox once - not only the last one")
+    void theCustomerFollowsEachVehicle() throws Exception {
+        UUID[] mine = portalCustomer();
+        OrderSummary order = ftlOrder(2, mine[0]);
+        UUID shipment = packed(order, true)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        assertThat(plan.path("vehicles")).hasSize(2);
+        String v1 = loadOf(plan, 1);
+        String v2 = loadOf(plan, 2);
+        book(v1, ghn, "51C-201.01");
+        book(v2, ghtk, "51C-202.02");
+        String vehicles = BASE + "/orders/me/" + order.orderId() + "/vehicles";
+
+        loadAndSign(v1, "51C-201.01");
+        JsonNode one = data(as(mine[1], "CUSTOMER", get(vehicles)).andExpect(status().isOk()));
+        assertThat(one).singleElement().satisfies(v -> {
+            assertThat(v.path("vehiclePlate").asText()).isEqualTo("51C-201.01");
+            assertThat(v.path("shipments")).singleElement()
+                    .satisfies(s -> assertThat(s.path("status").asText()).isEqualTo("READY_TO_DISPATCH"));
+        });
+
+        loadAndSign(v2, "51C-202.02");
+        JsonNode both = data(as(mine[1], "CUSTOMER", get(vehicles)).andExpect(status().isOk()));
+        assertThat(both).extracting(v -> v.path("vehiclePlate").asText()).containsExactly("51C-201.01", "51C-202.02");
+        assertThat(both.get(1).path("carrierName").asText()).isEqualTo("Xe tải Tiết Kiệm");
+        Await.until("each vehicle told", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
+                + "notification.user_notification WHERE recipient_id = ? AND category = 'ORDER_SHIPPING'", Long.class,
+                mine[1]) == 2);
     }
 
     @Test
@@ -1449,6 +1492,47 @@ class FtlDispatchIntegrationTest {
                 + "\"reason\":\"found at the reception\"}")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.shipment.status").value("DELIVERED"));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.DELIVERED);
+    }
+
+    @Test
+    @DisplayName("3-6 / E17: a report for the whole load leaves the shipment corrected by hand alone and applies to the "
+            + "others")
+    void aLoadWideReportSkipsTheCorrectedShipment() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String secret = "load-webhook-secret-e17-0123456789";
+        String code = "WE" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Xe tải webhook\",\"connection\":{\"connectionType\":"
+                        + "\"WEBHOOK_LOAD\",\"webhookSecret\":\"" + secret + "\"}}")).andExpect(status().isCreated()))
+                .path("carrierId").asText());
+        UUID first = packed(ftlOrder(1), false)[0];
+        UUID second = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(first, second), truck5t);
+        assertThat(plan.path("vehicles")).hasSize(1);
+        String loadId = loadOf(plan, 1);
+        String loadCode = load(loadId).path("code").asText();
+        String firstCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
+                first);
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-WE.01\",\"waybillNo\":\"WE-" + loadId + "\"}")).andExpect(status().isOk());
+        loadAndSign(loadId, "51C-WE.01");
+        java.util.function.Function<String, String> signed = content -> com.stockflow.fulfillment.internal.service
+                .CarrierWebhookTestSigner.sign(secret, content);
+        String one = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
+                + "\"2026-11-21T09:00:00Z\",\"shipmentCode\":\"" + firstCode + "\"}";
+        hook(code, one, "X-Signature", signed.apply(one)).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/shipments/" + first + "/delivery-outcome-correction"),
+                "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"REFUSED\",\"reason\":\"the customer refused\"}"))
+                .andExpect(status().isOk());
+
+        String all = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
+                + "\"2026-11-21T10:00:00Z\"}";
+        hook(code, all, "X-Signature", signed.apply(all)).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(first)).isEqualTo("DELIVERY_FAILED");
+        assertThat(shipmentStatus(second)).isEqualTo("DELIVERED");
+        assertThat(jdbc.queryForObject("SELECT result_note FROM fulfillment.carrier_event WHERE carrier_id = ? "
+                + "ORDER BY received_at DESC LIMIT 1", String.class, carrier)).contains("corrected by hand")
+                .contains(firstCode);
     }
 
     // ---- an order cancelled while its vehicle loads -------------------------------------------

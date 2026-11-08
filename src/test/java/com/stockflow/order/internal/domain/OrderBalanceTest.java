@@ -393,6 +393,17 @@ class OrderBalanceTest {
         }
 
         @Test
+        @DisplayName("the new edge is the correction's only: a delivered order is not failed as a whole order")
+        void notAWholeOrderFailure() {
+            Order order = packed(PaymentTerm.PREPAID, null);
+            order.markShipped(NOW, STAFF);
+            order.markDelivered(NOW, STAFF);
+            assertThat(catchThrowable(() -> order.markDeliveryFailed(DeliveryFailureReason.LOST, null, NOW, STAFF)))
+                    .isInstanceOf(InvalidOrderTransitionException.class);
+            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        }
+
+        @Test
         @DisplayName("refused: a delivery that billed the customer; OTHER without a note; a shipment not delivered")
         void refused() {
             Order credit = packed(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT);

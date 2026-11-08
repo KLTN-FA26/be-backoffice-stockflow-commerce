@@ -5,6 +5,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.fulfillment.internal.domain.LoadStatus;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
@@ -30,7 +31,8 @@ import java.util.stream.Collectors;
 
 /**
  * How the goods of a customer's own order travel, vehicle by vehicle (3-6; kltn-docs 17 BR-27, §5.2 "theo dõi giao
- * hàng"; 09 §4.5 step 9): for each vehicle that left with goods of the order, the carrier's name, the waybill number,
+ * hàng"; 09 §4.5 step 9): for each vehicle that left with goods of the order - one carrying only part of a shipment too
+ * (LP-3: a shipment's parcels may span vehicles), as soon as it leaves - the carrier's name, the waybill number,
  * the plate, the journey's milestones as the carrier reported them (picked up, on its way, returning, returned) with
  * their times, and each of the order's shipments on it with its outcome and when (delivered, not delivered, back). A
  * carrier without webhooks reports no milestone: the shipments' outcomes, recorded by the warehouse, are the journey.
@@ -58,16 +60,19 @@ public class OrderShippingTracking {
     private final DispatchLoadJpaRepository loads;
     private final CarrierJpaRepository carriers;
     private final TrackingMilestoneJpaRepository milestones;
+    private final com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository loaded;
 
     public OrderShippingTracking(CustomerService customers, OrderService orders, ShipmentJpaRepository shipments,
                                  DispatchLoadJpaRepository loads, CarrierJpaRepository carriers,
-                                 TrackingMilestoneJpaRepository milestones) {
+                                 TrackingMilestoneJpaRepository milestones,
+                                 com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository loaded) {
         this.customers = customers;
         this.orders = orders;
         this.shipments = shipments;
         this.loads = loads;
         this.carriers = carriers;
         this.milestones = milestones;
+        this.loaded = loaded;
     }
 
     /**
@@ -81,28 +86,35 @@ public class OrderShippingTracking {
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
         OrderSummary order = orders.findById(orderId).filter(o -> customer.customerId().equals(o.customerId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        List<ShipmentJpaEntity> left = shipments.findByOrderIdOrderByReadyAtAscIdAsc(order.orderId()).stream()
-                .filter(s -> s.getLoadId() != null && s.getHandedOverAt() != null).toList();
+        Map<UUID, ShipmentJpaEntity> ofOrder = shipments.findByOrderIdOrderByReadyAtAscIdAsc(order.orderId()).stream()
+                .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity(), (a, b) -> a,
+                        LinkedHashMap::new));
+        if (ofOrder.isEmpty()) {
+            return List.of();
+        }
+        // The vehicles the order's parcels are on (a shipment may span several), and the one each shipment that left
+        // records (a shipment of the parcel era has no parcel rows on a load).
+        Map<UUID, Set<UUID>> shipmentsByLoad = new LinkedHashMap<>();
+        loaded.findByShipmentIdInAndActiveTrue(ofOrder.keySet()).forEach(p -> shipmentsByLoad
+                .computeIfAbsent(p.getLoadId(), k -> new java.util.LinkedHashSet<>()).add(p.getShipmentId()));
+        ofOrder.values().stream().filter(s -> s.getLoadId() != null).forEach(s -> shipmentsByLoad
+                .computeIfAbsent(s.getLoadId(), k -> new java.util.LinkedHashSet<>()).add(s.getId()));
+        List<DispatchLoadJpaEntity> left = loads.findByIdIn(shipmentsByLoad.keySet()).stream()
+                .filter(l -> l.getStatus() == LoadStatus.DISPATCHED && l.getDispatchedAt() != null)
+                .sorted(Comparator.comparing(DispatchLoadJpaEntity::getDispatchedAt)
+                        .thenComparing(DispatchLoadJpaEntity::getId)).toList();
         if (left.isEmpty()) {
             return List.of();
         }
-        Set<UUID> loadIds = left.stream().map(ShipmentJpaEntity::getLoadId).collect(Collectors.toSet());
-        Map<UUID, DispatchLoadJpaEntity> vehicles = loads.findByIdIn(loadIds).stream()
-                .collect(Collectors.toMap(DispatchLoadJpaEntity::getId, Function.identity()));
-        Map<UUID, String> carrierNames = carriers.findAllById(vehicles.values().stream()
-                        .map(DispatchLoadJpaEntity::getCarrierId).filter(Objects::nonNull).collect(Collectors.toSet()))
+        Map<UUID, String> carrierNames = carriers.findAllById(left.stream().map(DispatchLoadJpaEntity::getCarrierId)
+                        .filter(Objects::nonNull).collect(Collectors.toSet()))
                 .stream().collect(Collectors.toMap(CarrierJpaEntity::getId, CarrierJpaEntity::getName));
-        Map<UUID, List<ShipmentJpaEntity>> byLoad = new LinkedHashMap<>();
-        left.stream().sorted(Comparator.comparing(ShipmentJpaEntity::getHandedOverAt))
-                .forEach(s -> byLoad.computeIfAbsent(s.getLoadId(), k -> new java.util.ArrayList<>()).add(s));
-        return byLoad.entrySet().stream().map(entry -> {
-            DispatchLoadJpaEntity load = vehicles.get(entry.getKey());
-            return new Vehicle(load.getCode(), carrierNames.get(load.getCarrierId()), load.getWaybillNo(),
-                    load.getVehiclePlate(), entry.getValue().getFirst().getHandedOverAt(),
-                    milestones.findByLoadIdOrderByCarrierReportedAtAsc(load.getId()).stream()
-                            .map(m -> new Milestone(m.getMilestone(), m.getCarrierReportedAt())).toList(),
-                    entry.getValue().stream().map(s -> new ShipmentProgress(s.getCode(), s.getStatus().name(),
-                            s.getOutcomeAt())).toList());
-        }).toList();
+        return left.stream().map(load -> new Vehicle(load.getCode(), carrierNames.get(load.getCarrierId()),
+                load.getWaybillNo(), load.getVehiclePlate(), load.getDispatchedAt(),
+                milestones.findByLoadIdOrderByCarrierReportedAtAsc(load.getId()).stream()
+                        .map(m -> new Milestone(m.getMilestone(), m.getCarrierReportedAt())).toList(),
+                shipmentsByLoad.get(load.getId()).stream().map(ofOrder::get).filter(Objects::nonNull)
+                        .map(s -> new ShipmentProgress(s.getCode(), s.getStatus().name(), s.getOutcomeAt())).toList()))
+                .toList();
     }
 }
