@@ -194,13 +194,18 @@ class DesignProjectIntegrationTest {
         return design;
     }
 
-    /** Places {@code logo} at {@code u} and renders the three files from that layout. */
-    private void layOut(String design, String logo, double u) throws Exception {
+    /** A layout with {@code logo} at {@code u} across the wall. */
+    private String layoutOf(String logo, double u) {
         double v = (surface.vFrom() + surface.vTo()) / 2;
-        String layout = "{\"schemaVersion\":1,\"templateCode\":\"CUP12-BODY\",\"sku\":\"" + sku + "\",\"surfaces\":"
+        return "{\"schemaVersion\":1,\"templateCode\":\"CUP12-BODY\",\"sku\":\"" + sku + "\",\"surfaces\":"
                 + "{\"BODY\":{\"background\":{\"kind\":\"none\"},\"elements\":[{\"id\":\"logo\",\"type\":\"image\","
                 + "\"assetId\":\"" + logo + "\",\"naturalWidthPx\":1200,\"naturalHeightPx\":1200,\"widthMm\":30,"
                 + "\"heightMm\":30,\"placement\":{\"u\":" + u + ",\"v\":" + v + ",\"rotationDeg\":0,\"scale\":1}}]}}}";
+    }
+
+    /** Places {@code logo} at {@code u} and renders the three files from that layout. */
+    private void layOut(String design, String logo, double u) throws Exception {
+        String layout = layoutOf(logo, u);
         String checksum = data(mvc.perform(put("/api/v1/designs/" + design + "/document")
                 .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + version(design) + ",\"document\":"
                         + layout + "}")).andExpect(status().isOk())).get("checksum").asText();
@@ -357,20 +362,46 @@ class DesignProjectIntegrationTest {
         mvc.perform(get("/api/v1/designs/" + design + "/assets"))
                 .andExpect(jsonPath("$.data[?(@.assetId == '" + placed.get("assetId").asText() + "')]").isNotEmpty());
         assertThat(projectEvents()).containsSubsequence("ASSET_ADDED", "ASSET_ADDED", "ASSET_REMOVED");
+
+        // At most 30 files (B43).
+        tx.executeWithoutResult(s -> {
+            for (int i = 0; i < 29; i++) {
+                jdbc.update("INSERT INTO design.design_project_asset (id, project_id, storage_key, original_name, "
+                        + "content_type, size_bytes, checksum, width_px, height_px, created_at) VALUES "
+                        + "(gen_random_uuid(), ?::uuid, 'design-assets/qa/' || gen_random_uuid(), 'x.png', 'image/png', "
+                        + "1, ?, 1, 1, NOW())", project, "a".repeat(64));
+            }
+        });
+        mvc.perform(multipart("/api/v1/design-projects/" + project + "/assets")
+                .file(new MockMultipartFile("file", "one-more.png", "image/png", png(10, 10))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_LIBRARY_FULL"));
     }
 
     @Test
     void aBatchGoesWholeOrNotAtAllAndItsRoundClosesOnceEveryDesignIsDecided() throws Exception {
         String first = draft(project, middle());
         String broken = draft(project, surface.uTo() + 500);
+        String stale = draft(project, middle());
+        // Its layout moved after its files were rendered: they are outdated.
+        String staleLogo = jdbc.queryForObject("SELECT id::text FROM design.design_asset WHERE draft_id = ?::uuid",
+                String.class, stale);
+        mvc.perform(put("/api/v1/designs/" + stale + "/document").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + version(stale) + ",\"document\":" + layoutOf(staleLogo, middle() + 1) + "}"))
+                .andExpect(status().isOk());
 
-        batch(first, broken).andExpect(status().isUnprocessableEntity())
+        batch(first, broken, stale).andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("DESIGN_BATCH_PREFLIGHT_FAILED"))
-                .andExpect(jsonPath("$.details.designs.length()").value(1))
-                .andExpect(jsonPath("$.details.designs[0].designId").value(broken));
+                .andExpect(jsonPath("$.details.designs.length()").value(2))
+                .andExpect(jsonPath("$.details.designs[?(@.designId == '" + broken + "')].issues").isNotEmpty())
+                .andExpect(jsonPath("$.details.designs[?(@.designId == '" + stale + "')].roles").isNotEmpty());
         assertThat(statusOf(first)).isEqualTo("DRAFT");
         assertThat(statusOf(broken)).isEqualTo("DRAFT");
+        assertThat(statusOf(stale)).isEqualTo("DRAFT");
         assertThat(projectEvents()).contains("BATCH_PREFLIGHT_FAILED");
+        assertThat(jdbc.queryForObject("SELECT notes FROM design.design_project_event WHERE project_id = ?::uuid "
+                + "AND event = 'BATCH_PREFLIGHT_FAILED'", String.class, project))
+                .contains(broken + ": OUTSIDE_PRINT_AREA", stale + ": files to render again");
         assertThat(jdbc.queryForList("SELECT decision FROM design.design_decision WHERE draft_id = ?::uuid",
                 String.class, broken)).contains("PREFLIGHT_FAILED");
         // One draft is no batch.
@@ -395,11 +426,31 @@ class DesignProjectIntegrationTest {
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + round + "')].projectName").value("Nhận diện quán A"));
 
         decide(first, false, "Logo lệch").andExpect(status().isOk());
-        mvc.perform(get("/api/v1/design-review-rounds/" + round)).andExpect(jsonPath("$.data.closedAt").doesNotExist());
+        mvc.perform(get("/api/v1/design-review-rounds/" + round)).andExpect(jsonPath("$.data.closedAt").doesNotExist())
+                // Returned, it is the customer's draft again: the round keeps its id and outcome, not the design.
+                .andExpect(jsonPath("$.data.designs[?(@.designId == '" + first + "')].outcome").value("RETURNED"))
+                .andExpect(jsonPath("$.data.designs[?(@.designId == '" + first + "')].design").isEmpty());
+
+        // Returned from a round still open, it goes into a new round with another draft.
+        as(owner, Set.of());
+        layOut(stale, staleLogo, middle());
+        String again = data(batch(first, stale).andExpect(status().isCreated())).get("roundId").asText();
+        assertThat(again).isNotEqualTo(round);
+        as(manager, REVIEWER);
         decide(broken, true, null).andExpect(status().isOk());
-        mvc.perform(get("/api/v1/design-review-rounds/" + round)).andExpect(jsonPath("$.data.closedAt").exists())
-                .andExpect(jsonPath("$.data.designs[?(@.design.id == '" + first + "')].outcome").value("RETURNED"));
-        assertThat(projectEvents()).containsSubsequence("BATCH_SUBMITTED", "BATCH_CLOSED");
+        mvc.perform(get("/api/v1/design-review-rounds/" + round)).andExpect(jsonPath("$.data.closedAt").exists());
+        assertThat(projectEvents()).containsSubsequence("BATCH_SUBMITTED", "BATCH_SUBMITTED", "BATCH_CLOSED");
+
+        // Returned once more and submitted alone, it is in the queue of designs submitted alone.
+        decide(stale, false, "Màu chưa đúng").andExpect(status().isOk());
+        as(owner, Set.of());
+        mvc.perform(post("/api/v1/designs/" + stale + "/technical-review-requests")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + version(stale) + "}"))
+                .andExpect(status().isOk());
+        as(manager, REVIEWER);
+        mvc.perform(get("/api/v1/designs/review-queue"))
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + stale + "')]").isNotEmpty())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + first + "')]").isEmpty());
     }
 
     @Test
@@ -460,6 +511,22 @@ class DesignProjectIntegrationTest {
         String revision = data(mvc.perform(post("/api/v1/designs/" + cup + "/revisions")).andExpect(status().isOk()))
                 .get("id").asText();
         mvc.perform(get("/api/v1/designs/" + revision)).andExpect(jsonPath("$.data.projectId").value(project));
+        // The project full (B42), a revision is not refused: it stands alone.
+        long held = jdbc.queryForObject("SELECT count(*) FROM design.design_draft WHERE project_id = ?::uuid "
+                + "AND status <> 'ARCHIVED'", Long.class, project);
+        tx.executeWithoutResult(s -> {
+            for (long i = held; i < 20; i++) {
+                jdbc.update("INSERT INTO design.design_draft (id, customer_id, product_id, name, status, created_at, "
+                        + "current_artifacts, owner_user_id, project_id) VALUES (gen_random_uuid(), ?, ?, 'x', 'DRAFT', "
+                        + "NOW(), '{}'::jsonb, ?, ?::uuid)", customerId, productId, owner, project);
+            }
+        });
+        String outside = data(mvc.perform(post("/api/v1/designs/" + mug + "/revisions")).andExpect(status().isOk()))
+                .get("id").asText();
+        mvc.perform(get("/api/v1/designs/" + outside)).andExpect(jsonPath("$.data.projectId").doesNotExist());
+        // Closed, the project takes no revision either.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET status = 'ARCHIVED', archived_at = "
+                + "NOW() WHERE project_id = ?::uuid AND name = 'x'", project));
         mvc.perform(post("/api/v1/design-projects/" + project + "/archive").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"version\":" + projectVersion() + "}")).andExpect(status().isOk());
         String later = data(mvc.perform(post("/api/v1/designs/" + mug + "/revisions")).andExpect(status().isOk()))

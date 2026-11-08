@@ -70,8 +70,22 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
             + "and d.status <> com.stockflow.design.internal.domain.DesignStatus.ARCHIVED")
     long countInProject(@Param("projectId") UUID projectId);
 
-    /** Whether a design of the project waits for review: the project cannot close meanwhile (BR-22). */
-    boolean existsByProjectIdAndStatus(UUID projectId, DesignStatus status);
+    /** One project's design count, archived designs aside. */
+    interface ProjectCount {
+        UUID getProjectId();
+
+        long getDesigns();
+    }
+
+    /** {@link #countInProject} of each of {@code projectIds}, for a page of projects; a project with none is absent. */
+    @Query("select d.projectId as projectId, count(d) as designs from DesignDraftJpaEntity d "
+            + "where d.projectId in :projectIds "
+            + "and d.status <> com.stockflow.design.internal.domain.DesignStatus.ARCHIVED group by d.projectId")
+    java.util.List<ProjectCount> countInProjects(@Param("projectIds") Collection<UUID> projectIds);
+
+    /** The project a design is in now, read from the table rather than from what this transaction loaded. */
+    @Query("select d.projectId from DesignDraftJpaEntity d where d.id = :id")
+    UUID projectIdOf(@Param("id") UUID id);
 
     /** What the draft limit counts (B37). */
     long countByCustomerIdAndStatus(UUID customerId, DesignStatus status);

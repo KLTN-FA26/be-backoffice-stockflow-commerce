@@ -286,8 +286,8 @@ public class CustomerDesignService {
                 clock.instant()));
         decide(draft, actor, DesignDecisionType.DERIVED_FROM_SNAPSHOT, snapshotId.toString());
         if (source.getProjectId() != null) {
-            // In the same project while it is open; a closed project takes it not (BR-22).
-            projects.joinRevision(draft, source.getProjectId(), actor);
+            // In the same project while it is open and has room; otherwise it stands alone (BR-22, B42).
+            projects.joinRevision(draft, sourceId, source.getProjectId(), actor);
         }
         return views.of(draft);
     }

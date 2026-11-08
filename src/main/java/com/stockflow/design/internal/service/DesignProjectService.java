@@ -107,9 +107,14 @@ public class DesignProjectService {
     public Page<ProjectSummary> list(UUID actor, String status, Pageable page) {
         authenticated(actor);
         Set<ProjectStatus> statuses = status == null || status.isBlank() ? LISTED : Set.of(parseStatus(status));
-        return projects.findOwnedBy(actor, statuses, Pages.of(page.getPageNumber(), page.getPageSize()))
-                .map(p -> new ProjectSummary(p.getId(), p.getName(), p.getDescription(), p.getStatus(), p.getVersion(),
-                        drafts.countInProject(p.getId()), p.getCreatedAt(), p.getArchivedAt()));
+        Page<DesignProjectJpaEntity> found = projects.findOwnedBy(actor, statuses, Pages.of(page.getPageNumber(),
+                page.getPageSize()));
+        java.util.Map<UUID, Long> counts = found.isEmpty() ? java.util.Map.of()
+                : drafts.countInProjects(found.getContent().stream().map(DesignProjectJpaEntity::getId).toList())
+                .stream().collect(java.util.stream.Collectors.toMap(DesignDraftJpaRepository.ProjectCount::getProjectId,
+                        DesignDraftJpaRepository.ProjectCount::getDesigns));
+        return found.map(p -> new ProjectSummary(p.getId(), p.getName(), p.getDescription(), p.getStatus(),
+                p.getVersion(), counts.getOrDefault(p.getId(), 0L), p.getCreatedAt(), p.getArchivedAt()));
     }
 
     @Transactional(readOnly = true)
@@ -201,13 +206,16 @@ public class DesignProjectService {
 
     /**
      * A revision joins the project of the design it revises while that project is open (§4.7, BR-22); a closed
-     * project takes it not, and it stands on its own.
+     * project takes it not, and it stands on its own. So it does when the project is full (B42): revising is never
+     * refused for the project's sake - the customer may move it in once a place is free. Whether the source is still in
+     * that project is read again under the project's lock, which removing a design takes too.
      */
-    void joinRevision(DesignDraftJpaEntity revision, UUID sourceProjectId, UUID actor) {
+    void joinRevision(DesignDraftJpaEntity revision, UUID sourceId, UUID sourceProjectId, UUID actor) {
         DesignProjectJpaEntity project = projects.lockById(sourceProjectId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         entityManager.refresh(project);
-        if (project.getStatus() == ProjectStatus.ACTIVE) {
+        if (project.getStatus() == ProjectStatus.ACTIVE && sourceProjectId.equals(drafts.projectIdOf(sourceId))
+                && drafts.countInProject(sourceProjectId) < DesignProjectRules.MAX_DESIGNS) {
             join(project, revision, actor);
         }
     }

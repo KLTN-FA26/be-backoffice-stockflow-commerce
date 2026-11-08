@@ -13,7 +13,10 @@ public record DesignReviewRoundResponse(UUID id, UUID projectId, String projectN
                                         String customerName, UUID submittedBy, Instant submittedAt, Instant closedAt,
                                         List<Design> designs) {
 
-    /** One design of the round, as it is now, and the decision on it. */
-    public record Design(DesignDraftResponse design, String outcome, Instant decidedAt) {
+    /**
+     * One design of the round and the decision on it. {@code design} - the design as it is now - only while it waits
+     * or once approved: returned or deleted, it is its owner's alone (kltn-docs 12 BR-03).
+     */
+    public record Design(UUID designId, DesignDraftResponse design, String outcome, Instant decidedAt) {
     }
 }

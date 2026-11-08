@@ -5,7 +5,9 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.i18n.Messages;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignProjectJpaEntity;
 import com.stockflow.design.internal.entity.DesignReviewRoundDesignJpaEntity;
 import com.stockflow.design.internal.entity.DesignReviewRoundJpaEntity;
@@ -22,6 +24,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -41,6 +45,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional(readOnly = true)
 public class DesignReviewRoundService {
 
+    private static final Logger log = LoggerFactory.getLogger(DesignReviewRoundService.class);
+
     private final DesignReviewRoundJpaRepository rounds;
     private final DesignReviewRoundDesignJpaRepository members;
     private final DesignProjectJpaRepository projects;
@@ -48,10 +54,13 @@ public class DesignReviewRoundService {
     private final DesignReviewService reviews;
     private final CustomerService customers;
     private final DraftViews views;
+    private final Messages messages;
 
+    @SuppressWarnings("java:S107")
     public DesignReviewRoundService(DesignReviewRoundJpaRepository rounds, DesignReviewRoundDesignJpaRepository members,
                                     DesignProjectJpaRepository projects, DesignDraftJpaRepository drafts,
-                                    DesignReviewService reviews, CustomerService customers, DraftViews views) {
+                                    DesignReviewService reviews, CustomerService customers, DraftViews views,
+                                    Messages messages) {
         this.rounds = rounds;
         this.members = members;
         this.projects = projects;
@@ -59,10 +68,16 @@ public class DesignReviewRoundService {
         this.reviews = reviews;
         this.customers = customers;
         this.views = views;
+        this.messages = messages;
     }
 
-    /** One design of a round: the design as it is now, and the decision on it, null while it waits. */
-    public record RoundDesign(DesignWorkflowService.DraftView design, String outcome, Instant decidedAt) {
+    /**
+     * One design of a round and the decision on it, null while it waits. The design as it is now is shown only while
+     * it waits or once approved: returned, it is a draft again and its owner's alone, and deleted it is nobody's (BR-03,
+     * B38) - its id and outcome remain.
+     */
+    public record RoundDesign(UUID designId, DesignWorkflowService.DraftView design, String outcome,
+                              Instant decidedAt) {
     }
 
     /** A round as the Sales Manager reads it. */
@@ -110,11 +125,27 @@ public class DesignReviewRoundService {
                 reviews.decide(design.id(), actor, design.version(), true, null);
                 outcomes.add(new ApprovalOutcome(design.id(), "APPROVED", null, null));
             } catch (BusinessException refused) {
+                if (refused.errorCode().isServerFault()) {
+                    log.error("Approving design {} of round {} failed", design.id(), roundId, refused);
+                }
+                // A server fault's own words name files and services: the client gets the code's text instead.
                 outcomes.add(new ApprovalOutcome(design.id(), "NOT_APPROVED", refused.errorCode().name(),
-                        refused.getMessage()));
+                        refused.errorCode().isServerFault() || refused.getMessage() == null
+                                ? messages.forCode(refused.errorCode()) : refused.getMessage()));
+            } catch (RuntimeException failed) {
+                // A lock timeout, a deadlock, a damaged file: this design stays waiting, the others still go (BR-20).
+                log.error("Approving design {} of round {} failed", design.id(), roundId, failed);
+                outcomes.add(new ApprovalOutcome(design.id(), "NOT_APPROVED", ErrorCode.INTERNAL_ERROR.name(),
+                        messages.forCode(ErrorCode.INTERNAL_ERROR)));
             }
         }
         return outcomes;
+    }
+
+    /** A design the Sales Manager may see: one waiting for review or approved. */
+    private static DesignWorkflowService.DraftView visible(DesignWorkflowService.DraftView design) {
+        return design != null && (DesignStatus.PENDING_REVIEW.name().equals(design.status())
+                || DesignStatus.APPROVED.name().equals(design.status())) ? design : null;
     }
 
     /** Rounds as read: their designs, projects and customers read once for the lot. */
@@ -137,7 +168,8 @@ public class DesignReviewRoundService {
             DesignProjectJpaEntity project = projectsById.get(round.getProjectId());
             List<RoundDesign> inRound = membersOf.getOrDefault(round.getId(), List.of()).stream()
                     .sorted(Comparator.comparing(DesignReviewRoundDesignJpaEntity::getDraftId))
-                    .map(m -> new RoundDesign(designs.get(m.getDraftId()), m.getOutcome(), m.getDecidedAt()))
+                    .map(m -> new RoundDesign(m.getDraftId(), visible(designs.get(m.getDraftId())), m.getOutcome(),
+                            m.getDecidedAt()))
                     .toList();
             return new RoundView(round.getId(), project.getId(), project.getName(), project.getCustomerId(),
                     names.get(project.getCustomerId()), round.getSubmittedBy(), round.getSubmittedAt(),

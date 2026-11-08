@@ -85,7 +85,8 @@ class DesignReviewRoundController {
     private DesignReviewRoundResponse toResponse(DesignReviewRoundService.RoundView r) {
         return new DesignReviewRoundResponse(r.id(), r.projectId(), r.projectName(), r.customerId(), r.customerName(),
                 r.submittedBy(), r.submittedAt(), r.closedAt(), r.designs().stream()
-                .map(d -> new DesignReviewRoundResponse.Design(drafts.toResponse(d.design()), d.outcome(),
-                        d.decidedAt())).toList());
+                .map(d -> new DesignReviewRoundResponse.Design(d.designId(),
+                        d.design() == null ? null : drafts.toResponse(d.design()), d.outcome(), d.decidedAt()))
+                .toList());
     }
 }

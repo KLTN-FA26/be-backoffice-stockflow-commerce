@@ -229,10 +229,11 @@ public class DesignSubmissionService {
     }
 
     /**
-     * The print file checked against the template (plan D2), read from storage with no transaction held: a finding
-     * when it is not the studio's for this template, none when it is.
+     * The print file checked against the template (plan D2), read from storage with no transaction held - also when a
+     * batch calls it through the proxy: a finding when it is not the studio's for this template, none when it is.
      */
-    List<LayoutPreflight.Issue> printFileIssues(Plan plan) {
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public List<LayoutPreflight.Issue> printFileIssues(Plan plan) {
         String problem;
         try (PrintFileCopy print = PrintFileCopy.download(storage, plan.printFileKey(), plan.printFileChecksum())) {
             problem = PrintFileGeometry.problem(print, plan.template());

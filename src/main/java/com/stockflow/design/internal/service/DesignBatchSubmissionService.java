@@ -122,8 +122,10 @@ public class DesignBatchSubmissionService {
             tx.executeWithoutResult(status -> {
                 failedPreflight.forEach((id, issues) -> submissions.recordFailure(id, actor, issues));
                 projects.record(projects.own(projectId, actor), actor, ProjectEventType.BATCH_PREFLIGHT_FAILED,
-                        failures.stream().map(f -> f.get("designId") + (f.containsKey("issues") ? " preflight"
-                                : " files " + f.get("roles"))).collect(Collectors.joining("; ")));
+                        failures.stream().map(f -> f.get("designId") + ": " + (f.containsKey("issues")
+                                ? failedPreflight.get(UUID.fromString((String) f.get("designId"))).stream()
+                                .map(LayoutPreflight.Issue::rule).distinct().collect(Collectors.joining(", "))
+                                : "files to render again " + f.get("roles"))).collect(Collectors.joining("; ")));
             });
             throw new BusinessException(ErrorCode.DESIGN_BATCH_PREFLIGHT_FAILED,
                     failures.size() + " of " + designs.size() + " designs did not pass; none was submitted", List.of(),
