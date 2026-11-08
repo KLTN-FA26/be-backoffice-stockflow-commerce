@@ -115,13 +115,15 @@ public class FileTransfers {
                 inspection.requireClean(content);
             }
             PdfContentPolicy.check(category, upload.contentType(), buffered.path());
+            ImageDimensions.Size dimensions = ImageDimensions.measures(category)
+                    ? ImageDimensions.of(buffered.path()) : null;
             StoredFile file;
             try (InputStream content = new BufferedInputStream(buffered.open())) {
                 file = storage.store(category, upload.originalName(), upload.contentType(),
                         upload.sizeBytes(), content, buffered.checksum());
             }
             if (!StorageKeys.hasDisplayCopies(category)) {
-                return new PreparedFiles.PreparedFile(file, buffered.checksum());
+                return new PreparedFiles.PreparedFile(file, buffered.checksum(), List.of(), dimensions);
             }
             try {
                 // From the spooled file, read once a decoder is free: a photo waiting for one holds no heap.

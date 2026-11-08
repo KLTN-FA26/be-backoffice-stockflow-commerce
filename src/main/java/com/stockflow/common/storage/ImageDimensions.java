@@ -32,6 +32,15 @@ public final class ImageDimensions {
     private ImageDimensions() {
     }
 
+    /**
+     * Whether uploads of {@code category} are measured when they are prepared - before they are stored, so an image
+     * over {@link #MAX_PIXELS} is refused without ever reaching the store. A customer's design image is: the studio's
+     * print-resolution check needs its size from the server, not from the browser that sent it.
+     */
+    public static boolean measures(FileCategory category) {
+        return category == FileCategory.DESIGN_ASSET;
+    }
+
     /** An image's upright size in pixels. */
     public record Size(int width, int height) {
         public long pixels() {

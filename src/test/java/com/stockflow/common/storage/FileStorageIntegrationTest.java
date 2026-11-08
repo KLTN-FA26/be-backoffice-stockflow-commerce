@@ -268,4 +268,37 @@ class FileStorageIntegrationTest {
                     .contains("X-Amz-Signature=", "X-Amz-Expires=600");
         }
     }
+
+    /** 2F-4: through the backend too, a design image is measured before it is stored, and a huge one never is. */
+    @Test
+    void aDesignImageIsMeasuredBeforeItIsStored() throws Exception {
+        var storage = new LocalFileStorage(properties(), Clock.systemUTC());
+        var transfers = new FileTransfers(storage, properties(), Clock.systemUTC());
+        byte[] png = png(120, 80);
+        try (var prepared = transfers.prepare(FileCategory.DESIGN_ASSET,
+                new FileUpload("logo.png", "image/png", png.length, new ByteArrayInputStream(png)))) {
+            assertThat(prepared.single().dimensions()).isEqualTo(new ImageDimensions.Size(120, 80));
+        }
+        byte[] huge = png(1, 1);
+        java.nio.ByteBuffer.wrap(huge, 16, 8).putInt(8000).putInt(5001);
+        assertThatThrownBy(() -> transfers.prepare(FileCategory.DESIGN_ASSET,
+                new FileUpload("huge.png", "image/png", huge.length, new ByteArrayInputStream(huge))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.PAYLOAD_TOO_LARGE));
+        try (var files = java.nio.file.Files.walk(directory)) {
+            assertThat(files.filter(java.nio.file.Files::isRegularFile)).as("nothing stored, the first one closed unadopted")
+                    .isEmpty();
+        }
+        try (var prepared = transfers.prepare(FileCategory.PRODUCT_IMAGE,
+                new FileUpload("p.png", "image/png", png.length, new ByteArrayInputStream(png)))) {
+            assertThat(prepared.single().dimensions()).isNull();
+        }
+    }
+
+    private static byte[] png(int width, int height) throws Exception {
+        var out = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(width, height,
+                java.awt.image.BufferedImage.TYPE_INT_RGB), "png", out);
+        return out.toByteArray();
+    }
 }

@@ -264,6 +264,7 @@ public class StagedUploads {
         // Spooled once to a temporary file, as a multipart upload is: its first bytes, size and digest checked on the
         // way, then scanned, then - a PDF - inspected for active content, an evidence photo rendered.
         List<String> copies;
+        ImageDimensions.Size dimensions;
         try (InputStream raw = storage.download(incoming);
              BufferedUpload buffered = BufferedUpload.read(category, new FileUpload(session.get("name"), type, size, raw))) {
             if (!sha256.equals(buffered.checksum())) {
@@ -274,6 +275,7 @@ public class StagedUploads {
                 inspection.requireClean(content);
             }
             PdfContentPolicy.check(category, type, buffered.path());
+            dimensions = ImageDimensions.measures(category) ? ImageDimensions.of(buffered.path()) : null;
             storage.copy(incoming, key);
             try {
                 // From the spooled file, read once a decoder is free: a photo waiting for one holds no heap.
@@ -287,7 +289,7 @@ public class StagedUploads {
             throw new StorageException("Could not read upload " + uploadId, unreadable);
         }
         var file = new StoredFile(key, session.get("name"), type, size, clock.instant());
-        return new Accepted(uploadId, incoming, new PreparedFiles.PreparedFile(file, sha256, copies));
+        return new Accepted(uploadId, incoming, new PreparedFiles.PreparedFile(file, sha256, copies, dimensions));
     }
 
     /** After the attaching transaction committed: the session remembers the key; the quarantined copy goes. */

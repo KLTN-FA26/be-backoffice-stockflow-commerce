@@ -56,7 +56,7 @@ public final class ContentTypePolicy {
     }
 
     /** Strips any {@code ; charset=...} and lowercases, so {@code IMAGE/PNG} matches. */
-    static String normalise(String declaredType) {
+    public static String normalise(String declaredType) {
         if (declaredType == null || declaredType.isBlank()) {
             throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE,
                     "The upload declared no content type");
