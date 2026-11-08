@@ -164,8 +164,51 @@ SELECT pg_temp.expect_ok('P15 sku renamed while still DRAFT', $q$
     VALUES (md5('qa:variant:draft')::uuid, md5('demo:product:SOFA-3S')::uuid, 'SOFA-3S-BEIGE', 'x', 'COLOR=BEIGE');
     UPDATE product.variants SET sku = 'SOFA-3S-BE' WHERE id = md5('qa:variant:draft')::uuid $q$);
 SELECT pg_temp.expect_fail('P16 print template on a STANDARD product', $q$
-    INSERT INTO product.customization_templates (id, variant_id, code, name, template_2d_url, allowed_file_formats, max_file_size_mb)
-    VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, 'T1', 'x', 'https://x', ARRAY['PNG'], 10) $q$);
+    INSERT INTO product.customization_templates (id, variant_id, code, name, allowed_file_formats, max_file_size_mb)
+    VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, 'T1', 'x', ARRAY['image/png'], 10) $q$);
+-- A CUSTOMIZABLE cup to hang templates on (V20261108000600): rolled back with the rest.
+INSERT INTO product.products (id, code, name, slug, status, kind, version, created_at)
+VALUES (md5('qa:product:CUP')::uuid, 'QACUP', 'QA cup', 'qa-cup', 'DRAFT', 'CUSTOMIZABLE', 0, NOW());
+INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
+                              created_at)
+VALUES (md5('qa:variant:CUP')::uuid, md5('qa:product:CUP')::uuid, 'QACUP-8OZ', 'QA cup 8oz', 'ACTIVE', TRUE,
+        'DEFAULT', 0, 0, NOW());
+SELECT pg_temp.expect_ok('P16a an active template with a model on a CUSTOMIZABLE variant', $q$
+    INSERT INTO product.customization_templates (id, variant_id, code, name, allowed_file_formats, max_file_size_mb,
+                                                 model_params_json, is_active)
+    VALUES (md5('qa:template:CUP')::uuid, md5('qa:variant:CUP')::uuid, 'CUP-BODY', 'x', ARRAY['image/png'], 20,
+            '{"kind": "parametric-cup"}', TRUE);
+    INSERT INTO product.print_areas (id, template_id, code, name, x_mm, y_mm, width_mm, height_mm, safe_margin_mm,
+                                     bleed_mm, shape_json, uv_mapping_json)
+    VALUES (gen_random_uuid(), md5('qa:template:CUP')::uuid, 'BODY', 'x', 0, 0, 250, 100, 3, 2,
+            '{"type": "annular-sector"}', '{"meshPart": "body"}') $q$);
+SELECT pg_temp.expect_fail('P16b an active template without a model', $q$
+    UPDATE product.customization_templates SET model_params_json = NULL WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16c an upload type that is not a design asset MIME type', $q$
+    UPDATE product.customization_templates SET allowed_file_formats = ARRAY['PNG']
+     WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16d a model of a kind the studio cannot draw', $q$
+    UPDATE product.customization_templates SET model_params_json = '{"kind": "gltf"}'
+     WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16e a second active template on one variant', $q$
+    INSERT INTO product.customization_templates (id, variant_id, code, name, allowed_file_formats, max_file_size_mb,
+                                                 model_params_json, is_active)
+    VALUES (gen_random_uuid(), md5('qa:variant:CUP')::uuid, 'CUP-BODY-2', 'x', ARRAY['image/png'], 20,
+            '{"kind": "parametric-cup"}', TRUE) $q$);
+SELECT pg_temp.expect_fail('P16f an upload limit over a design asset''s 50 MB', $q$
+    UPDATE product.customization_templates SET max_file_size_mb = 51 WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16g a reference die-line outside print-templates/', $q$
+    UPDATE product.customization_templates SET reference_file_key = 'documents/2026/11/a.pdf',
+           reference_file_name = 'a.pdf', reference_content_type = 'application/pdf'
+     WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16h a print area code the studio does not draw', $q$
+    INSERT INTO product.print_areas (id, template_id, code, name, x_mm, y_mm, width_mm, height_mm, shape_json,
+                                     uv_mapping_json)
+    VALUES (gen_random_uuid(), md5('qa:template:CUP')::uuid, 'WRAP', 'x', 0, 0, 250, 100, '{"type": "rect"}',
+            '{"meshPart": "body"}') $q$);
+SELECT pg_temp.expect_fail('P16i a print area without a computed shape', $q$
+    INSERT INTO product.print_areas (id, template_id, code, name, x_mm, y_mm, width_mm, height_mm, uv_mapping_json)
+    VALUES (gen_random_uuid(), md5('qa:template:CUP')::uuid, 'FRONT', 'x', 0, 0, 250, 100, '{"meshPart": "front"}') $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);
