@@ -42,6 +42,7 @@ class FulfillmentModuleTest {
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
     @MockitoBean com.stockflow.product.api.ProductService productServiceMock;
+    @MockitoBean com.stockflow.product.api.CustomerSkus customerSkusMock;
     // Order's, not fulfillment's, since packing no longer checks designs (V20261108000500).
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
 
