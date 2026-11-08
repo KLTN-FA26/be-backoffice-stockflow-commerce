@@ -67,6 +67,12 @@ public final class FulfillmentPermissions {
     public static final String WAYBILL_IMPORTS = "fulfillment-waybill-imports";
 
     /**
+     * READ: what carriers reported through their webhooks, and the error list; UPDATE: mark an error-list event dealt
+     * with, with a note (3-5; kltn-docs 09 §4.5 step 8; V20261108001700). Warehouse manager and system admin.
+     */
+    public static final String CARRIER_EVENTS = "fulfillment-carrier-events";
+
+    /**
      * UPDATE: record a delivery outcome - on its own, RETURNED only; APPROVE: also DELIVERED and DELIVERY_FAILED, which
      * move the order and bill it (kltn-docs 09 BR-02).
      */

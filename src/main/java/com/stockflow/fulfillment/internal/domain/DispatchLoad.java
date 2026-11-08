@@ -433,6 +433,54 @@ public final class DispatchLoad {
     }
 
     /**
+     * A driver took the carrier's order (an API carrier's webhook, kltn-docs 09 §4.5 "tài xế nhận đơn"): the driver's
+     * name and phone go on the load while its vehicle is booked or loading. The plate is not touched: the carrier sends
+     * none, and it is given at the handover.
+     *
+     * @return whether it changed anything
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} with no vehicle booked, or once the vehicle left with
+     *         another driver on its signed manifest
+     */
+    public boolean carrierAssignedDriver(String driver, String phone) {
+        String name = trimmed(driver);
+        String number = trimmed(phone);
+        if (status == LoadStatus.DISPATCHED && Objects.equals(name, driverName) && Objects.equals(number, driverPhone)) {
+            return false;
+        }
+        requireVehicleExpected("a driver taking the order");
+        if (Objects.equals(name, driverName) && Objects.equals(number, driverPhone)) {
+            return false;
+        }
+        driverName = name;
+        driverPhone = number;
+        return true;
+    }
+
+    /**
+     * The driver gave the carrier's order back and the carrier looks for another (09 §4.5 "tài xế huỷ sau khi nhận"):
+     * the driver comes off the load, the event log keeping who it was.
+     *
+     * @return whether there was a driver to take off
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} once the vehicle left, or with no vehicle booked
+     */
+    public boolean carrierReleasedDriver() {
+        requireVehicleExpected("a driver giving the order back");
+        if (driverName == null && driverPhone == null) {
+            return false;
+        }
+        driverName = null;
+        driverPhone = null;
+        return true;
+    }
+
+    private void requireVehicleExpected(String what) {
+        if (status != LoadStatus.VEHICLE_BOOKED && status != LoadStatus.LOADING) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, "Load %s is %s: %s is not expected now"
+                    .formatted(code, status, what));
+        }
+    }
+
+    /**
      * A waybill number can be recorded on this load at all: a carrier is booked and the load is live or left.
      *
      * @throws BusinessException {@code INVALID_LOAD_TRANSITION} when no carrier is booked (PLANNED) or it is CANCELLED

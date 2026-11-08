@@ -238,12 +238,14 @@ class ShipmentServiceTest {
         void deliveredTellsTheOrder() {
             ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.HANDED_OVER));
             OrderSummary order = orderKnowing(row);
-            when(orders.recordShipmentDelivered(row.getOrderId(), row.getId(), actor.userId())).thenReturn(order);
+            when(orders.recordShipmentDelivered(eq(row.getOrderId()), eq(row.getId()), any(java.time.Instant.class),
+                    eq(actor.userId()))).thenReturn(order);
 
             service.recordOutcome(row.getId(), new Shipments.Outcome("delivered", null, null), actor);
 
             assertThat(row.getStatus()).isEqualTo(ShipmentStatus.DELIVERED);
-            verify(orders).recordShipmentDelivered(row.getOrderId(), row.getId(), actor.userId());
+            verify(orders).recordShipmentDelivered(eq(row.getOrderId()), eq(row.getId()), any(java.time.Instant.class),
+                    eq(actor.userId()));
             verify(shipments).saveAndFlush(row);
             verify(timeline).record(any(Shipment.class), eq(ShipmentStatus.HANDED_OVER), eq(order), eq(null), any(),
                     any());
@@ -254,7 +256,8 @@ class ShipmentServiceTest {
         void failedCarriesReasonAndNote() {
             ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.HANDED_OVER));
             OrderSummary order = orderKnowing(row);
-            when(orders.recordShipmentDeliveryFailed(any(), any(), any(), any(), any())).thenReturn(order);
+            when(orders.recordShipmentDeliveryFailed(any(), any(), any(), any(), any(java.time.Instant.class), any()))
+                    .thenReturn(order);
 
             service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERY_FAILED", "customer_absent",
                     "  called twice  "), actor);
@@ -262,8 +265,9 @@ class ShipmentServiceTest {
             assertThat(row.getStatus()).isEqualTo(ShipmentStatus.DELIVERY_FAILED);
             assertThat(row.getFailureReason()).isEqualTo(com.stockflow.fulfillment.internal.domain.DeliveryFailureReason.CUSTOMER_ABSENT);
             assertThat(row.getFailureNote()).isEqualTo("called twice");
-            verify(orders).recordShipmentDeliveryFailed(row.getOrderId(), row.getId(),
-                    com.stockflow.order.api.DeliveryFailureReason.CUSTOMER_ABSENT, "called twice", actor.userId());
+            verify(orders).recordShipmentDeliveryFailed(eq(row.getOrderId()), eq(row.getId()),
+                    eq(com.stockflow.order.api.DeliveryFailureReason.CUSTOMER_ABSENT), eq("called twice"),
+                    any(java.time.Instant.class), eq(actor.userId()));
         }
 
         @Test
@@ -271,12 +275,14 @@ class ShipmentServiceTest {
         void returnedAfterFailure() {
             ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.DELIVERY_FAILED));
             OrderSummary order = orderKnowing(row);
-            when(orders.recordShipmentReturned(row.getOrderId(), row.getId(), actor.userId())).thenReturn(order);
+            when(orders.recordShipmentReturned(eq(row.getOrderId()), eq(row.getId()), any(java.time.Instant.class),
+                    eq(actor.userId()))).thenReturn(order);
 
             service.recordOutcome(row.getId(), new Shipments.Outcome("RETURNED", null, null), actor);
 
             assertThat(row.getStatus()).isEqualTo(ShipmentStatus.RETURNED);
-            verify(orders).recordShipmentReturned(row.getOrderId(), row.getId(), actor.userId());
+            verify(orders).recordShipmentReturned(eq(row.getOrderId()), eq(row.getId()), any(java.time.Instant.class),
+                    eq(actor.userId()));
         }
 
         @Test
@@ -284,7 +290,7 @@ class ShipmentServiceTest {
         void deliveredOnARetry() {
             ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.DELIVERY_FAILED));
             OrderSummary order = orderKnowing(row);
-            when(orders.recordShipmentDelivered(any(), any(), any())).thenReturn(order);
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
 
             service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null), actor);
 
@@ -303,7 +309,7 @@ class ShipmentServiceTest {
             assertThat(refusal(() -> service.recordOutcome(handed.getId(),
                     new Shipments.Outcome("RETURNED", null, null), actor)).errorCode())
                     .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
-            verify(orders, never()).recordShipmentDelivered(any(), any(), any());
+            verify(orders, never()).recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any());
             verify(shipments, never()).saveAndFlush(any());
         }
 
@@ -345,7 +351,7 @@ class ShipmentServiceTest {
             service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null), actor);
 
             verify(orders).recordDelivery(row.getOrderId(), actor.userId());
-            verify(orders, never()).recordShipmentDelivered(any(), any(), any());
+            verify(orders, never()).recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any());
         }
 
         @Test

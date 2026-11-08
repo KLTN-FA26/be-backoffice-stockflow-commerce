@@ -199,6 +199,32 @@ public interface Dispatching {
      */
     LoadDetail cancelCarrierBooking(UUID loadId, UUID bookingId, String reason, CurrentUser actor);
 
+    // ---- what a carrier's webhook reported (3-5; kltn-docs 09 §4.5 step 7) ---------------------------
+    // Applied in the caller's transaction under the load's locks; nobody is the actor. Each returns whether the load
+    // changed, and throws a BusinessException when the load's state does not take the report - the caller's
+    // NEEDS_REVIEW.
+
+    /**
+     * The waybill number, with the plate and driver when given (a WEBHOOK_LOAD carrier, 09 §4.4 source 1): history
+     * source WEBHOOK. Once the vehicle left, a different number is not applied ({@code INVALID_LOAD_TRANSITION}); the
+     * same number changes nothing. A number another live load of the carrier holds is {@code WAYBILL_DUPLICATE}.
+     */
+    boolean carrierWaybill(UUID loadId, String waybill, String plate, String driver, String phone);
+
+    /** A driver took the carrier's order: name and phone on the load. */
+    boolean carrierDriverAssigned(UUID loadId, String driver, String phone);
+
+    /** The driver gave the carrier's order back: off the load. */
+    boolean carrierDriverReleased(UUID loadId);
+
+    /**
+     * The carrier cancelled the order {@code bookingId} before the pickup (09 §4.5: "chuyến chưa ký bàn giao → về
+     * Planned, xoá thông tin đặt xe, báo Dispatch Staff"): the booking CANCELLED, the load back to PLANNED, the
+     * dispatchers told ({@code CarrierBookingCancelled}). A booking no longer BOOKED is left alone (false). Once
+     * loading started, {@code INVALID_LOAD_TRANSITION}.
+     */
+    boolean carrierOrderCancelled(UUID loadId, UUID bookingId, Instant at);
+
     // ---- the waybill number (3-2; 09 §4.4, BR-23, BR-24) --------------------------------------------------------------
 
     /**

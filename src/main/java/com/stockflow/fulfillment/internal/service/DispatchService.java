@@ -460,6 +460,84 @@ class DispatchService implements Dispatching {
         return detail(header, load);
     }
 
+    // ------------------------------------------------------------------ what a carrier's webhook reported (3-5)
+
+    @Override
+    public boolean carrierWaybill(UUID loadId, String waybill, String plate, String driver, String phone) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        String before = load.waybillNo();
+        if (load.status() == LoadStatus.DISPATCHED) {
+            String given = waybill == null ? null : waybill.strip();
+            if (Objects.equals(before, given)) {
+                return false;
+            }
+            // 09 §4.5 step 7: a load that left with another number goes to the error list, never corrected silently.
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s left with waybill number %s; the "
+                    + "carrier now reports %s").formatted(load.code(), before, given));
+        }
+        if (!load.recordWaybill(waybill, plate, driver, phone, null)) {
+            return false;
+        }
+        waybills.requireUnique(load.carrierId(), load.waybillNo(), load.id());
+        Instant now = clock.instant();
+        DispatchLoadJpaEntity current = locked.header();
+        waybills.saving(() -> store.save(load, current));
+        waybills.record(load.id(), before, load.waybillNo(), WaybillSource.WEBHOOK, null, now, null);
+        log.info("Load {}: waybill {} from the carrier's webhook", load.code(), load.waybillNo());
+        return true;
+    }
+
+    @Override
+    public boolean carrierDriverAssigned(UUID loadId, String driver, String phone) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        if (!load.carrierAssignedDriver(driver, phone)) {
+            return false;
+        }
+        store.save(load, locked.header());
+        log.info("Load {}: a driver took the carrier's order", load.code());
+        return true;
+    }
+
+    @Override
+    public boolean carrierDriverReleased(UUID loadId) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        if (!load.carrierReleasedDriver()) {
+            return false;
+        }
+        store.save(load, locked.header());
+        log.info("Load {}: the driver gave the carrier's order back", load.code());
+        return true;
+    }
+
+    @Override
+    public boolean carrierOrderCancelled(UUID loadId, UUID bookingId, Instant at) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        // First read of the booking in this transaction: the lock returns the row as it is now.
+        var booking = carrierBookings.lockById(bookingId).orElse(null);
+        if (booking == null || !com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity.BOOKED
+                .equals(booking.getStatus())) {
+            return false;
+        }
+        if (load.status() != LoadStatus.VEHICLE_BOOKED) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is %s: its carrier cancelled order "
+                    + "%s after loading started - settle it with the carrier").formatted(load.code(), load.status(),
+                    booking.getCarrierOrderId()));
+        }
+        String reason = "The carrier cancelled order " + booking.getCarrierOrderId();
+        String before = load.waybillNo();
+        booking.cancelled(reason, at);
+        carrierBookings.saveAndFlush(booking);
+        load.cancelBooking(reason, null, at);
+        store.save(load, locked.header());
+        waybills.record(load.id(), before, null, WaybillSource.WEBHOOK, null, at, reason);
+        log.info("Load {}: its carrier cancelled order {}; back to PLANNED", load.code(), booking.getCarrierOrderId());
+        return true;
+    }
+
     @Override
     public LoadDetail recordWaybill(UUID loadId, WaybillEntry entry, CurrentUser actor) {
         Locked locked = lockForChange(loadId);

@@ -93,6 +93,9 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
     /** Provider webhooks: anonymous, signed, idempotent by their own message ids. */
     static final String WEBHOOK_PATH = "/api/v1/notifications/webhooks/";
 
+    /** Carriers' webhooks (3-5): anonymous, authenticated by their credential, repeats told apart by the event log. */
+    static final String CARRIER_WEBHOOK_PATH = "/api/v1/fulfillment/carrier-webhooks/";
+
     /**
      * How long a stored response can be replayed.
      *
@@ -123,7 +126,8 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
         // A provider's webhook (SCRUM-352) is not a client's retry: it carries its own idempotency (Svix's message
         // id) and caps its body at 64 KiB as it reads it. Buffering it here first, whatever its size, would bypass
         // that cap (review of #195, N3).
-        if (request.getRequestURI() != null && request.getRequestURI().startsWith(WEBHOOK_PATH)) {
+        if (request.getRequestURI() != null && (request.getRequestURI().startsWith(WEBHOOK_PATH)
+                || request.getRequestURI().startsWith(CARRIER_WEBHOOK_PATH))) {
             return true;
         }
         if (request.getHeader(IdempotencyKeys.HEADER) == null) {

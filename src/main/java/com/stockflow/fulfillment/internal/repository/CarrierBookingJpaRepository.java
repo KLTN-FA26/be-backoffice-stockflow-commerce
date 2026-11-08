@@ -55,6 +55,32 @@ public interface CarrierBookingJpaRepository extends BaseJpaRepository<CarrierBo
                                                @Param("unwanted") Collection<com.stockflow.fulfillment.internal.domain
                                                        .LoadStatus> unwanted, Pageable page);
 
+    /** A booking as the carrier-event applier matches it (3-5), read without loading it: its lock reads it fresh. */
+    interface BookingKey {
+        UUID getId();
+
+        UUID getLoadId();
+
+        String getStatus();
+    }
+
+    /** The booking holding the carrier's order {@code orderId} (BR-22: an API carrier's events name its order). */
+    @Query("select b.id as id, b.loadId as loadId, b.status as status from CarrierBookingJpaEntity b "
+            + "where b.carrierId = :carrierId and b.carrierOrderId = :orderId")
+    Optional<BookingKey> findKeyByOrder(@Param("carrierId") UUID carrierId, @Param("orderId") String orderId);
+
+    /** The shipment of drop-off {@code seq} of the booking's order (1 = the first after the pickup), as it was made. */
+    @Query(value = """
+            SELECT CAST(stop ->> 'shipmentId' AS uuid)
+              FROM fulfillment.carrier_booking b CROSS JOIN LATERAL jsonb_array_elements(b.stops) AS stop
+             WHERE b.id = :bookingId AND CAST(stop ->> 'seq' AS integer) = :seq""", nativeQuery = true)
+    Optional<UUID> shipmentAtStop(@Param("bookingId") UUID bookingId, @Param("seq") int seq);
+
+    /** How many drop-offs the booking's order has. */
+    @Query(value = "SELECT jsonb_array_length(stops) FROM fulfillment.carrier_booking WHERE id = :bookingId",
+            nativeQuery = true)
+    int stopCount(@Param("bookingId") UUID bookingId);
+
     @Query("select p from CarrierPickupPointJpaEntity p where p.carrierId = :carrierId and p.warehouseId = :warehouseId")
     Optional<CarrierPickupPointJpaEntity> pickupPoint(@Param("carrierId") UUID carrierId,
                                                       @Param("warehouseId") UUID warehouseId);

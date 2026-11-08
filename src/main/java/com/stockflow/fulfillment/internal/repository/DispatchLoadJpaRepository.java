@@ -67,6 +67,32 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
                                                       cancelled);
 
     /** What a load is, read without loading the entity (so a lock taken next reads it fresh). */
+    /**
+     * What the carrier-event applier matches a report on (3-5), read without loading the load: its row is locked, and
+     * read fresh, only by the change that follows.
+     */
+    interface LoadFacts {
+        UUID getId();
+
+        String getCode();
+
+        UUID getWarehouseId();
+
+        UUID getCarrierId();
+
+        com.stockflow.fulfillment.internal.domain.LoadStatus getStatus();
+
+        String getWaybillNo();
+    }
+
+    @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
+            + "l.status as status, l.waybillNo as waybillNo from DispatchLoadJpaEntity l where l.id = :id")
+    Optional<LoadFacts> findFactsById(@Param("id") UUID id);
+
+    @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
+            + "l.status as status, l.waybillNo as waybillNo from DispatchLoadJpaEntity l where l.code = :code")
+    Optional<LoadFacts> findFactsByCode(@Param("code") String code);
+
     interface LoadKey {
         UUID getWarehouseId();
 

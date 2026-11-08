@@ -113,6 +113,8 @@ class PermissionMatrixTest {
             Map.entry("GET /oauth2/jwks", "public: the signing keys the resource server validates tokens with (permitAll)"),
             Map.entry("POST /api/v1/notifications/webhooks/resend",
                     "public: Resend's delivery reports; the Svix signature is the authorisation (permitAll for POST, SCRUM-352)"),
+            Map.entry("POST /api/v1/fulfillment/carrier-webhooks/{carrierCode}",
+                    "public: carriers' webhooks; the carrier's configured header or HMAC signature is the authorisation (permitAll for POST, 3-5)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
             Map.entry("GET /api/v1/catalog/categories",
                     "any signed-in user: the storefront category navigation, visible categories only (SCRUM-171)"),
@@ -222,6 +224,9 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/waybill-imports", "fulfillment-waybill-imports:CREATE"),
             Map.entry("GET /api/v1/fulfillment/waybill-imports", "fulfillment-waybill-imports:READ"),
             Map.entry("GET /api/v1/fulfillment/waybill-imports/{importId}", "fulfillment-waybill-imports:READ"),
+            Map.entry("GET /api/v1/fulfillment/carrier-events", "fulfillment-carrier-events:READ"),
+            Map.entry("GET /api/v1/fulfillment/carrier-events/{eventId}", "fulfillment-carrier-events:READ"),
+            Map.entry("POST /api/v1/fulfillment/carrier-events/{eventId}/resolution", "fulfillment-carrier-events:UPDATE"),
             // SCRUM-474 UNLOAD-DESIGN (V20261102020100): the controlled cancel after loading started, and the override.
             Map.entry("POST /api/v1/fulfillment/loads/{loadId}/controlled-cancellation",
                     "fulfillment-controlled-cancellations:UPDATE"),
@@ -281,6 +286,9 @@ class PermissionMatrixTest {
                     Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-waybill-imports:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.SYSTEM_ADMIN)),
+            // 3-5, kltn-docs 09 §4.5 step 8: the warehouse manager reads and resolves the carriers' error list.
+            Map.entry("fulfillment-carrier-events:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-carrier-events:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),

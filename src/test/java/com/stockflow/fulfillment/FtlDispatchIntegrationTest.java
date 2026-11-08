@@ -1027,6 +1027,236 @@ class FtlDispatchIntegrationTest {
         dispatch(get(BASE + "/carriers/" + aha + "/services").param("cityId", "SGN")).andExpect(status().isForbidden());
     }
 
+    // ---- carriers' webhooks (3-5; 09 §4.5, BR-22, BR-26, BR-27) ----------------------------------
+
+    private static final String HOOKS = BASE + "/carrier-webhooks/";
+    private static final String EVENTS = BASE + "/carrier-events";
+    private static final String AHA_CREDENTIAL = "webhook-credential-0123456789";
+
+    /** A call to a carrier's webhook, anonymous as carriers' are. */
+    private ResultActions hook(String carrierCode, String content, String header, String value) throws Exception {
+        MockHttpServletRequestBuilder request = post(HOOKS + carrierCode)
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON).content(content);
+        return mvc.perform(header == null ? request : request.header(header, value));
+    }
+
+    private ResultActions aha(String carrierCode, String content) throws Exception {
+        return hook(carrierCode, content, "apikey", AHA_CREDENTIAL);
+    }
+
+    /**
+     * Ahamove's callback as its docs show it: the whole order, the partner's own api_key echoed among its fields, the
+     * pickup as path[0] and each shipment a drop-off.
+     */
+    private static String ahamove(String id, String status, String sub, String fields, String stop1) {
+        return ("{\"_id\":\"%s\",\"status\":\"%s\",\"sub_status\":\"%s\",\"api_key\":\"aha-key-0123456789\","
+                + "\"city_id\":\"SGN\",\"service_id\":\"SGN-TRUCK-2000\",%s\"path\":[{\"address\":\"1 Lê Lợi\","
+                + "\"status\":\"\"},{\"address\":\"2 Hai Bà Trưng\",%s}]}").formatted(id, status, sub,
+                fields.isEmpty() ? "" : fields + ",", stop1.isEmpty() ? "\"status\":\"\"" : stop1);
+    }
+
+    private String carrierCode(UUID carrier) {
+        return jdbc.queryForObject("SELECT code FROM fulfillment.carrier WHERE id = ?", String.class, carrier);
+    }
+
+    private JsonNode lastEvent(UUID carrier) {
+        return json.valueToTree(jdbc.queryForMap("SELECT result, result_note, load_id, shipment_id, payload "
+                + "FROM fulfillment.carrier_event WHERE carrier_id = ? ORDER BY received_at DESC, id DESC LIMIT 1",
+                carrier));
+    }
+
+    private void loadAndSign(String loadId, String plate) throws Exception {
+        dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());
+        for (String label : labels(load(loadId))) {
+            scanOnto(loadId, label).andExpect(status().isOk());
+        }
+        long version = load(loadId).path("version").asLong();
+        dispatch(body(post(LOADS + "/" + loadId + "/handover"), "{\"version\":" + version
+                + ",\"carrierRepresentative\":\"Nguyen Van Tai\",\"vehiclePlate\":\"" + plate + "\",\"signed\":true}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
+    }
+
+    @Test
+    @DisplayName("3-5: Ahamove's webhook - its header credential, the api_key it echoes masked in the log; a driver "
+            + "taking the order, giving it back, another taking it; a repeat recorded once; the pickup reported before "
+            + "the handover is for review; after it, the milestone, the drop-off delivered at the carrier's time, an "
+            + "older failure outdated")
+    void ahamoveWebhook() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        String code = carrierCode(aha);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        deliverTo(shipment, "79");
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-W1", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+
+        // The wrong credential, or none: refused, and kept on the error list all the same.
+        hook(code, ahamove("AHA-W1", "ACCEPTED", "", "\"accept_time\":1800000000", ""), "apikey", "guess")
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.errorCode").value("WEBHOOK_SIGNATURE_INVALID"));
+        hook(code, "{}", null, null).andExpect(status().isUnauthorized());
+        hook("NO-SUCH-CARRIER", "{}", "apikey", AHA_CREDENTIAL).andExpect(status().isUnauthorized());
+        assertThat(lastEvent(aha).path("result").asText()).isEqualTo("INVALID_SIGNATURE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.carrier_event WHERE carrier_id IS NULL "
+                + "AND carrier_code = 'NO-SUCH-CARRIER' AND result = 'INVALID_SIGNATURE'", Long.class)).isOne();
+
+        // A driver takes the order: on the load; the api_key Ahamove echoes is not kept.
+        String accepted = ahamove("AHA-W1", "ACCEPTED", "", "\"accept_time\":1800000000,\"supplier_name\":\"Tài xế A\","
+                + "\"supplier_id\":\"84901111111\"", "");
+        aha(code, accepted).andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế A");
+        assertThat(load(loadId).path("driverPhone").asText()).isEqualTo("84901111111");
+        assertThat(lastEvent(aha).path("payload").asText()).doesNotContain("aha-key-0123456789").contains("***");
+        // The same callback again: recorded once.
+        aha(code, accepted).andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("DUPLICATE"));
+        // The driver gives it back, another takes it.
+        aha(code, ahamove("AHA-W1", "ASSIGNING", "", "\"accept_time\":1800000000", "")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).has("driverName") && !load(loadId).path("driverName").isNull()).isFalse();
+        aha(code, ahamove("AHA-W1", "ACCEPTED", "", "\"accept_time\":1800000300,\"supplier_name\":\"Tài xế B\","
+                + "\"supplier_id\":\"84902222222\"", "")).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế B");
+
+        // Picked up before the dispatcher signed: not applied, on the error list.
+        aha(code, ahamove("AHA-W1", "IN PROCESS", "", "\"pickup_time\":1800000600", ""))
+                .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
+        loadAndSign(loadId, "51C-AHA.01");
+        aha(code, ahamove("AHA-W1", "IN PROCESS", "", "\"pickup_time\":1800000700", ""))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(jdbc.queryForObject("SELECT milestone FROM fulfillment.tracking_milestone WHERE load_id = ?::uuid",
+                String.class, loadId)).isEqualTo("PICKED_UP");
+
+        // Drop-off 1 completed: its shipment delivered at the carrier's time (E25), recorded by nobody.
+        aha(code, ahamove("AHA-W1-1", "IN PROCESS", "", "", "\"status\":\"COMPLETED\",\"complete_time\":1800003600.5"))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
+        assertThat(jdbc.queryForObject("SELECT outcome_at FROM fulfillment.shipment WHERE id = ?", java.sql.Timestamp.class,
+                shipment).toInstant()).isEqualTo(Instant.ofEpochSecond(1_800_003_600L, 500_000_000L));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment_event WHERE shipment_id = ? AND "
+                + "status = 'DELIVERED' AND source = 'CARRIER_WEBHOOK' AND recorded_by IS NULL", Long.class, shipment))
+                .isOne();
+        assertThat(lastEvent(aha).path("shipment_id").asText()).isEqualTo(shipment.toString());
+        // A failure the carrier reports for an earlier time: outdated, ignored, still logged.
+        aha(code, ahamove("AHA-W1-1", "IN PROCESS", "", "", "\"status\":\"FAILED\",\"fail_time\":1800003000,"
+                + "\"fail_comment\":\"Khách vắng\"")).andExpect(jsonPath("$.data.result").value("STALE"));
+        assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
+        // A drop-off the order never had: for review.
+        aha(code, ahamove("AHA-W1-2", "IN PROCESS", "", "", "\"status\":\"COMPLETED\"")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
+
+        // The log of the load, newest first; the error list is the manager's.
+        JsonNode logged = data(as(manager, "WAREHOUSE_MANAGER", get(EVENTS).param("loadId", loadId))
+                .andExpect(status().isOk()));
+        assertThat(logged.path("items")).hasSizeGreaterThanOrEqualTo(8);
+        assertThat(logged.path("items").get(0).path("loadCode").asText()).isEqualTo(load(loadId).path("code").asText());
+        dispatch(get(EVENTS)).andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("3-5: Ahamove cancels the order before the pickup - the load is PLANNED again, its booking CANCELLED, "
+            + "the warehouse's dispatchers told; an order the load no longer holds is outdated")
+    void ahamoveCancelsTheOrder() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        String code = carrierCode(aha);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        deliverTo(shipment, "79");
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-C1", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+
+        aha(code, ahamove("AHA-C1", "CANCELLED", "", "\"cancel_time\":1800000900,\"cancel_by_user\":false,"
+                + "\"cancel_comment\":\"Auto cancel, no driver accepted\"", ""))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        JsonNode planned = load(loadId);
+        assertThat(planned.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(planned.path("carrierBooking").path("status").asText()).isEqualTo("CANCELLED");
+        JsonNode history = data(dispatch(get(LOADS + "/" + loadId + "/waybill-history")).andExpect(status().isOk()));
+        assertThat(history.get(history.size() - 1).path("source").asText()).isEqualTo("WEBHOOK");
+        Await.until("the dispatchers told", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
+                + "notification.user_notification WHERE recipient_id = ? AND category = 'CARRIER_BOOKING' "
+                + "AND source_id = ?", Long.class, dispatcher, loadId) == 1);
+        // Echoed again after the booking is gone: about an order the load no longer holds.
+        aha(code, ahamove("AHA-C1", "CANCELLED", "", "\"cancel_time\":1800000901", ""))
+                .andExpect(jsonPath("$.data.result").value("STALE"));
+    }
+
+    @Test
+    @DisplayName("3-5: a WEBHOOK_LOAD carrier signs its body (QD-11): unsigned is refused; the waybill number from its "
+            + "event (history source WEBHOOK); an unknown load is unmatched; an outcome before the vehicle left is for "
+            + "review; returned with no failure first is failed (OTHER) then returned (E21); the manager resolves the "
+            + "error list once")
+    void webhookPerLoad() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String secret = "load-webhook-secret-0123456789";
+        String code = "WL" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Xe tải webhook\",\"connection\":{\"connectionType\":"
+                        + "\"WEBHOOK_LOAD\",\"webhookSecret\":\"" + secret + "\",\"failureReasonMap\":"
+                        + "{\"Khách không nhận\":\"REFUSED\"}}}")).andExpect(status().isCreated()))
+                .path("carrierId").asText());
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        String loadCode = load(loadId).path("code").asText();
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-WL.01\"}")).andExpect(status().isOk());
+        java.util.function.Function<String, String> signed = content -> com.stockflow.fulfillment.internal.service
+                .CarrierWebhookTestSigner.sign(secret, content);
+
+        String waybill = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"WAYBILL\",\"reportedAt\":"
+                + "\"2026-11-20T08:00:00+07:00\",\"waybillNo\":\"WL-0001\",\"driverName\":\"Tài\"}";
+        hook(code, waybill, "X-Signature", "sha256=00").andExpect(status().isUnauthorized());
+        hook(code, waybill, "X-Signature", signed.apply(waybill)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).path("waybillNo").asText()).isEqualTo("WL-0001");
+        JsonNode history = data(dispatch(get(LOADS + "/" + loadId + "/waybill-history")).andExpect(status().isOk()));
+        assertThat(history.get(history.size() - 1).path("source").asText()).isEqualTo("WEBHOOK");
+
+        String unknown = "{\"loadCode\":\"LD-NOPE\",\"type\":\"PICKED_UP\",\"reportedAt\":\"2026-11-20T08:05:00Z\"}";
+        hook(code, unknown, "X-Signature", signed.apply(unknown))
+                .andExpect(jsonPath("$.data.result").value("UNMATCHED"));
+        String early = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
+                + "\"2026-11-20T09:00:00Z\"}";
+        JsonNode review = data(hook(code, early, "X-Signature", signed.apply(early))
+                .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW")));
+
+        loadAndSign(loadId, "51C-WL.01");
+        String back = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"RETURNED\",\"reportedAt\":"
+                + "\"2026-11-21T10:00:00Z\"}";
+        hook(code, back, "X-Signature", signed.apply(back)).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(shipment)).isEqualTo("RETURNED");
+        assertThat(jdbc.queryForList("SELECT status FROM fulfillment.shipment_event WHERE shipment_id = ? AND "
+                + "source = 'CARRIER_WEBHOOK' ORDER BY occurred_at, status", String.class, shipment))
+                .containsExactly("DELIVERY_FAILED", "RETURNED");
+        assertThat(jdbc.queryForObject("SELECT failure_reason FROM fulfillment.shipment WHERE id = ?", String.class,
+                shipment)).isEqualTo("OTHER");
+
+        // The error list: the manager resolves the early outcome once; an applied event is not the list's.
+        String reviewId = review.path("eventId").asText();
+        as(manager, "WAREHOUSE_MANAGER", get(EVENTS).param("result", "ERRORS").param("open", "true")
+                .param("carrierId", carrier.toString())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(3));
+        as(manager, "WAREHOUSE_MANAGER", body(post(EVENTS + "/" + reviewId + "/resolution"), "{\"note\":\"\"}"))
+                .andExpect(status().isBadRequest());
+        as(manager, "WAREHOUSE_MANAGER", body(post(EVENTS + "/" + reviewId + "/resolution"),
+                "{\"note\":\"recorded by hand after the call\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.event.resolutionNote").value("recorded by hand after the call"));
+        as(manager, "WAREHOUSE_MANAGER", body(post(EVENTS + "/" + reviewId + "/resolution"), "{\"note\":\"again\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_EVENT_NOT_RESOLVABLE"));
+        String appliedId = jdbc.queryForObject("SELECT id::text FROM fulfillment.carrier_event WHERE carrier_id = ? "
+                + "AND result = 'APPLIED' ORDER BY received_at LIMIT 1", String.class, carrier);
+        as(manager, "WAREHOUSE_MANAGER", body(post(EVENTS + "/" + appliedId + "/resolution"), "{\"note\":\"x\"}"))
+                .andExpect(status().isConflict());
+        as(manager, "WAREHOUSE_MANAGER", get(EVENTS + "/" + appliedId)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.payload").value(waybill));
+    }
+
     // ---- an order cancelled while its vehicle loads -------------------------------------------
 
     @Test

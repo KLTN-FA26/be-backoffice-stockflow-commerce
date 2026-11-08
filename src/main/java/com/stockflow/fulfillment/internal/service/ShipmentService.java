@@ -154,7 +154,7 @@ class ShipmentService implements Shipments {
         if (!changed) {
             return detail(row);
         }
-        OrderSummary order = tellOrder(row, target, reason, note, by);
+        OrderSummary order = tellOrder(row, target, reason, note, by, now);
         row.apply(shipment);
         shipments.saveAndFlush(row);
         String carrierName = row.getCarrierId() == null ? null
@@ -168,12 +168,53 @@ class ShipmentService implements Shipments {
     }
 
     /**
+     * An outcome the carrier's webhook reported (3-5; kltn-docs 09 §4.5 step 7), in the caller's transaction: the
+     * shipment locked and moved as {@link #recordOutcome} moves it, the order told in the same transaction - at the time
+     * the carrier gives (E25) and recorded by nobody, its steps naming the carrier event they came from.
+     *
+     * @param target DELIVERED, DELIVERY_FAILED (with {@code reason}; OTHER with {@code note}) or RETURNED
+     * @return whether it changed anything; false when the shipment already had that outcome
+     * @throws BusinessException {@code SHIPMENT_STATE_CONFLICT} when the shipment cannot take it (not handed over, or
+     *         already further along) - the caller's NEEDS_REVIEW
+     */
+    public boolean carrierOutcome(UUID shipmentId, ShipmentStatus target, DeliveryFailureReason reason, String note,
+                                  Instant at, UUID carrierEventId) {
+        ShipmentJpaEntity row = lock(shipmentId);
+        Shipment shipment = row.toDomain();
+        ShipmentStatus before = shipment.status();
+        String trimmed = note == null || note.isBlank() ? null : note.strip();
+        String kept = trimmed == null || trimmed.length() <= 1000 ? trimmed : trimmed.substring(0, 997) + "...";
+        boolean changed = switch (target) {
+            case DELIVERED -> shipment.carrierDelivered(at);
+            case DELIVERY_FAILED -> shipment.carrierFailed(Objects.requireNonNull(reason, "reason"), kept, at);
+            case RETURNED -> shipment.carrierReturned(at);
+            default -> throw new IllegalArgumentException(target.name());
+        };
+        if (!changed) {
+            return false;
+        }
+        OrderSummary order = tellOrder(row, target, reason, kept, null, at);
+        row.apply(shipment);
+        shipments.saveAndFlush(row);
+        String carrierName = row.getCarrierId() == null ? null
+                : carriers.findById(row.getCarrierId()).map(CarrierJpaEntity::getName).orElse(null);
+        String loadCode = row.getLoadId() == null ? null
+                : loads.findById(row.getLoadId()).map(DispatchLoadJpaEntity::getCode).orElse(null);
+        timeline.record(shipment, before, order, null, carrierName, loadCode, carrierEventId);
+        log.info("Shipment {}: {} -> {} as its carrier reported (order now {})", row.getCode(), before, target,
+                order == null ? "?" : order.status());
+        return true;
+    }
+
+    /**
      * The order follows in this transaction (A1). A shipment the order does not know while it records no shipment at
      * all left as the whole order (before loads existed, or packed before parcels recorded their contents): its outcome
      * is the order's own, as long as it is the order's only shipment not cancelled.
+     *
+     * @param at when it happened: now for an outcome a person records, the carrier's time for one its webhook reports
      */
     private OrderSummary tellOrder(ShipmentJpaEntity row, ShipmentStatus target, DeliveryFailureReason reason,
-                                   String note, UUID by) {
+                                   String note, UUID by, Instant at) {
         OrderSummary order = orders.findById(row.getOrderId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + row.getOrderId()));
         boolean known = order.lifecycle() != null && order.lifecycle().shipments().stream()
@@ -198,10 +239,10 @@ class ShipmentService implements Shipments {
             };
         }
         return switch (target) {
-            case DELIVERED -> orders.recordShipmentDelivered(row.getOrderId(), row.getId(), by);
+            case DELIVERED -> orders.recordShipmentDelivered(row.getOrderId(), row.getId(), at, by);
             case DELIVERY_FAILED -> orders.recordShipmentDeliveryFailed(row.getOrderId(), row.getId(),
-                    orderReason(reason), note, by);
-            case RETURNED -> orders.recordShipmentReturned(row.getOrderId(), row.getId(), by);
+                    orderReason(reason), note, at, by);
+            case RETURNED -> orders.recordShipmentReturned(row.getOrderId(), row.getId(), at, by);
             default -> throw new IllegalStateException(target.name());
         };
     }

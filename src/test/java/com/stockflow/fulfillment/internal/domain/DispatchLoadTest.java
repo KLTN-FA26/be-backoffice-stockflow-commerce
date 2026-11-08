@@ -130,6 +130,27 @@ class DispatchLoadTest {
     }
 
     @Test
+    @DisplayName("3-5: a carrier's driver goes on a booked or loading vehicle and comes off it; once the vehicle left "
+            + "only the same driver changes nothing; with no vehicle booked, a driver is not expected")
+    void theCarriersDriver() {
+        DispatchLoad load = vehicle();
+        assertThat(code(() -> load.carrierAssignedDriver("Tài", "0900"))).isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        assertThat(code(load::carrierReleasedDriver)).isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        load.book(GHN, null, null, null, "AHA-1", DISPATCHER, NOW);
+        assertThat(load.carrierReleasedDriver()).isFalse();
+        assertThat(load.carrierAssignedDriver(" Tài ", "0900")).isTrue();
+        assertThat(load.snapshot().driverName()).isEqualTo("Tài");
+        assertThat(load.carrierAssignedDriver("Tài", "0900")).isFalse();
+        assertThat(load.carrierReleasedDriver()).isTrue();
+        assertThat(load.snapshot().driverName()).isNull();
+        assertThat(load.snapshot().driverPhone()).isNull();
+        assertThat(load.snapshot().waybillNo()).isEqualTo("AHA-1");
+
+        DispatchLoad left = loading();
+        assertThat(left.carrierAssignedDriver("Hùng", "0911")).isTrue();
+    }
+
+    @Test
     @DisplayName("waybill number (09 §4.4, BR-23, BR-24): booked with it or recorded after, kept while the carrier stays, "
             + "gone with the booking, required to leave, corrected after leaving only with a reason")
     void theWaybillNumber() {

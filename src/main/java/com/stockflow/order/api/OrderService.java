@@ -134,6 +134,20 @@ public interface OrderService {
     OrderSummary recordShipmentReturned(UUID orderId, UUID shipmentId, UUID by);
 
     /**
+     * As {@link #recordShipmentDelivered(UUID, UUID, UUID)}, at the time the carrier gives (09 §4.5, E25: the delivery's
+     * own time, which an after-delivery instalment counts from). {@code by} is null when the carrier's webhook reported
+     * it.
+     */
+    OrderSummary recordShipmentDelivered(UUID orderId, UUID shipmentId, java.time.Instant at, UUID by);
+
+    /** As {@link #recordShipmentDeliveryFailed(UUID, UUID, DeliveryFailureReason, String, UUID)}, at {@code at}. */
+    OrderSummary recordShipmentDeliveryFailed(UUID orderId, UUID shipmentId, DeliveryFailureReason reason, String note,
+                                              java.time.Instant at, UUID by);
+
+    /** As {@link #recordShipmentReturned(UUID, UUID, UUID)}, at {@code at}. */
+    OrderSummary recordShipmentReturned(UUID orderId, UUID shipmentId, java.time.Instant at, UUID by);
+
+    /**
      * The carrier reported the order delivered (kltn-docs 09 §4.3): SHIPPED or DELIVERY_FAILED → DELIVERED, announced
      * as {@code OrderDelivered}. Idempotent for an order already delivered. Only for an order without shipments
      * (G4-Q5): one with shipments is delivered shipment by shipment.

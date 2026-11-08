@@ -41,6 +41,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -902,8 +903,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     @Override
     public OrderSummary recordShipmentDelivered(UUID orderId, UUID shipmentId, UUID by) {
+        return recordShipmentDelivered(orderId, shipmentId, clock.instant(), by);
+    }
+
+    @Override
+    public OrderSummary recordShipmentDelivered(UUID orderId, UUID shipmentId, Instant at, UUID by) {
         Order order = lockOrder(orderId);
-        if (!order.recordShipmentDelivered(shipmentId, clock.instant(), by)) {
+        if (!order.recordShipmentDelivered(shipmentId, at, by)) {
             return toSummary(order);
         }
         log.info("Order {}: shipment {} delivered, order {}", order.orderNumber(), shipmentId, order.status());
@@ -914,8 +920,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     public OrderSummary recordShipmentDeliveryFailed(UUID orderId, UUID shipmentId,
                                                      com.stockflow.order.api.DeliveryFailureReason reason, String note,
                                                      UUID by) {
+        return recordShipmentDeliveryFailed(orderId, shipmentId, reason, note, clock.instant(), by);
+    }
+
+    @Override
+    public OrderSummary recordShipmentDeliveryFailed(UUID orderId, UUID shipmentId,
+                                                     com.stockflow.order.api.DeliveryFailureReason reason, String note,
+                                                     Instant at, UUID by) {
         Order order = lockOrder(orderId);
-        if (!order.recordShipmentDeliveryFailed(shipmentId, reason, note, clock.instant(), by)) {
+        if (!order.recordShipmentDeliveryFailed(shipmentId, reason, note, at, by)) {
             return toSummary(order);
         }
         log.info("Order {}: shipment {} not delivered ({}), order {}", order.orderNumber(), shipmentId, reason,
@@ -925,8 +938,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     @Override
     public OrderSummary recordShipmentReturned(UUID orderId, UUID shipmentId, UUID by) {
+        return recordShipmentReturned(orderId, shipmentId, clock.instant(), by);
+    }
+
+    @Override
+    public OrderSummary recordShipmentReturned(UUID orderId, UUID shipmentId, Instant at, UUID by) {
         Order order = lockOrder(orderId);
-        if (!order.recordShipmentReturned(shipmentId, clock.instant(), by)) {
+        if (!order.recordShipmentReturned(shipmentId, at, by)) {
             return toSummary(order);
         }
         log.info("Order {}: shipment {} returned, order {}", order.orderNumber(), shipmentId, order.status());

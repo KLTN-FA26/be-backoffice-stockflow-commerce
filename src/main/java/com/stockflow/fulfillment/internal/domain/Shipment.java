@@ -137,7 +137,8 @@ public final class Shipment {
         if (status == ShipmentStatus.HANDED_OVER && loadId.equals(this.loadId)) {
             return false;
         }
-        if (!move(ShipmentStatus.HANDED_OVER, by)) {
+        recorder(by);
+        if (!move(ShipmentStatus.HANDED_OVER)) {
             return false;
         }
         this.wholeOrderHandover = this.wholeOrderHandover || wholeOrder;
@@ -172,9 +173,41 @@ public final class Shipment {
         return ready(newId, newCode, orderId, packId, warehouseId, newRequestId, parcels, note, by, at);
     }
 
-    /** The carrier reported it delivered, on the first try or a retry (09 §4.3 step 1-2). */
+    /** The carrier reported it delivered, on the first try or a retry (09 §4.3 step 1-2); recorded by a person. */
     public boolean recordDelivered(UUID by, Instant at) {
-        if (!move(ShipmentStatus.DELIVERED, by)) {
+        return delivered(recorder(by), at);
+    }
+
+    /** The carrier could not deliver it (09 §4.3 step 2); OTHER needs a note. Recorded by a person. */
+    public boolean recordFailed(DeliveryFailureReason reason, String note, UUID by, Instant at) {
+        return failed(reason, note, recorder(by), at);
+    }
+
+    /** The parcels came back to the warehouse (09 §4.3 step 3, BR-06); recorded by a person. */
+    public boolean recordReturned(UUID by, Instant at) {
+        return returned(recorder(by), at);
+    }
+
+    /**
+     * The carrier's webhook reported it delivered (09 §4.5 step 7): nobody recorded it, and {@code at} is the time the
+     * carrier gives - the delivery's own time (E25).
+     */
+    public boolean carrierDelivered(Instant at) {
+        return delivered(null, at);
+    }
+
+    /** The carrier's webhook reported it not delivered, its reason mapped (E22): recorded by nobody. */
+    public boolean carrierFailed(DeliveryFailureReason reason, String note, Instant at) {
+        return failed(reason, note, null, at);
+    }
+
+    /** The carrier's webhook reported the goods back at the warehouse: recorded by nobody. */
+    public boolean carrierReturned(Instant at) {
+        return returned(null, at);
+    }
+
+    private boolean delivered(UUID by, Instant at) {
+        if (!move(ShipmentStatus.DELIVERED)) {
             return false;
         }
         outcomeAt = at;
@@ -183,13 +216,12 @@ public final class Shipment {
         return true;
     }
 
-    /** The carrier could not deliver it (09 §4.3 step 2); OTHER needs a note. */
-    public boolean recordFailed(DeliveryFailureReason reason, String note, UUID by, Instant at) {
+    private boolean failed(DeliveryFailureReason reason, String note, UUID by, Instant at) {
         Objects.requireNonNull(reason, "reason");
         if (reason == DeliveryFailureReason.OTHER && (note == null || note.isBlank())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A failure for another reason says what it was");
         }
-        if (!move(ShipmentStatus.DELIVERY_FAILED, by)) {
+        if (!move(ShipmentStatus.DELIVERY_FAILED)) {
             return false;
         }
         outcomeAt = at;
@@ -200,15 +232,19 @@ public final class Shipment {
         return true;
     }
 
-    /** The parcels came back to the warehouse through a returns receipt (09 §4.3 step 3, BR-06). */
-    public boolean recordReturned(UUID by, Instant at) {
-        if (!move(ShipmentStatus.RETURNED, by)) {
+    private boolean returned(UUID by, Instant at) {
+        if (!move(ShipmentStatus.RETURNED)) {
             return false;
         }
         outcomeAt = at;
         outcomeBy = by;
         recorded.add(new Step(status, at, by, null));
         return true;
+    }
+
+    /** A person recording an outcome is always named (09 BR-02); only the carrier's webhook records as nobody. */
+    private static UUID recorder(UUID by) {
+        return Objects.requireNonNull(by, "who recorded it (09 BR-02)");
     }
 
     /** Before the handover only: the order was cancelled or the parcels are taken apart again (08 BR-05, BR-06). */
@@ -227,11 +263,10 @@ public final class Shipment {
         return true;
     }
 
-    private boolean move(ShipmentStatus target, UUID by) {
+    private boolean move(ShipmentStatus target) {
         if (status == target) {
             return false;
         }
-        Objects.requireNonNull(by, "who recorded it (09 BR-02)");
         if (!status.canTransitionTo(target)) {
             throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT,
                     "Shipment %s is %s; it cannot become %s".formatted(code, status, target));

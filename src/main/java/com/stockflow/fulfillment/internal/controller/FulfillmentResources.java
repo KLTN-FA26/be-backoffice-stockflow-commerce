@@ -21,6 +21,7 @@ final class FulfillmentResources {
     static final String CONTROLLED_CANCELLATIONS = FulfillmentPermissions.CONTROLLED_CANCELLATIONS;
     static final String WAYBILL_CORRECTIONS = FulfillmentPermissions.WAYBILL_CORRECTIONS;
     static final String WAYBILL_IMPORTS = FulfillmentPermissions.WAYBILL_IMPORTS;
+    static final String CARRIER_EVENTS = FulfillmentPermissions.CARRIER_EVENTS;
     static final String DELIVERY_OUTCOMES = FulfillmentPermissions.DELIVERY_OUTCOMES;
 
     private FulfillmentResources() { }

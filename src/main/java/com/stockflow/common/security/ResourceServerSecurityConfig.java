@@ -161,6 +161,10 @@ public class ResourceServerSecurityConfig {
                         // The mail provider's delivery reports (SCRUM-352): it cannot hold a token, so its Svix
                         // signature is the credential, checked by the endpoint. POST only.
                         .requestMatchers(HttpMethod.POST, "/api/v1/notifications/webhooks/resend").permitAll()
+                        // Carriers' webhooks (3-5, kltn-docs 09 §4.5): a carrier holds no token; the header credential
+                        // or the HMAC signature it was configured with is the credential, checked by the service. POST
+                        // only.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/fulfillment/carrier-webhooks/*").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(converter))

@@ -11,6 +11,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Writes what a shipment just went through: one {@code fulfillment.shipment_event} row per step (who, when, 09 BR-02)
@@ -37,11 +38,23 @@ class ShipmentTimeline {
      */
     void record(Shipment shipment, ShipmentStatus before, OrderSummary order, String orderNumber, String carrierName,
                 String loadCode) {
+        record(shipment, before, order, orderNumber, carrierName, loadCode, null);
+    }
+
+    /**
+     * @param carrierEventId the carrier event the steps came from (3-5: source CARRIER_WEBHOOK), or null for steps a
+     *                       person recorded
+     */
+    void record(Shipment shipment, ShipmentStatus before, OrderSummary order, String orderNumber, String carrierName,
+                String loadCode, UUID carrierEventId) {
         List<Shipment.Step> steps = shipment.pullRecorded();
         ShipmentStatus previous = before;
         for (Shipment.Step step : steps) {
-            events.save(new ShipmentEventJpaEntity(Identifiers.newId(), shipment.id(), step.status().name(),
-                    step.at(), step.note(), step.by()));
+            events.save(carrierEventId == null
+                    ? new ShipmentEventJpaEntity(Identifiers.newId(), shipment.id(), step.status().name(), step.at(),
+                            step.note(), step.by())
+                    : ShipmentEventJpaEntity.fromCarrier(Identifiers.newId(), shipment.id(), step.status().name(),
+                            step.at(), step.note(), carrierEventId + ":" + step.status().name()));
             publisher.publishEvent(new ShipmentStatusChanged(Identifiers.newId(), shipment.id(), shipment.code(),
                     shipment.orderId(), order != null ? order.orderNumber() : orderNumber,
                     order == null ? null : order.customerId(),

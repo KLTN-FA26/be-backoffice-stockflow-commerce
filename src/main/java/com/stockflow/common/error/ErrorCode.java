@@ -652,6 +652,10 @@ public enum ErrorCode {
     CARRIER_BOOKING_IN_PROGRESS("This load is already being booked with the carrier", 409),
     /** 3-4 (09 BR-29): the carrier would not cancel the order (the driver picked up): settle it with the carrier. */
     CARRIER_CANCEL_REFUSED("The carrier did not cancel the order", 409),
+    /** 3-5 (09 §4.5): no such call to a carrier's webhook. */
+    CARRIER_EVENT_NOT_FOUND("Carrier event not found", 404),
+    /** 3-5 (09 §4.5 step 8): only an open error-list event is resolved, once, and not while it is being handled. */
+    CARRIER_EVENT_NOT_RESOLVABLE("This carrier event cannot be resolved", 409),
     /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
     WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
     WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),
