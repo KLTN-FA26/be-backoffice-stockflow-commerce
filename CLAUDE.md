@@ -7,7 +7,8 @@ printing is done by producers outside the system: goods arrive printed, in carto
 stock like any other; the in-house production module is gone (`V20261108000100`). Stock never changes
 warehouse: transfer orders between warehouses are gone too (`V20261108000300`). Every order ships as a full
 truckload through a load plan and nothing is collected on delivery: parcel shipping, the delivery-mode choice and
-COD are gone (`V20261108000400`).
+COD are gone (`V20261108000400`). Printed goods arrive carrying the customer's design, so packing checks only the SKU
+and the count: the design check at packing is gone (`V20261108000500`).
 
 Read this before touching anything. It is short on purpose; it says what is not obvious from the
 code, and points at the code for the rest.
