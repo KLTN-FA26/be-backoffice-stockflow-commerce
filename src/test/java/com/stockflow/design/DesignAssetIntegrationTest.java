@@ -267,7 +267,7 @@ class DesignAssetIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("DESIGN_ASSET_LIMIT_REACHED"));
 
         tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE design.design_draft SET status = 'PENDING_REVIEW' WHERE id = ?::uuid", design));
+                "UPDATE design.design_draft SET status = 'PENDING_REVIEW', review_requested_at = NOW() WHERE id = ?::uuid", design));
         upload(design, "logo.png", "image/png", png, null)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DESIGN_NOT_DRAFT"));

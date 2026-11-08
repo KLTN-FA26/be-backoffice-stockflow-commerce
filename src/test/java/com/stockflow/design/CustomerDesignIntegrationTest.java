@@ -364,7 +364,7 @@ class CustomerDesignIntegrationTest {
     void aDesignThatIsNoLongerADraftDoesNotChange() throws Exception {
         String id = started().get("id").asText();
         tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE design.design_draft SET status = 'PENDING_REVIEW' WHERE id = ?::uuid", id));
+                "UPDATE design.design_draft SET status = 'PENDING_REVIEW', review_requested_at = NOW() WHERE id = ?::uuid", id));
 
         save(id, 0, layout("")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DESIGN_NOT_DRAFT"));
