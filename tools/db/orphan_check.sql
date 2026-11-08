@@ -38,9 +38,9 @@ WITH checks(step, reference, orphans) AS (
         (SELECT count(*) FROM chat.conversation c WHERE c.assigned_agent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.assigned_agent_id))),
     ('live', 'design.design_draft.customer_id -> customer.customer',
         (SELECT count(*) FROM design.design_draft c WHERE NOT EXISTS (SELECT 1 FROM customer.customer p WHERE p.id = c.customer_id))),
-    ('live', 'design.design_draft.{owner,assigned,reviewer,last_editor,reviewed_by} -> identity.app_user',
+    ('live', 'design.design_draft.{owner,reviewed_by} -> identity.app_user',
         (SELECT count(*) FROM design.design_draft c WHERE EXISTS (
-            SELECT 1 FROM unnest(ARRAY[c.owner_user_id, c.assigned_user_id, c.reviewer_user_id, c.last_editor_user_id, c.reviewed_by]) u(id)
+            SELECT 1 FROM unnest(ARRAY[c.owner_user_id, c.reviewed_by]) u(id)
              WHERE u.id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = u.id)))),
     ('live', 'design.design_snapshot.{confirmed_by,reviewed_by} -> identity.app_user',
         (SELECT count(*) FROM design.design_snapshot c WHERE EXISTS (

@@ -51,7 +51,7 @@ class DesignArtifactServiceTest {
     }
 
     private DesignDraft draft(DesignStatus status) {
-        return new DesignDraft(id, owner, null, status, UUID.randomUUID());
+        return new DesignDraft(id, owner, status, UUID.randomUUID(), null);
     }
 
     private PreparedFiles prepared() {
@@ -63,23 +63,23 @@ class DesignArtifactServiceTest {
     }
 
     @Test
-    void theReviewerIsRefusedBeforeTheirFileIsRead() {
+    void someoneButTheOwnerIsRefusedBeforeTheirFileIsRead() {
         UUID reviewer = UUID.randomUUID();
-        when(designs.findDraft(id, reviewer, false)).thenReturn(Optional.of(
-                new DesignDraft(id, owner, null, DesignStatus.DRAFT, UUID.randomUUID(), reviewer)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(
+                new DesignDraft(id, owner, DesignStatus.DRAFT, UUID.randomUUID(), null)));
 
         assertThatThrownBy(() -> service.upload(id, reviewer, upload()))
-                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
         assertThatThrownBy(() -> service.beginUpload(id, reviewer, new com.stockflow.common.storage.UploadSlotRequest(
                 "design.pdf", "application/pdf", bytes.length, Checksums.sha256Hex(bytes))))
-                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
         verifyNoInteractions(files, staged);
     }
 
     @Test
     void preparesTheFileBeforeLockingTheDraftAndAttachesItUnderTheLock() {
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
-        when(designs.findDraft(id, owner, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
         var prepared = prepared();
 
         var result = service.upload(id, owner, upload());
@@ -87,9 +87,9 @@ class DesignArtifactServiceTest {
         assertThat(result.checksum()).isEqualTo(Checksums.sha256Hex(bytes));
         assertThat(result.file().key()).isEqualTo("design-renders/new.pdf");
         InOrder order = inOrder(designs, files, prepared);
-        order.verify(designs).findDraft(id, owner, false);
+        order.verify(designs).findDraft(id, false);
         order.verify(files).prepare(eq(FileCategory.DESIGN_RENDER), any(FileUpload.class));
-        order.verify(designs).findDraft(id, owner, true);
+        order.verify(designs).findDraft(id, true);
         order.verify(designs).attach(result);
         order.verify(prepared).adopt();
         order.verify(prepared).close();
@@ -98,7 +98,7 @@ class DesignArtifactServiceTest {
     @Test
     void deniesUnrelatedUserEvenIfRepositoryAccidentallyReturnsDraft() {
         var outsider = UUID.randomUUID();
-        when(designs.findDraft(id, outsider, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
         assertThatThrownBy(() -> service.upload(id, outsider, upload()))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
@@ -107,9 +107,9 @@ class DesignArtifactServiceTest {
 
     @Test
     void refusesNonDraftAndSnapshotBackedDraftBeforeUploadingAnything() {
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
         assertThatThrownBy(() -> service.upload(id, owner, upload())).isInstanceOf(BusinessException.class);
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
         when(designs.hasSnapshot(id)).thenReturn(true);
         assertThatThrownBy(() -> service.upload(id, owner, upload())).isInstanceOf(BusinessException.class);
         verifyNoInteractions(files);
@@ -117,8 +117,8 @@ class DesignArtifactServiceTest {
 
     @Test
     void aDraftConfirmedWhileTheFileWasScannedIsRefusedAndTheFileIsNotKept() {
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
-        when(designs.findDraft(id, owner, true)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, true)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
         var prepared = prepared();
 
         assertThatThrownBy(() -> service.upload(id, owner, upload())).isInstanceOf(BusinessException.class);
@@ -129,7 +129,7 @@ class DesignArtifactServiceTest {
     }
 
     @Test void replayAfterConfirmationReturnsOriginalWithoutNewStorageWrite() {
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
         var artifact = new com.stockflow.design.internal.domain.DesignArtifact(UUID.randomUUID(), id,
                 new StoredFile("design-renders/old.pdf", "design.pdf", "application/pdf", bytes.length, Instant.EPOCH),
                 Checksums.sha256Hex(bytes), owner + ":CUSTOMER_PREVIEW:key:artifact-request-1");
@@ -144,8 +144,8 @@ class DesignArtifactServiceTest {
     }
 
     @Test void anUploadedFileIsAcceptedOutsideTheLockAndAttachedUnderIt() {
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
-        when(designs.findDraft(id, owner, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
         UUID uploadId = UUID.randomUUID();
         var prepared = mock(PreparedFiles.class);
         when(prepared.single()).thenReturn(new PreparedFiles.PreparedFile(new StoredFile("design-renders/" + uploadId
@@ -157,16 +157,16 @@ class DesignArtifactServiceTest {
         assertThat(result.role()).isEqualTo(com.stockflow.design.api.DesignArtifactRole.PRINT_READY);
         assertThat(result.uploadKey()).isEqualTo(owner + ":PRINT_READY:upload:" + uploadId);
         InOrder order = inOrder(designs, staged, prepared);
-        order.verify(designs).findDraft(id, owner, false);
+        order.verify(designs).findDraft(id, false);
         order.verify(staged).accept(FileCategory.DESIGN_RENDER, owner, java.util.List.of(uploadId));
-        order.verify(designs).findDraft(id, owner, true);
+        order.verify(designs).findDraft(id, true);
         order.verify(designs).attach(result);
         order.verify(prepared).adopt();
         verifyNoInteractions(files);
     }
 
     @Test void theSameUploadAttachedAgainIsAnsweredWithItsArtifactWithoutAcceptingItTwice() {
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
         UUID uploadId = UUID.randomUUID();
         var earlier = new com.stockflow.design.internal.domain.DesignArtifact(UUID.randomUUID(), id,
                 new StoredFile("design-renders/" + uploadId + ".pdf", "design.pdf", "application/pdf", bytes.length,
@@ -181,18 +181,18 @@ class DesignArtifactServiceTest {
     @Test void aSlotIsGivenOnlyForADraftThatStillTakesFiles() {
         var request = new com.stockflow.common.storage.UploadSlotRequest("d.pdf", "application/pdf", 10,
                 Checksums.sha256Hex(bytes));
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.APPROVED)));
         assertThatThrownBy(() -> service.beginUpload(id, owner, request)).isInstanceOf(BusinessException.class);
         verifyNoInteractions(staged);
 
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
         service.beginUpload(id, owner, request);
         verify(staged).begin(FileCategory.DESIGN_RENDER, owner, request);
     }
 
     @Test void theSameRequestCommittedWhileThisOneWasScanningIsAnsweredWithItsArtifact() {
-        when(designs.findDraft(id, owner, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
-        when(designs.findDraft(id, owner, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, false)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
+        when(designs.findDraft(id, true)).thenReturn(Optional.of(draft(DesignStatus.DRAFT)));
         var earlier = new com.stockflow.design.internal.domain.DesignArtifact(UUID.randomUUID(), id,
                 new StoredFile("design-renders/earlier.pdf", "design.pdf", "application/pdf", bytes.length, Instant.EPOCH),
                 Checksums.sha256Hex(bytes), owner + ":CUSTOMER_PREVIEW:key:artifact-request-2");

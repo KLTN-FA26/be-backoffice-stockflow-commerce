@@ -281,10 +281,6 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
                 Map.entry("POST /api/v1/orders", "{\"requestId\":\"" + UUID.randomUUID() + "\",\"customerId\":\"" + victimCustomer
                         + "\",\"lines\":[{\"sku\":\"SOFA-3S-GREY\",\"quantity\":1,\"unitPrice\":1000}]}"),
-                Map.entry("PUT /api/v1/designs/{id}/specification", "{\"version\":0,\"spec\":\"stolen\"}"),
-                Map.entry("POST /api/v1/designs/{id}/change-requests", "{\"version\":0,\"reason\":\"stolen\"}"),
-                Map.entry("POST /api/v1/designs/{id}/confirmation-withdrawals", "{\"version\":0,\"reason\":\"stolen\"}"),
-                Map.entry("POST /api/v1/designs/{id}/confirmations", "{\"version\":0,\"artifactId\":\"" + UUID.randomUUID() + "\"}"),
                 // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
                 Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_SOFA
                         + "\",\"sku\":\"SOFA-3S-GREY\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),

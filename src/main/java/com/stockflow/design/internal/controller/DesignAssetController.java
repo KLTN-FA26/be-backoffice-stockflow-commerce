@@ -99,8 +99,8 @@ class DesignAssetController {
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<List<DesignAssetResponse>> list(@PathVariable UUID designId,
                                                       @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(assets.list(designId, actor(user)).stream().map(DesignAssetController::toResponse)
-                .toList());
+        return ApiResponse.ok(assets.list(designId, actor(user), DesignWorkflowController.reviewer(user)).stream()
+                .map(DesignAssetController::toResponse).toList());
     }
 
     /** A signed link: never cached, never logged. */
@@ -109,7 +109,7 @@ class DesignAssetController {
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ResponseEntity<ApiResponse<ArtifactDownloadResponse>> link(@PathVariable UUID designId,
             @PathVariable UUID assetId, @AuthenticatedUser CurrentUser user) {
-        var link = assets.link(designId, assetId, actor(user));
+        var link = assets.link(designId, assetId, actor(user), DesignWorkflowController.reviewer(user));
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(ApiResponse.ok(new ArtifactDownloadResponse(link.url(), link.expiresAt())));
     }

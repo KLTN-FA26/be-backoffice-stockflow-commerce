@@ -25,6 +25,22 @@ public final class CustomerDesignRules {
         }
     }
 
+    /**
+     * Who reads a design (BR-03, B38, plan D7): its owner, while it is not archived; and someone who may review
+     * designs, while a customer's design waits for review. Anyone else is answered as if it did not exist.
+     *
+     * @param customerDesign whether the design was started by a customer on a template
+     * @param reviewer       whether the reader holds the right to review designs
+     */
+    public static void requireReader(UUID actor, UUID owner, DesignStatus status, boolean customerDesign,
+                                     boolean reviewer) {
+        boolean owns = actor != null && actor.equals(owner) && status != DesignStatus.ARCHIVED;
+        boolean reviews = actor != null && reviewer && customerDesign && status == DesignStatus.PENDING_REVIEW;
+        if (!owns && !reviews) {
+            throw new BusinessException(ErrorCode.NOT_FOUND);
+        }
+    }
+
     /** Only a draft is renamed, laid out or deleted (§4.1, BR-07, BR-08, BR-16). */
     public static void requireDraft(DesignStatus status) {
         if (status != DesignStatus.DRAFT) {

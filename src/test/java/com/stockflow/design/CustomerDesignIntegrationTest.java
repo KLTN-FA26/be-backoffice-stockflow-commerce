@@ -544,35 +544,30 @@ class CustomerDesignIntegrationTest {
     }
 
     /**
-     * Review of 2F-3: the staff workflow being replaced is no way into or through a design the customer started - staff
-     * cannot assign themselves to it (it does not exist to them, whatever version they quote), and its owner cannot
-     * confirm it past the Sales Manager.
+     * 2F-6: the staff workflow is gone - its endpoints no longer exist - and staff never reach a customer's draft.
      */
     @Test
-    void theStaffWorkflowIsNoWayThroughACustomersDesign() throws Exception {
+    void theStaffWorkflowIsGone() throws Exception {
         String id = started().get("id").asText();
+        String base = "/api/v1/designs/" + id;
 
         as(staff);
-        for (long version : new long[] {0, 7}) {
-            mvc.perform(put("/api/v1/designs/" + id + "/assignment").contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"version\":" + version + ",\"reviewerId\":\"" + staff + "\"}"))
-                    .andExpect(status().isNotFound());
-        }
-        mvc.perform(get("/api/v1/designs/" + id)).andExpect(status().isNotFound());
-
+        mvc.perform(get(base)).andExpect(status().isNotFound());
         as(owner);
-        String base = "/api/v1/designs/" + id;
-        String[][] staffSteps = {
+        String[][] removed = {
+                {"PUT", base + "/assignment", "{\"version\":0,\"reviewerId\":\"" + staff + "\"}"},
                 {"PUT", base + "/specification", "{\"version\":0,\"spec\":\"x\"}"},
                 {"POST", base + "/confirmation-requests", "{\"version\":0}"},
                 {"POST", base + "/confirmations", "{\"version\":0,\"artifactId\":\"" + UUID.randomUUID() + "\"}"},
                 {"POST", base + "/change-requests", "{\"version\":0,\"reason\":\"x\"}"},
-                {"POST", base + "/confirmation-withdrawals", "{\"version\":0,\"reason\":\"x\"}"}};
-        for (String[] step : staffSteps) {
+                {"POST", base + "/confirmation-withdrawals", "{\"version\":0,\"reason\":\"x\"}"},
+                {"POST", base + "/technical-reviews", "{\"version\":0}"},
+                {"POST", "/api/v1/designs", "{}"}};
+        for (String[] step : removed) {
             var request = step[0].equals("PUT") ? put(step[1]) : post(step[1]);
-            mvc.perform(request.contentType(MediaType.APPLICATION_JSON).content(step[2]))
-                    .andExpect(status().isConflict())
-                    .andExpect(jsonPath("$.errorCode").value("CONFLICT"));
+            int answered = mvc.perform(request.contentType(MediaType.APPLICATION_JSON).content(step[2]))
+                    .andReturn().getResponse().getStatus();
+            assertThat(answered).as(step[0] + " " + step[1]).isIn(404, 405);
         }
         mvc.perform(get(base)).andExpect(jsonPath("$.data.status").value("DRAFT"))
                 .andExpect(jsonPath("$.data.version").value(0));

@@ -160,10 +160,10 @@ public class DesignAssetService {
         }
     }
 
-    /** The design's images, newest first; in any status but archived. */
+    /** The design's images, newest first; to its owner, and to a reviewer while it is pending (plan D7). */
     @Transactional(readOnly = true)
-    public List<AssetView> list(UUID designId, UUID userId) {
-        ownDesign(designId, userId, false);
+    public List<AssetView> list(UUID designId, UUID userId, boolean reviewer) {
+        readable(designId, userId, reviewer);
         return assets.findByDraftIdOrderByCreatedAtDescIdDesc(designId).stream()
                 .map(DesignAssetService::view).toList();
     }
@@ -173,8 +173,8 @@ public class DesignAssetService {
      * their own studio, every time a layout is drawn.
      */
     @Transactional(readOnly = true)
-    public DownloadLink link(UUID designId, UUID assetId, UUID userId) {
-        ownDesign(designId, userId, false);
+    public DownloadLink link(UUID designId, UUID assetId, UUID userId, boolean reviewer) {
+        readable(designId, userId, reviewer);
         DesignAssetJpaEntity asset = assets.findByDraftIdAndId(designId, assetId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         return files.viewLink(asset.getStorageKey());
@@ -251,6 +251,13 @@ public class DesignAssetService {
             throw new BusinessException(ErrorCode.CONFLICT, "This design was not started on a template");
         }
         return draft;
+    }
+
+    private void readable(UUID designId, UUID userId, boolean reviewer) {
+        DesignDraftJpaEntity draft = drafts.findById(designId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        CustomerDesignRules.requireReader(userId, draft.getOwnerUserId(), draft.getStatus(),
+                draft.getTemplateId() != null, reviewer);
     }
 
     private void requireRoom(UUID designId) {

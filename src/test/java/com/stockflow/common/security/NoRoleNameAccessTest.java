@@ -81,12 +81,6 @@ class NoRoleNameAccessTest {
             new Allowed("application.yml", "stock-level-roles:", "stock-alert audience (who is told), not access"),
             new Allowed("application.yml", "expiry-roles:", "expiry-alert audience (who is told), not access"),
             // ---- checks on the user an action is about, not on the caller
-            new Allowed("design/internal/service/DesignWorkflowService.java", "Role.CUSTOMER.authority()",
-                    "the design's owner must be a customer account"),
-            new Allowed("design/internal/service/DesignWorkflowService.java", "Role.SALES_STAFF.authority()",
-                    "the designer a design is handed to must be Sales or the Sales Manager"),
-            new Allowed("design/internal/service/DesignWorkflowService.java", "Role.SALES_MANAGER.authority()",
-                    "the reviewer a design is handed to must be the Sales Manager"),
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
                     "Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority()",
                     "who a pick task can be assigned to (the assignee's eligibility), not the caller"),

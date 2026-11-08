@@ -1,32 +1,40 @@
 package com.stockflow.design.internal.domain;
 
 import com.stockflow.common.error.BusinessException;
-import org.junit.jupiter.api.Test;
+import com.stockflow.common.error.ErrorCode;
 import java.util.UUID;
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/** Every write checks the version the user saw (BR-11); who reads a design is the owner or, while pending, a reviewer. */
 class DesignWorkflowTest {
-    private final UUID owner = UUID.randomUUID(), editor = UUID.randomUUID(), reviewer = UUID.randomUUID(), artifact = UUID.randomUUID();
-    @Test void independentReviewerCanApproveCurrentArtifact() {
-        assertThatCode(() -> DesignWorkflow.requireReview(DesignStatus.DRAFT, artifact, artifact, reviewer, owner, editor, reviewer))
+
+    @Test
+    void aStaleVersionIsAConflict() {
+        assertThatCode(() -> DesignWorkflow.requireVersion(3, 3)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> DesignWorkflow.requireVersion(4, 3))
+                .extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.CONFLICT);
+    }
+
+    @Test
+    void aReviewerReadsACustomersDesignOnlyWhileItWaitsForReview() {
+        UUID owner = UUID.randomUUID();
+        UUID reviewer = UUID.randomUUID();
+
+        assertThatCode(() -> CustomerDesignRules.requireReader(reviewer, owner, DesignStatus.PENDING_REVIEW, true, true))
                 .doesNotThrowAnyException();
-    }
-    @Test void editorCannotReviewOwnWorkEvenWhenAssignedReviewer() {
-        assertThatThrownBy(() -> DesignWorkflow.requireReview(DesignStatus.DRAFT, artifact, artifact, editor, owner, editor, editor))
-                .isInstanceOf(BusinessException.class);
-    }
-    @Test void customerDecisionRequiresCurrentReviewedArtifact() {
-        assertThatCode(() -> DesignWorkflow.requireConfirmation(DesignStatus.PENDING_REVIEW, artifact, artifact, true, owner, owner))
+        for (DesignStatus status : new DesignStatus[] {DesignStatus.DRAFT, DesignStatus.APPROVED, DesignStatus.ARCHIVED}) {
+            assertThatThrownBy(() -> CustomerDesignRules.requireReader(reviewer, owner, status, true, true))
+                    .extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        }
+        // Without the right to review, or for a design staff started, nobody but the owner.
+        assertThatThrownBy(() -> CustomerDesignRules.requireReader(reviewer, owner, DesignStatus.PENDING_REVIEW, true,
+                false)).extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatThrownBy(() -> CustomerDesignRules.requireReader(reviewer, owner, DesignStatus.PENDING_REVIEW, false,
+                true)).extracting(ex -> ((BusinessException) ex).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatCode(() -> CustomerDesignRules.requireReader(owner, owner, DesignStatus.APPROVED, true, false))
                 .doesNotThrowAnyException();
-        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.PENDING_REVIEW, artifact, UUID.randomUUID(), true, owner, owner))
-                .isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.PENDING_REVIEW, artifact, artifact, false, owner, owner))
-                .isInstanceOf(BusinessException.class);
-    }
-    @Test void staffCannotConfirmForCustomerAndOldScreensCannotWrite() {
-        assertThatThrownBy(() -> DesignWorkflow.requireConfirmation(DesignStatus.PENDING_REVIEW, artifact, artifact, true, editor, owner))
-                .isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> DesignWorkflow.requireVersion(4, 3)).isInstanceOf(BusinessException.class);
     }
 }

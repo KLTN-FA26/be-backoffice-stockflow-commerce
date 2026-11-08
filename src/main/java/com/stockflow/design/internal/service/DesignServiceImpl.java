@@ -156,9 +156,17 @@ class DesignServiceImpl implements DesignService {
         var actualEntries = manifest.stream().map(value -> new DesignSnapshotArtifact(
                 value.artifactId(), value.role(), value.storageKey(), value.originalName(), value.contentType(), value.sizeBytes(),
                 storedDigest(value.storageKey(), rehash))).toList();
-        String actual = DesignSnapshotJpaEntity.manifestChecksum(actualEntries);
+        // A customer's design: the images it places are part of what was approved, and are checked as its files are.
+        var assets = snapshot.getAssets() == null ? List.<com.stockflow.design.internal.domain.DesignSnapshotAsset>of()
+                : snapshot.getAssets();
+        var actualAssets = assets.stream().map(asset -> new com.stockflow.design.internal.domain.DesignSnapshotAsset(
+                asset.assetId(), asset.storageKey(), asset.originalName(), asset.contentType(), asset.sizeBytes(),
+                storedDigest(asset.storageKey(), rehash), asset.widthPx(), asset.heightPx())).toList();
+        String actual = DesignSnapshotJpaEntity.checksumOf(actualEntries, snapshot.getDocumentChecksum(), actualAssets);
         boolean eachMatches = IntStream.range(0, manifest.size())
-                .allMatch(index -> manifest.get(index).checksum().equals(actualEntries.get(index).checksum()));
+                .allMatch(index -> manifest.get(index).checksum().equals(actualEntries.get(index).checksum()))
+                && IntStream.range(0, assets.size())
+                .allMatch(index -> assets.get(index).checksum().equals(actualAssets.get(index).checksum()));
         return new DesignVerification(snapshot.getId(), expectedChecksum, actual,
                 eachMatches && expectedChecksum.equals(snapshot.getChecksum()) && actual.equals(snapshot.getChecksum()));
     }
@@ -167,7 +175,8 @@ class DesignServiceImpl implements DesignService {
     private static boolean recordedManifestAddsUp(DesignSnapshotJpaEntity snapshot) {
         List<DesignSnapshotArtifact> manifest = snapshot.getArtifactManifest();
         return manifest.isEmpty()
-                || DesignSnapshotJpaEntity.manifestChecksum(manifest).equals(snapshot.getChecksum());
+                || DesignSnapshotJpaEntity.checksumOf(manifest, snapshot.getDocumentChecksum(),
+                        snapshot.getAssets() == null ? List.of() : snapshot.getAssets()).equals(snapshot.getChecksum());
     }
 
     private static void requireSha256(String checksum) {

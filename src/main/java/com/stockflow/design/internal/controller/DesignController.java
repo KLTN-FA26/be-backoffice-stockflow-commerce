@@ -99,15 +99,16 @@ class DesignController {
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<List<DesignArtifactResponse>> list(@PathVariable UUID designId,
                                                          @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(artifacts.list(designId, user == null ? null : user.userId()).stream()
-                .map(mapper::toResponse).toList());
+        return ApiResponse.ok(artifacts.list(designId, user == null ? null : user.userId(),
+                DesignWorkflowController.reviewer(user)).stream().map(mapper::toResponse).toList());
     }
 
     @GetMapping("/{artifactId}/preflight")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<DesignPreflightResponse> preflight(@PathVariable UUID designId, @PathVariable UUID artifactId,
                                                          @AuthenticatedUser CurrentUser user) {
-        var report = artifacts.preflight(designId, artifactId, user == null ? null : user.userId());
+        var report = artifacts.preflight(designId, artifactId, user == null ? null : user.userId(),
+                DesignWorkflowController.reviewer(user));
         return ApiResponse.ok(new DesignPreflightResponse(report.passed(), report.findings().stream()
                 .map(f -> new DesignPreflightResponse.Finding(f.code(), f.detail(), f.blocking())).toList()));
     }
@@ -117,6 +118,7 @@ class DesignController {
     public ResponseEntity<ApiResponse<ArtifactDownloadResponse>> downloadLink(@PathVariable UUID designId,
             @PathVariable UUID artifactId, @AuthenticatedUser CurrentUser user) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(mapper.toResponse(
-                artifacts.downloadLink(designId, artifactId, user == null ? null : user.userId()))));
+                artifacts.downloadLink(designId, artifactId, user == null ? null : user.userId(),
+                        DesignWorkflowController.reviewer(user)))));
     }
 }

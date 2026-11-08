@@ -55,9 +55,8 @@ class DraftViews {
         Instant updatedAt = layoutSaved != null && (rowChanged == null || layoutSaved.isAfter(rowChanged))
                 ? layoutSaved : rowChanged;
         return new DesignWorkflowService.DraftView(d.getId(), d.getCustomerId(), d.getProductId(), d.getOwnerUserId(),
-                d.getAssignedUserId(), d.getReviewerUserId(), d.getName(), d.getSpec(), d.getStatus().name(),
-                d.getCurrentArtifactId(), d.isPreflightPassed(), d.getReviewNotes(), d.getVersion(),
-                d.getParentSnapshotId(), slug, d.getSku(), d.getTemplateCode(), d.getReviewRequestedAt(),
-                d.getReviewedAt(), updatedAt);
+                d.getName(), d.getSpec(), d.getStatus().name(), d.getCurrentArtifactId(), d.getReviewedBy(),
+                d.getReviewNotes(), d.getVersion(), d.getParentSnapshotId(), slug, d.getSku(), d.getTemplateCode(),
+                d.getReviewRequestedAt(), d.getReviewedAt(), updatedAt);
     }
 }

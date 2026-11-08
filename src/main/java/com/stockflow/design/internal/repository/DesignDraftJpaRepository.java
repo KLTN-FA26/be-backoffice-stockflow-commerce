@@ -1,22 +1,21 @@
 package com.stockflow.design.internal.repository;
 
+import com.stockflow.common.persistence.BaseJpaRepository;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
-import com.stockflow.common.persistence.BaseJpaRepository;
 import jakarta.persistence.LockModeType;
+import java.util.Collection;
+import java.util.Optional;
+import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
-import java.util.Collection;
-import java.util.Optional;
-import java.util.UUID;
 
 /**
- * Spring Data repository for {@link DesignDraftJpaEntity}. An archived design is gone for everyone (kltn-docs 12 BR-03,
- * BR-16), and a design a customer started (it has a template) is its owner's alone (B38): the reads that take a user
- * leave both out. {@link #lockById} and {@code findById} return any row; their callers decide who may see it.
+ * Spring Data repository for {@link DesignDraftJpaEntity}. {@link #lockById} and {@code findById} return any row; their
+ * callers decide who may see it ({@code CustomerDesignRules.requireReader}).
  */
 public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJpaEntity> {
 
@@ -24,26 +23,10 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
     @Query("select d from DesignDraftJpaEntity d where d.id = :id")
     Optional<DesignDraftJpaEntity> lockById(@Param("id") UUID id);
 
-    /** The designs a user works on, in the given statuses. */
-    @Query("select d from DesignDraftJpaEntity d where d.status in :statuses and "
-            + "(d.ownerUserId = :userId or (d.templateId is null and "
-            + "(d.assignedUserId = :userId or d.reviewerUserId = :userId)))")
-    Page<DesignDraftJpaEntity> findForUser(@Param("userId") UUID userId,
+    /** A user's own designs in the given statuses (BR-03: a design is its owner's alone). */
+    @Query("select d from DesignDraftJpaEntity d where d.status in :statuses and d.ownerUserId = :userId")
+    Page<DesignDraftJpaEntity> findOwnedBy(@Param("userId") UUID userId,
             @Param("statuses") Collection<DesignStatus> statuses, Pageable pageable);
-
-    // Single-owner scope cannot express owner OR assigned designer. ALL/WAREHOUSE grants do
-    // not bypass this explicit predicate for private customer files.
-    @Query("select d from DesignDraftJpaEntity d where d.id = :id and "
-            + "d.status <> com.stockflow.design.internal.domain.DesignStatus.ARCHIVED and "
-            + "(d.ownerUserId = :userId or (d.templateId is null and "
-            + "(d.assignedUserId = :userId or d.reviewerUserId = :userId)))")
-    Optional<DesignDraftJpaEntity> findAccessible(@Param("id") UUID id, @Param("userId") UUID userId);
-
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("select d from DesignDraftJpaEntity d where d.id = :id and "
-            + "d.status <> com.stockflow.design.internal.domain.DesignStatus.ARCHIVED and "
-            + "(d.ownerUserId = :userId or (d.templateId is null and d.assignedUserId = :userId))")
-    Optional<DesignDraftJpaEntity> lockAccessible(@Param("id") UUID id, @Param("userId") UUID userId);
 
     /**
      * The Sales Manager's queue (kltn-docs 12 §4.4): customers' designs waiting for review, the longest waiting first.

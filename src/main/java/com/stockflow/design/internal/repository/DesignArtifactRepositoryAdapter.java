@@ -23,20 +23,15 @@ class DesignArtifactRepositoryAdapter implements DesignArtifactRepository {
     }
 
     @Override
-    public Optional<DesignDraft> findDraft(UUID designId, UUID userId, boolean forUpdate) {
-        if (userId == null) { return Optional.empty(); }
-        return (forUpdate ? drafts.lockAccessible(designId, userId) : drafts.findAccessible(designId, userId))
-                .map(row -> new DesignDraft(row.getId(), row.getOwnerUserId(), row.getAssignedUserId(),
-                        row.getStatus(), row.getCurrentArtifactId(), row.getReviewerUserId(), row.getTemplateId()));
+    public Optional<DesignDraft> findDraft(UUID designId, boolean forUpdate) {
+        return (forUpdate ? drafts.lockById(designId) : drafts.findById(designId))
+                .map(row -> new DesignDraft(row.getId(), row.getOwnerUserId(), row.getStatus(),
+                        row.getCurrentArtifactId(), row.getTemplateId()));
     }
 
     @Override
     public boolean hasSnapshot(UUID designId) { return snapshots.existsByDraftId(designId); }
 
-    @Override
-    public void recordEditor(UUID designId, UUID userId) {
-        drafts.findById(designId).orElseThrow().editedBy(userId);
-    }
 
     @Override
     public void attach(DesignArtifact artifact) {

@@ -15,6 +15,10 @@ public enum DesignDecisionType {
     PREFLIGHT_FAILED,
     /** The design passed preflight and waits for review; the notes name the layout's checksum. */
     SUBMITTED_FOR_REVIEW,
+    /** The Sales Manager returned the design to the customer; the notes are their reason. */
+    RETURNED,
+    /** The Sales Manager approved the design; the notes name the snapshot, the customer's SKU and the checksum. */
+    APPROVED,
     /** The customer deleted the draft. */
     ARCHIVED
 }

@@ -148,6 +148,14 @@ public class CustomerSkuService implements CustomerSkus {
         return owned.stream().map(v -> view(v, sources.get(v.getSourceVariantId()))).toList();
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<CustomerSku> ofSnapshot(UUID designSnapshotId) {
+        return variants.findByDesignSnapshotId(designSnapshotId).map(v -> view(v,
+                v.getSourceVariantId() == null ? null
+                        : variants.findById(v.getSourceVariantId()).map(VariantJpaEntity::getSku).orElse(null)));
+    }
+
     /** The first free "product - customer - number" code, the customer's part shortened to fit 64 characters. */
     private String nextCode(ProductJpaEntity product, UUID customerId, String customerCode) {
         long n = variants.countByProductIdAndOwnerCustomerId(product.getId(), customerId);

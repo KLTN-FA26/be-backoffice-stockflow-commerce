@@ -67,7 +67,7 @@ class DesignAssetServiceTest {
     void aDraftOnATemplateTakingPng() {
         var draft = new DesignDraftJpaEntity(designId, UUID.randomUUID(), UUID.randomUUID(), "Ly", null,
                 DesignStatus.DRAFT);
-        draft.assign(owner, null, null);
+        draft.ownedBy(owner);
         draft.drawOn(UUID.randomUUID(), "CUP-12", templateId, "CUP12-BODY");
         when(drafts.findById(designId)).thenReturn(Optional.of(draft));
         when(drafts.lockById(designId)).thenReturn(Optional.of(draft));

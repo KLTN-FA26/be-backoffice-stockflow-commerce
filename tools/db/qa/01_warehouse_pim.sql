@@ -263,6 +263,15 @@ SELECT pg_temp.expect_fail('P16v a design file naming its layout but not the tem
                                         checksum, created_at, artifact_role, document_checksum)
     VALUES (gen_random_uuid(), md5('qa:design:CUP')::uuid, 'design-renders/qa2.png', 'qa.png', 'image/png', 1, NOW(),
             repeat('a', 64), NOW(), 'PRINT_READY', repeat('b', 64)) $q$);
+SELECT pg_temp.expect_fail('P16w a design decision in a word the business no longer uses', $q$
+    INSERT INTO design.design_decision (id, draft_id, actor_id, decision, notes, draft_version, created_at)
+    SELECT gen_random_uuid(), md5('qa:design:CUP')::uuid, u.id, 'SENT_TO_CUSTOMER', 'x', 0, NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('P16x an approved layout without its checksum', $q$
+    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
+                                        artifact_manifest, document, assets, template)
+    VALUES (gen_random_uuid(), md5('qa:design:CUP')::uuid, repeat('a', 64), 'design-renders/qa.pdf', NOW(), NOW(),
+            '[]'::jsonb, '{}', '[]'::jsonb, '{}'::jsonb) $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);

@@ -7,7 +7,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.design.internal.controller.dto.DesignDocumentResponse;
 import com.stockflow.design.internal.controller.dto.DesignDraftResponse;
-import com.stockflow.design.internal.controller.dto.DesignTemplateResponse;
 import com.stockflow.design.internal.service.CustomerDesignService;
 import com.stockflow.design.internal.service.DesignSubmissionService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -45,13 +44,16 @@ class CustomerDesignController {
     private final DesignSubmissionService submissions;
     private final DesignWorkflowWebMapper drafts;
     private final CustomerDesignWebMapper mapper;
+    private final com.fasterxml.jackson.databind.ObjectMapper json;
 
     CustomerDesignController(CustomerDesignService service, DesignSubmissionService submissions,
-                             DesignWorkflowWebMapper drafts, CustomerDesignWebMapper mapper) {
+                             DesignWorkflowWebMapper drafts, CustomerDesignWebMapper mapper,
+                             com.fasterxml.jackson.databind.ObjectMapper json) {
         this.service = service;
         this.submissions = submissions;
         this.drafts = drafts;
         this.mapper = mapper;
+        this.json = json;
     }
 
     record StartRequest(@NotNull UUID productId, @NotBlank @Size(max = 64) String sku,
@@ -97,7 +99,8 @@ class CustomerDesignController {
     public ResponseEntity<ApiResponse<DesignDocumentResponse>> document(@PathVariable UUID id,
                                                                         @AuthenticatedUser CurrentUser user) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(ApiResponse.ok(mapper.toResponse(service.document(id, actor(user)))));
+                .body(ApiResponse.ok(mapper.toResponse(service.document(id, actor(user),
+                        DesignWorkflowController.reviewer(user)))));
     }
 
     /**
@@ -126,13 +129,17 @@ class CustomerDesignController {
         return ApiResponse.ok(drafts.toResponse(submissions.submit(id, actor(user), request.version())));
     }
 
+    /**
+     * In the shape of one template of the storefront's P2, plus {@code active}: as it is now, or for an approved design
+     * as it was approved.
+     */
     @GetMapping("/{id}/template")
-    @Operation(summary = "The template the design is drawn on, as it is now")
+    @Operation(summary = "The template the design is drawn on: as it is now, or as approved")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
-    public ResponseEntity<ApiResponse<DesignTemplateResponse>> template(@PathVariable UUID id,
-                                                                        @AuthenticatedUser CurrentUser user) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(ApiResponse.ok(mapper.toResponse(service.template(id, actor(user)))));
+    public ResponseEntity<ApiResponse<com.fasterxml.jackson.databind.JsonNode>> template(@PathVariable UUID id,
+            @AuthenticatedUser CurrentUser user) throws com.fasterxml.jackson.core.JsonProcessingException {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(
+                json.readTree(service.template(id, actor(user), DesignWorkflowController.reviewer(user)))));
     }
 
     private static UUID actor(CurrentUser user) {

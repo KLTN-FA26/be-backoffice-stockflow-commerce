@@ -166,14 +166,27 @@ public class DesignArtifactService {
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public DesignPreflight.Report preflight(UUID designId, UUID artifactId, UUID userId) {
-        var file = tx.execute(status -> list(designId, userId).stream().filter(found -> found.id().equals(artifactId))
+        return preflight(designId, artifactId, userId, false);
+    }
+
+    /** {@link #preflight(UUID, UUID, UUID)} for a reader who may also be a reviewer of the design (plan D7). */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public DesignPreflight.Report preflight(UUID designId, UUID artifactId, UUID userId, boolean reviewer) {
+        var file = tx.execute(status -> list(designId, userId, reviewer).stream()
+                .filter(found -> found.id().equals(artifactId))
                 .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND)).file());
         return designPreflight.inspect(file.key(), file.contentType());
     }
 
     @Transactional(readOnly = true)
     public List<DesignArtifact> list(UUID designId, UUID userId) {
-        requireDraft(designId, userId, false);
+        return list(designId, userId, false);
+    }
+
+    /** The design's files, to its owner and - while it waits for review - to a reviewer (BR-03, plan D7). */
+    @Transactional(readOnly = true)
+    public List<DesignArtifact> list(UUID designId, UUID userId, boolean reviewer) {
+        requireDraft(designId, userId, false, reviewer);
         return designs.findArtifacts(designId);
     }
 
@@ -182,7 +195,15 @@ public class DesignArtifactService {
     @Auditable(action = AuditAction.EXPORT, resourceType = "design-artifact", resourceId = "#artifactId",
             details = "{designId: #designId}")
     public DownloadLink downloadLink(UUID designId, UUID artifactId, UUID userId) {
-        var artifact = list(designId, userId).stream().filter(file -> file.id().equals(artifactId))
+        return downloadLink(designId, artifactId, userId, false);
+    }
+
+    /** {@link #downloadLink(UUID, UUID, UUID)} for a reader who may also be a reviewer of the design. */
+    @Transactional(readOnly = true)
+    @Auditable(action = AuditAction.EXPORT, resourceType = "design-artifact", resourceId = "#artifactId",
+            details = "{designId: #designId}")
+    public DownloadLink downloadLink(UUID designId, UUID artifactId, UUID userId, boolean reviewer) {
+        var artifact = list(designId, userId, reviewer).stream().filter(file -> file.id().equals(artifactId))
                 .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         return files.downloadLink(artifact.file().key(), artifact.file().originalName());
     }
@@ -220,7 +241,6 @@ public class DesignArtifactService {
             var artifact = new DesignArtifact(Identifiers.newId(), designId, role, file.file(), file.sha256(), key,
                     documentChecksum, renderedOnTemplate(draft, documentChecksum));
             designs.attach(artifact);
-            designs.recordEditor(designId, userId);
             prepared.adopt();
             return artifact;
         });
@@ -276,10 +296,14 @@ public class DesignArtifactService {
     }
 
     private DesignDraft requireDraft(UUID designId, UUID userId, boolean forUpdate) {
+        return requireDraft(designId, userId, forUpdate, false);
+    }
+
+    private DesignDraft requireDraft(UUID designId, UUID userId, boolean forUpdate, boolean reviewer) {
         if (userId == null) { throw new BusinessException(ErrorCode.UNAUTHORIZED); }
-        var draft = designs.findDraft(designId, userId, forUpdate)
+        var draft = designs.findDraft(designId, forUpdate)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        draft.requireAccess(userId);
+        draft.requireAccess(userId, reviewer);
         return draft;
     }
 

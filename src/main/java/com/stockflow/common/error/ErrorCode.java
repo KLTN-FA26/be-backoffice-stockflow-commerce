@@ -173,8 +173,6 @@ public enum ErrorCode {
     DAMAGE_PHOTO_REQUIRED("Damaged stock is reported with at least one photo", 400),
     /** SCRUM-427: commercial terms that contradict themselves (kltn-docs 18 §3). */
     CREDIT_PROFILE_INVALID("These commercial terms are inconsistent", 400),
-    /** An assisted design names a customer and an owner account; the owner must be that customer's own login. */
-    DESIGN_OWNER_CUSTOMER_MISMATCH("The design owner does not belong to this customer", 400),
 
     // ---- 409: the request is fine, the current state is not
     PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
@@ -677,6 +675,11 @@ public enum ErrorCode {
      * missing or names another layout. {@code details.roles} lists them.
      */
     DESIGN_FILES_OUTDATED("Render the design's files again from its current layout", 409),
+    /**
+     * The print file of a design being approved is not what the press needs: not a PDF, or not one page per print
+     * area of the bleed box's size (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
+     */
+    DESIGN_PRINT_FILE_INVALID("The design's print file does not fit its template", 409),
     /** A design holds at most 100 images (Design Studio plan 2F-4). */
     DESIGN_ASSET_LIMIT_REACHED("This design already has the most images allowed", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */

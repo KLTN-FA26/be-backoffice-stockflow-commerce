@@ -116,8 +116,7 @@ public class CustomerDesignService {
 
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), customer.customerId(), command.productId(),
                 command.name().strip(), null, DesignStatus.DRAFT);
-        draft.assign(actor, null, null);
-        draft.editedBy(actor);
+        draft.ownedBy(actor);
         draft.drawOn(template.variantId(), template.sku(), template.templateId(), template.code());
         drafts.saveAndFlush(draft);
         String layout = CanonicalJson.canonical(DesignDocumentRules.empty(frame(template, List.of())));
@@ -145,11 +144,12 @@ public class CustomerDesignService {
         return views.of(draft);
     }
 
-    /** The design's layout, at the design's current version. */
+    /** The design's layout, at the design's current version; to its owner, and to a reviewer while it is pending. */
     @Transactional(readOnly = true)
-    public DocumentView document(UUID id, UUID actor) {
+    public DocumentView document(UUID id, UUID actor, boolean reviewer) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
+        CustomerDesignRules.requireReader(actor, draft.getOwnerUserId(), draft.getStatus(),
+                draft.getTemplateId() != null, reviewer);
         DesignDocumentJpaEntity layout = documents.findById(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "This design has no layout"));
         return new DocumentView(id, draft.getVersion(), layout.getDocument(), layout.getChecksum(),
@@ -200,16 +200,27 @@ public class CustomerDesignService {
         return new DocumentView(id, draft.getVersion(), layout, checksum, at);
     }
 
-    /** The template the design is drawn on, as it is now (B39), whether or not it is still active. */
+    /**
+     * The template the design is drawn on, as {@link TemplateShapes} writes it: for an approved design the template
+     * frozen in its snapshot, so it reopens exactly as approved (BR-08); otherwise the template as it is now, whether
+     * or not it is still active (B39).
+     */
     @Transactional(readOnly = true)
-    public PrintConfig template(UUID id, UUID actor) {
+    public String template(UUID id, UUID actor, boolean reviewer) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
+        CustomerDesignRules.requireReader(actor, draft.getOwnerUserId(), draft.getStatus(),
+                draft.getTemplateId() != null, reviewer);
         if (draft.getTemplateId() == null) {
             throw new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND, "This design was not started on a template");
         }
-        return printConfigs.byId(draft.getTemplateId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND));
+        if (draft.getStatus() == DesignStatus.APPROVED) {
+            var frozen = snapshots.findByDraftId(id).map(snapshot -> snapshot.getTemplate());
+            if (frozen.isPresent() && frozen.get() != null) {
+                return frozen.get();
+            }
+        }
+        return TemplateShapes.json(printConfigs.byId(draft.getTemplateId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND)));
     }
 
     /**
@@ -247,8 +258,7 @@ public class CustomerDesignService {
 
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), source.getCustomerId(), source.getProductId(),
                 source.getName(), source.getSpec(), DesignStatus.DRAFT);
-        draft.assign(actor, null, null);
-        draft.editedBy(actor);
+        draft.ownedBy(actor);
         draft.drawOn(template.variantId(), template.sku(), template.templateId(), template.code());
         draft.derivedFrom(snapshotId);
         drafts.saveAndFlush(draft);
