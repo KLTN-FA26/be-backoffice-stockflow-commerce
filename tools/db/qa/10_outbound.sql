@@ -602,5 +602,26 @@ SELECT pg_temp.expect_fail('F102 the same milestone twice for one load', $q$
                                                 recorded_at)
     VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'PICKED_UP', NOW(), 'CARRIER_WEBHOOK',
             md5('qa:ce:f97')::uuid, NOW()) $q$);
+
+-- 3-6: a delivery corrected by hand, a proof of delivery (V20261108001800).
+SELECT pg_temp.expect_ok('F103 a delivery corrected to a failure, with its reason and why', $q$
+    INSERT INTO fulfillment.delivery_outcome_correction (id, shipment_id, from_status, to_status, failure_reason,
+                                                         reason, corrected_by, corrected_at)
+    SELECT md5('qa:doc:f103')::uuid, id, 'DELIVERED', 'DELIVERY_FAILED', 'CUSTOMER_ABSENT',
+           'the customer says nothing arrived', md5('demo:user:approver')::uuid, NOW()
+      FROM fulfillment.shipment LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('F104 a correction to a failure without its reason', $q$
+    INSERT INTO fulfillment.delivery_outcome_correction (id, shipment_id, from_status, to_status, reason, corrected_by,
+                                                         corrected_at)
+    SELECT gen_random_uuid(), id, 'DELIVERED', 'DELIVERY_FAILED', 'x', md5('demo:user:approver')::uuid, NOW()
+      FROM fulfillment.shipment LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('F105 a correction rewritten (append-only)', $q$
+    UPDATE fulfillment.delivery_outcome_correction SET reason = 'later' WHERE id = md5('qa:doc:f103')::uuid $q$);
+SELECT pg_temp.expect_fail('F106 a proof of delivery outside the documents', $q$
+    INSERT INTO fulfillment.shipment_pod_file (id, shipment_id, storage_key, file_name, content_type, size_bytes,
+                                               uploaded_by, uploaded_at)
+    SELECT gen_random_uuid(), id, 'images/2026/11/09/qa-pod.jpg', 'pod.jpg', 'image/jpeg', 10,
+           md5('demo:user:approver')::uuid, NOW()
+      FROM fulfillment.shipment LIMIT 1 $q$);
 ROLLBACK;
 \echo 'PASS 09_outbound'
