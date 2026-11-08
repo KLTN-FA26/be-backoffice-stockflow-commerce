@@ -819,6 +819,32 @@ Enum fulfillment.carrier_booking_status {
   CANCEL_FAILED
 }
 
+Enum fulfillment.carrier_event_event_kind {
+  WAYBILL
+  DRIVER_ASSIGNED
+  DRIVER_RELEASED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  DELIVERY_FAILED
+  RETURNING
+  RETURNED
+  ORDER_CANCELLED
+  ORDER_COMPLETED
+  OTHER
+}
+
+Enum fulfillment.carrier_event_result {
+  RECEIVED
+  APPLIED
+  DUPLICATE
+  STALE
+  IGNORED
+  UNMATCHED
+  INVALID_SIGNATURE
+  NEEDS_REVIEW
+}
+
 Enum fulfillment.dispatch_load_status {
   PLANNED
   VEHICLE_BOOKED
@@ -944,6 +970,18 @@ Enum fulfillment.shipment_event_status {
   RETURNED
   EXCEPTION
   CANCELLED
+}
+
+Enum fulfillment.tracking_milestone_milestone {
+  PICKED_UP
+  IN_TRANSIT
+  RETURNING
+  RETURNED
+}
+
+Enum fulfillment.tracking_milestone_source {
+  CARRIER_WEBHOOK
+  MANUAL
 }
 
 Enum fulfillment.vehicle_type_kind {
@@ -3558,6 +3596,33 @@ Table fulfillment.carrier_booking [headercolor: #2C7873] {
   last_modified_by varchar(100)
 }
 
+Table fulfillment.carrier_event [headercolor: #2C7873] {
+  id                  uuid [pk]
+  carrier_id          uuid
+  carrier_code        varchar(64) [not null]
+  received_at         timestamptz [not null]
+  payload             text [not null]
+  signature_valid     boolean [not null]
+  event_kind          fulfillment.carrier_event_event_kind
+  carrier_reference   varchar(128)
+  carrier_reported_at timestamptz
+  dedupe_key          varchar(64)
+  warehouse_id        uuid
+  load_id             uuid
+  shipment_id         uuid
+  result              fulfillment.carrier_event_result [not null]
+  result_note         varchar(1000)
+  decided_at          timestamptz
+  resolved_by         uuid
+  resolved_at         timestamptz
+  resolution_note     varchar(1000)
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+}
+
 Table fulfillment.carrier_pickup_point [headercolor: #2C7873] {
   id               uuid [pk]
   carrier_id       uuid [not null]
@@ -4043,6 +4108,24 @@ Table fulfillment.shipment_event [headercolor: #2C7873] {
   last_modified_at timestamptz
   last_modified_by varchar(100)
   recorded_by      uuid
+}
+
+Table fulfillment.tracking_milestone [headercolor: #2C7873] {
+  id                  uuid [pk]
+  load_id             uuid [not null]
+  milestone           fulfillment.tracking_milestone_milestone [not null]
+  carrier_reported_at timestamptz [not null]
+  source              fulfillment.tracking_milestone_source [not null]
+  carrier_event_id    uuid
+  recorded_at         timestamptz [not null]
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  indexes {
+    (load_id, milestone) [unique]
+  }
 }
 
 Table fulfillment.vehicle_type [headercolor: #2C7873] {
@@ -4992,6 +5075,11 @@ Ref: fulfillment.carrier_api_call.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_booking.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_booking.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.carrier_booking.requested_by > identity.app_user.id
+Ref: fulfillment.carrier_event.carrier_id > fulfillment.carrier.id
+Ref: fulfillment.carrier_event.load_id > fulfillment.dispatch_load.id
+Ref: fulfillment.carrier_event.resolved_by > identity.app_user.id
+Ref: fulfillment.carrier_event.shipment_id > fulfillment.shipment.id
+Ref: fulfillment.carrier_event.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.carrier_pickup_point.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_pickup_point.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.carrier_service_code.carrier_id > fulfillment.carrier.id
@@ -5073,6 +5161,8 @@ Ref: fulfillment.shipment.ready_by > identity.app_user.id
 Ref: fulfillment.shipment.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.shipment_event.recorded_by > identity.app_user.id
 Ref: fulfillment.shipment_event.shipment_id > fulfillment.shipment.id [delete: cascade]
+Ref: fulfillment.tracking_milestone.carrier_event_id > fulfillment.carrier_event.id
+Ref: fulfillment.tracking_milestone.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.waybill_change.changed_by > identity.app_user.id
 Ref: fulfillment.waybill_change.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.waybill_import.uploaded_by > identity.app_user.id
@@ -5254,6 +5344,7 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.carrier
   fulfillment.carrier_api_call
   fulfillment.carrier_booking
+  fulfillment.carrier_event
   fulfillment.carrier_pickup_point
   fulfillment.carrier_service_code
   fulfillment.dispatch_load
@@ -5275,6 +5366,7 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.pick_line
   fulfillment.shipment
   fulfillment.shipment_event
+  fulfillment.tracking_milestone
   fulfillment.vehicle_type
   fulfillment.wave
   fulfillment.waybill_change
