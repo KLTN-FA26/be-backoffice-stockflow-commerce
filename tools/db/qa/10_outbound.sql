@@ -273,7 +273,7 @@ SELECT pg_temp.expect_fail('F43 the order told of a shipment fulfillment never m
 SELECT pg_temp.expect_ok('F44 signed: the load DISPATCHED, the shipment HANDED_OVER on it with its carrier', $q$
     UPDATE fulfillment.dispatch_load SET status = 'DISPATCHED', dispatched_at = NOW(),
            dispatched_by = md5('demo:user:editor')::uuid, carrier_representative = 'Driver', vehicle_plate = '51C-1',
-           shipment_count = 1, package_count = 1
+           shipment_count = 1, package_count = 1, waybill_no = 'WB-QA-F44'
      WHERE id = md5('qa:load:f35')::uuid;
     UPDATE fulfillment.shipment SET status = 'HANDED_OVER', handed_over_at = NOW(),
            handed_over_by = md5('demo:user:editor')::uuid, load_id = md5('qa:load:f35')::uuid,
@@ -456,5 +456,44 @@ SELECT pg_temp.expect_fail('F71 a second service code for the same truck size in
                                                   service_code)
     VALUES (gen_random_uuid(), md5('qa:carrier:f64')::uuid,
             (SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-1T25'), '79', 'SGN', 'SGN-TRUCK-OTHER') $q$);
+
+-- 3-2: the waybill number on a load, its history (V20261108001400).
+INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate, status,
+                                       loading_started_at, dispatched_at, dispatched_by, carrier_representative,
+                                       shipment_count, package_count, waybill_no)
+VALUES (md5('qa:load:f72')::uuid, 'LD-QA-F72', gen_random_uuid(), md5('demo:wh:HCM')::uuid,
+        md5('qa:carrier:f64')::uuid, '51C-1', 'DISPATCHED', NOW(), NOW(), md5('demo:user:approver')::uuid, 'Tai', 1,
+        1, 'WB-QA-F72');
+SELECT pg_temp.expect_fail('F72 a load leaving without a waybill number', $q$
+    INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate, status,
+                                           loading_started_at, dispatched_at, dispatched_by, carrier_representative,
+                                           shipment_count, package_count)
+    VALUES (gen_random_uuid(), 'LD-QA-F72B', gen_random_uuid(), md5('demo:wh:HCM')::uuid,
+            md5('qa:carrier:f64')::uuid, '51C-2', 'DISPATCHED', NOW(), NOW(), md5('demo:user:approver')::uuid,
+            'Tai', 1, 1) $q$);
+SELECT pg_temp.expect_fail('F73 the same waybill number on two live loads of one carrier', $q$
+    INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate, status,
+                                           loading_started_at, dispatched_at, dispatched_by, carrier_representative,
+                                           shipment_count, package_count, waybill_no)
+    VALUES (gen_random_uuid(), 'LD-QA-F73', gen_random_uuid(), md5('demo:wh:HCM')::uuid,
+            md5('qa:carrier:f64')::uuid, '51C-3', 'DISPATCHED', NOW(), NOW(), md5('demo:user:approver')::uuid,
+            'Tai', 1, 1, 'WB-QA-F72') $q$);
+SELECT pg_temp.expect_ok('F74 a cancelled load of the carrier may hold the same number', $q$
+    INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, status, cancelled_at,
+                                           cancel_reason, waybill_no)
+    VALUES (gen_random_uuid(), 'LD-QA-F74', gen_random_uuid(), md5('demo:wh:HCM')::uuid,
+            md5('qa:carrier:f64')::uuid, 'CANCELLED', NOW(), 'xe không tới', 'WB-QA-F72') $q$);
+SELECT pg_temp.expect_ok('F75 a waybill change recorded', $q$
+    INSERT INTO fulfillment.waybill_change (id, load_id, old_waybill_no, new_waybill_no, source, changed_by,
+                                            changed_at, reason)
+    VALUES (md5('qa:wbc:f75')::uuid, md5('qa:load:f72')::uuid, NULL, 'WB-QA-F72', 'MANUAL',
+            md5('demo:user:approver')::uuid, NOW(), NULL) $q$);
+SELECT pg_temp.expect_fail('F76 a waybill change rewritten (append-only)', $q$
+    UPDATE fulfillment.waybill_change SET reason = 'later' WHERE id = md5('qa:wbc:f75')::uuid $q$);
+SELECT pg_temp.expect_fail('F77 a webhook change signed by someone', $q$
+    INSERT INTO fulfillment.waybill_change (id, load_id, old_waybill_no, new_waybill_no, source, changed_by,
+                                            changed_at)
+    VALUES (gen_random_uuid(), md5('qa:load:f72')::uuid, 'WB-QA-F72', 'WB-QA-F77', 'WEBHOOK',
+            md5('demo:user:approver')::uuid, NOW()) $q$);
 ROLLBACK;
 \echo 'PASS 09_outbound'
