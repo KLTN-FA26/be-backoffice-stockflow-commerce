@@ -10,7 +10,10 @@
 --      keep their own words and are read as they are).
 --   3. The staff workflow's columns of design_draft - the assigned designer and reviewer, the technical review flag and
 --      the last editor - are archived and dropped: a design is the customer's alone (BR-01), and a Sales Manager holding
---      design-designs:APPROVE decides it, not a person assigned to it.
+--      design-designs:APPROVE decides it, not a person assigned to it. A design that workflow left waiting for the
+--      customer's confirmation (PENDING_REVIEW with no template since V20261108000800) can be neither confirmed nor
+--      reviewed any more: it is a draft again, read-only as every design of that workflow (it has no template to be
+--      submitted on). Its status is archived first.
 --   4. The permission of that workflow, design-administration, goes; the roles that held it move their version so the
 --      grant is gone at once (ADR-0008).
 -- =============================================================================
@@ -53,6 +56,15 @@ ALTER TABLE design.design_draft
     DROP COLUMN preflight_passed,
     DROP COLUMN last_editor_user_id;
 
+INSERT INTO platform.legacy_archive (source_table, row_id, row_data)
+SELECT 'design.design_draft.status', d.id, jsonb_build_object('id', d.id, 'status', d.status)
+FROM design.design_draft d
+WHERE d.status = 'PENDING_REVIEW' AND d.template_id IS NULL;
+
+UPDATE design.design_draft
+SET status = 'DRAFT', version = version + 1, last_modified_at = NOW(), last_modified_by = 'flyway'
+WHERE status = 'PENDING_REVIEW' AND template_id IS NULL;
+
 -- 4. ---------------------------------------------------------------------------------------------
 INSERT INTO platform.legacy_archive (source_table, row_id, row_data)
 SELECT 'identity.permission', p.id, to_jsonb(p) FROM identity.permission p
@@ -78,4 +90,5 @@ COMMENT ON TABLE platform.legacy_archive IS
         'of parcel shipping, the delivery-mode choice and COD (V20261108000400) and of the design check at packing '
         '(V20261108000500), the customization templates and print areas as they were before templates got a model '
         '(V20261108000600), design statuses renamed when customers began designing (V20261108000800), and the staff '
-        'design workflow''s assignments and permission (V20261108001000). Read-only history.';
+        'design workflow''s assignments, its designs left waiting for confirmation and its permission '
+        '(V20261108001000). Read-only history.';
