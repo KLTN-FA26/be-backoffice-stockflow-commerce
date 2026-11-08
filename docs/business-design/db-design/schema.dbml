@@ -23,6 +23,14 @@ Enum product.media_kind {
   MODEL_3D
 }
 
+Enum product.print_areas_code {
+  BODY
+  FRONT
+  BACK
+  LEFT
+  RIGHT
+}
+
 Enum product.product_attributes_role {
   VARIANT_AXIS
   DESCRIPTIVE
@@ -1125,24 +1133,26 @@ Table product.category_attributes [headercolor: #2E86AB] {
 }
 
 Table product.customization_templates [headercolor: #2E86AB] {
-  id                   uuid [pk]
-  variant_id           uuid [not null]
-  code                 varchar(50) [not null]
-  name                 varchar(255) [not null]
-  template_2d_url      text [not null]
-  model_3d_url         text
-  min_dpi              int [not null, default: 150]
-  color_mode           product.customization_templates_color_mode [not null, default: 'CMYK']
-  allowed_file_formats text[] [not null]
-  max_file_size_mb     int [not null]
-  max_colors           int
-  allowed_font_codes   text[]
-  is_active            boolean [not null, default: true]
-  version              bigint [not null, default: 0]
-  created_at           timestamptz [not null, default: `now()`]
-  created_by           varchar(100)
-  last_modified_at     timestamptz
-  last_modified_by     varchar(100)
+  id                     uuid [pk]
+  variant_id             uuid [not null]
+  code                   varchar(50) [not null]
+  name                   varchar(255) [not null]
+  min_dpi                int [not null, default: 300]
+  color_mode             product.customization_templates_color_mode [not null, default: 'CMYK']
+  allowed_file_formats   text[] [not null]
+  max_file_size_mb       int [not null]
+  max_colors             int
+  allowed_font_codes     text[]
+  is_active              boolean [not null, default: false]
+  version                bigint [not null, default: 0]
+  created_at             timestamptz [not null, default: `now()`]
+  created_by             varchar(100)
+  last_modified_at       timestamptz
+  last_modified_by       varchar(100)
+  model_params_json      jsonb
+  reference_file_key     varchar(500)
+  reference_file_name    varchar(255)
+  reference_content_type varchar(100)
   indexes {
     (variant_id, code) [unique]
   }
@@ -1177,7 +1187,7 @@ Table product.media [headercolor: #2E86AB] {
 Table product.print_areas [headercolor: #2E86AB] {
   id               uuid [pk]
   template_id      uuid [not null]
-  code             varchar(50) [not null]
+  code             product.print_areas_code [not null]
   name             varchar(255) [not null]
   x_mm             decimal(10,2) [not null]
   y_mm             decimal(10,2) [not null]
@@ -1185,8 +1195,8 @@ Table product.print_areas [headercolor: #2E86AB] {
   height_mm        decimal(10,2) [not null]
   safe_margin_mm   decimal(10,2) [not null, default: 0]
   bleed_mm         decimal(10,2) [not null, default: 0]
-  shape_json       jsonb
-  uv_mapping_json  jsonb
+  shape_json       jsonb [not null]
+  uv_mapping_json  jsonb [not null]
   sort_order       int [not null, default: 0]
   version          bigint [not null, default: 0]
   created_at       timestamptz [not null, default: `now()`]
