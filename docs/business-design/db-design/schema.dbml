@@ -497,6 +497,12 @@ Enum ordering.cart_status {
   MERGED
 }
 
+Enum ordering.contract_payment_installment_milestone {
+  ON_SIGNING
+  BEFORE_DELIVERY
+  AFTER_DELIVERY
+}
+
 Enum ordering.customer_order_cancellation_reason_code {
   CUSTOMER_REQUEST
   PAYMENT_NOT_RECEIVED
@@ -662,6 +668,14 @@ Enum ordering.return_request_line_item_condition {
   DEFECTIVE
 }
 
+Enum ordering.sales_contract_status {
+  DRAFT
+  SENT
+  SIGNED
+  COMPLETED
+  CANCELLED
+}
+
 Enum ordering.tax_rate_tax_class {
   STANDARD
   REDUCED
@@ -683,6 +697,9 @@ Enum customer.customer_status {
 Enum customer.customer_change_history_field {
   FULL_NAME
   TAX_CODE
+  REGISTERED_ADDRESS
+  REPRESENTATIVE
+  REPRESENTATIVE_TITLE
 }
 
 Enum customer.customer_status_history_from_status {
@@ -2641,6 +2658,21 @@ Table ordering.cart_line [headercolor: #C0392B] {
   last_modified_by    varchar(100)
 }
 
+Table ordering.contract_payment_installment [headercolor: #C0392B] {
+  id                uuid [pk]
+  contract_id       uuid [not null]
+  seq               smallint [not null]
+  name              varchar(100) [not null]
+  milestone         ordering.contract_payment_installment_milestone [not null]
+  percent           decimal(5,2)
+  amount            decimal(19,4) [not null]
+  due_days          int
+  delivery_batch_id uuid
+  indexes {
+    (contract_id, seq) [unique]
+  }
+}
+
 Table ordering.customer_order [headercolor: #C0392B] {
   id                            uuid [pk]
   order_number                  varchar(32) [not null, unique]
@@ -2719,6 +2751,27 @@ Table ordering.customer_order [headercolor: #C0392B] {
   closed_amount                 decimal(19,4) [not null, default: 0]
   tax_amount                    decimal(19,4) [not null, default: 0]
   net_amount                    decimal(19,4) [note: 'generated: (total_amount - tax_amount)']
+}
+
+Table ordering.delivery_batch [headercolor: #C0392B] {
+  id           uuid [pk]
+  contract_id  uuid [not null]
+  seq          smallint [not null]
+  window_start date
+  window_end   date
+  indexes {
+    (contract_id, seq) [unique]
+  }
+}
+
+Table ordering.delivery_batch_line [headercolor: #C0392B] {
+  id                uuid [pk]
+  delivery_batch_id uuid [not null]
+  order_line_id     uuid [not null]
+  cartons           int [not null]
+  indexes {
+    (delivery_batch_id, order_line_id) [unique]
+  }
 }
 
 Table ordering.order_cancellation_request [headercolor: #C0392B] {
@@ -3121,6 +3174,41 @@ Table ordering.return_request_status_history [headercolor: #C0392B] {
   created_by        varchar(100)
 }
 
+Table ordering.sales_contract [headercolor: #C0392B] {
+  id                          uuid [pk]
+  contract_number             varchar(40) [not null, unique]
+  order_id                    uuid [not null]
+  status                      ordering.sales_contract_status [not null]
+  seller_name                 varchar(200) [not null]
+  seller_tax_code             varchar(14) [not null]
+  seller_address              varchar(500) [not null]
+  seller_representative       varchar(200) [not null]
+  seller_representative_title varchar(100) [not null]
+  buyer_name                  varchar(200) [not null]
+  buyer_tax_code              varchar(14)
+  buyer_address               varchar(500) [not null]
+  buyer_representative        varchar(200) [not null]
+  buyer_representative_title  varchar(100) [not null]
+  free_sample_rounds          int [not null]
+  sent_at                     timestamptz
+  sent_by                     uuid
+  sent_document_key           varchar(512)
+  signed_on                   date
+  signed_file_key             varchar(512)
+  signed_file_name            varchar(255)
+  signed_at                   timestamptz
+  signed_by                   uuid
+  cancelled_at                timestamptz
+  cancelled_by                uuid
+  cancellation_reason         varchar(500)
+  completed_at                timestamptz
+  version                     bigint [not null, default: 0]
+  created_at                  timestamptz [not null, default: `now()`]
+  created_by                  varchar(100)
+  last_modified_at            timestamptz
+  last_modified_by            varchar(100)
+}
+
 Table ordering.tax_rate [headercolor: #C0392B] {
   tax_class        ordering.tax_rate_tax_class [pk]
   rate             decimal(5,2) [not null]
@@ -3199,11 +3287,24 @@ Table customer.customer_change_history [headercolor: #D68910] {
   id          uuid [pk]
   customer_id uuid [not null]
   field       customer.customer_change_history_field [not null]
-  old_value   varchar(200)
-  new_value   varchar(200)
+  old_value   varchar(500)
+  new_value   varchar(500)
   changed_by  uuid
   changed_at  timestamptz [not null]
   created_at  timestamptz [not null, default: `now()`]
+}
+
+Table customer.customer_legal_profile [headercolor: #D68910] {
+  id                   uuid [pk]
+  customer_id          uuid [not null, unique]
+  registered_address   varchar(500) [not null]
+  representative_name  varchar(200) [not null]
+  representative_title varchar(100) [not null]
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null, default: `now()`]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
 }
 
 Table customer.customer_status_history [headercolor: #D68910] {
@@ -5068,10 +5169,15 @@ Ref: ordering.cart.merged_into_cart_id > ordering.cart.id [delete: restrict]
 Ref: ordering.cart_line.cart_id > ordering.cart.id [delete: cascade]
 Ref: ordering.cart_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: ordering.cart_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.contract_payment_installment.contract_id > ordering.sales_contract.id [delete: cascade]
+Ref: ordering.contract_payment_installment.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
 Ref: ordering.customer_order.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.customer_order.released_by > identity.app_user.id
 Ref: ordering.customer_order.replaces_return_request_id > ordering.return_request.id [delete: restrict]
 Ref: ordering.customer_order.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.delivery_batch.contract_id > ordering.sales_contract.id [delete: cascade]
+Ref: ordering.delivery_batch_line.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
+Ref: ordering.delivery_batch_line.order_line_id > ordering.order_line.id
 Ref: ordering.order_cancellation_request.decided_by > identity.app_user.id
 Ref: ordering.order_cancellation_request.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_cancellation_request.requested_by > identity.app_user.id
@@ -5143,6 +5249,10 @@ Ref: ordering.return_request_line.scrap_adjustment_id > inventory.stock_adjustme
 Ref: ordering.return_request_line.sku > product.variants.sku [delete: restrict]
 Ref: ordering.return_request_status_history.actor_id > identity.app_user.id
 Ref: ordering.return_request_status_history.return_request_id > ordering.return_request.id [delete: cascade]
+Ref: ordering.sales_contract.cancelled_by > identity.app_user.id
+Ref: ordering.sales_contract.order_id > ordering.customer_order.id
+Ref: ordering.sales_contract.sent_by > identity.app_user.id
+Ref: ordering.sales_contract.signed_by > identity.app_user.id
 Ref: customer.address.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.credit_profile.approved_by > identity.app_user.id
 Ref: customer.credit_profile.customer_id > customer.customer.id [delete: cascade]
@@ -5150,6 +5260,7 @@ Ref: customer.customer.segment_id > customer.segment.id
 Ref: customer.customer.user_id > identity.app_user.id [delete: restrict]
 Ref: customer.customer_change_history.changed_by > identity.app_user.id
 Ref: customer.customer_change_history.customer_id > customer.customer.id [delete: cascade]
+Ref: customer.customer_legal_profile.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.customer_status_history.changed_by > identity.app_user.id
 Ref: customer.customer_status_history.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.default_payment_installment.schedule_id > customer.default_payment_schedule.id [delete: cascade]
@@ -5423,7 +5534,10 @@ TableGroup procurement_group [color: #7D5BA6] {
 TableGroup ordering_group [color: #C0392B] {
   ordering.cart
   ordering.cart_line
+  ordering.contract_payment_installment
   ordering.customer_order
+  ordering.delivery_batch
+  ordering.delivery_batch_line
   ordering.order_cancellation_request
   ordering.order_credit_check
   ordering.order_fee_line
@@ -5448,6 +5562,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.return_request_evidence
   ordering.return_request_line
   ordering.return_request_status_history
+  ordering.sales_contract
   ordering.tax_rate
 }
 
@@ -5456,6 +5571,7 @@ TableGroup customer_group [color: #D68910] {
   customer.credit_profile
   customer.customer
   customer.customer_change_history
+  customer.customer_legal_profile
   customer.customer_status_history
   customer.default_payment_installment
   customer.default_payment_schedule
