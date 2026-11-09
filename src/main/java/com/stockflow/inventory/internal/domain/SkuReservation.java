@@ -47,10 +47,23 @@ public final class SkuReservation extends AggregateRoot {
     private ReservationStatus status;
     private ReleaseReason releaseReason;
     private Instant closedAt;
+    /**
+     * 4B-7 (20 §5.6, BR-17): the warehouse the hold is at - an order of a contract holds its stock at its shipping
+     * warehouse only. Null for a checkout hold, promised against the whole system.
+     */
+    private final String warehouseCode;
 
     public SkuReservation(ReservationId id, Sku sku, UUID orderId, UUID rootRequestId, UUID requestId,
                           Quantity quantity, Instant reservedAt, Instant expiresAt, ReservationStatus status,
                           ReleaseReason releaseReason, Instant closedAt) {
+        this(id, sku, orderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status, releaseReason,
+                closedAt, null);
+    }
+
+    public SkuReservation(ReservationId id, Sku sku, UUID orderId, UUID rootRequestId, UUID requestId,
+                          Quantity quantity, Instant reservedAt, Instant expiresAt, ReservationStatus status,
+                          ReleaseReason releaseReason, Instant closedAt, String warehouseCode) {
+        this.warehouseCode = warehouseCode;
         this.id = Objects.requireNonNull(id, "id");
         this.sku = Objects.requireNonNull(sku, "sku");
         this.orderId = Objects.requireNonNull(orderId, "orderId");
@@ -89,6 +102,26 @@ public final class SkuReservation extends AggregateRoot {
                 requestId, requestId, quantity, now, now.plus(ttl), ReservationStatus.HELD, null, null);
         reservation.registerEvent(new StockEvent.Reserved(new StockReserved(orderId, sku.code(), null,
                 quantity.value(), reservation.expiresAt)));
+        return reservation;
+    }
+
+    /**
+     * 4B-7 (17 §4.2 step 3, 20 §5.6): the hold an order of a contract takes at its shipping warehouse - by SKU, on no
+     * bin, and with no deadline: it lasts until release, cancellation or a manual release. {@code available} is the
+     * SKU's available-to-promise at that warehouse, read under the SKU's advisory lock.
+     *
+     * @throws InsufficientStockException when fewer than {@code quantity} units are available to promise there
+     */
+    public static SkuReservation holdAt(String warehouseCode, Sku sku, UUID orderId, UUID requestId, Quantity quantity,
+                                        int available, Instant now) {
+        Objects.requireNonNull(warehouseCode, "warehouseCode");
+        if (available < quantity.value()) {
+            throw new InsufficientStockException(sku.code(), quantity.value(), Math.max(available, 0));
+        }
+        SkuReservation reservation = new SkuReservation(new ReservationId(Identifiers.newId()), sku, orderId,
+                requestId, requestId, quantity, now, null, ReservationStatus.HELD, null, null, warehouseCode);
+        reservation.registerEvent(new StockEvent.Reserved(new StockReserved(orderId, sku.code(), null,
+                quantity.value(), null)));
         return reservation;
     }
 
@@ -161,4 +194,5 @@ public final class SkuReservation extends AggregateRoot {
     public ReservationStatus status() { return status; }
     public ReleaseReason releaseReason() { return releaseReason; }
     public Instant closedAt() { return closedAt; }
+    public String warehouseCode() { return warehouseCode; }
 }

@@ -14,6 +14,13 @@ import java.util.UUID;
  */
 public interface OrderRepository {
 
+    /**
+     * 4B-7 (17 §4.2 step 3): the CONFIRMED orders of a contract with a shipping warehouse - those whose holds stock
+     * arriving later tops up - earliest signed first, so the oldest order is served first.
+     */
+    java.util.List<UUID> confirmedWithShippingWarehouse();
+
+
     Optional<Order> findById(OrderId id);
 
     Optional<Order> findByIdForUpdate(OrderId id);

@@ -38,6 +38,9 @@ public interface SkuReservationRepository {
     /** Units under live SKU reservations, per SKU code; a SKU with none is absent. */
     Map<String, Long> heldBySku(Collection<String> skus);
 
+    /** 4B-7: the live SKU reservations of {@code sku} held at a warehouse, by warehouse code (20 BR-17). */
+    Map<String, Long> heldBySkuAt(String sku);
+
     /** These reservations, in any status; an unknown id is absent. */
     List<SkuReservation> findAll(Collection<UUID> reservationIds);
 

@@ -359,11 +359,17 @@ public enum ErrorCode {
     CUSTOMER_LEGAL_PROFILE_MISSING("The customer's registered address and legal representative are recorded before a contract is drawn up", 409),
     /** 4B-4 (18 §3): the legal profile read before it was recorded. */
     LEGAL_PROFILE_NOT_FOUND("The customer's legal profile is not recorded yet", 404),
-    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
+    /** 4B-7 (17 §4.2 step 2): only a CONFIRMED order of a contract gets a shipping warehouse. */
+    ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED("The shipping warehouse is chosen for a confirmed order of a contract", 409),
+    /** 4B-7 (17 BR-22): the shipping warehouse changes only while nothing is held for the order. */
+    ORDER_SHIPPING_WAREHOUSE_LOCKED("Stock is held at the order's shipping warehouse; it can no longer change", 409),
+    /** 4B-7 (17 BR-22): an order of a contract is released from its shipping warehouse only. */
+    ORDER_SHIPPING_WAREHOUSE_MISMATCH("The order ships from another warehouse", 409),
     /** 4B-5: an order confirmed by its contract holds no stock until its shipping warehouse is chosen (4B-7). */
     ORDER_STOCK_NOT_HELD("This order holds no stock yet; its shipping warehouse is chosen and its stock held first", 409),
     /** 4B-5: an order of a contract is paid by the contract's installments, not by the order's own terms. */
     ORDER_PAID_BY_CONTRACT("This order is paid by its sales contract's installments", 409),
+    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
@@ -576,6 +582,8 @@ public enum ErrorCode {
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
+    /** 4B-7 (20 BR-17): a hold at the order's shipping warehouse is allocated there only. */
+    RESERVATION_WAREHOUSE_MISMATCH("The stock is held at another warehouse", 409),
     /**
      * A hold that is not an order's goods on a shelf - one on a legacy print-shop row (IN_PRODUCTION):
      * a pick does not close it (review of #109). The code keeps its name for clients that read it.

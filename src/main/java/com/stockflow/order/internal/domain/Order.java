@@ -100,6 +100,10 @@ public final class Order extends AggregateRoot {
     private Instant goodsLeftAt;
     /** 4B-5: when its sales contract was signed; null for an order placed at checkout. */
     private Instant contractSignedAt;
+    /** 4B-7 (17 BR-22): the one warehouse an order of a contract ships from, chosen by Sales once it is CONFIRMED. */
+    private UUID shippingWarehouseId;
+    private Instant shippingWarehouseChosenAt;
+    private UUID shippingWarehouseChosenBy;
     private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
     private java.math.BigDecimal depositRequired;
     private Instant depositReceivedAt;
@@ -963,6 +967,15 @@ public final class Order extends AggregateRoot {
         }
         if (status != OrderStatus.CONFIRMED) {
             throw new InvalidOrderTransitionException(orderNumber, status, "only a confirmed order can be released");
+        }
+        if (paidByContract() && shippingWarehouseId == null) {
+            throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("Order %s has no shipping warehouse: choose it "
+                    + "and hold its stock there first (17 §4.2)").formatted(orderNumber));
+        }
+        if (paidByContract() && !shippingWarehouseId.equals(warehouse)) {
+            // 17 BR-22: one warehouse; it is released where its stock is held.
+            throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_MISMATCH, ("Order %s ships from another "
+                    + "warehouse").formatted(orderNumber));
         }
         if (paidByContract() && lines.stream().anyMatch(line -> !line.isReserved())) {
             // An order confirmed by its contract holds nothing until its shipping warehouse is chosen and its stock held
@@ -2195,6 +2208,50 @@ public final class Order extends AggregateRoot {
     public void restoreContractSigned(Instant at) {
         this.contractSignedAt = at;
     }
+
+    public void restoreShippingWarehouse(UUID warehouse, Instant chosenAt, UUID chosenBy) {
+        this.shippingWarehouseId = warehouse;
+        this.shippingWarehouseChosenAt = chosenAt;
+        this.shippingWarehouseChosenBy = chosenBy;
+    }
+
+    /**
+     * 4B-7 (kltn-docs 17 §4.2 step 2, BR-22): the one warehouse this order of a contract ships from, chosen by Sales once
+     * it is CONFIRMED. Its stock is held there only (20 BR-17). It changes only while nothing is held for the order - a
+     * hold already taken ties it to its warehouse; the same warehouse again changes nothing.
+     *
+     * @param holdsStock whether any stock is held for the order now
+     * @return whether it changed
+     * @throws BusinessException {@code ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED} for an order not of a contract or not
+     *         CONFIRMED; {@code ORDER_SHIPPING_WAREHOUSE_LOCKED} for another warehouse while stock is held
+     */
+    public boolean chooseShippingWarehouse(UUID warehouse, boolean holdsStock, UUID by, Instant at) {
+        java.util.Objects.requireNonNull(warehouse, "warehouse");
+        if (!paidByContract() || status != OrderStatus.CONFIRMED) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED, ("Order %s is %s: the shipping "
+                    + "warehouse is chosen for a confirmed order of a contract").formatted(orderNumber, status));
+        }
+        if (warehouse.equals(shippingWarehouseId)) {
+            return false;
+        }
+        if (shippingWarehouseId != null && holdsStock) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_LOCKED, ("Order %s holds stock at its "
+                    + "shipping warehouse; release those holds before choosing another").formatted(orderNumber));
+        }
+        this.shippingWarehouseId = warehouse;
+        this.shippingWarehouseChosenAt = java.util.Objects.requireNonNull(at, "at");
+        this.shippingWarehouseChosenBy = java.util.Objects.requireNonNull(by, "by");
+        return true;
+    }
+
+    /** 4B-7: more cartons held for a line at the shipping warehouse - stock that arrived after the first holds. */
+    public void holdMore(UUID lineId, List<UUID> reservationIds) {
+        lineOf(lineId).holdMore(reservationIds);
+    }
+
+    public UUID shippingWarehouseId() { return shippingWarehouseId; }
+    public Instant shippingWarehouseChosenAt() { return shippingWarehouseChosenAt; }
+    public UUID shippingWarehouseChosenBy() { return shippingWarehouseChosenBy; }
 
     /** 4B-5: when its sales contract was signed - what confirms it, not a payment its own terms ask for. */
     public Instant contractSignedAt() { return contractSignedAt; }

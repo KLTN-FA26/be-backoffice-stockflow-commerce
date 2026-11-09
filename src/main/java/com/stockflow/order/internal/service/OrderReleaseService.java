@@ -43,11 +43,14 @@ class OrderReleaseService implements OrderReleases {
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final OrderStockAllocation allocation;
     private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
+    private final ShippingWarehouseService shippingWarehouses;
 
     OrderReleaseService(OrderRepository repository, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
                         InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
-                        OrderStockAllocation allocation, com.stockflow.order.internal.domain.SalesContractRepository contracts) {
+                        OrderStockAllocation allocation, com.stockflow.order.internal.domain.SalesContractRepository contracts,
+                        ShippingWarehouseService shippingWarehouses) {
+        this.shippingWarehouses = shippingWarehouses;
         this.contracts = contracts;
         this.allocation = allocation;
         this.repository = repository;
@@ -81,6 +84,11 @@ class OrderReleaseService implements OrderReleases {
                 && paymentService.creditPosition(order.customerId()).hasOverdue()) {
             throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE,
                     "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));
+        }
+        if (order.paidByContract()) {
+            // 4B-7 (17 §4.2 step 5): released when its stock is all held at its shipping warehouse - every carton of
+            // every line (until 4B-8 releases batch by batch). Order#release checks the warehouse itself.
+            shippingWarehouses.requireFullyHeld(order);
         }
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant());
         // F-FUL step 02 (SCRUM-152): the SKU reservations taken at checkout become allocations on pickable bins of

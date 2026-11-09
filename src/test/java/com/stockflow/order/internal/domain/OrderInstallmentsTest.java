@@ -70,7 +70,10 @@ class OrderInstallmentsTest {
         Order order = signedWaitingOnSigning();
         order.confirmByInstallments(NOW);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        order.release(UUID.randomUUID(), "WH-HCM", SALES, NOW);
+        // 4B-7: released from its shipping warehouse, where its stock is held.
+        UUID warehouse = UUID.randomUUID();
+        order.chooseShippingWarehouse(warehouse, true, SALES, NOW);
+        order.release(warehouse, "HCM", SALES, NOW);
         order.startPicking(SALES, NOW);
 
         assertThatThrownBy(() -> order.requireHandoverAllowed(new Order.LedgerMoney(BigDecimal.ZERO, BigDecimal.ZERO,

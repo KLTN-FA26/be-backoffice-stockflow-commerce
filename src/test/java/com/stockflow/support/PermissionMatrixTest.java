@@ -322,6 +322,10 @@ class PermissionMatrixTest {
                     Role.ORDER_COORDINATOR, Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("payment-receipts:CREATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("payment-receipts:UPDATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
+            Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),

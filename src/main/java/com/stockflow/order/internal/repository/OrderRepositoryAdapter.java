@@ -52,6 +52,17 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
+    public java.util.List<UUID> confirmedWithShippingWarehouse() {
+        @SuppressWarnings("unchecked")
+        java.util.List<UUID> ids = entityManager.createNativeQuery("""
+                        SELECT id FROM ordering.customer_order
+                         WHERE status = 'CONFIRMED' AND shipping_warehouse_id IS NOT NULL
+                         ORDER BY contract_signed_at, id""")
+                .getResultList();
+        return ids;
+    }
+
+    @Override
     public Optional<Order> findById(OrderId id) {
         return jpa.findByIdWithLines(id.value()).map(this::toDomain);
     }
