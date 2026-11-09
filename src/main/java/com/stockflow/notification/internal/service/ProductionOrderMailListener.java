@@ -36,6 +36,7 @@ import java.util.UUID;
  * 1. the production order's lock      every message of one production order, one after the other
  * 2. pending?                          sent already, or settled               -> nothing
  * 3. the production order, read now    gone                                   -> SKIPPED  PRODUCTION_ORDER_NOT_FOUND
+ *                                      (a stop reads only its code, status, reason and producer)
  * 4. the producer's channel            the coordinator hands the slip over   -> SKIPPED  PRODUCER_CHANNEL_PDF
  *                                      no address                             -> SKIPPED  RECIPIENT_MISSING
  * 5. stopped since?                    "sent" or "sample approved" not yet out -> FAILED, final  SUPERSEDED_BY_STOP
@@ -117,7 +118,8 @@ class ProductionOrderMailListener {
         }
         Optional<ProductionOrderMail> found;
         try {
-            found = directory.mail(productionOrderId, issuedAt);
+            // A stop needs no line, size or file: reading them could only keep it from going.
+            found = kind == Kind.STOPPED ? directory.stop(productionOrderId) : directory.mail(productionOrderId, issuedAt);
         } catch (RuntimeException unreadable) {
             // Recorded, so the attempt limit applies: an order that cannot be read is not retried every minute for ever.
             deliveries.failed(new RecordedDelivery.Delivery(reference, 0, kind.template, NotificationChannel.EMAIL,

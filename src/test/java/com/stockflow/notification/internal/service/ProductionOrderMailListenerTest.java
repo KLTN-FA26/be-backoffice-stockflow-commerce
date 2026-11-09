@@ -85,6 +85,13 @@ class ProductionOrderMailListenerTest {
                 NOW.plus(Duration.ofDays(30)));
     }
 
+    /** What a stop reads: no line, no size, no file. */
+    private static ProductionOrderMail stop(String status, String reason) {
+        return new ProductionOrderMail(ID, "PRD-20261110-0001", "Xưởng in Bình Dương", "EMAIL", "don@xuong.vn",
+                COORDINATOR, status, LocalDate.of(2026, 11, 30), null, null, true, null, null, null, reason, List.of(),
+                null, null);
+    }
+
     private static ProductionOrderSent sent() {
         return new ProductionOrderSent(UUID.randomUUID(), ID, "PRD-20261110-0001", UUID.randomUUID(),
                 LocalDate.of(2026, 11, 30), 12, new BigDecimal("1.008"), NOW);
@@ -183,7 +190,7 @@ class ProductionOrderMailListenerTest {
     @DisplayName("stopped: the producer is told to stop, with the reason, and no link")
     void stopped() {
         when(logs.existsByExternalReference("production-order:" + ID + ":sent")).thenReturn(true);
-        when(directory.mail(eq(ID), any())).thenReturn(Optional.of(mail("EMAIL", "don@xuong.vn", "CANCELLED", "Khách huỷ đơn")));
+        when(directory.stop(ID)).thenReturn(Optional.of(stop("CANCELLED", "Khách huỷ đơn")));
 
         listener.on(new ProductionOrderStopped(UUID.randomUUID(), ID, "PRD-20261110-0001", "CANCELLED", NOW));
 
@@ -193,13 +200,14 @@ class ProductionOrderMailListenerTest {
             assertThat(email.idempotencyKey()).isEqualTo("production-order:" + ID + ":stopped");
             assertThat(email.category()).isEqualTo("production_order_stopped");
         });
+        verify(directory, never()).mail(any(), any());
     }
 
     @Test
     @DisplayName("closed after mass printing started: 'closed, deliver nothing more'")
     void closed() {
         when(logs.existsByExternalReference("production-order:" + ID + ":sample-approved")).thenReturn(true);
-        when(directory.mail(eq(ID), any())).thenReturn(Optional.of(mail("EMAIL", "don@xuong.vn", "CLOSED", "Xưởng dừng")));
+        when(directory.stop(ID)).thenReturn(Optional.of(stop("CLOSED", "Xưởng dừng")));
 
         listener.on(new ProductionOrderStopped(UUID.randomUUID(), ID, "PRD-20261110-0001", "CLOSED", NOW));
 
@@ -274,7 +282,7 @@ class ProductionOrderMailListenerTest {
     @Test
     @DisplayName("nothing reached the producer by e-mail: there is nothing to stop, and no stop is sent")
     void nothingToStop() {
-        when(directory.mail(eq(ID), any())).thenReturn(Optional.of(mail("EMAIL", "don@xuong.vn", "CANCELLED", "Huỷ")));
+        when(directory.stop(ID)).thenReturn(Optional.of(stop("CANCELLED", "Huỷ")));
 
         listener.on(new ProductionOrderStopped(UUID.randomUUID(), ID, "PRD-20261110-0001", "CANCELLED", NOW));
 
@@ -305,6 +313,18 @@ class ProductionOrderMailListenerTest {
         verify(attempts).failed(eq("-"), any(), eq(broken), eq("production-order:" + ID + ":sent"),
                 eq("production_order_sent"), eq(false), eq(0));
         assertThat(transport.sent()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a stop never reads the lines: a SKU's missing packaging cannot keep the producer from being told")
+    void stopReadsNoLines() {
+        when(logs.existsByExternalReference("production-order:" + ID + ":sent")).thenReturn(true);
+        when(directory.mail(any(), any())).thenThrow(new IllegalStateException("no packaging for CUP-1"));
+        when(directory.stop(ID)).thenReturn(Optional.of(stop("CANCELLED", "Khách huỷ")));
+
+        listener.on(new ProductionOrderStopped(UUID.randomUUID(), ID, "PRD-20261110-0001", "CANCELLED", NOW));
+
+        assertThat(transport.sent()).singleElement().satisfies(email -> assertThat(email.subject()).contains("ĐÃ HUỶ"));
     }
 
     @Test

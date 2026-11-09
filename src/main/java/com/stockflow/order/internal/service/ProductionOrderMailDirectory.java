@@ -25,4 +25,9 @@ class ProductionOrderMailDirectory implements ProductionOrderDirectory {
     public Optional<ProductionOrderMail> mail(UUID productionOrderId, Instant issuedAt) {
         return dispatch.mail(productionOrderId, issuedAt);
     }
+
+    @Override
+    public Optional<ProductionOrderMail> stop(UUID productionOrderId) {
+        return dispatch.stopMail(productionOrderId);
+    }
 }

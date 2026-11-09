@@ -357,6 +357,26 @@ public class ProductionOrderDispatch {
         });
     }
 
+    /**
+     * The production order as a stop message needs it: its code, status, reason and producer only. Nothing about its
+     * lines is read - a SKU whose item or packaging went missing must not keep the producer from being told to stop.
+     */
+    @Transactional(readOnly = true)
+    public Optional<ProductionOrderMail> stopMail(UUID id) {
+        return productionOrders.findById(id).map(production -> {
+            Producer producer = producers.findById(production.producerId()).orElseThrow();
+            String stopReason = switch (production.status()) {
+                case CANCELLED -> production.cancellationReason();
+                case CLOSED -> production.closingReason();
+                default -> null;
+            };
+            return new ProductionOrderMail(id, production.code(), producer.name(), producer.channel().name(),
+                    producer.email(), production.drawnUpBy(), production.status().name(), production.needByDate(),
+                    null, null, production.sampleApprovalRequired(), null, null, null, stopReason, List.of(), null,
+                    null);
+        });
+    }
+
     // ---- the producer's links ---------------------------------------------------------------------------------------
 
     /**

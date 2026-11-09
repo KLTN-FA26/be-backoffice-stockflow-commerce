@@ -23,4 +23,11 @@ public interface ProductionOrderDirectory {
      * the provider may already have accepted.
      */
     Optional<ProductionOrderMail> mail(UUID productionOrderId, Instant issuedAt);
+
+    /**
+     * The production order as a stop message needs it - its code, status, the coordinator's reason and the producer -
+     * with no line, carton size, name or file: data those come from that went missing must never keep a producer from
+     * being told to stop. Empty when there is no such production order.
+     */
+    Optional<ProductionOrderMail> stop(UUID productionOrderId);
 }
