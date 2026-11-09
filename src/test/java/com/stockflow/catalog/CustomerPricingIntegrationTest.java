@@ -179,13 +179,15 @@ class CustomerPricingIntegrationTest {
                   AND action='CREATE' AND outcome='SUCCESS'""", Long.class, buyer.customerId().toString())).isEqualTo(1);
     }
 
-    /** 13 BR-04, BR-10: no price on the storefront at all - not the customer's own, not a group's, not a base one. */
+    /**
+     * 13 BR-04, BR-10: the portal's price route and Sales' "what the customer pays now" are gone; the internal price is
+     * read as it is. Every storefront screen is {@code StorefrontWithoutPricesIntegrationTest}'s.
+     */
     @Test
-    void theStorefrontShowsNoPriceAtAll() throws Exception {
+    void thePortalPriceRouteAndTheSalesScheduleAreGone() throws Exception {
         Buyer own = buyer("ACTIVE");
         String sku = ownSku(own);
         createPrice(own.customerId(), sku, tiers(Map.of(2, 11_000L, 10, 10_000L))).andExpect(status().isCreated());
-        KeptCheckoutPrices.give(jdbc, tx, own.customerId(), BLANK, KEPT);
 
         // The portal's price endpoint is gone, whoever asks.
         for (String asked : List.of(sku, BLANK)) {

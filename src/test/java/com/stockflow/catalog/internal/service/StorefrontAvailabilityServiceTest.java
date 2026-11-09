@@ -10,7 +10,6 @@ import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionService;
-import com.stockflow.product.api.CustomerSku;
 import com.stockflow.product.api.CustomerSkus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,12 +22,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -64,8 +65,12 @@ class StorefrontAvailabilityServiceTest {
     void activeCustomerWithItsOwnSkus() {
         when(customers.findByUserId(userId)).thenReturn(Optional.of(new CustomerSummary(
                 customerId, userId, "Customer", "customer@example.test", null, null, null, "ACTIVE", 0, null)));
-        when(customerSkus.ownedBy(customerId, null)).thenReturn(List.of(own(CUP, "ACTIVE"), own(BAG, "ACTIVE"),
-                own(LID, "ACTIVE"), own(OLD, "OBSOLETE")));
+        // The caller's own ACTIVE SKUs among those asked: OLD is its own but retired, so the product module leaves it out.
+        when(customerSkus.activeOwnedBy(eq(customerId), any())).thenAnswer(call -> {
+            Collection<String> asked = call.getArgument(1);
+            return asked.stream().filter(Set.of(CUP.code(), BAG.code(), LID.code())::contains)
+                    .collect(java.util.stream.Collectors.toSet());
+        });
         declared.put(CUP.code(), List.of(unit(CUP, "PCS", 1, true, true, false), unit(CUP, "CARTON", 10, false, true, false)));
         declared.put(BAG.code(), List.of(unit(BAG, "PCS", 1, true, true, false), unit(BAG, "CARTON", 24, false, true, false)));
         // Two cartons: the default shipping one is the SKU's carton; a retired one is never it.
@@ -103,6 +108,15 @@ class StorefrontAvailabilityServiceTest {
 
         assertThat(service.availabilityOf(userId, List.of(CUP.code())))
                 .containsExactly(new SkuAvailability(CUP, Availability.OUT_OF_STOCK));
+    }
+
+    @Test
+    void onlyTheSkusAskedAreLookedUp() {
+        when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of(CUP, 100));
+
+        service.availabilityOf(userId, List.of("ly12-acme-01", "LY12-OTHER-01"));
+
+        verify(customerSkus).activeOwnedBy(customerId, List.of(CUP.code(), THEIRS.code()));
     }
 
     @Test
@@ -171,11 +185,6 @@ class StorefrontAvailabilityServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.UNAUTHORIZED));
         verifyNoInteractions(inventory);
-    }
-
-    private CustomerSku own(Sku sku, String status) {
-        return new CustomerSku(UUID.randomUUID(), UUID.randomUUID(), sku.code(), sku.code(), customerId,
-                UUID.randomUUID(), "LY12-TRANG", status);
     }
 
     private static UomConversion unit(Sku sku, String code, int factor, boolean base, boolean active,

@@ -18,7 +18,8 @@
 -- Data:
 --   * every catalog.pricing_rule row (base prices 'BASE:<sku>', group prices, any other rule) and every
 --     catalog.promotion row is archived whole, then the tables are dropped;
---   * every catalog.catalog_entry row with a price keeps its row; its price and currency are archived;
+--   * every catalog.catalog_entry row with a price keeps its row; its price and currency are archived (a row without
+--     a price loses only the currency, always the column's default 'VND', so nothing of it is archived);
 --   * every product.variant_sales_units row with a price keeps its row; its price is archived;
 --   * the catalog-segment-prices permission and every grant of it are archived and deleted, advancing
 --     app_role.version of each role that held it (ADR-0008).

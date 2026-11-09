@@ -41,9 +41,6 @@ public final class CacheNames {
     /** Storefront category tree. Rebuilt rarely, read on every page. */
     public static final String CATEGORIES = "categories";
 
-    /** Effective price for a SKU. Short TTL: a stale price is a promise we may have to honour. */
-    public static final String PRICES = "prices";
-
     /** The permission matrix, derived from annotations at startup. Effectively immutable. */
     public static final String PERMISSION_CATALOG = "permissionCatalog";
 
@@ -69,8 +66,6 @@ public final class CacheNames {
         Map<String, Duration> ttls = new LinkedHashMap<>();
         ttls.put(PRODUCTS, Duration.ofMinutes(30));
         ttls.put(CATEGORIES, Duration.ofHours(6));
-        // Short: a customer who is shown a stale price and adds to cart has been made a promise.
-        ttls.put(PRICES, Duration.ofSeconds(60));
         ttls.put(PERMISSION_CATALOG, Duration.ofHours(12));
         // Short enough that revoking someone's access takes effect within a coffee break, long
         // enough that the identity module is not queried on every single request.

@@ -190,14 +190,6 @@ order by pc.is_primary desc, pc.id limit 1
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
     }
 
-    public void advanceCommerceRevision(UUID id, String actor) {
-        jdbc.update(
-                "update product.products set"
-                        + " version=version+1,last_modified_at=now(),last_modified_by=? where id=?",
-                actor,
-                id);
-    }
-
     public void edit(UUID id, String slug, String title, String description, String actor) {
         try {
             jdbc.update(

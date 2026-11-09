@@ -10,7 +10,6 @@ import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionService;
-import com.stockflow.product.api.CustomerSku;
 import com.stockflow.product.api.CustomerSkus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,8 +36,9 @@ import java.util.stream.Collectors;
  * <p>Counted in whole cartons of the SKU's standard size (13 BR-12, open-questions A9): available to promise is
  * inventory's system-wide figure, every warehouse together (13 BR-07, C3), read through {@code inventory :: api} in one
  * query for the whole page, then divided by the SKU's carton. The carton is the one {@code QuoteService} quotes in: the
- * SKU's single active packing unit of more than one piece, the default shipping one should there be several. A SKU
- * without one gets no indicator - a guessed carton would promise stock no quote can sell - and the gap is logged.</p>
+ * SKU's single active packing unit of more than one piece, the default shipping one should there be several
+ * ({@link UomConversion#cartonOf}). A SKU without one gets no indicator - a guessed carton would promise stock no quote
+ * can sell - and the gap is logged.</p>
  *
  * <p>Not cached. Docs 13 allows ten seconds of lag; the endpoint's own short {@code Cache-Control} absorbs a page being
  * refreshed.</p>
@@ -78,10 +78,8 @@ public class StorefrontAvailabilityService {
         CustomerSummary customer = customers.findByUserId(userId).filter(found -> "ACTIVE".equals(found.status()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.FORBIDDEN));
         Set<Sku> asked = parse(codes);
-        Set<String> own = customerSkus.ownedBy(customer.customerId(), null).stream()
-                .filter(sku -> "ACTIVE".equals(sku.status()))
-                .map(CustomerSku::sku)
-                .collect(Collectors.toSet());
+        Set<String> own = customerSkus.activeOwnedBy(customer.customerId(),
+                asked.stream().map(Sku::code).toList());
         Set<Sku> owned = asked.stream().filter(sku -> own.contains(sku.code()))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (owned.isEmpty()) return List.of();
@@ -101,17 +99,10 @@ public class StorefrontAvailabilityService {
         Map<String, List<UomConversion>> declared = units.conversionsOf(skus);
         Map<String, Integer> sizes = new HashMap<>();
         for (Sku sku : skus) {
-            List<UomConversion> candidates = declared.getOrDefault(sku.code(), List.of()).stream()
-                    .filter(unit -> unit.active() && !unit.base() && unit.factor() > 1).toList();
-            if (candidates.size() > 1) {
-                candidates = candidates.stream().filter(UomConversion::defaultShipping).toList();
-            }
-            if (candidates.size() == 1) {
-                sizes.put(sku.code(), candidates.getFirst().factor());
-            } else {
-                log.warn("Customer SKU {} has no single carton unit (kltn-docs 01 BR-03): no stock indicator for it",
-                        sku.code());
-            }
+            UomConversion.cartonOf(declared.getOrDefault(sku.code(), List.of())).ifPresentOrElse(
+                    carton -> sizes.put(sku.code(), carton.factor()),
+                    () -> log.warn("Customer SKU {} has no single carton unit (kltn-docs 01 BR-03): no stock indicator "
+                            + "for it", sku.code()));
         }
         return sizes;
     }

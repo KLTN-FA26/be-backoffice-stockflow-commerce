@@ -165,6 +165,19 @@ public class CustomerSkuService implements CustomerSkus {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Set<String> activeOwnedBy(UUID customerId, java.util.Collection<String> skus) {
+        if (customerId == null || skus == null || skus.isEmpty()) {
+            return java.util.Set.of();
+        }
+        return variants.findBySkuIn(skus).stream()
+                .filter(v -> customerId.equals(v.getOwnerCustomerId())
+                        && v.getStatus() == com.stockflow.product.internal.domain.VariantStatus.ACTIVE)
+                .map(VariantJpaEntity::getSku)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<CustomerSku> ownedBy(UUID customerId, UUID productId) {
         List<VariantJpaEntity> owned = variants.ownedBy(customerId, productId);
         Map<UUID, String> sources = variants.findAllById(owned.stream().map(VariantJpaEntity::getSourceVariantId)

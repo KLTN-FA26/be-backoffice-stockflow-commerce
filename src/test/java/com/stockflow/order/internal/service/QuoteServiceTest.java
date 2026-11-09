@@ -221,13 +221,13 @@ class QuoteServiceTest {
     }
 
     @Test
-    void aLineStartsFromTheCustomersOwnPriceNeverAGroupOrBasePrice() {
+    void aLineStartsFromTheCustomersOwnPrice() {
         when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
         when(quotes.nextNumber(any())).thenReturn("QT-9");
-        // No price of the customer's own (a group or base price is never asked for): Sales enters the tiers.
+        // No price of the customer's own - and there is no other (13 BR-04): Sales enters the tiers.
         assertThatThrownBy(() -> service.create(sales, create(SKU, 20, null))).as("nothing to start from")
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        verify(catalog, never()).checkoutPrices(any(), any());
+        verify(catalog).customerPrice(customer, SKU);
 
         when(catalog.customerPrice(customer, SKU)).thenReturn(Optional.of(new PriceSchedule(SKU,
                 10, List.of(new PriceSchedule.Tier(10, Money.vnd(2100)),

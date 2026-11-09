@@ -197,6 +197,23 @@ class CustomerSkuIntegrationTest {
                 .isEqualTo(ErrorCode.VARIANT_NOT_FOUND);
     }
 
+    /** 5-3 (kltn-docs 13 BR-01, BR-02): what a customer may be told about is its own ACTIVE SKUs, and only those asked. */
+    @Test
+    void theActiveSkusACustomerOwnsAmongThoseAsked() {
+        CustomerSku sku = issue(snapshot(), "0312345678");
+        UUID other = tx.execute(s -> ReferenceRows.customer(entityManager));
+
+        assertThat(customerSkus.activeOwnedBy(customerId, List.of(sku.sku(), sourceSku, "NO-SUCH-SKU")))
+                .containsExactly(sku.sku());
+        assertThat(customerSkus.activeOwnedBy(other, List.of(sku.sku(), sourceSku))).isEmpty();
+        assertThat(customerSkus.activeOwnedBy(customerId, List.of())).isEmpty();
+        assertThat(customerSkus.activeOwnedBy(null, List.of(sku.sku()))).isEmpty();
+
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?",
+                sku.sku()));
+        assertThat(customerSkus.activeOwnedBy(customerId, List.of(sku.sku()))).as("blocked").isEmpty();
+    }
+
     @Test
     void aVariantNotOnSaleOrAnotherCustomersSkuCannotBeASource() {
         UUID snapshot = snapshot();

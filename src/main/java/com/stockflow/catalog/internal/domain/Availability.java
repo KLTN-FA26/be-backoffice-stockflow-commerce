@@ -10,19 +10,19 @@ package com.stockflow.catalog.internal.domain;
  * <p>Counted in cartons (13 BR-12, open-questions A9, D28): a customer orders whole cartons, so stock short of one
  * carton is nothing to promise, and the low-stock threshold is a number of cartons too.</p>
  *
- * <p>No {@code PRE_ORDER} yet: docs 13 lists it for "ATP ≤ 0 but the policy allows pre-ordering",
- * and no such policy exists anywhere in the data model. Until one does, out of stock is out of
- * stock.</p>
+ * <p>Three values only (13 §4.4 step 4). Out of stock never stops a customer: a customer's SKU is made to order, so
+ * Sales still quotes it and a Production Order makes up the shortfall (13 edge case "Khách muốn mua SKU riêng
+ * {@code Out of stock}").</p>
  */
 public enum Availability {
 
     /** Above the low-stock threshold. */
     IN_STOCK,
 
-    /** Some left, at or under the threshold — still buyable, shown with a warning. */
+    /** Some whole cartons left, at or under the threshold - shown with a warning. */
     LOW_STOCK,
 
-    /** Nothing to promise; the product stays visible but cannot be bought. */
+    /** Not one whole carton to promise; the customer can still ask Sales for a quote. */
     OUT_OF_STOCK;
 
     /**
