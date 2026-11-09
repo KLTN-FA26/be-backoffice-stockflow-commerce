@@ -20,7 +20,7 @@ import java.util.UUID;
  * @param closedAt    when it was emptied, lost or voided
  */
 public record StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
-                                  Integer receivedQty, String locationCode, StockPackageStatus status, boolean unopened,
+                                  Integer receivedQty, String locationCode, StockPackageStatus status,
                                   String lotNumber, LocalDate expiryDate, int onHand, int reserved,
                                   UUID goodsReceiptLineId, Instant closedAt) {
 
@@ -38,26 +38,26 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
     }
 
     /**
-     * What one location holds of one SKU, lot and stock status: unopened cartons and their units, opened cartons
-     * still holding something and what is left in them, units in no carton.
+     * What one location holds of one SKU, lot and stock status: cartons and their units - every carton in stock is
+     * whole (team plan 4C-3), so there is no opened column - and units in no carton, which only the paths not yet in
+     * cartons write (a put-back, a customer return, a damage report).
      *
-     * @param totalUnits the three unit columns added; any other value is refused
+     * @param totalUnits the two unit columns added; any other value is refused
      */
     public record LocationLine(String sku, String lotNumber, LocalDate expiryDate, StockStatus status,
-                               int wholeCartons, int wholeCartonUnits, int openedCartons, int openedCartonUnits,
-                               int looseUnits, int totalUnits) {
+                               int wholeCartons, int wholeCartonUnits, int looseUnits, int totalUnits) {
 
         public LocationLine {
-            if (totalUnits != wholeCartonUnits + openedCartonUnits + looseUnits) {
+            if (totalUnits != wholeCartonUnits + looseUnits) {
                 throw new IllegalArgumentException("totalUnits " + totalUnits + " is not " + wholeCartonUnits + " + "
-                        + openedCartonUnits + " + " + looseUnits);
+                        + looseUnits);
             }
         }
 
         public LocationLine(String sku, String lotNumber, LocalDate expiryDate, StockStatus status, int wholeCartons,
-                            int wholeCartonUnits, int openedCartons, int openedCartonUnits, int looseUnits) {
-            this(sku, lotNumber, expiryDate, status, wholeCartons, wholeCartonUnits, openedCartons, openedCartonUnits,
-                    looseUnits, wholeCartonUnits + openedCartonUnits + looseUnits);
+                            int wholeCartonUnits, int looseUnits) {
+            this(sku, lotNumber, expiryDate, status, wholeCartons, wholeCartonUnits, looseUnits,
+                    wholeCartonUnits + looseUnits);
         }
     }
 }

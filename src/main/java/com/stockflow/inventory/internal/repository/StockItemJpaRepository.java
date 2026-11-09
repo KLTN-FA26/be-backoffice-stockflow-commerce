@@ -84,14 +84,15 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
      *
      * <p>{@code reserved} is read from the denormalised column rather than aggregated from the
      * child table, which keeps this a single-table scan on the partial index. The carton, when there
-     * is one, is joined by its primary key only to say whether the row is that whole sealed carton
+     * is one, is joined by its primary key only to say whether the row is that whole carton in stock
      * (SCRUM-473); a carton holding stock is IN_STOCK, so no status filter is needed on it.</p>
      */
     @Query("""
             select new com.stockflow.inventory.internal.repository.AvailabilityRow(
                 s.id, s.locationCode, s.lotNumber, s.expiryDate, s.status, s.onHand, s.reserved, s.receivedAt,
                 s.stockPackageId,
-                case when p.unopened = true and s.reserved = 0 and s.onHand = p.receivedQty then true else false end)
+                case when p.status = com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
+                     and s.reserved = 0 and s.onHand = p.receivedQty then true else false end)
             from StockItemJpaEntity s
             left join StockPackageJpaEntity p on p.id = s.stockPackageId
             where s.sku = :sku
@@ -199,7 +200,8 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     @Query("""
             select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
                    r.quantity, r.status, r.expiresAt, s.expiryDate, s.serialNumber, p.lpn,
-                   case when p.unopened = true and r.quantity = s.onHand and s.onHand = p.receivedQty
+                   case when p.status = com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
+                        and r.quantity = s.onHand and s.onHand = p.receivedQty
                         then true else false end)
             from ReservationJpaEntity r join r.stockItem s
             left join StockPackageJpaEntity p on p.id = s.stockPackageId

@@ -575,10 +575,15 @@ public enum ErrorCode {
     STOCK_PACKAGE_WRONG_LOCATION("The carton is not at this location", 422),
     /** A carton counted above its received quantity. */
     STOCK_PACKAGE_OVERFILLED("A carton cannot hold more than it was received with", 422),
-    /** Kltn-docs 11 BR-05: a carton held or allocated for an order is not moved by hand; its picker would find it gone. */
-    STOCK_PACKAGE_HELD("The carton is held for an order and cannot be moved by hand", 409),
+    /**
+     * Kltn-docs 11 BR-05: a carton held or allocated for an order is not moved by hand; its picker would find it gone.
+     * Nor written off by hand (20 §4.3, team plan 4C-3): the order's hold is released or reallocated first.
+     */
+    STOCK_PACKAGE_HELD("The carton is held for an order and cannot be moved or written off by hand", 409),
     /** Team plan 4C-2 (07 BR-03, 11 BR-04): stock leaves a carton whole; nothing takes part of one. */
     STOCK_PACKAGE_TAKEN_WHOLE("A carton is taken whole; part of it cannot be taken", 409),
+    /** Team plan 4C-3 (20 §4.3, BR-05): one adjustment of a carton waits for approval at a time. */
+    STOCK_PACKAGE_ADJUSTMENT_PENDING("Another adjustment of this carton is waiting for approval", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),

@@ -39,11 +39,11 @@ public interface CycleCountRepository {
      */
     Map<CountSlot, String> claim(Collection<CountSlot> slots);
 
-    /** The stocked slots a scope selects, with their book quantities. */
+    /** The cartons in stock a scope selects (one line each, kltn-docs 20 §4.2 a2), with their book quantities. */
     List<CountLineDraft> stockIn(String warehousePrefix, Collection<String> locationCodes,
                                  Collection<String> locationPrefixes, Collection<String> skus);
 
-    /** Committed on_hand, read FOR SHARE. */
+    /** The carton's committed on_hand, read FOR SHARE. */
     int bookQuantity(CountSlot slot);
 
     /**
@@ -67,8 +67,8 @@ public interface CycleCountRepository {
     record LineAdjustment(UUID id, String number, int quantityDelta, String status) { }
 
     /**
-     * Stock held back from picking: by an open SHORT_PICK recount (or one whose variance waits for approval), or by a
-     * pending shortage of any count.
+     * Cartons held back from picking: by an open SHORT_PICK recount (or one whose variance waits for approval), by a
+     * pending shortage of any count, or by a write-off waiting for approval (kltn-docs 20 BR-11).
      */
     record Frozen(UUID stockItemId, String sku, String locationCode, long free) { }
 

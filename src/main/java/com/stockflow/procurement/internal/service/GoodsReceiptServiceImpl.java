@@ -542,7 +542,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * {@inheritDoc}
      *
      * <p>SCRUM-473: nothing here names a carton. {@code inventory.receive} finds the line's RECEIVING cartons by the
-     * line's id and puts the goods into them - one INBOUND row each, IN_STOCK and still unopened. Since team plan
+     * line's id and puts the goods into them - one INBOUND row each, IN_STOCK and whole. Since team plan
      * 4C-2 nothing goes loose (kltn-docs 03 BR-12): a line with units outside its cartons - a remainder, or a line
      * counted with none - is refused ({@code RECEIPT_LINE_NOT_IN_CARTONS}) and the receipt stays a draft to recount; a
      * draft may still hold such a line while it is being counted. Cartons holding more than the line are refused

@@ -16,7 +16,8 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * A stock count over a set of slots, from planning to submission (SCRUM-146, spec §3, §5).
+ * A stock count over a set of LPN cartons, from planning to submission (SCRUM-146; kltn-docs 20 §4.2, team plan 4C-3):
+ * each carton is stated present or not found at its bin, never counted in units (BR-14).
  *
  * <p>The aggregate owns the rules that used to be scattered over SQL and a service: a closed count
  * takes no counts, a count is submitted only when every line is counted, and a second submit or
@@ -24,16 +25,16 @@ import java.util.UUID;
  * raise anything twice. It does not touch stock: variances become adjustments in the application
  * layer, after {@link #submit} says this call is the one that completed the count.</p>
  *
- * <p>Counting overwrites the line's expected quantity with the book quantity read at that moment
- * (spec §5, D3): the variance is judged against what the books held when the shelf was counted, not
- * against a figure frozen at planning that picks and receipts have since moved.</p>
+ * <p>Counting records whether the books have the carton at its bin at that moment (20 §4.2 b4, BR-09): the variance
+ * is judged against what the books held when the shelf was counted, not against a state frozen at planning that
+ * picks have since moved.</p>
  */
 public final class CycleCount extends AggregateRoot {
 
     /** The longest note the column holds. */
     private static final int NOTE_MAX = 1000;
 
-    /** A slot to count and the book quantity it was planned with. */
+    /** A carton to count and the units the books held of it when it was planned (0 or its standard count). */
     public record CountLineDraft(CountSlot slot, int expectedQty) { }
 
     private final UUID id;
@@ -74,7 +75,8 @@ public final class CycleCount extends AggregateRoot {
 
     /**
      * @throws BusinessException {@code CYCLE_COUNT_EMPTY_SCOPE} when there is nothing to count
-     * @throws IllegalArgumentException when two drafts name the same slot (the caller dedupes; a duplicate is a bug)
+     * @throws IllegalArgumentException when two drafts name the same carton (the caller dedupes; a duplicate is a bug),
+     *         or a draft names no carton
      */
     public static CycleCount plan(String number, UUID warehouseId, CycleCountTrigger trigger, boolean blind,
                                   UUID assignedUserId, LocalDate plannedDate, String note,
@@ -138,12 +140,18 @@ public final class CycleCount extends AggregateRoot {
         }
     }
 
-    public CycleCountLine count(UUID lineId, int countedQty, int bookQty, UUID by, Instant at) {
+    /**
+     * The carton of a line was scanned at its bin, or not found there (20 §4.2 b4).
+     *
+     * @param booked whether the books have it at the line's bin now (BR-09)
+     * @param units  its standard count
+     */
+    public CycleCountLine count(UUID lineId, boolean found, boolean booked, int units, UUID by, Instant at) {
         requireOpen();
         CycleCountLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No such line on this count"));
         requireMayCount(line, by);
-        line.count(countedQty, bookQty, by, at);
+        line.count(found, booked, units, by, at);
         start(at);
         return line;
     }
@@ -160,15 +168,21 @@ public final class CycleCount extends AggregateRoot {
         return line;
     }
 
-    /** A slot found on the shelf that the plan did not list. */
-    public CycleCountLine addLine(CountSlot slot, int countedQty, int bookQty, UUID by, Instant at) {
+    /**
+     * A carton scanned at a bin of the count that the plan did not list (20 §4.2 b5): found, whatever the books say -
+     * a LOST carton found again is the surplus this records.
+     *
+     * @param booked whether the books have it at that bin now
+     * @param units  its standard count
+     */
+    public CycleCountLine addLine(CountSlot slot, boolean booked, int units, UUID by, Instant at) {
         requireOpen();
         // By lock key: a carton line that followed its carton to another bin is still that carton's line.
         if (lines.stream().anyMatch(l -> l.slot().lockKey().equals(slot.lockKey()))) {
-            throw new BusinessException(ErrorCode.CYCLE_COUNT_SLOT_BUSY, "This slot is already on the count");
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_SLOT_BUSY, "This carton is already on the count");
         }
-        CycleCountLine line = new CycleCountLine(slot, bookQty);
-        line.count(countedQty, bookQty, by, at);
+        CycleCountLine line = new CycleCountLine(slot, booked ? units : 0);
+        line.count(true, booked, units, by, at);
         lines.add(line);
         start(at);
         return line;
@@ -215,11 +229,19 @@ public final class CycleCount extends AggregateRoot {
      * Flags lines for a second count after approval found the figure doubtful; returns their slots. A line is
      * flagged once: its doubt is handed to that recount, and counting the slot again after it is a new count.
      *
-     * @throws BusinessException {@code CONFLICT} naming every line already flagged, before any line is flagged
+     * @throws BusinessException {@code CONFLICT} naming every line already flagged, or every loose line of the history,
+     *         before any line is flagged
      */
     public List<CountSlot> markRecount(Collection<UUID> lineIds) {
         if (status != CycleCountStatus.COMPLETED) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_NOT_OPEN, "Only a submitted count can be sent for recount");
+        }
+        List<String> loose = lines.stream().filter(line -> lineIds.contains(line.id()) && !line.slot().isCarton())
+                .map(line -> line.id().toString()).toList();
+        if (!loose.isEmpty()) {
+            // A loose line of the history: counts are by carton now (team plan 4C-3); its bin's cartons are planned.
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "Loose lines are not recounted; plan a count of the bin's cartons: " + String.join(", ", loose));
         }
         List<String> flagged = lines.stream().filter(line -> lineIds.contains(line.id()) && line.recountRequired())
                 .map(line -> line.id().toString()).toList();

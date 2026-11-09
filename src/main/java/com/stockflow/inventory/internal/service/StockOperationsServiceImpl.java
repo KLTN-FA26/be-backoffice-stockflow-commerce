@@ -27,7 +27,7 @@ import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.CountSlot;
-import com.stockflow.inventory.internal.domain.CountVariance;
+import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
@@ -236,7 +236,7 @@ class StockOperationsServiceImpl implements StockOperations {
 
         Instant now = clock.instant();
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
-                sku, blankToNull(lotNumber), from, to, quantity.value(), before, arriving,
+                sku, source.lotNumber(), from, to, quantity.value(), before, arriving,
                 referenceType, referenceId, reason, actorId, now).ofLot(source.lotId());
         ledger.append(line);
         log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
@@ -294,13 +294,12 @@ class StockOperationsServiceImpl implements StockOperations {
      * <p>A move a person asks for ({@code MOVE_TASK}, kltn-docs 11) is different in three ways. It is answered again
      * for the same request id ({@code referenceId}), from the ledger, rather than refused (11 BR-07: sending the same
      * request does not move twice). It never takes a carton with units held for an order (11 BR-05: the picker would
-     * walk to an empty bin; the hold moves only by picking). And it neither takes a carton a cycle count holds nor
-     * moves one into a bin where a count holds that SKU and lot loose (11 BR-06, SCRUM-146): the count would be of
-     * books that changed under it. A count of cartons counts each by its LPN, so a carton moved in beside them changes
-     * no counted line's books; whether such a count should also hold the bin against new arrivals is team plan
-     * 4C-3's, which moves counting to cartons. The count's slots are asked through {@code claim} after the cartons are locked and
-     * before their rows are, which also takes the slots' advisory locks, so a count planned at the same moment either
-     * sees this move committed or waits for it.</p>
+     * walk to an empty bin; the hold moves only by picking). And it does not take a carton a cycle count holds
+     * (11 BR-06, 20 BR-10, SCRUM-146): the count would be of books that changed under it. A count is of cartons, each
+     * by its LPN (team plan 4C-3), so a carton moved in beside them changes no counted line's books: the bin is not
+     * held against arrivals (20 §4.2 b4: the warehouse keeps working while it is counted). The count's cartons are
+     * asked through {@code claim} after the cartons are locked and before their rows are, which also takes their
+     * advisory locks, so a count planned at the same moment either sees this move committed or waits for it.</p>
      *
      * <p>One exception: a putaway ({@code PUTAWAY_TASK}, to AVAILABLE) of a carton somebody already moved by hand into
      * the chosen bin. It has nowhere to move to, so it is reclassified where it stands, and its ledger line is a
@@ -446,10 +445,9 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     /**
-     * Kltn-docs 11 BR-06 for cartons moved by hand: each carton's own slot at its bin, and the destination bin's loose
-     * slot of the carton's SKU and lot (a carton slot there is another carton's, whose books this move leaves alone).
-     * Held is exactly what {@code claim} calls busy (open count, or submitted with its variance still pending), so the
-     * two cannot disagree. Whoever asks, whatever they may do: this protects the count, it is not a visibility rule.
+     * Kltn-docs 11 BR-06, 20 BR-10 for cartons moved by hand: a carton a count holds stays where it is. Held is exactly
+     * what {@code claim} calls busy (open count, or submitted with its variance still pending), so the two cannot
+     * disagree. Whoever asks, whatever they may do: this protects the count, it is not a visibility rule.
      */
     private void requireNotUnderCount(List<StockPackage> cartons, List<StockItemId> rowIds, LocationId to) {
         Map<StockPackageId, StockItem> rowOf = new HashMap<>();
@@ -457,26 +455,20 @@ class StockOperationsServiceImpl implements StockOperations {
             stockItems.findById(id).ifPresent(row -> rowOf.putIfAbsent(row.stockPackageId(), row));
         }
         Map<CountSlot, StockPackage> out = new LinkedHashMap<>();
-        Map<CountSlot, StockPackage> in = new LinkedHashMap<>();
         for (StockPackage carton : cartons) {
             StockItem row = rowOf.get(carton.id());
-            if (row == null) {
-                continue;
+            if (row != null) {
+                out.put(CountSlot.carton(carton.location(), row.sku(), row.lotNumber(), carton.id()), carton);
             }
-            out.put(CountSlot.carton(carton.location(), row.sku(), row.lotNumber(), carton.id()), carton);
-            in.putIfAbsent(CountSlot.loose(to, row.sku(), row.lotNumber()), carton);
         }
-        List<CountSlot> slots = new ArrayList<>(out.keySet());
-        slots.addAll(in.keySet());
-        Map<CountSlot, String> busy = countLines.claim(slots);
-        for (CountSlot slot : slots) {
-            String count = busy.get(slot);
+        Map<CountSlot, String> busy = countLines.claim(out.keySet());
+        for (Map.Entry<CountSlot, StockPackage> entry : out.entrySet()) {
+            String count = busy.get(entry.getKey());
             if (count != null) {
-                StockPackage carton = out.containsKey(slot) ? out.get(slot) : in.get(slot);
+                CountSlot slot = entry.getKey();
                 throw new BusinessException(ErrorCode.STOCK_SLOT_UNDER_COUNT,
-                        "%s of %s is under count %s; %s cannot be moved %s until the count is done".formatted(
-                                slot.location(), slot.sku(), count, carton.lpn(),
-                                out.containsKey(slot) ? "out" : "in"),
+                        "%s of %s is under count %s; %s cannot be moved until the count is done".formatted(
+                                slot.location(), slot.sku(), count, entry.getValue().lpn()),
                         List.of(), Map.of("locationCode", slot.location().code(), "cycleCountNumber", count));
             }
         }
@@ -510,7 +502,8 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         LocationId location = new LocationId(command.locationCode());
         requireUsable(location);
-        String lot = blankToNull(command.lotNumber());
+        // Every unit carries a lot (20 BR-22): a receipt line that names none receives lot UNTRACED.
+        String lot = StockLots.orUntraced(command.lotNumber());
 
         List<StockPackage> packed = lockCartonsOf(command.receiptLineId()).stream()
                 .filter(carton -> carton.status() == StockPackageStatus.RECEIVING)
@@ -687,8 +680,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private static StockPackageView view(StockPackage carton, UomConversion unit, Integer quantity) {
         return new StockPackageView(carton.id().value(), carton.lpn(), carton.goodsReceiptLineId(),
                 unit == null ? null : unit.sku(), carton.uomConversionId(), unit == null ? null : unit.unitOfMeasure(),
-                carton.nominalQty(), quantity, carton.receivedQty(), carton.location().code(), carton.status().name(),
-                carton.unopened());
+                carton.nominalQty(), quantity, carton.receivedQty(), carton.location().code(), carton.status().name());
     }
 
     private void requireUsable(LocationId location) {
@@ -731,7 +723,8 @@ class StockOperationsServiceImpl implements StockOperations {
                     "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
             case USABLE -> { }
         }
-        String lot = blankToNull(command.lotNumber());
+        // Goods returned with no lot are of lot UNTRACED, as every unit carries a lot (20 BR-22).
+        String lot = StockLots.orUntraced(command.lotNumber());
         Quantity quantity = Quantity.of(command.quantity());
         Optional<StockItem> layer = findLayer(command.sku(), location, lot, command.receivedAt());
         if (layer.isPresent()) {
@@ -759,6 +752,11 @@ class StockOperationsServiceImpl implements StockOperations {
 
     // ------------------------------------------------------------------ adjustments
 
+    /**
+     * Loose stock only (rows in no carton): what a customer return still asks for its returned goods (scrap, sent
+     * back), until returns are received by carton (team plan 4D-2/4D-3). A carton is adjusted whole, by LPN
+     * ({@link #requestPackageAdjustment}); the lookup reaches no carton's row ({@link #findLayer}).
+     */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#result?.adjustmentId()")
     public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
@@ -776,53 +774,107 @@ class StockOperationsServiceImpl implements StockOperations {
         Instant now = clock.instant();
         StockAdjustment adjustment = StockAdjustment.request(
                 adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), location, command.sku(),
-                blankToNull(command.lotNumber()), command.quantityDelta(),
+                StockLots.orUntraced(command.lotNumber()), command.quantityDelta(),
                 AdjustmentReason.valueOf(command.reason().name()), command.note(), command.requestedBy(), now)
                 .atLayer(command.receivedAt());
         return toSummary(adjustments.save(adjustment));
     }
 
     /**
-     * The slot is the one submission chose, so the (SKU, location, lot) ambiguity {@link #findOne} refuses never
-     * arises here, and the assignee and the count's state were checked by the caller. A loose variance is split over
-     * the slot's receipt layers as they stand now, under the SKU lock ({@link CountVariance#split}: a shortage from
-     * free units first, then held ones, each in FEFO order; a surplus on the newest layer), one adjustment per layer,
-     * because approval posts an adjustment onto one stock row. A carton's is one adjustment naming the carton: its approval changes the carton's state once.
+     * The carton is the one submission judged, under its lock, and the assignee and the count's state were checked by
+     * the caller. One adjustment of the whole carton (kltn-docs 20 §4.2 c8): a carton not found written off, a LOST
+     * carton found restocked; approval changes the carton's row and state once ({@link StockPackageContents#adjust}).
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "cycle-count-line", resourceId = "#cycleCountLineId")
-    public List<StockAdjustmentSummary> requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta,
-                                                             UUID requestedBy, String note) {
+    public StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta,
+                                                       UUID requestedBy, String note) {
         Objects.requireNonNull(cycleCountLineId, "cycleCountLineId");
-        if (delta == 0) {
-            return List.of();
+        if (delta == 0 || !slot.isCarton()) {
+            throw new IllegalArgumentException("A count variance is a whole carton found against the books");
         }
         WarehouseScope.requireLocation(slot.location().code());
         policies.lock(slot.sku().code());
         Instant now = clock.instant();
-        LocalDate day = LocalDate.ofInstant(now, BUSINESS_ZONE);
-        if (slot.isCarton()) {
-            StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(day), slot.location(),
-                            slot.sku(), slot.lotNumber(), delta, AdjustmentReason.COUNT_VARIANCE, note, requestedBy, now)
-                    .inPackage(slot.stockPackageId()).forCountLine(cycleCountLineId);
-            return List.of(toSummary(adjustments.save(adjustment)));
+        StockAdjustment adjustment = StockAdjustment.requestCarton(
+                adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), slot.stockPackageId(),
+                slot.location(), slot.sku(), slot.lotNumber(),
+                delta < 0 ? AdjustmentDirection.WRITE_OFF : AdjustmentDirection.RESTOCK, Math.abs(delta),
+                AdjustmentReason.COUNT_VARIANCE, note, cycleCountLineId, requestedBy, now);
+        log.info("Count line {}: carton {} {} asked", cycleCountLineId, slot.stockPackageId().value(),
+                delta < 0 ? "write-off" : "restock");
+        return toSummary(adjustments.save(adjustment));
+    }
+
+    /**
+     * Kltn-docs 20 §4.3: a carton, by its LPN, written off whole (it must be in stock, held for no order) or restocked
+     * whole (it must be LOST), for one of BR-04's reasons. Nothing changes until another person approves (BR-05).
+     *
+     * <p>Lock order of every carton writer: the SKU, the carton's slot (the advisory lock a count's claim takes, so a
+     * count planned now sees this request or waits for it), then the carton. A carton a count holds (BR-10) is the
+     * count's to correct, and a carton with an adjustment already pending is decided once: both are refused, as the
+     * database refuses the second pending one ({@code uk_stock_adjustment_pending_package}).</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#result?.adjustmentId()")
+    public StockAdjustmentSummary requestPackageAdjustment(PackageAdjustmentRequest request) {
+        AdjustmentReason reason = AdjustmentReason.valueOf(request.reason().name());
+        if (!reason.askableByHand()) {
+            // Said first, so a typed-in COUNT_VARIANCE or a reason of the history hears why before any lookup.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason == AdjustmentReason.COUNT_VARIANCE
+                    ? "A count variance comes from a cycle count"
+                    : "A carton is adjusted for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER, not " + reason);
         }
-        List<CountVariance.Layer> layers = stockItems.findLooseBySkuAndLocation(slot.sku(), slot.location()).stream()
-                .filter(item -> Objects.equals(blankToNull(item.lotNumber()), slot.lotNumber()))
-                .map(item -> new CountVariance.Layer(item.id(), item.receivedAt(), item.expiryDate(),
-                        item.onHand().value(), item.reserved().value()))
-                .toList();
-        List<StockAdjustmentSummary> asked = new ArrayList<>();
-        for (CountVariance.Share share : CountVariance.split(delta, layers)) {
-            StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(day), slot.location(),
-                            slot.sku(), slot.lotNumber(), share.delta(), AdjustmentReason.COUNT_VARIANCE, note,
-                            requestedBy, now)
-                    .atLayer(share.receivedAt()).forCountLine(cycleCountLineId);
-            asked.add(toSummary(adjustments.save(adjustment)));
+        String lpn = StockPackageView.normalLpn(request.lpn());
+        StockPackage seen = (lpn == null ? Optional.<StockPackage>empty() : stockPackages.findByLpn(lpn))
+                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + lpn));
+        WarehouseScope.requireLocation(seen.location().code());
+        StockItem row = stockItems.findIdsInStockPackage(seen.id()).stream().map(stockItems::findById)
+                .flatMap(Optional::stream).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
+                        "%s has never held stock".formatted(seen.lpn())));
+        policies.lock(row.sku().code());
+        CountSlot slot = CountSlot.carton(seen.location(), row.sku(), row.lotNumber(), seen.id());
+        String count = countLines.claim(List.of(slot)).get(slot);
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("Stock package %s vanished".formatted(seen.lpn())));
+        if (count != null) {
+            throw new BusinessException(ErrorCode.STOCK_SLOT_UNDER_COUNT,
+                    "%s is on count %s; the count corrects it".formatted(carton.lpn(), count),
+                    List.of(), Map.of("locationCode", carton.location().code(), "cycleCountNumber", count));
         }
-        log.info("Count line {}: variance {} of {}{} at {} asked as {} adjustment(s)", cycleCountLineId, delta,
-                slot.sku(), lotSuffix(slot.lotNumber()), slot.location(), asked.size());
-        return asked;
+        adjustments.findPendingForPackage(carton.id()).ifPresent(pending -> {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_ADJUSTMENT_PENDING,
+                    "Adjustment %s of %s is waiting for approval".formatted(pending.number(), carton.lpn()),
+                    List.of(), Map.of("lpn", carton.lpn(), "adjustmentNumber", pending.number()));
+        });
+        StockItem locked = stockItems.findByIdForUpdate(row.id()).orElseThrow();
+        switch (request.direction()) {
+            case WRITE_OFF -> {
+                if (carton.status() != StockPackageStatus.IN_STOCK) {
+                    throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
+                            "%s is %s; only a carton in stock is written off".formatted(carton.lpn(), carton.status()));
+                }
+                if (!locked.reserved().isZero()) {
+                    throw new BusinessException(ErrorCode.STOCK_PACKAGE_HELD,
+                            "%s is held for an order; release or reallocate it before writing it off"
+                                    .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn()));
+                }
+            }
+            case RESTOCK -> {
+                if (carton.status() != StockPackageStatus.LOST) {
+                    throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
+                            "%s is %s; only a LOST carton is restocked".formatted(carton.lpn(), carton.status()));
+                }
+            }
+        }
+        Instant now = clock.instant();
+        StockAdjustment adjustment = StockAdjustment.requestCarton(
+                adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), carton.id(), carton.location(),
+                locked.sku(), locked.lotNumber(), request.direction(), carton.nominalQty(), reason, request.note(),
+                null, request.requestedBy(), now);
+        log.info("Adjustment {} asked: {} of {} ({})", adjustment.number(), request.direction(), carton.lpn(), reason);
+        return toSummary(adjustments.save(adjustment));
     }
 
     @Override
@@ -881,16 +933,17 @@ class StockOperationsServiceImpl implements StockOperations {
 
     /**
      * A carton's adjustment, under the SKU lock the caller took: {@link StockPackageContents#adjust} locks the carton
-     * and then its rows, spreads the units over them and changes the carton once (#125 lock order, spec section 6).
-     * Decided first, so a requester approving their own request hears that rather than a stock shortage; a refusal
-     * while posting rolls the decision back. One ledger line per row changed, naming the carton on the side that
+     * and then its row, writes it off or restocks it whole and changes the carton once (#125 lock order). A write-off
+     * for LOST or a count's shortage leaves the carton LOST, so it can be found again (20 §4.6 step 7); any other
+     * write-off CONSUMED. Decided first, so a requester approving their own request hears that rather than a stock
+     * refusal; a refusal while posting rolls the decision back. One ledger line, naming the carton on the side that
      * has it - the side whose location the loose path names.
      */
     private StockAdjustmentSummary approveCarton(StockAdjustment adjustment, UUID approverId) {
         Instant now = clock.instant();
         adjustment.approveForCarton(approverId, now);
         List<StockPackageContents.RowChange> changes = cartons.adjust(adjustment.stockPackageId(),
-                adjustment.quantityDelta(), adjustment.reason() == AdjustmentReason.COUNT_VARIANCE, now);
+                adjustment.quantityDelta(), adjustment.reason().leavesCartonLost(), now);
         StockAdjustment saved = adjustments.save(adjustment);
         String reason = ledgerReason(adjustment);
         for (StockPackageContents.RowChange change : changes) {
@@ -998,7 +1051,7 @@ class StockOperationsServiceImpl implements StockOperations {
         if (receivedAt == null) {
             return findOne(sku, location, lotNumber);
         }
-        String lot = blankToNull(lotNumber);
+        String lot = StockLots.orUntraced(lotNumber);
         return stockItems.findLooseBySkuAndLocation(sku, location).stream()
                 .filter(item -> Objects.equals(item.lotNumber(), lot) && receivedAt.equals(item.receivedAt()))
                 .findFirst();
@@ -1016,7 +1069,7 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     private Optional<StockItem> findOne(Sku sku, LocationId location, String lotNumber) {
-        String lot = blankToNull(lotNumber);
+        String lot = StockLots.orUntraced(lotNumber);
         var matches =
                 stockItems.findLooseBySkuAndLocation(sku, location).stream()
                 .filter(item -> Objects.equals(item.lotNumber(), lot))

@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
@@ -13,7 +12,6 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
-import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.internal.controller.dto.MoveStockPackagesRequest;
 import com.stockflow.inventory.internal.controller.dto.MovedStockPackageResponse;
@@ -105,15 +103,25 @@ class StockOperationsController {
                 .map(mapper::toResponse));
     }
 
+    /**
+     * Kltn-docs 20 §4.3: a carton, by LPN, written off whole or restocked whole - never a number of units (BR-14).
+     * Loose stock is not adjusted here: the rows in no carton that a customer return still writes are adjusted by the
+     * return itself, until returns are received by carton (team plan 4D-2).
+     */
     @PostMapping("/adjustments")
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Ask for a stock correction with a reason; nothing changes until someone else approves")
+    @Operation(summary = "Ask to write a carton off whole or restock a LOST one; nothing changes until someone else "
+            + "approves",
+            description = "404 STOCK_PACKAGE_NOT_FOUND; 409 INVALID_STOCK_PACKAGE_TRANSITION (a write-off of a carton "
+                    + "not in stock, a restock of one not LOST), STOCK_PACKAGE_HELD, STOCK_SLOT_UNDER_COUNT, "
+                    + "STOCK_PACKAGE_ADJUSTMENT_PENDING; 400 VALIDATION_FAILED for COUNT_VARIANCE, a reason of the "
+                    + "history, or OTHER without a note; 403 for a carton in another warehouse.")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
     public ApiResponse<StockAdjustmentResponse> requestAdjustment(@Valid @RequestBody RequestAdjustmentRequest request,
                                                                   @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(operations.requestAdjustment(new RequestAdjustmentCommand(
-                request.locationCode(), new Sku(request.sku()), request.lotNumber(), request.quantityDelta(),
-                request.reason(), request.note(), user.userId()))));
+        return ApiResponse.ok(mapper.toResponse(operations.requestPackageAdjustment(
+                new StockOperations.PackageAdjustmentRequest(request.lpn(), request.direction(), request.reason(),
+                        request.note(), user.userId()))));
     }
 
     @GetMapping("/adjustments")

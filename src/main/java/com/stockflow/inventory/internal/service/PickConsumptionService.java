@@ -234,10 +234,8 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
      * <p>One count per slot: a short pick on a slot another count holds - open, or submitted with its variance still
      * pending approval, whatever its trigger (the rule a plan's claim keeps) - answers with that count instead of
      * opening a second count of the same stock, whose variance would correct the books a second time. So does a
-     * second short line on the same bin, SKU and lot (or the same carton), or the same report again. A row of a
-     * carton is counted as that carton: counted as a loose slot its book would read 0 and the whole carton would come
-     * out as surplus. Either way the line expects the slot's book quantity - every loose layer of the bin, SKU and
-     * lot, or the carton's rows - as a plan's line does, not the on-hand of the one layer the pick drew on.</p>
+     * second short line on the same carton, or the same report again. The line counts the carton the hold is on
+     * (kltn-docs 20 §4.2 f12: that very carton at that bin) and expects its book quantity, as a plan's line does.</p>
      *
      * <p>Reusing an <em>open</em> MANUAL count leaves the slot unfrozen until that count is submitted (only a
      * SHORT_PICK count freezes while open; a pending shortage freezes whatever the trigger): an accepted window in
@@ -253,11 +251,14 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                         "No allocation with id " + reservationId));
         WarehouseScope.requireLocation(item.location().code());
         Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-        var slot = item.stockPackageId() == null
-                ? com.stockflow.inventory.internal.domain.CountSlot.loose(item.location(), item.sku(),
-                        item.lotNumber())
-                : com.stockflow.inventory.internal.domain.CountSlot.carton(item.location(), item.sku(),
-                        item.lotNumber(), item.stockPackageId());
+        if (item.stockPackageId() == null) {
+            // Allocations are whole cartons (team plan 4C-2) and counts are by carton (4C-3): a hold on loose stock is
+            // history, and there is no loose slot to count.
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "Allocation %s holds loose stock; a recount is of cartons".formatted(reservationId));
+        }
+        var slot = com.stockflow.inventory.internal.domain.CountSlot.carton(item.location(), item.sku(),
+                item.lotNumber(), item.stockPackageId());
         var holding = cycleCounts.findHolding(slot);
         if (holding.isPresent()) {
             return new com.stockflow.inventory.consumption.ShortPickRecount(holding.get().id(), holding.get().number(),
