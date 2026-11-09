@@ -52,6 +52,14 @@ ALTER TABLE ordering.quote_line
         AND (tax_class IS NULL OR (sku IS NOT NULL AND tax_class IN ('STANDARD', 'REDUCED', 'EXEMPT')
             AND tax_rate >= 0 AND tax_rate < 100)));
 
+-- A carton line of a quote still being drafted takes its product's class and rate now, as a line drafted from here on
+-- does; a quote already sent keeps the offer it made, without VAT (14 BR-06).
+UPDATE ordering.quote_line l
+   SET tax_class = p.tax_class, tax_rate = r.rate
+  FROM ordering.quote q, product.variants v, product.products p, ordering.tax_rate r
+ WHERE q.id = l.quote_id AND q.status = 'DRAFT' AND l.sku IS NOT NULL AND l.tax_class IS NULL
+   AND v.sku = l.sku AND p.id = v.product_id AND r.tax_class = p.tax_class;
+
 CREATE TABLE ordering.quote_fee_line
 (
     id        UUID          NOT NULL,
@@ -69,8 +77,9 @@ CREATE TABLE ordering.quote_fee_line
         ON DELETE RESTRICT,
     CONSTRAINT ck_quote_fee_line_kind CHECK (kind IN ('PLATE_FEE', 'SHIPPING_FEE')),
     CONSTRAINT ck_quote_fee_line_sku CHECK ((kind = 'PLATE_FEE') = (sku IS NOT NULL)),
-    CONSTRAINT ck_quote_fee_line_amount CHECK (amount IS NULL OR (amount >= 0 AND amount = TRUNC(amount)
-        AND (kind = 'PLATE_FEE' OR amount > 0))),
+    -- A plate fee the system added waits for Sales' amount (null); a shipping fee is entered with one (BR-20).
+    CONSTRAINT ck_quote_fee_line_amount CHECK ((kind = 'PLATE_FEE' OR amount IS NOT NULL)
+        AND (amount IS NULL OR (amount >= 0 AND amount = TRUNC(amount) AND (kind = 'PLATE_FEE' OR amount > 0)))),
     CONSTRAINT ck_quote_fee_line_tax CHECK ((tax_class IS NULL) = (tax_rate IS NULL)
         AND (tax_class IS NULL OR (tax_class IN ('STANDARD', 'REDUCED', 'EXEMPT') AND tax_rate >= 0
             AND tax_rate < 100)))
@@ -117,8 +126,8 @@ ALTER TABLE ordering.order_line
     ADD COLUMN tax_rate   NUMERIC(5, 2),
     ADD COLUMN tax_amount NUMERIC(19, 4),
     ADD CONSTRAINT ck_order_line_tax CHECK ((tax_rate IS NULL) = (tax_amount IS NULL)
-        AND (tax_rate IS NULL OR (tax_rate >= 0 AND tax_rate < 100 AND tax_amount >= 0
-            AND tax_amount = TRUNC(tax_amount))));
+        AND (tax_rate IS NULL OR (tax_rate >= 0 AND tax_rate < 100
+            AND tax_amount = ROUND(ROUND(quantity * unit_price, 0) * tax_rate / 100, 0))));
 
 CREATE TABLE ordering.order_fee_line
 (
@@ -140,8 +149,8 @@ CREATE TABLE ordering.order_fee_line
     CONSTRAINT ck_order_fee_line_sku CHECK ((kind = 'PLATE_FEE') = (sku IS NOT NULL)),
     CONSTRAINT ck_order_fee_line_amount CHECK (amount >= 0 AND amount = TRUNC(amount)
         AND (kind = 'PLATE_FEE' OR amount > 0)),
-    CONSTRAINT ck_order_fee_line_tax CHECK (tax_rate >= 0 AND tax_rate < 100 AND tax_amount >= 0
-        AND tax_amount = TRUNC(tax_amount))
+    CONSTRAINT ck_order_fee_line_tax CHECK (tax_rate >= 0 AND tax_rate < 100
+        AND tax_amount = ROUND(amount * tax_rate / 100, 0))
 );
 
 CREATE INDEX ix_order_fee_line_order ON ordering.order_fee_line (order_id);
@@ -162,6 +171,11 @@ COMMENT ON COLUMN ordering.customer_order.net_amount IS
     '4B-3: the total before tax - goods and fee lines (14 BR-09); generated as total_amount - tax_amount.';
 COMMENT ON COLUMN ordering.customer_order.tax_amount IS
     '4B-3: the VAT of every line and fee line, each rounded to the dong (14 BR-21). 0 on orders placed before.';
+
+-- The units closed out of an order are worth their share of their lines with tax since 4B-3 (Order.closedAmount).
+COMMENT ON COLUMN ordering.customer_order.closed_amount IS
+    'Value of the units closed out of the order (a closed remainder, a production shortfall), with their VAT: '
+    'total_amount less what the order is worth now. "Paid in full" compares the money with total_amount - closed_amount.';
 
 -- Reporting: cartons of each SKU -----------------------------------------------------------------------------------
 ALTER TABLE reporting.product_sales_summary
