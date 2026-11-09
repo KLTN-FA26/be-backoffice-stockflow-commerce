@@ -595,6 +595,16 @@ Enum ordering.order_shipment_status {
   RETURNED
 }
 
+Enum ordering.producer_channel {
+  EMAIL
+  PDF
+}
+
+Enum ordering.producer_status {
+  ACTIVE
+  INACTIVE
+}
+
 Enum ordering.quote_payment_term {
   PREPAID
   DEPOSIT
@@ -2971,6 +2981,24 @@ Table ordering.order_status_transition [headercolor: #C0392B] {
   indexes {
     (from_status, to_status) [pk]
   }
+}
+
+Table ordering.producer [headercolor: #C0392B] {
+  id                 uuid [pk]
+  code               varchar(32) [not null, unique]
+  name               varchar(200) [not null]
+  contact_name       varchar(200)
+  contact_phone      varchar(32)
+  email              varchar(254)
+  channel            ordering.producer_channel [not null]
+  standard_lead_days int [not null, default: 14]
+  status             ordering.producer_status [not null, default: 'ACTIVE']
+  note               varchar(500)
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
 }
 
 Table ordering.quote [headercolor: #C0392B] {
@@ -5654,6 +5682,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.order_shipment_line
   ordering.order_status_history
   ordering.order_status_transition
+  ordering.producer
   ordering.quote
   ordering.quote_fee_line
   ordering.quote_line
