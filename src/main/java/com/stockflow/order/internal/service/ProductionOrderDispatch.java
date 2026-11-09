@@ -90,7 +90,12 @@ import java.util.UUID;
  *       ({@link #stopped}: a sent production order cancelled or closed) go the same way.</li>
  *   <li><b>The links</b> work for {@code stockflow.order.production-order.file-links-valid-for} and are checked again on
  *       every use ({@link #openSlip}, {@link #openPrintFile}): the signature, the production order still open, the
- *       file still hashing to what was approved. Only then is a presigned URL of minutes handed out - never logged.</li>
+ *       file's digest still the approved one. Only then is a presigned URL of minutes handed out - never logged.</li>
+ *   <li><b>What "checksum checked on download" checks.</b> The digest the object store keeps for the object (computed
+ *       from its bytes when it was stored), against the one recorded at approval; the bytes are hashed only when the
+ *       store kept no digest. It catches another object put under the key, not a change to the bytes that left the
+ *       store's digest metadata as it was - reading every print file through the application on each download would
+ *       defeat the presigned URL.</li>
  * </ul>
  */
 @Service
@@ -417,7 +422,7 @@ public class ProductionOrderDispatch {
         return production;
     }
 
-    /** The slip's presigned link, after checking the stored object still hashes to what was sent. */
+    /** The slip's presigned link, after checking the store's digest of the object is still the one sent. */
     private DownloadLink intactSlipLink(ProductionOrder production) {
         ProductionOrderSlip slip = slips.find(production.id()).orElseThrow(() -> new BusinessException(
                 ErrorCode.PRODUCTION_ORDER_SLIP_NOT_FOUND, "Production order %s has no slip"

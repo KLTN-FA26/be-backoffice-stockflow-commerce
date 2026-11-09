@@ -8,7 +8,8 @@ import java.util.regex.Pattern;
 /**
  * The slip a production order was sent with (4A-3, kltn-docs 17 §4.3 step 7): the PDF the producer works from, kept as
  * it was sent - one per production order, never changed - with the SHA-256 and size of the stored object, so it can be
- * shown again and a download refused when the object no longer hashes to what was sent. The database holds the same
+ * shown again and a download refused when the digest the store keeps for the object no longer matches it (the store's
+ * recorded digest, not a fresh hash of the bytes - see {@code ProductionOrderDispatch}). The database holds the same
  * rules ({@code ordering.production_order_slip}, its CHECKs and triggers).
  */
 public record ProductionOrderSlip(UUID productionOrderId, String storageKey, String sha256, long sizeBytes,

@@ -1,8 +1,10 @@
 -- 4A-3 (kltn-docs 17 §4.3 step 7, BR-23): the production order slip. Approving a production order sends it: the
 -- system draws the slip (PDF) the producer works from and sends it through the producer's channel - e-mailed with
 -- time-limited links to it and to the print files, or handed over by the coordinator. The slip is kept as it was sent,
--- one per production order, so what the producer was told can always be shown again and checked byte for byte: the
--- SHA-256 recorded here is the stored object's, and a download is refused when the object no longer hashes to it.
+-- one per production order, so what the producer was told can always be shown again. The SHA-256 recorded here is
+-- the digest of the slip's bytes as they were stored. A download compares it with the digest the object store keeps
+-- for the object (the bytes are hashed only when it keeps none) and is refused when they differ: another object under
+-- the key is caught; a change to the bytes that left the store's digest metadata as it was is not.
 
 CREATE TABLE ordering.production_order_slip
 (

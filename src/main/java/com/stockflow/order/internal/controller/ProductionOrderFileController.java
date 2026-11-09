@@ -21,7 +21,8 @@ import java.util.UUID;
  * The links a producer is e-mailed with its production order (4A-3, kltn-docs 17 §4.3 step 7: the slip, and the print
  * files "with a checksum checked on download"). A producer holds no account: the link itself - signed, time-limited
  * ({@code SignedLinks}) - is the credential, so these routes are open to anyone (permitAll, GET and HEAD) and everything is
- * checked by the service on each use: the signature, the production order still open, the file still the one approved.
+ * checked by the service on each use: the signature, the production order still open, the file's recorded digest
+ * still the approved one (the object store's digest metadata, not a fresh hash of the bytes).
  * Then the answer is a redirect to a presigned URL of minutes, so the bytes never pass through the application.
  *
  * <p>The redirect's target is never logged, and the request log keeps no {@code signature} parameter. The responses are
