@@ -683,13 +683,12 @@ class StockDamageIntegrationTest {
         UUID contents = made.get(0).stockItemId();
         UUID secondCarton = made.get(1).id();
         UUID secondContents = made.get(1).stockItemId();
-        String cartonState = "SELECT status, unopened FROM inventory.stock_package WHERE id = ?";
+        String cartonState = "SELECT status FROM inventory.stock_package WHERE id = ?";
 
         // Part of a carton: the carton would be opened, which no carton is any more (team plan 4C-2).
         report(UUID.randomUUID(), contents, 2).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
-        assertThat(jdbc.queryForMap(cartonState, carton)).containsEntry("status", "IN_STOCK")
-                .containsEntry("unopened", true);
+        assertThat(jdbc.queryForMap(cartonState, carton)).containsEntry("status", "IN_STOCK");
         assertThat(onHand(contents)).isEqualTo(5);
         assertThat(reports()).isZero();
 

@@ -119,7 +119,7 @@ class StockPackageLookupIntegrationTest {
                 packages.length == 0 ? null : carton, RECEIVING, List.of(packages), clerk));
     }
 
-    /** Both cartons IN_STOCK, unopened, at the receiving area; nothing loose. */
+    /** Both cartons IN_STOCK, at the receiving area; nothing loose. */
     private void receive() {
         inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
     }
@@ -148,7 +148,6 @@ class StockPackageLookupIntegrationTest {
         assertThat(detail.onHand()).isEqualTo(1000);
         assertThat(detail.reserved()).isZero();
         assertThat(detail.status()).isEqualTo(StockPackageStatus.IN_STOCK);
-        assertThat(detail.unopened()).isTrue();
         assertThat(detail.locationCode()).isEqualTo(RECEIVING);
         assertThat(detail.goodsReceiptLineId()).isEqualTo(line);
         assertThat(detail.closedAt()).isNull();
@@ -181,12 +180,12 @@ class StockPackageLookupIntegrationTest {
     }
 
     @Test
-    @DisplayName("the receiving area after receipt: two whole cartons of 2000 units, nothing loose")
+    @DisplayName("the receiving area after receipt: two whole cartons of 2000 units, nothing loose, of lot UNTRACED")
     void summaryAtTheReceivingArea() {
         receive();
 
         assertThat(lookup.atLocation(RECEIVING.toLowerCase(Locale.ROOT))).filteredOn(l -> l.sku().equals(sku))
-                .containsExactly(new LocationLine(sku, null, null, StockStatus.INBOUND, 2, 2000, 0, 0, 0, 2000));
+                .containsExactly(new LocationLine(sku, "UNTRACED", null, StockStatus.INBOUND, 2, 2000, 0, 2000));
     }
 
     @Test

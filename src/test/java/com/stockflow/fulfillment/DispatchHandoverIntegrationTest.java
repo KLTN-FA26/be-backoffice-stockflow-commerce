@@ -941,9 +941,9 @@ class DispatchHandoverIntegrationTest {
      */
     private void stock(int sofas) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                     created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
+                VALUES (?, ?, 'HCM-A02-1-A', 'UNTRACED', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 

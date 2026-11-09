@@ -371,15 +371,15 @@ class GoodsReceiptPackageIntegrationTest {
     }
 
     @Test
-    @DisplayName("confirm: cartons IN_STOCK and unopened, one INBOUND row of 1000 in each, nothing loose")
+    @DisplayName("confirm: cartons IN_STOCK, one INBOUND row of 1000 in each, nothing loose")
     void confirmIntoCartons() {
         UUID lineId = fiveCartons().id();
 
         GoodsReceipts.ReceiptView confirmed = receipts.confirm(receiptId, clerk);
 
         assertThat(jdbc.queryForList("""
-                select status || ':' || unopened from inventory.stock_package where goods_receipt_line_id = ?""",
-                String.class, lineId)).hasSize(5).containsOnly("IN_STOCK:true");
+                select status from inventory.stock_package where goods_receipt_line_id = ?""",
+                String.class, lineId)).hasSize(5).containsOnly("IN_STOCK");
         assertThat(jdbc.query("""
                 select s.on_hand, s.status, p.received_qty from inventory.stock_item s
                   left join inventory.stock_package p on p.id = s.stock_package_id

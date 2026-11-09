@@ -74,7 +74,7 @@ class StockPackageConsumptionIntegrationTest {
         });
     }
 
-    /** An unopened carton of 5 on the shelf, counted in at 5: the only stock of the SKU unless another is added. */
+    /** A whole carton of 5 on the shelf, counted in at 5: the only stock of the SKU unless another is added. */
     private UUID cartonOnShelf(String name) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -83,8 +83,9 @@ class StockPackageConsumptionIntegrationTest {
                         received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
                     id, "LPN-" + sku + "-" + name, item, carton, SHELF);
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
-                        version, created_at, stock_package_id) values (?, ?, ?, ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
+                        status, version, created_at, stock_package_id)
+                        values (?, ?, ?, 'UNTRACED', ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
                     Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), id);
         });
         return id;
@@ -116,7 +117,7 @@ class StockPackageConsumptionIntegrationTest {
 
     private Map<String, Object> carton(UUID id) {
         return jdbc.queryForMap("""
-                select p.status, p.unopened, p.closed_at is not null as closed,
+                select p.status, p.closed_at is not null as closed,
                        (select coalesce(sum(s.on_hand), 0) from inventory.stock_item s where s.stock_package_id = p.id) as held
                   from inventory.stock_package p where p.id = ?""", id);
     }
@@ -129,8 +130,7 @@ class StockPackageConsumptionIntegrationTest {
 
         assertThat(((BusinessException) catchThrowable(() -> hold(order, 3))).errorCode())
                 .as("3 of a carton of 5: no whole carton fits").isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", true)
-                .containsEntry("held", 5L);
+        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 5L);
 
         UUID whole = hold(order, 5);
         tx.executeWithoutResult(s -> pickConsumption.consumeForPick(whole, Identifiers.newId(), clerk));

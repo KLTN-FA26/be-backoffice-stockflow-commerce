@@ -903,7 +903,7 @@ class GoodsReceiptServiceImplTest {
             UUID lineId = receipt.lines().get(0).id();
             when(inventory.receivingPackagesOf(anyCollection())).thenReturn(Map.of(lineId, List.of(
                     new StockPackageView(UUID.randomUUID(), "LPN-1", lineId, "CUP-01", UUID.randomUUID(), "CARTON", 106, 106,
-                            106, "HCM-RCV-01", "RECEIVING", true))));
+                            106, "HCM-RCV-01", "RECEIVING"))));
 
             assertThat(code(() -> service.rejectExcess(receipt.id(), manager, "over")))
                     .isEqualTo(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE);

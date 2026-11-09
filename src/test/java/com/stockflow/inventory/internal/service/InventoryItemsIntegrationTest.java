@@ -188,8 +188,8 @@ class InventoryItemsIntegrationTest {
     void unitChangeWhileStockIsHeldIs409() {
         var f = fixture();
         tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,created_at)
-                values (?,?,'HCM-A01-1-A',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
+                insert into inventory.stock_item(id,sku,location_code,lot_number,on_hand,reserved,status,received_at,created_at)
+                values (?,?,'HCM-A01-1-A','UNTRACED',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
         var before = items.get(f.itemId());
         try {
             assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("BOX", null, "0.120"))))
@@ -248,8 +248,8 @@ class InventoryItemsIntegrationTest {
         String sku = tx.execute(s -> ReferenceRows.approvedProduct(entityManager).sku());
         var f = new Fixture(null, sku, itemId(sku));
         tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,created_at)
-                values (?,?,'HCM-A01-1-A',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
+                insert into inventory.stock_item(id,sku,location_code,lot_number,on_hand,reserved,status,received_at,created_at)
+                values (?,?,'HCM-A01-1-A','UNTRACED',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
         try {
             var before = items.get(f.itemId());
             items.configure(f.itemId(), before.version(),

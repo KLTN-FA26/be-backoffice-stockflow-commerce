@@ -198,7 +198,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                 receipt == null ? null : Timestamp.from(receipt),
                 expiry,
                 serial,
-                expiry == null ? null : "TEST-LOT");
+                expiry == null ? "UNTRACED" : "TEST-LOT");
         return id;
     }
 

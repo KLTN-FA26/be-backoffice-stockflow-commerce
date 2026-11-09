@@ -112,7 +112,7 @@ class StockPackageMoveIntegrationTest {
                 packages.length == 0 ? null : carton, RECEIVING, List.of(packages), clerk));
     }
 
-    /** Counts the two cartons and receives the line: the first carton is IN_STOCK, unopened, with one INBOUND row. */
+    /** Counts the two cartons and receives the line: the first carton is IN_STOCK, with one INBOUND row. */
     private void receiveCartons() {
         lpn = count(PackageCount.fresh(), PackageCount.fresh()).getFirst().lpn();
         inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
@@ -128,7 +128,7 @@ class StockPackageMoveIntegrationTest {
     }
 
     private String cartonState() {
-        return jdbc.queryForObject("select location_code || ':' || status || ':' || unopened"
+        return jdbc.queryForObject("select location_code || ':' || status"
                 + " from inventory.stock_package where lpn = ?", String.class, lpn);
     }
 
@@ -138,7 +138,7 @@ class StockPackageMoveIntegrationTest {
     }
 
     @Test
-    @DisplayName("a move takes the carton and its row along: same row, still unopened, one MOVE line naming the carton")
+    @DisplayName("a move takes the carton and its row along: same row, one MOVE line naming the carton")
     void moveTakesTheRowsAlong() {
         receiveCartons();
         UUID row = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
@@ -149,8 +149,7 @@ class StockPackageMoveIntegrationTest {
         assertThat(moved.lpn()).isEqualTo(lpn);
         assertThat(moved.locationCode()).isEqualTo(BIN);
         assertThat(moved.quantity()).isEqualTo(1000);
-        assertThat(moved.unopened()).isTrue();
-        assertThat(cartonState()).isEqualTo(BIN + ":IN_STOCK:true");
+        assertThat(cartonState()).isEqualTo(BIN + ":IN_STOCK");
         assertThat(rowState()).isEqualTo(BIN + ":INBOUND:1000");
         assertThat(jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
                 cartonId)).as("the row is the same one").isEqualTo(row);
@@ -202,8 +201,7 @@ class StockPackageMoveIntegrationTest {
                 .getFirst();
 
         assertThat(view.locationCode()).isEqualTo(QUARANTINE);
-        assertThat(view.unopened()).isTrue();
-        assertThat(cartonState()).isEqualTo(QUARANTINE + ":IN_STOCK:true");
+        assertThat(cartonState()).isEqualTo(QUARANTINE + ":IN_STOCK");
         assertThat(rowState()).isEqualTo(QUARANTINE + ":QUARANTINE:1000");
         assertThat(jdbc.query("""
                 select from_status, to_status, from_stock_package_id = to_stock_package_id as same_carton

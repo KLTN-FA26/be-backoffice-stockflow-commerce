@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * per carton, the remainder loose.
  *
  * <p>Nothing here runs in a test transaction: V20261020000200 checks a carton against its rows at commit (an IN_STOCK
- * carton holds stock, an unopened one exactly what was counted into it), so every call commits as production's
+ * carton holds stock, exactly what was counted into it), so every call commits as production's
  * would. Each test has its own SKU, with a CARTON unit of 1000, and its own CONFIRMED purchase order and draft
  * receipt of one line of 2000, on the demo supplier and the HCM receiving area.</p>
  *
@@ -156,7 +156,6 @@ class ReceivingPackagesIntegrationTest {
             assertThat(view.unitOfMeasure()).isEqualTo("CARTON");
             assertThat(view.nominalQty()).isEqualTo(1000);
             assertThat(view.locationCode()).isEqualTo(RECEIVING);
-            assertThat(view.unopened()).isTrue();
         });
         assertThat(views).extracting(StockPackageView::lpn).doesNotHaveDuplicates().isSorted();
         assertThat(views).extracting(StockPackageView::quantity).containsExactly(1000, 1000);
@@ -213,8 +212,8 @@ class ReceivingPackagesIntegrationTest {
 
         assertThat(move.quantity()).as("the first carton's line is the move returned").isEqualTo(1000);
         assertThat(jdbc.queryForList("""
-                select status || ':' || unopened from inventory.stock_package where goods_receipt_line_id = ?""",
-                String.class, line)).containsExactly("IN_STOCK:true", "IN_STOCK:true");
+                select status from inventory.stock_package where goods_receipt_line_id = ?""",
+                String.class, line)).containsExactly("IN_STOCK", "IN_STOCK");
         assertThat(jdbc.query("""
                 select s.on_hand, s.status, s.location_code, p.received_qty from inventory.stock_item s
                   left join inventory.stock_package p on p.id = s.stock_package_id

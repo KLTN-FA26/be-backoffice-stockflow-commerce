@@ -95,8 +95,9 @@ class StockBrowsingIntegrationTest {
 
     private void stock(String location, int onHand, String status) {
         jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at)
-                VALUES (?, ?, ?, ?, 0, ?, 0, NOW())""", Identifiers.newId(), sku, location, onHand, status);
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
+                    created_at)
+                VALUES (?, ?, ?, 'UNTRACED', ?, 0, ?, 0, NOW())""", Identifiers.newId(), sku, location, onHand, status);
     }
 
     private static ErrorCode codeOf(Throwable thrown) {

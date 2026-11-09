@@ -145,7 +145,7 @@ class LooseStockToCartonsIntegrationTest {
             assertThat(carton.path("onHand").asInt()).as(lpn).isEqualTo(perCarton);
             assertThat(carton.path("reserved").asInt()).as(lpn).isZero();
             assertThat(carton.path("status").asText()).as(lpn).isEqualTo("IN_STOCK");
-            assertThat(carton.path("unopened").asBoolean()).as(lpn).isTrue();
+            assertThat(carton.has("unopened")).as("%s: the flag is gone (4C-3)", lpn).isFalse();
             assertThat(absent(carton.path("goodsReceiptLineId"))).as("%s was made in the warehouse", lpn).isTrue();
 
             // The LPN a person scans finds the same carton, with its one stock row: the units, their lot and status.
@@ -156,7 +156,7 @@ class LooseStockToCartonsIntegrationTest {
             assertThat(detail.path("lotNumber").asText()).as(lpn).isEqualTo(carton.path("lotNumber").asText());
             assertThat(detail.path("nominalQty").asInt()).as(lpn).isEqualTo(perCarton);
             assertThat(detail.path("onHand").asInt()).as(lpn).isEqualTo(perCarton);
-            assertThat(detail.path("unopened").asBoolean()).as(lpn).isTrue();
+            assertThat(detail.has("unopened")).as("%s: the flag is gone (4C-3)", lpn).isFalse();
             assertThat(detail.path("status").asText()).as(lpn).isEqualTo("IN_STOCK");
             assertThat(absent(detail.path("closedAt"))).as(lpn).isTrue();
             String stockStatus = carton.path("locationCode").asText().equals(QUARANTINE) ? "QUARANTINE" : "AVAILABLE";

@@ -149,7 +149,7 @@ class StockPackageLookupHttpTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lpn").value(lpns.getFirst()))
                 .andExpect(jsonPath("$.data.onHand").value(1000))
-                .andExpect(jsonPath("$.data.unopened").value(true))
+                .andExpect(jsonPath("$.data.unopened").doesNotExist())
                 .andExpect(jsonPath("$.data.status").value("IN_STOCK"))
                 .andExpect(jsonPath("$.data.locationCode").value(RECEIVING))
                 .andExpect(jsonPath("$.data.contents.length()").value(1))
@@ -191,7 +191,7 @@ class StockPackageLookupHttpTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("update inventory.stock_item set on_hand = 0, reserved = 0 where stock_package_id ="
                     + " (select id from inventory.stock_package where lpn = ?)", lost);
-            jdbc.update("update inventory.stock_package set status = 'LOST', unopened = false, closed_at = NOW()"
+            jdbc.update("update inventory.stock_package set status = 'LOST', closed_at = NOW()"
                     + " where lpn = ?", lost);
         });
         read(Role.WAREHOUSE_STAFF, outsider, "/" + lost).andExpect(status().isForbidden());
