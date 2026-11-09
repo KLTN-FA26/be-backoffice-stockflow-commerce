@@ -737,6 +737,21 @@ Enum payment.cod_remittance_line_match_status {
   MISSING
 }
 
+Enum payment.installment_milestone {
+  ON_SIGNING
+  BEFORE_DELIVERY
+  AFTER_DELIVERY
+}
+
+Enum payment.installment_status {
+  NOT_DUE
+  DUE
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
 Enum payment.payment_method {
   CARD
   BANK_TRANSFER
@@ -751,6 +766,11 @@ Enum payment.payment_status {
   FAILED
   REFUNDED
   CANCELLED
+}
+
+Enum payment.payment_receipt_status {
+  RECORDED
+  VOIDED
 }
 
 Enum payment.receivable_kind {
@@ -3427,6 +3447,38 @@ Table payment.customer_transfer [headercolor: #B8860B] {
   refunded_amount    decimal(19,4) [not null, default: 0]
 }
 
+Table payment.installment [headercolor: #B8860B] {
+  id                      uuid [pk]
+  contract_id             uuid [not null]
+  contract_installment_id uuid [not null, unique]
+  order_id                uuid [not null]
+  customer_id             uuid [not null]
+  contract_number         varchar(40) [not null]
+  order_number            varchar(32) [not null]
+  seq                     smallint [not null]
+  name                    varchar(100) [not null]
+  milestone               payment.installment_milestone [not null]
+  delivery_batch_id       uuid
+  delivery_batch_seq      smallint
+  amount                  decimal(19,4) [not null]
+  paid_amount             decimal(19,4) [not null, default: 0]
+  currency                varchar(3) [not null]
+  due_days                int
+  reached_at              timestamptz
+  due_date                date
+  status                  payment.installment_status [not null]
+  paid_at                 timestamptz
+  cancelled_at            timestamptz
+  version                 bigint [not null, default: 0]
+  created_at              timestamptz [not null, default: `now()`]
+  created_by              varchar(100)
+  last_modified_at        timestamptz
+  last_modified_by        varchar(100)
+  indexes {
+    (contract_id, seq) [unique]
+  }
+}
+
 Table payment.payment [headercolor: #B8860B] {
   id               uuid [pk]
   order_id         uuid [not null]
@@ -3441,6 +3493,38 @@ Table payment.payment [headercolor: #B8860B] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table payment.payment_receipt [headercolor: #B8860B] {
+  id               uuid [pk]
+  customer_id      uuid [not null]
+  reference        varchar(100) [not null]
+  received_on      date [not null]
+  amount           decimal(19,4) [not null]
+  currency         varchar(3) [not null]
+  note             varchar(500)
+  status           payment.payment_receipt_status [not null]
+  recorded_by      uuid [not null]
+  recorded_at      timestamptz [not null]
+  voided_by        uuid
+  voided_at        timestamptz
+  void_reason      varchar(500)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table payment.payment_receipt_line [headercolor: #B8860B] {
+  id             uuid [pk]
+  receipt_id     uuid [not null]
+  installment_id uuid [not null]
+  amount         decimal(19,4) [not null]
+  created_at     timestamptz [not null, default: `now()`]
+  indexes {
+    (receipt_id, installment_id) [unique]
+  }
 }
 
 Table payment.receivable [headercolor: #B8860B] {
@@ -5275,7 +5359,17 @@ Ref: payment.cod_remittance_line.remittance_id > payment.cod_remittance.id [dele
 Ref: payment.cod_remittance_line.shipment_id > fulfillment.shipment.id [delete: restrict]
 Ref: payment.customer_transfer.customer_id > customer.customer.id [delete: restrict]
 Ref: payment.customer_transfer.recorded_by > identity.app_user.id
+Ref: payment.installment.contract_id > ordering.sales_contract.id
+Ref: payment.installment.contract_installment_id > ordering.contract_payment_installment.id
+Ref: payment.installment.customer_id > customer.customer.id
+Ref: payment.installment.delivery_batch_id > ordering.delivery_batch.id
+Ref: payment.installment.order_id > ordering.customer_order.id
 Ref: payment.payment.order_id > ordering.customer_order.id [delete: restrict]
+Ref: payment.payment_receipt.customer_id > customer.customer.id
+Ref: payment.payment_receipt.recorded_by > identity.app_user.id
+Ref: payment.payment_receipt.voided_by > identity.app_user.id
+Ref: payment.payment_receipt_line.installment_id > payment.installment.id
+Ref: payment.payment_receipt_line.receipt_id > payment.payment_receipt.id
 Ref: payment.receivable.customer_id > customer.customer.id [delete: restrict]
 Ref: payment.receivable.order_id > ordering.customer_order.id [delete: restrict]
 Ref: payment.refund.allocation_id > payment.transfer_allocation.id [delete: restrict]
@@ -5584,7 +5678,10 @@ TableGroup payment_group [color: #B8860B] {
   payment.cod_remittance
   payment.cod_remittance_line
   payment.customer_transfer
+  payment.installment
   payment.payment
+  payment.payment_receipt
+  payment.payment_receipt_line
   payment.receivable
   payment.refund
   payment.transfer_allocation
