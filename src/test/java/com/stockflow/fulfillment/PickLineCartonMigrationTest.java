@@ -102,18 +102,35 @@ class PickLineCartonMigrationTest {
         return lpn;
     }
 
-    private void loose(int quantity) {
-        tx.executeWithoutResult(s -> stockRow(quantity, null));
+    /**
+     * A hold of {@code quantity} on a row of {@code onHand} loose units, written as rows. Allocation no longer draws on
+     * loose stock (team plan 4C-2), but loose holds still exist - a put-back, a return, a hold made before - and a pick
+     * line on one must still name no carton.
+     */
+    private UUID looseHold(int onHand, int quantity) {
+        return tx.execute(s -> {
+            UUID row = stockRow(onHand, null);
+            UUID reservation = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id,
+                                                             quantity, reserved_at, expires_at, status)
+                    VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW() + INTERVAL '1 day', 'HELD')""",
+                    reservation, row, order, UUID.randomUUID(), UUID.randomUUID(), quantity);
+            jdbc.update("UPDATE inventory.stock_item SET reserved = reserved + ? WHERE id = ?", quantity, row);
+            return reservation;
+        });
     }
 
-    private void stockRow(int onHand, UUID carton) {
+    private UUID stockRow(int onHand, UUID carton) {
+        UUID id = Identifiers.newId();
         jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
                     version, created_at, stock_package_id) values (?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), onHand, carton);
+                id, sku, SHELF, java.sql.Timestamp.from(RECEIVED), onHand, carton);
+        return id;
     }
 
-    /** Reserves and allocates {@code quantity} for the order; returns the one hold it made. */
+    /** Reserves and allocates {@code quantity} for the order - one whole carton; returns the one hold it made. */
     private UUID hold(int quantity) {
         List<UUID> holds = tx.execute(s -> {
             inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order));
@@ -163,8 +180,7 @@ class PickLineCartonMigrationTest {
     @DisplayName("a hold on loose units names no carton")
     void lpnOnALooseHoldIsRefused() {
         String lpn = carton("A");
-        loose(5);
-        UUID reservation = hold(3);
+        UUID reservation = looseHold(5, 3);
 
         assertThatThrownBy(() -> line(reservation, lpn, false)).isInstanceOf(DataAccessException.class);
     }
@@ -173,7 +189,7 @@ class PickLineCartonMigrationTest {
     @DisplayName("a line on a carton hold must name the carton")
     void lineOnACartonHoldWithoutLpnIsRefused() {
         carton("A");
-        UUID reservation = hold(4);
+        UUID reservation = hold(10);
 
         assertThatThrownBy(() -> line(reservation, null, false)).isInstanceOf(DataAccessException.class);
     }
@@ -181,8 +197,7 @@ class PickLineCartonMigrationTest {
     @Test
     @DisplayName("a whole-carton line names its carton")
     void wholeCartonNeedsAnLpn() {
-        loose(5);
-        UUID reservation = hold(5);
+        UUID reservation = looseHold(5, 5);
 
         assertThatThrownBy(() -> line(reservation, null, true)).isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("ck_pick_line_whole_carton");

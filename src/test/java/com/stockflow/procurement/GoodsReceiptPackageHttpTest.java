@@ -110,24 +110,25 @@ class GoodsReceiptPackageHttpTest {
     }
 
     @Test
-    @DisplayName("PUT lines with a unit and two cartons: 200, the line's cartons with their LPNs, the rest loose")
+    @DisplayName("PUT lines with a unit and two cartons of its standard 1000: 200, the line's cartons with their LPNs,"
+            + " nothing loose")
     void countIntoCartonsAnswersWithLpns() throws Exception {
         String body = """
                 {"lines":[{"purchaseOrderLineId":"%s","quantity":2000,"locationCode":"%s","unitOfMeasure":"CARTON",
-                           "packages":[{"quantity":1000},{"quantity":980}]}]}""".formatted(poLine, RECEIVING);
+                           "packages":[{"quantity":1000},{"quantity":1000}]}]}""".formatted(poLine, RECEIVING);
 
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put("/api/v1/goods-receipts/" + receiptId + "/lines")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lines[0].unitOfMeasure").value("CARTON"))
-                .andExpect(jsonPath("$.data.lines[0].looseQuantity").value(20))
+                .andExpect(jsonPath("$.data.lines[0].looseQuantity").value(0))
                 .andExpect(jsonPath("$.data.lines[0].packages.length()").value(2))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].lpn", everyItem(matchesPattern("^LPN-\\d{8}-\\d{6}$"))))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].status", everyItem(org.hamcrest.Matchers.is("RECEIVING"))))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].nominalQty",
                         everyItem(org.hamcrest.Matchers.is(1000))))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].receivedQty",
-                        org.hamcrest.Matchers.containsInAnyOrder(1000, 980)))
+                        everyItem(org.hamcrest.Matchers.is(1000))))
                 .andExpect(jsonPath("$.data.lines[0].units[0].base").value(true))
                 .andExpect(jsonPath("$.data.lines[0].units[?(@.unitOfMeasure == 'CARTON')].factor",
                         org.hamcrest.Matchers.contains(1000)))

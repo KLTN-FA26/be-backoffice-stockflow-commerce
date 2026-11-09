@@ -14,6 +14,7 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -188,12 +189,14 @@ class FtlDispatchIntegrationTest {
         return request.contentType("application/json").content(content);
     }
 
+    /**
+     * The order's sofas, as whole sealed cartons of one (the demo sofa's carton unit): an order is given whole cartons
+     * only (team plan 4C-2), so loose sofas would not be allocated and the order would draw on the shared demo cartons.
+     * Received long ago, so the allocator hands them out first (FIFO).
+     */
     private void stock(int sofas) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
-                Identifiers.newId(), SOFA.code(), sofas));
+        tx.executeWithoutResult(s -> CartonRows.stock(jdbc, SOFA.code(), "HCM-A02-1-A", sofas, 1, null,
+                Instant.now().minus(Duration.ofDays(400))));
     }
 
     /** A paid order of the demo customer for {@code sofas} sofas, released at HCM (every order is a full truckload). */

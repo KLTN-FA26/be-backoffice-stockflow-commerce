@@ -3,6 +3,7 @@ package com.stockflow.procurement;
 import com.jayway.jsonpath.JsonPath;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -38,6 +39,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * required supplier and a free-text reason; confirming never posts - a warehouse manager (and nobody without
  * {@code procurement-goods-receipts:APPROVE}), who is neither the receiver nor whoever sent it, approves it (stock is
  * counted in only then) or rejects it (the whole receipt is cancelled). A PO attached afterwards is a reference only.
+ *
+ * <p>Since team plan 4C-2 a receipt is posted only with every unit in a carton (kltn-docs 03 BR-12): the lines are
+ * counted into the demo SKUs' CARTON unit of one piece.</p>
  */
 @SecuredIntegrationTest
 class GoodsReceiptWithoutPoIntegrationTest {
@@ -159,7 +163,15 @@ class GoodsReceiptWithoutPoIntegrationTest {
         return JsonPath.read(body, "$.data.id");
     }
 
+    /** A sofa line counted into cartons of one, as a posted receipt holds it. */
     private String sofa(int quantity) {
+        return """
+                {"sku":"%s","quantity":%d,"locationCode":"%s","unitOfMeasure":"%s","packages":%s}"""
+                .formatted(SOFA, quantity, RECEIVING, ReceiptCartons.DEMO_UNIT, ReceiptCartons.json(quantity, 1));
+    }
+
+    /** A loose sofa line, for a count that is refused anyway. */
+    private String sofaLoose(int quantity) {
         return """
                 {"sku":"%s","quantity":%d,"locationCode":"%s"}""".formatted(SOFA, quantity, RECEIVING);
     }
@@ -244,7 +256,7 @@ class GoodsReceiptWithoutPoIntegrationTest {
                         "lines[0].purchaseOrderLineId", "lines[1].sku", "lines[2].sku", "lines[3].lotNumber",
                         "lines[3].expiryDate")));
         // The same item and lot twice.
-        count(clerk, receipt, sofa(1), sofa(2)).andExpect(status().isConflict())
+        count(clerk, receipt, sofaLoose(1), sofaLoose(2)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[1].lotNumber"));
     }
 
@@ -255,7 +267,7 @@ class GoodsReceiptWithoutPoIntegrationTest {
         String receipt = JsonPath.read(as(clerk, post("/api/v1/goods-receipts").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"purchaseOrderId\":\"" + order + "\"}")).andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString(), "$.data.id");
-        count(clerk, receipt, sofa(1)).andExpect(status().isConflict())
+        count(clerk, receipt, sofaLoose(1)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("RECEIPT_LINE_NOT_ON_PO"))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].purchaseOrderLineId"));
     }
@@ -342,8 +354,10 @@ class GoodsReceiptWithoutPoIntegrationTest {
         String suffix = UUID.randomUUID().toString().substring(0, 6);
         String receipt = draft(clerk, supplier(), "gift");
         String tableLine = """
-                {"sku":"%s","quantity":3,"lotNumber":"NP-%s","expiryDate":"%s","locationCode":"%s"}"""
-                .formatted(TABLE, suffix, LocalDate.now().plusYears(1), RECEIVING);
+                {"sku":"%s","quantity":3,"lotNumber":"NP-%s","expiryDate":"%s","locationCode":"%s",\
+                "unitOfMeasure":"%s","packages":%s}"""
+                .formatted(TABLE, suffix, LocalDate.now().plusYears(1), RECEIVING, ReceiptCartons.DEMO_UNIT,
+                        ReceiptCartons.json(3, 1));
         count(clerk, receipt, tableLine).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lines[0].lotTracked").value(true));
         confirm(clerk, receipt).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));

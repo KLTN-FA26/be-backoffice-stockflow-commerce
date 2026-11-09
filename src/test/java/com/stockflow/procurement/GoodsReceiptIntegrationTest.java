@@ -11,6 +11,7 @@ import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
@@ -113,12 +114,27 @@ class GoodsReceiptIntegrationTest {
         return ((BusinessException) e).errorCode();
     }
 
-    private GoodsReceipts.NewLine table(UUID po, int qty) {
-        return new GoodsReceipts.NewLine(poLine(po, TABLE), qty, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null);
+    /**
+     * A line counted into cartons of the demo unit, one piece each: since team plan 4C-2 a receipt is posted only with
+     * every unit in a carton (kltn-docs 03 BR-12). A draft may still hold a loose line.
+     */
+    private static GoodsReceipts.NewLine boxed(UUID poLine, int qty, String lotNumber, LocalDate expiry,
+                                               String location, String note) {
+        return new GoodsReceipts.NewLine(poLine, qty, lotNumber, expiry, location, note, ReceiptCartons.DEMO_UNIT,
+                ReceiptCartons.demo(qty));
     }
 
+    private GoodsReceipts.NewLine table(UUID po, int qty) {
+        return boxed(poLine(po, TABLE), qty, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null);
+    }
+
+    /** A loose draft line of a lot: never posted as it is. */
     private GoodsReceipts.NewLine tableLot(UUID poLine, int qty, String lotNumber, String note) {
         return new GoodsReceipts.NewLine(poLine, qty, lotNumber, LocalDate.now().plusYears(1), "HCM-RCV01", note);
+    }
+
+    private GoodsReceipts.NewLine tableLotBoxed(UUID poLine, int qty, String lotNumber) {
+        return boxed(poLine, qty, lotNumber, LocalDate.now().plusYears(1), "HCM-RCV01", null);
     }
 
     private List<UUID> lineIds(UUID receiptId, String lotNumber) {
@@ -140,7 +156,7 @@ class GoodsReceiptIntegrationTest {
         assertThat(draft.number()).matches("GR-\\d{8}-\\d{4}");
 
         receipts.replaceLines(draft.id(), List.of(
-                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "hcm-rcv01", null), table(po, 6)));
+                boxed(poLine(po, SOFA), 4, null, null, "hcm-rcv01", null), table(po, 6)));
         GoodsReceipts.ReceiptView confirmed = receipts.confirm(draft.id(), clerk);
 
         assertThat(confirmed.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
@@ -160,7 +176,7 @@ class GoodsReceiptIntegrationTest {
                 SELECT count(*) FROM inventory.stock_movement m JOIN procurement.goods_receipt_lines l
                   ON l.id = m.reference_id WHERE l.receipt_id = ? AND m.movement_type = 'RECEIPT'
                    AND m.reference_type = 'GOODS_RECEIPT_LINE' AND m.to_status = 'INBOUND'""",
-                Integer.class, draft.id())).isEqualTo(2);
+                Integer.class, draft.id())).as("one ledger line per carton: 4 + 6 cartons of one").isEqualTo(10);
         // BR-04: received is not sellable.
         assertThat(inventory.availableToPromise(new Sku(TABLE))).isEqualTo(atpBefore);
         assertThat(recorded.ofType(GoodsReceiptConfirmed.class)).singleElement()
@@ -195,7 +211,9 @@ class GoodsReceiptIntegrationTest {
                 String.class, other.get(0))).isEqualTo("2:short");
 
         // A lot no longer counted goes, a new one is a new line, inserted after the others went down.
-        receipts.replaceLines(draft.id(), List.of(tableLot(line, 1, lot, null), tableLot(line, 9, third, null)));
+        // Counted into cartons only now: a line that ever had cartons is not dropped from the count, and the lot
+        // dropped here had none.
+        receipts.replaceLines(draft.id(), List.of(tableLotBoxed(line, 1, lot), tableLotBoxed(line, 9, third)));
         assertThat(lineIds(draft.id(), lot)).isEqualTo(first);
         assertThat(lineIds(draft.id(), second)).isEmpty();
         assertThat(lineIds(draft.id(), third)).hasSize(1).doesNotContainAnyElementsOf(other);
@@ -244,7 +262,7 @@ class GoodsReceiptIntegrationTest {
         UUID line = poLine(po, SOFA);
 
         GoodsReceipts.ReceiptView first = receipts.create(new GoodsReceipts.Create(po, null, null), clerk);
-        receipts.replaceLines(first.id(), List.of(new GoodsReceipts.NewLine(line, 6, null, null, "HCM-RCV01", null)));
+        receipts.replaceLines(first.id(), List.of(boxed(line, 6, null, null, "HCM-RCV01", null)));
         assertThat(receipts.confirm(first.id(), clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(poStatus(po)).isEqualTo("PARTIALLY_RECEIVED");
 
@@ -257,7 +275,7 @@ class GoodsReceiptIntegrationTest {
         assertThat(over.warnings()).containsExactly(GoodsReceipts.OVER_TOLERANCE);
         // Recounting a draft's line twice: the row is updated in place, never counted twice by the tolerance.
         receipts.replaceLines(second.id(), List.of(new GoodsReceipts.NewLine(line, 3, null, null, "HCM-RCV01", null)));
-        receipts.replaceLines(second.id(), List.of(new GoodsReceipts.NewLine(line, 4, null, null, "HCM-RCV01", "rest")));
+        receipts.replaceLines(second.id(), List.of(boxed(line, 4, null, null, "HCM-RCV01", "rest")));
         assertThat(receipts.confirm(second.id(), clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(poStatus(po)).isEqualTo("RECEIVED");
         assertThat(jdbc.queryForList("""
@@ -306,7 +324,7 @@ class GoodsReceiptIntegrationTest {
                 List.of(new GoodsReceipts.NewLine(table, 1, lot, LocalDate.now().minusDays(1), "HCM-RCV01", null))))
                 .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
 
-        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(sofa, 2, null, null, "HCM-RCV01", null)));
+        receipts.replaceLines(receiptId, List.of(boxed(sofa, 2, null, null, "HCM-RCV01", null)));
         GoodsReceipts.ReceiptView confirmed = receipts.confirm(receiptId, clerk);
         UUID sofaLine = confirmed.lines().get(0).id();
         assertThatThrownBy(() -> receipts.cancel(receiptId))
@@ -411,7 +429,7 @@ class GoodsReceiptIntegrationTest {
     void displayFields() {
         UUID po = confirmedOrder(TABLE, 2);
         UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-464", null), clerk).id();
-        GoodsReceipts.ReceiptView counted = receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(
+        GoodsReceipts.ReceiptView counted = receipts.replaceLines(receiptId, List.of(boxed(
                 poLine(po, TABLE), 2, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null)));
         assertThat(counted.lines()).singleElement().satisfies(l -> {
             assertThat(l.lotTracked()).isTrue();
