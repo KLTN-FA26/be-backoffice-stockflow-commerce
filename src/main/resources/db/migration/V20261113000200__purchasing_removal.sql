@@ -651,6 +651,10 @@ ALTER TABLE procurement.goods_receipts
     ADD CONSTRAINT ck_goods_receipts_confirmed
         CHECK (status IN ('DRAFT', 'CANCELLED') OR (confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL));
 
+-- The default PURCHASE (V20261108002800) was the type of every receipt before production orders; it would now name a
+-- type check_goods_receipt refuses. A writer says what its receipt is against.
+ALTER TABLE procurement.goods_receipts ALTER COLUMN receipt_type DROP DEFAULT;
+
 COMMENT ON COLUMN procurement.goods_receipts.receipt_type IS
     'PRODUCTION: against one production order (kltn-docs 03 §1). PURCHASE: a receipt of the purchasing there was '
         'before V20261113000200, kept as history; none is started any more.';
