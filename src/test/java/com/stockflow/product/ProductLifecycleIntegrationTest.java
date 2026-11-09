@@ -669,13 +669,15 @@ class ProductLifecycleIntegrationTest {
         UUID po = draftPurchaseOrder(approved.code());
         UUID order = orderWithLine(approved.code(), "IN_PRODUCTION");
         orderWithLine(approved.code(), "SHIPPED");   // shipped: nothing left to fulfil, not listed
-        orderWithLine(approved.code(), "DRAFT");     // a cart is not an order
+        // 4B-5: a DRAFT order is made from an accepted quote, its contract being drawn up - it will ship the SKU.
+        UUID drafted = orderWithLine(approved.code(), "DRAFT");
         orderWithLine(approved.code(), "CANCELLED");
 
         send("GET", token(UUID.randomUUID(), "SALES_STAFF"), path, null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.references.length()").value(2))
+                .andExpect(jsonPath("$.data.references.length()").value(3))
                 .andExpect(jsonPath("$.data.references[?(@.kind == 'PURCHASE_ORDER_LINE')].documentId").value(po.toString()))
-                .andExpect(jsonPath("$.data.references[?(@.kind == 'SALES_ORDER_LINE')].documentId").value(order.toString()));
+                .andExpect(jsonPath("$.data.references[?(@.kind == 'SALES_ORDER_LINE')].documentId")
+                        .value(org.hamcrest.Matchers.containsInAnyOrder(order.toString(), drafted.toString())));
         assertRefused(send("GET", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), path, null), 403, "FORBIDDEN");
         assertRefused(send("GET", editor(), "/api/v1/products/" + UUID.randomUUID() + "/open-references", null),
                 404, "PRODUCT_NOT_FOUND");
