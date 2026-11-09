@@ -231,7 +231,7 @@ class CycleCountIntegrationTest {
 
     private Map<String, Object> cartonState(UUID id) {
         return jdbc.queryForMap("""
-                select p.status,
+                select p.status, p.unopened,
                        (select coalesce(sum(s.on_hand), 0) from inventory.stock_item s where s.stock_package_id = p.id) as held
                   from inventory.stock_package p where p.id = ?""", id);
     }
@@ -616,7 +616,8 @@ class CycleCountIntegrationTest {
         assertThat(found).singleElement().satisfies(a -> assertThat(a).containsEntry("quantity_delta", 20));
         operations.approve((UUID) found.get(0).get("id"), manager);
 
-        assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 20L);
+        assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 20L)
+                .as("found whole, sealed again").containsEntry("unopened", true);
     }
 
     @Test

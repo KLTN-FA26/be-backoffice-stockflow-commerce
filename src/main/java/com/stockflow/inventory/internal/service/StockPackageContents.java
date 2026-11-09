@@ -93,7 +93,8 @@ class StockPackageContents {
      * spec 2026-10-23 section 6). Call under the SKU lock; the carton and then its rows, by id, are locked here.
      *
      * <ul>
-     *   <li>Written up: a LOST carton is found first. The units go onto the row that holds the carton's stock, or
+     *   <li>Written up: a LOST carton is found first, whole and sealed - a write-up of less than it was counted in at
+     *       is refused ({@code STOCK_PACKAGE_TAKEN_WHOLE}). The units go onto the row that holds the carton's stock, or
      *       onto its first row when none does - rows are never deleted at zero, so a lost carton still has the row it
      *       was emptied from. An IN_STOCK one must already be open: an unopened carton holds exactly what was counted
      *       into it. Never above what was counted into it ({@code STOCK_PACKAGE_OVERFILLED}).</li>
@@ -144,6 +145,12 @@ class StockPackageContents {
 
     private static List<RowChange> fill(StockPackage carton, List<StockItem> rows, int units) {
         if (carton.status() == StockPackageStatus.LOST) {
+            // Found whole or not at all: it comes back sealed, so it must hold what was counted into it again.
+            if (held(rows) + units != carton.receivedQty()) {
+                throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s was counted in at %d; it is found "
+                        + "whole or not at all, not with %d").formatted(carton.lpn(), carton.receivedQty(),
+                        held(rows) + units), List.of(), Map.of("lpn", carton.lpn()));
+            }
             carton.found();
         } else if (carton.status() != StockPackageStatus.IN_STOCK) {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
