@@ -15,8 +15,8 @@ import java.util.function.Consumer;
 
 /**
  * Hands the incomplete publications of one listener method back to it, a bounded page at a time (team plan QD-7: the
- * retry the purchase-order sender had, shared with production orders). The publications are read from the registry
- * ({@link PendingPublicationReader}) and passed to the listener's proxy, which delivers them on its own threads and, on
+ * retry the purchase-order sender had, kept for production orders when purchasing went, 4A-8). The publications are
+ * read from the registry ({@link PendingPublicationReader}) and passed to the listener's proxy, which delivers them on its own threads and, on
  * success, lets Spring Modulith mark them complete: no second queue, no republishing to other listeners.
  *
  * <p>A {@link Cursor} keeps the position in the backlog between runs, so a head of messages that keep failing cannot
