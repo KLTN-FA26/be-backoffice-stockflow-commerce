@@ -1,22 +1,25 @@
 -- =============================================================================
 -- A customer's default payment schedule, the one a new sales contract starts from (kltn-docs 18 §3, §4 steps 2 and 5,
--- BR-03; 14 §4.3 step 12, BR-13; 15 BR-12; team plan 4B-1).
+-- BR-03, BR-04; 14 §4.3 step 12, BR-13; 15 BR-12; team plan 4B-1).
 --
 --   * customer.default_payment_schedule - one per customer: who set it and when, and - for a schedule with an
---     AFTER_DELIVERY instalment - which accountant approved it and when (18 BR-03: only accounting grants credit).
---   * customer.default_payment_installment - its instalments in order: a name, a share of the order's total with tax
+--     AFTER_DELIVERY installment - which accountant approved it and when (18 BR-03: only accounting grants credit).
+--     Sales may propose one; until approved_by is set it awaits accounting, and no contract is drafted on it.
+--   * customer.default_payment_installment - its installments in order: a name, a share of the order's total with tax
 --     (a percentage, two decimals at most), a milestone (ON_SIGNING / BEFORE_DELIVERY / AFTER_DELIVERY) and N days
 --     after it. The shares add up to 100.
 --
--- Checked when the transaction commits (18 BR-03 held by the database too; the service checks first):
--- a schedule has at least one instalment and its shares add up to 100; an AFTER_DELIVERY instalment needs an
--- accountant's approval and the customer's approved credit (allow_credit with a limit above 0) - also when the credit
--- terms change afterwards (a limit lowered to 0 while the default schedule still pays after delivery is refused).
--- Existing customers get no schedule: they keep their credit profile, and a contract drafted for one starts from a
--- single ON_SIGNING instalment until Sales sets one.
+-- Checked when the transaction commits (the service checks first), by customer.check_default_payment_schedule():
+-- a schedule has at least one installment and its shares add up to 100; an AFTER_DELIVERY installment needs the
+-- customer's approved credit (allow_credit with a limit above 0) - also when the credit terms change or go afterwards;
+-- an approval is only on a schedule that pays after delivery. The credit is read FOR SHARE, so a transaction taking
+-- the credit away and one adding an installment after delivery cannot both commit unseen by each other.
+-- Who approved is the service's to decide (customer-payment-schedules:APPROVE); the database keeps who did.
+-- Existing customers get no schedule: a contract drafted for one starts from their commercial terms until Sales sets
+-- one (a deposit customer's deposit on signing and the rest before delivery, anyone else everything on signing).
 --
 -- New permission customer-payment-schedules: READ and UPDATE for Sales and accounting, APPROVE (an AFTER_DELIVERY
--- instalment) for accounting.
+-- installment) for accounting.
 -- =============================================================================
 
 CREATE TABLE customer.default_payment_schedule
@@ -67,62 +70,73 @@ CREATE TABLE customer.default_payment_installment
     CONSTRAINT ck_default_payment_installment_due_days CHECK (due_days BETWEEN 0 AND 365)
 );
 
--- The rules across the schedule, its instalments and the customer's credit, checked at commit.
+-- The rules across the schedule, its installments and the customer's credit, checked at commit for every customer a
+-- changed row touches - the old one too when a row moves to another.
 CREATE FUNCTION customer.check_default_payment_schedule()
     RETURNS trigger
     LANGUAGE plpgsql AS
 $$
 DECLARE
-    the_customer UUID;
-    the_schedule customer.default_payment_schedule%ROWTYPE;
-    total        NUMERIC;
-    lines        INTEGER;
+    touched        UUID[];
+    the_customer   UUID;
+    the_schedule   customer.default_payment_schedule%ROWTYPE;
+    total          NUMERIC;
+    lines          INTEGER;
     after_delivery BOOLEAN;
-    credit_ok    BOOLEAN;
+    credit_ok      BOOLEAN;
 BEGIN
-    IF TG_TABLE_NAME = 'credit_profile' THEN
-        the_customer := NEW.customer_id;
-    ELSIF TG_TABLE_NAME = 'default_payment_schedule' THEN
-        the_customer := CASE WHEN TG_OP = 'DELETE' THEN OLD.customer_id ELSE NEW.customer_id END;
+    IF TG_TABLE_NAME = 'default_payment_installment' THEN
+        SELECT array_agg(s.customer_id) INTO touched FROM customer.default_payment_schedule s
+         WHERE s.id IN (CASE WHEN TG_OP = 'DELETE' THEN NULL ELSE NEW.schedule_id END,
+                        CASE WHEN TG_OP = 'INSERT' THEN NULL ELSE OLD.schedule_id END);
     ELSE
-        SELECT s.customer_id INTO the_customer FROM customer.default_payment_schedule s
-         WHERE s.id = CASE WHEN TG_OP = 'DELETE' THEN OLD.schedule_id ELSE NEW.schedule_id END;
+        touched := ARRAY[CASE WHEN TG_OP = 'DELETE' THEN NULL ELSE NEW.customer_id END,
+                         CASE WHEN TG_OP = 'INSERT' THEN NULL ELSE OLD.customer_id END];
     END IF;
-    SELECT * INTO the_schedule FROM customer.default_payment_schedule WHERE customer_id = the_customer;
-    IF NOT FOUND THEN
-        RETURN NULL;
-    END IF;
-    SELECT coalesce(sum(percent), 0), count(*), coalesce(bool_or(milestone = 'AFTER_DELIVERY'), false)
-      INTO total, lines, after_delivery
-      FROM customer.default_payment_installment WHERE schedule_id = the_schedule.id;
-    IF lines = 0 OR total <> 100 THEN
-        RAISE EXCEPTION 'The default payment schedule of customer % has % instalment(s) adding up to %, not 100',
-            the_customer, lines, total USING ERRCODE = 'check_violation';
-    END IF;
-    IF after_delivery THEN
-        SELECT coalesce(bool_or(allow_credit AND credit_limit > 0), false) INTO credit_ok
-          FROM customer.credit_profile WHERE customer_id = the_customer;
-        IF the_schedule.approved_by IS NULL OR NOT coalesce(credit_ok, false) THEN
-            RAISE EXCEPTION 'The default payment schedule of customer % pays after delivery without approved credit',
+    FOR the_customer IN SELECT DISTINCT c FROM unnest(touched) AS c WHERE c IS NOT NULL LOOP
+        SELECT * INTO the_schedule FROM customer.default_payment_schedule WHERE customer_id = the_customer;
+        IF NOT FOUND THEN
+            CONTINUE;
+        END IF;
+        SELECT coalesce(sum(percent), 0), count(*), coalesce(bool_or(milestone = 'AFTER_DELIVERY'), false)
+          INTO total, lines, after_delivery
+          FROM customer.default_payment_installment WHERE schedule_id = the_schedule.id;
+        IF lines = 0 OR total <> 100 THEN
+            RAISE EXCEPTION 'The default payment schedule of customer % has % installment(s) adding up to %, not 100',
+                the_customer, lines, total USING ERRCODE = 'check_violation';
+        END IF;
+        IF the_schedule.approved_by IS NOT NULL AND NOT after_delivery THEN
+            RAISE EXCEPTION 'The default payment schedule of customer % is approved but pays nothing after delivery',
                 the_customer USING ERRCODE = 'check_violation';
         END IF;
-    END IF;
+        IF after_delivery THEN
+            -- FOR SHARE: a concurrent change of the credit waits for this transaction, or this one waits for it and
+            -- reads what it committed.
+            SELECT bool_or(allow_credit AND credit_limit > 0) INTO credit_ok
+              FROM (SELECT allow_credit, credit_limit FROM customer.credit_profile
+                     WHERE customer_id = the_customer FOR SHARE) AS terms;
+            IF NOT coalesce(credit_ok, false) THEN
+                RAISE EXCEPTION 'The default payment schedule of customer % pays after delivery without approved credit',
+                    the_customer USING ERRCODE = 'check_violation';
+            END IF;
+        END IF;
+    END LOOP;
     RETURN NULL;
 END;
 $$;
 
-CREATE CONSTRAINT TRIGGER trg_default_payment_installment_check
+CREATE CONSTRAINT TRIGGER tg_default_payment_installment_check
     AFTER INSERT OR UPDATE OR DELETE ON customer.default_payment_installment
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION customer.check_default_payment_schedule();
 
-CREATE CONSTRAINT TRIGGER trg_default_payment_schedule_check
+CREATE CONSTRAINT TRIGGER tg_default_payment_schedule_check
     AFTER INSERT OR UPDATE ON customer.default_payment_schedule
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION customer.check_default_payment_schedule();
 
-CREATE CONSTRAINT TRIGGER trg_credit_profile_payment_schedule_check
-    AFTER UPDATE ON customer.credit_profile
+CREATE CONSTRAINT TRIGGER tg_credit_profile_payment_schedule_check
+    AFTER UPDATE OR DELETE ON customer.credit_profile
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION customer.check_default_payment_schedule();
 

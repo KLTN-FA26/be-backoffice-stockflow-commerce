@@ -12,10 +12,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
- * V20261108001900 on the real upgrade path (kltn-docs 18 BR-03, 14 BR-13; team plan 4B-1): existing customers get no
- * schedule; a schedule's shares add up to 100 when its transaction commits; an instalment after delivery needs an
- * accountant's approval and the customer's approved credit - and that credit cannot be taken away under it; Sales and
- * accounting get the permission, their versions moving (ADR-0008).
+ * V20261108001900 on the real upgrade path (kltn-docs 18 BR-03, BR-04, 14 BR-13, 15 BR-12; team plan 4B-1): existing
+ * customers get no schedule; a schedule's shares add up to 100 when its transaction commits; an installment after
+ * delivery needs the customer's approved credit - a limit above 0 - and that credit cannot be lowered to 0, taken away
+ * or deleted under it; an approval is only on a schedule paying after delivery; what the application writes (the
+ * installments deleted and written again, the customer deleted with it) is accepted; Sales and accounting get the
+ * permission, their versions moving (ADR-0008).
  */
 class DefaultPaymentScheduleMigrationUpgradeTest {
 
@@ -54,35 +56,63 @@ class DefaultPaymentScheduleMigrationUpgradeTest {
                     line(db, 1, "60", "ON_SIGNING");
                     line(db, 2, "30", "BEFORE_DELIVERY");
                 });
-                // After delivery without approval, then approved but without credit: refused.
-                assertRefusedAtCommit(db, "approval", () -> {
-                    schedule(db, null);
-                    line(db, 1, "40", "ON_SIGNING");
-                    line(db, 2, "60", "AFTER_DELIVERY");
+                // An approval on a schedule that pays nothing after delivery: refused.
+                assertRefusedAtCommit(db, "nothing to approve", () -> {
+                    schedule(db, USER);
+                    line(db, 1, "100", "ON_SIGNING");
                 });
-                assertRefusedAtCommit(db, "credit", () -> {
+                // After delivery without credit - and then with credit whose limit is 0: refused, approved or not.
+                assertRefusedAtCommit(db, "no credit", () -> {
                     schedule(db, USER);
                     line(db, 1, "40", "ON_SIGNING");
                     line(db, 2, "60", "AFTER_DELIVERY");
                 });
-
-                // With credit approved: kept; the credit cannot be taken away under it.
-                RawSql.update(db, "UPDATE customer.credit_profile SET allow_credit = true, credit_limit = 50000000, "
+                RawSql.update(db, "UPDATE customer.credit_profile SET allow_credit = true, credit_limit = 0, "
                         + "credit_term_days = 30 WHERE customer_id = ?::uuid", CUSTOMER);
-                db.setAutoCommit(false);
-                schedule(db, USER);
-                line(db, 1, "40", "ON_SIGNING");
-                line(db, 2, "60", "AFTER_DELIVERY");
-                db.commit();
-                db.setAutoCommit(true);
+                assertRefusedAtCommit(db, "a limit of 0", () -> {
+                    schedule(db, null);
+                    line(db, 1, "40", "ON_SIGNING");
+                    line(db, 2, "60", "AFTER_DELIVERY");
+                });
+
+                // With credit approved: Sales' proposal is kept, awaiting approval.
+                RawSql.update(db, "UPDATE customer.credit_profile SET credit_limit = 50000000 WHERE customer_id = "
+                        + "?::uuid", CUSTOMER);
+                inOneTransaction(db, () -> {
+                    schedule(db, null);
+                    line(db, 1, "40", "ON_SIGNING");
+                    line(db, 2, "60", "AFTER_DELIVERY");
+                });
                 assertThat(RawSql.number(db, "SELECT count(*) FROM customer.default_payment_installment")).isEqualTo(2);
+                // The installments rewritten whole in one transaction, as Hibernate replaces a collection: accepted.
+                inOneTransaction(db, () -> {
+                    RawSql.update(db, "DELETE FROM customer.default_payment_installment WHERE schedule_id = ?::uuid",
+                            SCHEDULE);
+                    line(db, 1, "25", "ON_SIGNING");
+                    line(db, 2, "25", "BEFORE_DELIVERY");
+                    line(db, 3, "50", "AFTER_DELIVERY");
+                });
+                RawSql.update(db, "UPDATE customer.default_payment_schedule SET approved_by = ?::uuid, "
+                        + "approved_at = NOW() WHERE id = ?::uuid", USER, SCHEDULE);
+
+                // The credit cannot be taken away, lowered to 0 or deleted under it.
                 assertRefusedAtCommit(db, "credit taken away", () -> RawSql.update(db, "UPDATE customer.credit_profile "
                         + "SET allow_credit = false, credit_limit = NULL, credit_term_days = NULL WHERE customer_id = "
                         + "?::uuid", CUSTOMER));
+                assertRefusedAtCommit(db, "limit lowered to 0", () -> RawSql.update(db, "UPDATE "
+                        + "customer.credit_profile SET credit_limit = 0 WHERE customer_id = ?::uuid", CUSTOMER));
+                assertRefusedAtCommit(db, "credit deleted", () -> RawSql.update(db, "DELETE FROM "
+                        + "customer.credit_profile WHERE customer_id = ?::uuid", CUSTOMER));
+                assertRefusedAtCommit(db, "an installment removed", () -> RawSql.update(db, "DELETE FROM "
+                        + "customer.default_payment_installment WHERE seq = 3"));
                 RawSql.refused(db, "ck_default_payment_installment_percent", "UPDATE customer.default_payment_installment "
                         + "SET percent = 0 WHERE seq = 1");
                 RawSql.refused(db, "ck_default_payment_installment_milestone", "UPDATE "
                         + "customer.default_payment_installment SET milestone = 'ON_DELIVERY' WHERE seq = 1");
+
+                // The customer deleted with its schedule: nothing left to check.
+                RawSql.update(db, "DELETE FROM customer.customer WHERE id = ?::uuid", CUSTOMER);
+                assertThat(RawSql.number(db, "SELECT count(*) FROM customer.default_payment_schedule")).isZero();
 
                 assertThat(RawSql.texts(db, "SELECT r.code || ':' || p.action FROM identity.role_permission rp "
                         + "JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p "
@@ -99,6 +129,19 @@ class DefaultPaymentScheduleMigrationUpgradeTest {
 
     private interface Statements {
         void run() throws SQLException;
+    }
+
+    private static void inOneTransaction(Connection db, Statements statements) throws SQLException {
+        db.setAutoCommit(false);
+        try {
+            statements.run();
+            db.commit();
+        } catch (SQLException e) {
+            db.rollback();
+            throw e;
+        } finally {
+            db.setAutoCommit(true);
+        }
     }
 
     /** The statements, in one transaction, are refused when it commits (SQLSTATE class 23). */
