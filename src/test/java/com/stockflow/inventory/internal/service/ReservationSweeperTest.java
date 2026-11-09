@@ -47,7 +47,7 @@ class ReservationSweeperTest {
     }
 
     @Test
-    @DisplayName("an expired SKU reservation is closed as EXPIRED and announced, so order can cancel the unpaid order")
+    @DisplayName("an expired SKU reservation is closed as EXPIRED and announced (nothing in order answers it any more, 5-2)")
     void expiresSkuReservation() {
         UUID orderId = UUID.randomUUID();
         SkuReservation hold = skuHold(orderId, 12);

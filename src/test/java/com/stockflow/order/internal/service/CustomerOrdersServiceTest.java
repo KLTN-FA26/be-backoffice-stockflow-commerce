@@ -208,7 +208,7 @@ class CustomerOrdersServiceTest {
             Order order = order(OrderFixtures.releasedPrepaid());
 
             assertThat(service.myOrder(order.customerId(), order.id().value()).allowedActions())
-                    .isEqualTo(new CustomerOrders.AllowedActions(false, true, false));
+                    .isEqualTo(new CustomerOrders.AllowedActions(false, true));
 
             when(requests.hasPending(order.id().value())).thenReturn(true);
             assertThat(service.myOrder(order.customerId(), order.id().value()).allowedActions().requestCancellation())
@@ -223,7 +223,7 @@ class CustomerOrdersServiceTest {
             order(order);
 
             assertThat(service.myOrder(order.customerId(), order.id().value()).allowedActions())
-                    .isEqualTo(new CustomerOrders.AllowedActions(false, false, false));
+                    .isEqualTo(new CustomerOrders.AllowedActions(false, false));
         }
 
         @Test

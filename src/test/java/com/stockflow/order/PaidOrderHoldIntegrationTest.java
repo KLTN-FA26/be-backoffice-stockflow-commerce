@@ -34,8 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * kltn-docs 14 BR-07 (SCRUM-465): a stock hold has a deadline only while its order waits for
- * payment. Paid, its holds are pinned and survive the expiry sweep; unpaid past the deadline, the
- * order is cancelled and its stock released.
+ * payment. Paid, its holds are pinned and survive the expiry sweep; unpaid past the deadline, its stock is released
+ * and the order is left as it is: the system no longer cancels it (team plan 5-2), Sales does.
  *
  * <p>The sweep is run directly rather than waited for, and a deadline is moved into the past in the
  * database instead of sleeping through the configured TTL. Every test puts its stock back.</p>
@@ -130,8 +130,8 @@ class PaidOrderHoldIntegrationTest {
     }
 
     @Test
-    @DisplayName("an unpaid order whose hold ran out is cancelled and its stock released")
-    void unpaidOrderIsCancelledWhenItsHoldExpires() throws Exception {
+    @DisplayName("an unpaid order whose hold ran out gives its stock back but is not cancelled: Sales cancels it (5-2)")
+    void unpaidOrderIsLeftForSalesWhenItsHoldExpires() throws Exception {
         int before = inventory.availableToPromise(SOFA);
         UUID orderId = place(3);
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before - 3);
@@ -139,22 +139,33 @@ class PaidOrderHoldIntegrationTest {
         deadlinePassed(orderId);
         sweep();
 
-        Await.until("order cancelled", ASYNC, () -> statusOf(orderId) == OrderStatus.CANCELLED);
-        assertThat(holdStates(orderId)).isNotEmpty().allMatch(state -> state.startsWith("EXPIRED")
-                || state.startsWith("RELEASED"));
+        Await.until("the holds expired", ASYNC, () -> holdStates(orderId).stream()
+                .allMatch(state -> state.startsWith("EXPIRED")));
+        // The expiry event is no longer the order's to answer, however long the asynchronous listeners are given.
+        Thread.sleep(1_500);
+        assertThat(statusOf(orderId)).as("nothing cancels it on its own any more").isEqualTo(OrderStatus.PENDING_PAYMENT);
         assertThat(jdbc.queryForObject("SELECT cancellation_reason FROM ordering.customer_order WHERE id = ?",
-                String.class, orderId)).startsWith("PAYMENT_NOT_RECEIVED");
+                String.class, orderId)).isNull();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE completion_date IS NULL
+                  AND (listener_id LIKE '%InventoryEventListener%' OR event_type LIKE '%OrderCancellationReferred')""",
+                Integer.class)).isZero();
+        assertThat(inventory.availableToPromise(SOFA)).as("the stock is back on sale").isEqualTo(before);
+
+        cleanUp(orderId);
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CANCELLED);
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
     }
 
     @Test
-    @DisplayName("money arriving after the order was cancelled leaves it cancelled, without failing")
+    @DisplayName("money arriving after Sales cancelled the order leaves it cancelled, without failing")
     void paymentAfterCancellationIsLeftForRefund() throws Exception {
         int before = inventory.availableToPromise(SOFA);
         UUID orderId = place(1);
         deadlinePassed(orderId);
         sweep();
-        Await.until("order cancelled", ASYNC, () -> statusOf(orderId) == OrderStatus.CANCELLED);
+        cleanUp(orderId);
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CANCELLED);
 
         paymentCaptured(orderId);
         // The listener runs asynchronously; give it the same window, then check nothing moved.

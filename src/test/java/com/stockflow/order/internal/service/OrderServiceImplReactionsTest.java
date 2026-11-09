@@ -41,7 +41,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * What {@link OrderServiceImpl} does when other modules tell it something: money counted or taken back (kltn-docs 15
- * BR-02, BR-06), a failed payment or an expired stock hold (14 BR-07), and what any cancellation does with the order's
+ * BR-02, BR-06), a failed payment (the expired stock hold no longer cancels, 5-2), and what any cancellation does with the order's
  * holds (17 §4.4, BR-PRD-10). {@code placeOrder} is deliberately not covered here.
  */
 class OrderServiceImplReactionsTest {
