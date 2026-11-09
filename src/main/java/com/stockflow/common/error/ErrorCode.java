@@ -359,6 +359,22 @@ public enum ErrorCode {
     CUSTOMER_LEGAL_PROFILE_MISSING("The customer's registered address and legal representative are recorded before a contract is drawn up", 409),
     /** 4B-4 (18 §3): the legal profile read before it was recorded. */
     LEGAL_PROFILE_NOT_FOUND("The customer's legal profile is not recorded yet", 404),
+    /** 4A-2: no production order with that id (for a warehouse-bound caller: none received at their warehouses). */
+    PRODUCTION_ORDER_NOT_FOUND("Production order not found", 404),
+    /** 4A-2 (17 §5.3): the production order's status does not allow this. */
+    PRODUCTION_ORDER_STATUS_INVALID("The production order is not in a status that allows this", 409),
+    /** 4A-2 (17 BR-23): the one who drew a production order up does not approve it. */
+    PRODUCTION_ORDER_SELF_APPROVAL("A production order is approved by someone who did not draw it up", 409),
+    /** 4A-2 (17 BR-05): production orders come from a confirmed order of a contract with a shipping warehouse. */
+    PRODUCTION_ORDER_NOT_ALLOWED("A production order is drawn up for a confirmed order of a contract", 409),
+    /** 4A-2 (17 BR-05): the delivery batch lacks nothing - held, or on its way. */
+    PRODUCTION_ORDER_NOTHING_SHORT("The delivery batch lacks nothing to produce", 409),
+    /** 4A-2: a line makes no more than its delivery batch lacks. */
+    PRODUCTION_ORDER_EXCEEDS_SHORTAGE("A line makes more cartons than the delivery batch lacks", 409),
+    /** 4A-2: an INACTIVE producer takes no new production order. */
+    PRODUCER_INACTIVE("This producer takes no new production order", 409),
+    /** 4A-2 (17 BR-05): the print files changed since the design was approved. */
+    PRINT_FILE_MISMATCH("The print files no longer match the approved design", 409),
     /** 4A-1: no producer with that id. */
     PRODUCER_NOT_FOUND("Producer not found", 404),
     /** 4A-1: a producer's code identifies it for good. */

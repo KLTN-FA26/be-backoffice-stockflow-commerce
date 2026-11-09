@@ -98,9 +98,12 @@ public class ShippingWarehouseService {
     private final SalesContractRepository contracts;
     private final Clock clock;
     private final TransactionTemplate eachOrder;
+    private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
 
     ShippingWarehouseService(OrderRepository orders, InventoryService inventory, WarehouseDirectory warehouses,
-                             SalesContractRepository contracts, Clock clock, PlatformTransactionManager transactions) {
+                             SalesContractRepository contracts, Clock clock, PlatformTransactionManager transactions,
+                             com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders) {
+        this.productionOrders = productionOrders;
         this.orders = orders;
         this.inventory = inventory;
         this.warehouses = warehouses;
@@ -162,11 +165,28 @@ public class ShippingWarehouseService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
                         "No active warehouse " + warehouseId));
         boolean holdsStock = heldUnitsByLine(order).values().stream().anyMatch(units -> units > 0);
-        if (order.chooseShippingWarehouse(warehouse.id(), holdsStock, by, clock.instant())) {
+        List<com.stockflow.order.internal.domain.ProductionOrder> production = productionOrders.ofSalesOrder(orderId);
+        if (order.shippingWarehouseId() != null && !warehouse.id().equals(order.shippingWarehouseId())
+                && production.stream().anyMatch(com.stockflow.order.internal.domain.ProductionOrder::sentAndOpen)) {
+            // 17 §4.2 step 2, BR-22: a production order sent to a producer delivers to the warehouse it names.
+            throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_LOCKED, ("Order %s has a production order "
+                    + "sent to be delivered to its shipping warehouse").formatted(order.orderNumber()));
+        }
+        boolean changed = order.chooseShippingWarehouse(warehouse.id(), holdsStock, by, clock.instant());
+        if (changed) {
             log.info("Order {} ships from {}", order.orderNumber(), warehouse.code());
         }
         holdWhatIsAvailable(order, warehouse.code());
         orders.save(order);
+        if (changed) {
+            // Those not sent yet are received at the new warehouse (17 §4.2 step 2) - after the order's row says it,
+            // which the production order's own check reads (check_production_order).
+            for (com.stockflow.order.internal.domain.ProductionOrder draft : production) {
+                if (draft.receiveAt(warehouse.id())) {
+                    productionOrders.save(draft);
+                }
+            }
+        }
         return coverageOf(order, warehouse.code());
     }
 

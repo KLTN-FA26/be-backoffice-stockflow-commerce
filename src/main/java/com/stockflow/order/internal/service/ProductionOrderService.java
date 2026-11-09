@@ -1,0 +1,366 @@
+package com.stockflow.order.internal.service;
+
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.common.security.AssignedWarehouses;
+import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.design.api.DesignService;
+import com.stockflow.design.api.DesignVerification;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.internal.domain.DeliveryBatch;
+import com.stockflow.order.internal.domain.Order;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderLine;
+import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.Producer;
+import com.stockflow.order.internal.domain.ProducerRepository;
+import com.stockflow.order.internal.domain.ProductionOrder;
+import com.stockflow.order.internal.domain.ProductionOrderRepository;
+import com.stockflow.order.internal.domain.ProductionOrderStatus;
+import com.stockflow.order.internal.domain.SalesContract;
+import com.stockflow.order.internal.domain.SalesContractRepository;
+import com.stockflow.order.internal.domain.WarehouseDirectory;
+import com.stockflow.order.internal.repository.ProductionOrderSearch;
+import com.stockflow.product.api.CustomerSku;
+import com.stockflow.product.api.CustomerSkus;
+import com.stockflow.common.id.Identifiers;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+/**
+ * Production orders (4A-2, kltn-docs 17 §4.3 steps 6-7, 12-13, §5.3; BR-05, BR-06, BR-23, BR-24, BR-26).
+ *
+ * <ul>
+ *   <li><b>Draw up</b> (Production Coordinator): from a confirmed order of a contract with a shipping warehouse, for one
+ *       delivery batch - its lines filled with what the batch lacks there after the stock held for it (17 §4.2 step 3)
+ *       and what other open production orders of the batch still bring. Received at the shipping warehouse; needed by
+ *       the batch's window start (BR-26); a sample required when one of its SKUs was never produced (BR-24).</li>
+ *   <li><b>Edit</b> while a draft (B33), <b>submit</b>, <b>approve</b> (Sales Manager, not the one who drew it up -
+ *       BR-23; the print files are checked byte by byte first) which sends it, or <b>return</b> it with a reason.
+ *       The sheet and the e-mail to the producer are 4A-3.</li>
+ *   <li><b>Cancel</b> before mass printing, <b>close</b> after it started (BR-06), with a reason.</li>
+ * </ul>
+ *
+ * <p>The capacity warning (BR-25) waits for the warehouse capacity table: not computed yet.</p>
+ */
+@Service
+@Transactional
+public class ProductionOrderService {
+
+    private static final Logger log = LoggerFactory.getLogger(ProductionOrderService.class);
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+    private static final SortWhitelist SORT = SortWhitelist.of("createdAt", "needByDate", "code", "status")
+            .withDefault("createdAt", Sort.Direction.DESC);
+
+    /** A production order and its history of status, for display. */
+    public record Detail(ProductionOrder order, List<ProductionOrderRepository.HistoryEntry> history) {
+    }
+
+    private final ProductionOrderRepository productionOrders;
+    private final ProductionOrderSearch search;
+    private final OrderRepository orders;
+    private final SalesContractRepository contracts;
+    private final ProducerRepository producers;
+    private final ShippingWarehouseService shippingWarehouses;
+    private final WarehouseDirectory warehouses;
+    private final CustomerSkus customerSkus;
+    private final DesignService designs;
+    private final Clock clock;
+    private final TransactionTemplate tx;
+
+    ProductionOrderService(ProductionOrderRepository productionOrders, ProductionOrderSearch search,
+                           OrderRepository orders, SalesContractRepository contracts, ProducerRepository producers,
+                           ShippingWarehouseService shippingWarehouses, WarehouseDirectory warehouses,
+                           CustomerSkus customerSkus, DesignService designs, Clock clock,
+                           PlatformTransactionManager transactions) {
+        this.productionOrders = productionOrders;
+        this.search = search;
+        this.orders = orders;
+        this.contracts = contracts;
+        this.producers = producers;
+        this.shippingWarehouses = shippingWarehouses;
+        this.warehouses = warehouses;
+        this.customerSkus = customerSkus;
+        this.designs = designs;
+        this.clock = clock;
+        this.tx = new TransactionTemplate(transactions);
+    }
+
+    /**
+     * Draws up a production order for what delivery batch {@code batchSeq} of the order lacks (17 §4.3 step 6).
+     *
+     * @throws BusinessException {@code NOT_FOUND}; {@code PRODUCTION_ORDER_NOT_ALLOWED} for an order not confirmed, not
+     *         of a contract, or with no shipping warehouse; {@code PRODUCER_NOT_FOUND}; {@code PRODUCER_INACTIVE};
+     *         {@code PRODUCTION_ORDER_NOTHING_SHORT} when the batch lacks nothing
+     */
+    @Auditable(action = AuditAction.CREATE, resourceType = "production-order", resourceId = "#result?.id()")
+    public ProductionOrder drawUp(UUID salesOrderId, int batchSeq, UUID producerId, UUID by) {
+        Order order = orders.findByIdForUpdate(new OrderId(salesOrderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + salesOrderId));
+        requireProducible(order);
+        SalesContract contract = contracts.findLiveByOrderId(salesOrderId).orElseThrow(() ->
+                new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, "Order %s has no signed contract"
+                        .formatted(order.orderNumber())));
+        DeliveryBatch batch = contract.schedule().stream().filter(b -> b.seq() == batchSeq).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "Order %s has no delivery batch %d"
+                        .formatted(order.orderNumber(), batchSeq)));
+        Producer producer = activeProducer(producerId);
+        Map<UUID, Integer> lacking = lacking(order, batch, null);
+        if (lacking.values().stream().noneMatch(cartons -> cartons > 0)) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOTHING_SHORT, ("Delivery batch %d of order %s lacks "
+                    + "nothing: its stock is held, or on its way").formatted(batchSeq, order.orderNumber()));
+        }
+        Map<UUID, OrderLine> lines = new HashMap<>();
+        order.lines().forEach(line -> lines.put(line.id(), line));
+        List<ProductionOrder.Line> made = new ArrayList<>();
+        for (Map.Entry<UUID, Integer> entry : lacking.entrySet()) {
+            if (entry.getValue() <= 0) {
+                continue;
+            }
+            OrderLine line = lines.get(entry.getKey());
+            CustomerSku sku = customerSkus.find(line.sku().code()).orElseThrow(() -> new BusinessException(
+                    ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, "%s is not a customer's own SKU: it is not produced to order"
+                    .formatted(line.sku().code())));
+            String checksum = designs.verifySnapshotForSku(sku.designSnapshotId(), order.customerId(), sku.sku())
+                    .checksum();
+            made.add(new ProductionOrder.Line(Identifiers.newId(), line.id(), line.sku().code(), entry.getValue(),
+                    line.unitsPerCarton(), sku.designSnapshotId(), checksum, null, 0));
+        }
+        Set<String> producedBefore = productionOrders.producedBefore(made.stream().map(ProductionOrder.Line::sku)
+                .toList());
+        boolean firstTime = made.stream().anyMatch(line -> !producedBefore.contains(line.sku()));
+        Instant now = clock.instant();
+        ProductionOrder drawn = ProductionOrder.drawUp(productionOrders.nextCode(LocalDate.ofInstant(now,
+                        BUSINESS_ZONE)), salesOrderId, batch.id(), order.customerId(), producer.id(),
+                order.shippingWarehouseId(), batch.windowStart(), firstTime, made,
+                order.total().currency().getCurrencyCode(), by, now);
+        ProductionOrder saved = productionOrders.save(drawn);
+        log.info("Production order {} drawn up for batch {} of order {}: {} line(s), producer {}", saved.code(),
+                batchSeq, order.orderNumber(), made.size(), producer.code());
+        return saved;
+    }
+
+    /**
+     * The coordinator's changes to a draft read at {@code version} (B33).
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_NOT_FOUND}; {@code OPTIMISTIC_LOCK};
+     *         {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code PRODUCER_INACTIVE};
+     *         {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}; {@code VALIDATION_FAILED}
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder edit(UUID id, long version, ProductionOrder.Draft draft) {
+        ProductionOrder production = locked(id, version);
+        activeProducer(draft.producerId());
+        Order order = orders.findById(new OrderId(production.salesOrderId())).orElseThrow();
+        DeliveryBatch batch = batchOf(production);
+        production.edit(draft, lacking(order, batch, production.id()));
+        return productionOrders.save(production);
+    }
+
+    /** DRAFT → PENDING_APPROVAL. */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder submit(UUID id, long version, UUID by) {
+        ProductionOrder production = locked(id, version);
+        activeProducer(production.producerId());
+        production.submit(by, clock.instant());
+        log.info("Production order {} submitted for approval", production.code());
+        return productionOrders.save(production);
+    }
+
+    /**
+     * Approved by the Sales Manager - never the one who drew it up - so sent (BR-23). The print files of every line are
+     * re-read and re-hashed first, outside any transaction (a full download of each bundle): a production order is not
+     * sent to print a file that changed.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_SELF_APPROVAL}; {@code PRINT_FILE_MISMATCH};
+     *         {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code OPTIMISTIC_LOCK}
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Auditable(action = AuditAction.APPROVE, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder approve(UUID id, long version, UUID by) {
+        ProductionOrder read = productionOrders.findById(id).filter(this::visible).orElseThrow(() -> notFound(id));
+        // Refused before the download, where the bytes would not change the answer.
+        if (by.equals(read.drawnUpBy())) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_SELF_APPROVAL, ("Production order %s was drawn up by "
+                    + "you: someone else approves it (BR-23)").formatted(read.code()));
+        }
+        if (read.status() != ProductionOrderStatus.PENDING_APPROVAL) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID, ("Production order %s is %s and "
+                    + "cannot be approved").formatted(read.code(), read.status()));
+        }
+        Map<UUID, String> snapshots = new LinkedHashMap<>();
+        read.lines().forEach(line -> snapshots.put(line.designSnapshotId(), line.printFileChecksum()));
+        for (Map.Entry<UUID, String> snapshot : snapshots.entrySet()) {
+            DesignVerification verified = designs.verifyForPrinting(snapshot.getKey(), snapshot.getValue());
+            if (!verified.matching()) {
+                throw new BusinessException(ErrorCode.PRINT_FILE_MISMATCH, ("Production order %s: the print files of "
+                        + "design %s no longer match what was approved").formatted(read.code(), snapshot.getKey()));
+            }
+        }
+        return tx.execute(status -> {
+            ProductionOrder production = locked(id, version);
+            production.approve(by, clock.instant());
+            ProductionOrder saved = productionOrders.save(production);
+            log.info("Production order {} approved and sent", saved.code());
+            return saved;
+        });
+    }
+
+    /** Returned to the coordinator with a reason (BR-23). */
+    @Auditable(action = AuditAction.REJECT, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder returnToDraft(UUID id, long version, String reason, UUID by) {
+        ProductionOrder production = locked(id, version);
+        production.returnToDraft(reason, by, clock.instant());
+        log.info("Production order {} returned to its coordinator", production.code());
+        return productionOrders.save(production);
+    }
+
+    /** Cancelled before mass printing, with a reason (BR-06). Telling the producer is 4A-3. */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder cancel(UUID id, long version, String reason, UUID by) {
+        ProductionOrder production = locked(id, version);
+        production.cancel(reason, by, clock.instant());
+        log.info("Production order {} cancelled", production.code());
+        return productionOrders.save(production);
+    }
+
+    /** Closed after mass printing started, short or before anything came, with a reason (BR-06). */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder close(UUID id, long version, String reason, UUID by) {
+        ProductionOrder production = locked(id, version);
+        production.close(reason, by, clock.instant());
+        log.info("Production order {} closed", production.code());
+        return productionOrders.save(production);
+    }
+
+    // ---- reading ----------------------------------------------------------------------------------------------------
+
+    /** One production order and its history; a warehouse-bound caller sees those received at their warehouses only. */
+    @Transactional(readOnly = true)
+    public Detail detail(UUID id) {
+        ProductionOrder production = productionOrders.findById(id).filter(this::visible).orElseThrow(() -> notFound(id));
+        return new Detail(production, productionOrders.history(id));
+    }
+
+    @Transactional(readOnly = true)
+    public PageResponse<ProductionOrder> list(UUID receivingWarehouseId, ProductionOrderStatus status, UUID producerId,
+                                              UUID salesOrderId, int page, int size, String sort) {
+        return Pages.toResponse(search.search(receivingWarehouseId, status, producerId, salesOrderId,
+                WarehouseScope.restriction().map(AssignedWarehouses::ids).orElse(null),
+                Pages.of(page, size, SORT.parse(sort))));
+    }
+
+    /** What each line of the batch still lacks for a production order, in cartons (the draft's own cartons count). */
+    @Transactional(readOnly = true)
+    public Map<UUID, Integer> lacking(UUID productionOrderId) {
+        ProductionOrder production = productionOrders.findById(productionOrderId).orElseThrow(() ->
+                notFound(productionOrderId));
+        Order order = orders.findById(new OrderId(production.salesOrderId())).orElseThrow();
+        return lacking(order, batchOf(production), production.id());
+    }
+
+    // ---- the batch's shortage -----------------------------------------------------------------------------------------
+
+    /**
+     * Per order line of the batch, the cartons it lacks (BR-05): its cartons in the batch, less what is held for it at
+     * the shipping warehouse (the earliest batch first, 17 §4.2 step 3), less what open production orders of the batch
+     * still bring - {@code excluding} one of them (a draft being edited may keep its own cartons).
+     */
+    private Map<UUID, Integer> lacking(Order order, DeliveryBatch batch, UUID excluding) {
+        ShippingWarehouseService.Coverage coverage = shippingWarehouses.coverage(order.id().value());
+        Map<UUID, Integer> lacking = new LinkedHashMap<>();
+        coverage.batches().stream().filter(b -> b.seq() == batch.seq()).findFirst()
+                .ifPresent(b -> b.lines().forEach(line -> lacking.merge(line.lineId(), line.shortCartons(),
+                        Integer::sum)));
+        for (ProductionOrder other : productionOrders.ofSalesOrder(order.id().value())) {
+            if (other.id().equals(excluding) || !other.deliveryBatchId().equals(batch.id())) {
+                continue;
+            }
+            lacking.replaceAll((lineId, cartons) -> cartons - other.outstandingCartons(lineId));
+        }
+        lacking.replaceAll((lineId, cartons) -> Math.max(0, cartons));
+        return lacking;
+    }
+
+    private DeliveryBatch batchOf(ProductionOrder production) {
+        return contracts.findLiveByOrderId(production.salesOrderId()).stream()
+                .flatMap(contract -> contract.schedule().stream())
+                .filter(batch -> batch.id().equals(production.deliveryBatchId()))
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Production order %s: "
+                        + "its order's contract and delivery batch are gone").formatted(production.code())));
+    }
+
+    private static void requireProducible(Order order) {
+        if (!order.paidByContract() || order.status() != OrderStatus.CONFIRMED) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s is %s: production orders are "
+                    + "drawn up for a confirmed order of a contract").formatted(order.orderNumber(), order.status()));
+        }
+        if (order.shippingWarehouseId() == null) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s has no shipping warehouse: "
+                    + "choose it and hold its stock first - production makes only what is missing there")
+                    .formatted(order.orderNumber()));
+        }
+    }
+
+    private Producer activeProducer(UUID producerId) {
+        Producer producer = producers.findById(producerId).orElseThrow(() -> new BusinessException(
+                ErrorCode.PRODUCER_NOT_FOUND, "No producer " + producerId));
+        if (!producer.takesOrders()) {
+            throw new BusinessException(ErrorCode.PRODUCER_INACTIVE, "Producer %s takes no new order"
+                    .formatted(producer.code()));
+        }
+        return producer;
+    }
+
+    private ProductionOrder locked(UUID id, long version) {
+        ProductionOrder production = productionOrders.findByIdForUpdate(id).filter(this::visible)
+                .orElseThrow(() -> notFound(id));
+        if (production.version() != version) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Production order %s changed since it was read"
+                    .formatted(production.code()));
+        }
+        return production;
+    }
+
+    /** A warehouse-bound caller (the warehouse manager) sees the production orders coming to their warehouses. */
+    private boolean visible(ProductionOrder production) {
+        return WarehouseScope.restriction().map(allowed -> allowed.ids().contains(production.receivingWarehouseId()))
+                .orElse(true);
+    }
+
+    private static BusinessException notFound(UUID id) {
+        return new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_FOUND, "No production order " + id);
+    }
+
+    /** The production orders of a sales order, for the order's own view. */
+    @Transactional(readOnly = true)
+    public List<ProductionOrder> ofSalesOrder(UUID salesOrderId) {
+        return productionOrders.ofSalesOrder(salesOrderId).stream().filter(this::visible)
+                .collect(Collectors.toList());
+    }
+}

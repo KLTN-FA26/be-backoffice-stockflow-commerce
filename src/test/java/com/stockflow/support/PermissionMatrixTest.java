@@ -311,8 +311,9 @@ class PermissionMatrixTest {
             Map.entry("customer-payment-schedules:APPROVE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             // 4B-4, kltn-docs 14 §4.3: Sales draws up, sends and records the contract signed; accounting and the Sales
             // Manager read it.
+            // 4A-2: and the Production Coordinator, who draws production orders up from what the contract schedules.
             Map.entry("sales-contracts:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT,
-                    Role.SYSTEM_ADMIN)),
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-contracts:CREATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-contracts:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-contracts:APPROVE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
@@ -325,7 +326,13 @@ class PermissionMatrixTest {
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
-                    Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+                    Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            // 4A-2, kltn-docs 17 §4.3, BR-23: the coordinator draws production orders up, the Sales Manager approves.
+            Map.entry("production-orders:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("production-orders:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("production-orders:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("production-orders:READ", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER,
+                    Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 4A-1, kltn-docs 17 §4.3 and 00 §2.1 (2026-11-07): the Production Coordinator keeps the producers.
             Map.entry("sales-producers:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-producers:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
@@ -339,9 +346,9 @@ class PermissionMatrixTest {
             Map.entry("platform-actuator:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ACCOUNTANT,
-                    Role.SYSTEM_ADMIN)),
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
-                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+                    Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
