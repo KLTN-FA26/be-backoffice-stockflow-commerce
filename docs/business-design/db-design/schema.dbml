@@ -2768,6 +2768,9 @@ Table ordering.order_line [headercolor: #C0392B] {
   design_checksum         varchar(64)
   cancelled_quantity      int [not null, default: 0]
   requested_delivery_date date
+  uom_conversion_id       uuid
+  cartons                 int
+  units_per_carton        int
 }
 
 Table ordering.order_line_reservation [headercolor: #C0392B] {
@@ -2891,12 +2894,17 @@ Table ordering.quote_line [headercolor: #C0392B] {
   id                  uuid [pk]
   quote_id            uuid [not null]
   line_no             int [not null]
-  blank_sku           varchar(64) [not null]
-  design_snapshot_id  uuid [not null]
+  blank_sku           varchar(64)
+  design_snapshot_id  uuid
   print_spec          varchar(2000)
-  quantity            int [not null]
+  quantity            int
   accepted_quantity   int
   accepted_unit_price decimal(19,4)
+  sku                 varchar(64)
+  uom_conversion_id   uuid
+  cartons             int
+  units_per_carton    int
+  accepted_cartons    int
   indexes {
     (quote_id, line_no) [unique]
   }
@@ -5021,6 +5029,7 @@ Ref: ordering.order_hold.resolved_by > identity.app_user.id
 Ref: ordering.order_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: ordering.order_line.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.order_line.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: ordering.order_line_reservation.order_line_id > ordering.order_line.id [delete: cascade]
 Ref: ordering.order_line_reservation.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: ordering.order_partial_shipment_decision.decided_by > identity.app_user.id
@@ -5041,6 +5050,8 @@ Ref: ordering.quote.sent_by > identity.app_user.id
 Ref: ordering.quote_line.blank_sku > product.variants.sku [delete: restrict]
 Ref: ordering.quote_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: ordering.quote_line.quote_id > ordering.quote.id [delete: cascade]
+Ref: ordering.quote_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.quote_line.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: ordering.quote_price_tier.quote_line_id > ordering.quote_line.id [delete: cascade]
 Ref: ordering.quote_status_history.changed_by > identity.app_user.id
 Ref: ordering.quote_status_history.quote_id > ordering.quote.id [delete: cascade]
