@@ -12,22 +12,6 @@ package com.stockflow.common.error;
  */
 public enum ErrorCode {
     // ---- 400: the request itself is wrong; retrying it unchanged will not help
-    PO_DELIVERY_DATE_REQUIRED("A delivery date is required before sending", 400),
-    PO_REASON_REQUIRED("A reason of 1..1000 characters is required", 400),
-    PO_SUPPLIER_RESPONSE_INVALID("Supplier response must be CONFIRMED or REJECTED", 400),
-    PO_LINE_DESCRIPTION_REQUIRED("A product description is required for each purchase order line", 400),
-    SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
-    SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
-    // Supplier catalog field codes (SCRUM-77): each names one rule on one input of the catalog form, so
-    // the field error is translated by its own code. The response's errorCode stays VALIDATION_FAILED.
-    SUPPLIER_ITEM_SKU_INVALID("The SKU is not a well-formed SKU code", 400),
-    SUPPLIER_ITEM_SUPPLIER_SKU_CODE_TOO_LONG("The supplier SKU code must be at most 50 characters", 400),
-    SUPPLIER_ITEM_PRICE_INVALID("The price must be above zero, at most 9,999,999,999,999,999.99, and have no more"
-            + " decimals than the supplier's currency allows", 400),
-    SUPPLIER_ITEM_MOQ_INVALID("The minimum order quantity must be at least 1", 400),
-    SUPPLIER_ITEM_PACK_SIZE_INVALID("The pack size must be at least 1", 400),
-    SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE("The minimum order quantity must be a multiple of the pack size", 400),
-    SUPPLIER_ITEM_LEAD_TIME_INVALID("The lead time must be between 0 and 365 days", 400),
     VALIDATION_FAILED("Invalid request data", 400),
     /** A customization template's model, limits or print areas cannot be printed as given (kltn-docs 01 BR-21). */
     PRINT_CONFIG_INVALID("The customization template is not valid", 400),
@@ -44,8 +28,6 @@ public enum ErrorCode {
     PRODUCT_SKU_REQUIRED("At least one sellable SKU is required", 409),
     PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
     PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
-    /** SCRUM-461, kltn-docs 02 BR-01: a new purchase order line takes only an active SKU. {@code fieldErrors[]} names each line. */
-    SKU_NOT_PURCHASABLE("The SKU is not active for purchasing", 409),
     /** Review of #109, item 6: a quote, its acceptance or its order, or a new sample, on a SKU no longer ACTIVE. */
     SKU_NOT_SELLABLE("The SKU is no longer active; change the line to an active SKU", 409),
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
@@ -90,9 +72,6 @@ public enum ErrorCode {
     NOT_FOUND("Resource not found", 404),
     ROLE_NOT_FOUND("Role not found", 404),
     USER_NOT_FOUND("User not found", 404),
-    SUPPLIER_NOT_FOUND("Supplier not found", 404),
-    SUPPLIER_ITEM_NOT_FOUND("Supplier item not found", 404),
-    PURCHASE_ORDER_NOT_FOUND("Purchase order not found", 404),
     PRODUCT_NOT_FOUND("Product not found", 404),
     CATEGORY_NOT_FOUND("Category not found", 404),
     BRAND_NOT_FOUND("Brand not found", 404),
@@ -109,7 +88,6 @@ public enum ErrorCode {
     PACKAGE_NOT_FOUND("Package not found", 404),
     SHIPMENT_NOT_FOUND("Shipment not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
-    SUPPLIER_INVOICE_NOT_FOUND("Supplier invoice not found", 404),
     /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
     NOTIFICATION_NOT_FOUND("Notification not found", 404),
     /** An alert of a warehouse outside the caller's scope is {@code OUT_OF_DATA_SCOPE}, not this. */
@@ -175,17 +153,7 @@ public enum ErrorCode {
     CREDIT_PROFILE_INVALID("These commercial terms are inconsistent", 400),
 
     // ---- 409: the request is fine, the current state is not
-    PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
     CONFLICT("Conflicting state", 409),
-    /** SCRUM-78: the envelope of a purchase order whose lines break the supplier's catalog; each line carries its own field code. */
-    SUPPLIER_TERMS_VIOLATED("One or more lines do not meet the supplier's catalog terms", 409),
-    SUPPLIER_ITEM_NOT_LISTED("This supplier does not list this SKU", 409),
-    PO_LINE_BELOW_MOQ("The quantity is below the supplier's minimum order quantity", 409),
-    PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
-    /** A line entered in a packing unit is a whole number of that unit (BR-09, V20261020000400). */
-    PO_LINE_UNIT_NOT_MULTIPLE("The quantity must be a whole number of the line's unit", 409),
-    PO_LINE_UNIT_INVALID("The unit is retired; order in an active unit", 409),
-    PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
     /** The inventory item already has a unit with this code (its base unit included). */
@@ -226,38 +194,7 @@ public enum ErrorCode {
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
     /** The life of a stock package (V20261020000100): RECEIVING → IN_STOCK | VOID, IN_STOCK → CONSUMED | LOST, LOST → IN_STOCK. */
     INVALID_STOCK_PACKAGE_TRANSITION("This stock package cannot do that in its current status", 409),
-    /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
-    PURCHASE_ORDER_NOT_RECEIVABLE("Goods cannot be received against this purchase order now", 409),
     INVALID_RECEIPT_TRANSITION("This goods receipt cannot move to that status right now", 409),
-    /**
-     * SCRUM-477, four eyes (BR-RCP-001): whoever counted a receipt, or asked for its approval, may not decide it.
-     */
-    RECEIPT_SELF_APPROVAL("A goods receipt cannot be decided by the person who counted it or asked for its approval", 409),
-    /** SCRUM-478, BR-RCP-002: a receipt without a purchase order needs a reason. */
-    BLIND_RECEIPT_REASON_REQUIRED("A receipt without a purchase order needs a reason", 400),
-    /** SCRUM-478, owner decision NOPO-ATTACH: the purchase order attached to a receipt without one is the supplier's. */
-    RECEIPT_REFERENCE_SUPPLIER_MISMATCH("The purchase order is not the receipt's supplier's", 409),
-    /** SCRUM-477: approving a receipt, or rejecting its excess, needs a reason. */
-    RECEIPT_APPROVAL_REASON_REQUIRED("Deciding on a goods receipt needs a reason", 400),
-    /** SCRUM-308, BR-INV-001: the supplier already has an invoice with this number (case aside): paying it twice. */
-    SUPPLIER_INVOICE_NUMBER_TAKEN("The supplier already has an invoice with this number", 409),
-    /** SCRUM-308/309: changed, matched or voided in a status that does not allow it. */
-    SUPPLIER_INVOICE_INVALID_TRANSITION("This supplier invoice cannot do that in its current status", 409),
-    /**
-     * SCRUM-308: a line bills a PO line that does not exist or is not the supplier's (or not the invoice's order), or
-     * names a receipt line of another PO line.
-     */
-    SUPPLIER_INVOICE_LINE_INVALID("An invoice line does not bill a purchase order line of this supplier", 422),
-    /** SCRUM-308: the invoice is not in the currency of the orders it bills. */
-    SUPPLIER_INVOICE_CURRENCY_MISMATCH("The invoice is not in the currency of the purchase orders it bills", 422),
-    /** SCRUM-308: the order was never approved, or was cancelled - there is nothing to bill on it. */
-    PURCHASE_ORDER_NOT_INVOICEABLE("This purchase order cannot be invoiced in its current status", 409),
-    /**
-     * BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. Since SCRUM-477 a count beyond
-     * it is no longer refused - the receipt waits for the warehouse manager - so the service does not answer with
-     * this; it stays for clients that still map it, and for the database trigger's own refusal.
-     */
-    OVER_RECEIPT_TOLERANCE("The quantity exceeds what the purchase order line allows", 409),
     /** The location exists but is not the kind of area this step needs (RECEIVING, QUARANTINE), or is in another
      *  warehouse. */
     LOCATION_AREA_MISMATCH("The location is not an area of the right kind in this warehouse", 409),
@@ -266,7 +203,6 @@ public enum ErrorCode {
     RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
-    RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
     /**
      * SCRUM-473: a receipt line that has ever had labelled cartons - VOID ones too, which still point at it
      * ({@code fk_stock_package_receipt_line}) - keeps its PO line and lot and cannot be removed from the draft, and
@@ -295,13 +231,9 @@ public enum ErrorCode {
      * and claims no packing unit it holds no carton of.
      */
     RECEIPT_LINE_UNIT_INVALID("A receipt line counts in its item's base unit, or in an active packing unit it has cartons of", 422),
-    /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
-    PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
     RECEIPT_LINE_NOT_FOUND("This receipt has no such line", 404),
     /** Photos of a delivery or of one of its lines: a bounded set, not an album. */
     GOODS_RECEIPT_PHOTO_LIMIT_REACHED("This receipt has as many photos here as it may hold", 409),
-    /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
-    SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
     /** BR-ORD-007 / BR-CUS-003: new work (a sample round, a quote, an order) is only for an ACTIVE customer. */
     CUSTOMER_NOT_ACTIVE("This customer is not active and cannot take on new work", 409),
     /** SCRUM-394: a sample is linked only to a quote still being negotiated. */
@@ -848,14 +780,6 @@ public enum ErrorCode {
     DESIGN_PENDING_IN_PROJECT("A design waiting for review stays in its project", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
-    /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
-    SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
-    SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
-    SUPPLIER_CODE_ALREADY_EXISTS("A supplier with this code already exists", 409),
-    SUPPLIER_TAX_CODE_ALREADY_EXISTS("A supplier with this tax code already exists", 409),
-    SUPPLIER_ITEM_DUPLICATE("This supplier already lists this SKU", 409),
-    SUPPLIER_ITEM_IN_USE("An open purchase order still orders this SKU from this supplier", 409),
-    INVALID_SUPPLIER_CONFIRMATION("This supplier confirmation cannot be recorded", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     BRAND_CODE_ALREADY_EXISTS("A brand with this code or slug already exists", 409),
     CATEGORY_CODE_ALREADY_EXISTS("A category with this code or slug already exists", 409),
@@ -869,13 +793,6 @@ public enum ErrorCode {
     PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
     VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),
     VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
-    /**
-     * kltn-docs 02 §4 step 7 (owner decision SCRUM-124): the approver's approval limit - the highest of their roles'
-     * {@code procurement.approval_limits} in the order's currency - is below the order's total after tax. A business
-     * rule on a request that is otherwise allowed, hence 409 and not 403 (403 means a missing permission): the order
-     * waits for someone whose limit covers it. Never raised for an approver with no limit configured (PO-NOLIMIT).
-     */
-    PO_APPROVAL_LIMIT_EXCEEDED("The purchase order total is above your approval limit", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
     /** kltn-docs 18 BR-01: one pending or active customer per tax code. */
@@ -893,17 +810,6 @@ public enum ErrorCode {
     PORTAL_ACCOUNT_ALREADY_ACTIVE("This customer has already activated their portal account", 409),
     /** Guest checkout is permanently disabled by the B2B-only decision. */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
-    INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
-    /** Only a DRAFT standard order is edited in place; afterwards changes go through a revision (BR-02, BR-10). */
-    PURCHASE_ORDER_NOT_EDITABLE("Only a draft standard purchase order can be edited", 409),
-    /** An approved or confirmed standard order is changed by an amendment, and only while nothing was received (SCRUM-117). */
-    PO_AMENDMENT_NOT_ALLOWED("This purchase order cannot be amended now", 409),
-    /** One amendment waits for a decision at a time; the next is requested after it is approved, rejected or withdrawn. */
-    PO_AMENDMENT_ALREADY_PENDING("An amendment of this purchase order already waits for a decision", 409),
-    PO_AMENDMENT_NOT_PENDING("No amendment of this purchase order waits for a decision", 409),
-    PO_AMENDMENT_NO_CHANGE("The amendment changes nothing", 400),
-    /** The warehouse exists but is not ACTIVE: nothing new is received into or sent from it (SCRUM-390). */
-    WAREHOUSE_INACTIVE("This warehouse is not active", 409),
     /** The prefix starts every location code of the warehouse, so it is unique system-wide. */
     WAREHOUSE_PREFIX_ALREADY_EXISTS("A warehouse with this prefix already exists", 409),
     ZONE_NAME_ALREADY_EXISTS("This warehouse already has a zone with this name", 409),
