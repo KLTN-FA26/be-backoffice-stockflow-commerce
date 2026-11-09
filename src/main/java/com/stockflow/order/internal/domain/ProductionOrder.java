@@ -21,7 +21,9 @@ import java.util.UUID;
  * shipping warehouse - the receiving warehouse - and submits it; the Sales Manager, never the one who drew it up,
  * approves it, which sends it, or returns it with a reason. It is cancelled before mass printing, and closed - short,
  * or before anything came - after it started. Goods are received against it while it is {@link #receivable} (4A-5,
- * kltn-docs 03 BR-01, BR-15), and each confirmed receipt moves it on ({@link #receive}).
+ * kltn-docs 03 BR-01, BR-15), and each confirmed receipt moves it on ({@link #receive}). The coordinator records the
+ * producer's acceptance with its expected completion day, and the start of mass printing when no print sample is to be
+ * approved; with one, the customer's approval of a sample round starts it ({@link SampleRounds}, 4A-4).
  *
  * <p>Every change of status is kept with who, when and why ({@link #pullChanges}). The database holds the same rules
  * ({@code ordering.check_production_order}, the CHECKs of {@code production_order}).</p>
@@ -30,6 +32,11 @@ public final class ProductionOrder {
 
     /** The longest reason or note kept. */
     public static final int TEXT_MAX = 500;
+
+    /** Accepted by the producer and still making goods: when it expects them done means something. */
+    private static final java.util.Set<ProductionOrderStatus> EXPECTING = java.util.EnumSet.of(
+            ProductionOrderStatus.ACCEPTED, ProductionOrderStatus.SAMPLE_PENDING, ProductionOrderStatus.IN_PRODUCTION,
+            ProductionOrderStatus.PARTIALLY_RECEIVED);
 
     /**
      * One line: the order line's SKU, in whole cartons of its standard count, and the approved design it is printed to
@@ -109,6 +116,7 @@ public final class ProductionOrder {
     private String returnedReason;
     private Instant sentAt;
     private Instant productionStartedAt;
+    private LocalDate expectedCompletionDate;
     private UUID cancelledBy;
     private Instant cancelledAt;
     private String cancellationReason;
@@ -119,7 +127,7 @@ public final class ProductionOrder {
     private final long version;
     private final List<Change> changes = new ArrayList<>();
 
-    /** Restores one as stored. */
+    /** Restores one as stored before the producer gave an expected completion day (or never accepted it). */
     public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                            UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
                            ProductionOrderStatus status, boolean sampleApprovalRequired,
@@ -128,6 +136,22 @@ public final class ProductionOrder {
                            Instant approvedAt, String returnedReason, Instant sentAt, Instant productionStartedAt,
                            UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy,
                            Instant closedAt, String closingReason, List<Line> lines, long version) {
+        this(id, code, salesOrderId, deliveryBatchId, customerId, producerId, receivingWarehouseId, needByDate, status,
+                sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, unitPrice, currency, note,
+                drawnUpBy, submittedAt, approvedBy, approvedAt, returnedReason, sentAt, productionStartedAt, null,
+                cancelledBy, cancelledAt, cancellationReason, closedBy, closedAt, closingReason, lines, version);
+    }
+
+    /** Restores one as stored. */
+    public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
+                           UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
+                           ProductionOrderStatus status, boolean sampleApprovalRequired,
+                           boolean sampleRequiredByDefault, String sampleWaiverReason, BigDecimal unitPrice,
+                           String currency, String note, UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
+                           Instant approvedAt, String returnedReason, Instant sentAt, Instant productionStartedAt,
+                           LocalDate expectedCompletionDate, UUID cancelledBy, Instant cancelledAt,
+                           String cancellationReason, UUID closedBy, Instant closedAt, String closingReason,
+                           List<Line> lines, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.code = Objects.requireNonNull(code, "code");
         this.salesOrderId = Objects.requireNonNull(salesOrderId, "salesOrderId");
@@ -150,6 +174,7 @@ public final class ProductionOrder {
         this.returnedReason = returnedReason;
         this.sentAt = sentAt;
         this.productionStartedAt = productionStartedAt;
+        this.expectedCompletionDate = expectedCompletionDate;
         this.cancelledBy = cancelledBy;
         this.cancelledAt = cancelledAt;
         this.cancellationReason = cancellationReason;
@@ -300,6 +325,89 @@ public final class ProductionOrder {
         this.closedBy = by;
         this.closedAt = at;
         this.closingReason = why;
+    }
+
+    /**
+     * The producer accepted it and said when the goods will be done (17 §4.3 step 8): SENT → ACCEPTED, recorded by hand
+     * by the coordinator. The day is what the AT_RISK alert compares with the need-by date (§4.12), so an acceptance
+     * without one is refused rather than recorded half.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless SENT; {@code VALIDATION_FAILED} with no day
+     */
+    public void accept(LocalDate expectedCompletion, UUID by, Instant at) {
+        LocalDate day = requiredDay(expectedCompletion);
+        move(ProductionOrderStatus.ACCEPTED, null, by, at, "accepted");
+        this.expectedCompletionDate = day;
+    }
+
+    /**
+     * The producer moved its expected completion day (17 §4.3 step 10: "có thể cập nhật ngày hoàn thành dự kiến"),
+     * while it still has goods to make - accepted and not yet received, cancelled or closed.
+     *
+     * @return whether the day changed
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code VALIDATION_FAILED} with no day
+     */
+    public boolean expectCompletion(LocalDate expectedCompletion) {
+        LocalDate day = requiredDay(expectedCompletion);
+        if (!EXPECTING.contains(status)) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID, ("Production order %s is %s: its "
+                    + "expected completion day is recorded once the producer accepted it, while goods are still to "
+                    + "come").formatted(code, status));
+        }
+        boolean changed = !day.equals(expectedCompletionDate);
+        this.expectedCompletionDate = day;
+        return changed;
+    }
+
+    /**
+     * The producer started mass printing (17 §4.3 step 10): ACCEPTED → IN_PRODUCTION, recorded by the coordinator - only
+     * when no print sample is to be approved. With one, the customer's approval starts it ({@link #sampleApproved}):
+     * goods printed in bulk before anyone approved the sample are exactly what BR-24 prevents.
+     *
+     * @param expectedCompletion the producer's new day, or null to keep the one given on acceptance
+     * @throws BusinessException {@code PRODUCTION_ORDER_SAMPLE_REQUIRED}; {@code PRODUCTION_ORDER_STATUS_INVALID}
+     */
+    public void startProduction(LocalDate expectedCompletion, UUID by, Instant at) {
+        requireStatus(ProductionOrderStatus.ACCEPTED, "put in production by hand");
+        if (sampleApprovalRequired) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_SAMPLE_REQUIRED, ("Production order %s waits for the "
+                    + "customer to approve its print sample: that is what starts mass printing (BR-24)")
+                    .formatted(code));
+        }
+        move(ProductionOrderStatus.IN_PRODUCTION, null, by, at, "put in production");
+        this.productionStartedAt = at;
+        if (expectedCompletion != null) {
+            this.expectedCompletionDate = expectedCompletion;
+        }
+    }
+
+    /**
+     * Round 1 of its print sample was uploaded (17 §4.3 step 9): ACCEPTED → SAMPLE_PENDING. Package-private: only
+     * {@link SampleRounds#open} moves it, with the round it opens.
+     */
+    void awaitSample(UUID by, Instant at) {
+        if (!sampleApprovalRequired) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_SAMPLE_NOT_REQUIRED, ("Production order %s has no "
+                    + "print sample to approve (BR-24)").formatted(code));
+        }
+        move(ProductionOrderStatus.SAMPLE_PENDING, "Print sample round 1 uploaded", by, at, "sent its print sample");
+    }
+
+    /**
+     * The customer approved round {@code round} of its print sample (17 §4.3 steps 9-10): SAMPLE_PENDING →
+     * IN_PRODUCTION, mass printing started now. Package-private: only {@link SampleRounds#answer} moves it.
+     */
+    void sampleApproved(int round, UUID by, Instant at) {
+        move(ProductionOrderStatus.IN_PRODUCTION, "Print sample round %d approved by the customer".formatted(round), by,
+                at, "put in production");
+        this.productionStartedAt = at;
+    }
+
+    private static LocalDate requiredDay(LocalDate day) {
+        if (day == null) {
+            throw invalid("The producer's expected completion day is required (17 §4.3 step 8)");
+        }
+        return day;
     }
 
     /**
@@ -482,6 +590,7 @@ public final class ProductionOrder {
     public String returnedReason() { return returnedReason; }
     public Instant sentAt() { return sentAt; }
     public Instant productionStartedAt() { return productionStartedAt; }
+    public LocalDate expectedCompletionDate() { return expectedCompletionDate; }
     public UUID cancelledBy() { return cancelledBy; }
     public Instant cancelledAt() { return cancelledAt; }
     public String cancellationReason() { return cancellationReason; }

@@ -67,6 +67,9 @@ import java.util.stream.Collectors;
  *       The sheet and the e-mail to the producer are 4A-3.</li>
  *   <li><b>Cancel</b> before mass printing, <b>close</b> after it started (BR-06), with a reason - never while a goods
  *       receipt against it is a draft (4A-5, kltn-docs 03 edge cases).</li>
+ *   <li><b>Accept</b> with the producer's expected completion day, move that day, and <b>start production</b> when no
+ *       print sample is to be approved (4A-4, 17 §4.3 steps 8 and 10); the print sample rounds are
+ *       {@code ProductionSampleService}'s.</li>
  * </ul>
  *
  * <p>Every write locks the sales order first and the production order after it - the order {@code drawUp} locks in,
@@ -292,6 +295,70 @@ public class ProductionOrderService {
         production.close(reason, by, clock.instant());
         log.info("Production order {} closed", production.code());
         return productionOrders.save(production);
+    }
+
+    /**
+     * The producer accepted it and gave its expected completion day (17 §4.3 step 8): SENT → ACCEPTED, recorded by the
+     * coordinator by hand - there is no producer system to hear it from.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code VALIDATION_FAILED} with no day;
+     *         {@code OPTIMISTIC_LOCK}
+     */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder accept(UUID id, long version, LocalDate expectedCompletion, UUID by) {
+        requireNotPast(expectedCompletion);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
+        production.accept(expectedCompletion, by, clock.instant());
+        log.info("Production order {} accepted by its producer, expected done on {}", production.code(),
+                expectedCompletion);
+        return productionOrders.save(production);
+    }
+
+    /**
+     * The producer moved its expected completion day (17 §4.3 steps 8, 10), from acceptance until the goods are in.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code VALIDATION_FAILED};
+     *         {@code OPTIMISTIC_LOCK}
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder expectCompletion(UUID id, long version, LocalDate expectedCompletion) {
+        requireNotPast(expectedCompletion);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
+        if (!production.expectCompletion(expectedCompletion)) {
+            return production;
+        }
+        log.info("Production order {}: its producer now expects it done on {}", production.code(), expectedCompletion);
+        return productionOrders.save(production);
+    }
+
+    /**
+     * The producer started mass printing, with no print sample to approve (17 §4.3 step 10): ACCEPTED →
+     * IN_PRODUCTION, its expected completion day updated if the producer gave a new one. The sales order records that
+     * printing started (BR-11) in the same transaction ({@code ProductionOrderProgressListener}).
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_SAMPLE_REQUIRED}; {@code PRODUCTION_ORDER_STATUS_INVALID};
+     *         {@code OPTIMISTIC_LOCK}
+     */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder startProduction(UUID id, long version, LocalDate expectedCompletion, UUID by) {
+        requireNotPast(expectedCompletion);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
+        production.startProduction(expectedCompletion, by, clock.instant());
+        log.info("Production order {} in mass production", production.code());
+        return productionOrders.save(production);
+    }
+
+    /**
+     * A producer says when the goods will be done, never when they would have been: a day already gone is a slip of
+     * the keyboard, and it would raise or hide the AT_RISK alert that reads it (17 §4.12). Checked here, against the
+     * business day, not in the aggregate or the database, which have no clock.
+     */
+    private void requireNotPast(LocalDate expectedCompletion) {
+        if (expectedCompletion != null && expectedCompletion.isBefore(LocalDate.ofInstant(clock.instant(),
+                BUSINESS_ZONE))) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The expected completion day %s is in the past")
+                    .formatted(expectedCompletion));
+        }
     }
 
     /**

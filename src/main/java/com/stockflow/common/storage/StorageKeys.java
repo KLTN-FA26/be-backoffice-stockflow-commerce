@@ -128,6 +128,9 @@ public final class StorageKeys {
             case "image/jpeg" -> ".jpg";
             case "image/png" -> ".png";
             case "image/webp" -> ".webp";
+            case "video/mp4" -> ".mp4";
+            case "video/quicktime" -> ".mov";
+            case "video/webm" -> ".webm";
             case "application/pdf" -> ".pdf";
             case "text/csv" -> ".csv";
             case "text/plain" -> ".txt";

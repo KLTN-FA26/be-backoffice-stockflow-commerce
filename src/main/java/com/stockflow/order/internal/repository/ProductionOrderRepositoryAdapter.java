@@ -141,6 +141,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                 order.submittedAt(), order.approvedBy(), order.approvedAt(), order.returnedReason(), order.sentAt(),
                 order.productionStartedAt(), order.cancelledBy(), order.cancelledAt(), order.cancellationReason(),
                 order.closedBy(), order.closedAt(), order.closingReason());
+        entity.expectCompletion(order.expectedCompletionDate());
         long readAt = entity.getVersion();
         ProductionOrderJpaEntity saved = jpa.saveAndFlush(entity);
         if (!created && saved.getVersion() == readAt) {
@@ -299,7 +300,8 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                 e.isSampleApprovalRequired(), e.isSampleRequiredByDefault(), e.getSampleWaiverReason(),
                 e.getUnitPrice(), e.getCurrency(), e.getNote(), e.getDrawnUpBy(), e.getSubmittedAt(),
                 e.getApprovedBy(), e.getApprovedAt(), e.getReturnedReason(), e.getSentAt(),
-                e.getProductionStartedAt(), e.getCancelledBy(), e.getCancelledAt(), e.getCancellationReason(),
+                e.getProductionStartedAt(), e.getExpectedCompletionDate(), e.getCancelledBy(), e.getCancelledAt(),
+                e.getCancellationReason(),
                 e.getClosedBy(), e.getClosedAt(), e.getClosingReason(), lines, e.getVersion());
     }
 

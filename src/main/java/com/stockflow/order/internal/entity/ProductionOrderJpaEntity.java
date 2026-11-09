@@ -85,6 +85,10 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "production_started_at")
     private Instant productionStartedAt;
 
+    /** 4A-4 (17 §4.3 step 8): the producer's expected completion day, from ACCEPTED on. */
+    @Column(name = "expected_completion_date")
+    private LocalDate expectedCompletionDate;
+
     @Column(name = "cancelled_by")
     private UUID cancelledBy;
 
@@ -146,6 +150,11 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.closingReason = closingReason;
     }
 
+    /** Set beside {@link #apply}: the producer's day moves on its own, after the rest is settled. */
+    public void expectCompletion(LocalDate expectedCompletionDate) {
+        this.expectedCompletionDate = expectedCompletionDate;
+    }
+
     public String getCode() { return code; }
     public UUID getSalesOrderId() { return salesOrderId; }
     public UUID getDeliveryBatchId() { return deliveryBatchId; }
@@ -167,6 +176,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public String getReturnedReason() { return returnedReason; }
     public Instant getSentAt() { return sentAt; }
     public Instant getProductionStartedAt() { return productionStartedAt; }
+    public LocalDate getExpectedCompletionDate() { return expectedCompletionDate; }
     public UUID getCancelledBy() { return cancelledBy; }
     public Instant getCancelledAt() { return cancelledAt; }
     public String getCancellationReason() { return cancellationReason; }

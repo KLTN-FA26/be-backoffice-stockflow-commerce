@@ -213,6 +213,9 @@ class LocalFileStorage implements FileStorage {
             case ".jpg" -> "image/jpeg";
             case ".png" -> "image/png";
             case ".webp" -> "image/webp";
+            case ".mp4" -> "video/mp4";
+            case ".mov" -> "video/quicktime";
+            case ".webm" -> "video/webm";
             case ".pdf" -> "application/pdf";
             case ".csv" -> "text/csv";
             case ".txt" -> "text/plain";

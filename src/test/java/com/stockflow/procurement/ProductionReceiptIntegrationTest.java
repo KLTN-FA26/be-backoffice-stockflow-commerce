@@ -28,6 +28,7 @@ import com.stockflow.order.internal.domain.ProductionOrderRepository.HistoryEntr
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.service.ProducerService;
 import com.stockflow.order.internal.service.ProductionOrderService;
+import com.stockflow.order.internal.service.ProductionSampleService;
 import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.order.internal.service.ShippingWarehouseService;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
@@ -41,6 +42,7 @@ import com.stockflow.support.Await;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.PrintSamples;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.TestPdfs;
 import com.stockflow.support.WithCurrentUser;
@@ -123,6 +125,7 @@ class ProductionReceiptIntegrationTest {
     @Autowired GoodsReceipts receipts;
     @Autowired ProductionOrderReceiving receiving;
     @Autowired ProductionOrderService productionOrders;
+    @Autowired ProductionSampleService samples;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
     @Autowired OrderService orders;
@@ -480,6 +483,41 @@ class ProductionReceiptIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM procurement.goods_receipts WHERE production_order_id "
                 + "IN (?, ?, ?)", Long.class, sample.id(), draft.id(), receivable.id()))
                 .as("only the receipt allowed was started").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("17 BR-24, 03 BR-15 (4A-4): nothing received while the print sample waits; after the customer's "
+            + "approval, the receipt starts")
+    void receivedOnceTheSampleIsApproved() {
+        UUID orderId = confirmedOrderAtA();
+        UUID customerUser = PrintSamples.portalUser(jdbc, tx, entityManager, customerId);
+        ProductionOrder sent = sentWithSample(orderId, 1);
+        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(10), coordinator);
+        assertThatThrownBy(() -> start(accepted)).as("ACCEPTED with a print sample to approve")
+                .extracting(ProductionReceiptIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE);
+
+        var opened = samples.open(accepted.id(), null, null, PrintSamples.photos(1), coordinator);
+        ProductionOrder pending = reread(accepted.id());
+        assertThat(pending.status()).isEqualTo(ProductionOrderStatus.SAMPLE_PENDING);
+        assertThatThrownBy(() -> start(pending)).as("SAMPLE_PENDING")
+                .satisfies(e -> assertThat(code(e)).isEqualTo(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE))
+                .hasMessageContaining("print sample");
+        UUID round = opened.rounds().waiting().orElseThrow().id();
+        samples.answer(customerId, customerUser, round, com.stockflow.order.internal.domain.SampleRound.Result
+                .REPRINT_REQUESTED, "Brighter red");
+        assertThatThrownBy(() -> start(reread(accepted.id()))).as("sent back, still pending")
+                .extracting(ProductionReceiptIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE);
+        var second = samples.open(accepted.id(), com.stockflow.order.internal.domain.ReprintReason.CUSTOMER_CHANGE,
+                null, PrintSamples.photos(1), coordinator);
+        samples.answer(customerId, customerUser, second.rounds().waiting().orElseThrow().id(),
+                com.stockflow.order.internal.domain.SampleRound.Result.APPROVED, null);
+
+        ProductionOrder printing = reread(accepted.id());
+        assertThat(printing.status()).isEqualTo(ProductionOrderStatus.IN_PRODUCTION);
+        ReceiptView receipt = start(printing);
+        assertThat(receipt.productionOrderId()).isEqualTo(printing.id());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM procurement.goods_receipts WHERE production_order_id = ?",
+                Long.class, printing.id())).as("only the receipt after the approval").isEqualTo(1);
     }
 
     @Test

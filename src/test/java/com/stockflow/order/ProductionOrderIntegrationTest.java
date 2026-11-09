@@ -26,6 +26,7 @@ import com.stockflow.order.internal.domain.ProductionOrderRepository.HistoryEntr
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.service.ProducerService;
 import com.stockflow.order.internal.service.ProductionOrderService;
+import com.stockflow.order.internal.service.ProductionSampleService;
 import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.order.internal.service.ShippingWarehouseService;
 import com.stockflow.order.internal.service.ShippingWarehouseService.BatchCoverage;
@@ -33,6 +34,7 @@ import com.stockflow.order.internal.service.ShippingWarehouseService.Coverage;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.PrintSamples;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.TestPdfs;
 import com.stockflow.support.WithCurrentUser;
@@ -120,6 +122,7 @@ class ProductionOrderIntegrationTest {
     private static Warehouse b;
 
     @Autowired ProductionOrderService productionOrders;
+    @Autowired ProductionSampleService samples;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
     @Autowired OrderService orders;
@@ -135,6 +138,7 @@ class ProductionOrderIntegrationTest {
     private UUID coordinator;
     private UUID manager;
     private UUID customerId;
+    private UUID customerUser;
     private IssuedSku sku;
     private Producer producer;
     private LocalDate today;
@@ -163,6 +167,7 @@ class ProductionOrderIntegrationTest {
                     VALUES (?, ?, '12 Nguyen Hue, TP HCM', 'Le Van D', 'Director', 0, NOW())""",
                     Identifiers.newId(), customerId);
         });
+        customerUser = PrintSamples.portalUser(jdbc, tx, entityManager, customerId);
         sku = issueSku();
         producer = producers.register(producerCode(), pdfProducer("Production test workshop"));
         today = LocalDate.now(VIETNAM);
@@ -386,16 +391,12 @@ class ProductionOrderIntegrationTest {
                 production.note(), required, reason, null);
     }
 
-    /** Mass printing started, as 4A-4 / 4A-5 will record it: SENT → ACCEPTED → IN_PRODUCTION, by SQL for now. */
+    /**
+     * Mass printing started, as 4A-4 records it: SENT → ACCEPTED, then round 1 of its print sample approved by the
+     * customer - or the coordinator's start when no sample is to be approved.
+     */
     private void startMassPrinting(UUID id) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE ordering.production_order SET status = 'ACCEPTED', version = version + 1 WHERE id = ?",
-                    id);
-            jdbc.update("""
-                    UPDATE ordering.production_order SET status = 'IN_PRODUCTION', production_started_at = NOW(),
-                           version = version + 1
-                     WHERE id = ?""", id);
-        });
+        PrintSamples.massPrinting(productionOrders, samples, reread(id), coordinator, customerUser);
     }
 
     private Map<String, Object> row(UUID id) {

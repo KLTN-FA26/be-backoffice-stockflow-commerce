@@ -60,6 +60,13 @@ public final class OrderResources {
     public static final String PRODUCTION_ORDERS = "production-orders";
 
     /**
+     * 4A-4 (kltn-docs 13 §4.3 step 5, BR-13): the storefront's print samples to approve - the customer reads and
+     * answers their own (scope OWN, the owner checked by the service). The coordinator's side of the rounds is
+     * {@code production-orders:UPDATE}. Seeded by V20261108003100.
+     */
+    public static final String PRODUCTION_SAMPLES = "production-samples";
+
+    /**
      * Return requests (SCRUM-243, seeded by V20260903000100, UPDATE added by V20261101020000): CREATE opens one and adds
      * photos (the customer on their own orders, Sales on any), UPDATE withdraws one, READ lists them, APPROVE is Sales'
      * review (approve, reject).
