@@ -13,8 +13,14 @@ import java.util.List;
  *
  * <p>A slot can hold several layers (same SKU and lot received at different times); stock is
  * adjusted per layer, so one delta must be split. A shortage takes the layers' <em>free</em> units
- * first, oldest receipt first - FIFO, the order stock leaves in (kltn-docs 01 BR-17), so the layer the missing units
- * most plausibly came from - and only then units held for customers, again oldest first. Writing a held unit
+ * first, oldest receipt first - FIFO, the order dated stock leaves in (kltn-docs 01 BR-17), so the layer the missing
+ * units most plausibly came from - and only then units held for customers, again oldest first.</p>
+ *
+ * <p>A layer with no receipt time (stock older than timed receipts) is taken <em>first</em> here, as the oldest it
+ * can be. That is deliberately not the order it leaves in: {@link StockAllocator#comparator()} gives such stock
+ * <em>last</em>, so as not to change any SKU's allocation order. Only for dated layers do the two orders agree.</p>
+ *
+ * <p>Writing a held unit
  * down while a free one of the same slot stands on the books would ask for an adjustment that
  * approval refuses (it cannot cut into a hold), when the books can absorb the shortage without
  * touching any customer. A surplus goes to the newest layer, so found stock is never presented as older than it

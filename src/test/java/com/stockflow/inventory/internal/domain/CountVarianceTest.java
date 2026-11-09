@@ -49,6 +49,17 @@ class CountVarianceTest {
     }
 
     @Test
+    void anUndatedLayerIsTakenFirstUnlikeAllocation() {
+        // The shortage takes stock with no receipt time first, as the oldest it can be; StockAllocator gives such
+        // stock last. Pinned so the difference stays deliberate.
+        Layer undated = layer(null, 3);
+        Layer dated = layer(T1, 10);
+
+        assertThat(CountVariance.split(-4, List.of(dated, undated)))
+                .containsExactly(new Share(undated.id(), null, -3), new Share(dated.id(), T1, -1));
+    }
+
+    @Test
     void shortageTakesFreeUnitsBeforeHeldOnes() {
         // FIFO would start with sep, but all of it is held for customers; oct has 6 free of 10.
         Layer sep = layer(T1, 4, 4);
