@@ -10,12 +10,14 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.procurement.internal.controller.dto.CreateGoodsReceiptRequest;
 import com.stockflow.procurement.internal.controller.dto.CreateGoodsReceiptWithoutPoRequest;
+import com.stockflow.procurement.internal.controller.dto.CreateProductionGoodsReceiptRequest;
 import com.stockflow.procurement.internal.controller.dto.GoodsReceiptResponse;
 import com.stockflow.procurement.internal.controller.dto.GoodsReceiptRowResponse;
 import com.stockflow.procurement.internal.controller.dto.ReceiptDecisionRequest;
 import com.stockflow.procurement.internal.controller.dto.ReceiptLinesRequest;
 import com.stockflow.procurement.internal.controller.dto.ReferencePurchaseOrderRequest;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
+import com.stockflow.procurement.internal.domain.GoodsReceiptType;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -44,6 +46,9 @@ import java.util.UUID;
  *
  * <p>The only way goods are received: the old {@code POST /purchase-orders/{id}/receipts}, which only
  * advanced PO-line totals, went with the old purchasing tables (contract C4).</p>
+ *
+ * <p>4A-5 (kltn-docs 03 §4.1): finished goods are received against a production order ({@code POST /production}), on
+ * the same endpoints afterwards - counted in whole cartons, confirmed, cancelled - with the same permissions.</p>
  */
 @RestController
 @RequestMapping("/api/v1/goods-receipts")
@@ -93,6 +98,23 @@ class GoodsReceiptController {
                         request.deliveryNote(), request.note()), user.userId())));
     }
 
+    @PostMapping("/production")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Start a receipt (DRAFT) against a production order (kltn-docs 03 §4.1, BR-01, BR-15)",
+            description = """
+                    The production order is IN_PRODUCTION or PARTIALLY_RECEIVED, or SENT / ACCEPTED when no print \
+                    sample is to be approved first (`PRODUCTION_ORDER_NOT_RECEIVABLE`, 409 otherwise); the receipt is \
+                    at the warehouse it is received at, which the caller is assigned to. While the draft is open the \
+                    production order is neither cancelled nor closed. Lines: `PUT /{id}/lines`, each naming a \
+                    `productionOrderLineId` and listing its cartons; the lot is the production order's code.""")
+    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.CREATE)
+    public ApiResponse<GoodsReceiptResponse> createForProductionOrder(
+            @Valid @RequestBody CreateProductionGoodsReceiptRequest request, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(receipts.createForProductionOrder(
+                new GoodsReceipts.CreateForProductionOrder(request.productionOrderId(), request.deliveryNote(),
+                        request.note()), user.userId())));
+    }
+
     @GetMapping
     @Operation(summary = "Goods receipts, newest first")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.READ)
@@ -104,11 +126,14 @@ class GoodsReceiptController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant receivedFrom,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant receivedTo,
             @RequestParam(required = false) Boolean withoutPo,
+            @RequestParam(required = false) UUID productionOrderId,
+            @RequestParam(required = false) GoodsReceiptType receiptType,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(receipts.list(statuses, purchaseOrderId, warehouseId, search, receivedFrom, receivedTo,
-                withoutPo, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(mapper::toResponse));
+                withoutPo, productionOrderId, receiptType, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)
+                .map(mapper::toResponse));
     }
 
     @GetMapping("/{receiptId}")
@@ -141,15 +166,26 @@ class GoodsReceiptController {
                     voided ones too - left out), \
                     `STOCK_PACKAGE_NOT_FOUND` (404: an LPN not of this line), `INVALID_STOCK_PACKAGE_TRANSITION` \
                     (409: a voided carton named again), `VALIDATION_FAILED` (cartons without a unit, an LPN listed \
-                    twice, a carton under 1 unit).""")
+                    twice, a carton under 1 unit).
+
+                    4A-5, a receipt against a production order: each line names its `productionOrderLineId` (one line \
+                    per production order line), its RECEIVING `locationCode` and at least one carton in `packages`; \
+                    every carton holds the line's standard count, so `quantity` (the line's and a carton's) may be \
+                    left out. No `lotNumber`, `expiryDate`, `purchaseOrderLineId`: the lot is the production order's \
+                    code. Codes: `RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER` (409), `RECEIPT_CARTON_NOT_STANDARD` (422: a \
+                    carton of another count, BR-13), `RECEIPT_EXCEEDS_PRODUCTION_ORDER` (409: more cartons than the \
+                    line orders on all its receipts not cancelled, drafts included - BR-02), \
+                    `PRODUCTION_ORDER_NOT_RECEIVABLE` (409).""")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> replaceLines(@PathVariable UUID receiptId,
                                                           @Valid @RequestBody ReceiptLinesRequest request) {
+        // A quantity left out is 0: a production receipt counts it from the cartons, a purchase receipt refuses it.
         return ApiResponse.ok(mapper.toResponse(receipts.replaceLines(receiptId, request.lines().stream()
-                .map(l -> new GoodsReceipts.NewLine(l.purchaseOrderLineId(), l.quantity(), l.lotNumber(),
-                        l.expiryDate(), l.locationCode(), l.note(), l.unitOfMeasure(),
+                .map(l -> new GoodsReceipts.NewLine(l.purchaseOrderLineId(), l.quantity() == null ? 0 : l.quantity(),
+                        l.lotNumber(), l.expiryDate(), l.locationCode(), l.note(), l.unitOfMeasure(),
                         l.packages() == null ? List.of() : l.packages().stream()
-                                .map(p -> new GoodsReceipts.NewPackage(p.lpn(), p.quantity())).toList(), l.sku()))
+                                .map(p -> new GoodsReceipts.NewPackage(p.lpn(), p.quantity() == null ? 0 : p.quantity()))
+                                .toList(), l.sku(), l.productionOrderLineId()))
                 .toList())));
     }
 
@@ -159,7 +195,12 @@ class GoodsReceiptController {
                     A count beyond a PO line's over-receipt tolerance (BR-RCP-001) is not refused and not posted: the \
                     receipt becomes `PENDING_APPROVAL`, nothing is counted in, and the warehouse manager decides \
                     (`/approval`, `/excess-rejection`). The draft's `warnings` say which lines (`OVER_TOLERANCE`) \
-                    before it is confirmed.""")
+                    before it is confirmed.
+
+                    4A-5, a receipt against a production order: the cartons become INBOUND stock in the production \
+                    order's lot and the production order moves on - to IN_PRODUCTION first when it was still SENT / \
+                    ACCEPTED (BR-15), then PARTIALLY_RECEIVED, or RECEIVED once every line is in. BR-02 is checked \
+                    again; there is no approval step.""")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> confirm(@PathVariable UUID receiptId,
                                                      @AuthenticatedUser CurrentUser user) {

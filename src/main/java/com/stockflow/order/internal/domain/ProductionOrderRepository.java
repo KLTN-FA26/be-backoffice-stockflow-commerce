@@ -15,6 +15,9 @@ public interface ProductionOrderRepository {
     /** The production order, its row locked until the transaction ends and read fresh. */
     Optional<ProductionOrder> findByIdForUpdate(UUID id);
 
+    /** The production orders with these ids, unlocked; unknown ids are left out. */
+    List<ProductionOrder> findAllById(Collection<UUID> ids);
+
     /** Every production order of a sales order, oldest first. */
     List<ProductionOrder> ofSalesOrder(UUID salesOrderId);
 

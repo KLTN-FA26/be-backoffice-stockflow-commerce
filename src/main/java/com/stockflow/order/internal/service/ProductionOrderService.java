@@ -20,6 +20,7 @@ import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProducerRepository;
 import com.stockflow.order.internal.domain.ProductionOrder;
+import com.stockflow.order.internal.domain.ProductionOrderReceiptRepository;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.domain.SalesContract;
@@ -64,8 +65,13 @@ import java.util.stream.Collectors;
  *   <li><b>Edit</b> while a draft (B33), <b>submit</b>, <b>approve</b> (Sales Manager, not the one who drew it up -
  *       BR-23; the print files are checked byte by byte first) which sends it, or <b>return</b> it with a reason.
  *       The sheet and the e-mail to the producer are 4A-3.</li>
- *   <li><b>Cancel</b> before mass printing, <b>close</b> after it started (BR-06), with a reason.</li>
+ *   <li><b>Cancel</b> before mass printing, <b>close</b> after it started (BR-06), with a reason - never while a goods
+ *       receipt against it is a draft (4A-5, kltn-docs 03 edge cases).</li>
  * </ul>
+ *
+ * <p>Every write locks the sales order first and the production order after it - the order {@code drawUp} locks in,
+ * and the one receiving takes ({@code ProductionOrderReceivingService}). One order everywhere: a path taking the
+ * production order before its sales order would deadlock against an approval.</p>
  *
  * <p>The capacity warning (BR-25) waits for the warehouse capacity table: not computed yet.</p>
  */
@@ -83,6 +89,7 @@ public class ProductionOrderService {
     }
 
     private final ProductionOrderRepository productionOrders;
+    private final ProductionOrderReceiptRepository receipts;
     private final ProductionOrderSearch search;
     private final OrderRepository orders;
     private final SalesContractRepository contracts;
@@ -94,12 +101,13 @@ public class ProductionOrderService {
     private final Clock clock;
     private final TransactionTemplate tx;
 
-    ProductionOrderService(ProductionOrderRepository productionOrders, ProductionOrderSearch search,
-                           OrderRepository orders, SalesContractRepository contracts, ProducerRepository producers,
-                           ShippingWarehouseService shippingWarehouses, WarehouseDirectory warehouses,
-                           CustomerSkus customerSkus, DesignService designs, Clock clock,
+    ProductionOrderService(ProductionOrderRepository productionOrders, ProductionOrderReceiptRepository receipts,
+                           ProductionOrderSearch search, OrderRepository orders, SalesContractRepository contracts,
+                           ProducerRepository producers, ShippingWarehouseService shippingWarehouses,
+                           WarehouseDirectory warehouses, CustomerSkus customerSkus, DesignService designs, Clock clock,
                            PlatformTransactionManager transactions) {
         this.productionOrders = productionOrders;
+        this.receipts = receipts;
         this.search = search;
         this.orders = orders;
         this.contracts = contracts;
@@ -248,28 +256,56 @@ public class ProductionOrderService {
     /** Returned to the coordinator with a reason (BR-23). */
     @Auditable(action = AuditAction.REJECT, resourceType = "production-order", resourceId = "#id")
     public ProductionOrder returnToDraft(UUID id, long version, String reason, UUID by) {
-        ProductionOrder production = locked(id, version);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
         production.returnToDraft(reason, by, clock.instant());
         log.info("Production order {} returned to its coordinator", production.code());
         return productionOrders.save(production);
     }
 
-    /** Cancelled before mass printing, with a reason (BR-06). Telling the producer is 4A-3. */
+    /**
+     * Cancelled before mass printing, with a reason (BR-06), while no goods receipt against it is a draft (03 edge
+     * cases: the draft is confirmed or cancelled first). Telling the producer is 4A-3.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS}; {@code PRODUCTION_ORDER_STATUS_INVALID};
+     *         {@code VALIDATION_FAILED}; {@code OPTIMISTIC_LOCK}
+     */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
     public ProductionOrder cancel(UUID id, long version, String reason, UUID by) {
-        ProductionOrder production = locked(id, version);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
+        requireNoDraftReceipt(production, "cancelled");
         production.cancel(reason, by, clock.instant());
         log.info("Production order {} cancelled", production.code());
         return productionOrders.save(production);
     }
 
-    /** Closed after mass printing started, short or before anything came, with a reason (BR-06). */
+    /**
+     * Closed after mass printing started, short or before anything came, with a reason (BR-06), while no goods receipt
+     * against it is a draft (03 edge cases).
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS}; {@code PRODUCTION_ORDER_STATUS_INVALID};
+     *         {@code VALIDATION_FAILED}; {@code OPTIMISTIC_LOCK}
+     */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
     public ProductionOrder close(UUID id, long version, String reason, UUID by) {
-        ProductionOrder production = locked(id, version);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
+        requireNoDraftReceipt(production, "closed");
         production.close(reason, by, clock.instant());
         log.info("Production order {} closed", production.code());
         return productionOrders.save(production);
+    }
+
+    /**
+     * 03 edge cases: a receipt counted against it while it is cancelled or closed would be posted against a
+     * production order that no longer takes goods. Decided under the production order's lock, which a receipt is
+     * started and confirmed under too, so no draft appears between this answer and the change.
+     */
+    private void requireNoDraftReceipt(ProductionOrder production, String what) {
+        List<String> drafts = receipts.drafts(production.id());
+        if (!drafts.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS, ("Production order %s has draft "
+                    + "receipt(s) %s: confirm or cancel them before it is %s").formatted(production.code(),
+                    String.join(", ", drafts), what));
+        }
     }
 
     // ---- reading ----------------------------------------------------------------------------------------------------
@@ -391,11 +427,26 @@ public class ProductionOrderService {
     }
 
     private Locked lockedWithOrder(UUID id, long version) {
-        UUID salesOrderId = productionOrders.findById(id).filter(this::visible).orElseThrow(() -> notFound(id))
-                .salesOrderId();
-        Order order = orders.findByIdForUpdate(new OrderId(salesOrderId)).orElseThrow();
+        Order order = lockOrderOf(id);
         ProductionOrder production = locked(id, version);
         return new Locked(order, production, scheduleOf(production));
+    }
+
+    /**
+     * The production order locked after its sales order, for a change that reads nothing of the order (returning,
+     * cancelling, closing): the same lock order as {@link #lockedWithOrder}, without needing the contract's schedule -
+     * a production order is still cancelled after its order's contract is gone.
+     */
+    private ProductionOrder lockedAfterItsOrder(UUID id, long version) {
+        lockOrderOf(id);
+        return locked(id, version);
+    }
+
+    /** The sales order of a production order the caller may see, locked. */
+    private Order lockOrderOf(UUID id) {
+        UUID salesOrderId = productionOrders.findById(id).filter(this::visible).orElseThrow(() -> notFound(id))
+                .salesOrderId();
+        return orders.findByIdForUpdate(new OrderId(salesOrderId)).orElseThrow();
     }
 
     private ProductionOrder locked(UUID id, long version) {

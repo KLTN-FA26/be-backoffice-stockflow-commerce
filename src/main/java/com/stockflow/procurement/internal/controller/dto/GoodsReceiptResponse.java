@@ -20,6 +20,11 @@ import java.util.UUID;
  * their lines are told apart by {@code sku} ({@code purchaseOrderLineId} is null). They are always sent to the manager
  * on confirmation ({@code status = PENDING_APPROVAL}); {@code approval.decision} is {@code REJECTED} when refused (the
  * receipt is then {@code CANCELLED}). {@code referencedPurchaseOrder*}: the PO attached afterwards, a reference only.</p>
+ *
+ * <p>4A-5: {@code receiptType} is {@code PURCHASE} or {@code PRODUCTION}. A production receipt names its production
+ * order ({@code productionOrderId}, {@code productionOrderCode} - also the lot of every line - its
+ * {@code productionOrderStatus}, {@code producerId}, {@code producerName}) and has no PO or supplier; each line names
+ * its {@code productionOrderLineId} and carries {@code production}, the line against what it orders.</p>
  */
 public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber,
                                    UUID supplierId, String supplierName, UUID warehouseId, String warehouseCode,
@@ -28,7 +33,9 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
                                    UUID confirmedBy, String confirmedByName, Instant closedAt, List<Line> lines,
                                    List<String> warnings, Approval approval, boolean withoutPurchaseOrder,
                                    String blindReason, UUID referencedPurchaseOrderId,
-                                   String referencedPurchaseOrderNumber) {
+                                   String referencedPurchaseOrderNumber, String receiptType, UUID productionOrderId,
+                                   String productionOrderCode, String productionOrderStatus, UUID producerId,
+                                   String producerName) {
 
     /**
      * The warehouse manager's exception approval (SCRUM-477, BR-RCP-001): null for a receipt that never went beyond
@@ -53,7 +60,24 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
                        List<String> warnings, String unitOfMeasure,
                        int looseQuantity, List<Package> packages, List<Unit> units,
                        @io.swagger.v3.oas.annotations.media.Schema(description = "SCRUM-473: the unit the PO line was"
-                               + " ordered in, to pre-select; null for base units") String orderedUnitOfMeasure) {
+                               + " ordered in, to pre-select; null for base units") String orderedUnitOfMeasure,
+                       @io.swagger.v3.oas.annotations.media.Schema(description = "4A-5: the production order line a"
+                               + " production receipt's line counts; null on a purchase receipt")
+                       UUID productionOrderLineId,
+                       @io.swagger.v3.oas.annotations.media.Schema(description = "4A-5: the line against its"
+                               + " production order line; null on a purchase receipt", nullable = true)
+                       ProductionLineProgress production) {
+    }
+
+    /**
+     * 4A-5 (kltn-docs 03 §3 output, §4.1 step 3): a production line in cartons of {@code unitsPerCarton} and in units.
+     * {@code ordered*}: what the production order line orders. {@code received*}: what confirmed receipts counted in
+     * so far, this one included once confirmed. {@code thisReceipt*}: this receipt's. {@code remaining*}: what stays
+     * open once this receipt is counted in - for a draft, ordered less received less this receipt.
+     */
+    public record ProductionLineProgress(int unitsPerCarton, int orderedCartons, int receivedCartons,
+                                         int thisReceiptCartons, int remainingCartons, int orderedUnits,
+                                         int receivedUnits, int thisReceiptUnits, int remainingUnits) {
     }
 
     /**

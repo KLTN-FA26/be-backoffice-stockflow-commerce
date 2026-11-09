@@ -102,8 +102,9 @@ class GoodsReceiptServiceImplTest {
             UUID.randomUUID(), "RECEIVING");
 
     private GoodsReceiptServiceImpl service(Instant now) {
-        return new GoodsReceiptServiceImpl(receipts, search, orders, locations, inventory, warehouses, identity,
-                inventoryControl, units, users, events, Clock.fixed(now, ZoneOffset.UTC));
+        return new GoodsReceiptServiceImpl(receipts, search, orders,
+                mock(com.stockflow.order.api.ProductionOrderReceiving.class), locations, inventory, warehouses,
+                identity, inventoryControl, units, users, events, Clock.fixed(now, ZoneOffset.UTC));
     }
 
     private InventoryItemPolicy plainItem() {

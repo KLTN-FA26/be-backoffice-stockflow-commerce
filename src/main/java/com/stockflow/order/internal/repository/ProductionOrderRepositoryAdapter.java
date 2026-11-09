@@ -43,6 +43,10 @@ import java.util.stream.Collectors;
 @Repository
 class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, ProductionOrderSearch {
 
+    /** The statuses mass printing has started by ({@code ck_production_order_started}). */
+    private static final Set<ProductionOrderStatus> STARTED = java.util.EnumSet.of(ProductionOrderStatus.IN_PRODUCTION,
+            ProductionOrderStatus.PARTIALLY_RECEIVED, ProductionOrderStatus.RECEIVED);
+
     private final ProductionOrderJpaRepository jpa;
     private final EntityManager entityManager;
     private final ApplicationEventPublisher events;
@@ -67,6 +71,17 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         }
         entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
         return Optional.of(toDomain(entity, linesOf(List.of(id)).getOrDefault(id, List.of())));
+    }
+
+    @Override
+    public List<ProductionOrder> findAllById(Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        List<ProductionOrderJpaEntity> entities = jpa.findAllById(Set.copyOf(ids));
+        Map<UUID, List<ProductionOrder.Line>> lines = linesOf(entities.stream().map(ProductionOrderJpaEntity::getId)
+                .toList());
+        return entities.stream().map(e -> toDomain(e, lines.getOrDefault(e.getId(), List.of()))).toList();
     }
 
     @Override
@@ -117,6 +132,10 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "Production order %s changed since it was read".formatted(order.code()));
         }
+        List<ProductionOrder.Change> changes = order.pullChanges();
+        if (!created) {
+            writeStatusesPassed(order, changes);
+        }
         entity.apply(order.producerId(), order.receivingWarehouseId(), order.needByDate(), order.status(),
                 order.sampleApprovalRequired(), order.sampleWaiverReason(), order.unitPrice(), order.note(),
                 order.submittedAt(), order.approvedBy(), order.approvedAt(), order.returnedReason(), order.sentAt(),
@@ -132,7 +151,6 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
             entityManager.lock(saved, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
         }
         writeLines(order, created);
-        List<ProductionOrder.Change> changes = order.pullChanges();
         for (ProductionOrder.Change change : changes) {
             entityManager.createNativeQuery("""
                             INSERT INTO ordering.production_order_status_history (id, production_order_id, from_status,
@@ -155,6 +173,34 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                     order.deliveryBatchId(), change.from(), change.to(), change.by(), change.at()));
         }
         return toDomain(saved, linesOf(List.of(order.id())).getOrDefault(order.id(), List.of()));
+    }
+
+    /**
+     * {@code tg_production_order} holds every change of status, row by row, to an edge of 17 §5.3. A production order
+     * that moved more than once since it was read - goods received while it was still SENT or ACCEPTED take it to
+     * IN_PRODUCTION and on to PARTIALLY_RECEIVED or RECEIVED in one receipt (4A-5, kltn-docs 03 BR-15) - is written
+     * through each status it passed before the entity's update writes the last: a single update to the final status
+     * would be a jump the database refuses. A status from IN_PRODUCTION on carries the start of mass printing
+     * ({@code ck_production_order_started}). The version is the entity's to move, once, by its own update.
+     */
+    private void writeStatusesPassed(ProductionOrder order, List<ProductionOrder.Change> changes) {
+        for (ProductionOrder.Change passed : changes.subList(0, Math.max(changes.size() - 1, 0))) {
+            if (STARTED.contains(passed.to())) {
+                entityManager.createNativeQuery("""
+                                UPDATE ordering.production_order
+                                   SET status = :status, production_started_at = COALESCE(production_started_at, :at)
+                                 WHERE id = :id""")
+                        .setParameter("status", passed.to().name())
+                        .setParameter("at", order.productionStartedAt())
+                        .setParameter("id", order.id())
+                        .executeUpdate();
+            } else {
+                entityManager.createNativeQuery("UPDATE ordering.production_order SET status = :status WHERE id = :id")
+                        .setParameter("status", passed.to().name())
+                        .setParameter("id", order.id())
+                        .executeUpdate();
+            }
+        }
     }
 
     /**

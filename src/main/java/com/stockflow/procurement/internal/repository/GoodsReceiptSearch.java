@@ -1,6 +1,7 @@
 package com.stockflow.procurement.internal.repository;
 
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
+import com.stockflow.procurement.internal.domain.GoodsReceiptType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
@@ -11,16 +12,29 @@ import java.util.UUID;
 /** Read side of goods receipts for the list screen. Rows carry no lines. */
 public interface GoodsReceiptSearch {
 
-    /** {@code withoutPurchaseOrder}: true keeps only receipts without a PO (SCRUM-478), false only those against one. */
+    /**
+     * {@code withoutPurchaseOrder}: true keeps only receipts without a PO (SCRUM-478) - blind purchase receipts, not
+     * production ones - false only those against one. {@code productionOrderId}, {@code receiptType}: 4A-5.
+     */
     record Criteria(List<GoodsReceiptStatus> statuses, UUID purchaseOrderId, UUID warehouseId, String number,
-                    Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder) {
+                    Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder, UUID productionOrderId,
+                    GoodsReceiptType receiptType) {
+
+        public Criteria(List<GoodsReceiptStatus> statuses, UUID purchaseOrderId, UUID warehouseId, String number,
+                        Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder) {
+            this(statuses, purchaseOrderId, warehouseId, number, receivedFrom, receivedTo, withoutPurchaseOrder, null,
+                    null);
+        }
     }
 
-    /** {@code supplierId}: the supplier of a receipt without a PO; null on one against a PO. */
+    /**
+     * {@code supplierId}: the supplier of a receipt without a PO; null on one against a PO.
+     * {@code productionOrderId}: the production order of a PRODUCTION receipt (4A-5).
+     */
     record Row(UUID id, String number, UUID purchaseOrderId, UUID supplierId, UUID warehouseId,
                GoodsReceiptStatus status,
                String deliveryNote, Instant receivedAt, UUID receivedBy, Instant confirmedAt, UUID confirmedBy,
-               Instant closedAt) {
+               Instant closedAt, GoodsReceiptType receiptType, UUID productionOrderId) {
     }
 
     /** What a receipt shows of its purchase order: number and supplier (SCRUM-464). */
