@@ -15,6 +15,11 @@
 --     new one is created (warehouse.check_storage_location_owned);
 --   * inventory.stock_damage_disposition.supplier_id and supplier_name, and the damage report's supplier shipments:
 --     damage reporting goes as a whole with 5-6; only the foreign key into the suppliers goes here;
+--   * inventory.stock_lot.purchase_order_id, purchase_order_number, supplier_id and supplier_name: a snapshot, taken
+--     when the lot was opened, of the purchase order and supplier its goods came from. Nothing writes them any more
+--     (a production order lot names neither, ck_stock_lot_production_order); the lot trace still shows them for old
+--     lots, and damage reporting's return to supplier reads them until 5-6 removes it. Only their foreign keys go here,
+--     so the ids are archive references from now on (the rows they named are archived in step 2);
 --   * inventory.uom_conversions.default_purchase: the item's unit model, not purchasing;
 --   * the PROCUREMENT_STAFF role, with the goods-receipt grants it keeps: it goes with 5-8.
 --
@@ -40,12 +45,13 @@
 --   5. the QC photos;
 --   6. foreign keys into purchasing, then the CHECKs that name purchase columns, then those columns, then the tables -
 --      children first, never CASCADE - and the functions only their triggers used;
---   7. the CHECKs Postgres dropped with a column, recreated without it; receipt lines get their unit and lot, both
---      NOT NULL from now on; purchase-only statuses and photo stages leave their CHECKs;
+--   7. receipt lines get their unit and lot, both NOT NULL from now on; purchase-only statuses and photo stages leave
+--      their CHECKs (no multi-column CHECK of a kept table loses a column it still needs: those of goods_receipts that
+--      named purchase columns are about purchase receipts only);
 --   8. permissions: grants first, advancing app_role.version of exactly the roles that lost one (ADR-0008), then the
 --      permission rows.
 --
--- Written so that it survives the sibling migrations merged before it: no function or CHECK here names
+-- Written so that it survives the sibling migrations merged before it: no function here names
 -- catalog.pricing_rule (dropped by V20261110000100) or an expiry_date column (dropped by V20261111000300); where the
 -- expiry still matters it is read through to_jsonb, which does not fail once the column is gone.
 -- =============================================================================
@@ -148,7 +154,7 @@ UNION ALL SELECT 'procurement.goods_receipt_lines.purchase', t.id, to_jsonb(t) F
 -- The photos QC took (step 5), whole. ArchivedPurchasingFileReferences reads storage_key from these rows.
 UNION ALL SELECT 'procurement.goods_receipt_photos', t.id, to_jsonb(t) FROM procurement.goods_receipt_photos t
           WHERE t.stage = 'QC'
--- The purchasing columns of items and lots that step 6 drops, of the rows that used them.
+-- The purchasing columns of items that step 6 drops, of the rows that used them.
 UNION ALL SELECT 'inventory.inventory_items.purchasing', t.id,
                  jsonb_build_object('id', t.id, 'sku', t.sku, 'default_supplier_id', t.default_supplier_id,
                                     'reference_purchase_price', t.reference_purchase_price,
@@ -157,15 +163,6 @@ UNION ALL SELECT 'inventory.inventory_items.purchasing', t.id,
           FROM inventory.inventory_items t
           WHERE t.default_supplier_id IS NOT NULL OR t.reference_purchase_price IS NOT NULL
              OR t.reference_purchase_currency IS NOT NULL OR t.lead_time_days IS NOT NULL OR t.moq IS NOT NULL
-UNION ALL SELECT 'inventory.stock_lot.purchasing', t.id,
-                 jsonb_build_object('id', t.id, 'sku', t.sku, 'lot_number', t.lot_number,
-                                    'goods_receipt_id', t.goods_receipt_id,
-                                    'purchase_order_id', t.purchase_order_id,
-                                    'purchase_order_number', t.purchase_order_number,
-                                    'supplier_id', t.supplier_id, 'supplier_name', t.supplier_name)
-          FROM inventory.stock_lot t
-          WHERE t.purchase_order_id IS NOT NULL OR t.purchase_order_number IS NOT NULL
-             OR t.supplier_id IS NOT NULL OR t.supplier_name IS NOT NULL
 -- Permissions and their grants (step 8).
 UNION ALL SELECT 'identity.permission', t.id, to_jsonb(t) FROM identity.permission t
           WHERE t.code LIKE 'procurement-%'
@@ -187,7 +184,7 @@ COMMENT ON TABLE platform.legacy_archive IS
         'design workflow''s assignments, its designs left waiting for confirmation and its permission '
         '(V20261108001000), the parcel carriers'' status before they were retired (V20261108001300), and '
         'purchasing - purchase orders, suppliers, supplier invoices, reorder proposals, subcontracting, the '
-        'purchase columns of receipts, items and lots, and the QC photos of receipts (V20261113000200). Read-only '
+        'purchase columns of receipts and items, and the QC photos of receipts (V20261113000200). Read-only '
         'history.';
 
 
@@ -489,6 +486,7 @@ ALTER TABLE procurement.goods_receipts
     DROP CONSTRAINT fk_goods_receipts_approval_decided_by;
 ALTER TABLE procurement.goods_receipt_lines DROP CONSTRAINT fk_goods_receipt_lines_po_line;
 ALTER TABLE inventory.inventory_items DROP CONSTRAINT fk_inventory_items_default_supplier;
+-- The lot keeps its snapshot of where its goods came from (see the header); only the references go.
 ALTER TABLE inventory.stock_lot
     DROP CONSTRAINT fk_stock_lot_purchase_order,
     DROP CONSTRAINT fk_stock_lot_supplier;
@@ -513,11 +511,6 @@ ALTER TABLE inventory.inventory_items
     DROP CONSTRAINT ck_inventory_items_reference_price,
     DROP CONSTRAINT ck_inventory_items_lead_time,
     DROP CONSTRAINT ck_inventory_items_moq;
--- Recreated without the purchase columns in step 7. IF EXISTS: a sibling migration that drops another column of the
--- two (V20261111000300 drops expiry_date) may have dropped them already.
-ALTER TABLE inventory.stock_lot
-    DROP CONSTRAINT IF EXISTS ck_stock_lot_production_order,
-    DROP CONSTRAINT IF EXISTS ck_stock_lot_untraced;
 
 -- The columns; their indexes (ix_goods_receipts_po, _referenced_po, _supplier, ix_goods_receipt_lines_po_line,
 -- uk_goods_receipt_lines_lot, uk_goods_receipt_lines_blind_lot, ix_inventory_items_default_supplier) go with them.
@@ -540,11 +533,6 @@ ALTER TABLE inventory.inventory_items
     DROP COLUMN reference_purchase_currency,
     DROP COLUMN lead_time_days,
     DROP COLUMN moq;
-ALTER TABLE inventory.stock_lot
-    DROP COLUMN purchase_order_id,
-    DROP COLUMN purchase_order_number,
-    DROP COLUMN supplier_id,
-    DROP COLUMN supplier_name;
 
 -- The tables, children first. Three foreign keys close cycles (a purchase order and its revisions point at each other;
 -- an order names the proposal it came from, whose lines name the order): they go first.
@@ -594,20 +582,8 @@ DROP FUNCTION warehouse.check_subcontractor_site_location();
 
 
 -- ---------------------------------------------------------------------------------------------
--- 7. CHECKs recreated, units and lots, statuses and stages
+-- 7. Units and lots, statuses and stages
 -- ---------------------------------------------------------------------------------------------
--- As V20261108002800 stated them, less the purchase columns. The expiry date is left out of the production order
--- lot's rule: V20261111000300 drops the column, and a CHECK naming it would stop this migration once that ran first;
--- check_goods_receipt_line still refuses one on the receipt line the lot is opened from.
-ALTER TABLE inventory.stock_lot
-    ADD CONSTRAINT ck_stock_lot_production_order CHECK (
-        (origin_type = 'PRODUCTION_ORDER') = (production_order_id IS NOT NULL)
-        AND (production_order_id IS NULL) = (production_order_code IS NULL)
-        AND (origin_type <> 'PRODUCTION_ORDER'
-             OR (lot_number = production_order_code AND received_at IS NOT NULL
-                 AND goods_receipt_id IS NULL AND goods_receipt_number IS NULL))),
-    ADD CONSTRAINT ck_stock_lot_untraced CHECK (origin_type <> 'UNTRACED' OR goods_receipt_id IS NULL);
-
 -- Every receipt line has a unit and a lot (kltn-docs 03 BR-03, BR-12): a production receipt's always had them
 -- (check_goods_receipt_line). An old purchase line counted in base units names the item's base unit; one without a lot
 -- takes its receipt's number, the identity of the stock lot it went into (header). Archived whole in step 2. The
