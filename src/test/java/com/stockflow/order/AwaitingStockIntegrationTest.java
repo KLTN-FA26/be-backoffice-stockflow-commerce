@@ -378,7 +378,7 @@ class AwaitingStockIntegrationTest {
         stock(CARTONS * PER_CARTON);
         assertThat(shippingWarehouses.topUpWaiting()).isPositive();
         assertThat(shippingWarehouses.coverage(orderId).fullyHeld()).isTrue();
-        assertThat(status(orderId)).as("held in full, it is released - READY_TO_FULFILL means released")
+        assertThat(status(orderId)).as("held in full but not released yet: READY_TO_FULFILL means released, so it still waits")
                 .isEqualTo(OrderStatus.AWAITING_STOCK);
 
         assertThat(releases.release(orderId, a.id(), coordinator).status())
