@@ -604,9 +604,9 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Goods picked for an order that was cancelled afterwards come back onto this stock item (docs 07
-     * BR-05, SCRUM-275): {@code onHand} grows by what the pick took. Only sellable stock takes them —
-     * a put-back is not how goods get into a quarantined or blocked lot.
+     * The carton picked for an order that was cancelled afterwards comes back into this, its row (docs 07 BR-05, §4.5
+     * step 14; team plan 4C-4): {@code onHand} grows by what the pick took, the whole carton. Only sellable stock takes
+     * it - a put-back is not how goods get into a quarantined or blocked lot.
      */
     public void putBack(Quantity quantity) {
         if (status != StockStatus.AVAILABLE) {
@@ -766,20 +766,6 @@ public final class StockItem extends AggregateRoot {
                         source.lotId);
         arrived.moveIn(quantity);
         return arrived;
-    }
-
-    /**
-     * Picked units of {@code source} put back AVAILABLE and loose at {@code bin} (kltn-docs 07 BR-05, a cancelled
-     * order's pick line), as the layer they left. Unlike {@link #arrivedAs} the bin may be the one they were picked
-     * from: when {@code source} is a carton's row, that row stays with its CONSUMED carton and empty, and the units
-     * come back beside it as a loose row of their own. Whether they go back into a carton is team plan 4C-4's.
-     */
-    public static StockItem putBackBeside(StockItem source, LocationId bin, Quantity quantity) {
-        StockItem back = new StockItem(StockItemId.newId(), source.sku, Objects.requireNonNull(bin, "bin"),
-                source.lotNumber, source.expiryDate, Quantity.ZERO, StockStatus.AVAILABLE, List.of(), 0L,
-                source.receivedAt, source.serialNumber, source.lotId);
-        back.moveIn(quantity);
-        return back;
     }
 
     /**

@@ -155,10 +155,10 @@ class FulfillmentController {
     }
 
     /**
-     * Confirms one line by scan (SCRUM-267/274, docs 07 step 6): location, then SKU or barcode, then the
-     * quantity, which must be the whole allocation. The line's hold is deducted in the same transaction
-     * ({@code inventory :: consumption}, SCRUM-275). Only the assignee; the same scan again answers 200
-     * with the line unchanged. Send an {@code Idempotency-Key} per scan.
+     * Confirms one line by scan (kltn-docs 07 §4.2 step 5): the bin, then the carton's LPN - only the line's own; a SKU,
+     * a barcode or another carton is 409 {@code PICK_ITEM_MISMATCH} (BR-10). No quantity: the carton is taken whole
+     * (BR-04). The line's hold is deducted in the same transaction ({@code inventory :: consumption}, SCRUM-275). Only
+     * the assignee; the same scan again answers 200 with the line unchanged. Send an {@code Idempotency-Key} per scan.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/confirmation")
     @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
@@ -166,7 +166,7 @@ class FulfillmentController {
     public ApiResponse<PickLineResponse> confirmPick(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @Valid @RequestBody ConfirmPickRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(pickLists.confirm(taskId, lineId, request.locationCode(),
-                request.scannedCode(), request.quantity(), actor)));
+                request.lpn(), actor)));
     }
 
     /**
@@ -184,23 +184,25 @@ class FulfillmentController {
     }
 
     /**
-     * Puts everything one line picked back onto an active bin of the task's warehouse, as AVAILABLE
-     * stock (SCRUM-275). Any warehouse staff member or manager of that warehouse, not only the picker. The
-     * same line again answers 200 with the line unchanged.
+     * Puts the carton one line picked back onto an active bin of the task's warehouse, whole, as AVAILABLE stock,
+     * confirmed by scanning its LPN (kltn-docs 07 §4.5 step 14): the carton is IN_STOCK there again, sealed, with its
+     * LPN and count. Any warehouse staff member or manager of that warehouse, not only the picker. The same line and
+     * LPN again answers 200 with the line unchanged.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/put-back")
     @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<PickLineResponse> putBack(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @Valid @RequestBody PutBackRequest request, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(pickLists.putBack(taskId, lineId, request.locationCode(), actor)));
+        return ApiResponse.ok(mapper.toResponse(pickLists.putBack(taskId, lineId, request.locationCode(),
+                request.lpn(), actor)));
     }
 
     /**
-     * X-SHORT (docs 04c): the assignee is at the line's bin and finds fewer units than allocated - a picking step,
-     * so the picking permission. The line turns
-     * SHORT, nothing is deducted, and the order goes ON_HOLD ({@code INVENTORY}) for the coordinator. The
-     * same report again answers 200 with the line unchanged.
+     * X-SHORT (kltn-docs 07 §4.4 step 9, BR-09): the assignee is at the line's bin and cannot take its carton -
+     * {@code NOT_FOUND} or {@code DAMAGED} - a picking step, so the picking permission. The line turns SHORT of the
+     * whole carton, nothing is deducted, the order goes ON_HOLD ({@code INVENTORY}) for the coordinator and the carton
+     * is counted blind. The same report again answers 200 with the line unchanged.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/short")
     @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
@@ -208,7 +210,7 @@ class FulfillmentController {
     public ApiResponse<PickLineResponse> reportShort(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @Valid @RequestBody ShortPickRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(pickLists.reportShort(taskId, lineId, request.locationCode(),
-                request.foundQuantity(), actor)));
+                request.reason(), actor)));
     }
 
     /** Step one of a damage photo uploaded straight to storage, for the task's assignee: a signed PUT. */
@@ -235,13 +237,14 @@ class FulfillmentController {
     }
 
     /**
-     * SCRUM-277: the assignee is at the line's bin and finds some of the allocated units damaged - a picking step, so
-     * the picking permission. {@code multipart/form-data}: a JSON part {@code report} and one to five image parts
-     * {@code photos} (BR-STK-003). The damaged units go to quarantine as DAMAGED; the line gives way to a line for the
-     * good units at the same bin and, for the damaged ones, to new lines where other stock replaced them - or a SHORT
-     * line, the order ON_HOLD ({@code INVENTORY}) for the coordinator, when none could. The same report again answers
-     * 200 with what it made. Retries carry the same {@code requestId}: uploads are not buffered by the idempotency
-     * filter.
+     * SCRUM-277: the assignee is at the line's bin and finds its carton damaged - a picking step, so the picking
+     * permission. Always the whole carton ({@code damagedQuantity} = the line's; otherwise 409
+     * {@code STOCK_PACKAGE_TAKEN_WHOLE}). {@code multipart/form-data}: a JSON part {@code report} and one to five image
+     * parts {@code photos} (BR-STK-003). The units go to quarantine as DAMAGED; the line gives way to new lines where
+     * whole cartons replaced it - or a SHORT line, the order ON_HOLD ({@code INVENTORY}) for the coordinator, when none
+     * could. The same report again answers 200 with what it made. Retries carry the same {@code requestId}: uploads
+     * are not buffered by the idempotency filter. Until team plan 5-6 removes it; a short pick with reason
+     * {@code DAMAGED} is the docs' way (07 §4.4).
      */
     @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage",
             consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -277,8 +280,8 @@ class FulfillmentController {
     }
 
     /**
-     * Resolves a SHORT line by reallocation (X-SHORT step 04): the same quantity is allocated on other pickable
-     * bins of the warehouse, FEFO, never the short one; the answer is the new lines to pick. The order resumes
+     * Resolves a SHORT line by reallocation (07 §4.4 step 10): as many whole cartons are allocated from other pickable
+     * bins of the warehouse, FIFO, never the short one; the answer is the new lines to pick. The order resumes
      * once no line is SHORT. Too little stock is 409 {@code INSUFFICIENT_STOCK} and nothing changes. A decision of
      * whoever assigns the work (the coordinator, the warehouse manager), not of the picker.
      */
@@ -309,7 +312,8 @@ class FulfillmentController {
     }
 
     record CreateTaskRequest(@NotNull UUID orderId, @NotNull UUID assignedUserId) { }
+    /** The bin, as scanned, and why its carton cannot be taken. A carton is short whole: no quantity is entered. */
     record ShortPickRequest(@NotBlank @Size(max = 64) String locationCode,
-                            @NotNull @jakarta.validation.constraints.PositiveOrZero Integer foundQuantity) { }
+                            @NotNull com.stockflow.fulfillment.internal.domain.ShortPickReason reason) { }
     record AssignmentRequest(@NotNull UUID assignedUserId) { }
 }

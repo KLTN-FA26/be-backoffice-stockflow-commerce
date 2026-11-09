@@ -18,6 +18,8 @@ import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
+import com.stockflow.inventory.internal.domain.StockPackage;
+import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import org.slf4j.Logger;
@@ -28,15 +30,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Deducts picked stock and books put-backs, writing the ledger as it goes (SCRUM-267/275, docs 07
- * Output and BR-05).
+ * Deducts picked cartons and books them back whole when the order is cancelled, writing the ledger as it goes
+ * (SCRUM-267/275, team plan 4C-4; kltn-docs 07 Output, BR-05, §4.5 step 14).
  *
  * <p><b>Why the ledger is the idempotency key.</b> A pick line deducts once: the {@code PICK} row with
  * reference {@code PICK_LINE} and the line's id is looked up under the stock row's lock before anything
@@ -48,12 +49,12 @@ import java.util.UUID;
  * <p><b>Locks.</b> Every method takes the SKU's advisory lock, then the carton (stock package) the hold's
  * row is in if it is in one, then the stock row it changes ({@code SELECT … FOR UPDATE} plus a refresh): the
  * lock order every writer of a carton keeps (V20261020000100). The row lock is what serialises a pick against
- * a cancellation releasing the same hold: whichever commits second sees the hold closed. A put-back locks two
- * stock rows in id order. Callers that lock their own rows (fulfillment's pick task, its package) take them
- * before calling in here, and nothing takes a SKU lock and then such a row.</p>
+ * a cancellation releasing the same hold: whichever commits second sees the hold closed. A put-back locks the
+ * carton the pick emptied and its one row. Callers that lock their own rows (fulfillment's pick task, its package)
+ * take them before calling in here, and nothing takes a SKU lock and then such a row.</p>
  *
- * <p>Units picked out of a carton open it, and the last unit closes it CONSUMED, in the same transaction
- * ({@link StockPackageContents}).</p>
+ * <p>A pick takes its carton whole and closes it CONSUMED in the same transaction ({@link StockPackageContents}); a
+ * put-back brings that very carton back IN_STOCK, sealed ({@link StockPackage#restock}).</p>
  *
  * <p>Joins the caller's transaction ({@code REQUIRED}): the pick line and the deduction commit or roll
  * back together.</p>
@@ -73,12 +74,15 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final Clock clock;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports;
+    private final StockPackageRepository stockPackages;
 
     PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
                            LocationDirectory locations, InventoryPolicyRepository policies,
                            StockPackageContents cartons, Clock clock,
                            com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
-                           com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports) {
+                           com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports,
+                           StockPackageRepository stockPackages) {
+        this.stockPackages = stockPackages;
         this.cycleCounts = cycleCounts;
         this.damageReports = damageReports;
         this.stockItems = stockItems;
@@ -157,7 +161,14 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         // BR-SEC-002: the bin is in a warehouse the caller is assigned to. First, so a replay cannot tell
         // anything about another warehouse.
         WarehouseScope.requireLocation(target.code());
-        policies.lock(command.sku());
+        // The carton the hold emptied, in the order every carton writer locks (V20261020000100): the SKU, then the
+        // carton FOR UPDATE, then its row by id. The row is read once unlocked to learn the SKU and the carton; a pick
+        // line's hold never changes row once consumed.
+        StockItem rowView = stockItems.findIdByReservationId(ReservationId.of(command.reservationId()))
+                .flatMap(stockItems::findById)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No reservation with id " + command.reservationId()));
+        policies.lock(rowView.sku().code());
         if (ledger.findByReference(StockMovement.MovementType.PUT_BACK, StockMovement.ReferenceType.PICK_LINE,
                 command.pickLineId()).isPresent()) {
             return;
@@ -168,64 +179,51 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                     "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(target));
             case USABLE -> { }
         }
-        StockItem sourceView = stockItems.findByReservationIdForUpdate(ReservationId.of(command.reservationId()))
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
-                        "No reservation with id " + command.reservationId()));
-        // The goods come back as the layer they left: same SKU, lot, expiry and receipt time, so FEFO and
-        // FIFO still see them in their place - as loose stock. At the bin they left, that layer is the source
-        // row itself when it is loose; a carton's row is never refilled by a put-back, whatever bin it is on:
-        // emptied by the pick, the carton is CONSUMED and must stay empty, and opened, it would take back units
-        // that may never have left it (the put-back names no carton). Picking from a carton is SCRUM-473's.
-        Optional<StockItem> destinationView = sourceView.location().equals(target) && sourceView.isLoose()
-                ? Optional.of(sourceView)
-                : stockItems.findLooseBySkuAndLocation(sourceView.sku(), target).stream()
-                        .filter(item -> item.isSameGoodsAs(sourceView))
-                        .findFirst();
-        List<StockItem> toLock = destinationView.isPresent() && !destinationView.get().id().equals(sourceView.id())
-                ? List.of(sourceView, destinationView.get()) : List.of(sourceView);
-        StockItem source = null;
-        StockItem destination = null;
-        for (StockItem view : toLock.stream()
-                .sorted(Comparator.comparing(item -> item.id().value().toString())).toList()) {
-            StockItem locked = stockItems.findByIdForUpdate(view.id()).orElseThrow(() ->
-                    new IllegalStateException("Stock item %s vanished mid put-back".formatted(view.id())));
-            if (locked.id().equals(sourceView.id())) {
-                source = locked;
-            }
-            if (destinationView.isPresent() && locked.id().equals(destinationView.get().id())) {
-                destination = locked;
-            }
+        if (rowView.stockPackageId() == null) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Pick line %s took loose stock; only a "
+                    + "whole carton is put back (kltn-docs 07 §4.5 step 14)").formatted(command.pickLineId()));
         }
-        Objects.requireNonNull(source, "source");
-        Quantity quantity = Quantity.of(command.quantity());
-        // Units found damaged at packing are back in quarantine already (R8): only the rest of what the pick took
-        // can come back onto a bin.
-        Reservation consumed = source.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
-        int left = consumed.quantity().value() - damageReports.damagedAfterPick(command.reservationId());
-        if (consumed.status() == com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED
-                && quantity.value() > left) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The pick took %s unit(s) on allocation %s and %d "
-                    + "of them went to quarantine damaged; %s cannot be put back").formatted(consumed.quantity(),
-                    command.reservationId(), consumed.quantity().value() - left, quantity));
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(rowView.stockPackageId())).stream()
+                .findFirst().orElseThrow(() -> new IllegalStateException(
+                        "No stock package " + rowView.stockPackageId().value()));
+        StockItem row = stockItems.findByIdForUpdate(rowView.id()).orElseThrow(() ->
+                new IllegalStateException("Stock item %s vanished mid put-back".formatted(rowView.id())));
+        Reservation consumed = row.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
+        if (!carton.lpn().equalsIgnoreCase(command.lpn().trim())) {
+            // tg_pick_line_carton keeps a line's LPN its hold's carton: a mismatch is a caller's bug, not a request.
+            throw new IllegalStateException("Pick line %s names carton %s; its hold is in %s"
+                    .formatted(command.pickLineId(), command.lpn(), carton.lpn()));
         }
-        if (destination == null) {
-            // A carton's row may be on the very bin they come back to: a new loose row beside it (StockItem#putBackBeside).
-            stockItems.save(StockItem.putBackBeside(source, target, quantity));
-        } else {
-            // Units rejoining their own receipt layer, not replenishment: a FIFO SKU's policy trigger refuses
-            // the raised on_hand unless the row is named as a same-receipt merge (V20261017000450).
-            destination.putBack(quantity);
-            stockItems.saveMerged(destination);
+        // The whole carton came off the shelf on this hold, and all of it is still here: none of it went to quarantine
+        // damaged at packing (R8). Anything else is not a carton any more and cannot go back as one.
+        int damagedAtPacking = damageReports.damagedAfterPick(command.reservationId());
+        if (consumed.status() != com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED
+                || carton.receivedQty() == null || consumed.quantity().value() != carton.receivedQty()
+                || damagedAtPacking > 0) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s is %s %s of carton %s "
+                    + "(%s counted in), %d of them found damaged at packing; only a whole carton taken by the pick goes "
+                    + "back").formatted(command.reservationId(), consumed.status(), consumed.quantity(), carton.lpn(),
+                    carton.receivedQty(), damagedAtPacking));
         }
+        Quantity quantity = consumed.quantity();
+        // CONSUMED -> IN_STOCK, sealed, at the bin (4C-2's transition; INVALID_STOCK_PACKAGE_TRANSITION otherwise); the
+        // row follows it and takes its units back as the layer they left - same lot and receipt time, so FIFO still
+        // sees them in their place. Rejoining their own receipt, not replenishment: a FIFO SKU's policy trigger refuses
+        // the raised on_hand unless the row is named as a same-receipt merge (V20261017000450). The carton's contents
+        // are checked against it at commit (V20261020000200): IN_STOCK, unopened, holding what was counted in.
+        carton.restock(target);
+        row.followPackageTo(target);
+        row.putBack(quantity);
+        stockItems.saveMerged(row);
+        stockPackages.save(carton);
 
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
-                source.sku(), source.lotNumber(), null, target, quantity.value(), StockStatus.AVAILABLE,
+                row.sku(), row.lotNumber(), null, target, quantity.value(), StockStatus.AVAILABLE,
                 StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now)
-                .ofLot(source.lotId())
-                .forOrder(source.findReservation(ReservationId.of(command.reservationId()))
-                        .map(Reservation::orderId).orElse(null)));
-        log.info("Pick line {} put back: {} x {} onto {}", command.pickLineId(), quantity, source.sku(), target);
+                .ofLot(row.lotId()).forOrder(consumed.orderId()).arriving(carton.id()));
+        log.info("Pick line {} put back: carton {} ({} x {}) onto {}", command.pickLineId(), carton.lpn(), quantity,
+                row.sku(), target);
     }
 
     /**

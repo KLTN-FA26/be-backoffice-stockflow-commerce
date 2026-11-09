@@ -233,7 +233,7 @@ instance only. Bounded batches.
                         never the reverse (cancelling an order locks stock rows in its own transaction
                         and touches the pick only later, in the OrderCancelled listener)
 2. scope + assignee   ← WarehouseScope.requireWarehouse(pick.warehouseId), then only the assignee
-3. PickList.confirm   ← domain: location, SKU or barcode, exact allocation (BR-04); same scan again = done
+3. PickList.confirm   ← domain: location, then the line's own LPN only (BR-10); no quantity, the carton is whole (BR-04, 4C-4); same scan again = done
 4. PickConsumption.consumeForPick(reservationId, pickLineId, actor)
                       ← inventory, same transaction: locks the stock row, hold → CONSUMED, on_hand falls,
                         one stock_movement(PICK, PICK_LINE) row, StockDeducted published.
@@ -244,9 +244,12 @@ instance only. Bounded batches.
 `PickConsumption` lives in `inventory/consumption/`, a second named interface next to `api`. Only
 `fulfillment` lists `"inventory :: consumption"` in its `allowedDependencies`
 (`InventoryConsumptionBoundaryTest` pins that): deducting stock is not something any module may do.
-The same interface books put-backs — goods picked for an order cancelled afterwards go back onto a bin
-of the same warehouse as AVAILABLE stock, one `stock_movement(PUT_BACK, PICK_LINE)` row per line
-(`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/put-back`, docs 07 BR-05).
+The same interface books put-backs — the carton picked for an order cancelled afterwards goes back onto a bin
+of the same warehouse whole, scanned by LPN: CONSUMED → IN_STOCK sealed, its row AVAILABLE again, one
+`stock_movement(PUT_BACK, PICK_LINE)` row naming the carton per line
+(`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/put-back`, docs 07 BR-05, §4.5 step 14; team plan 4C-4).
+A short pick is per carton with a reason (`NOT_FOUND` / `DAMAGED`): the line SHORT, the order on hold, a blind
+count of the carton (07 §4.4 step 9, BR-09).
 
 `POST /api/v1/inventory/reservations/{reservationId}/consumption` still exists for operations (closing a
 hold by hand) and runs the same implementation, writing a `PICK` ledger row that names the order. Nothing

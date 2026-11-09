@@ -2,6 +2,7 @@ package com.stockflow.fulfillment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.fulfillment.internal.domain.PickLineStatus;
+import com.stockflow.fulfillment.internal.domain.ShortPickReason;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -42,6 +43,10 @@ public class PickLineJpaEntity extends BaseEntity {
     private int pickedQty;
     @Column(name = "short_qty", nullable = false)
     private int shortQty;
+    /** 4C-4: why the carton could not be taken; {@code ck_pick_line_short_reason}. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "short_reason", length = 16)
+    private ShortPickReason shortReason;
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 16)
     private PickLineStatus status;
@@ -120,9 +125,13 @@ public class PickLineJpaEntity extends BaseEntity {
         this.putBackAt = putBackAt;
     }
 
-    /** The units a picker did not find at the bin (X-SHORT); {@code ck_pick_line_within_allocation} bounds it. */
-    public void recordShort(int shortQty) {
+    /**
+     * What a picker could not take (X-SHORT) and why; {@code ck_pick_line_within_allocation} bounds the units and
+     * {@code ck_pick_line_short_reason} ties a reason to the whole line.
+     */
+    public void recordShort(int shortQty, ShortPickReason shortReason) {
         this.shortQty = shortQty;
+        this.shortReason = shortReason;
     }
 
     /** What a damage report recorded on the line (SCRUM-277); {@code ck_pick_line_damaged} bounds it. */
@@ -152,6 +161,7 @@ public class PickLineJpaEntity extends BaseEntity {
     public int getAllocatedQty() { return allocatedQty; }
     public int getPickedQty() { return pickedQty; }
     public int getShortQty() { return shortQty; }
+    public ShortPickReason getShortReason() { return shortReason; }
     public String getLpn() { return lpn; }
     public boolean isWholeCarton() { return wholeCarton; }
     public PickLineStatus getStatus() { return status; }

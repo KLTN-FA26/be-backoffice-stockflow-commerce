@@ -539,12 +539,12 @@ public enum ErrorCode {
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
     PICK_LOCATION_MISMATCH("The scanned location is not this line's", 409),
-    /** SCRUM-274: the code scanned is neither this line's SKU nor its barcode. */
-    PICK_ITEM_MISMATCH("The scanned item is not this line's SKU", 409),
-    /** Docs 07 BR-04: never more than the line's allocation; more needs a re-allocation. */
-    PICK_QUANTITY_EXCEEDS_ALLOCATION("More than allocated to this line", 409),
-    /** Fewer than allocated: a short pick, reported through the short-pick flow (SCRUM-268). */
-    PICK_QUANTITY_SHORT("Fewer than allocated - report a short pick", 409),
+    /**
+     * Kltn-docs 07 BR-10 (team plan 4C-4): the code scanned is not this line's carton LPN - a SKU, a barcode or another
+     * carton is refused, to pick a line or to put it back. No quantity is scanned any more (BR-04), so the former
+     * PICK_QUANTITY_EXCEEDS_ALLOCATION and PICK_QUANTITY_SHORT are gone.
+     */
+    PICK_ITEM_MISMATCH("The scanned code is not this line's carton LPN", 409),
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
     /** A cycle count already completed or cancelled. */
     CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),

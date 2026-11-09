@@ -3,8 +3,8 @@ package com.stockflow.inventory.consumption;
 import java.util.UUID;
 
 /**
- * Deducts the stock a pick line takes, and books it back when the order is cancelled afterwards
- * (kltn-docs 07 Output "giảm tồn tại vị trí nguồn", BR-05; SCRUM-275). Custom-printed goods pass through here like
+ * Deducts the carton a pick line takes, and books it back whole when the order is cancelled afterwards
+ * (kltn-docs 07 Output "giảm tồn tại vị trí nguồn", BR-05; SCRUM-275; team plan 4C-4). Custom-printed goods pass through here like
  * any other: they are printed outside the system and received into stock before they are picked, and packing deducts
  * nothing.
  *
@@ -30,14 +30,17 @@ public interface PickConsumption {
     ConsumedPick consumeForPick(UUID reservationId, UUID pickLineId, UUID actorId);
 
     /**
-     * Books picked goods of a cancelled order back onto a bin as AVAILABLE stock, into the stock layer
-     * they were picked from (same SKU, lot, expiry and receipt) at that bin, or a new one there; writes
-     * one {@code PUT_BACK} ledger row naming the pick line. Called again for the same pick line, it
-     * changes nothing.
+     * Books the carton a cancelled order's pick line took back onto a bin, whole (kltn-docs 07 §4.5 step 14, team plan
+     * 4C-4): the carton goes CONSUMED to IN_STOCK, sealed, at the bin, keeping its LPN; its stock row - the layer the
+     * pick emptied, same SKU, lot and receipt - follows it there and holds the carton's count again, AVAILABLE; one
+     * {@code PUT_BACK} ledger row names the pick line and the carton. Called again for the same pick line, it changes
+     * nothing. Whether the carton fits the bin (BR-12) is not checked here (team plan 5-4).
      *
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} when the line's
      *         hold is unknown; {@code LOCATION_NOT_FOUND} / {@code LOCATION_NOT_USABLE} for the bin;
-     *         {@code STOCK_STATUS_MISMATCH} when that bin holds the same layer in another status;
+     *         {@code STOCK_PACKAGE_TAKEN_WHOLE} when the hold is not that whole carton, emptied by this pick (loose
+     *         stock, part of a carton, units of it found damaged at packing); {@code INVALID_STOCK_PACKAGE_TRANSITION}
+     *         when the carton is not CONSUMED; {@code STOCK_STATUS_MISMATCH} when its row is not AVAILABLE stock;
      *         {@code OUT_OF_DATA_SCOPE}
      */
     void putBack(PutBackCommand command);

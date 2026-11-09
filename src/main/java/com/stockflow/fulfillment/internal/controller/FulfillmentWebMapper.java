@@ -33,8 +33,8 @@ class FulfillmentWebMapper {
         return new PickLineResponse(line.lineId(), line.taskId(), line.sequenceNo(), line.orderLineId(), line.sku(),
                 line.barcode(), line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(),
                 line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(),
-                line.shortQty(), line.lpn(), line.wholeCarton(), line.damagedQty(), line.damageReportId(),
-                line.packingDamagedQty());
+                line.shortQty(), line.shortReason() == null ? null : line.shortReason().name(), line.lpn(),
+                line.wholeCarton(), line.damagedQty(), line.damageReportId(), line.packingDamagedQty());
     }
 
     PickDamageResponse toResponse(PickLists.PickDamageView damage) {
@@ -45,6 +45,6 @@ class FulfillmentWebMapper {
 
     PutBackRowResponse toResponse(PickLists.PutBackRow row) {
         return new PutBackRowResponse(row.taskId(), row.orderNumber(), row.warehouseId(), row.lineId(), row.sku(),
-                row.lotNumber(), row.pickedQty(), row.fromLocationCode(), row.pickedAt());
+                row.lotNumber(), row.lpn(), row.pickedQty(), row.fromLocationCode(), row.pickedAt());
     }
 }
