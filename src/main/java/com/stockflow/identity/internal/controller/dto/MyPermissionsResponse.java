@@ -13,7 +13,7 @@ import java.util.List;
 public record MyPermissionsResponse(
         List<String> roles,
         @Schema(description = "resource:ACTION codes, sorted",
-                example = "[\"procurement-purchase-orders:READ\", \"procurement-purchase-orders:UPDATE\"]")
+                example = "[\"procurement-goods-receipts:READ\", \"procurement-goods-receipts:UPDATE\"]")
         List<String> permissions,
         DataScope dataScope) {
 }

@@ -86,7 +86,7 @@ public class AsyncConfig implements AsyncConfigurer {
     /**
      * Names the method and the TYPES of its arguments, not their values. The arguments of an async event listener are
      * events, and an event's {@code toString()} prints every field: the order confirmation's contact e-mail, a
-     * cancellation's free-text note, a purchase order's buyer contact - personal data that {@code verify.py} keeps out
+     * cancellation's free-text note, a person's contact details - personal data that {@code verify.py} keeps out
      * of new events and that a log line would otherwise copy to wherever logs go, once per failed attempt.
      */
     @Override
