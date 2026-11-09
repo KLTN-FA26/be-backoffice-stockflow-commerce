@@ -27,7 +27,7 @@ import java.util.function.Consumer;
  * Tries again the messages to producers whose last attempt failed in a way worth retrying (4A-3): the incomplete
  * publications of {@link ProductionOrderMailListener}'s handlers - the three events of the order module and staff's
  * re-sends - handed back to the listener's proxy a bounded page at a time ({@link PublicationRedelivery}, the
- * purchase-order retry's loop, QD-7). A message is tried at most five times ({@link RecordedDelivery#RETRIED_FAILURES});
+ * purchase-order retry's loop until 4A-8, QD-7). A message is tried at most five times ({@link RecordedDelivery#RETRIED_FAILURES});
  * the fifth failure is final and the publication completes. A message is not handed back before the wait its last
  * failure set ({@link ProductionOrderMailListener#retryAfter}, {@code next_attempt_at}).
  *

@@ -257,7 +257,7 @@ public interface InventoryService {
     /** The receiving policy of each inventory item that exists, in one query (SCRUM-464). */
     java.util.Map<UUID, InventoryItemPolicy> itemPolicies(java.util.Collection<UUID> inventoryItemIds);
 
-    /** The SKU of each inventory item that exists, for a list of purchase order lines in one query. */
+    /** The SKU of each inventory item that exists, in one query. */
     java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds);
 
     /**

@@ -327,10 +327,6 @@ FREE_TEXT_ALLOWED = {
     # Record.component: why it exists today.
     "OrderCancelled.note":                # what the customer or Sales typed when cancelling an order.
         "cancellation note shown to payment and fulfillment staff",
-    "PurchaseOrderSent.cancellationReason":  # what purchasing typed when cancelling a purchase order.
-        "reason printed in the supplier cancellation mail and sent to the supplier API",
-    "PurchaseOrderSent.amendmentReason":  # what purchasing typed when amending an approved purchase order (SCRUM-117).
-        "reason printed in the supplier amendment mail and sent to the supplier API, as the cancellation reason is",
 }
 
 def camel_words(name):
@@ -383,16 +379,6 @@ PII_ALLOWED = {
     # Record.component: why it exists today. The list only ever shrinks.
     "OrderPlaced.contactEmail":           # develop: the order confirmation mail goes to the customer's contact.
         "customer contact e-mail for the order confirmation mail (follow-up: resolve it in the listener)",
-    "Buyer.companyAddress":               # PurchaseOrderSent.Buyer: our own company, printed on the PO mail.
-        "our company's address on the purchase order sent to the supplier",
-    "Buyer.receivingAddress":
-        "our warehouse's receiving address on the purchase order sent to the supplier",
-    "Buyer.contactName":
-        "our purchasing contact named on the purchase order sent to the supplier",
-    "Buyer.phone":
-        "our purchasing contact's phone on the purchase order sent to the supplier",
-    "Buyer.email":
-        "our purchasing contact's e-mail on the purchase order sent to the supplier",
 }
 seen_pii = set()
 for f in files:

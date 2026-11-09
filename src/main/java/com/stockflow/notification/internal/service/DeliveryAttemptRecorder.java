@@ -69,12 +69,12 @@ class DeliveryAttemptRecorder {
         else if (notBefore != null) attempt.retryNotBefore(notBefore);
         logs.saveAndFlush(attempt);
         LoggerFactory.getLogger(DeliveryAttemptRecorder.class)
-                .error("Supplier notification failed: {} ({})", reference, message, failure);
+                .error("Partner notification failed: {} ({})", reference, message, failure);
     }
 
     /**
      * A terminal FAILED attempt for a delivery that is closed without being sent because something newer replaced it
-     * ({@code failureCode} says what): it never reached the supplier, and terminal is what stops it being retried.
+     * ({@code failureCode} says what): it never reached the partner, and terminal is what stops it being retried.
      */
     static DeliveryLogJpaEntity superseded(
             String reference,

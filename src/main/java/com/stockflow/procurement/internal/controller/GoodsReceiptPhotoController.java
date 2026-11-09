@@ -40,7 +40,8 @@ import java.util.function.Function;
 
 /**
  * Photos of a goods receipt (04b F-RCV step 05): the warehouse's of what arrived, of the delivery as a whole or of one
- * line, while the receipt is counted or awaits approval - evidence when a carton is refused or a delivery disputed.
+ * line, while the receipt is counted (or, a historical purchase receipt, awaits its old approval) - evidence when a
+ * carton is refused or a delivery disputed.
  * JPEG or PNG, at most 20 MB and {@value GoodsReceiptPhotoService#MAX_PHOTOS_PER_SUBJECT} per subject. Sent as
  * multipart, or uploaded straight to storage through {@code /uploads} and named by its upload id
  * (docs/direct-uploads-fe-contract.md). Kept for good: there is no delete. Photos QC took while receiving QC existed
@@ -74,7 +75,7 @@ class GoodsReceiptPhotoController {
     @PostMapping(path = "/photos", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Keep a photo of what arrived (multipart: file; receiptLineId for one line, absent for the delivery)")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<PhotoResponse> addReceivingPhoto(@PathVariable UUID receiptId,
                                                         @RequestPart("file") MultipartFile file,
                                                         @RequestParam(required = false) UUID receiptLineId,
@@ -85,7 +86,7 @@ class GoodsReceiptPhotoController {
 
     @PostMapping(path = "/photos/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Step one of a receiving photo uploaded straight to storage: a signed PUT for the declared file")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ResponseEntity<ApiResponse<UploadSlot>> beginReceivingUpload(@PathVariable UUID receiptId,
             @RequestParam(required = false) UUID receiptLineId, @Valid @RequestBody UploadSlotRequest request,
             @AuthenticatedUser CurrentUser user) {
@@ -96,7 +97,7 @@ class GoodsReceiptPhotoController {
     @PostMapping(path = "/photos", consumes = MediaType.APPLICATION_JSON_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Keep a receiving photo uploaded through /photos/uploads; the same uploadId again answers the same photo")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<PhotoResponse> attachReceivingPhoto(@PathVariable UUID receiptId,
                                                            @Valid @RequestBody AttachReceivingPhoto body,
                                                            @AuthenticatedUser CurrentUser user) {
@@ -108,7 +109,7 @@ class GoodsReceiptPhotoController {
 
     @GetMapping("/photos")
     @Operation(summary = "Every photo of the receipt, oldest first, each with a thumbnail link")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.READ)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.READ)
     public ApiResponse<List<PhotoResponse>> list(@PathVariable UUID receiptId) {
         return ApiResponse.ok(photos.list(receiptId).stream().map(GoodsReceiptPhotoController::toResponse).toList());
     }
@@ -116,7 +117,7 @@ class GoodsReceiptPhotoController {
     @GetMapping("/photos/{photoId}/download-url")
     @Operation(summary = "A five-minute link to one photo: its display copy (no location metadata); original=true saves "
             + "the photo exactly as taken, and is audited")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.READ)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.READ)
     public ResponseEntity<ApiResponse<PhotoLink>> link(@PathVariable UUID receiptId, @PathVariable UUID photoId,
                                                        @RequestParam(defaultValue = "false") boolean original) {
         var link = original ? photos.originalLink(receiptId, photoId) : photos.viewLink(receiptId, photoId);
