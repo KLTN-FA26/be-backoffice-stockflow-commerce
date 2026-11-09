@@ -19,6 +19,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * <b>The packing session of one task</b> (kltn-docs 08 §4-6, SCRUM-278/281/282): the order's lines as the packing
@@ -55,6 +56,9 @@ public final class PackingSession {
 
     /** The key of {@link Line#lots} for units picked without a lot, beside others of the same line that have one. */
     public static final String NO_LOT = "";
+
+    /** The lot of stock that had none (V20261111000110, kltn-docs 20 BR-22, open question C45): nothing to scan. */
+    static final String UNTRACED_LOT = "UNTRACED";
 
     /** More units than one scan or one removal ever carries: refused before any arithmetic on it. */
     public static final int MAX_UNITS_PER_SCAN = 1_000_000;
@@ -806,12 +810,16 @@ public final class PackingSession {
         }
         String lot;
         if (blank(lotNumber)) {
-            // Some of the line's goods were picked without a lot: those are scanned without one.
-            if (!line.lots().containsKey(NO_LOT)) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, line.sku() + " is tracked by lot: scan the lot",
-                        List.of(FieldError.of("lotNumber", "required for " + line.sku())));
-            }
-            lot = NO_LOT;
+            // Goods picked without a lot are scanned without one; so are goods of lot UNTRACED (V20261111000110, kltn-docs
+            // open question C45): the stock that had no lot was given that name, and no label carries a lot to scan for
+            // it. The units without a lot first, then those of lot UNTRACED.
+            lot = Stream.of(NO_LOT, UNTRACED_LOT).filter(line.lots()::containsKey)
+                    .filter(candidate -> packedOf(line, candidate) + quantity <= line.lots().get(candidate))
+                    .findFirst()
+                    .or(() -> Stream.of(NO_LOT, UNTRACED_LOT).filter(line.lots()::containsKey).findFirst())
+                    .orElseThrow(() -> new BusinessException(ErrorCode.VALIDATION_FAILED,
+                            line.sku() + " is tracked by lot: scan the lot",
+                            List.of(FieldError.of("lotNumber", "required for " + line.sku()))));
         } else {
             lot = line.lots().keySet().stream().filter(known -> !NO_LOT.equals(known) && same(lotNumber, known))
                     .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.PACK_LOT_MISMATCH,
@@ -820,16 +828,22 @@ public final class PackingSession {
                                             .collect(Collectors.joining(", ")))));
         }
         String stored = NO_LOT.equals(lot) ? null : lot;
-        int packedOfLot = parcels.stream().filter(Parcel::live).flatMap(p -> p.contents.entrySet().stream())
-                .filter(e -> e.getKey().orderLineId().equals(line.orderLineId())
-                        && Objects.equals(stored, e.getKey().lotNumber()))
-                .mapToInt(Map.Entry::getValue).sum();
+        int packedOfLot = packedOf(line, lot);
         if ((long) packedOfLot + quantity > line.lots().get(lot)) {
             throw new BusinessException(ErrorCode.PACK_LOT_MISMATCH, "%d of %s were picked for %s; %d packed already"
                     .formatted(line.lots().get(lot), stored == null ? "the units without a lot" : "lot " + lot,
                             line.sku(), packedOfLot));
         }
         return stored;
+    }
+
+    /** Units of {@code lot} ({@link #NO_LOT} for none) of the line already in a live parcel. */
+    private int packedOf(Line line, String lot) {
+        String stored = NO_LOT.equals(lot) ? null : lot;
+        return parcels.stream().filter(Parcel::live).flatMap(p -> p.contents.entrySet().stream())
+                .filter(e -> e.getKey().orderLineId().equals(line.orderLineId())
+                        && Objects.equals(stored, e.getKey().lotNumber()))
+                .mapToInt(Map.Entry::getValue).sum();
     }
 
     private String checkSerial(Line line, String serialNumber, int quantity) {

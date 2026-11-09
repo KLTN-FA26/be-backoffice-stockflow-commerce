@@ -144,13 +144,17 @@ public class InventoryPolicyRepository {
         return findItem(sku).map(InventoryControlItem::policy);
     }
 
+    /**
+     * Whether stock of {@code sku} breaks {@code p}: the twin of {@code inventory.enforce_sku_policy}, which refuses
+     * the same rows at write time. A lot conflicts with no policy (V20261111000110): every unit carries one (kltn-docs
+     * 20 BR-22, lot {@code UNTRACED} for what had none), so only a lot-tracked SKU's stock without one does.
+     */
     public boolean incompatible(String sku, InventoryPolicy p) {
         Long count =
                 jdbc.queryForObject(
                         """
 select count(*) from inventory.stock_item where sku = ? and (on_hand > 0 or reserved > 0)
 and ((? and nullif(trim(lot_number), '') is null)
-  or (not ? and lot_number is not null)
   or (? and (nullif(trim(serial_number), '') is null or on_hand > 1))
   or (not ? and serial_number is not null)
   or (? and expiry_date is null) or (not ? and expiry_date is not null)
@@ -161,7 +165,6 @@ and ((? and nullif(trim(lot_number), '') is null)
 """,
                         Long.class,
                         sku,
-                        p.trackingMode().lotTracked(),
                         p.trackingMode().lotTracked(),
                         p.trackingMode().serialTracked(),
                         p.trackingMode().serialTracked(),
