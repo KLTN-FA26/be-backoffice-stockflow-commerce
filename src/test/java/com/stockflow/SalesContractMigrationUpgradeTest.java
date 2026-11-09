@@ -103,15 +103,39 @@ class SalesContractMigrationUpgradeTest {
                 refusedBy(db, "ck_delivery_batch_window", "UPDATE ordering.delivery_batch SET window_end = "
                         + "window_start - 1 WHERE id = '" + id("b1") + "'");
 
+                // 15 BR-12: credit granted while drafting, taken back before sending: the contract is not sent.
+                RawSql.update(db, "INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, "
+                        + "allow_credit, default_payment_term, credit_limit, credit_term_days, approved_by, approved_at) "
+                        + "VALUES (gen_random_uuid(), ?::uuid, true, false, true, 'PREPAID', 50000000, 30, ?::uuid, "
+                        + "NOW())", CUSTOMER, USER);
+                RawSql.update(db, "UPDATE ordering.contract_payment_installment SET milestone = 'AFTER_DELIVERY', "
+                        + "due_days = 30 WHERE seq = 2");
+                RawSql.update(db, "UPDATE customer.credit_profile SET allow_credit = false, credit_limit = NULL, "
+                        + "credit_term_days = NULL WHERE customer_id = ?::uuid", CUSTOMER);
+                inOneTransaction(db, "needs credit accounting approved", "UPDATE ordering.sales_contract SET status = "
+                        + "'SENT', sent_at = NOW(), sent_by = '" + USER + "', sent_document_key = 'documents/hd.pdf' "
+                        + "WHERE id = '" + CONTRACT + "'");
+                RawSql.update(db, "UPDATE ordering.contract_payment_installment SET milestone = 'BEFORE_DELIVERY', "
+                        + "due_days = NULL WHERE seq = 2");
+
                 // 14 §5.2: the state machine; BR-14: what a sent contract keeps.
                 refusedBy(db, "is not a transition", "UPDATE ordering.sales_contract SET status = 'COMPLETED', "
                         + "completed_at = NOW() WHERE id = '" + CONTRACT + "'");
+                refusedBy(db, "keeps its number", "UPDATE ordering.sales_contract SET contract_number = 'HD-X' WHERE "
+                        + "id = '" + CONTRACT + "'");
                 refusedBy(db, "ck_sales_contract_sent", "UPDATE ordering.sales_contract SET status = 'SENT' WHERE id = '"
                         + CONTRACT + "'");
                 RawSql.update(db, "UPDATE ordering.sales_contract SET status = 'SENT', sent_at = NOW(), sent_by = "
                         + "?::uuid, sent_document_key = 'documents/hd.pdf' WHERE id = ?::uuid", USER, CONTRACT);
                 refusedBy(db, "does not change (14 BR-14)", "UPDATE ordering.sales_contract SET free_sample_rounds = 5 "
                         + "WHERE id = '" + CONTRACT + "'");
+                refusedBy(db, "does not change (14 BR-14)", "UPDATE ordering.sales_contract SET sent_by = NULL, "
+                        + "sent_at = NULL, sent_document_key = NULL WHERE id = '" + CONTRACT + "'");
+                // Not even with the transition that signs it.
+                refusedBy(db, "does not change (14 BR-14)", "UPDATE ordering.sales_contract SET status = 'SIGNED', "
+                        + "signed_at = NOW(), signed_by = '" + USER + "', signed_on = CURRENT_DATE, signed_file_key = "
+                        + "'documents/s.pdf', signed_file_name = 's.pdf', buyer_name = 'Someone else' WHERE id = '"
+                        + CONTRACT + "'");
                 refusedBy(db, "do not change (14 BR-14)", "UPDATE ordering.delivery_batch SET window_end = window_end "
                         + "+ 1 WHERE id = '" + id("b2") + "'");
                 refusedBy(db, "do not change (14 BR-14)", "DELETE FROM ordering.contract_payment_installment WHERE "
@@ -122,9 +146,10 @@ class SalesContractMigrationUpgradeTest {
                 RawSql.update(db, "UPDATE ordering.sales_contract SET status = 'SIGNED', signed_at = NOW(), signed_by = "
                         + "?::uuid, signed_on = CURRENT_DATE, signed_file_key = 'documents/s.pdf', signed_file_name = "
                         + "'s.pdf' WHERE id = ?::uuid", USER, CONTRACT);
-                refusedBy(db, "is not a transition", "UPDATE ordering.sales_contract SET status = 'CANCELLED', "
-                        + "cancelled_at = NOW(), cancelled_by = '" + USER + "', cancellation_reason = 'x', signed_at = "
-                        + "NULL, signed_by = NULL, signed_on = NULL, signed_file_key = NULL, signed_file_name = NULL "
+                refusedBy(db, "does not change (14 BR-14)", "UPDATE ordering.sales_contract SET signed_file_name = "
+                        + "'other.pdf' WHERE id = '" + CONTRACT + "'");
+                refusedBy(db, "SIGNED -> CANCELLED is not a transition", "UPDATE ordering.sales_contract SET status "
+                        + "= 'CANCELLED', cancelled_at = NOW(), cancelled_by = '" + USER + "', cancellation_reason = 'x' "
                         + "WHERE id = '" + CONTRACT + "'");
             }
         }

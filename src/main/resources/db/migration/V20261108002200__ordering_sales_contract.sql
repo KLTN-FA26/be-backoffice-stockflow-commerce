@@ -21,7 +21,9 @@
 --     approved (15 BR-12). 4B-6 turns the plan of a signed contract into payment installments to collect.
 --
 -- The schedule and plan rules are checked when the transaction commits: the application replaces a draft's batches,
--- lines and installments together, and a half-written schedule is never seen by anyone.
+-- lines and installments together, and a half-written schedule is never seen by anyone. Every row written queues a
+-- check of its whole contract, so a contract has at most 20 batches and 20 installments: a draft rewritten whole is
+-- then a few dozen small checks at commit.
 -- =============================================================================
 
 -- The buyer's legal profile -----------------------------------------------------------------------------------------
@@ -148,30 +150,45 @@ CREATE INDEX ix_sales_contract_cancelled_by ON ordering.sales_contract (cancelle
 COMMENT ON TABLE ordering.sales_contract IS
     '4B-4 (14 §4.3, §5.2, BR-12, BR-14, BR-18): the sales contract of an order; goods, prices and totals are the order''s.';
 
--- 14 §5.2: the contract's state machine.
+-- 14 §5.2: the contract's state machine; BR-14: what a contract past DRAFT keeps, whatever the statement also does -
+-- a transition included. Each transition sets only its own columns: SENT the sending, SIGNED the signature, CANCELLED
+-- the cancellation, COMPLETED its day.
 CREATE FUNCTION ordering.check_sales_contract_transition()
     RETURNS trigger
     LANGUAGE plpgsql AS
 $$
 BEGIN
+    IF NEW.order_id IS DISTINCT FROM OLD.order_id OR NEW.contract_number IS DISTINCT FROM OLD.contract_number THEN
+        RAISE EXCEPTION 'sales contract %: a contract keeps its number and stays with its order', OLD.contract_number
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF OLD.status <> 'DRAFT' AND (NEW.seller_name, NEW.seller_tax_code, NEW.seller_address, NEW.seller_representative,
+            NEW.seller_representative_title, NEW.buyer_name, NEW.buyer_tax_code, NEW.buyer_address,
+            NEW.buyer_representative, NEW.buyer_representative_title, NEW.free_sample_rounds, NEW.sent_at,
+            NEW.sent_by, NEW.sent_document_key)
+        IS DISTINCT FROM (OLD.seller_name, OLD.seller_tax_code, OLD.seller_address, OLD.seller_representative,
+            OLD.seller_representative_title, OLD.buyer_name, OLD.buyer_tax_code, OLD.buyer_address,
+            OLD.buyer_representative, OLD.buyer_representative_title, OLD.free_sample_rounds, OLD.sent_at,
+            OLD.sent_by, OLD.sent_document_key)
+    THEN
+        RAISE EXCEPTION 'sales contract %: a % contract does not change (14 BR-14)', OLD.contract_number,
+            OLD.status USING ERRCODE = 'check_violation';
+    END IF;
+    IF OLD.status IN ('SIGNED', 'COMPLETED') AND (NEW.signed_on, NEW.signed_file_key, NEW.signed_file_name,
+            NEW.signed_at, NEW.signed_by)
+        IS DISTINCT FROM (OLD.signed_on, OLD.signed_file_key, OLD.signed_file_name, OLD.signed_at, OLD.signed_by)
+    THEN
+        RAISE EXCEPTION 'sales contract %: a % contract does not change (14 BR-14)', OLD.contract_number,
+            OLD.status USING ERRCODE = 'check_violation';
+    END IF;
+    IF OLD.status IN ('CANCELLED', 'COMPLETED') AND (NEW.cancelled_at, NEW.cancelled_by, NEW.cancellation_reason,
+            NEW.completed_at)
+        IS DISTINCT FROM (OLD.cancelled_at, OLD.cancelled_by, OLD.cancellation_reason, OLD.completed_at)
+    THEN
+        RAISE EXCEPTION 'sales contract %: a % contract does not change', OLD.contract_number, OLD.status
+            USING ERRCODE = 'check_violation';
+    END IF;
     IF NEW.status = OLD.status THEN
-        -- BR-14: only a draft's content changes; a contract is never moved to another order.
-        IF OLD.status <> 'DRAFT' AND (NEW.order_id, NEW.contract_number, NEW.seller_name, NEW.seller_tax_code,
-                NEW.seller_address, NEW.seller_representative, NEW.seller_representative_title, NEW.buyer_name,
-                NEW.buyer_tax_code, NEW.buyer_address, NEW.buyer_representative, NEW.buyer_representative_title,
-                NEW.free_sample_rounds, NEW.sent_at, NEW.sent_document_key, NEW.signed_on, NEW.signed_file_key)
-            IS DISTINCT FROM (OLD.order_id, OLD.contract_number, OLD.seller_name, OLD.seller_tax_code,
-                OLD.seller_address, OLD.seller_representative, OLD.seller_representative_title, OLD.buyer_name,
-                OLD.buyer_tax_code, OLD.buyer_address, OLD.buyer_representative, OLD.buyer_representative_title,
-                OLD.free_sample_rounds, OLD.sent_at, OLD.sent_document_key, OLD.signed_on, OLD.signed_file_key)
-        THEN
-            RAISE EXCEPTION 'sales contract %: a % contract does not change (14 BR-14)', OLD.contract_number,
-                OLD.status USING ERRCODE = 'check_violation';
-        END IF;
-        IF OLD.status = 'DRAFT' AND NEW.order_id IS DISTINCT FROM OLD.order_id THEN
-            RAISE EXCEPTION 'sales contract %: a contract stays with its order', OLD.contract_number
-                USING ERRCODE = 'check_violation';
-        END IF;
         RETURN NEW;
     END IF;
     IF NOT ((OLD.status = 'DRAFT' AND NEW.status IN ('SENT', 'CANCELLED'))
@@ -201,7 +218,7 @@ CREATE TABLE ordering.delivery_batch
     CONSTRAINT uk_delivery_batch_seq UNIQUE (contract_id, seq),
     CONSTRAINT fk_delivery_batch_contract FOREIGN KEY (contract_id) REFERENCES ordering.sales_contract (id)
         ON DELETE CASCADE,
-    CONSTRAINT ck_delivery_batch_seq CHECK (seq BETWEEN 1 AND 100),
+    CONSTRAINT ck_delivery_batch_seq CHECK (seq BETWEEN 1 AND 20),
     CONSTRAINT ck_delivery_batch_window CHECK ((window_start IS NULL) = (window_end IS NULL)
         AND (window_start IS NULL OR window_start <= window_end))
 );
@@ -247,7 +264,7 @@ CREATE TABLE ordering.contract_payment_installment
         REFERENCES ordering.sales_contract (id) ON DELETE CASCADE,
     CONSTRAINT fk_contract_payment_installment_batch FOREIGN KEY (delivery_batch_id)
         REFERENCES ordering.delivery_batch (id) ON DELETE CASCADE,
-    CONSTRAINT ck_contract_payment_installment_seq CHECK (seq BETWEEN 1 AND 100),
+    CONSTRAINT ck_contract_payment_installment_seq CHECK (seq BETWEEN 1 AND 20),
     CONSTRAINT ck_contract_payment_installment_name CHECK (btrim(name) <> ''),
     CONSTRAINT ck_contract_payment_installment_milestone CHECK (milestone IN ('ON_SIGNING', 'BEFORE_DELIVERY',
                                                                             'AFTER_DELIVERY')),
@@ -278,9 +295,14 @@ DECLARE
     installments INTEGER;
     bad          TEXT;
     credit_ok    BOOLEAN;
+    sending      BOOLEAN := false;
 BEGIN
     IF TG_TABLE_NAME = 'sales_contract' THEN
         the_contract := NEW.id;
+        -- Only the contract's own row has a status: PL/pgSQL does not stop at the first false operand.
+        IF TG_OP = 'UPDATE' THEN
+            sending := OLD.status = 'DRAFT' AND NEW.status = 'SENT';
+        END IF;
     ELSIF TG_TABLE_NAME = 'delivery_batch_line' THEN
         SELECT b.contract_id INTO the_contract FROM ordering.delivery_batch b
          WHERE b.id = CASE WHEN TG_OP = 'DELETE' THEN OLD.delivery_batch_id ELSE NEW.delivery_batch_id END;
@@ -360,9 +382,11 @@ BEGIN
         RAISE EXCEPTION 'sales contract %: an installment names a delivery batch of another contract',
             contract.contract_number USING ERRCODE = 'check_violation';
     END IF;
-    -- 15 BR-12: paying after delivery is credit, and only accounting grants credit. Checked while the plan can change.
-    IF contract.status = 'DRAFT' AND EXISTS (SELECT 1 FROM ordering.contract_payment_installment i
-                                               WHERE i.contract_id = the_contract AND i.milestone = 'AFTER_DELIVERY')
+    -- 15 BR-12: paying after delivery is credit, and only accounting grants credit. Checked while the plan can change,
+    -- and when the contract is sent: the customer is offered no credit accounting took back meanwhile.
+    IF (contract.status = 'DRAFT' OR sending)
+        AND EXISTS (SELECT 1 FROM ordering.contract_payment_installment i
+                     WHERE i.contract_id = the_contract AND i.milestone = 'AFTER_DELIVERY')
     THEN
         SELECT bool_or(cp.allow_credit AND cp.credit_limit > 0) INTO credit_ok
           FROM (SELECT p.allow_credit, p.credit_limit FROM customer.credit_profile p

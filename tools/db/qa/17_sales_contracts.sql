@@ -160,9 +160,12 @@ SELECT pg_temp.expect_ok('SC19 signed, with the signed file and the day', $q$
      WHERE id = md5('qa17:contract')::uuid $q$);
 SELECT pg_temp.expect_fail('SC20 a signed contract cancelled', $q$
     UPDATE ordering.sales_contract SET status = 'CANCELLED', cancelled_at = NOW(),
-           cancelled_by = md5('demo:user:editor')::uuid, cancellation_reason = 'x', signed_at = NULL,
-           signed_by = NULL, signed_on = NULL, signed_file_key = NULL, signed_file_name = NULL
+           cancelled_by = md5('demo:user:editor')::uuid, cancellation_reason = 'x'
      WHERE id = md5('qa17:contract')::uuid $q$);
+SELECT pg_temp.expect_fail('SC20b a signed contract''s signed file swapped', $q$
+    UPDATE ordering.sales_contract SET signed_file_key = 'documents/other.pdf' WHERE id = md5('qa17:contract')::uuid $q$);
+SELECT pg_temp.expect_fail('SC20c a signed contract''s buyer changed', $q$
+    UPDATE ordering.sales_contract SET buyer_name = 'Someone else' WHERE id = md5('qa17:contract')::uuid $q$);
 
 \echo '--- who works on contracts'
 CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$
