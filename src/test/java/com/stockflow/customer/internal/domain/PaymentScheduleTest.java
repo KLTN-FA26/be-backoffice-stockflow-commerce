@@ -31,7 +31,7 @@ class PaymentScheduleTest {
     }
 
     @Test
-    @DisplayName("shares above 0, two decimals at most, adding up to exactly 100; 1 to 12 instalments; 0-365 days")
+    @DisplayName("shares above 0, two decimals at most, adding up to exactly 100; 1 to 12 installments; 0-365 days")
     void shares() {
         PaymentSchedule ok = PaymentSchedule.create(CUSTOMER, List.of(line("33.33", PaymentMilestone.ON_SIGNING, 0),
                 line("33.33", PaymentMilestone.BEFORE_DELIVERY, 0), line("33.34", PaymentMilestone.BEFORE_DELIVERY, 7)),
@@ -57,24 +57,47 @@ class PaymentScheduleTest {
     }
 
     @Test
-    @DisplayName("after delivery: an approver's only, for approved credit, and recorded as their approval")
+    @DisplayName("after delivery: only on approved credit; Sales' proposal awaits accounting, an accountant's is approved "
+            + "as saved; a change of the installments clears the approval, a change of the note keeps it")
     void afterDelivery() {
         List<PaymentSchedule.Installment> credit = List.of(line("40", PaymentMilestone.ON_SIGNING, 0),
                 line("60", PaymentMilestone.AFTER_DELIVERY, 30));
-        assertThat(refused(() -> PaymentSchedule.create(CUSTOMER, credit, null, SALES, false, true, NOW)))
-                .isEqualTo(ErrorCode.FORBIDDEN);
+        assertThat(refused(() -> PaymentSchedule.create(CUSTOMER, credit, null, SALES, false, false, NOW)))
+                .isEqualTo(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT);
         assertThat(refused(() -> PaymentSchedule.create(CUSTOMER, credit, null, SALES, true, false, NOW)))
                 .isEqualTo(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT);
 
-        UUID accountant = UUID.randomUUID();
-        PaymentSchedule approved = PaymentSchedule.create(CUSTOMER, credit, " note ", accountant, true, true, NOW);
-        assertThat(approved.paysAfterDelivery()).isTrue();
-        assertThat(approved.approvedBy()).isEqualTo(accountant);
-        assertThat(approved.approvedAt()).isEqualTo(NOW);
-        assertThat(approved.note()).isEqualTo("note");
+        PaymentSchedule proposed = PaymentSchedule.create(CUSTOMER, credit, " note ", SALES, false, true, NOW);
+        assertThat(proposed.paysAfterDelivery()).isTrue();
+        assertThat(proposed.awaitingApproval()).isTrue();
+        assertThat(proposed.approvedBy()).isNull();
+        assertThat(proposed.note()).isEqualTo("note");
 
-        approved.replace(List.of(line("100", PaymentMilestone.ON_SIGNING, 0)), null, SALES, false, true, NOW);
-        assertThat(approved.approvedBy()).isNull();
-        assertThat(approved.setBy()).isEqualTo(SALES);
+        UUID accountant = UUID.randomUUID();
+        Instant later = NOW.plusSeconds(60);
+        assertThat(refused(() -> proposed.approve(accountant, false, later)))
+                .isEqualTo(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT);
+        assertThat(proposed.approve(accountant, true, later)).isTrue();
+        assertThat(proposed.approvedBy()).isEqualTo(accountant);
+        assertThat(proposed.approvedAt()).isEqualTo(later);
+        assertThat(proposed.approve(UUID.randomUUID(), true, NOW.plusSeconds(120))).isFalse();
+        assertThat(proposed.approvedBy()).isEqualTo(accountant);
+
+        // Sales rewrites the note only: still approved. Sales changes a share: it awaits accounting again.
+        proposed.replace(credit, "another note", SALES, false, true, NOW.plusSeconds(180));
+        assertThat(proposed.approvedBy()).isEqualTo(accountant);
+        proposed.replace(List.of(line("50", PaymentMilestone.ON_SIGNING, 0),
+                line("50", PaymentMilestone.AFTER_DELIVERY, 30)), null, SALES, false, true, NOW.plusSeconds(240));
+        assertThat(proposed.awaitingApproval()).isTrue();
+
+        // An accountant's own schedule is approved as saved; back to signing only, nothing is left to approve.
+        proposed.replace(credit, null, accountant, true, true, NOW.plusSeconds(300));
+        assertThat(proposed.approvedBy()).isEqualTo(accountant);
+        assertThat(proposed.approvedAt()).isEqualTo(NOW.plusSeconds(300));
+        proposed.replace(List.of(line("100", PaymentMilestone.ON_SIGNING, 0)), null, SALES, false, true, NOW);
+        assertThat(proposed.approvedBy()).isNull();
+        assertThat(proposed.awaitingApproval()).isFalse();
+        assertThat(proposed.setBy()).isEqualTo(SALES);
+        assertThat(refused(() -> proposed.approve(accountant, true, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
 }

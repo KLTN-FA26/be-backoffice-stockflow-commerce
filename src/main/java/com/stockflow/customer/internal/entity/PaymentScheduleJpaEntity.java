@@ -22,13 +22,13 @@ import java.util.UUID;
 
 /**
  * A customer's default payment schedule (tables {@code customer.default_payment_schedule} and
- * {@code customer.default_payment_installment}); the instalments are replaced whole with it.
+ * {@code customer.default_payment_installment}); the installments are replaced whole with it.
  */
 @Entity
 @Table(name = "default_payment_schedule", schema = "customer")
 public class PaymentScheduleJpaEntity extends BaseEntity {
 
-    /** One instalment row. */
+    /** One installment row. */
     @Embeddable
     public static class InstallmentRow {
         @Column(name = "seq", nullable = false) private int seq;

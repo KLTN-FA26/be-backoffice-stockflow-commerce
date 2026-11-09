@@ -15,25 +15,27 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * A customer's default payment schedule (kltn-docs 18 §3, BR-03; 14 BR-13; 15 BR-12): the instalments a new sales
- * contract starts from, replaced whole.
+ * A customer's default payment schedule (kltn-docs 18 §3, §4 steps 2 and 5, BR-03, BR-04; 14 BR-13; 15 BR-12): the
+ * installments a new sales contract starts from, replaced whole.
  *
  * <ul>
- *   <li>one to {@value #MAX_INSTALMENTS} instalments, each a share of the total with tax above 0 with two decimals at
- *       most, the shares adding up to exactly 100;</li>
+ *   <li>one to {@value #MAX_INSTALLMENTS} installments, each a share of the total with tax above 0 with two decimals at
+ *       most, the shares adding up to exactly 100 (BR-04);</li>
  *   <li>each due at a milestone plus 0-365 days;</li>
- *   <li>an AFTER_DELIVERY instalment only from someone who approves credit, for a customer whose credit accounting
- *       approved - a limit above 0 (18 BR-03); that approval is recorded with the schedule, and a schedule saved later
- *       without such an instalment carries none.</li>
+ *   <li>an AFTER_DELIVERY installment - credit - only for a customer whose credit accounting approved with a limit
+ *       above 0 (BR-03). Sales may propose one; it then awaits accounting's approval (15 BR-12), and a contract is not
+ *       drafted on it until approved. An accountant's own schedule is approved as it is saved. Changing the
+ *       installments again - by anyone without approval - clears the approval; changing only the note keeps it.</li>
  * </ul>
- * Mirrored by {@code customer.check_default_payment_schedule()} at commit.
+ * Mirrored by {@code customer.check_default_payment_schedule()} at commit: the shares, the credit, and no approval on a
+ * schedule with nothing to approve.
  */
 public final class PaymentSchedule extends AggregateRoot {
 
-    public static final int MAX_INSTALMENTS = 12;
+    public static final int MAX_INSTALLMENTS = 12;
     private static final BigDecimal HUNDRED = new BigDecimal("100");
 
-    /** One instalment, in order. */
+    /** One installment, in order. */
     public record Installment(String name, BigDecimal percent, PaymentMilestone milestone, int dueDays) {
 
         public Installment {
@@ -69,7 +71,8 @@ public final class PaymentSchedule extends AggregateRoot {
     /**
      * A first schedule for the customer.
      *
-     * @param credit whether the customer's credit is approved with a limit above 0
+     * @param approver whether the one saving approves credit (accounting): their schedule is approved as saved
+     * @param credit   whether the customer's credit is approved with a limit above 0
      */
     public static PaymentSchedule create(UUID customerId, List<Installment> installments, String note, UUID by,
                                          boolean approver, boolean credit, Instant at) {
@@ -82,30 +85,29 @@ public final class PaymentSchedule extends AggregateRoot {
     /**
      * Replaces the schedule whole.
      *
-     * @throws BusinessException {@code VALIDATION_FAILED} naming each wrong field; {@code FORBIDDEN} for an
-     *         AFTER_DELIVERY instalment from someone who does not approve credit; {@code PAYMENT_SCHEDULE_NEEDS_CREDIT}
-     *         for one when the customer has no approved credit
+     * @throws BusinessException {@code VALIDATION_FAILED} naming each wrong field; {@code PAYMENT_SCHEDULE_NEEDS_CREDIT}
+     *         for an AFTER_DELIVERY installment when the customer has no approved credit
      */
     public void replace(List<Installment> wanted, String note, UUID by, boolean approver, boolean credit, Instant at) {
         Objects.requireNonNull(by, "by");
         List<Installment> given = wanted == null ? List.of() : List.copyOf(wanted);
         List<FieldError> errors = new ArrayList<>();
-        if (given.isEmpty() || given.size() > MAX_INSTALMENTS) {
-            errors.add(FieldError.of("installments", "1 to " + MAX_INSTALMENTS + " instalments"));
+        if (given.isEmpty() || given.size() > MAX_INSTALLMENTS) {
+            errors.add(FieldError.of("installments", "1 to " + MAX_INSTALLMENTS + " installments"));
         }
         BigDecimal total = BigDecimal.ZERO;
         for (int i = 0; i < given.size(); i++) {
             Installment line = given.get(i);
-            String at_ = "installments[" + i + "].";
+            String field = "installments[" + i + "].";
             if (line.name().isBlank() || line.name().strip().length() > 100) {
-                errors.add(FieldError.of(at_ + "name", "required, at most 100 characters"));
+                errors.add(FieldError.of(field + "name", "required, at most 100 characters"));
             }
             BigDecimal percent = line.percent().stripTrailingZeros();
             if (line.percent().signum() <= 0 || line.percent().compareTo(HUNDRED) > 0 || percent.scale() > 2) {
-                errors.add(FieldError.of(at_ + "percent", "above 0, at most 100, two decimals at most"));
+                errors.add(FieldError.of(field + "percent", "above 0, at most 100, two decimals at most"));
             }
             if (line.dueDays() < 0 || line.dueDays() > 365) {
-                errors.add(FieldError.of(at_ + "dueDays", "0 to 365"));
+                errors.add(FieldError.of(field + "dueDays", "0 to 365"));
             }
             total = total.add(line.percent());
         }
@@ -116,26 +118,65 @@ public final class PaymentSchedule extends AggregateRoot {
         if (!errors.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid payment schedule", errors);
         }
-        boolean afterDelivery = given.stream().anyMatch(l -> l.milestone() == PaymentMilestone.AFTER_DELIVERY);
-        if (afterDelivery && !approver) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "Only accounting sets an instalment after delivery "
-                    + "(kltn-docs 18 BR-03)");
-        }
+        List<Installment> normalized = given.stream().map(l -> new Installment(l.name().strip(),
+                l.percent().setScale(2), l.milestone(), l.dueDays())).toList();
+        boolean afterDelivery = normalized.stream().anyMatch(l -> l.milestone() == PaymentMilestone.AFTER_DELIVERY);
         if (afterDelivery && !credit) {
             throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("Customer %s has no credit approved "
-                    + "with a limit above 0: an instalment after delivery is not allowed").formatted(customerId));
+                    + "with a limit above 0: an installment after delivery is not allowed").formatted(customerId));
         }
-        this.installments = given.stream().map(l -> new Installment(l.name().strip(), l.percent().setScale(2),
-                l.milestone(), l.dueDays())).toList();
+        boolean unchanged = normalized.equals(installments);
+        this.installments = normalized;
         this.note = note == null || note.isBlank() ? null : note.strip();
         this.setBy = by;
         this.setAt = at;
-        this.approvedBy = afterDelivery ? by : null;
-        this.approvedAt = afterDelivery ? at : null;
+        if (!afterDelivery) {
+            this.approvedBy = null;
+            this.approvedAt = null;
+        } else if (approver) {
+            this.approvedBy = by;
+            this.approvedAt = at;
+        } else if (!unchanged) {
+            // Proposed by Sales, or changed since it was approved: it awaits accounting again (15 BR-12).
+            this.approvedBy = null;
+            this.approvedAt = null;
+        }
+    }
+
+    /**
+     * Accounting approves the installments after delivery Sales proposed (15 BR-12, 18 BR-03). Approving one already
+     * approved changes nothing.
+     *
+     * @param credit whether the customer's credit is approved with a limit above 0, now
+     * @return whether it changed
+     * @throws BusinessException {@code VALIDATION_FAILED} when nothing in it pays after delivery;
+     *         {@code PAYMENT_SCHEDULE_NEEDS_CREDIT} when the customer has no approved credit any more
+     */
+    public boolean approve(UUID by, boolean credit, Instant at) {
+        Objects.requireNonNull(by, "by");
+        if (!paysAfterDelivery()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The default payment schedule of customer %s pays "
+                    + "nothing after delivery: there is nothing to approve").formatted(customerId));
+        }
+        if (!credit) {
+            throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("Customer %s has no credit approved "
+                    + "with a limit above 0: an installment after delivery is not allowed").formatted(customerId));
+        }
+        if (approvedBy != null) {
+            return false;
+        }
+        this.approvedBy = by;
+        this.approvedAt = at;
+        return true;
     }
 
     public boolean paysAfterDelivery() {
         return installments.stream().anyMatch(l -> l.milestone() == PaymentMilestone.AFTER_DELIVERY);
+    }
+
+    /** Pays after delivery and accounting has not approved it yet: no contract is drafted on it. */
+    public boolean awaitingApproval() {
+        return paysAfterDelivery() && approvedBy == null;
     }
 
     public UUID id() { return id; }

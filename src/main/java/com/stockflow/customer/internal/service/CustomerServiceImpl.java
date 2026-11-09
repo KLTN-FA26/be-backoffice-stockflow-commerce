@@ -111,16 +111,6 @@ class CustomerServiceImpl implements CustomerService {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "The terms of customer %s changed since they were read".formatted(command.customerId()));
         }
-        // 18 BR-03 / 4B-1: credit lowered to nothing while the default schedule still pays after delivery would leave a
-        // new contract with credit nobody approved. The schedule is changed first.
-        boolean credit = command.allowCredit() && command.creditLimit() != null
-                && command.creditLimit().signum() > 0;
-        if (!credit && schedules.findByCustomerId(command.customerId())
-                .filter(com.stockflow.customer.internal.domain.PaymentSchedule::paysAfterDelivery).isPresent()) {
-            throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("The default payment schedule of "
-                    + "customer %s pays after delivery: change it before taking the credit away")
-                    .formatted(command.customerId()));
-        }
         var now = clock.instant();
         CreditProfile profile = existing.map(found -> {
             found.change(command.allowPrepaid(), command.allowDeposit(), command.allowCredit(), command.defaultTerm(),
@@ -130,6 +120,15 @@ class CustomerServiceImpl implements CustomerService {
         }).orElseGet(() -> CreditProfile.create(command.customerId(), command.allowPrepaid(), command.allowDeposit(),
                 command.allowCredit(), command.defaultTerm(), command.depositPercent(), command.creditLimit(),
                 command.creditTermDays(), command.depositBalancePolicy(), command.approvedBy(), now, command.note()));
+        // 18 BR-03 / 4B-1: credit lowered to nothing while the default schedule still pays after delivery would leave a
+        // new contract with credit nobody approved. The schedule is changed first. Asked of the terms as validated,
+        // under the customer row lock taken above - the lock the schedule is saved under.
+        if (!CreditCheck.approvedCredit(profile) && schedules.findByCustomerId(command.customerId())
+                .filter(com.stockflow.customer.internal.domain.PaymentSchedule::paysAfterDelivery).isPresent()) {
+            throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("The default payment schedule of "
+                    + "customer %s pays after delivery: change it before taking the credit away")
+                    .formatted(command.customerId()));
+        }
         return toTerms(creditProfiles.save(profile));
     }
 

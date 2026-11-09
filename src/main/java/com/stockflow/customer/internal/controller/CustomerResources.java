@@ -8,7 +8,7 @@ public final class CustomerResources {
     /** Commercial terms: payment terms allowed, deposit share, credit limit and days (SCRUM-427). */
     public static final String CREDIT_PROFILES = "customer-credit-profiles";
 
-    /** 4B-1: the default payment schedule - READ, UPDATE (Sales), APPROVE (an instalment after delivery: accounting). */
+    /** 4B-1: the default payment schedule - READ, UPDATE (Sales), APPROVE (an installment after delivery: accounting). */
     public static final String PAYMENT_SCHEDULES = "customer-payment-schedules";
     /** Customer groups and who is in them (P7): Sales Manager manages, Sales reads (V20261017000600). */
     public static final String SEGMENTS = "customer-segments";

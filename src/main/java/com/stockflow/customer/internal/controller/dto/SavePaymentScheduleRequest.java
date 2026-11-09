@@ -13,7 +13,8 @@ import java.util.List;
  * A customer's default payment schedule, replaced whole (kltn-docs 18 §3).
  *
  * @param installments    in order; the shares add up to 100
- * @param expectedVersion the version read; left out only for a customer that has none yet
+ * @param expectedVersion the version read; left out (or -1, what an unset schedule reads as) only for a customer that
+ *                        has none yet
  */
 public record SavePaymentScheduleRequest(@NotEmpty @Size(max = 12) List<@Valid @NotNull Line> installments,
                                          @Size(max = 1000) String note,
@@ -21,7 +22,7 @@ public record SavePaymentScheduleRequest(@NotEmpty @Size(max = 12) List<@Valid @
 
     /**
      * @param percent share of the total with tax, two decimals at most
-     * @param dueDays days after the milestone, 0 when left out
+     * @param dueDays days after the milestone; left out, the customer's credit term after delivery and 0 otherwise
      */
     public record Line(@NotNull @Size(max = 100) String name, @NotNull BigDecimal percent,
                        @NotNull PaymentMilestone milestone, Integer dueDays) { }
