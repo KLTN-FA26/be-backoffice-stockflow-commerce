@@ -124,23 +124,7 @@ SELECT pg_temp.expect_fail('O21 the same shipment in a second remittance', $q$
 SELECT pg_temp.expect_fail('O22 RECONCILED without who/when', $q$
     UPDATE payment.cod_remittance SET status = 'RECONCILED', received_amount = 19800000, received_at = NOW() WHERE id = md5('qa:cod:1')::uuid $q$);
 
-\echo '--- carts (docs 14)'
-SELECT pg_temp.expect_ok('O23 customer cart with a line', $q$
-    INSERT INTO ordering.cart (id, customer_id) VALUES (md5('qa:cart:1')::uuid, 'c0000000-0000-4000-8000-000000000001');
-    INSERT INTO ordering.cart_line (id, cart_id, sku, quantity, unit_price_snapshot) VALUES (gen_random_uuid(), md5('qa:cart:1')::uuid, 'SOFA-3S-GREY', 1, 10000000) $q$);
-SELECT pg_temp.expect_fail('O24 a second ACTIVE cart for the customer', $q$
-    INSERT INTO ordering.cart (id, customer_id) VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001') $q$);
-SELECT pg_temp.expect_fail('O25 a cart that belongs to nobody', $q$
-    INSERT INTO ordering.cart (id) VALUES (gen_random_uuid()) $q$);
-SELECT pg_temp.expect_fail('O26 the same sku twice as separate lines', $q$
-    INSERT INTO ordering.cart_line (id, cart_id, sku, quantity) VALUES (gen_random_uuid(), md5('qa:cart:1')::uuid, 'SOFA-3S-GREY', 1) $q$);
-SELECT pg_temp.expect_fail('O27 a sku that is not sold', $q$
-    INSERT INTO ordering.cart_line (id, cart_id, sku, quantity) VALUES (gen_random_uuid(), md5('qa:cart:1')::uuid, 'NOPE', 1) $q$);
-SELECT pg_temp.expect_fail('O28 CONVERTED without its order', $q$
-    UPDATE ordering.cart SET status = 'CONVERTED' WHERE id = md5('qa:cart:1')::uuid $q$);
-SELECT pg_temp.expect_ok('O29 guest cart merged into the account cart at login', $q$
-    INSERT INTO ordering.cart (id, guest_token) VALUES (md5('qa:cart:guest')::uuid, 'tok-qa-1');
-    UPDATE ordering.cart SET status = 'MERGED', merged_into_cart_id = md5('qa:cart:1')::uuid WHERE id = md5('qa:cart:guest')::uuid $q$);
+-- (carts, O23-O29, went with customer self-ordering: V20261113000100, QA 60)
 
 \echo '--- order timeline and returns (docs 17)'
 SELECT pg_temp.expect_ok('O30 status history rows', $q$
