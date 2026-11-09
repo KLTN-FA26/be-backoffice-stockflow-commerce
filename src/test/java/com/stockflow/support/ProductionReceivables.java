@@ -169,8 +169,20 @@ public class ProductionReceivables {
      * order of several lines.
      */
     public Receivable sentLines(UUID warehouseId, int[]... lines) {
+        return sentLinesOf(null, warehouseId, lines);
+    }
+
+    /**
+     * A production order of one line of a SKU made from {@code product} (a customer's variant of it), for a test of
+     * what a product's life cycle does with the production orders still open on it.
+     */
+    public Receivable sentFor(ReferenceRows.ProductRow product, UUID warehouseId, int cartons, int unitsPerCarton) {
+        return sentLinesOf(product, warehouseId, new int[] {cartons, unitsPerCarton});
+    }
+
+    private Receivable sentLinesOf(ReferenceRows.ProductRow product, UUID warehouseId, int[]... lines) {
         try {
-            return build(warehouseId, lines);
+            return build(product, warehouseId, lines);
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -179,8 +191,9 @@ public class ProductionReceivables {
     }
 
     /** A customer SKU as the design approval leaves it, with its logistics complete and a CARTON of {@code per}. */
-    private Issued issue(UUID customerId, int cartons, int per) throws Exception {
-        ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
+    private Issued issue(UUID customerId, ReferenceRows.ProductRow given, int cartons, int per) throws Exception {
+        ReferenceRows.ProductRow product = given != null ? given
+                : tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE product.products SET tax_class = 'STANDARD', kind = 'CUSTOMIZABLE' WHERE id = ?",
                 product.productId()));
@@ -214,11 +227,11 @@ public class ProductionReceivables {
         return new Issued(sku, item, carton, cartons, per);
     }
 
-    private Receivable build(UUID warehouseId, int[][] specs) throws Exception {
+    private Receivable build(ReferenceRows.ProductRow product, UUID warehouseId, int[][] specs) throws Exception {
         UUID customerId = customer();
         List<Issued> issued = new ArrayList<>();
         for (int[] spec : specs) {
-            issued.add(issue(customerId, spec[0], spec[1]));
+            issued.add(issue(customerId, product, spec[0], spec[1]));
         }
 
         CurrentUser sales = sales();

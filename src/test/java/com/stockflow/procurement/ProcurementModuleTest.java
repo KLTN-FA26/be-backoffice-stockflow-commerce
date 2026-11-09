@@ -1,6 +1,8 @@
 package com.stockflow.procurement;
 
-import com.stockflow.procurement.api.ProcurementService;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import(PostgresContainer.class)
 class ProcurementModuleTest {
 
-    @Autowired ProcurementService procurement;
+    @Autowired GoodsReceipts receipts;
     @Autowired ApplicationContext context;
     /** Notification (booted here) asks customer for addresses through this; customer is not booted (SCRUM-352). */
     @org.springframework.test.context.bean.override.mockito.MockitoBean
@@ -49,9 +51,10 @@ class ProcurementModuleTest {
     com.stockflow.payment.api.ReturnSettlement returnSettlementMock;
 
     @Test
-    @DisplayName("procurement starts and answers through its api with the other modules absent")
+    @DisplayName("procurement starts and answers through its goods receipts with the other modules absent")
     void bootsInIsolation() {
-        assertThat(procurement.findById(UUID.randomUUID())).isEmpty();
+        assertThatThrownBy(() -> receipts.get(UUID.randomUUID())).isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.GOODS_RECEIPT_NOT_FOUND);
     }
 
     /**

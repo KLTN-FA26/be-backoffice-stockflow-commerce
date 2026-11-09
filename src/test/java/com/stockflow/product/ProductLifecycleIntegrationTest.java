@@ -12,6 +12,8 @@ import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.support.Await;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.ProductionReceivables;
+import com.stockflow.support.SecuredProductionReceiptTest;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
@@ -62,11 +64,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>People are real {@code identity.app_user} rows, because the history and the approval evidence are foreign
  * keys to them; only the token decoding is stubbed.</p>
  */
-@IntegrationTest
-@Import({PostgresContainer.class, RedisContainer.class})
-@AutoConfigureMockMvc
-// The same properties and mock as the other security tests, so the application context is shared.
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+@SecuredProductionReceiptTest
 class ProductLifecycleIntegrationTest {
 
     private static final String JSON = "application/json";
@@ -78,6 +76,7 @@ class ProductLifecycleIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ProductService products;
+    @Autowired ProductionReceivables receivables;
     @Autowired ProductTaxonomyService taxonomy;
     @Autowired CatalogService catalog;
     @Autowired CatalogProjectionService projection;
@@ -174,6 +173,14 @@ class ProductLifecycleIntegrationTest {
         return ProductFixtures.draft(products, tax, UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT));
     }
 
+    /** A production order sent for 2 cartons of 10 of a SKU of the product, not received at all yet. */
+    private ProductionReceivables.Receivable openProductionOrder(ProductSummary product) {
+        UUID variant = jdbc.queryForObject("SELECT id FROM product.variants WHERE product_id = ? AND is_default",
+                UUID.class, product.productId());
+        return receivables.sentFor(new ReferenceRows.ProductRow(product.productId(), variant, product.code()),
+                DemoData.WAREHOUSE_HCM, 2, 10);
+    }
+
     /** A placed order with one line of {@code sku}, in the given status. */
     private UUID orderWithLine(String sku, String status) {
         return tx.execute(s -> ReferenceRows.orderWithLine(entityManager, sku, status, DemoData.CUSTOMER_ID, editorUser,
@@ -258,11 +265,12 @@ class ProductLifecycleIntegrationTest {
     // ------------------------------------------------------------------ discontinue
 
     @Test
-    @DisplayName("discontinue with an unshipped order: 200 with the warning and the document")
+    @DisplayName("discontinue with an open production order line and an unshipped order: 200 with both warnings and the documents")
     void discontinueWarnsAndNeverRefuses() throws Exception {
         ProductSummary approved = approvedProduct();
         UUID id = approved.productId();
         String sku = approved.code();
+        ProductionReceivables.Receivable production = openProductionOrder(approved);
         UUID order = orderWithLine(sku, "CONFIRMED");
         String orderNumber = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?", String.class, order);
 
@@ -281,10 +289,15 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.productId").value(id.toString()))
                 .andExpect(jsonPath("$.data.discontinueReason").value("Het dong san pham"))
                 .andExpect(jsonPath("$.data.discontinuedAt").isNotEmpty())
-                .andExpect(jsonPath("$.data.warnings.length()").value(1))
-                .andExpect(jsonPath("$.data.warnings[0]").value("UNSHIPPED_ORDER_LINES"))
-                .andExpect(jsonPath("$.data.openReferences.length()").value(1))
+                .andExpect(jsonPath("$.data.warnings.length()").value(2))
+                .andExpect(jsonPath("$.data.warnings[0]").value("OPEN_PRODUCTION_ORDER_LINES"))
+                .andExpect(jsonPath("$.data.warnings[1]").value("UNSHIPPED_ORDER_LINES"))
+                .andExpect(jsonPath("$.data.openReferences.length()").value(2))
                 .andExpect(jsonPath("$.data.openReferencesTruncated").value(false))
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentNumber")
+                        .value(production.productionCode()))
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
+                        .value(production.productionOrderId().toString()))
                 .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].documentNumber").value(orderNumber))
                 .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].sku").value(sku));
 
@@ -597,6 +610,7 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.references.length()").value(0))
                 .andExpect(jsonPath("$.data.truncated").value(false));
 
+        ProductionReceivables.Receivable production = openProductionOrder(approved);
         UUID order = orderWithLine(approved.code(), "IN_PRODUCTION");
         orderWithLine(approved.code(), "SHIPPED");   // shipped: nothing left to fulfil, not listed
         // 4B-5: a DRAFT order is made from an accepted quote, its contract being drawn up - it will ship the SKU.
@@ -604,7 +618,9 @@ class ProductLifecycleIntegrationTest {
         orderWithLine(approved.code(), "CANCELLED");
 
         send("GET", token(UUID.randomUUID(), "SALES_STAFF"), path, null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.references.length()").value(2))
+                .andExpect(jsonPath("$.data.references.length()").value(3))
+                .andExpect(jsonPath("$.data.references[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
+                        .value(production.productionOrderId().toString()))
                 .andExpect(jsonPath("$.data.references[?(@.kind == 'SALES_ORDER_LINE')].documentId")
                         .value(org.hamcrest.Matchers.containsInAnyOrder(order.toString(), drafted.toString())));
         assertRefused(send("GET", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), path, null), 403, "FORBIDDEN");
