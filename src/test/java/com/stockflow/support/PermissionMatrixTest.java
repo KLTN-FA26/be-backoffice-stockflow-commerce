@@ -368,8 +368,6 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
-                Map.entry("POST /api/v1/orders", "{\"requestId\":\"" + UUID.randomUUID() + "\",\"customerId\":\"" + victimCustomer
-                        + "\",\"lines\":[{\"sku\":\"SOFA-3S-GREY\",\"quantity\":1,\"unitPrice\":1000}]}"),
                 // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
                 Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_SOFA
                         + "\",\"sku\":\"SOFA-3S-GREY\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
@@ -393,7 +391,6 @@ class PermissionMatrixTest {
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
-                Map.entry("POST /api/v1/orders/{orderId}/reorder", "{\"requestId\":\"" + UUID.randomUUID() + "\"}"),
                 // SCRUM-243: a well-formed claim on the victim's order, so only the owner check can refuse it.
                 Map.entry("POST /api/v1/orders/{orderId}/returns", "{\"requestId\":\"" + UUID.randomUUID()
                         + "\",\"reasonCode\":\"PRINT_DEFECT\",\"requestedResolution\":\"REFUND\",\"lines\":[{\"orderLineId\":\""
@@ -621,6 +618,26 @@ class PermissionMatrixTest {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }
+    }
+
+    /**
+     * Team plan 5-2 (kltn-docs 13 BR-08, 14 BR-01, BR-02): the customer does not place orders. Its role holds no
+     * right to create one, nor the cart's permission; the two handlers that did are gone, so the "own data" allow-list
+     * above cannot be hiding a customer-reachable way to order; and staff, who draw an order up from a quote, still
+     * hold the permission.
+     */
+    @Test
+    void aCustomerHoldsNoRightToPlaceAnOrder() {
+        ResolvedAuthorization customer = roles.resolve(List.of(Role.CUSTOMER.authority()));
+        assertThat(customer.permissions()).as("a customer follows its orders")
+                .contains(PermissionCode.of("sales-orders", com.stockflow.common.security.Action.READ))
+                .doesNotContain(PermissionCode.of("sales-orders", com.stockflow.common.security.Action.CREATE));
+        assertThat(customer.permissions()).extracting(PermissionCode::resource).doesNotContain("sales-carts");
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .contains(PermissionCode.of("sales-orders", com.stockflow.common.security.Action.CREATE));
+
+        Set<String> keys = handlers().stream().map(Handler::key).collect(java.util.stream.Collectors.toSet());
+        assertThat(keys).doesNotContain("POST /api/v1/orders", "POST /api/v1/orders/{orderId}/reorder");
     }
 
     @Test
