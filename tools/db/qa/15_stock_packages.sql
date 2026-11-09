@@ -71,8 +71,8 @@ SELECT pg_temp.expect_fail('K6 part of an unopened stock package leaves for QC',
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
     VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 4, 0, 'QUARANTINE', NOW(), NOW() - interval '1 hour') $q$);
 SELECT pg_temp.expect_fail('K7 a row of another SKU put into it', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-B', 'L1', CURRENT_DATE + 30, 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:1')::uuid) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-B', 'L1', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:1')::uuid) $q$);
 SELECT pg_temp.expect_fail('K8 counted again once in stock', $q$
     UPDATE inventory.stock_package SET received_qty = 9 WHERE id = md5('qa:pk:1')::uuid $q$);
 SELECT pg_temp.expect_fail('K9 its LPN changed', $q$
@@ -137,15 +137,15 @@ SELECT pg_temp.expect_fail('K24 still RECEIVING but holding stock', $q$
 SELECT pg_temp.expect_fail('K25 two lots in one stock package', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened)
     VALUES (md5('qa:pk:25')::uuid, 'QA-LPN-25', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa:unit:TABLE-CARTON')::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK', FALSE);
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', CURRENT_DATE + 30, 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid),
-           (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', CURRENT_DATE + 30, 3, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid),
+           (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid) $q$);
 SELECT pg_temp.expect_ok('K26 one lot received at two times in one stock package', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened)
     VALUES (md5('qa:pk:26')::uuid, 'QA-LPN-26', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa:unit:TABLE-CARTON')::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK', FALSE);
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', CURRENT_DATE + 30, 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid),
-           (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', CURRENT_DATE + 30, 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:26')::uuid) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid),
+           (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:26')::uuid) $q$);
 
 \echo '--- ledger (V20261020000300)'
 SELECT pg_temp.expect_fail('K27 a source stock package with no source location', $q$
@@ -171,8 +171,8 @@ SELECT pg_temp.expect_fail('K28d the emptied row filled again away from its stoc
     UPDATE inventory.stock_item SET on_hand = 1 WHERE id = md5('qa:pk:2:empty')::uuid $q$);
 SELECT pg_temp.expect_ok('K28e one lot picked out, another put back into the stock package', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE stock_package_id = md5('qa:pk:26')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', CURRENT_DATE + 30, 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid) $q$);
 SELECT pg_temp.expect_fail('K28f a second row of the emptied layer in the stock package, on its new bin', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
     SELECT gen_random_uuid(), sku, 'HCM-A01-1-B', 1, 0, 'AVAILABLE', NOW(), received_at, stock_package_id

@@ -125,10 +125,8 @@ SELECT pg_temp.expect_ok('LC14 a lot on stock of a SKU that is not lot-tracked (
 SELECT pg_temp.expect_ok('LC15 ... and more of it later', $q$
     UPDATE inventory.stock_item SET on_hand = on_hand + 1 WHERE id = md5('qa40:lot')::uuid $q$);
 SELECT pg_temp.expect_fail('LC16 stock of a lot-tracked SKU (the oak table) with no lot', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, expiry_date, on_hand, reserved, status, created_at,
-                                      received_at)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', CURRENT_DATE + 365, 2, 0, 'AVAILABLE', NOW(),
-            NOW()) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 2, 0, 'AVAILABLE', NOW(), NOW()) $q$);
 
 \echo '--- the cartons it made are cartons like any other'
 SELECT pg_temp.expect_fail('LC17 a carton it made is opened and sealed again', $q$
