@@ -155,14 +155,43 @@ public class PutawayService {
     /**
      * The bins of the warehouse that take the task's carton now, best first: it fits them dimension by dimension and
      * their free volume and load take it (kltn-docs 06 §4.4). The carton is left out of every bin's occupancy, so one
-     * somebody already moved into a bin by hand still finds that bin.
+     * somebody already moved into a bin by hand still finds that bin. Empty bins are ranked by the rest of the lot
+     * (05 §4.2 step 4).
      */
     private List<PutawayRanker.Suggestion> suggest(UUID warehouseId, PutawayTaskView task, String lot) {
         List<PutawayCandidate> candidates = warehouses.putawayCandidates(warehouseId);
         Map<String, Occupancy> occupied = occupancy.occupancyOf(
                 candidates.stream().map(PutawayCandidate::locationCode).toList(), task.sku(), lot,
                 task.stockPackageId());
-        return PutawayRanker.rank(needOf(task), candidates.stream().map(PutawayService::binOf).toList(), occupied);
+        Need need = needOf(task);
+        return PutawayRanker.rank(need, restOfLot(warehouseId, task, lot, need),
+                candidates.stream().map(PutawayService::binOf).toList(), occupied);
+    }
+
+    /**
+     * The rest of the task's lot (05 §4.2): the cartons of that lot with an open putaway task (PENDING or IN_PROGRESS)
+     * standing in the same warehouse, this one included. A carton without a lot is a lot of its own.
+     */
+    private PutawayRanker.Lot restOfLot(UUID warehouseId, PutawayTaskView task, String lot, Need need) {
+        if (lot == null) {
+            return PutawayRanker.Lot.of(need);
+        }
+        Set<StockPackageId> open = new java.util.HashSet<>();
+        open.add(new StockPackageId(task.stockPackageId()));
+        tasks.openTasks().stream().map(PutawayTaskView::stockPackageId).filter(java.util.Objects::nonNull)
+                .forEach(id -> open.add(new StockPackageId(id)));
+        List<StockPackage> cartons = stockPackages.findAllById(List.copyOf(open));
+        Set<String> inWarehouse = warehouses.findLocations(cartons.stream().map(c -> c.location().code())
+                        .collect(Collectors.toSet())).stream()
+                .filter(location -> warehouseId.equals(location.warehouseId()))
+                .map(StorageLocationView::locationCode).collect(Collectors.toSet());
+        List<UUID> sameWarehouse = cartons.stream().filter(c -> inWarehouse.contains(c.location().code()))
+                .map(c -> c.id().value()).toList();
+        if (sameWarehouse.isEmpty()) {
+            return PutawayRanker.Lot.of(need);
+        }
+        PutawayRanker.Lot rest = occupancy.lotOf(sameWarehouse, lot);
+        return rest.volumeM3().signum() == 0 ? PutawayRanker.Lot.of(need) : rest;
     }
 
     /** The usable OVERFLOW areas of a warehouse, by location code. */

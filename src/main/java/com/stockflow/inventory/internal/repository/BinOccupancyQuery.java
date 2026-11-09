@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.inventory.internal.domain.CartonFit;
+import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Need;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -129,6 +130,31 @@ public class BinOccupancyQuery {
                             rs.getBigDecimal("weight_kg")));
                 });
         return out;
+    }
+
+    /**
+     * The volume and full weight of those of {@code cartonIds} that hold units of {@code lotNumber}: the rest of a lot
+     * still to put away, which empty bins are ranked by (05 §4.2). Unmeasured cartons add nothing.
+     */
+    public PutawayRanker.Lot lotOf(Collection<UUID> cartonIds, String lotNumber) {
+        if (cartonIds.isEmpty()) {
+            return new PutawayRanker.Lot(BigDecimal.ZERO, BigDecimal.ZERO);
+        }
+        return jdbc.query("""
+                select coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0) as volume_m3,
+                       coalesce(sum(coalesce(u.weight_kg, i.weight_kg * p.nominal_qty)), 0) as weight_kg
+                from inventory.stock_package p
+                join inventory.uom_conversions u on u.id = p.uom_conversion_id
+                join inventory.inventory_items i on i.id = p.inventory_item_id
+                where p.id = any (?)
+                  and exists (select 1 from inventory.stock_item s where s.stock_package_id = p.id
+                                 and s.on_hand > 0 and s.lot_number = ?)""", ps -> {
+            ps.setArray(1, ps.getConnection().createArrayOf("uuid", cartonIds.toArray()));
+            ps.setString(2, lotNumber);
+        }, rs -> {
+            rs.next();
+            return new PutawayRanker.Lot(orZero(rs.getBigDecimal("volume_m3")), orZero(rs.getBigDecimal("weight_kg")));
+        });
     }
 
     private static BigDecimal orZero(BigDecimal value) {

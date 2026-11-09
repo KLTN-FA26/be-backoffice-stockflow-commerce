@@ -81,25 +81,65 @@ class PutawayRankerTest {
                 .singleElement().satisfies(s -> assertThat(s.freeWeightKg()).isEqualByComparingTo("2"));
     }
 
-    @Test
-    @DisplayName("BR-SLT-004: same lot, then same SKU, then an empty bin, then any bin with room")
-    void ranksSameLotThenSameSkuThenEmptyThenOther() {
-        List<Bin> bins = List.of(bin("D", "1"), bin("C", "1"), bin("B", "1"), bin("A", "1"));
-        Map<String, Occupancy> occ = Map.of(
-                "A", new Occupancy(5, new BigDecimal("0.1"), BigDecimal.ZERO, true, true),
-                "B", new Occupancy(5, new BigDecimal("0.1"), BigDecimal.ZERO, true, false),
-                "D", holding("0.1"));
-        List<Suggestion> out = PutawayRanker.rank(CARTON, bins, occ);
-        assertThat(codes(out)).containsExactly("A", "B", "C", "D");
-        assertThat(out).extracting(Suggestion::reason)
-                .containsExactly(Reason.SAME_LOT, Reason.SAME_SKU, Reason.EMPTY, Reason.HAS_ROOM);
+    private static Occupancy sameLot(String volumeM3) {
+        return new Occupancy(5, new BigDecimal(volumeM3), BigDecimal.ZERO, true, true);
+    }
+
+    private static Occupancy sameSku(String volumeM3) {
+        return new Occupancy(5, new BigDecimal(volumeM3), BigDecimal.ZERO, true, false);
     }
 
     @Test
-    @DisplayName("within a reason, more free volume first, then by code; a bin without a volume after every measured one")
-    void moreRoomFirstWithinARank() {
-        List<Bin> bins = List.of(bin("B", "1"), bin("A", "1"), bin("C", "3"), bin("Z", null));
-        assertThat(codes(PutawayRanker.rank(CARTON, bins, Map.of()))).containsExactly("C", "A", "B", "Z");
+    @DisplayName("05 §4.2 (2026-11-08): same lot, then an empty bin, then the same SKU of another lot, then other SKUs")
+    void ranksSameLotThenEmptyThenSameSkuThenOther() {
+        List<Bin> bins = List.of(bin("D", "1"), bin("C", "1"), bin("B", "1"), bin("A", "1"));
+        Map<String, Occupancy> occ = Map.of("A", sameLot("0.1"), "C", sameSku("0.1"), "D", holding("0.1"));
+        List<Suggestion> out = PutawayRanker.rank(CARTON, bins, occ);
+        assertThat(codes(out)).containsExactly("A", "B", "C", "D");
+        assertThat(out).extracting(Suggestion::reason)
+                .containsExactly(Reason.SAME_LOT, Reason.EMPTY, Reason.SAME_SKU, Reason.OTHER_SKU);
+    }
+
+    @Test
+    @DisplayName("same lot, same SKU, other SKU: the bin with less free volume first (best fit), then by code")
+    void bestFitWithinTheOccupiedGroups() {
+        List<Bin> bins = List.of(bin("L1", "1"), bin("L2", "1"), bin("S1", "1"), bin("S2", "1"), bin("O1", "1"),
+                bin("O2", "1"), bin("O3", "1"));
+        Map<String, Occupancy> occ = Map.of("L1", sameLot("0.2"), "L2", sameLot("0.7"), "S1", sameSku("0.1"),
+                "S2", sameSku("0.5"), "O1", holding("0.3"), "O2", holding("0.6"), "O3", holding("0.6"));
+        assertThat(codes(PutawayRanker.rank(CARTON, bins, occ)))
+                .containsExactly("L2", "L1", "S2", "S1", "O2", "O3", "O1");
+    }
+
+    @Test
+    @DisplayName("empty bins: the smallest that takes the whole rest of the lot first, then those that do not, larger first")
+    void emptyBinsByTheRestOfTheLot() {
+        // The docs' example: the lot is 3 cartons of 0.1 m³; empty bins of 0.8 and 1.5 take it, 0.25 and 0.2 do not.
+        List<Bin> bins = List.of(bin("B04", "1.5"), bin("B05", "0.2"), bin("B03", "0.8"), bin("B06", "0.25"));
+        PutawayRanker.Lot lot = new PutawayRanker.Lot(new BigDecimal("0.3"), new BigDecimal("15"));
+        assertThat(codes(PutawayRanker.rank(CARTON, lot, bins, Map.of())))
+                .containsExactly("B03", "B04", "B06", "B05");
+    }
+
+    @Test
+    @DisplayName("an empty bin that takes the lot's volume but not its weight does not take the lot")
+    void theLotsWeightCounts() {
+        Bin light = new Bin("LIGHT", CUBE, new BigDecimal("0.5"), new BigDecimal("10"));
+        Bin strong = new Bin("STRONG", CUBE, new BigDecimal("0.9"), new BigDecimal("100"));
+        PutawayRanker.Lot lot = new PutawayRanker.Lot(new BigDecimal("0.3"), new BigDecimal("15"));
+        assertThat(codes(PutawayRanker.rank(CARTON, lot, List.of(light, strong), Map.of())))
+                .containsExactly("STRONG", "LIGHT");
+    }
+
+    @Test
+    @DisplayName("06 §4.4: a bin without a volume ranks after EVERY measured bin, whatever its group; among them group, then code")
+    void unmeasuredAfterEveryMeasuredBin() {
+        List<Bin> bins = List.of(bin("U2", null), bin("U1", null), bin("U3", null), bin("M1", "1"), bin("M2", "1"));
+        Map<String, Occupancy> occ = Map.of("U1", sameLot("5"), "U3", sameLot("1"), "M1", holding("0.1"),
+                "M2", sameSku("0.2"));
+        List<Suggestion> out = PutawayRanker.rank(CARTON, bins, occ);
+        assertThat(codes(out)).containsExactly("M2", "M1", "U1", "U3", "U2");
+        assertThat(out.get(2).reason()).isEqualTo(Reason.SAME_LOT);
     }
 
     @Test
