@@ -660,6 +660,44 @@ class ProductionScheduleIntegrationTest {
     }
 
     @Test
+    @DisplayName("17 §4.2 step 5: an order released for its first batch is still followed - a later batch short and "
+            + "uncovered keeps its PO_NEEDED, stays on the schedule, and may be drawn up")
+    void followedPastRelease() {
+        UUID orderId = confirmedOrder(line -> List.of(
+                new SalesContracts.Batch(today.plusDays(5), today.plusDays(6),
+                        List.of(new SalesContracts.BatchLine(line, 8))),
+                new SalesContracts.Batch(today.plusDays(10), today.plusDays(11),
+                        List.of(new SalesContracts.BatchLine(line, 8))),
+                new SalesContracts.Batch(today.plusDays(40), today.plusDays(41),
+                        List.of(new SalesContracts.BatchLine(line, 4)))), a);
+        UUID first = batchId(orderId, 1);
+        UUID second = batchId(orderId, 2);
+        drawUp(orderId, 1);
+        awaitListeners(orderId);
+        alerts.recompute(orderId);
+        UUID opened = openAlert(DelayAlertType.PO_NEEDED, second);
+        assertThat(opened).as("batch 2: short, uncovered, 10 days out").isNotNull();
+        assertThat(openAlert(DelayAlertType.PO_NEEDED, first)).as("batch 1: its production order covers it").isNull();
+
+        // Released for batch 1 while batch 2 is still short (until 4B-8 releases batch by batch: by SQL).
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.customer_order SET status = 'READY_TO_FULFILL', released_at = NOW(), "
+                    + "released_by = ?, warehouse_id = shipping_warehouse_id WHERE id = ?", manager, orderId);
+        });
+        assertThat(alerts.recompute(orderId)).as("the release's recompute closes nothing")
+                .isEqualTo(new DelayAlertService.Recomputed(0, 0));
+        assertThat(openAlert(DelayAlertType.PO_NEEDED, second)).isEqualTo(opened);
+        assertThat(shortOf(scheduleOf(null, a.id(), null, null, false), orderId)).extracting(ShortBatch::seq)
+                .as("still on the schedule").containsExactly(2, 3);
+
+        ProductionOrder forSecond = drawUp(orderId, 2);
+        assertThat(forSecond.deliveryBatchId()).as("drawn up batch by batch past release").isEqualTo(second);
+        alerts.recompute(orderId);
+        assertThat(openAlert(DelayAlertType.PO_NEEDED, second)).as("covered now").isNull();
+    }
+
+    @Test
     @DisplayName("step 48: the order's own writes are triggers - signed and its warehouse chosen, PO_NEEDED opens with "
             + "no recompute asked for")
     void theOrdersWritesAreTriggers() {

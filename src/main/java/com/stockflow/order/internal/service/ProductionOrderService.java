@@ -77,6 +77,16 @@ public class ProductionOrderService {
     private static final SortWhitelist SORT = SortWhitelist.of("createdAt", "needByDate", "code", "status")
             .withDefault("createdAt", Sort.Direction.DESC);
 
+    /**
+     * The orders a production order may be drawn up for (17 §4.3 step 6, §4.2 step 5): confirmed, and - for an order of
+     * several batches - on after it was released for its first batch, while later batches are still short ("lập dần
+     * theo từng đợt"). Not an order on hold: what it is made for waits until the hold is resolved.
+     * 4A-6: add {@code AWAITING_STOCK} here.
+     */
+    static final Set<OrderStatus> PRODUCIBLE = java.util.Collections.unmodifiableSet(java.util.EnumSet.of(
+            OrderStatus.CONFIRMED, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED,
+            OrderStatus.PARTIALLY_FULFILLED));
+
     /** A production order and its history of status, for display. */
     public record Detail(ProductionOrder order, List<ProductionOrderRepository.HistoryEntry> history) {
     }
@@ -358,9 +368,10 @@ public class ProductionOrderService {
     }
 
     private static void requireProducible(Order order) {
-        if (!order.paidByContract() || order.status() != OrderStatus.CONFIRMED) {
+        if (!order.paidByContract() || !PRODUCIBLE.contains(order.status())) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s is %s: production orders are "
-                    + "drawn up for a confirmed order of a contract").formatted(order.orderNumber(), order.status()));
+                    + "drawn up for a confirmed order of a contract still owing batches").formatted(order.orderNumber(),
+                    order.status()));
         }
         if (order.shippingWarehouseId() == null) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s has no shipping warehouse: "

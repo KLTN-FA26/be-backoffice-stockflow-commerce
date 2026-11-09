@@ -223,11 +223,18 @@ class DelayAlertEvaluatorTest {
         }
 
         @Test
-        @DisplayName("closes when the order's shortage is no longer followed (released, cancelled)")
+        @DisplayName("closes when the order's shortage is no longer followed (cancelled, all shipped)")
         void closesWhenNoLongerFollowed() {
             opensStaysCloses(DelayAlertType.PO_NEEDED,
                     holding(batch(3, false, TODAY.plusDays(7), TODAY.plusDays(9), true, true, 14)),
                     holding(batch(3, false, TODAY.plusDays(7), TODAY.plusDays(9), false, true, 14)));
+        }
+
+        @Test
+        @DisplayName("a batch handed over needs nothing made, whatever its count says")
+        void notForABatchHandedOver() {
+            assertThat(holding(batch(3, true, TODAY.plusDays(7), TODAY.plusDays(9), true, true, 14)))
+                    .doesNotContain(condition(DelayAlertType.PO_NEEDED));
         }
 
         @Test

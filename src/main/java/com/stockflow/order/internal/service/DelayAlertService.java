@@ -62,10 +62,12 @@ import java.util.stream.Collectors;
  * before reading anything, so two of them for one order - a listener and the sweep - run one after the other and the
  * later one sees what the earlier committed; the unique index of open alerts would make a duplicate harmless anyway.</p>
  *
- * <p><b>Which orders are followed.</b> PO_NEEDED while the order's shortage turns into production orders
- * ({@link #SHORTAGE_FOLLOWED}: confirmed - the shortage is counted from what it holds, which release turns into
- * allocations that stop counting once picked); DELIVERY_LATE while it still has goods to hand over
- * ({@link #DELIVERY_FOLLOWED}). 4A-6 adds {@code AWAITING_STOCK} to both: one constant each.</p>
+ * <p><b>Which orders are followed.</b> Both while the order still owes batches ({@link #SHORTAGE_FOLLOWED},
+ * {@link #DELIVERY_FOLLOWED}): from confirmation until everything left. Not only until release: an order of several
+ * batches is released once its first is covered while later ones are still short (17 §4.2 step 5), and PO_NEEDED is
+ * what reminds the coordinator to draw them up batch by batch. The shortage counts held stock and what was already
+ * picked for the order, earliest batch first, so a batch released or handed over is covered and only later batches can
+ * lack anything. 4A-6 adds {@code AWAITING_STOCK} to both: one constant each.</p>
  */
 @Service
 public class DelayAlertService {
@@ -73,8 +75,13 @@ public class DelayAlertService {
     private static final Logger log = LoggerFactory.getLogger(DelayAlertService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
-    /** 17 §4.2 step 5: the order whose shortage becomes production orders. */
-    static final Set<OrderStatus> SHORTAGE_FOLLOWED = Collections.unmodifiableSet(EnumSet.of(OrderStatus.CONFIRMED));
+    /**
+     * 17 §4.2 step 5, §4.3 step 6: the orders whose shortage becomes production orders - confirmed, and on past release
+     * while later batches are short; on hold too, so the shortage stays in sight while the hold is resolved.
+     */
+    static final Set<OrderStatus> SHORTAGE_FOLLOWED = Collections.unmodifiableSet(EnumSet.of(OrderStatus.CONFIRMED,
+            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED,
+            OrderStatus.ON_HOLD)); // 4A-6: + AWAITING_STOCK
 
     /**
      * Confirmed and not yet all handed over (17 §4.5): an order on hold still owes its batches. Before confirmation the
@@ -82,7 +89,7 @@ public class DelayAlertService {
      */
     static final Set<OrderStatus> DELIVERY_FOLLOWED = Collections.unmodifiableSet(EnumSet.of(OrderStatus.CONFIRMED,
             OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED,
-            OrderStatus.ON_HOLD));
+            OrderStatus.ON_HOLD)); // 4A-6: + AWAITING_STOCK
 
     /** What one recompute changed. */
     public record Recomputed(int opened, int closed) {

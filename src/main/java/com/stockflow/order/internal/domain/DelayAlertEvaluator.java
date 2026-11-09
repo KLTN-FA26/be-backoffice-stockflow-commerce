@@ -29,7 +29,7 @@ import java.util.UUID;
  *       window that still lacks cartons no open production order brings (the production order's own count of what a
  *       batch lacks - held stock first, then what open production orders bring, the earliest batch first), and the
  *       window starts within the lead time: {@code windowStart - today <= leadDays} (B44). A batch with no window yet
- *       has no day to count to.</li>
+ *       has no day to count to; a batch handed over needs nothing made, whatever its count says.</li>
  *   <li><b>DELIVERY_LATE</b> - an order whose delivery is followed ({@link Facts#deliveryFollowed}) has a batch whose
  *       window ended before today and which is not all handed over ({@link #handedOver}).</li>
  * </ul>
@@ -138,7 +138,7 @@ public final class DelayAlertEvaluator {
             if (batch.windowStart() == null) {
                 continue;
             }
-            if (facts.shortageFollowed() && batch.uncoveredCartons() > 0
+            if (facts.shortageFollowed() && !batch.handedOver() && batch.uncoveredCartons() > 0
                     && ChronoUnit.DAYS.between(today, batch.windowStart()) <= facts.leadDays()) {
                 holding.add(new Condition(DelayAlertType.PO_NEEDED, batch.id()));
             }
