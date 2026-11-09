@@ -19,13 +19,17 @@
 --          (CONSUMED, LOST, VOID) keep the figure they were counted in at; one off its standard cannot come back
 --          into stock (the CHECK refuses it on the way back, StockPackage.restock / found first).
 --        * inventory.stock_package_balance is rewritten: one row per carton (UNIQUE(stock_package_id), below), with
---          its stock row's id and stock status, and no unopened.
+--          its stock row's id and stock status, and no unopened. Nor an expiry date: the stock row has it while it
+--          lasts (team plan 5-1 drops it), and the view does not tie itself to a column on its way out.
 --   2. inventory.stock_item:
---        * lot_number and lot_id NOT NULL, lot_number not blank (20 BR-22: no stock without a lot), and
---          enforce_sku_policy requires a lot of every SKU, lot-tracked or not. Rows with no lot are emptied rows of
---          the history (V20261111000110 boxed every live unit with a lot): they are archived and relabelled lot
---          'UNTRACED' (open question C45), on the SKU's UNTRACED lot as V20261111000110 made them. Units have no lot
---          of their own any more anywhere a lot is asked: the code writes 'UNTRACED' where it is given none.
+--        * lot_number and lot_id NOT NULL, lot_number not blank (20 BR-22: no stock without a lot) - for every row
+--          of every SKU, which is what "enforce_sku_policy requires a lot" in the team plan asks; the function's own
+--          lot clause (lot-tracked SKUs only) can no longer fire, and the function is left as it is: team plan 5-1
+--          rewrites it without the expiry columns and 5-5 drops the policy, and a third rewrite here would undo
+--          whichever of them ran first. Rows with no lot are emptied rows of the history (V20261111000110 boxed every
+--          live unit with a lot): they are archived and relabelled lot 'UNTRACED' (open question C45), on the SKU's
+--          UNTRACED lot as V20261111000110 made them (of their expiry, while lots have one). The code writes
+--          'UNTRACED' wherever goods arrive with no lot.
 --        * uk_stock_item_package_layer (one row per carton, SKU, lot, serial and receipt) is replaced by
 --          uk_stock_item_package: one row per carton (20 BR-18). Cartons closed by V20261111000110 may have kept
 --          several emptied rows; all but one are archived and detached (stock_package_id NULL). The ledger names
@@ -107,11 +111,20 @@ $$;
 -- 2. Archive what changes
 -- ---------------------------------------------------------------------------------------------
 
--- Rows relabelled lot UNTRACED: emptied, with no lot (the stops refused a live one).
-CREATE TEMPORARY TABLE c3_relabel ON COMMIT DROP AS
-SELECT s.id, s.sku, s.expiry_date, NULL::UUID AS lot_id
-  FROM inventory.stock_item s
- WHERE NULLIF(btrim(s.lot_number), '') IS NULL;
+-- Rows relabelled lot UNTRACED: emptied, with no lot (the stops refused a live one). With their expiry while stock
+-- rows have one (team plan 5-1 drops it; this runs either side of that).
+DO $$
+BEGIN
+    EXECUTE format($q$
+        CREATE TEMPORARY TABLE c3_relabel ON COMMIT DROP AS
+        SELECT s.id, s.sku, %s AS expiry_date, NULL::UUID AS lot_id
+          FROM inventory.stock_item s
+         WHERE NULLIF(btrim(s.lot_number), '') IS NULL$q$,
+        CASE WHEN EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+                            AND table_name = 'stock_item' AND column_name = 'expiry_date')
+             THEN 's.expiry_date' ELSE 'NULL::DATE' END);
+END
+$$;
 
 -- Rows detached from their carton: every row of a carton but the one kept - the row holding its units, or else its
 -- first row by id.
@@ -283,7 +296,6 @@ SELECT p.id                                                     AS stock_package
        s.id                                                     AS stock_item_id,
        s.status                                                 AS stock_status,
        s.lot_number,
-       s.expiry_date,
        COALESCE(s.on_hand, 0)                                   AS on_hand,
        COALESCE(s.reserved, 0)                                  AS reserved,
        CASE WHEN s.status = 'AVAILABLE' THEN s.on_hand - s.reserved ELSE 0 END AS available,
@@ -302,16 +314,34 @@ COMMENT ON VIEW inventory.stock_package_balance IS
 -- 5. stock_item: a lot on every row; one row per carton
 -- ---------------------------------------------------------------------------------------------
 
--- The SKU's lot UNTRACED of the expiry, as V20261111000110 finds or makes it.
-UPDATE c3_relabel r
-   SET lot_id = (SELECT l.id FROM inventory.stock_lot l
-                  WHERE l.sku = r.sku AND l.lot_number = 'UNTRACED' AND l.origin_type = 'UNTRACED'
-                    AND l.expiry_date IS NOT DISTINCT FROM r.expiry_date
-                  ORDER BY l.created_at, l.id LIMIT 1);
-CREATE TEMPORARY TABLE c3_untraced ON COMMIT DROP AS
-SELECT DISTINCT sku, expiry_date, gen_random_uuid() AS lot_id FROM c3_relabel WHERE lot_id IS NULL;
-INSERT INTO inventory.stock_lot (id, sku, lot_number, expiry_date, origin_type, version, created_at, created_by)
-SELECT lot_id, sku, 'UNTRACED', expiry_date, 'UNTRACED', 0, NOW(), 'V20261113000300' FROM c3_untraced;
+-- The SKU's lot UNTRACED (of the expiry, while lots have one), as V20261111000110 finds or makes it: the lot trigger
+-- wants a row's lot to match its lot number and expiry.
+CREATE TEMPORARY TABLE c3_untraced (sku VARCHAR(64), expiry_date DATE, lot_id UUID) ON COMMIT DROP;
+DO $$
+DECLARE
+    lot_expiry BOOLEAN := EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+                                    AND table_name = 'stock_lot' AND column_name = 'expiry_date');
+BEGIN
+    EXECUTE format($q$
+        UPDATE c3_relabel r
+           SET lot_id = (SELECT l.id FROM inventory.stock_lot l
+                          WHERE l.sku = r.sku AND l.lot_number = 'UNTRACED' AND l.origin_type = 'UNTRACED' %s
+                          ORDER BY l.created_at, l.id LIMIT 1)$q$,
+        CASE WHEN lot_expiry THEN 'AND l.expiry_date IS NOT DISTINCT FROM r.expiry_date' ELSE '' END);
+    INSERT INTO c3_untraced
+    SELECT DISTINCT sku, CASE WHEN lot_expiry THEN expiry_date END, NULL::UUID FROM c3_relabel WHERE lot_id IS NULL;
+    UPDATE c3_untraced SET lot_id = gen_random_uuid();
+    IF lot_expiry THEN
+        EXECUTE $q$
+            INSERT INTO inventory.stock_lot (id, sku, lot_number, expiry_date, origin_type, version, created_at,
+                                             created_by)
+            SELECT lot_id, sku, 'UNTRACED', expiry_date, 'UNTRACED', 0, NOW(), 'V20261113000300' FROM c3_untraced$q$;
+    ELSE
+        INSERT INTO inventory.stock_lot (id, sku, lot_number, origin_type, version, created_at, created_by)
+        SELECT lot_id, sku, 'UNTRACED', 'UNTRACED', 0, NOW(), 'V20261113000300' FROM c3_untraced;
+    END IF;
+END
+$$;
 UPDATE c3_relabel r SET lot_id = t.lot_id
   FROM c3_untraced t
  WHERE r.lot_id IS NULL AND t.sku = r.sku AND t.expiry_date IS NOT DISTINCT FROM r.expiry_date;
@@ -349,61 +379,6 @@ COMMENT ON INDEX inventory.uk_stock_item_package IS
 COMMENT ON COLUMN inventory.stock_item.stock_package_id IS
     'The carton this row is the contents of (one row per carton). NULL only for loose rows still written by a '
     'put-back, a customer return or a damage report, and for emptied rows of the history.';
-
--- V20261111000110's function, with the lot required of every SKU (20 BR-22), before the policy is even read: NOT
--- NULL and ck_stock_item_lot say it for every row; this says it as the policy error the application maps.
-CREATE OR REPLACE FUNCTION inventory.enforce_sku_policy() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE p inventory.inventory_items%ROWTYPE; receipt_day date;
-BEGIN
-    IF NULLIF(btrim(NEW.lot_number), '') IS NULL THEN
-        RAISE EXCEPTION 'Stock does not satisfy configured SKU policy: every unit carries a lot' USING ERRCODE='23514';
-    END IF;
-    -- Holds/consumption already lock individual rows in id order. Taking a SKU-wide lock here
-    -- would invert that order when two reservations span different rows of the same SKU.
-    IF TG_OP='UPDATE' AND NEW.sku IS NOT DISTINCT FROM OLD.sku
-       AND NEW.received_at IS NOT DISTINCT FROM OLD.received_at
-       AND NEW.lot_number IS NOT DISTINCT FROM OLD.lot_number
-       AND NEW.serial_number IS NOT DISTINCT FROM OLD.serial_number
-       AND NEW.expiry_date IS NOT DISTINCT FROM OLD.expiry_date
-       AND NEW.on_hand <= OLD.on_hand THEN
-        RETURN NEW;
-    END IF;
-    PERFORM pg_advisory_xact_lock(hashtextextended(NEW.sku, 701));
-    SELECT * INTO p FROM inventory.inventory_items WHERE sku=NEW.sku;
-    IF NOT FOUND OR NOT p.policy_configured THEN RETURN NEW; END IF;
-    IF TG_OP='UPDATE' THEN
-        IF NEW.sku IS DISTINCT FROM OLD.sku OR NEW.received_at IS DISTINCT FROM OLD.received_at
-           OR NEW.lot_number IS DISTINCT FROM OLD.lot_number OR NEW.serial_number IS DISTINCT FROM OLD.serial_number
-           OR NEW.expiry_date IS DISTINCT FROM OLD.expiry_date THEN
-            RAISE EXCEPTION 'Receipt identity is immutable; reconcile via a new stock layer' USING ERRCODE='23514';
-        END IF;
-        IF NEW.on_hand <= OLD.on_hand THEN RETURN NEW; END IF;
-        -- Replenishment must be a new layer; otherwise FIFO loses the age of incoming units. Units of this
-        -- very receipt moved in from another location (identity unchanged, checked just above) are not
-        -- replenishment: the application names the row it merges into for that one statement.
-        IF p.removal_strategy='FIFO'
-           AND current_setting('stockflow.same_receipt_merge', true) IS DISTINCT FROM NEW.id::text THEN
-            RAISE EXCEPTION 'FIFO replenishment requires a new receipt layer' USING ERRCODE='23514';
-        END IF;
-    END IF;
-    IF NEW.on_hand = 0 THEN RETURN NEW; END IF;
-    IF (p.serial_tracked AND (nullif(trim(NEW.serial_number),'') IS NULL OR NEW.on_hand > 1))
-       OR (NOT p.serial_tracked AND NEW.serial_number IS NOT NULL)
-       OR (p.expiry_tracked AND NEW.expiry_date IS NULL)
-       OR (NOT p.expiry_tracked AND NEW.expiry_date IS NOT NULL)
-       OR (p.removal_strategy='FIFO' AND NEW.received_at IS NULL) THEN
-        RAISE EXCEPTION 'Stock does not satisfy configured SKU policy' USING ERRCODE='23514';
-    END IF;
-    receipt_day := COALESCE((NEW.received_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date,
-                           (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Ho_Chi_Minh')::date);
-    IF NEW.received_at > clock_timestamp() + interval '1 minute' OR NEW.expiry_date < receipt_day
-       OR NEW.expiry_date < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
-       OR (p.max_shelf_life_days IS NOT NULL AND (NEW.received_at IS NULL OR NEW.expiry_date > receipt_day + p.max_shelf_life_days)) THEN
-        RAISE EXCEPTION 'Invalid receipt/expiry date' USING ERRCODE='23514';
-    END IF;
-    RETURN NEW;
-END $$;
-
 
 -- ---------------------------------------------------------------------------------------------
 -- 6. Count lines: a carton, whole

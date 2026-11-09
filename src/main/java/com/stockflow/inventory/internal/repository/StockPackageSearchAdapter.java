@@ -35,8 +35,15 @@ class StockPackageSearchAdapter implements StockPackageSearch {
 
     private static final String CARTON_COLUMNS = """
             b.stock_package_id, b.lpn, b.sku, b.unit_of_measure, b.nominal_qty, b.received_qty, b.location_code,
-            b.status, b.lot_number, b.expiry_date, b.on_hand, b.reserved, b.goods_receipt_line_id,
+            b.status, b.lot_number, si.expiry_date, b.on_hand, b.reserved, b.goods_receipt_line_id,
             b.closed_at""";
+
+    /**
+     * The view and the carton's stock row, for the expiry date: V20261113000300 left it out of the view, which does
+     * not tie itself to a column team plan 5-1 drops.
+     */
+    private static final String CARTONS = """
+            inventory.stock_package_balance b LEFT JOIN inventory.stock_item si ON si.id = b.stock_item_id""";
 
     /** The column of each of {@link #SORTABLE}; checked when the class loads, so a gap fails startup, not a request. */
     private static final Map<String, String> SORT_COLUMNS =
@@ -66,7 +73,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
 
     @Override
     public Optional<StockPackageBalance> byLpn(String lpn) {
-        return jdbc.query("SELECT " + CARTON_COLUMNS + " FROM inventory.stock_package_balance b WHERE b.lpn = :lpn",
+        return jdbc.query("SELECT " + CARTON_COLUMNS + " FROM " + CARTONS + " WHERE b.lpn = :lpn",
                 new MapSqlParameterSource("lpn", lpn), StockPackageSearchAdapter::cartonRow).stream().findFirst();
     }
 
@@ -114,7 +121,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
             return new PageImpl<>(List.of(), pageable, total == null ? 0 : total);
         }
         params.addValue("limit", pageable.getPageSize()).addValue("offset", pageable.getOffset());
-        List<StockPackageBalance> content = jdbc.query("SELECT " + CARTON_COLUMNS + " FROM inventory.stock_package_balance b"
+        List<StockPackageBalance> content = jdbc.query("SELECT " + CARTON_COLUMNS + " FROM " + CARTONS
                         + " WHERE " + where + " ORDER BY " + orderBy(pageable.getSort())
                         + " LIMIT :limit OFFSET :offset",
                 params, StockPackageSearchAdapter::cartonRow);
