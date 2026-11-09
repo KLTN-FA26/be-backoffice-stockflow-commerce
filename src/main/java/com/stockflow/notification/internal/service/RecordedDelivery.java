@@ -28,6 +28,13 @@ import java.time.Clock;
  *              anything else                                               -> FAILED row, and the failure is rethrown
  * </pre>
  *
+ * <p><b>At least once, not exactly once.</b> The SENT row is written in the listener's transaction after the transport
+ * accepted the message. If that transaction then fails to commit (the database gone at that moment, the JVM killed),
+ * the event stays incomplete and the message is sent again. With Resend (the dev and prod transport) the provider drops
+ * the second one when the message carries an idempotency key - the production order's messages carry their reference,
+ * the same on every attempt. Plain {@code smtp} has no such key, so there the partner may receive it twice. No database
+ * write can close that window: the send happens outside the transaction.</p>
+ *
  * <p>Not a bean: each listener builds one over the repository, clock and recorder it is given, so the listeners keep
  * the constructors their tests call. Call it inside the listener's transaction, which the advisory lock lasts for.</p>
  */
