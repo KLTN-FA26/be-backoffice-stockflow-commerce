@@ -341,6 +341,26 @@ public enum ErrorCode {
     /** 4B-3 (kltn-docs 14 BR-17): a SKU produced for the first time is sent with its plate fee. */
     QUOTE_PLATE_FEE_MISSING("A SKU on this quote is produced for the first time and has no plate fee; edit the quote",
             409),
+    /** 4B-4 (kltn-docs 14 §4.3): the order has no live sales contract, or no contract by that id. */
+    SALES_CONTRACT_NOT_FOUND("No sales contract for this order", 404),
+    /** 4B-4 (14 BR-12): one live contract per order. */
+    SALES_CONTRACT_EXISTS("This order already has a sales contract in force; cancel it to draw up another", 409),
+    /** 4B-4 (14 §4.3 step 11). */
+    SALES_CONTRACT_ORDER_NOT_DRAFT("A sales contract is drawn up, edited and sent for a draft order", 409),
+    /** 4B-4 (14 BR-23): the delivery schedule counts cartons. */
+    SALES_CONTRACT_ORDER_NOT_CARTONS("A sales contract schedules cartons of the customer's own SKUs; this order has lines not ordered in cartons", 409),
+    /** 4B-4 (14 §5.2, BR-14): the contract's state machine. */
+    SALES_CONTRACT_STATUS_INVALID("The sales contract is not in a status that allows this", 409),
+    /** 4B-4 (14 BR-23): batches, windows and cartons; the field errors name each rule broken. */
+    DELIVERY_SCHEDULE_INVALID("The delivery schedule breaks a rule of the contract", 409),
+    /** 4B-4 (14 BR-13): installments adding up to the total with tax; the field errors name each rule broken. */
+    PAYMENT_PLAN_INVALID("The payment plan breaks a rule of the contract", 409),
+    /** 4B-4 (18 BR-05). */
+    CUSTOMER_LEGAL_PROFILE_MISSING("The customer's registered address and legal representative are recorded before a contract is drawn up", 409),
+    /** 4B-4 (18 §3): the legal profile read before it was recorded. */
+    LEGAL_PROFILE_NOT_FOUND("The customer's legal profile is not recorded yet", 404),
+    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
+    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
      * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.
