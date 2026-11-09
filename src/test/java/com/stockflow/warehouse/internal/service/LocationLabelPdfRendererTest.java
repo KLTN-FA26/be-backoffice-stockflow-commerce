@@ -4,7 +4,6 @@ import com.google.zxing.BarcodeFormat;
 import com.stockflow.common.label.LabelDecoding;
 import com.stockflow.common.label.LabelFonts;
 import com.stockflow.common.label.LabelFormat;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -37,7 +36,7 @@ class LocationLabelPdfRendererTest {
 
     private static LocationLabel bin(String shelf, int level, String bin) {
         return new LocationLabel("HCM-" + shelf + "-" + level + "-" + bin, StorageLocationKind.BIN, shelf, level,
-                bin, null, StorageClass.OVERSIZE);
+                bin, null);
     }
 
     private static LocationLabelSheet sheet(List<LocationLabel> labels) {
@@ -111,8 +110,7 @@ class LocationLabelPdfRendererTest {
 
     @Test
     void anAreaLabelShowsTheAreaName() throws IOException {
-        var area = new LocationLabel("HCM-RCV01", StorageLocationKind.AREA, null, null, null, "Khu nhận hàng",
-                StorageClass.OVERSIZE);
+        var area = new LocationLabel("HCM-RCV01", StorageLocationKind.AREA, null, null, null, "Khu nhận hàng");
         try (PDDocument doc = render(List.of(area), LabelFormat.THERMAL_ROLL)) {
             String text = new PDFTextStripper().getText(doc);
             assertThat(text).contains("HCM-RCV01", "Khu nhận hàng").doesNotContain("Kệ");
@@ -123,7 +121,7 @@ class LocationLabelPdfRendererTest {
     void aCodeTooLongForCode128StillRendersAndItsQrDecodes() throws IOException {
         String code = "ABCDEFGHIJ-ABCDEFGHIJKLMNOPQRST-99-ABCDEFGHIJKLMNOPQRST";
         var label = new LocationLabel(code, StorageLocationKind.BIN, "ABCDEFGHIJKLMNOPQRST", 99,
-                "ABCDEFGHIJKLMNOPQRST", null, StorageClass.NORMAL);
+                "ABCDEFGHIJKLMNOPQRST", null);
         try (PDDocument doc = Loader.loadPDF(renderer.render(new LocationLabelSheet("ABCDEFGHIJ", "Kho dài",
                 List.of(label)), LabelFormat.A4_SHEET, WORDS))) {
             BufferedImage cell = LabelDecoding.cell(page(doc, 0), LabelFormat.A4_SHEET, 0, DPI);
@@ -139,8 +137,7 @@ class LocationLabelPdfRendererTest {
 
     @Test
     void aNameTheFontCannotDrawStillPrints() throws IOException {
-        var area = new LocationLabel("HCM-RCV01", StorageLocationKind.AREA, null, null, null, "Khu	lạnh 🧊",
-                StorageClass.COLD);
+        var area = new LocationLabel("HCM-RCV01", StorageLocationKind.AREA, null, null, null, "Khu	lạnh 🧊");
         try (PDDocument doc = Loader.loadPDF(renderer.render(new LocationLabelSheet("HCM", "Kho	🧊 lạnh",
                 List.of(area)), LabelFormat.A4_SHEET, WORDS))) {
             String text = new PDFTextStripper().getText(doc);

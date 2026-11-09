@@ -1,7 +1,6 @@
 package com.stockflow.warehouse.internal.entity;
 
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.common.persistence.BaseEntity;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
@@ -93,10 +92,6 @@ public class ShelfJpaEntity extends BaseEntity {
     private boolean pickWest;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "default_storage_class", nullable = false, length = 32)
-    private StorageClass defaultStorageClass;
-
-    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private LocationStatus status;
 
@@ -123,7 +118,7 @@ public class ShelfJpaEntity extends BaseEntity {
                           String description, BigDecimal x, BigDecimal y, BigDecimal width,
                           BigDecimal length, int rotation, boolean obstacle, boolean pickNorth,
                           boolean pickEast, boolean pickSouth, boolean pickWest,
-                          StorageClass defaultStorageClass, LocationStatus status) {
+                          LocationStatus status) {
         super(id);
         this.warehouseId = warehouseId;
         this.zoneId = zoneId;
@@ -140,7 +135,6 @@ public class ShelfJpaEntity extends BaseEntity {
         this.pickEast = pickEast;
         this.pickSouth = pickSouth;
         this.pickWest = pickWest;
-        this.defaultStorageClass = defaultStorageClass;
         this.status = status;
     }
 
@@ -148,7 +142,7 @@ public class ShelfJpaEntity extends BaseEntity {
     public void apply(UUID zoneId, String name, String description, BigDecimal x, BigDecimal y,
                       BigDecimal width, BigDecimal length, int rotation, boolean obstacle,
                       boolean pickNorth, boolean pickEast, boolean pickSouth, boolean pickWest,
-                      StorageClass defaultStorageClass, LocationStatus status) {
+                      LocationStatus status) {
         this.zoneId = zoneId;
         this.name = name;
         this.description = description;
@@ -162,7 +156,6 @@ public class ShelfJpaEntity extends BaseEntity {
         this.pickEast = pickEast;
         this.pickSouth = pickSouth;
         this.pickWest = pickWest;
-        this.defaultStorageClass = defaultStorageClass;
         this.status = status;
     }
 
@@ -187,7 +180,6 @@ public class ShelfJpaEntity extends BaseEntity {
     public boolean isPickEast() { return pickEast; }
     public boolean isPickSouth() { return pickSouth; }
     public boolean isPickWest() { return pickWest; }
-    public StorageClass getDefaultStorageClass() { return defaultStorageClass; }
     public LocationStatus getStatus() { return status; }
     public List<ShelfLevelJpaEntity> getLevels() { return levels; }
 }

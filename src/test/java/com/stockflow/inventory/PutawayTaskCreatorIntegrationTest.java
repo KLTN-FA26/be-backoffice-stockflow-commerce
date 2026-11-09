@@ -127,8 +127,8 @@ class PutawayTaskCreatorIntegrationTest {
 
     private void area(UUID warehouse, String code, String locationCode, String type, int x) {
         UUID location = Identifiers.newId();
-        jdbc.update("INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,"
-                + " is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, 'NORMAL', FALSE, FALSE, 'ACTIVE')",
+        jdbc.update("INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code,"
+                + " is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, FALSE, FALSE, 'ACTIVE')",
                 location, warehouse, locationCode);
         jdbc.update("INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length,"
                 + " rotation, is_obstacle, status) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 5, 5, 0, FALSE, 'ACTIVE')",

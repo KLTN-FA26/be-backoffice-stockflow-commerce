@@ -1,6 +1,5 @@
 package com.stockflow.inventory.internal.repository;
 
-import com.stockflow.inventory.api.StorageClass;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.support.PageableExecutionUtils;
@@ -38,10 +37,6 @@ class InventoryItemSearchAdapter implements InventoryItemSearch {
             args.add(pattern);
             args.add(pattern);
         }
-        if (criteria.storageClass() != null) {
-            where.append(" AND storage_class = ?");
-            args.add(criteria.storageClass().name());
-        }
         if (criteria.policyConfigured() != null) {
             where.append(" AND policy_configured = ?");
             args.add(criteria.policyConfigured());
@@ -51,12 +46,12 @@ class InventoryItemSearchAdapter implements InventoryItemSearch {
         pageArgs.add(pageable.getPageSize());
         pageArgs.add(pageable.getOffset());
         List<Row> content = jdbc.query(
-                "SELECT id, sku, unit_of_measure, barcode, storage_class, lot_tracked, serial_tracked,"
+                "SELECT id, sku, unit_of_measure, barcode, lot_tracked, serial_tracked,"
                         + " policy_configured FROM inventory.inventory_items" + where
                         + " ORDER BY sku LIMIT ? OFFSET ?",
                 (rs, n) -> new Row(rs.getObject("id", UUID.class), rs.getString("sku"),
                         rs.getString("unit_of_measure"), rs.getString("barcode"),
-                        StorageClass.valueOf(rs.getString("storage_class")), rs.getBoolean("lot_tracked"),
+                        rs.getBoolean("lot_tracked"),
                         rs.getBoolean("serial_tracked"), rs.getBoolean("policy_configured")),
                 pageArgs.toArray());
         // A partial page already gives the total (its offset plus its length), so the count, a second scan with the

@@ -11,7 +11,6 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.RemovalStrategy;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
@@ -83,7 +82,7 @@ class InventoryItemsIntegrationTest {
     private ItemLogistics logistics(String unit, String barcode, String weightKg) {
         return new ItemLogistics(unit, barcode, new BigDecimal(weightKg), new BigDecimal("8"), new BigDecimal("8"),
                 new BigDecimal("10"), new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"),
-                new BigDecimal("50"), 1, 50, StorageClass.FRAGILE, false, null);
+                new BigDecimal("50"), 1, 50);
     }
 
     private static ErrorCode codeOf(Runnable call) {

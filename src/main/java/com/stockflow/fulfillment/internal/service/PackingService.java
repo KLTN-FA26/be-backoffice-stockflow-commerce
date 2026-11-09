@@ -36,7 +36,6 @@ import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -681,7 +680,7 @@ class PackingService implements Packing {
     /**
      * The order's lines as the packing table sees them: what the order still wants (its quantity less units closed),
      * what reached packing (what was picked and not put back), the lots and serials of those goods, and the SKU's
-     * barcode, rotatable flag and storage class.
+     * barcode, rotatable flag and box count.
      *
      * <p>Legacy: a print line of an order released while in-house production existed was never picked - production
      * consumed its hold when it delivered the printed goods to packing (G4-Q2). Those units, a CONSUMED hold of the line
@@ -745,7 +744,8 @@ class PackingService implements Packing {
             }
             lines.add(new PackingSession.Line(line.lineId(), line.sku(), item.barcode(), wanted, available, print,
                     line.designSnapshotId(), lots, serials, item.rotatable(),
-                    item.storageClass() == StorageClass.FRAGILE, item.packageCount()));
+                    // No SKU is stored FRAGILE any more (storage class removed, team plan 5-4): the packer marks it.
+                    false, item.packageCount()));
         }
         return lines;
     }

@@ -4,7 +4,6 @@ import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingSpec.WarningCode;
 import com.stockflow.inventory.api.RuleLevel;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.UomConversion;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,7 +32,7 @@ class PackagingRulesTest {
     private static ItemLogistics item(String weight, String l, String w, String h, String pWeight, String pl,
                                       String pw, String ph, int packageCount, boolean rotatable) {
         return new ItemLogistics("EACH", null, d(weight), d(l), d(w), d(h), d(pWeight), d(pl), d(pw), d(ph),
-                packageCount, 1, StorageClass.NORMAL, false, null, rotatable);
+                packageCount, 1, rotatable);
     }
 
     private static ItemLogistics unitOnly() {

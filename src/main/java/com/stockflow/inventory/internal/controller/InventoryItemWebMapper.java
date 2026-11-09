@@ -21,8 +21,7 @@ class InventoryItemWebMapper {
         return new InventoryItemResponse(d.id(), d.sku(), d.version(),
                 new InventoryItemResponse.Logistics(l.unitOfMeasure(), l.barcode(), l.weightKg(), l.lengthCm(),
                         l.widthCm(), l.heightCm(), l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(),
-                        l.packageHeightCm(), l.packageCount(), l.packSize(), l.storageClass().name(),
-                        l.requiresAdultSignature(), l.shippingRestrictionNote(), l.rotatable()),
+                        l.packageHeightCm(), l.packageCount(), l.packSize(), l.rotatable()),
                 new InventoryItemResponse.Policy(p.reorderPoint(), p.safetyStock(), p.maxQty(),
                         p.removalStrategy().name(), p.trackingMode().name(), p.expiryTracked(),
                         p.maxShelfLifeDays()),
@@ -32,14 +31,13 @@ class InventoryItemWebMapper {
 
     InventoryItemSummaryResponse toSummary(InventoryItems.Summary s) {
         return new InventoryItemSummaryResponse(s.id(), s.sku(), s.unitOfMeasure(), s.barcode(),
-                s.storageClass().name(), s.trackingMode().name(), s.policyConfigured());
+                s.trackingMode().name(), s.policyConfigured());
     }
 
     ItemLogistics toLogistics(UpdateItemLogisticsRequest r) {
         return new ItemLogistics(r.unitOfMeasure(), r.barcode(), r.weightKg(), r.lengthCm(), r.widthCm(),
                 r.heightCm(), r.packageWeightKg(), r.packageLengthCm(), r.packageWidthCm(), r.packageHeightCm(),
                 Objects.requireNonNullElse(r.packageCount(), 1), Objects.requireNonNullElse(r.packSize(), 1),
-                r.storageClass(), r.requiresAdultSignature(), r.shippingRestrictionNote(),
                 !Boolean.FALSE.equals(r.rotatable()));
     }
 

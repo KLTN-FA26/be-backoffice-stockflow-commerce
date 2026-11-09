@@ -117,8 +117,8 @@ class GoodsReceiptPutawayCloseIntegrationTest {
 
     private void area(UUID warehouse, String code, String locationCode, String type, int x) {
         UUID location = Identifiers.newId();
-        jdbc.update("INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,"
-                + " is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, 'NORMAL', FALSE, FALSE, 'ACTIVE')",
+        jdbc.update("INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code,"
+                + " is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, FALSE, FALSE, 'ACTIVE')",
                 location, warehouse, locationCode);
         jdbc.update("INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length,"
                 + " rotation, is_obstacle, status) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 5, 5, 0, FALSE, 'ACTIVE')",
@@ -135,17 +135,16 @@ class GoodsReceiptPutawayCloseIntegrationTest {
         jdbc.update("""
                 INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation,
                                              is_obstacle, pick_north, pick_east, pick_south, pick_west,
-                                             default_storage_class, status)
-                VALUES (?, ?, ?, 'B01', 'Shelf', 5, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE, 'NORMAL',
+                                             status)
+                VALUES (?, ?, ?, 'B01', 'Shelf', 5, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE,
                         'ACTIVE')""", shelf, warehouse, zone);
         jdbc.update("""
                 INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
                 VALUES (?, ?, 1, 0, 1.4, 500)""", level, shelf);
         jdbc.update("""
-                INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
-                                                        capacity_units, max_weight, is_pickable, is_putaway_target,
+                INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable, is_putaway_target,
                                                         status)
-                VALUES (?, ?, 'BIN', ?, 'NORMAL', 500, 500, TRUE, TRUE, 'ACTIVE')""", location, warehouse, bin);
+                VALUES (?, ?, 'BIN', ?, 500, TRUE, TRUE, 'ACTIVE')""", location, warehouse, bin);
         jdbc.update("""
                 INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
                 VALUES (?, ?, ?, 'A', 0, 0, 5, 1.2, 0, 'PALLET')""", Identifiers.newId(), level, location);

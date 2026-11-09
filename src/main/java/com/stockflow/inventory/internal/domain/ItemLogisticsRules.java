@@ -36,12 +36,6 @@ public final class ItemLogisticsRules {
         if (l.packageCount() < 1 || l.packSize() < 1) {
             throw invalid("packageCount and packSize must be at least 1");
         }
-        if (l.storageClass() == null) {
-            throw invalid("storageClass is required");
-        }
-        if (l.shippingRestrictionNote() != null && l.shippingRestrictionNote().length() > 500) {
-            throw invalid("shippingRestrictionNote must be at most 500 characters");
-        }
     }
 
     private static void positive(BigDecimal value, String field) {

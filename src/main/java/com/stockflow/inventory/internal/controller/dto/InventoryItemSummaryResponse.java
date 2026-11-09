@@ -7,5 +7,5 @@ import java.util.UUID;
 /** One row of the inventory item list. */
 @Schema(name = "InventoryItemSummary")
 public record InventoryItemSummaryResponse(UUID id, String sku, String unitOfMeasure, String barcode,
-                                           String storageClass, String trackingMode, boolean policyConfigured) {
+                                           String trackingMode, boolean policyConfigured) {
 }

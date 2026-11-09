@@ -7,7 +7,6 @@ import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.SkuRetirement;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.inventory.internal.repository.InventoryItemSearch;
@@ -61,8 +60,7 @@ class InventoryItemsImplTest {
             Clock.fixed(NOW, ZoneOffset.UTC), users, events, retirement);
 
     private static ItemLogistics logistics(String unit, String barcode) {
-        return new ItemLogistics(unit, barcode, BigDecimal.ONE, null, null, null, null, null, null, null, 1, 1,
-                StorageClass.NORMAL, false, null);
+        return new ItemLogistics(unit, barcode, BigDecimal.ONE, null, null, null, null, null, null, null, 1, 1);
     }
 
     private static InventoryPolicy policy(Integer reorder, Integer safety, Integer max, RemovalStrategy strategy,
@@ -127,16 +125,16 @@ class InventoryItemsImplTest {
         @DisplayName("search turns blank filters into no filter, trims the others, and derives the tracking mode")
         void searchNormalisesFilters() {
             when(search.items(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(
-                    new InventoryItemSearch.Row(ID, SKU, "PCS", "893", StorageClass.COLD, true, true, false))));
+                    new InventoryItemSearch.Row(ID, SKU, "PCS", "893", true, true, false))));
 
             PageResponse<InventoryItems.Summary> page = service.search(
-                    new InventoryItems.ItemQuery("  ", " cup ", StorageClass.COLD, false, 0, 20));
+                    new InventoryItems.ItemQuery("  ", " cup ", false, 0, 20));
 
             ArgumentCaptor<InventoryItemSearch.Criteria> criteria =
                     ArgumentCaptor.forClass(InventoryItemSearch.Criteria.class);
             verify(search).items(criteria.capture(), any(Pageable.class));
             assertThat(criteria.getValue()).isEqualTo(
-                    new InventoryItemSearch.Criteria(null, "cup", StorageClass.COLD, false));
+                    new InventoryItemSearch.Criteria(null, "cup", false));
             assertThat(page.items().get(0).trackingMode()).isEqualTo(TrackingMode.LOT_SERIAL);
         }
     }

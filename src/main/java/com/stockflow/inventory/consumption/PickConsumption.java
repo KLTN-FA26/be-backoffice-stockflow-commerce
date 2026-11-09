@@ -38,6 +38,8 @@ public interface PickConsumption {
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} when the line's
      *         hold is unknown; {@code LOCATION_NOT_FOUND} / {@code LOCATION_NOT_USABLE} for the bin;
      *         {@code STOCK_STATUS_MISMATCH} when that bin holds the same layer in another status;
+     *         {@code CARTON_DOES_NOT_FIT_BIN} when the carton the goods were picked in does not fit that bin
+     *         dimension by dimension (kltn-docs 07 BR-12: such a carton goes to an OVERFLOW area);
      *         {@code OUT_OF_DATA_SCOPE}
      */
     void putBack(PutBackCommand command);

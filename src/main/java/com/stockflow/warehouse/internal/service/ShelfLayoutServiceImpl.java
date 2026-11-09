@@ -69,8 +69,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
                     "Warehouse %s already has shelf %s".formatted(warehouse.prefix(), code));
         }
         Shelf shelf = Shelf.create(Identifiers.newId(), warehouse.id(), command.zoneId(), code, command.name(),
-                command.description(), command.footprint(), command.obstacle(), command.pickFaces(),
-                command.defaultStorageClass());
+                command.description(), command.footprint(), command.obstacle(), command.pickFaces());
         requirePlaceable(warehouse, shelf.id(), shelf.footprint());
         return ShelfSummary.of(shelves.save(shelf));
     }
@@ -83,7 +82,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         Shelf shelf = require(command.shelfId());
         requireZoneOf(command.zoneId(), warehouse.id());
         shelf.update(command.zoneId(), command.name(), command.description(), command.footprint(),
-                command.obstacle(), command.pickFaces(), command.defaultStorageClass(), command.expectedVersion());
+                command.obstacle(), command.pickFaces(), command.expectedVersion());
         if (shelf.status() != LocationStatus.INACTIVE) {
             requirePlaceable(warehouse, shelf.id(), shelf.footprint());
         }
@@ -134,7 +133,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         Shelf shelf = require(command.shelfId());
         UUID binId = shelf.addBin(command.levelId(), Identifiers.newId(), Identifiers.newId(), command.code(),
                 command.details(), command.settings(), warehouse.prefix()).id();
-        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(command.levelId()).bin(binId));
+        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(command.levelId()), binId);
     }
 
     @Override
@@ -144,7 +143,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
         shelf.updateBin(command.levelId(), command.binId(), command.details(), command.settings());
-        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(command.levelId()).bin(command.binId()));
+        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(command.levelId()), command.binId());
     }
 
     @Override
@@ -153,7 +152,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         lockWarehouseOf(shelfId);
         Shelf shelf = require(shelfId);
         shelf.changeBinStatus(levelId, binId, status);
-        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(levelId).bin(binId));
+        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(levelId), binId);
     }
 
     /**

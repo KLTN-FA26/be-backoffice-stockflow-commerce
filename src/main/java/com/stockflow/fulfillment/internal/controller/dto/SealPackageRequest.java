@@ -12,7 +12,8 @@ import java.math.BigDecimal;
  * Weighed, measured, sealed (kltn-docs 08 step 5-7, BR-03): the real weight and size are required.
  *
  * @param rotatable null: from the SKUs inside, the strictest wins (01, E13); set: the packer's override
- * @param fragile   null: from the SKUs inside (storage class FRAGILE); set: the packer's override
+ * @param fragile   null: not fragile (no SKU is FRAGILE since the storage class went, team plan 5-4); set: the
+ *                  packer's override
  * @param kitOverrideReason KIT-FORCE: an ordinary package holding an item that ships as several boxes is sealed only
  *                  with a reason - its own (given when opened or scanned) or this one
  */

@@ -78,7 +78,7 @@ class ExpirySweeperTest {
         events = mock(ApplicationEventPublisher.class);
         warehouses = mock(WarehouseService.class);
         when(warehouses.findLocation(LOCATION)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                StorageLocationView.Kind.BIN, WAREHOUSE, LOCATION, StorageLocationView.StorageClass.NORMAL,
+                StorageLocationView.Kind.BIN, WAREHOUSE, LOCATION,
                 StorageLocationView.Status.ACTIVE, StorageLocationView.Status.ACTIVE, true)));
         when(alerts.findOpenOfKinds(any(Kind[].class))).thenAnswer(i -> List.copyOf(open));
         when(alerts.insertIfAbsent(any())).thenReturn(true);

@@ -11,8 +11,11 @@ import java.util.UUID;
  * @param lpn                 the carton's; null for a loose task
  * @param targetLocationCode  the bin of the latest putaway; null until something was put away
  * @param suggestions         ranked bins; empty in a list, filled when one task is read
+ * @param overflowLocationCodes when one task is read and no bin takes its carton: the usable {@code OVERFLOW} areas
+ *                            of its warehouse, where it may be put instead (kltn-docs 05 BR-13); empty otherwise
  */
 public record PutawayTaskResponse(UUID id, UUID goodsReceiptId, UUID goodsReceiptLineId, String sku, String lotNumber,
                                   int quantity, int left, String sourceLocationCode, String lpn, String status,
-                                  String targetLocationCode, List<PutawaySuggestionResponse> suggestions) {
+                                  String targetLocationCode, List<PutawaySuggestionResponse> suggestions,
+                                  List<String> overflowLocationCodes) {
 }

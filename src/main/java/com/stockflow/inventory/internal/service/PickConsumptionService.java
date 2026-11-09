@@ -73,12 +73,15 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final Clock clock;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports;
+    private final CartonPlacement placement;
 
     PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
                            LocationDirectory locations, InventoryPolicyRepository policies,
                            StockPackageContents cartons, Clock clock,
                            com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
-                           com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports) {
+                           com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports,
+                           CartonPlacement placement) {
+        this.placement = placement;
         this.cycleCounts = cycleCounts;
         this.damageReports = damageReports;
         this.stockItems = stockItems;
@@ -171,6 +174,11 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         StockItem sourceView = stockItems.findByReservationIdForUpdate(ReservationId.of(command.reservationId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                         "No reservation with id " + command.reservationId()));
+        // Onto a bin, the carton they were picked in must fit it (kltn-docs 07 BR-12, 06 BR-01); one that fits no bin
+        // goes to an OVERFLOW area, which takes any size.
+        if (sourceView.stockPackageId() != null) {
+            placement.requireFits(target.code(), sourceView.stockPackageId());
+        }
         // The goods come back as the layer they left: same SKU, lot, expiry and receipt time, so FEFO and
         // FIFO still see them in their place - as loose stock. At the bin they left, that layer is the source
         // row itself when it is loose; a carton's row is never refilled by a put-back, whatever bin it is on:

@@ -7,7 +7,6 @@ import com.stockflow.warehouse.internal.domain.BoundaryType;
 import com.stockflow.warehouse.internal.domain.DoorStatus;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.service.AreaCommands;
 import com.stockflow.warehouse.internal.service.AreaLayoutService;
 import com.stockflow.warehouse.internal.service.AreaSummary;
@@ -68,30 +67,31 @@ class AreaAndBoundaryControllerHttpTest {
     void creatingAStorageAreaCarriesItsLocation() throws Exception {
         when(areas.createArea(any())).thenReturn(new AreaSummary(UUID.randomUUID(), WAREHOUSE, "RCV02",
                 AreaType.RECEIVING, "Khu nhận 2", FLOOR, false, LocationStatus.ACTIVE, 0, UUID.randomUUID(),
-                "HCM-RCV02", StorageClass.NORMAL, 500, null, false, true));
+                "HCM-RCV02", new java.math.BigDecimal("500"), false, true));
 
         mvc.perform(post("/api/v1/warehouses/{id}/areas", WAREHOUSE).contentType("application/json").content("""
                         {"code":"rcv02","type":"RECEIVING","name":"Khu nhận 2",
                          "footprint":{"x":20,"y":25,"width":5,"length":5,"rotation":0},
-                         "location":{"capacityUnits":500,"pickable":false,"putawayTarget":true}}
+                         "location":{"maxWeight":500,"pickable":false,"putawayTarget":true}}
                         """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.locationCode").value("HCM-RCV02"))
+                .andExpect(jsonPath("$.data.storageClass").doesNotExist())
+                .andExpect(jsonPath("$.data.capacityUnits").doesNotExist())
                 .andExpect(jsonPath("$.data.footprint.width").value(5));
 
         ArgumentCaptor<AreaCommands.CreateArea> sent = ArgumentCaptor.forClass(AreaCommands.CreateArea.class);
         verify(areas).createArea(sent.capture());
         assertThat(sent.getValue().warehouseId()).isEqualTo(WAREHOUSE);
         assertThat(sent.getValue().details().footprint()).isEqualTo(FLOOR);
-        assertThat(sent.getValue().details().storageClass()).isEqualTo(StorageClass.NORMAL);
-        assertThat(sent.getValue().details().settings().capacityUnits()).isEqualTo(500);
+        assertThat(sent.getValue().details().settings().maxWeight()).isEqualByComparingTo("500");
     }
 
     @Test
     void aNonStorageAreaAnswersWithoutLocationFields() throws Exception {
         when(areas.createArea(any())).thenReturn(new AreaSummary(UUID.randomUUID(), WAREHOUSE, "OFFICE2",
                 AreaType.NON_STORAGE, "Văn phòng 2", FLOOR, true, LocationStatus.ACTIVE, 0, null, null, null,
-                null, null, null, null));
+                null, null));
 
         mvc.perform(post("/api/v1/warehouses/{id}/areas", WAREHOUSE).contentType("application/json").content("""
                         {"code":"office2","type":"NON_STORAGE","name":"Văn phòng 2","obstacle":true,
@@ -112,13 +112,12 @@ class AreaAndBoundaryControllerHttpTest {
     void updatingAnAreaCarriesTheVersionAndTheAreaId() throws Exception {
         UUID area = UUID.fromString("0190a000-0000-7000-8000-000000000003");
         when(areas.updateArea(any())).thenReturn(new AreaSummary(area, WAREHOUSE, "RCV01", AreaType.OVERFLOW,
-                "Khu tràn", FLOOR, false, LocationStatus.ACTIVE, 8, UUID.randomUUID(), "HCM-RCV01",
-                StorageClass.OVERSIZE, null, null, false, true));
+                "Khu tràn", FLOOR, false, LocationStatus.ACTIVE, 8, UUID.randomUUID(), "HCM-RCV01", null, false, true));
 
         mvc.perform(put("/api/v1/areas/{id}", area).contentType("application/json").content("""
                         {"type":"OVERFLOW","name":"Khu tràn","version":7,
                          "footprint":{"x":20,"y":25,"width":5,"length":5,"rotation":0},
-                         "location":{"storageClass":"OVERSIZE","pickable":false,"putawayTarget":true}}
+                         "location":{"pickable":false,"putawayTarget":true}}
                         """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(8));
@@ -127,7 +126,7 @@ class AreaAndBoundaryControllerHttpTest {
         verify(areas).updateArea(sent.capture());
         assertThat(sent.getValue().areaId()).isEqualTo(area);
         assertThat(sent.getValue().expectedVersion()).isEqualTo(7);
-        assertThat(sent.getValue().details().storageClass()).isEqualTo(StorageClass.OVERSIZE);
+        assertThat(sent.getValue().details().type()).isEqualTo(AreaType.OVERFLOW);
     }
 
     @Test
@@ -135,7 +134,7 @@ class AreaAndBoundaryControllerHttpTest {
         UUID area = UUID.fromString("0190a000-0000-7000-8000-000000000003");
         when(areas.changeAreaStatus(any(), any())).thenReturn(new AreaSummary(area, WAREHOUSE, "QC01",
                 AreaType.QUARANTINE, "Khu QC", FLOOR, false, LocationStatus.BLOCKED, 4, UUID.randomUUID(),
-                "HCM-QC01", StorageClass.NORMAL, null, null, false, false));
+                "HCM-QC01", null, false, false));
 
         mvc.perform(put("/api/v1/areas/{id}/status", area).contentType("application/json")
                         .content("{\"status\":\"BLOCKED\"}"))

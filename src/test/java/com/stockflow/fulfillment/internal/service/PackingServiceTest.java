@@ -37,7 +37,6 @@ import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemLogistics;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderHoldState;
 import com.stockflow.order.api.OrderService;
@@ -139,8 +138,7 @@ class PackingServiceTest {
             return session;
         });
         when(itemControls.logistics(any())).thenAnswer(call -> new InventoryItemLogistics("SKU-A", 0, new ItemLogistics(
-                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1, StorageClass.NORMAL, false,
-                null, true)));
+                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1, true)));
         when(shipments.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
         when(shipments.findByPackIdOrderByReadyAtAscIdAsc(any())).thenReturn(List.of());
     }
@@ -879,15 +877,15 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("a FRAGILE item makes a fragile line; the item's rotatable flag and box count carry over")
+        @DisplayName("no item is FRAGILE any more (5-4): the line is not fragile; rotatable flag and box count carry over")
         void itemFlags() {
             when(itemControls.logistics(any())).thenReturn(new InventoryItemLogistics("SKU-A", 0, new ItemLogistics("PCS",
-                    null, null, null, null, null, null, null, null, null, 3, 1, StorageClass.FRAGILE, false, null,
+                    null, null, null, null, null, null, null, null, null, 3, 1,
                     false)));
 
             service.session(pick.getId(), actor);
 
-            assertThat(lastFacts.getFirst().fragile()).isTrue();
+            assertThat(lastFacts.getFirst().fragile()).isFalse();
             assertThat(lastFacts.getFirst().rotatable()).isFalse();
             assertThat(lastFacts.getFirst().packageCount()).isEqualTo(3);
         }

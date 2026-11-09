@@ -11,7 +11,6 @@ import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
-import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.service.PutawayService.TaskView;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
@@ -54,7 +53,7 @@ class PutawayServiceListTest {
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final StockMovementLog ledger = mock(StockMovementLog.class);
     private final PutawayService service = new PutawayService(tasks, warehouses, stockPackages, ledger,
-            mock(InventoryPolicyRepository.class), mock(BinOccupancyQuery.class), mock(StockOperations.class),
+            mock(BinOccupancyQuery.class), mock(StockOperations.class),
             mock(ApplicationEventPublisher.class));
 
     private final UUID warehouse = UUID.randomUUID();
@@ -155,7 +154,7 @@ class PutawayServiceListTest {
                     done.goodsReceiptLineId(), receivedInto(done, RCV),
                     cancelled.goodsReceiptLineId(), receivedInto(cancelled, RCV)));
             when(warehouses.findLocation(binId)).thenReturn(Optional.of(new StorageLocationView(binId,
-                    StorageLocationView.Kind.BIN, warehouse, BIN, StorageLocationView.StorageClass.NORMAL,
+                    StorageLocationView.Kind.BIN, warehouse, BIN,
                     StorageLocationView.Status.ACTIVE, StorageLocationView.Status.ACTIVE, true)));
             return service.list(null, receipt, null, 0, 20);
         }

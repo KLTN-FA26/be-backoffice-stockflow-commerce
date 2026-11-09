@@ -75,8 +75,10 @@ class PutawayController {
     @PostMapping("/{taskId}/confirmations")
     @Operation(summary = "Put a task's goods into a bin, by scan",
             description = "Takes {locationCode, lpn}: the task's carton goes into the bin whole. Answers the task as "
-                    + "it now stands. Refused: DONE task 409, other carton 409, a bin that is not a bin 422, another "
-                    + "warehouse's, unusable, of the wrong class or full 409.")
+                    + "it now stands. Refused: DONE task 409, other carton 409, an area that is not OVERFLOW 422, "
+                    + "another warehouse's, unusable or full 409, a carton that does not fit the bin 422 "
+                    + "CARTON_DOES_NOT_FIT_BIN. An OVERFLOW area of the warehouse is taken only when no bin takes "
+                    + "the carton (05 BR-13); otherwise 409 PUTAWAY_OVERFLOW_NOT_ALLOWED.")
     @RequiresPermission(resource = InventoryResources.PUTAWAY_TASKS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
     public ApiResponse<PutawayTaskResponse> confirm(@PathVariable UUID taskId,
                                                     @Valid @RequestBody PutawayConfirmationRequest request,
@@ -89,7 +91,7 @@ class PutawayController {
         return new PutawayTaskResponse(task.id(), task.goodsReceiptId(), task.goodsReceiptLineId(), task.sku(),
                 task.lotNumber(), task.quantity(), task.left(), task.sourceLocationCode(), task.lpn(), task.status(),
                 task.targetLocationCode(), task.suggestions().stream()
-                .map(s -> new PutawaySuggestionResponse(s.locationCode(), s.reason().name(), s.freeUnits(),
-                        s.freeWeightKg())).toList());
+                .map(s -> new PutawaySuggestionResponse(s.locationCode(), s.reason().name(), s.freeVolumeM3(),
+                        s.freeWeightKg())).toList(), task.overflowLocationCodes());
     }
 }

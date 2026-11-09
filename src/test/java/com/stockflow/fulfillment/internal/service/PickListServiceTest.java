@@ -91,7 +91,7 @@ class PickListServiceTest {
         when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
                 task.getOrderId(), OrderStatus.PICKING, List.of(), null)));
         when(itemControls.logistics(any())).thenAnswer(call -> new InventoryItemLogistics("X", 0, new ItemLogistics(
-                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1, null, false, null)));
+                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1)));
     }
 
     private PickLineJpaEntity line(String sku, String location, int allocated, UUID reservation) {
@@ -126,7 +126,7 @@ class PickListServiceTest {
         private void locationsIn(UUID warehouse, String... codes) {
             for (String code : codes) {
                 when(warehouses.findLocation(code)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                        StorageLocationView.Kind.BIN, warehouse, code, null, null, null, true)));
+                        StorageLocationView.Kind.BIN, warehouse, code, null, null, true)));
             }
         }
 
@@ -485,7 +485,7 @@ class PickListServiceTest {
             when(inventory.reallocate(any())).thenReturn(List.of(new StockReservation(UUID.randomUUID(),
                     UUID.randomUUID(), location, "LOT-2", 5)));
             when(warehouses.findLocation(location)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, null, true)));
+                    StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, true)));
         }
 
         @Test
@@ -555,7 +555,7 @@ class PickListServiceTest {
             when(inventory.reallocate(any())).thenReturn(List.of(new StockReservation(UUID.randomUUID(),
                     UUID.randomUUID(), "HN-B-01", "LOT-2", 5)));
             when(warehouses.findLocation("HN-B-01")).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, OTHER_WAREHOUSE, "HN-B-01", null, null, null, true)));
+                    StorageLocationView.Kind.BIN, OTHER_WAREHOUSE, "HN-B-01", null, null, true)));
 
             assertThat(refusal(() -> service.reallocateShort(task.getId(), row.getId(), actor)).errorCode())
                     .isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
@@ -582,7 +582,7 @@ class PickListServiceTest {
 
         private void binOf(UUID warehouse, boolean usable, StorageLocationView.Kind kind) {
             when(warehouses.findLocation("HCM-A-05")).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    kind, warehouse, "HCM-A-05", null, null, null, usable)));
+                    kind, warehouse, "HCM-A-05", null, null, usable)));
         }
 
         @Test

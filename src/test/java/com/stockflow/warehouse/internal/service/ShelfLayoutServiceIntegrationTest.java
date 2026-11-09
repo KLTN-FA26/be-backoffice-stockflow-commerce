@@ -18,7 +18,6 @@ import com.stockflow.warehouse.internal.domain.PickFaces;
 import com.stockflow.warehouse.internal.domain.Shelf;
 import com.stockflow.warehouse.internal.domain.ShelfLevel;
 import com.stockflow.warehouse.internal.domain.ShelfRepository;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import org.hibernate.SessionFactory;
@@ -70,14 +69,14 @@ class ShelfLayoutServiceIntegrationTest {
 
     private ShelfSummary create(UUID warehouseId, UUID zoneId, String code, Footprint footprint) {
         return shelves.createShelf(new ShelfCommands.CreateShelf(warehouseId, zoneId, code, "Kệ " + code, null,
-                footprint, true, new PickFaces(false, false, true, false), StorageClass.NORMAL));
+                footprint, true, new PickFaces(false, false, true, false)));
     }
 
     private static BinDetails binAt(Footprint footprint) {
-        return new BinDetails(null, footprint, BinType.PALLET, null);
+        return new BinDetails(null, footprint, BinType.PALLET);
     }
 
-    private static final LocationSettings PICKABLE = new LocationSettings(40, new BigDecimal("250"), true, true);
+    private static final LocationSettings PICKABLE = new LocationSettings(new BigDecimal("250"), true, true);
 
     private static ErrorCode errorOf(Runnable call) {
         try {
@@ -185,7 +184,7 @@ class ShelfLayoutServiceIntegrationTest {
             jdbc.execute("set constraints all immediate");
 
             assertThat(bin.locationCode()).isEqualTo("HCM-A01-3-01");
-            assertThat(bin.storageClass()).isEqualTo(StorageClass.OVERSIZE);
+            assertThat(bin.capacityVolumeM3()).as("5 x 1.2 x 1.4").isEqualByComparingTo("8.4");
             entityManager.clear();
             ShelfSummary reloaded = shelves.getShelf(a01);
             assertThat(reloaded.levels()).extracting(ShelfSummary.Level::levelIndex).containsExactly(1, 2, 3);
@@ -223,18 +222,17 @@ class ShelfLayoutServiceIntegrationTest {
         }
 
         @Test
-        @DisplayName("a new default class reaches every bin of the shelf in the database (#18 D9)")
-        void defaultClassReachesTheLocations() {
+        @DisplayName("an edit of the shelf moves its version and leaves its bins' locations as they are")
+        void editMovesTheVersion() {
             ShelfSummary a01 = shelves.getShelf(DemoData.shelf("A01"));
 
             ShelfSummary updated = shelves.updateShelf(new ShelfCommands.UpdateShelf(a01.id(), a01.zoneId(),
-                    a01.name(), a01.description(), a01.footprint(), a01.obstacle(), a01.pickFaces(),
-                    StorageClass.FRAGILE, a01.version()));
+                    "Shelf A01 renamed", a01.description(), a01.footprint(), a01.obstacle(), a01.pickFaces(), a01.version()));
             entityManager.flush();
 
             assertThat(updated.version()).isEqualTo(a01.version() + 1);
             assertThat(jdbc.queryForObject("select count(*) from warehouse.storage_location "
-                    + "where location_code like 'HCM-A01-%' and storage_class = 'FRAGILE'", Integer.class))
+                    + "where location_code like 'HCM-A01-%' and status = 'ACTIVE'", Integer.class))
                     .isEqualTo(4);
         }
 
@@ -243,7 +241,7 @@ class ShelfLayoutServiceIntegrationTest {
         void unknownShelf() {
             assertThat(errorOf(() -> shelves.getShelf(Identifiers.newId()))).isEqualTo(ErrorCode.SHELF_NOT_FOUND);
             assertThat(errorOf(() -> shelves.addLevel(new ShelfCommands.AddLevel(Identifiers.newId(), 1,
-                    LevelMeasures.NONE)))).isEqualTo(ErrorCode.SHELF_NOT_FOUND);
+                    new LevelMeasures(null, new BigDecimal("1.4"), null))))).isEqualTo(ErrorCode.SHELF_NOT_FOUND);
         }
     }
 
@@ -312,10 +310,9 @@ class ShelfLayoutServiceIntegrationTest {
     /** Three levels of {@code binsPerLevel} 1 x 1 bins in a row, built through the aggregate. */
     private Shelf treeOf(String code, int binsPerLevel) {
         Shelf shelf = Shelf.create(Identifiers.newId(), WAREHOUSE_HCM, null, code, "Kệ " + code, null,
-                at("0", "0", String.valueOf(binsPerLevel), "1"), true, new PickFaces(true, false, false, false),
-                StorageClass.NORMAL);
+                at("0", "0", String.valueOf(binsPerLevel), "1"), true, new PickFaces(true, false, false, false));
         for (int index = 1; index <= 3; index++) {
-            ShelfLevel level = shelf.addLevel(Identifiers.newId(), index, LevelMeasures.NONE);
+            ShelfLevel level = shelf.addLevel(Identifiers.newId(), index, new LevelMeasures(null, new BigDecimal("1.4"), null));
             for (int i = 0; i < binsPerLevel; i++) {
                 shelf.addBin(level.id(), Identifiers.newId(), Identifiers.newId(), "B" + i,
                         binAt(at(String.valueOf(i), "0", "1", "1")), PICKABLE, "HCM");

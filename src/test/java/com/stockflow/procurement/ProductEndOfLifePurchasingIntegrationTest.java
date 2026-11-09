@@ -14,7 +14,6 @@ import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.internal.service.InventoryItems;
@@ -106,7 +105,7 @@ class ProductEndOfLifePurchasingIntegrationTest {
         items.describe(item, items.get(item).version(),
                 new ItemLogistics("EACH", null, new BigDecimal("0.5"), new BigDecimal("10"), new BigDecimal("10"),
                         new BigDecimal("10"), new BigDecimal("0.6"), new BigDecimal("12"), new BigDecimal("12"),
-                        new BigDecimal("12"), 1, 1, StorageClass.NORMAL, false, null));
+                        new BigDecimal("12"), 1, 1));
         return product;
     }
 

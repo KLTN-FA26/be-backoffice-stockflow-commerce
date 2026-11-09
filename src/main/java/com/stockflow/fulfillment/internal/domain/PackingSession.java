@@ -33,8 +33,8 @@ import java.util.stream.Stream;
  *   <li><b>One parcel, one order</b> (08 BR-04): a session only holds its own order's lines; the database checks it
  *       too.</li>
  *   <li><b>Measured parcels</b> (08 BR-03, step 5): a parcel is sealed with its real weight and size; its rotatable
- *       flag comes from its SKUs - the strictest wins (01, E13) - its fragile flag from a FRAGILE SKU, and the packer
- *       may override either.</li>
+ *       flag comes from its SKUs - the strictest wins (01, E13) - its fragile flag from its lines (no SKU has been
+ *       FRAGILE since the storage class went, team plan 5-4), and the packer may override either.</li>
  *   <li><b>Shipments</b> (08 step 9, 09 §4.1 step 1): completing ships every sealed parcel not yet shipped as one
  *       shipment. Everything the order still wants must be in it (BR-01) unless the packer completes a partial
  *       shipment, with a reason, where the policy allows split shipments (G4-Q3; a mixed order's stock lines first,
@@ -72,7 +72,8 @@ public final class PackingSession {
      * @param lots      lot number to the units of it picked or produced; empty when the goods have no lot. When some
      *                  of them have a lot and some do not, the units without one are under {@link #NO_LOT}
      * @param serials   the serial numbers of the goods; empty when they have none
-     * @param fragile   its SKU is stored FRAGILE (docs 01 storage class): a parcel holding it is marked fragile
+     * @param fragile   a parcel holding it is marked fragile. Nothing sets it from the item since the storage class
+     *                  went (team plan 5-4); the packer's override does
      * @param packageCount how many boxes one unit of its item ships as (inventory {@code package_count}); more than one
      *                  makes a unit of it a kit (LP2-5)
      */

@@ -3,7 +3,6 @@ package com.stockflow.warehouse.internal.controller.dto;
 import com.stockflow.warehouse.internal.domain.BinNamingScheme;
 import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Digits;
@@ -44,8 +43,7 @@ public final class ShelfRequests {
             UUID zoneId,
             @NotNull @Valid FootprintRequest footprint,
             boolean obstacle,
-            @NotNull PickFaces pickFaces,
-            @NotNull StorageClass defaultStorageClass
+            @NotNull PickFaces pickFaces
     ) {
     }
 
@@ -58,7 +56,6 @@ public final class ShelfRequests {
             @NotNull @Valid FootprintRequest footprint,
             boolean obstacle,
             @NotNull PickFaces pickFaces,
-            @NotNull StorageClass defaultStorageClass,
             @Schema(description = "The version from the last read; a stale one answers 409 OPTIMISTIC_LOCK")
             @PositiveOrZero long version
     ) {
@@ -74,19 +71,21 @@ public final class ShelfRequests {
                     example = "2")
             @Min(1) @Max(99) int levelIndex,
             @PositiveOrZero @Digits(integer = 7, fraction = 3) BigDecimal elevation,
-            @Positive @Digits(integer = 7, fraction = 3) BigDecimal usableHeight,
+            @Schema(description = "Clear height in metres, required (06 BR-19): bin volumes are computed from it",
+                    example = "0.5")
+            @NotNull @Positive @Digits(integer = 7, fraction = 3) BigDecimal usableHeight,
             @Positive @Digits(integer = 7, fraction = 3) BigDecimal maxWeight
     ) {
     }
 
     public record UpdateLevel(
             @PositiveOrZero @Digits(integer = 7, fraction = 3) BigDecimal elevation,
-            @Positive @Digits(integer = 7, fraction = 3) BigDecimal usableHeight,
+            @Schema(description = "Clear height in metres, required (06 BR-19)", example = "0.5")
+            @NotNull @Positive @Digits(integer = 7, fraction = 3) BigDecimal usableHeight,
             @Positive @Digits(integer = 7, fraction = 3) BigDecimal maxWeight
     ) {
     }
 
-    /** @param storageClassOverride {@code null} = the shelf's default class applies */
     public record AddBin(
             @Schema(description = "Upper-cased, unique on the level. The location code becomes "
                     + "prefix-shelf-level-bin", example = "B")
@@ -94,10 +93,6 @@ public final class ShelfRequests {
             @Size(max = 1000) String description,
             @NotNull @Valid FootprintRequest footprint,
             @NotNull BinType type,
-            @Schema(description = "null = the shelf's defaultStorageClass applies")
-            StorageClass storageClassOverride,
-            @Schema(description = "Base units; null = not checked", example = "40")
-            @Positive Integer capacityUnits,
             @Positive @Digits(integer = 7, fraction = 3) BigDecimal maxWeight,
             boolean pickable,
             boolean putawayTarget
@@ -108,10 +103,6 @@ public final class ShelfRequests {
             @Size(max = 1000) String description,
             @NotNull @Valid FootprintRequest footprint,
             @NotNull BinType type,
-            @Schema(description = "null = the shelf's defaultStorageClass applies")
-            StorageClass storageClassOverride,
-            @Schema(description = "Base units; null = not checked", example = "40")
-            @Positive Integer capacityUnits,
             @Positive @Digits(integer = 7, fraction = 3) BigDecimal maxWeight,
             boolean pickable,
             boolean putawayTarget
@@ -139,18 +130,11 @@ public final class ShelfRequests {
     }
 
     /**
-     * What every generated bin starts with: {@code type} and the override go on the bin, the rest on
-     * its storage location.
-     *
-     * @param storageClassOverride {@code null} = the shelf's default class applies
+     * What every generated bin starts with: {@code type} goes on the bin, the rest on its storage location.
      */
     @Schema(name = "BinDefaultsRequest")
     public record BinDefaults(
             @NotNull BinType type,
-            @Schema(description = "null = the shelf's defaultStorageClass applies")
-            StorageClass storageClassOverride,
-            @Schema(description = "Base units; null = not checked", example = "40")
-            @Positive Integer capacityUnits,
             @Positive @Digits(integer = 7, fraction = 3) BigDecimal maxWeight,
             boolean pickable,
             boolean putawayTarget

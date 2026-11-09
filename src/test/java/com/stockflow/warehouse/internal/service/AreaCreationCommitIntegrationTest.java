@@ -8,7 +8,6 @@ import com.stockflow.warehouse.internal.domain.AreaDetails;
 import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LocationSettings;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,7 +49,7 @@ class AreaCreationCommitIntegrationTest {
 
     private AreaSummary create(String code, Footprint footprint) {
         return areas.createArea(new AreaCommands.CreateArea(WAREHOUSE_HCM, code, new AreaDetails(AreaType.RECEIVING,
-                "Khu " + code, footprint, false, null, new LocationSettings(null, null, false, true))));
+                "Khu " + code, footprint, false, new LocationSettings(null, false, true))));
     }
 
     private static Footprint at(String x, String y, String width, String length) {
@@ -64,7 +63,6 @@ class AreaCreationCommitIntegrationTest {
 
         assertThat(area.code()).isEqualTo("RCV02");
         assertThat(area.locationCode()).isEqualTo("HCM-RCV02");
-        assertThat(area.storageClass()).isEqualTo(StorageClass.NORMAL);
         assertThat(jdbc.queryForObject("select count(*) from warehouse.area a join warehouse.storage_location l "
                 + "on l.id = a.location_id where l.location_code = 'HCM-RCV02' and l.kind = 'AREA' "
                 + "and l.status = 'ACTIVE'", Integer.class)).isEqualTo(1);

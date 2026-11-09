@@ -5,6 +5,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.warehouse.api.BinSize;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.internal.domain.AreaType;
@@ -17,7 +18,6 @@ import com.stockflow.warehouse.internal.domain.LocationSettings;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.MapUnit;
 import com.stockflow.warehouse.internal.domain.PickFaces;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import org.hibernate.SessionFactory;
@@ -96,14 +96,15 @@ class LayoutReadIntegrationTest {
             assertThat(a01.levels().get(1).bins()).extracting(WarehouseLayout.Bin::locationCode)
                     .containsExactly("HCM-A01-2-A", "HCM-A01-2-B");
             WarehouseLayout.Bin bin = a01.levels().get(1).bins().get(1);
-            assertThat(bin.storageClass()).isEqualTo(StorageClass.OVERSIZE);
-            assertThat(bin.capacityUnits()).isEqualTo(40);
+            // 5 m x 1.2 m on a level 1.4 m clear: computed, never typed in (kltn-docs 06 BR-19).
+            assertThat(bin.capacityVolumeM3()).isEqualByComparingTo("8.4");
             assertThat(bin.effectiveStatus()).isEqualTo(LocationStatus.ACTIVE);
             assertThat(bin.usable()).isTrue();
             assertThat(a01.pickFaces()).isEqualTo(new PickFaces(false, false, true, false));
             assertThat(layout.areas()).extracting(WarehouseLayout.Area::code)
                     // QCA01 (QUALITY_CONTROL) and RTV01 (rejects) come from the receiving demo seed (SCRUM-435).
-                    .containsExactly("DSP01", "OFFICE", "PACK01", "PRD01", "QC01", "QCA01", "RCV01", "RTV01");
+                    // OVF01 (OVERFLOW) is the demo's overflow area (team plan 5-4).
+                    .containsExactly("DSP01", "OFFICE", "OVF01", "PACK01", "PRD01", "QC01", "QCA01", "RCV01", "RTV01");
             assertThat(layout.boundaries()).hasSize(2);
         }
 
@@ -163,16 +164,16 @@ class LayoutReadIntegrationTest {
     private UUID warehouseWithShelves(String prefix, int shelfCount) {
         UUID warehouseId = warehouses.register(new RegisterWarehouseCommand(prefix, "Kho " + prefix,
                 "1 Đường Thử", null, MapUnit.M, new BigDecimal("60"), new BigDecimal("60"))).id();
-        BinDefaults defaults = new BinDefaults(BinType.SMALL_PARTS, null,
-                new LocationSettings(10, null, true, true));
+        BinDefaults defaults = new BinDefaults(BinType.SMALL_PARTS,
+                new LocationSettings(null, true, true));
         IntStream.range(0, shelfCount).forEach(i -> {
             UUID shelfId = shelves.createShelf(new ShelfCommands.CreateShelf(warehouseId, null,
                     "S%02d".formatted(i), "Kệ " + i, null,
                     new Footprint(BigDecimal.ONE, BigDecimal.valueOf(1 + 2L * i), BigDecimal.TEN,
                             new BigDecimal("1.2"), 0),
-                    true, new PickFaces(true, false, false, false), StorageClass.NORMAL)).id();
-            UUID first = shelves.addLevel(new ShelfCommands.AddLevel(shelfId, 1, LevelMeasures.NONE)).id();
-            UUID second = shelves.addLevel(new ShelfCommands.AddLevel(shelfId, 2, LevelMeasures.NONE)).id();
+                    true, new PickFaces(true, false, false, false))).id();
+            UUID first = shelves.addLevel(new ShelfCommands.AddLevel(shelfId, 1, new LevelMeasures(null, new BigDecimal("1.4"), null))).id();
+            UUID second = shelves.addLevel(new ShelfCommands.AddLevel(shelfId, 2, new LevelMeasures(null, new BigDecimal("1.4"), null))).id();
             shelves.generateBins(new ShelfCommands.GenerateBins(shelfId, List.of(first, second), 1, 10,
                     BinNamingScheme.SEQUENTIAL, defaults));
         });
@@ -217,7 +218,7 @@ class LayoutReadIntegrationTest {
                         assertThat(bin.effectiveStatus()).isEqualTo(LocationStatus.INACTIVE);
                         assertThat(bin.usable()).isFalse();
                     });
-            assertThat(layout.areas()).filteredOn(a -> a.locationId() != null).hasSize(7)   // with the print shop, V20261017000410
+            assertThat(layout.areas()).filteredOn(a -> a.locationId() != null).hasSize(8)   // with the print shop (V20261017000410) and OVF01 (5-4)
                     .allSatisfy(a -> assertThat(a.usable()).isFalse());
             assertThat(location("HCM-B01-1-A").usable()).isFalse();
             assertThat(location("HCM-RCV01").effectiveStatus()).isEqualTo(StorageLocationView.Status.INACTIVE);
@@ -247,7 +248,9 @@ class LayoutReadIntegrationTest {
             assertThat(view.kind()).isEqualTo(StorageLocationView.Kind.BIN);
             assertThat(view.locationCode()).isEqualTo("HCM-A01-2-B");
             assertThat(view.warehouseId()).isEqualTo(WAREHOUSE_HCM);
-            assertThat(view.storageClass()).isEqualTo(StorageLocationView.StorageClass.OVERSIZE);
+            assertThat(view.binSize()).isEqualTo(new BinSize(new BigDecimal("5.000"), new BigDecimal("1.200"),
+                    new BigDecimal("1.400")));
+            assertThat(view.binSize().volumeM3()).isEqualByComparingTo("8.4");
             assertThat(view.usable()).isTrue();
         }
 
@@ -282,7 +285,7 @@ class LayoutReadIntegrationTest {
 
             assertThat(view.locationCode()).isEqualTo("HCM-RCV01");
             assertThat(view.kind()).isEqualTo(StorageLocationView.Kind.AREA);
-            assertThat(view.storageClass()).isEqualTo(StorageLocationView.StorageClass.OVERSIZE);
+            assertThat(view.binSize()).as("an area has no bin size").isNull();
         }
     }
 

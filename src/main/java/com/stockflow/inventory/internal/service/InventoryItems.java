@@ -4,7 +4,6 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.StockThresholdEvaluation;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.TrackingMode;
 
 import java.util.UUID;
@@ -22,14 +21,14 @@ public interface InventoryItems {
                   StockThresholdEvaluation evaluation) {}
 
     /** One row of the item list: what a picker of items needs, without the dimensions and thresholds of a detail. */
-    record Summary(UUID id, String sku, String unitOfMeasure, String barcode, StorageClass storageClass,
+    record Summary(UUID id, String sku, String unitOfMeasure, String barcode,
                    TrackingMode trackingMode, boolean policyConfigured) {}
 
     /**
      * @param sku exact match; {@code q} is a case-insensitive substring of the SKU or the barcode, with no wildcard
      *            meaning for {@code %} and {@code _}; null filters are not applied
      */
-    record ItemQuery(String sku, String q, StorageClass storageClass, Boolean policyConfigured, int page, int size) {}
+    record ItemQuery(String sku, String q, Boolean policyConfigured, int page, int size) {}
 
     /** Items in SKU order, one page at a time. */
     PageResponse<Summary> search(ItemQuery query);
