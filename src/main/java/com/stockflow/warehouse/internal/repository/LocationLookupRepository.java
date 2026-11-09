@@ -30,7 +30,7 @@ public interface LocationLookupRepository {
     /** The own codes of the zone's shelves in that warehouse, sorted; empty for an unknown or foreign zone. */
     java.util.List<String> findShelfCodesInZone(UUID warehouseId, UUID zoneId);
 
-    /** The warehouse itself, for other modules naming it on a document (a purchase order's receiving warehouse). */
+    /** The warehouse itself, for other modules naming it on a document (a production order's receiving warehouse). */
     Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId);
 
     /** Every ACTIVE warehouse, by code (4B-7: those an order may ship from). */

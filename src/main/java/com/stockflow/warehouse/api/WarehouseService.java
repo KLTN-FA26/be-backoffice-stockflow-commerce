@@ -48,7 +48,7 @@ public interface WarehouseService {
      */
     java.util.Map<String, UUID> pickableLocations(java.util.Collection<String> locationCodes);
 
-    /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
+    /** @return empty when no warehouse has this id; a goods receipt receives into one (SCRUM-390) */
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
 
     /**
