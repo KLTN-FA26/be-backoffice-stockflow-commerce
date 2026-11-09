@@ -617,9 +617,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      */
     Order cancelLoaded(Order order, CancelOrderCommand command) {
         boolean wasHoldingStock = order.status().holdsStock();
+        java.time.Instant now = clock.instant();
         order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.agreedFee(),
-                command.cancelledBy(),
-                clock.instant());
+                command.cancelledBy(), now);
         // 17 §4.8 step 27: an order cancelled before its contract is signed takes the contract with it. A signed
         // contract stays SIGNED: it is settled outside the system (14 §5.2, decided 2026-11-05).
         contracts.findLiveByOrderId(order.id().value())
@@ -640,12 +640,31 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         }
 
         Order saved = repository.save(order);
+        settleContractMoney(order, command, now);
         closeUndecidableCancellationRequest(order);
         events.publishEventsOf(order);
         // The code, not the reason text: the text carries the customer's note, and a line break in it
         // would forge log lines (CodeQL java/log-injection).
         log.info("Cancelled order {} ({})", order.orderNumber(), order.cancellationReasonCode());
         return saved;
+    }
+
+    /**
+     * 4B-9 (15 §4.6 step 18, 17 §4.8 step 30): a contract order's money is on its installments, so payment settles it
+     * here, in the cancelling transaction and under the order's lock - the installments not paid in full cancelled, the
+     * money collected paying the fee first, the rest to refund, a shortfall owed on a fee item. {@link Order#cancel} has
+     * already refused a fee before mass printing (BR-11) or above the order's worth.
+     */
+    private void settleContractMoney(Order order, CancelOrderCommand command, java.time.Instant at) {
+        if (!order.paidByContract()) {
+            return;
+        }
+        com.stockflow.order.api.CancellationFee fee = command.agreedFee();
+        BigDecimal percent = command.retainedPercent() == null || command.retainedPercent().signum() == 0 ? null
+                : command.retainedPercent();
+        paymentService.settleCancellation(new com.stockflow.payment.api.SettleCancellationCommand(order.id().value(),
+                percent, fee == null ? null : fee.amount(), fee == null ? null : fee.reason(),
+                fee == null ? null : fee.detail(), command.cancelledBy(), at));
     }
 
     /**
@@ -1123,7 +1142,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         Order order = lockOrder(orderId);
         java.util.Map<UUID, Integer> closedBefore = order.lines().stream()
                 .collect(Collectors.toMap(OrderLine::id, OrderLine::cancelledQuantity));
-        BigDecimal closed = order.closeRemainder(reasonCode, note, fee, by, clock.instant());
+        java.time.Instant now = clock.instant();
+        BigDecimal closed = order.closeRemainder(reasonCode, note, fee, by, now);
         java.util.Map<OrderLine, Integer> closedLines = order.lines().stream()
                 .filter(line -> line.cancelledQuantity() > closedBefore.get(line.id()))
                 .collect(Collectors.toMap(line -> line, line -> line.cancelledQuantity() - closedBefore.get(line.id()),
@@ -1131,6 +1151,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // The holds of the lines with units that will not go are freed; a hold already consumed by a pick is left as
         // it is (its goods are fulfillment's to put back, G4-4).
         releaseHolds(closedLines.keySet());
+        // 4B-9 (15 §4.6 step 19, BR-16): a contract order's installments owe less by the goods closed with their VAT -
+        // never the mould / print or shipping fee lines (D30, D32), which closeRemainder leaves out of `closed`; money
+        // paid above the order's new worth pays the fee first and the rest is to refund. In this transaction, under the
+        // order's lock.
+        if (order.paidByContract() && closed.signum() > 0) {
+            paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(orderId,
+                    order.lastClosureId(), closed, fee == null ? null : fee.amount(), fee == null ? null : fee.reason(),
+                    fee == null ? null : fee.detail(), by, now));
+        }
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());
         return saved(order);

@@ -146,6 +146,12 @@ public final class Order extends AggregateRoot {
     private BigDecimal remainderFeeRetainedAmount = BigDecimal.ZERO;
     private BigDecimal remainderFeePaidAmount = BigDecimal.ZERO;
     /**
+     * 4B-9: the id of the closure {@link #closeRemainder} made in this unit of work, which the service hands payment
+     * with the closure's money (a contract order's installments are settled in the same transaction). Not stored: the
+     * closure's event carries it, and payment keys its settlement on it.
+     */
+    private UUID lastClosureId;
+    /**
      * PACK-PARTIAL (lead's decision 2026-10-21): Sales decided the order may ship in parts - a packing completion that
      * leaves goods behind, or a handover of part of it. Off by default: the warehouse ships the order whole.
      */
@@ -1189,6 +1195,10 @@ public final class Order extends AggregateRoot {
      * reason and detail. The money held for the order (received, less what closures asked back - review of S6) pays
      * it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the cancellation announces
      * it and payment records a receivable (Q6a). Nothing is collected or marked paid.
+     *
+     * <p>4B-9: an order of a contract holds no money of its own here - it was paid on its installments - so the share
+     * and the agreed amount are settled by payment against them, in the caller's transaction
+     * ({@code PaymentService.settleCancellation}); this order announces no fee owed, and keeps nothing.</p>
      */
     public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
                        com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant now) {
@@ -1201,8 +1211,12 @@ public final class Order extends AggregateRoot {
         if (code == CancellationReasonCode.OTHER && trimmed == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A cancellation for OTHER must say why in the note");
         }
-        if (retainedPercent != null && (retainedPercent.signum() < 0 || retainedPercent.compareTo(HUNDRED) > 0)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The retained share is between 0 and 100 percent");
+        // 4B-9: two decimals at most, as payment keeps the share of a contract order (order_settlement.fee_percent) -
+        // refused here, before any stock or contract is touched.
+        if (retainedPercent != null && (retainedPercent.signum() < 0 || retainedPercent.compareTo(HUNDRED) > 0
+                || retainedPercent.stripTrailingZeros().scale() > 2)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The retained share is between 0 and 100 percent, to two decimals");
         }
         // SCRUM-260: a replacement ships goods a resolved return promised. Cancelled any other way, the return would
         // stay "replaced" while the customer got neither the goods nor the money - so only its withdrawal through the
@@ -1253,10 +1267,13 @@ public final class Order extends AggregateRoot {
         this.cancellationReasonCode = code;
         this.cancellationReason = reasonText;
         this.cancellationRetainedAmount = retained;
+        // 4B-9: a contract order's money is on its installments, never in the ledger (OrderAllocator refuses it), so
+        // its fee is settled against them by payment in this transaction (OrderServiceImpl.cancelLoaded). Announcing
+        // the fee as owed here as well would open a ledger receivable for the same fee a second time.
+        BigDecimal owed = agreed == null || paidByContract() ? BigDecimal.ZERO : agreed.subtract(retained);
         registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
                 previous.name(), code.name(), trimmed, paidAmount, held.subtract(retained),
-                total().currency().getCurrencyCode(), by, now,
-                agreed == null ? BigDecimal.ZERO : agreed.subtract(retained))));
+                total().currency().getCurrencyCode(), by, now, owed)));
     }
 
     private void requireAgreedFee(com.stockflow.order.api.CancellationFee fee, BigDecimal retainedPercent) {
@@ -1616,9 +1633,14 @@ public final class Order extends AggregateRoot {
         }
         reevaluatePaidInFull(at);
         followShipments(ShipmentChange.CLOSED, at, by, reason);
+        this.lastClosureId = UUID.randomUUID();
+        // 4B-9: a contract order's money is on its installments, which payment settles in this transaction
+        // (OrderServiceImpl.closeRemainder); the ledger holds none of it, so it is told of no fee owed - a ledger
+        // receivable would bill the same fee twice.
         registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
                 orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), paidAmount,
-                refundable, total().currency().getCurrencyCode(), by, at, UUID.randomUUID(), fee, retained, owed)));
+                refundable, total().currency().getCurrencyCode(), by, at, lastClosureId, fee, retained,
+                paidByContract() ? BigDecimal.ZERO : owed)));
         return closed.amount();
     }
 
@@ -2310,6 +2332,9 @@ public final class Order extends AggregateRoot {
      * only as the money ledger's neutral PREPAID until the ledger goes (4B-10).
      */
     public boolean paidByContract() { return contractSignedAt != null; }
+
+    /** The closure {@link #closeRemainder} made in this unit of work; null when none was made (4B-9). */
+    public UUID lastClosureId() { return lastClosureId; }
 
     /**
      * Goods of the order leave on a load plan's vehicle (SCRUM-392, LP-3) - part of a shipment that is handed over only
