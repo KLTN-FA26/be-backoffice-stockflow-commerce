@@ -93,6 +93,18 @@ public class OrderLineJpaEntity {
         this.unitsPerCarton = unitsPerCarton;
     }
 
+    /** 4B-3: the VAT rate fixed on the line and its tax; both null for a line without VAT. */
+    @Column(name = "tax_rate", precision = 5, scale = 2)
+    private BigDecimal taxRate;
+    @Column(name = "tax_amount", precision = 19, scale = 4)
+    private BigDecimal taxAmount;
+    public BigDecimal getTaxRate() { return taxRate; }
+    public BigDecimal getTaxAmount() { return taxAmount; }
+    public void setTax(BigDecimal rate, BigDecimal amount) {
+        this.taxRate = rate;
+        this.taxAmount = amount;
+    }
+
     @ElementCollection(fetch = jakarta.persistence.FetchType.EAGER)
     @CollectionTable(
             name = "order_line_reservation",

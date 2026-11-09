@@ -27,8 +27,9 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
      * The order side of a customer's credit exposure (kltn-docs 15 BR-03): for every credit order in a status
      * {@link OrderStatus#countsTowardCreditExposure} names - the list comes from the state machine, never typed here,
      * so a new status cannot leak an order out of it - what the order has still to bill: its total, less the units
-     * closed out of it, less what its deliveries billed (the receivables count that), less money paid ahead outside
-     * receivables. A split order is counted once: its delivered shipments as receivables, the rest here. An order on
+     * closed out of it ({@code closed_amount}, their share of their lines with tax as the order computed it - not their
+     * price alone, which would leave their VAT counted), less what its deliveries billed (the receivables count that),
+     * less money paid ahead outside receivables. A split order is counted once: its delivered shipments as receivables, the rest here. An order on
      * a credit hold is not credit given yet.
      *
      * <p>BALCREDIT: a deposit order whose balance goes on credit counts the same way, from the moment it is placed
@@ -39,9 +40,7 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
     public BigDecimal undeliveredCreditExposure(UUID customerId, UUID excludingOrderId) {
         Object sum = entityManager.createNativeQuery("""
                         SELECT COALESCE(SUM(GREATEST(0,
-                                   o.total_amount
-                                 - COALESCE((SELECT SUM(l.cancelled_quantity * l.unit_price)
-                                               FROM ordering.order_line l WHERE l.order_id = o.id), 0)
+                                   o.total_amount - o.closed_amount
                                  - o.billed_amount
                                  - GREATEST(CASE WHEN o.payment_term = 'DEPOSIT' THEN o.deposit_required ELSE 0 END,
                                             o.paid_amount - o.receivable_paid_amount))), 0)

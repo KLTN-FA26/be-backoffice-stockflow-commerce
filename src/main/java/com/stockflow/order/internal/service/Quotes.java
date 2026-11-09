@@ -54,13 +54,51 @@ public interface Quotes {
      *                              the quote is a draft, it must not be in the past, and null means none was asked
      */
     record Draft(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                 List<Line> lines, java.time.LocalDate requestedDeliveryDate) {
+                 List<Line> lines, java.time.LocalDate requestedDeliveryDate, List<Fee> fees) {
+
+        /** A draft without fee lines Sales entered (a plate fee the system adds still comes, unpriced). */
+        public Draft(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
+                     List<Line> lines, java.time.LocalDate requestedDeliveryDate) {
+            this(paymentTerm, depositPercent, validUntil, terms, lines, requestedDeliveryDate, List.of());
+        }
 
         /** A draft without a requested delivery date. */
         public Draft(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
                      List<Line> lines) {
-            this(paymentTerm, depositPercent, validUntil, terms, lines, null);
+            this(paymentTerm, depositPercent, validUntil, terms, lines, null, List.of());
         }
+
+        public Draft {
+            fees = fees == null ? List.of() : List.copyOf(fees);
+        }
+    }
+
+    /**
+     * A fee line as Sales writes it (4B-3; kltn-docs 14 BR-17, BR-20).
+     *
+     * @param kind   {@code PLATE_FEE} or {@code SHIPPING_FEE}
+     * @param sku    the SKU a plate fee is for - one on the quote, produced for the first time; null for shipping
+     * @param amount whole VND; for a plate fee, null leaves it for later (the quote is not sent before)
+     */
+    record Fee(com.stockflow.order.api.FeeKind kind, String sku, BigDecimal amount) {
+    }
+
+    /**
+     * A fee line as read, with its VAT.
+     *
+     * @param amount  null for a plate fee not priced yet
+     * @param taxRate null while the SKU's product has no tax class
+     * @param tax     the amount at the rate, rounded to the dong; null until both are known
+     */
+    record FeeView(UUID id, com.stockflow.order.api.FeeKind kind, String sku, BigDecimal amount, String taxClass,
+                   BigDecimal taxRate, BigDecimal tax) {
+    }
+
+    /**
+     * The three totals of an offer (kltn-docs 14 BR-09): the goods, the fee lines, the VAT, and the total with it. A
+     * part not known yet - a line or fee unpriced, a rate missing - is null, and so is the total.
+     */
+    record Totals(BigDecimal subtotal, BigDecimal fees, BigDecimal tax, BigDecimal total) {
     }
 
     record Create(UUID requestId, UUID customerId, Draft draft) {
@@ -80,11 +118,16 @@ public interface Quotes {
      * @param proposedLineTotal {@code units} x {@code proposedUnitPrice}
      * @param acceptedCartons   cartons accepted; null until accepted, and on a legacy line
      * @param acceptedUnits     pieces accepted; null until accepted
+     * @param taxClass          the product's tax class copied with the price (4B-3, 14 BR-21); null while it has none
+     * @param taxRate           its VAT rate, a percentage
+     * @param proposedTax       the VAT of {@code proposedLineTotal}; null without a rate or a price
+     * @param acceptedTax       the VAT of {@code acceptedLineTotal}
      */
     record LineView(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
                     int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq, List<Tier> tiers,
                     BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal, Integer acceptedCartons,
-                    Integer acceptedUnits, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal) {
+                    Integer acceptedUnits, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
+                    String taxClass, BigDecimal taxRate, BigDecimal proposedTax, BigDecimal acceptedTax) {
     }
 
     record Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, Instant changedAt,
@@ -97,11 +140,15 @@ public interface Quotes {
     /**
      * @param status the status as of now: a sent quote past its validity reads EXPIRED even before the
      *               expiry sweep has written it
-     * @param legacy drafted before 4B-2 on blanks and designs: kept to read (QD-16)
+     * @param legacy        drafted before 4B-2 on blanks and designs: kept to read (QD-16)
+     * @param proposedTotal the total with tax at the proposed cartons ({@code proposed.total()}); null while a part of
+     *                      it is not known
+     * @param acceptedTotal the total with tax accepted; null until accepted
      */
     record QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                      PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     java.time.LocalDate requestedDeliveryDate, boolean legacy, List<LineView> lines, boolean priced,
+                     java.time.LocalDate requestedDeliveryDate, boolean legacy, List<LineView> lines,
+                     List<FeeView> fees, boolean priced, Totals proposed, Totals accepted,
                      BigDecimal proposedTotal, BigDecimal acceptedTotal,
                      Instant sentAt, UUID sentBy, Instant respondedAt,
                      UUID respondedBy, String customerFeedback, String cancellationReason,

@@ -56,12 +56,15 @@ public final class QuoteLine {
     private final String printSpec;
     private final int quantity;
     private final List<PriceTier> tiers;
+    private final String taxClass;
+    private final java.math.BigDecimal taxRate;
     private Integer acceptedQuantity;
     private Money acceptedUnitPrice;
 
     private QuoteLine(UUID id, int lineNo, Measure measure, Sku sku, UUID uomConversionId, int unitsPerCarton,
                       UUID designSnapshotId, String printSpec, int quantity, List<PriceTier> tiers,
-                      Integer acceptedQuantity, Money acceptedUnitPrice) {
+                      Integer acceptedQuantity, Money acceptedUnitPrice, String taxClass,
+                      java.math.BigDecimal taxRate) {
         this.id = Objects.requireNonNull(id, "id");
         if (lineNo < 1) {
             throw new IllegalArgumentException("Line numbers start at 1");
@@ -94,6 +97,19 @@ public final class QuoteLine {
         }
         this.acceptedQuantity = acceptedQuantity;
         this.acceptedUnitPrice = acceptedUnitPrice;
+        if ((taxClass == null) != (taxRate == null) || (taxClass != null && measure == Measure.UNIT)) {
+            throw new IllegalArgumentException("A carton line has its tax class and rate, or neither; a legacy line none");
+        }
+        this.taxClass = taxClass;
+        this.taxRate = taxRate == null ? null : Vat.rate(taxRate);
+    }
+
+    /** A carton line without its VAT rate yet (its product has no tax class): as {@link #carton(UUID, int, Sku,
+     *  UUID, int, int, List, Integer, Money, String, java.math.BigDecimal)} with none. */
+    public static QuoteLine carton(UUID id, int lineNo, Sku sku, UUID uomConversionId, int unitsPerCarton, int cartons,
+                                   List<PriceTier> tiers, Integer acceptedCartons, Money acceptedUnitPrice) {
+        return carton(id, lineNo, sku, uomConversionId, unitsPerCarton, cartons, tiers, acceptedCartons,
+                acceptedUnitPrice, null, null);
     }
 
     /**
@@ -101,16 +117,20 @@ public final class QuoteLine {
      *
      * @param uomConversionId the SKU's carton unit
      * @param unitsPerCarton  its factor now, fixed on the line; a carton holds more than one piece (01 BR-03)
+     * @param taxClass        its product's tax class, copied with the price (14 BR-21); null while the product has
+     *                        none - the quote is then not sent
+     * @param taxRate         that class's VAT rate, a percentage
      */
     public static QuoteLine carton(UUID id, int lineNo, Sku sku, UUID uomConversionId, int unitsPerCarton, int cartons,
-                                   List<PriceTier> tiers, Integer acceptedCartons, Money acceptedUnitPrice) {
+                                   List<PriceTier> tiers, Integer acceptedCartons, Money acceptedUnitPrice,
+                                   String taxClass, java.math.BigDecimal taxRate) {
         Objects.requireNonNull(uomConversionId, "uomConversionId");
         if (unitsPerCarton < 2) {
             throw new BusinessException(ErrorCode.CARTON_SPEC_MISSING,
                     "%s: a carton holds more than one piece, not %d".formatted(sku.code(), unitsPerCarton));
         }
         return new QuoteLine(id, lineNo, Measure.CARTON, sku, uomConversionId, unitsPerCarton, null, null, cartons,
-                tiers, acceptedCartons, acceptedUnitPrice);
+                tiers, acceptedCartons, acceptedUnitPrice, taxClass, taxRate);
     }
 
     /** A line drafted before 4B-2, as its row keeps it: a blank, a design, units (QD-16). */
@@ -123,7 +143,7 @@ public final class QuoteLine {
                     "A print specification is at most " + MAX_PRINT_SPEC + " characters");
         }
         return new QuoteLine(id, lineNo, Measure.UNIT, blankSku, null, 1, designSnapshotId, spec, units, tiers,
-                acceptedUnits, acceptedUnitPrice);
+                acceptedUnits, acceptedUnitPrice, null, null);
     }
 
     /** Whether the line was drafted before 4B-2 on a blank and a design: kept to read (QD-16). */
@@ -217,4 +237,13 @@ public final class QuoteLine {
     public Integer acceptedUnits() { return acceptedQuantity == null ? null : acceptedQuantity * unitsPerCarton; }
     /** The price of one piece the customer accepted; null until accepted. */
     public Money acceptedUnitPrice() { return acceptedUnitPrice; }
+    /** Its product's tax class, copied with the price (4B-3); null while the product has none, and on a legacy line. */
+    public String taxClass() { return taxClass; }
+    /** The VAT rate of {@link #taxClass()}, a percentage; null with it. */
+    public java.math.BigDecimal taxRate() { return taxRate; }
+
+    /** The VAT of {@code net}, the line's total at some price; null while the line has no rate. */
+    public Money taxOf(Money net) {
+        return taxRate == null ? null : Vat.of(net, taxRate);
+    }
 }

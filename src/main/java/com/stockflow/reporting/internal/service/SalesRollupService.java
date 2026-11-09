@@ -139,10 +139,12 @@ class SalesRollupService {
             LOG.warn("Sales rollup: order {} is in {}, not {}; left out", order.orderId(), currency, CURRENCY);
             return Optional.empty();
         }
+        // 4B-3 (17 §4.11, D33): revenue before tax, the fee lines included; a SKU's cartons rank it after revenue.
         return Optional.of(new OrderContribution(order.orderId(), BusinessDay.of(order.placedAt()), currency,
-                order.total().amount(),
+                order.netTotal().amount(),
                 order.lines().stream()
-                        .map(line -> new OrderContribution.Line(line.sku(), line.quantity(), line.lineTotal().amount()))
+                        .map(line -> new OrderContribution.Line(line.sku(), line.quantity(), line.lineTotal().amount(),
+                                line.cartons() == null ? 0 : line.cartons()))
                         .toList()));
     }
 }

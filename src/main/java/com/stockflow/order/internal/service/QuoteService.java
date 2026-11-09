@@ -82,6 +82,12 @@ import java.util.function.Consumer;
  * the SKU, read at the quote's cartons of it; Sales enters the tiers when there is none. A quote drafted before on
  * blanks and designs is kept to read (QD-16): it is not sent, accepted or converted, and an accepted one may be
  * cancelled for that alone.</p>
+ *
+ * <p><b>VAT and fee lines</b> (4B-3; kltn-docs 14 BR-09, BR-17, BR-20, BR-21): every line copies its product's tax
+ * class and that class's rate with its price; a SKU produced for the first time gets a plate-fee line the system adds
+ * and Sales prices; Sales may add one shipping fee (STANDARD rate, D31). A quote is sent once every line is priced and
+ * taxed and every fee line has its amount. The totals - goods, fees, VAT, the total with it - are read line by line,
+ * each line's VAT rounded to the dong, and the order the quote becomes keeps all of it.</p>
  */
 @Service
 @Transactional
@@ -106,12 +112,18 @@ class QuoteService implements Quotes {
     private final ProductService products;
 
     private final com.stockflow.product.api.CustomerSkus customerSkus;
+    private final com.stockflow.order.internal.domain.TaxRates taxRates;
+    private final com.stockflow.order.internal.domain.SkuProductionHistory production;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, CustomerService customers,
                  UomConversionService units, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json,
                  Clock clock, CatalogService catalog, ApplicationEventPublisher events, ProductService products,
-                 com.stockflow.product.api.CustomerSkus customerSkus) {
+                 com.stockflow.product.api.CustomerSkus customerSkus,
+                 com.stockflow.order.internal.domain.TaxRates taxRates,
+                 com.stockflow.order.internal.domain.SkuProductionHistory production) {
         this.customerSkus = customerSkus;
+        this.taxRates = taxRates;
+        this.production = production;
         this.events = events;
         this.products = products;
         this.catalog = catalog;
@@ -299,11 +311,16 @@ class QuoteService implements Quotes {
         List<PlaceOrderCommand.Line> lines = quote.offer().lines().stream()
                 .map(line -> new PlaceOrderCommand.Line(line.sku(), line.acceptedUnits(), line.acceptedUnitPrice(),
                         null, quote.offer().requestedDeliveryDate(), new PlaceOrderCommand.Carton(
-                                line.uomConversionId(), line.acceptedQuantity(), line.unitsPerCarton())))
+                                line.uomConversionId(), line.acceptedQuantity(), line.unitsPerCarton()),
+                        line.taxRate()))
+                .toList();
+        // 4B-3: the fee lines and every rate as the quote fixed them (14 BR-06, BR-21).
+        List<PlaceOrderCommand.Fee> fees = quote.offer().fees().stream()
+                .map(fee -> new PlaceOrderCommand.Fee(fee.kind(), fee.sku(), fee.amount(), fee.taxRate()))
                 .toList();
         OrderSummary order = quotedOrders.placeQuotedOrder(new PlaceOrderCommand(conversionRequestId(quote.id()),
                 quote.customerId(), conversion.shippingAddressId(), conversion.billingAddressId(), true, lines,
-                quote.offer().paymentTerm(), quote.offer().depositPercent()));
+                quote.offer().paymentTerm(), quote.offer().depositPercent(), null, fees));
         Instant now = clock.instant();
         quote.convert(order.orderId(), now);
         quotes.save(quote);
@@ -590,6 +607,10 @@ class QuoteService implements Quotes {
         Map<String, UomConversion> cartonUnits = cartonUnits(skus);
         Map<String, Integer> cartonsBySku = new java.util.HashMap<>();
         draft.lines().forEach(line -> cartonsBySku.merge(new Sku(line.sku()).code(), line.cartons(), Integer::sum));
+        // 14 BR-21: each line's VAT follows its product's tax class, copied with the price; a product without one
+        // leaves the line without a rate, and the quote is not sent until it has one.
+        Map<String, com.stockflow.product.api.TaxClass> classes = products.taxClassesOf(skus);
+        Map<String, BigDecimal> rates = taxRates.all();
         List<QuoteLine> lines = new ArrayList<>();
         int lineNo = 1;
         for (Line line : draft.lines()) {
@@ -598,9 +619,11 @@ class QuoteService implements Quotes {
             List<PriceTier> tiers = !asGiven && (line.tiers() == null || line.tiers().isEmpty())
                     ? defaultTiers(customerId, sku, cartonsBySku.get(sku.code()))
                     : line.tiers().stream().map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
+            String taxClass = classes.containsKey(sku.code()) ? classes.get(sku.code()).name() : null;
             lines.add(QuoteLine.carton(Identifiers.newId(), lineNo++, sku, carton.id(), carton.factor(), line.cartons(),
-                    tiers, null, null));
+                    tiers, null, null, taxClass, taxClass == null ? null : rates.get(taxClass)));
         }
+        List<com.stockflow.order.internal.domain.QuoteFee> fees = fees(draft.fees(), lines, classes, rates);
         BigDecimal deposit = draft.depositPercent();
         if (draft.paymentTerm() == com.stockflow.order.api.PaymentTerm.DEPOSIT && deposit == null) {
             // Audit of #109: the share the customer is shown and accepts is the share its order asks for. The customer's
@@ -614,7 +637,76 @@ class QuoteService implements Quotes {
         }
         return new Quote.Offer(draft.paymentTerm(), deposit,
                 draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(),
-                draft.requestedDeliveryDate(), lines);
+                draft.requestedDeliveryDate(), lines, fees);
+    }
+
+    /**
+     * The fee lines of a draft (14 BR-17, BR-20): a plate fee for each SKU on it produced for the first time - added by
+     * the system, priced by Sales (its amount from the draft when Sales gave one) - and the shipping fee Sales added, at
+     * most one. A plate fee for a SKU produced before, or not on the quote, is refused rather than dropped.
+     */
+    private List<com.stockflow.order.internal.domain.QuoteFee> fees(List<Fee> given, List<QuoteLine> lines,
+                                                                     Map<String, com.stockflow.product.api.TaxClass> classes,
+                                                                     Map<String, BigDecimal> rates) {
+        List<String> skus = lines.stream().map(line -> line.sku().code()).distinct().toList();
+        java.util.Set<String> produced = production.producedBefore(skus);
+        Map<String, com.stockflow.common.domain.Money> plates = new LinkedHashMap<>();
+        com.stockflow.common.domain.Money shipping = null;
+        List<FieldError> errors = new ArrayList<>();
+        for (int i = 0; i < given.size(); i++) {
+            Fee fee = given.get(i);
+            String field = "fees[" + i + "]";
+            if (fee == null || fee.kind() == null) {
+                errors.add(new FieldError(field + ".kind", "PLATE_FEE or SHIPPING_FEE", "NotNull"));
+                continue;
+            }
+            if (fee.kind() == com.stockflow.order.api.FeeKind.SHIPPING_FEE) {
+                if (shipping != null || fee.amount() == null) {
+                    errors.add(new FieldError(field, "one shipping fee at most, with its amount", "SHIPPING_FEE"));
+                    continue;
+                }
+                shipping = feeAmount(field, fee.amount(), errors);
+                continue;
+            }
+            String sku = fee.sku() == null ? null : new Sku(fee.sku()).code();
+            if (sku == null || !skus.contains(sku)) {
+                errors.add(new FieldError(field + ".sku", "a plate fee is for a SKU on the quote", "PLATE_FEE"));
+            } else if (produced.contains(sku)) {
+                errors.add(new FieldError(field + ".sku", "%s was produced before: a reorder has no plate fee (14 BR-17)"
+                        .formatted(sku), "PLATE_FEE"));
+            } else if (plates.containsKey(sku)) {
+                errors.add(new FieldError(field + ".sku", "one plate fee per SKU", "PLATE_FEE"));
+            } else {
+                plates.put(sku, fee.amount() == null ? null : feeAmount(field, fee.amount(), errors));
+            }
+        }
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid fee lines", errors);
+        }
+        List<com.stockflow.order.internal.domain.QuoteFee> fees = new ArrayList<>();
+        for (String sku : skus) {
+            if (!produced.contains(sku)) {
+                String taxClass = classes.containsKey(sku) ? classes.get(sku).name() : null;
+                fees.add(new com.stockflow.order.internal.domain.QuoteFee(Identifiers.newId(),
+                        com.stockflow.order.api.FeeKind.PLATE_FEE, new Sku(sku), plates.get(sku), taxClass,
+                        taxClass == null ? null : rates.get(taxClass)));
+            }
+        }
+        if (shipping != null) {
+            String standard = com.stockflow.order.internal.domain.TaxRates.STANDARD;
+            fees.add(new com.stockflow.order.internal.domain.QuoteFee(Identifiers.newId(),
+                    com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, shipping, standard, rates.get(standard)));
+        }
+        return fees;
+    }
+
+    /** A fee as entered: whole VND, checked before {@code Money} would round 100.5 to 101 without a word. */
+    private static com.stockflow.common.domain.Money feeAmount(String field, BigDecimal amount, List<FieldError> errors) {
+        if (amount.signum() < 0 || amount.stripTrailingZeros().scale() > 0) {
+            errors.add(new FieldError(field + ".amount", "a whole VND amount, 0 or more", "Digits"));
+            return null;
+        }
+        return new com.stockflow.common.domain.Money(amount, com.stockflow.common.domain.Money.VND);
     }
 
     /**
@@ -743,9 +835,20 @@ class QuoteService implements Quotes {
                 row.put("uomConversionId", line.uomConversionId().toString());
                 row.put("cartons", line.quantity());
                 row.put("unitsPerCarton", line.unitsPerCarton());
+                row.put("taxClass", line.taxClass());
+                row.put("taxRate", line.taxRate());
             }
             row.put("tiers", line.tiers().stream().map(t -> Map.of("minQuantity", t.minQuantity(),
                     "unitPrice", t.unitPrice().amount())).toList());
+            return row;
+        }).toList());
+        document.put("fees", offer.fees().stream().map(fee -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("kind", fee.kind().name());
+            row.put("sku", fee.sku() == null ? null : fee.sku().code());
+            row.put("amount", fee.amount() == null ? null : fee.amount().amount());
+            row.put("taxClass", fee.taxClass());
+            row.put("taxRate", fee.taxRate());
             return row;
         }).toList());
         try {
@@ -783,38 +886,51 @@ class QuoteService implements Quotes {
             offer = sentOffer(quote, lastSent.get().offer());
             revision = lastSent.get().revision();
         }
-        BigDecimal acceptedTotal = null;
         boolean priced = offer.priced();
-        BigDecimal proposedTotal = priced ? BigDecimal.ZERO : null;
+        boolean accepted = !offer.lines().isEmpty() && offer.lines().stream().allMatch(l -> l.acceptedQuantity() != null);
+        // 4B-3: a legacy quote predates VAT: its lines' tax is 0 by definition, not unknown.
+        boolean untaxed = offer.legacy();
+        TotalsBuilder proposedTotals = new TotalsBuilder();
+        TotalsBuilder acceptedTotals = new TotalsBuilder();
         List<LineView> lines = new ArrayList<>();
         for (QuoteLine line : offer.lines()) {
-            BigDecimal lineTotal = line.acceptedQuantity() == null ? null
-                    : line.total(line.acceptedQuantity(), line.acceptedUnitPrice()).amount();
-            if (lineTotal != null) {
-                acceptedTotal = acceptedTotal == null ? lineTotal : acceptedTotal.add(lineTotal);
-            }
+            com.stockflow.common.domain.Money acceptedNet = line.acceptedQuantity() == null ? null
+                    : line.total(line.acceptedQuantity(), line.acceptedUnitPrice());
+            com.stockflow.common.domain.Money acceptedTax = acceptedNet == null ? null
+                    : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(acceptedNet);
             com.stockflow.common.domain.Money proposed = !line.priced() ? null
                     : line.priceFor(offer.proposedQuantity(line.sku().code()));
-            BigDecimal proposedLineTotal = proposed == null ? null : line.total(line.quantity(), proposed).amount();
-            if (priced) {
-                proposedTotal = proposedTotal.add(proposedLineTotal);
-            }
+            com.stockflow.common.domain.Money proposedNet = proposed == null ? null : line.total(line.quantity(), proposed);
+            com.stockflow.common.domain.Money proposedTax = proposedNet == null ? null
+                    : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(proposedNet);
+            proposedTotals.goods(proposedNet, proposedTax);
+            acceptedTotals.goods(acceptedNet, acceptedTax);
             lines.add(new LineView(line.id(), line.lineNo(), line.measure().name(), line.sku().code(),
                     line.legacy() ? null : line.quantity(), line.legacy() ? null : line.unitsPerCarton(), line.units(),
                     line.designSnapshotId(), line.printSpec(), line.priced(), line.priced() ? line.moq() : null,
                     line.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList(),
-                    proposed == null ? null : proposed.amount(), proposedLineTotal,
+                    proposed == null ? null : proposed.amount(), amount(proposedNet),
                     line.legacy() ? null : line.acceptedQuantity(), line.acceptedUnits(),
-                    line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(), lineTotal));
+                    line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(), amount(acceptedNet),
+                    line.taxClass(), line.taxRate(), amount(proposedTax), amount(acceptedTax)));
         }
+        List<FeeView> fees = new ArrayList<>();
+        for (com.stockflow.order.internal.domain.QuoteFee fee : offer.fees()) {
+            proposedTotals.fee(fee.amount(), fee.tax());
+            acceptedTotals.fee(fee.amount(), fee.tax());
+            fees.add(new FeeView(fee.id(), fee.kind(), fee.sku() == null ? null : fee.sku().code(), amount(fee.amount()),
+                    fee.taxClass(), fee.taxRate(), amount(fee.tax())));
+        }
+        Totals proposedView = proposedTotals.build();
+        Totals acceptedView = accepted ? acceptedTotals.build() : null;
         ConvertedOrder converted = quote.convertedOrderId() == null ? null : orders.findById(quote.convertedOrderId())
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))
                 .orElse(null);
         return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), revision,
                 offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(),
-                offer.requestedDeliveryDate(), offer.legacy(), lines, priced,
-                proposedTotal,
-                acceptedTotal,
+                offer.requestedDeliveryDate(), offer.legacy(), lines, fees, priced, proposedView, acceptedView,
+                proposedView.total(),
+                acceptedView == null ? null : acceptedView.total(),
                 quote.sentAt(), quote.sentBy(), quote.respondedAt(), quote.respondedBy(), quote.customerFeedback(),
                 quote.cancellationReason(), converted, quote.convertedAt(), history, row.createdAt(), row.createdBy(),
                 row.version());
@@ -839,10 +955,25 @@ class QuoteService implements Quotes {
                 lines.add(line.path("sku").isTextual()
                         ? QuoteLine.carton(id, lineNo, new Sku(line.path("sku").asText()),
                                 UUID.fromString(line.path("uomConversionId").asText()),
-                                line.path("unitsPerCarton").asInt(), line.path("cartons").asInt(), tiers, null, null)
+                                line.path("unitsPerCarton").asInt(), line.path("cartons").asInt(), tiers, null, null,
+                                textOrNull(line.path("taxClass")),
+                                line.path("taxRate").isNumber() ? line.path("taxRate").decimalValue() : null)
                         : QuoteLine.legacy(id, lineNo, new Sku(line.path("blankSku").asText()),
                                 UUID.fromString(line.path("designSnapshotId").asText()),
                                 textOrNull(line.path("printSpec")), line.path("quantity").asInt(), tiers, null, null));
+            }
+            // 4B-3: the fee lines as sent; an offer sent before had none.
+            List<com.stockflow.order.internal.domain.QuoteFee> fees = new ArrayList<>();
+            for (JsonNode fee : sent.path("fees")) {
+                fees.add(new com.stockflow.order.internal.domain.QuoteFee(UUID.nameUUIDFromBytes(("quote-fee:"
+                        + quote.id() + ":" + fee.path("kind").asText() + ":" + fee.path("sku").asText())
+                        .getBytes(StandardCharsets.UTF_8)),
+                        com.stockflow.order.api.FeeKind.valueOf(fee.path("kind").asText()),
+                        fee.path("sku").isTextual() ? new Sku(fee.path("sku").asText()) : null,
+                        fee.path("amount").isNumber() ? new com.stockflow.common.domain.Money(
+                                fee.path("amount").decimalValue(), com.stockflow.common.domain.Money.VND) : null,
+                        textOrNull(fee.path("taxClass")),
+                        fee.path("taxRate").isNumber() ? fee.path("taxRate").decimalValue() : null));
             }
             JsonNode deposit = sent.path("depositPercent");
             return new Quote.Offer(com.stockflow.order.api.PaymentTerm.valueOf(sent.path("paymentTerm").asText()),
@@ -850,9 +981,42 @@ class QuoteService implements Quotes {
                     textOrNull(sent.path("terms")),
                     sent.path("requestedDeliveryDate").isTextual()
                             ? LocalDate.parse(sent.path("requestedDeliveryDate").asText()) : null,
-                    lines);
+                    lines, fees);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Unreadable offer on the history of quote " + quote.quoteNumber(), e);
+        }
+    }
+
+    private static BigDecimal amount(com.stockflow.common.domain.Money money) {
+        return money == null ? null : money.amount();
+    }
+
+    /**
+     * Adds an offer up line by line (14 BR-09): the goods, the fees, the VAT of each - a part left unknown (a line not
+     * priced, a fee not priced, a rate missing) leaves that part and the total null.
+     */
+    private static final class TotalsBuilder {
+        private BigDecimal subtotal = BigDecimal.ZERO;
+        private BigDecimal fees = BigDecimal.ZERO;
+        private BigDecimal tax = BigDecimal.ZERO;
+
+        void goods(com.stockflow.common.domain.Money net, com.stockflow.common.domain.Money vat) {
+            subtotal = add(subtotal, net);
+            tax = add(tax, vat);
+        }
+
+        void fee(com.stockflow.common.domain.Money amount, com.stockflow.common.domain.Money vat) {
+            fees = add(fees, amount);
+            tax = add(tax, vat);
+        }
+
+        private static BigDecimal add(BigDecimal sum, com.stockflow.common.domain.Money part) {
+            return sum == null || part == null ? null : sum.add(part.amount());
+        }
+
+        Totals build() {
+            BigDecimal total = subtotal == null || fees == null || tax == null ? null : subtotal.add(fees).add(tax);
+            return new Totals(subtotal, fees, tax, total);
         }
     }
 

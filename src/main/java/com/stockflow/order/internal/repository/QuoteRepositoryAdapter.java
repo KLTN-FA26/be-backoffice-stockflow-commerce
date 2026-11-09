@@ -9,6 +9,7 @@ import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.entity.QuoteJpaEntity;
+import com.stockflow.order.internal.entity.QuoteFeeLineJpaEntity;
 import com.stockflow.order.internal.entity.QuoteLineJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
@@ -118,8 +119,26 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                         line.quantity(), tiers, line.acceptedQuantity(), price);
             } else {
                 row.applyCartons(line.lineNo(), line.sku().code(), line.uomConversionId(), line.unitsPerCarton(),
-                        line.quantity(), tiers, line.acceptedQuantity(), price);
+                        line.quantity(), tiers, line.acceptedQuantity(), price, line.taxClass(), line.taxRate());
             }
+        }
+        // 4B-3: the fee lines, written in place; a fee no longer on the draft goes (orphan removal).
+        Map<UUID, QuoteFeeLineJpaEntity> existingFees = entity.getFees().stream()
+                .collect(Collectors.toMap(QuoteFeeLineJpaEntity::getId, Function.identity()));
+        boolean feesDropped = entity.getFees()
+                .removeIf(row -> offer.fees().stream().noneMatch(fee -> fee.id().equals(row.getId())));
+        if (feesDropped && !entity.isNew()) {
+            // As for lines: a new plate fee of the same SKU would hit uk_quote_fee_line_plate before the old row goes.
+            entityManager.flush();
+        }
+        for (com.stockflow.order.internal.domain.QuoteFee fee : offer.fees()) {
+            QuoteFeeLineJpaEntity row = existingFees.get(fee.id());
+            if (row == null) {
+                row = new QuoteFeeLineJpaEntity(fee.id());
+                entity.addFee(row);
+            }
+            row.apply(fee.kind(), fee.sku() == null ? null : fee.sku().code(),
+                    fee.amount() == null ? null : fee.amount().amount(), fee.taxClass(), fee.taxRate());
         }
         return toDomain(jpa.saveAndFlush(entity));
     }
@@ -213,9 +232,16 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
 
     static Quote toDomain(QuoteJpaEntity e) {
         List<QuoteLine> lines = e.getLines().stream().map(QuoteRepositoryAdapter::toDomain).toList();
+        List<com.stockflow.order.internal.domain.QuoteFee> fees = e.getFees().stream()
+                .sorted(java.util.Comparator.comparing(QuoteFeeLineJpaEntity::getKind)
+                        .thenComparing(f -> f.getSku() == null ? "" : f.getSku()))
+                .map(f -> new com.stockflow.order.internal.domain.QuoteFee(f.getId(), f.getKind(),
+                        f.getSku() == null ? null : new Sku(f.getSku()),
+                        f.getAmount() == null ? null : vnd(f.getAmount()), f.getTaxClass(), f.getTaxRate()))
+                .toList();
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
                 e.getRevision(), new Quote.Offer(e.getPaymentTerm(), e.getDepositPercent(), e.getValidUntil(),
-                        e.getTerms(), e.getRequestedDeliveryDate(), lines),
+                        e.getTerms(), e.getRequestedDeliveryDate(), lines, fees),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
                 e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt());
     }
@@ -228,7 +254,8 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 ? QuoteLine.legacy(l.getId(), l.getLineNo(), new Sku(l.getBlankSku()), l.getDesignSnapshotId(),
                         l.getPrintSpec(), l.getQuantity(), tiers, l.getAcceptedQuantity(), price)
                 : QuoteLine.carton(l.getId(), l.getLineNo(), new Sku(l.getSku()), l.getUomConversionId(),
-                        l.getUnitsPerCarton(), l.getCartons(), tiers, l.getAcceptedCartons(), price);
+                        l.getUnitsPerCarton(), l.getCartons(), tiers, l.getAcceptedCartons(), price, l.getTaxClass(),
+                        l.getTaxRate());
     }
 
     /** Whole dong, as stored with four decimal places: compare and display without trailing zeros. */

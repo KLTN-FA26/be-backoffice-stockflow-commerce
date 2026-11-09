@@ -22,7 +22,7 @@ public interface ReportingService {
     List<SalesDay> salesDaily(LocalDate from, LocalDate to);
 
     /**
-     * The best-selling SKUs of the range, by revenue (then units).
+     * The best-selling SKUs of the range, by revenue before tax (then cartons, then units; 4B-3, D33).
      *
      * @param limit how many to return; null means 10, at most 100
      */
@@ -43,8 +43,11 @@ public interface ReportingService {
     record SalesDay(LocalDate day, int ordersCount, BigDecimal revenue, String currency) {
     }
 
-    /** {@code productName} is null when the product module does not know the SKU any more. */
-    record TopProduct(String sku, String productName, long quantitySold, BigDecimal revenue) {
+    /**
+     * {@code productName} is null when the product module does not know the SKU any more. {@code revenue} is before tax
+     * (4B-3, D33); {@code cartonsSold} counts the cartons of lines placed by the carton, less cancelled orders.
+     */
+    record TopProduct(String sku, String productName, long quantitySold, BigDecimal revenue, long cartonsSold) {
     }
 
     record OrderStatusCount(String status, long count) {

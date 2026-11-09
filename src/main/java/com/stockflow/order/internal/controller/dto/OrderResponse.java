@@ -133,8 +133,22 @@ public record OrderResponse(
         @Schema(deprecated = true, description = "Always true: printing is done outside the system, so an order's "
                 + "goods are in stock before it is released. Kept for clients that still read it; null on rows that "
                 + "do not carry it")
-        Boolean printLinesReady
+        Boolean printLinesReady,
+
+        @Schema(description = "4B-3: the total before tax - goods and fee lines; totalAmount is it plus taxAmount")
+        BigDecimal netAmount,
+
+        @Schema(description = "4B-3: the VAT of every line and fee line, each rounded to the dong; 0 for an order "
+                + "placed without VAT")
+        BigDecimal taxAmount,
+
+        @Schema(description = "4B-3: the fee lines - a plate fee per SKU produced for the first time, the shipping fee")
+        List<Fee> fees
 ) {
+
+    /** A fee line with its VAT (14 BR-17, BR-20, BR-21). */
+    public record Fee(String kind, String sku, BigDecimal amount, BigDecimal taxRate, BigDecimal taxAmount) {
+    }
 
     @Schema(name = "OrderShipment")
     public record Shipment(
@@ -200,14 +214,30 @@ public record OrderResponse(
             Integer cartons,
 
             @Schema(description = "4B-2: pieces per carton fixed on the line when it was quoted")
-            Integer unitsPerCarton
+            Integer unitsPerCarton,
+
+            @Schema(description = "4B-3: the VAT rate fixed on the line, a percentage; null for a line without VAT")
+            BigDecimal taxRate,
+
+            @Schema(description = "4B-3: the line's VAT, rounded to the dong; null for a line without VAT")
+            BigDecimal taxAmount
     ) {
+
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
+                    Integer deliveredQuantity, Integer cancelledQuantity, java.time.LocalDate requestedDeliveryDate,
+                    Integer cartons, Integer unitsPerCarton) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, requestedDeliveryDate, cartons,
+                    unitsPerCarton, null, null);
+        }
 
         public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                     List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
                     Integer deliveredQuantity, Integer cancelledQuantity, java.time.LocalDate requestedDeliveryDate) {
             this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
-                    shippedQuantity, deliveredQuantity, cancelledQuantity, requestedDeliveryDate, null, null);
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, requestedDeliveryDate, null, null, null,
+                    null);
         }
 
         public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,

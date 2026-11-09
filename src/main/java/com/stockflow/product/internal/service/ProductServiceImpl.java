@@ -126,6 +126,12 @@ class ProductServiceImpl implements ProductService {
         return products.nameForSku(sku);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, com.stockflow.product.api.TaxClass> taxClassesOf(java.util.Collection<String> skus) {
+        return products.taxClassesOf(skus);
+    }
+
     /**
      * A draft product and its variants; each variant creates its SKU's inventory item (trigger), where
      * its logistics are then filled in.

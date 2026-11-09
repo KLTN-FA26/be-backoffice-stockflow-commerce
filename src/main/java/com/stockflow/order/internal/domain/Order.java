@@ -67,6 +67,9 @@ public final class Order extends AggregateRoot {
     private final OrderAddressSnapshot billingAddress;
     private final UUID requestId;
     private final List<OrderLine> lines;
+
+    /** 4B-3: the fee lines copied from the quote when the order was placed (14 BR-09, BR-17, BR-20); fixed. */
+    private final List<OrderFee> fees = new ArrayList<>();
     private final Instant placedAt;
 
     private OrderStatus status;
@@ -269,10 +272,58 @@ public final class Order extends AggregateRoot {
     }
 
     /** Sum of the lines. Derived on every call rather than stored, so it cannot go stale. */
+    /**
+     * What the customer pays: the total with tax (kltn-docs 14 BR-09) - the lines and the fee lines, each with its VAT.
+     * An order placed without VAT (before 4B-3, or at checkout) adds none.
+     */
     public Money total() {
-        return lines.stream()
-                .map(OrderLine::lineTotal)
-                .reduce(Money.zero(lines.getFirst().unitPrice().currency()), Money::plus);
+        return netTotal().plus(taxTotal());
+    }
+
+    /** The total before tax: the lines' totals and the fee lines' amounts (14 BR-09). */
+    public Money netTotal() {
+        Money net = lines.stream().map(OrderLine::lineTotal).reduce(Money.zero(currency()), Money::plus);
+        return fees.stream().map(OrderFee::amount).reduce(net, Money::plus);
+    }
+
+    /** The VAT of every line and fee line, each rounded to the dong (14 BR-21). */
+    public Money taxTotal() {
+        Money tax = lines.stream().map(OrderLine::taxAmount).filter(java.util.Objects::nonNull)
+                .reduce(Money.zero(currency()), Money::plus);
+        return fees.stream().map(OrderFee::taxAmount).reduce(tax, Money::plus);
+    }
+
+    /** The fee lines with their VAT. */
+    private Money feesGross() {
+        return fees.stream().map(OrderFee::gross).reduce(Money.zero(currency()), Money::plus);
+    }
+
+    private java.util.Currency currency() {
+        return lines.getFirst().unitPrice().currency();
+    }
+
+    /**
+     * The fee lines of the order, from its accepted quote (4B-3). Set once, before the terms are applied - a deposit is
+     * a share of the total with them.
+     */
+    public void attachFees(List<OrderFee> placed) {
+        if (placed == null || placed.isEmpty()) {
+            return;
+        }
+        if (!fees.isEmpty()) {
+            throw new IllegalStateException("Order " + orderNumber + " has its fee lines already");
+        }
+        for (OrderFee fee : placed) {
+            if (!fee.amount().currency().equals(currency())) {
+                throw new IllegalArgumentException("A fee is in the order's currency");
+            }
+        }
+        fees.addAll(placed);
+    }
+
+    /** The fee lines, unmodifiable. */
+    public List<OrderFee> fees() {
+        return java.util.Collections.unmodifiableList(fees);
     }
 
     public void attachReservations(UUID lineId, List<UUID> reservationIds) {
@@ -1213,7 +1264,13 @@ public final class Order extends AggregateRoot {
                         "Line %s of order %s has %d unit(s) left to ship, not %d".formatted(line.sku().code(),
                                 orderNumber, left, entry.getValue()));
             }
-            value = value.plus(line.unitPrice().times(entry.getValue()));
+            // With its VAT (4B-3): the units' share of the line's total with tax, so the shipments of a line add up to it.
+            int before = shippedUnits(line.id(), false);
+            value = value.plus(line.grossBetween(before, before + entry.getValue()));
+        }
+        if (shipments.isEmpty()) {
+            // The fee lines are billed with the first shipment that leaves, once (14 BR-09): they carry no units.
+            value = value.plus(feesGross());
         }
         int leaving = quantities.values().stream().mapToInt(Integer::intValue).sum();
         boolean everythingGoes = outstandingUnits() == leaving;
@@ -1403,7 +1460,8 @@ public final class Order extends AggregateRoot {
         for (OrderLine line : lines) {
             int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
             if (left > 0 && line.printedToCustomerDesign()) {
-                closedPrints = closedPrints.plus(line.unitPrice().times(left));
+                int open = line.quantity() - line.cancelledQuantity();
+                closedPrints = closedPrints.plus(line.grossBetween(open - left, open));
             }
         }
         BigDecimal fee = agreedFee == null ? BigDecimal.ZERO : requireRemainderFee(agreedFee, closedPrints.amount());
@@ -1412,8 +1470,9 @@ public final class Order extends AggregateRoot {
         for (OrderLine line : lines) {
             int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
             if (left > 0) {
+                int open = line.quantity() - line.cancelledQuantity();
                 line.closeUnits(left);
-                closed = closed.plus(line.unitPrice().times(left));
+                closed = closed.plus(line.grossBetween(open - left, open));
                 closedLines.add(new com.stockflow.contracts.OrderRemainderClosed.Line(line.id(), line.sku().code(), left));
             }
         }
@@ -1556,9 +1615,9 @@ public final class Order extends AggregateRoot {
      * still owed a delivery until they are closed - shipped again, or closed and so refunded - so they stay in it.
      */
     public BigDecimal billable() {
-        BigDecimal closed = lines.stream().map(l -> l.unitPrice().times(l.cancelledQuantity()).amount())
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        return total().amount().subtract(closed);
+        // Each line's units not closed with their VAT (4B-3), and the fee lines: closing units never closes a fee.
+        return lines.stream().map(l -> l.grossOf(l.quantity() - l.cancelledQuantity()).amount())
+                .reduce(feesGross().amount(), BigDecimal::add);
     }
 
     /** What the customer still owes on the order (never below zero; above, a refund is the payment module's). */

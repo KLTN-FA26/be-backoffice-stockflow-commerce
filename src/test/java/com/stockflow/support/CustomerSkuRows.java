@@ -27,11 +27,47 @@ public final class CustomerSkuRows {
     private CustomerSkuRows() {
     }
 
-    /** A SKU of {@code customerId} sold in cartons of {@code unitsPerCarton}, on a product of its own. */
+    /**
+     * A SKU of {@code customerId} sold in cartons of {@code unitsPerCarton}, on a product of its own whose tax class is
+     * EXEMPT (no VAT), produced before (an order of it was confirmed): a quote of it has no plate fee and its totals are
+     * its lines' - what a test about something else wants (4B-3).
+     */
     public static Issued issue(JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em, UUID customerId,
                                int unitsPerCarton) {
+        return issue(jdbc, tx, em, customerId, unitsPerCarton, "EXEMPT", true);
+    }
+
+    /**
+     * The same, with the product's tax class ({@code STANDARD}, {@code REDUCED}, {@code EXEMPT} or null for none yet)
+     * and whether the SKU was produced before - a SKU never produced gets a plate fee on its first quote (14 BR-17).
+     */
+    public static Issued issue(JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em, UUID customerId,
+                               int unitsPerCarton, String taxClass, boolean produced) {
         ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(em));
-        return issueOn(jdbc, tx, customerId, product, unitsPerCarton);
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.products SET tax_class = ? WHERE id = ?", taxClass,
+                product.productId()));
+        Issued issued = issueOn(jdbc, tx, customerId, product, unitsPerCarton);
+        if (produced) {
+            produced(jdbc, tx, customerId, issued.sku());
+        }
+        return issued;
+    }
+
+    /**
+     * Marks {@code sku} produced before (4B-3, 14 BR-17): a confirmed credit order of it, as an earlier sale left it -
+     * what {@code SkuProductionHistory} reads until production orders exist.
+     */
+    public static void produced(JdbcTemplate jdbc, TransactionTemplate tx, UUID customerId, String sku) {
+        UUID order = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
+                        currency, placed_at, created_at, payment_term, credit_term_days)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 0, 'VND', NOW() - interval '30 days', NOW() - interval '30 days',
+                        'CREDIT', 30)""", order, ReferenceRows.orderNumber(order), customerId, Identifiers.newId());
+            jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) "
+                    + "VALUES (?, ?, ?, 1, 0, 'VND')", Identifiers.newId(), order, sku);
+        });
     }
 
     /**

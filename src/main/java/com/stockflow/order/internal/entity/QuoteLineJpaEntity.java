@@ -76,6 +76,12 @@ public class QuoteLineJpaEntity {
     @Column(name = "accepted_cartons")
     private Integer acceptedCartons;
 
+    @Column(name = "tax_class", length = 16)
+    private String taxClass;
+
+    @Column(name = "tax_rate", precision = 5, scale = 2)
+    private BigDecimal taxRate;
+
     @Column(name = "blank_sku", length = 64)
     private String blankSku;
 
@@ -113,8 +119,11 @@ public class QuoteLineJpaEntity {
 
     /** A carton line: the columns of a line drafted before are cleared. */
     public void applyCartons(int lineNo, String sku, UUID uomConversionId, int unitsPerCarton, int cartons,
-                             List<Tier> tiers, Integer acceptedCartons, BigDecimal acceptedUnitPrice) {
+                             List<Tier> tiers, Integer acceptedCartons, BigDecimal acceptedUnitPrice, String taxClass,
+                             BigDecimal taxRate) {
         this.lineNo = lineNo;
+        this.taxClass = taxClass;
+        this.taxRate = taxRate;
         this.sku = sku;
         this.uomConversionId = uomConversionId;
         this.unitsPerCarton = unitsPerCarton;
@@ -138,6 +147,8 @@ public class QuoteLineJpaEntity {
         this.printSpec = printSpec;
         this.quantity = quantity;
         this.acceptedQuantity = acceptedQuantity;
+        this.taxClass = null;
+        this.taxRate = null;
         this.sku = null;
         this.uomConversionId = null;
         this.unitsPerCarton = null;
@@ -167,6 +178,8 @@ public class QuoteLineJpaEntity {
     public Integer getCartons() { return cartons; }
     public Integer getUnitsPerCarton() { return unitsPerCarton; }
     public Integer getAcceptedCartons() { return acceptedCartons; }
+    public String getTaxClass() { return taxClass; }
+    public BigDecimal getTaxRate() { return taxRate; }
     public String getBlankSku() { return blankSku; }
     public UUID getDesignSnapshotId() { return designSnapshotId; }
     public String getPrintSpec() { return printSpec; }

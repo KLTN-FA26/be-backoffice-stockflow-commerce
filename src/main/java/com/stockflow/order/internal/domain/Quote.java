@@ -45,12 +45,18 @@ public final class Quote {
      *                              none.
      */
     public record Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                        java.time.LocalDate requestedDeliveryDate, List<QuoteLine> lines) {
+                        java.time.LocalDate requestedDeliveryDate, List<QuoteLine> lines, List<QuoteFee> fees) {
+
+        /** An offer without fee lines. */
+        public Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
+                     java.time.LocalDate requestedDeliveryDate, List<QuoteLine> lines) {
+            this(paymentTerm, depositPercent, validUntil, terms, requestedDeliveryDate, lines, List.of());
+        }
 
         /** An offer without a requested delivery date. */
         public Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
                      List<QuoteLine> lines) {
-            this(paymentTerm, depositPercent, validUntil, terms, null, lines);
+            this(paymentTerm, depositPercent, validUntil, terms, null, lines, List.of());
         }
 
         public Offer {
@@ -88,6 +94,28 @@ public final class Quote {
                 }
             }
             lines = List.copyOf(lines);
+            fees = fees == null ? List.of() : List.copyOf(fees);
+            // 4B-3 (14 BR-17, BR-20): at most one shipping fee; one plate fee per SKU on the quote, none on a legacy one.
+            var platedSkus = new HashSet<String>();
+            var onQuote = new HashSet<String>();
+            lines.forEach(line -> onQuote.add(line.sku().code()));
+            int shipping = 0;
+            for (QuoteFee fee : fees) {
+                if (legacy) {
+                    throw new IllegalArgumentException("A quote drafted on blanks and designs has no fee lines");
+                }
+                if (fee.kind() == com.stockflow.order.api.FeeKind.SHIPPING_FEE) {
+                    if (++shipping > 1) {
+                        throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote has one shipping fee at most");
+                    }
+                } else if (!onQuote.contains(fee.sku().code())) {
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                            "A plate fee is for a SKU on the quote, not " + fee.sku().code());
+                } else if (!platedSkus.add(fee.sku().code())) {
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                            "SKU " + fee.sku().code() + " has one plate fee at most");
+                }
+            }
             Map<String, Integer> bySku = quantityBySku(lines, QuoteLine::quantity);
             for (QuoteLine line : lines) {
                 int quantity = bySku.get(line.sku().code());
@@ -204,6 +232,27 @@ public final class Quote {
                 throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED,
                         "Quote %s line %d has no price yet; enter its tiers before sending".formatted(quoteNumber,
                                 line.lineNo()));
+            }
+        }
+        // 14 §4.1 step 3 (4B-3): every fee line has its amount, every line and fee line its VAT rate.
+        for (QuoteFee fee : offer.fees()) {
+            if (!fee.priced()) {
+                throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED, ("Quote %s: the %s of %s has no amount yet; "
+                        + "enter it before sending").formatted(quoteNumber, fee.kind(), fee.sku().code()));
+            }
+        }
+        for (QuoteLine line : offer.lines()) {
+            if (line.taxRate() == null) {
+                throw new BusinessException(ErrorCode.QUOTE_TAX_CLASS_MISSING, ("Quote %s line %d: the product of %s "
+                        + "has no tax class; set it before sending").formatted(quoteNumber, line.lineNo(),
+                        line.sku().code()));
+            }
+        }
+        for (QuoteFee fee : offer.fees()) {
+            if (fee.taxRate() == null) {
+                throw new BusinessException(ErrorCode.QUOTE_TAX_CLASS_MISSING, ("Quote %s: the product of %s has no "
+                        + "tax class, so its plate fee has no VAT rate; set it before sending").formatted(quoteNumber,
+                        fee.sku().code()));
             }
         }
         if (!offer.validUntil().isAfter(now)) {

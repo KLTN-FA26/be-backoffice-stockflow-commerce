@@ -36,9 +36,7 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
                         SELECT o.id FROM ordering.customer_order o
                          WHERE o.status = 'DELIVERED' AND o.delivered_at <= :cutoff
                            -- Still owing, or a return open: the aggregate would refuse; leave room in the batch.
-                           AND o.paid_amount >= o.total_amount
-                               - COALESCE((SELECT SUM(l.cancelled_quantity * l.unit_price)
-                                             FROM ordering.order_line l WHERE l.order_id = o.id), 0)
+                           AND o.paid_amount >= o.total_amount - o.closed_amount
                            AND NOT EXISTS (SELECT 1 FROM ordering.return_request r WHERE r.order_id = o.id
                                               AND r.status IN (%s))
                          ORDER BY o.delivered_at, o.id""".formatted(OPEN_RETURN))

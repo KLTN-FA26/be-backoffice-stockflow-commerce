@@ -67,7 +67,9 @@ class QuoteServiceTransitionsTest {
     private final QuoteService service = new QuoteService(quotes, search, customers,
             mock(com.stockflow.inventory.api.UomConversionService.class), mock(QuotedOrders.class),
             mock(OrderService.class), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
-            mock(com.stockflow.catalog.api.CatalogService.class), events, products, customerSkus);
+            mock(com.stockflow.catalog.api.CatalogService.class), events, products, customerSkus,
+            mock(com.stockflow.order.internal.domain.TaxRates.class),
+            mock(com.stockflow.order.internal.domain.SkuProductionHistory.class));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -98,7 +100,8 @@ class QuoteServiceTransitionsTest {
         boolean answered = status == QuoteStatus.ACCEPTED || status == QuoteStatus.CHANGES_REQUESTED;
         QuoteLine line = QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), UUID.randomUUID(), 50, 20,
                 List.of(PriceTier.of(10, new BigDecimal("2000")), PriceTier.of(50, new BigDecimal("1800"))),
-                status == QuoteStatus.ACCEPTED ? 20 : null, status == QuoteStatus.ACCEPTED ? Money.vnd(2000) : null);
+                status == QuoteStatus.ACCEPTED ? 20 : null, status == QuoteStatus.ACCEPTED ? Money.vnd(2000) : null,
+                "STANDARD", new BigDecimal("10"));
         Quote quote = Quote.restore(UUID.randomUUID(), "QT-1", UUID.randomUUID(), customer, status, 1,
                 new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("40"), validUntil, null, List.of(line)),
                 status == QuoteStatus.DRAFT ? null : NOW, status == QuoteStatus.DRAFT ? null : salesUser,

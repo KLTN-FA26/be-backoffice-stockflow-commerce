@@ -35,8 +35,41 @@ public record OrderSummary(
         Instant releasedAt,
         Payment payment,
         Cancellation cancellation,
-        Lifecycle lifecycle
+        Lifecycle lifecycle,
+        Charges charges
 ) {
+
+    /** Without the charges block (4B-3): the total is all there is, with no VAT or fee line. */
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
+                        List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
+                        String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
+                        AddressSummary shippingAddress, AddressSummary billingAddress, PaymentTerm paymentTerm,
+                        UUID warehouseId, Instant releasedAt, Payment payment, Cancellation cancellation,
+                        Lifecycle lifecycle) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
+                paymentTerm, warehouseId, releasedAt, payment, cancellation, lifecycle, null);
+    }
+
+    /**
+     * The order's three totals and its fee lines (4B-3; kltn-docs 14 BR-09): before tax (goods and fees), the VAT, and
+     * {@link #total()} with it.
+     */
+    public record Charges(Money netTotal, Money taxTotal, List<FeeSummary> fees) {
+
+        public Charges {
+            fees = fees == null ? List.of() : List.copyOf(fees);
+        }
+    }
+
+    /** A fee line: the plate fee of a SKU produced for the first time, or the shipping fee; its VAT. */
+    public record FeeSummary(FeeKind kind, String sku, Money amount, java.math.BigDecimal taxRate, Money taxAmount) {
+    }
+
+    /** The total before tax: {@link Charges#netTotal()}, or the total of an order without charges. */
+    public Money netTotal() {
+        return charges == null ? total : charges.netTotal();
+    }
 
     /** Without the lifecycle block (G3-2): callers written before it. */
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
@@ -221,6 +254,8 @@ public record OrderSummary(
      *                       none was asked
      * @param cartons        cartons ordered (4B-2, kltn-docs 14 BR-08): {@code quantity} is cartons x
      *                       {@code unitsPerCarton} pieces; both null for a line not ordered in cartons
+     * @param taxRate        the VAT rate fixed on the line (4B-3, 14 BR-21); null with {@code taxAmount} for a line
+     *                       without VAT
      */
     public record LineSummary(
             UUID lineId,
@@ -233,8 +268,18 @@ public record OrderSummary(
             String designChecksum,
             java.time.LocalDate requestedDeliveryDate,
             Integer cartons,
-            Integer unitsPerCarton
+            Integer unitsPerCarton,
+            java.math.BigDecimal taxRate,
+            Money taxAmount
     ) {
+
+        /** Without VAT. */
+        public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice, Money lineTotal,
+                           List<UUID> reservationIds, UUID designSnapshotId, String designChecksum,
+                           java.time.LocalDate requestedDeliveryDate, Integer cartons, Integer unitsPerCarton) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    requestedDeliveryDate, cartons, unitsPerCarton, null, null);
+        }
 
         /** Not ordered in cartons. */
         public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice, Money lineTotal,

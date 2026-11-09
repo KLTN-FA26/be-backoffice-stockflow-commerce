@@ -85,6 +85,9 @@ public class QuoteJpaEntity extends BaseEntity {
     @OrderBy("lineNo")
     private List<QuoteLineJpaEntity> lines = new ArrayList<>();
 
+    @OneToMany(mappedBy = "quote", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    private List<QuoteFeeLineJpaEntity> fees = new ArrayList<>();
+
     protected QuoteJpaEntity() {
     }
 
@@ -140,4 +143,11 @@ public class QuoteJpaEntity extends BaseEntity {
     public UUID getConvertedOrderId() { return convertedOrderId; }
     public Instant getConvertedAt() { return convertedAt; }
     public List<QuoteLineJpaEntity> getLines() { return lines; }
+
+    public void addFee(QuoteFeeLineJpaEntity fee) {
+        fee.attachTo(this);
+        fees.add(fee);
+    }
+
+    public List<QuoteFeeLineJpaEntity> getFees() { return fees; }
 }

@@ -118,7 +118,9 @@ final class OrderWebMapper {
                                                         ? progress.get(line.lineId()).deliveredQuantity() : null,
                                                 progress.containsKey(line.lineId())
                                                         ? progress.get(line.lineId()).cancelledQuantity() : null,
-                                                line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton()))
+                                                line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton(),
+                                                line.taxRate(),
+                                                line.taxAmount() == null ? null : line.taxAmount().amount()))
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
@@ -169,7 +171,12 @@ final class OrderWebMapper {
                         .toList(),
                 lifecycle == null ? null : lifecycle.allowPartialShipment(),
                 // Printing is outside the system: whatever an order holds is in stock, so the goods are ready.
-                lifecycle == null ? null : Boolean.TRUE);
+                lifecycle == null ? null : Boolean.TRUE,
+                summary.netTotal().amount(),
+                summary.charges() == null ? java.math.BigDecimal.ZERO : summary.charges().taxTotal().amount(),
+                summary.charges() == null ? List.of() : summary.charges().fees().stream()
+                        .map(fee -> new OrderResponse.Fee(fee.kind().name(), fee.sku(), fee.amount().amount(),
+                                fee.taxRate(), fee.taxAmount().amount())).toList());
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(

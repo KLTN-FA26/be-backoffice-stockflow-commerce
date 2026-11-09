@@ -69,7 +69,7 @@ class QuoteController {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.create(user, new Quotes.Create(request.requestId(),
                 request.customerId(), new Quotes.Draft(request.paymentTerm(), request.depositPercent(),
                 request.validUntil(), request.terms(), QuoteWebMapper.lines(request.lines()),
-                request.requestedDeliveryDate())))));
+                request.requestedDeliveryDate(), QuoteWebMapper.fees(request.fees()))))));
     }
 
     @GetMapping
@@ -101,7 +101,8 @@ class QuoteController {
                                            @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.edit(user, quoteId, request.version(),
                 new Quotes.Draft(request.paymentTerm(), request.depositPercent(), request.validUntil(),
-                        request.terms(), QuoteWebMapper.lines(request.lines()), request.requestedDeliveryDate()))));
+                        request.terms(), QuoteWebMapper.lines(request.lines()), request.requestedDeliveryDate(),
+                        QuoteWebMapper.fees(request.fees())))));
     }
 
     @PostMapping("/{quoteId}/sending")

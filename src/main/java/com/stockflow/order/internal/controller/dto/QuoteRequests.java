@@ -40,6 +40,15 @@ public final class QuoteRequests {
             List<@Valid Tier> tiers) {
     }
 
+    @Schema(description = "4B-3: a fee line - PLATE_FEE for a SKU on the quote produced for the first time, or "
+            + "SHIPPING_FEE; whole VND, a plate fee may be left without its amount for now")
+    public record Fee(
+            @NotNull(message = "kind is required") com.stockflow.order.api.FeeKind kind,
+            @Schema(description = "PLATE_FEE: the SKU it is for; empty for SHIPPING_FEE") @ValidSku String sku,
+            @DecimalMin(value = "0", message = "amount is not negative")
+            @Digits(integer = 15, fraction = 0, message = "amount is whole VND") BigDecimal amount) {
+    }
+
     public record Create(
             @NotNull(message = "requestId is required") UUID requestId,
             @NotNull(message = "customerId is required") UUID customerId,
@@ -52,7 +61,11 @@ public final class QuoteRequests {
                     + "optional. It is copied onto the print lines of the order this quote becomes")
             LocalDate requestedDeliveryDate,
             @NotEmpty(message = "a quote needs at least one line") @Size(max = 50, message = "at most 50 lines")
-            List<@Valid Line> lines) {
+            List<@Valid Line> lines,
+            @Schema(description = "4B-3: fee lines. A plate fee (PLATE_FEE, its sku, amount) prices the one the system adds "
+                    + "for a SKU produced for the first time; one SHIPPING_FEE with its amount, if the customer pays it")
+            @Size(max = 51, message = "at most 51 fee lines")
+            List<@Valid Fee> fees) {
     }
 
     public record Edit(
@@ -65,7 +78,11 @@ public final class QuoteRequests {
                     + "optional. It is copied onto the print lines of the order this quote becomes")
             LocalDate requestedDeliveryDate,
             @NotEmpty(message = "a quote needs at least one line") @Size(max = 50, message = "at most 50 lines")
-            List<@Valid Line> lines) {
+            List<@Valid Line> lines,
+            @Schema(description = "4B-3: fee lines. A plate fee (PLATE_FEE, its sku, amount) prices the one the system adds "
+                    + "for a SKU produced for the first time; one SHIPPING_FEE with its amount, if the customer pays it")
+            @Size(max = 51, message = "at most 51 fee lines")
+            List<@Valid Fee> fees) {
     }
 
     /** Reorder of an order placed from a quote; {@code requestId} makes a retried click return the same draft. */

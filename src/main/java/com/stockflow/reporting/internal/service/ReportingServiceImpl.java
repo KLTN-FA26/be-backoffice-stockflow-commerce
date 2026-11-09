@@ -81,7 +81,7 @@ class ReportingServiceImpl implements ReportingService {
         }
         return queries.topProducts(period.from(), period.to(), top).stream()
                 .map(row -> new TopProduct(row.sku(), products.nameForSku(row.sku()).orElse(null),
-                        row.quantitySold(), vnd(row.revenue())))
+                        row.quantitySold(), vnd(row.revenue()), row.cartonsSold()))
                 .toList();
     }
 

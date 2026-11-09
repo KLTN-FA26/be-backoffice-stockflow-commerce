@@ -119,6 +119,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "total_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal totalAmount;
 
+    /**
+     * 4B-3: the VAT of the order's lines and fee lines. The total before tax, {@code net_amount}, is a column the
+     * database generates as {@code total_amount - tax_amount}; it is not mapped, so nothing can write a third number
+     * that disagrees with the other two.
+     */
+    @Column(name = "tax_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal taxAmount = java.math.BigDecimal.ZERO;
+
     @Column(name = "currency", nullable = false, length = 3)
     private String currency;
 
@@ -267,6 +275,11 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @org.hibernate.annotations.BatchSize(size = 50)
     private List<OrderLineJpaEntity> lines = new ArrayList<>();
 
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL,
+            orphanRemoval = true, fetch = FetchType.LAZY)
+    @org.hibernate.annotations.BatchSize(size = 50)
+    private List<OrderFeeLineJpaEntity> fees = new ArrayList<>();
+
     protected OrderJpaEntity() {
     }
 
@@ -365,6 +378,27 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.cancellationReasonCode = code;
         this.cancellationRetainedAmount = retained;
     }
+
+    /** The order's VAT (4B-3); the total with tax is {@link #apply}'s, the total before tax their difference. */
+    public void applyTax(java.math.BigDecimal tax) {
+        this.taxAmount = tax;
+    }
+
+    /**
+     * The fee lines, written once when the order is placed (4B-3): rows already there are kept as they are - they
+     * never change - and only fee lines the entity does not hold yet are added.
+     */
+    public void addMissingFees(List<OrderFeeLineJpaEntity> placed) {
+        java.util.Set<UUID> held = new java.util.HashSet<>();
+        fees.forEach(fee -> held.add(fee.getId()));
+        placed.stream().filter(fee -> !held.contains(fee.getId())).forEach(fee -> {
+            fee.attachTo(this);
+            fees.add(fee);
+        });
+    }
+
+    public List<OrderFeeLineJpaEntity> getFees() { return fees; }
+    public java.math.BigDecimal getTaxAmount() { return taxAmount; }
 
     public void replaceLines(List<OrderLineJpaEntity> replacement) {
         this.lines.clear();

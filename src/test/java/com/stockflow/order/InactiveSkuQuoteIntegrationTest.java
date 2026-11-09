@@ -99,6 +99,8 @@ class InactiveSkuQuoteIntegrationTest {
         sku = CustomerSkuRows.issueOn(jdbc, tx, customerId, new ReferenceRows.ProductRow(productId, variant,
                 "FX-" + suffix), 10).sku();
         CustomerSkuRows.stock(jdbc, tx, sku, 100);
+        // Produced before (4B-3): this test is about the SKU's status, not a first production's plate fee.
+        CustomerSkuRows.produced(jdbc, tx, customerId, sku);
     }
 
     // ------------------------------------------------------------------------------------- fixtures

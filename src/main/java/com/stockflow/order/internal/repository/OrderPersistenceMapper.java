@@ -45,6 +45,10 @@ final class OrderPersistenceMapper {
                     if (line.getCartons() != null) {
                         mapped.withCartons(line.getUomConversionId(), line.getCartons(), line.getUnitsPerCarton());
                     }
+                    if (line.getTaxRate() != null) {
+                        mapped.withTax(line.getTaxRate(), new Money(line.getTaxAmount(),
+                                Currency.getInstance(line.getCurrency())));
+                    }
                     mapped.withRequestedDeliveryDate(line.getRequestedDeliveryDate());
                     return mapped;
                 })
@@ -83,6 +87,12 @@ final class OrderPersistenceMapper {
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
                 entity.getReceivablePaidAmount(), entity.getRemainderRefundAmount());
+        order.attachFees(entity.getFees().stream()
+                .map(fee -> new com.stockflow.order.internal.domain.OrderFee(fee.getId(), fee.getKind(),
+                        fee.getSku() == null ? null : new Sku(fee.getSku()),
+                        new Money(fee.getAmount(), Currency.getInstance(fee.getCurrency())), fee.getTaxRate(),
+                        new Money(fee.getTaxAmount(), Currency.getInstance(fee.getCurrency()))))
+                .toList());
         order.restoreShipments(shipmentRows.stream()
                 .map(row -> new OrderShipment(row.getId(), row.getQuantities(), row.getAmount(), row.getHandedOverAt(),
                         row.getHandedOverBy(), row.getStatus(), row.getOutcomeAt(), row.getOutcomeBy(),
@@ -107,6 +117,8 @@ final class OrderPersistenceMapper {
                 order.contactPhone(), toEntity(order.shippingAddress()),
                 toEntity(order.billingAddress()));
         entity.replaceLines(toLineEntities(order));
+        entity.addMissingFees(toFeeEntities(order));
+        entity.applyTax(order.taxTotal().amount());
         applyTermsAndRelease(order, entity);
         entity.applyReplacement(order.replacesReturnRequestId());
         return entity;
@@ -199,7 +211,15 @@ final class OrderPersistenceMapper {
         entity.apply(order.status(), total.amount(),
                 total.currency().getCurrencyCode(), order.cancellationReason());
         entity.replaceLines(toLineEntities(order));
+        entity.addMissingFees(toFeeEntities(order));
+        entity.applyTax(order.taxTotal().amount());
         applyTermsAndRelease(order, entity);
+    }
+
+    private static List<com.stockflow.order.internal.entity.OrderFeeLineJpaEntity> toFeeEntities(Order order) {
+        return order.fees().stream().map(fee -> new com.stockflow.order.internal.entity.OrderFeeLineJpaEntity(fee.id(),
+                fee.kind(), fee.sku() == null ? null : fee.sku().code(), fee.amount().amount(), fee.taxRate(),
+                fee.taxAmount().amount(), fee.amount().currency().getCurrencyCode())).toList();
     }
 
     private static List<OrderLineJpaEntity> toLineEntities(Order order) {
@@ -217,6 +237,7 @@ final class OrderPersistenceMapper {
                     mapped.setCancelledQuantity(line.cancelledQuantity());
                     mapped.setRequestedDeliveryDate(line.requestedDeliveryDate());
                     mapped.setCartons(line.uomConversionId(), line.cartons(), line.unitsPerCarton());
+                    mapped.setTax(line.taxRate(), line.taxAmount() == null ? null : line.taxAmount().amount());
                     return mapped;
                 })
                 .toList();

@@ -19,6 +19,16 @@ final class QuoteWebMapper {
                 .toList();
     }
 
+    static List<Quotes.Fee> fees(List<QuoteRequests.Fee> fees) {
+        return fees == null ? List.of() : fees.stream()
+                .map(fee -> new Quotes.Fee(fee.kind(), fee.sku(), fee.amount())).toList();
+    }
+
+    private static QuoteResponse.Totals totals(Quotes.Totals totals) {
+        return totals == null ? null
+                : new QuoteResponse.Totals(totals.subtotal(), totals.fees(), totals.tax(), totals.total());
+    }
+
     static QuoteResponse toResponse(Quotes.QuoteView q) {
         return new QuoteResponse(q.id(), q.quoteNumber(), q.customerId(), q.status().name(), q.revision(),
                 q.paymentTerm().name(), q.depositPercent(), q.validUntil(), q.terms(), q.requestedDeliveryDate(),
@@ -27,8 +37,11 @@ final class QuoteWebMapper {
                         l.unitsPerCarton(), l.units(), l.designSnapshotId(), l.printSpec(), l.priced(), l.moq(),
                         l.tiers().stream().map(t -> new QuoteResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),
                         l.proposedUnitPrice(), l.proposedLineTotal(), l.acceptedCartons(), l.acceptedUnits(),
-                        l.acceptedUnitPrice(), l.acceptedLineTotal())).toList(),
-                q.priced(), q.proposedTotal(), q.acceptedTotal(), q.sentAt(), q.sentBy(), q.respondedAt(), q.respondedBy(), q.customerFeedback(),
+                        l.acceptedUnitPrice(), l.acceptedLineTotal(), l.taxClass(), l.taxRate(), l.proposedTax(),
+                        l.acceptedTax())).toList(),
+                q.fees().stream().map(f -> new QuoteResponse.Fee(f.id(), f.kind().name(), f.sku(), f.amount(),
+                        f.taxClass(), f.taxRate(), f.tax())).toList(),
+                q.priced(), totals(q.proposed()), totals(q.accepted()), q.proposedTotal(), q.acceptedTotal(), q.sentAt(), q.sentBy(), q.respondedAt(), q.respondedBy(), q.customerFeedback(),
                 q.cancellationReason(),
                 q.convertedOrder() == null ? null : new QuoteResponse.Order(q.convertedOrder().orderId(),
                         q.convertedOrder().orderNumber(), q.convertedOrder().status().name(), q.convertedOrder().total()),

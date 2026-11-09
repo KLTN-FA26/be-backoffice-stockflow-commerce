@@ -72,9 +72,14 @@ class QuoteServiceTest {
     private final org.springframework.context.ApplicationEventPublisher events =
             mock(org.springframework.context.ApplicationEventPublisher.class);
     private final CustomerSkus customerSkus = mock(CustomerSkus.class);
+    private final com.stockflow.product.api.ProductService products = mock(com.stockflow.product.api.ProductService.class);
+    private final com.stockflow.order.internal.domain.TaxRates taxRates =
+            mock(com.stockflow.order.internal.domain.TaxRates.class);
+    private final com.stockflow.order.internal.domain.SkuProductionHistory production =
+            mock(com.stockflow.order.internal.domain.SkuProductionHistory.class);
     private final QuoteService service = new QuoteService(quotes, search, customers, units, quotedOrders,
-            orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events,
-            mock(com.stockflow.product.api.ProductService.class), customerSkus);
+            orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events, products, customerSkus,
+            taxRates, production);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -96,6 +101,18 @@ class QuoteServiceTest {
                 customer, QuoteStatus.SENT, 1, PaymentTerm.DEPOSIT, NOW.plusSeconds(3600), NOW, null, NOW, "sales", 7)));
         when(search.history(any())).thenReturn(List.of());
         ownedByTheCustomer(SKU);
+        // 4B-3: the products are STANDARD (10%) unless a test says otherwise; every SKU was produced before.
+        when(taxRates.all()).thenReturn(Map.of("STANDARD", new BigDecimal("10.00"), "REDUCED", new BigDecimal("5.00"),
+                "EXEMPT", new BigDecimal("0.00")));
+        when(products.taxClassesOf(anyCollection())).thenAnswer(call -> {
+            Map<String, com.stockflow.product.api.TaxClass> classes = new java.util.HashMap<>();
+            for (Object code : (java.util.Collection<?>) call.getArgument(0)) {
+                classes.put((String) code, com.stockflow.product.api.TaxClass.STANDARD);
+            }
+            return classes;
+        });
+        when(production.producedBefore(anyCollection())).thenAnswer(call ->
+                new java.util.HashSet<>((java.util.Collection<String>) call.getArgument(0)));
         when(units.conversionsOf(anyCollection())).thenAnswer(call -> {
             Map<String, List<UomConversion>> declared = new java.util.HashMap<>();
             for (Object sku : (java.util.Collection<?>) call.getArgument(0)) {
@@ -133,7 +150,7 @@ class QuoteServiceTest {
         return QuoteLine.carton(UUID.randomUUID(), lineNo, new Sku(sku), sku.equals(SKU) ? CARTON
                         : UUID.nameUUIDFromBytes(sku.getBytes()), 50, cartons,
                 List.of(PriceTier.of(10, new BigDecimal("2000")), PriceTier.of(50, new BigDecimal("1800"))), accepted,
-                price);
+                price, "STANDARD", new BigDecimal("10"));
     }
 
     private Quote stored(QuoteStatus status) {
@@ -230,7 +247,9 @@ class QuoteServiceTest {
         Quotes.QuoteView accepted = service.accept(portal, quote.id(), new Quotes.Acceptance(7, Map.of()));
 
         assertThat(accepted.status()).isEqualTo(QuoteStatus.ACCEPTED);
-        assertThat(accepted.acceptedTotal()).as("20 cartons x 50 x 2,000").isEqualByComparingTo("2000000");
+        assertThat(accepted.acceptedTotal()).as("20 cartons x 50 x 2,000, and 10% VAT (4B-3)")
+                .isEqualByComparingTo("2200000");
+        assertThat(accepted.accepted().subtotal()).isEqualByComparingTo("2000000");
     }
 
     @Test
@@ -442,5 +461,89 @@ class QuoteServiceTest {
         UUID quote = UUID.randomUUID();
         assertThat(QuoteService.conversionRequestId(quote)).isEqualTo(QuoteService.conversionRequestId(quote));
         assertThat(QuoteService.conversionRequestId(quote)).isNotEqualTo(QuoteService.conversionRequestId(UUID.randomUUID()));
+    }
+
+    // ------------------------------------------------------------------------------------- 4B-3: VAT and fee lines
+
+    private Quotes.Create createWithFees(List<Quotes.Fee> fees) {
+        return new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(PaymentTerm.DEPOSIT, null,
+                NOW.plusSeconds(3600), null, List.of(new Quotes.Line(SKU, 20, List.of(new Quotes.Tier(10,
+                new BigDecimal("2000"))))), null, fees));
+    }
+
+    @Test
+    void aFirstProductionGetsAPlateFeeTheSystemAddsEveryLineItsProductsVatAndTheTotalsAddUp() {
+        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
+        when(quotes.nextNumber(any())).thenReturn("QT-9");
+        when(production.producedBefore(anyCollection())).thenReturn(Set.of());
+
+        Quotes.QuoteView unpriced = service.create(sales, createWithFees(List.of(
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, new BigDecimal("300000")))));
+        assertThat(unpriced.lines().getFirst().taxClass()).isEqualTo("STANDARD");
+        assertThat(unpriced.lines().getFirst().taxRate()).isEqualByComparingTo("10");
+        assertThat(unpriced.lines().getFirst().proposedTax()).isEqualByComparingTo("200000");
+        assertThat(unpriced.fees()).extracting(Quotes.FeeView::kind).containsExactly(
+                com.stockflow.order.api.FeeKind.PLATE_FEE, com.stockflow.order.api.FeeKind.SHIPPING_FEE);
+        assertThat(unpriced.fees().getFirst().sku()).isEqualTo(SKU);
+        assertThat(unpriced.fees().getFirst().amount()).as("added by the system, priced by Sales").isNull();
+        assertThat(unpriced.fees().get(1).taxClass()).as("D31").isEqualTo("STANDARD");
+        assertThat(unpriced.proposed().subtotal()).isEqualByComparingTo("2000000");
+        assertThat(unpriced.proposed().fees()).as("the plate fee is not priced yet").isNull();
+        assertThat(unpriced.proposedTotal()).isNull();
+
+        Quotes.QuoteView priced = service.create(sales, createWithFees(List.of(
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.PLATE_FEE, SKU, new BigDecimal("500000")),
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, new BigDecimal("300000")))));
+        // 2,000,000 of goods + 800,000 of fees; VAT 10% line by line: 200,000 + 50,000 + 30,000.
+        assertThat(priced.proposed().subtotal()).isEqualByComparingTo("2000000");
+        assertThat(priced.proposed().fees()).isEqualByComparingTo("800000");
+        assertThat(priced.proposed().tax()).isEqualByComparingTo("280000");
+        assertThat(priced.proposedTotal()).isEqualByComparingTo("3080000");
+    }
+
+    @Test
+    void aPlateFeeIsForAFirstProductionOfASkuOnTheQuoteAndThereIsOneShippingFeeAtMost() {
+        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.create(sales, createWithFees(List.of(
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.PLATE_FEE, SKU, new BigDecimal("500000"))))))
+                .as("produced before: a reorder has no plate fee (14 BR-17)")
+                .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        when(production.producedBefore(anyCollection())).thenReturn(Set.of());
+        assertThatThrownBy(() -> service.create(sales, createWithFees(List.of(
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.PLATE_FEE, "LY16-ACME-01", new BigDecimal("1"))))))
+                .as("not a SKU on the quote").extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> service.create(sales, createWithFees(List.of(
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, new BigDecimal("1")),
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, new BigDecimal("2"))))))
+                .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> service.create(sales, createWithFees(List.of(
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, new BigDecimal("100.5"))))))
+                .as("whole VND, refused before Money rounds it").extracting(QuoteServiceTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        verify(quotes, never()).save(any());
+    }
+
+    @Test
+    void conversionCarriesEachLinesVatRateAndTheFeeLines() {
+        com.stockflow.order.internal.domain.QuoteFee plate = new com.stockflow.order.internal.domain.QuoteFee(
+                UUID.randomUUID(), com.stockflow.order.api.FeeKind.PLATE_FEE, new Sku(SKU), Money.vnd(500_000),
+                "STANDARD", new BigDecimal("10"));
+        com.stockflow.order.internal.domain.QuoteFee shipping = new com.stockflow.order.internal.domain.QuoteFee(
+                UUID.randomUUID(), com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, Money.vnd(300_000), "STANDARD",
+                new BigDecimal("10"));
+        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(PaymentTerm.PREPAID, null, NOW.plusSeconds(3600),
+                null, null, List.of(line(1, SKU, 20, 20, Money.vnd(2000))), List.of(plate, shipping)));
+        when(quotedOrders.placeQuotedOrder(any())).thenReturn(new OrderSummary(UUID.randomUUID(), "SO-1", customer,
+                OrderStatus.PENDING_PAYMENT, Money.vnd(3_080_000), List.of(), NOW));
+
+        service.convert(sales, quote.id(), new Quotes.Conversion(7, null, null));
+
+        ArgumentCaptor<PlaceOrderCommand> placed = ArgumentCaptor.forClass(PlaceOrderCommand.class);
+        verify(quotedOrders).placeQuotedOrder(placed.capture());
+        assertThat(placed.getValue().lines()).singleElement()
+                .satisfies(l -> assertThat(l.taxRate()).isEqualByComparingTo("10"));
+        assertThat(placed.getValue().fees()).extracting(PlaceOrderCommand.Fee::kind, f -> f.amount().amount().longValue())
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(com.stockflow.order.api.FeeKind.PLATE_FEE, 500_000L),
+                        org.assertj.core.groups.Tuple.tuple(com.stockflow.order.api.FeeKind.SHIPPING_FEE, 300_000L));
     }
 }

@@ -34,9 +34,13 @@ class QuoteTest {
     private final UUID sales = UUID.randomUUID();
     private final UUID customerUser = UUID.randomUUID();
 
-    /** Cartons of 50 pieces of {@code sku}: 10+ cartons at 2,000 VND a piece, 50+ at 1,800, 100+ at 1,650. */
+    /**
+     * Cartons of 50 pieces of {@code sku}: 10+ cartons at 2,000 VND a piece, 50+ at 1,800, 100+ at 1,650; VAT STANDARD,
+     * 10% (4B-3).
+     */
     private static QuoteLine line(int lineNo, String sku, int cartons) {
-        return QuoteLine.carton(UUID.randomUUID(), lineNo, new Sku(sku), CARTON, 50, cartons, TIERS, null, null);
+        return QuoteLine.carton(UUID.randomUUID(), lineNo, new Sku(sku), CARTON, 50, cartons, TIERS, null, null,
+                "STANDARD", new BigDecimal("10"));
     }
 
     private static QuoteLine line(int lineNo, int cartons) {
@@ -336,5 +340,50 @@ class QuoteTest {
         assertThat(QuoteStatus.CANCELLED.seenByCustomer()).isFalse();
         assertThat(EnumSet.complementOf(EnumSet.of(QuoteStatus.DRAFT, QuoteStatus.CANCELLED)))
                 .allMatch(QuoteStatus::seenByCustomer);
+    }
+
+    @Test
+    void aQuoteIsSentOnceEveryLineHasItsVatRateAndEveryFeeItsAmount() {
+        QuoteLine untaxed = QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), CARTON, 50, 20, TIERS,
+                null, null);
+        QuoteLine taxed = QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), CARTON, 50, 20, TIERS, null,
+                null, "STANDARD", new BigDecimal("10"));
+        assertThat(taxed.taxOf(taxed.total(20, taxed.priceFor(20)))).as("10% of 2,000,000").isEqualTo(Money.vnd(200_000));
+
+        Quote noRate = Quote.draft(UUID.randomUUID(), "QT-8", UUID.randomUUID(), UUID.randomUUID(), offer(untaxed));
+        assertThatThrownBy(() -> noRate.send(sales, NOW)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_TAX_CLASS_MISSING);
+
+        QuoteFee plate = new QuoteFee(UUID.randomUUID(), com.stockflow.order.api.FeeKind.PLATE_FEE,
+                new Sku("LY12-ACME-01"), null, "STANDARD", new BigDecimal("10"));
+        Quote unpricedFee = Quote.draft(UUID.randomUUID(), "QT-9", UUID.randomUUID(), UUID.randomUUID(),
+                new Quote.Offer(PaymentTerm.PREPAID, null, VALID_UNTIL, null, null, List.of(taxed), List.of(plate)));
+        assertThatThrownBy(() -> unpricedFee.send(sales, NOW)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
+        unpricedFee.revise(new Quote.Offer(PaymentTerm.PREPAID, null, VALID_UNTIL, null, null, List.of(taxed),
+                List.of(new QuoteFee(plate.id(), plate.kind(), plate.sku(), Money.vnd(0), "STANDARD",
+                        new BigDecimal("10")))));
+        unpricedFee.send(sales, NOW);
+        assertThat(unpricedFee.status()).as("a plate fee waived at 0 is a price").isEqualTo(QuoteStatus.SENT);
+    }
+
+    @Test
+    void feeLinesAreOneShippingFeeAndOnePlateFeePerSkuOnTheQuote() {
+        QuoteFee shipping = new QuoteFee(UUID.randomUUID(), com.stockflow.order.api.FeeKind.SHIPPING_FEE, null,
+                Money.vnd(300_000), "STANDARD", new BigDecimal("10"));
+        assertThatThrownBy(() -> new Quote.Offer(PaymentTerm.PREPAID, null, VALID_UNTIL, null, null,
+                List.of(line(1, 20)), List.of(shipping, new QuoteFee(UUID.randomUUID(), shipping.kind(), null,
+                        Money.vnd(1), "STANDARD", new BigDecimal("10"))))).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> new Quote.Offer(PaymentTerm.PREPAID, null, VALID_UNTIL, null, null,
+                List.of(line(1, 20)), List.of(new QuoteFee(UUID.randomUUID(), com.stockflow.order.api.FeeKind.PLATE_FEE,
+                        new Sku("LY16-ACME-01"), null, null, null)))).as("a SKU not on the quote")
+                .extracting(QuoteTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> new QuoteFee(UUID.randomUUID(), com.stockflow.order.api.FeeKind.SHIPPING_FEE, null,
+                Money.vnd(0), "STANDARD", new BigDecimal("10"))).as("a shipping fee is more than zero")
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> new QuoteFee(UUID.randomUUID(), com.stockflow.order.api.FeeKind.SHIPPING_FEE,
+                new Sku("LY12-ACME-01"), Money.vnd(1), "STANDARD", new BigDecimal("10"))).as("names no SKU")
+                .isInstanceOf(BusinessException.class);
     }
 }

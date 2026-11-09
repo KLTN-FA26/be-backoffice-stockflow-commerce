@@ -19,6 +19,7 @@ import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.api.PlaceGuestOrderCommand;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderFee;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderAddressSnapshot;
@@ -226,6 +227,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 orderLine.withCartons(line.carton().uomConversionId(), line.carton().cartons(),
                         line.carton().unitsPerCarton());
             }
+            if (line.taxRate() != null) {
+                // 4B-3 (14 BR-21): the rate fixed on the accepted quote line; the tax is the line's total at it.
+                orderLine.withTax(line.taxRate());
+            }
             orderLine.withRequestedDeliveryDate(line.requestedDeliveryDate());
             if (line.designSnapshotId() != null) {
                 orderLine.recordDesignChecksum(designs.verifySnapshotForSku(line.designSnapshotId(), command.customerId(), line.sku().code()).checksum());
@@ -244,6 +249,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             order = Order.draft(orderNumber, command.customerId(), command.requestId(),
                     lines, clock.instant());
         }
+        // 4B-3: the quote's fee lines, before the terms - a deposit is a share of the total with them (14 BR-09).
+        order.attachFees(command.fees().stream().map(fee -> OrderFee.of(deterministicFeeId(command.requestId(),
+                fee.kind(), fee.sku()), fee.kind(), fee.sku(), fee.amount(), fee.taxRate())).toList());
         // Before any stock is held: terms that cannot be accepted refuse the order cheaply. The
         // customer row is locked here, before reserving, so two credit orders of one customer are
         // checked against the limit one after the other (kltn-docs 15 BR-03) and every checkout takes
@@ -1098,6 +1106,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return UUID.nameUUIDFromBytes((requestId + ":" + lineId).getBytes(StandardCharsets.UTF_8));
     }
 
+    /** A fee line's id from the request and what it is for: a retried placement writes the same row. */
+    static UUID deterministicFeeId(UUID requestId, com.stockflow.order.api.FeeKind kind,
+                                   com.stockflow.common.domain.Sku sku) {
+        return UUID.nameUUIDFromBytes(("order-fee:" + requestId + ":" + kind + ":" + (sku == null ? "" : sku.code()))
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     /** Stable line identity: same checkout request, same position, same id. */
     private static UUID deterministicLineId(UUID requestId, int index) {
         return UUID.nameUUIDFromBytes((requestId + "#line#" + index).getBytes(StandardCharsets.UTF_8));
@@ -1118,7 +1133,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                 line.unitPrice(),
                                 line.lineTotal(),
                                 line.reservationIds(), line.designSnapshotId(), line.designChecksum(),
-                                line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton()))
+                                line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton(), line.taxRate(),
+                                line.taxAmount()))
                         .toList(),
                 order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
                 order.contactName(), order.contactEmail(), order.contactPhone(),
@@ -1131,7 +1147,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                 order.cancellationRetainedAmount(), order.cancellationFeeReason(),
                                 order.cancellationFeeDetail(), order.cancellationFeeAmount())
                         : null,
-                lifecycleOf(order));
+                lifecycleOf(order),
+                new OrderSummary.Charges(order.netTotal(), order.taxTotal(), order.fees().stream()
+                        .map(fee -> new OrderSummary.FeeSummary(fee.kind(), fee.sku() == null ? null : fee.sku().code(),
+                                fee.amount(), fee.taxRate(), fee.taxAmount())).toList()));
     }
 
     /** The hold, the milestones, how much of each line went out and the shipments (G3-2). */

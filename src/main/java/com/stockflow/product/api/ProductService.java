@@ -24,6 +24,12 @@ public interface ProductService {
      *  {@code sku} belongs to. Never exposes persistence objects. */
     Optional<String> nameForSku(String sku);
 
+    /**
+     * The tax class of the product each of {@code skus} belongs to (4B-3; kltn-docs 01, 14 BR-21: a line's VAT follows
+     * its product's tax class), by SKU as given. A SKU whose product has no tax class yet, or an unknown SKU, is absent.
+     */
+    java.util.Map<String, TaxClass> taxClassesOf(java.util.Collection<String> skus);
+
     ProductSummary create(CreateProductCommand command);
 
     Optional<ProductSummary> findById(UUID productId);

@@ -63,6 +63,13 @@ public final class OrderLine {
     private Integer cartons;
     private Integer unitsPerCarton;
 
+    /**
+     * 4B-3 (kltn-docs 14 BR-21): the VAT rate fixed on the line with its price, and its tax - the line's total at the
+     * rate, rounded to the dong. Null on a line placed without one (before 4B-3, or bought at checkout): no VAT.
+     */
+    private java.math.BigDecimal taxRate;
+    private Money taxAmount;
+
     public OrderLine(UUID id, Sku sku, int quantity, Money unitPrice,
                      UUID designSnapshotId, List<UUID> reservationIds, int cancelledQuantity) {
         this(id, sku, quantity, unitPrice, designSnapshotId, reservationIds);
@@ -192,6 +199,64 @@ public final class OrderLine {
         this.cartons = cartons;
         this.unitsPerCarton = unitsPerCarton;
         return this;
+    }
+
+    /**
+     * The VAT rate of the line, fixed when the order is placed; its tax is computed from the line's total. Set once.
+     */
+    public OrderLine withTax(java.math.BigDecimal ratePercent) {
+        return withTax(ratePercent, Vat.of(lineTotal(), ratePercent));
+    }
+
+    /** The rate and the tax as the line keeps them (read back from its row). */
+    public OrderLine withTax(java.math.BigDecimal ratePercent, Money tax) {
+        java.util.Objects.requireNonNull(tax, "tax");
+        java.math.BigDecimal rate = Vat.rate(ratePercent);
+        if (tax.isNegative() || !tax.currency().equals(unitPrice.currency())) {
+            throw new IllegalArgumentException("A line's tax is not negative and in the line's currency");
+        }
+        if (this.taxRate != null && (this.taxRate.compareTo(rate) != 0 || !this.taxAmount.equals(tax))) {
+            throw new IllegalStateException("An order line's VAT is fixed when it is placed");
+        }
+        this.taxRate = rate;
+        this.taxAmount = tax;
+        return this;
+    }
+
+    /** The VAT rate fixed on the line; null for a line without VAT. */
+    public java.math.BigDecimal taxRate() { return taxRate; }
+    /** The line's VAT; null for a line without VAT. */
+    public Money taxAmount() { return taxAmount; }
+
+    /** The line's total with its VAT. */
+    public Money grossTotal() {
+        return taxAmount == null ? lineTotal() : lineTotal().plus(taxAmount);
+    }
+
+    /**
+     * What the first {@code units} units of the line are worth with their VAT: the line's total with tax in proportion,
+     * rounded so that the whole line adds up to {@link #grossTotal()} exactly - money billed or closed a few units at a
+     * time never goes past the line. Without VAT, simply the units at their price.
+     */
+    public Money grossOf(int units) {
+        if (units < 0 || units > quantity) {
+            throw new IllegalArgumentException("Between 0 and the line's " + quantity + " units, not " + units);
+        }
+        if (taxAmount == null) {
+            return unitPrice.times(units);
+        }
+        if (units == quantity) {
+            return grossTotal();
+        }
+        int digits = unitPrice.currency().getDefaultFractionDigits();
+        return new Money(grossTotal().amount().multiply(java.math.BigDecimal.valueOf(units))
+                .divide(java.math.BigDecimal.valueOf(quantity), digits, java.math.RoundingMode.HALF_UP),
+                unitPrice.currency());
+    }
+
+    /** What units {@code from} (exclusive) to {@code to} (inclusive) of the line are worth with VAT. */
+    public Money grossBetween(int from, int to) {
+        return grossOf(to).minus(grossOf(from));
     }
 
     /** The SKU's carton unit the line was ordered in; null for a line not ordered in cartons. */
