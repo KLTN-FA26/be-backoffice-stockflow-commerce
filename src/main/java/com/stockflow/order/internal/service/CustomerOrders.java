@@ -51,9 +51,10 @@ public interface CustomerOrders {
 
     /**
      * What the customer may do with the order now, so the portal does not keep its own copy of the rules (G3-2):
-     * cancel at once, ask for a cancellation, or order the same again.
+     * cancel at once, or ask for a cancellation. Ordering the same again is not among them: it opens a chat with Sales
+     * on any order (kltn-docs 13 BR-08), and there is nothing to decide here.
      */
-    record AllowedActions(boolean cancel, boolean requestCancellation, boolean reorder) {
+    record AllowedActions(boolean cancel, boolean requestCancellation) {
     }
 
     /** Where printing a line stands. {@code NOT_REQUIRED} for a line of stock goods. */
@@ -93,18 +94,10 @@ public interface CustomerOrders {
     record Production(ProductionState state, int goodQuantity) {
     }
 
-    /**
-     * @param productSlug  where the line's SKU is on sale in the storefront today ({@code /catalog/{slug}}); with
-     *                     {@code productTitle} and {@code productImageUrl} what a portal needs to put the line
-     *                     back in a basket (reorder, SCRUM-190). All three are null when the SKU is not on sale now
-     *                     (suspended, discontinued, unpublished): the portal skips such a line. They describe
-     *                     today's catalogue, not what the order froze
-     */
     /** @param taxRate the line's VAT rate (4B-3); null, with {@code taxAmount}, on a line placed without VAT */
     record Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
-                UUID designSnapshotId, Production production, String productSlug, String productTitle,
-                String productImageUrl, Integer cartons, Integer unitsPerCarton, BigDecimal taxRate,
-                BigDecimal taxAmount) {
+                UUID designSnapshotId, Production production, Integer cartons, Integer unitsPerCarton,
+                BigDecimal taxRate, BigDecimal taxAmount) {
     }
 
     /**

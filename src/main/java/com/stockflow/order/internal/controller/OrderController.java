@@ -15,10 +15,6 @@ import com.stockflow.order.internal.controller.dto.CustomerOrderCardResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderDetailResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.TransferInstructionsResponse;
-import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
-import com.stockflow.order.internal.controller.dto.QuoteRequests;
-import com.stockflow.order.internal.controller.dto.QuoteResponse;
-import com.stockflow.order.internal.service.Quotes;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
@@ -45,14 +41,19 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
-/** HTTP entry point for orders. Thin: request in, command out, response back. *
+/**
+ * HTTP entry point for orders. Thin: request in, command out, response back.
+ *
+ * <p><b>No order is placed here.</b> The customer does not order on the portal, and "order again" opens a chat with
+ * Sales (kltn-docs 14 BR-01, BR-02; 13 BR-08): an order is drawn up by Sales from an accepted quote
+ * ({@code POST /api/v1/quotes/{id}/conversion}). Checkout and the reorder of a quoted order went with team plan 5-2.</p>
+ *
  * <p><b>Handler methods are public.</b> {@code @RequiresPermission} and {@code @Auditable} are
  * applied by Spring AOP proxies, which advise a package-private method only when the generated
  * proxy happens to land in the same package and classloader. When that does not hold the advice is
@@ -61,7 +62,7 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/orders")
-@Tag(name = "Orders", description = "Checkout, order lookup and cancellation")
+@Tag(name = "Orders", description = "Order lookup, history and cancellation")
 @PermissionResource(
         code = OrderResources.ORDERS,
         group = "Sales",
@@ -73,107 +74,23 @@ class OrderController {
 
     private final OrderService orderService;
     private final CustomerService customerService;
-    private final Quotes quotes;
     private final CustomerOrders customerOrders;
     private final com.stockflow.order.internal.service.TransferInstructions transferInstructions;
     private final com.stockflow.identity.api.IdentityService identities;
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
-    private final com.stockflow.order.internal.service.DuplicateOrders duplicateOrders;
 
-    OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
+    OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
                     com.stockflow.order.internal.service.TransferInstructions transferInstructions,
                     com.stockflow.identity.api.IdentityService identities,
-                    com.stockflow.order.internal.service.PartialShipments partialShipments,
-                    com.stockflow.order.internal.service.DuplicateOrders duplicateOrders) {
-        this.duplicateOrders = duplicateOrders;
+                    com.stockflow.order.internal.service.PartialShipments partialShipments) {
         this.partialShipments = partialShipments;
         this.identities = identities;
         this.orderService = orderService;
         this.customerService = customerService;
-        this.quotes = quotes;
         this.customerOrders = customerOrders;
         this.transferInstructions = transferInstructions;
-    }
-
-    /**
-     * Place an order.
-     *
-     * <p>201 on success, 409 when stock ran out. The 409 comes from
-     * {@code InsufficientStockException} propagating out of inventory, through the shared
-     * exception handler, without this controller writing a single catch block — and, because the
-     * whole call was one transaction, nothing partial is left behind when it happens.</p>
-     */
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Place an order: create it and reserve its stock in one transaction")
-    @RequiresPermission(resource = OrderResources.ORDERS,
-            action = Action.CREATE, scope = DataScope.OWN)
-    public ApiResponse<OrderResponse> place(@Valid @RequestBody PlaceOrderRequest request,
-                                            @AuthenticatedUser CurrentUser user) {
-        // Who may place at all is sales-orders:CREATE; for whom is data scope: the back office for any customer (an
-        // assisted order), a portal account for its own customer only.
-        boolean mayPlaceForAnotherCustomer = ScopeGuards.isBackOffice(user);
-        if (!mayPlaceForAnotherCustomer) {
-            UUID ownCustomerId = requiredOwnCustomerId(user);
-            if (!ownCustomerId.equals(request.customerId())) {
-                // Hide whether another customer's id exists.
-                throw new BusinessException(ErrorCode.NOT_FOUND);
-            }
-        }
-        var command = OrderWebMapper.toCommand(request);
-        if (!mayPlaceForAnotherCustomer && !request.duplicateConfirmed()) {
-            refuseUnconfirmedDuplicate(command);
-        }
-        if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
-            // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) - never the customer's own pick:
-            // their configured percentage is used. How the balance is collected is different (SCRUM-193): the customer
-            // may choose among the policies their terms allow (15 §4.2 step 3), and placeOrder refuses any other with
-            // 409 BALANCE_POLICY_NOT_ALLOWED, so it is passed through.
-            command = new com.stockflow.order.api.PlaceOrderCommand(command.requestId(), command.customerId(),
-                    command.shippingAddressId(), command.billingAddressId(), command.snapshotCustomer(),
-                    command.lines(), command.paymentTerm(), null, command.balancePolicy());
-        }
-        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
-    }
-
-    /**
-     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): a customer who places what they placed a moment ago - ordering
-     * again from their history, or a second click from another device - is asked first. 409 with the earlier order
-     * in {@code details}; the portal shows it and resends with {@code confirmDuplicate: true} if the customer insists.
-     */
-    private void refuseUnconfirmedDuplicate(com.stockflow.order.api.PlaceOrderCommand command) {
-        var lines = command.lines().stream()
-                .map(line -> new com.stockflow.order.internal.service.DuplicateOrders.Line(line.sku().code(),
-                        line.quantity(), line.designSnapshotId()))
-                .toList();
-        duplicateOrders.findSuspected(command.customerId(), command.requestId(), lines).ifPresent(earlier -> {
-            throw new BusinessException(ErrorCode.DUPLICATE_ORDER_SUSPECTED,
-                    "Order " + earlier.orderNumber() + " with the same items was placed at " + earlier.placedAt(),
-                    java.util.List.of(), java.util.Map.of("orderId", earlier.orderId().toString(),
-                            "orderNumber", earlier.orderNumber(), "placedAt", earlier.placedAt().toString()));
-        });
-    }
-
-    /**
-     * Order again what a negotiated order bought (user decision 2026-10-12): a new DRAFT quote with the same
-     * blanks, designs, print specifications and quantities, priced from today's price list - the old deal is
-     * not reused and nothing is payable until Sales sends the quote and the customer accepts it. An order
-     * bought at the price list is not re-quoted ({@code ORDER_NOT_QUOTED}): it is placed again directly.
-     * The same verb as placing an order, so the customer and Sales may both start it.
-     */
-    @PostMapping("/{orderId}/reorder")
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Reorder a quoted order: a new draft quote for Sales at today's price list, never the old deal")
-    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.CREATE, scope = DataScope.OWN)
-    // Each new request id drafts a quote and notifies Sales (audit of #109): a bound, as on customer creation.
-    @com.stockflow.common.ratelimit.RateLimit(limit = 10, perSeconds = 60)
-    public ApiResponse<QuoteResponse> reorder(@PathVariable UUID orderId,
-                                              @Valid @RequestBody QuoteRequests.Reorder request,
-                                              @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.reorder(user,
-                new Quotes.Reorder(request.requestId(), orderId))));
     }
 
     @GetMapping("/{orderId}")
