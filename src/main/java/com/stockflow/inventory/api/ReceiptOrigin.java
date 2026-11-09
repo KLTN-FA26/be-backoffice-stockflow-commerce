@@ -11,6 +11,10 @@ import java.util.UUID;
  * <p>4A-5: goods received against a production order name it instead of a purchase order and a supplier
  * ({@code productionOrderId}, {@code productionOrderCode}). Their lot is the production order's - one per production
  * order and SKU, whatever the number of receipts (kltn-docs 03 BR-03) - and its number is the code.</p>
+ *
+ * <p>Since purchasing went (4A-8) goods are received against production orders only ({@link #ofProductionOrder}); the
+ * purchase order and supplier components stay for the shape the lots of earlier receipts keep, and are null on every
+ * new origin.</p>
  */
 public record ReceiptOrigin(UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId,
                             String purchaseOrderNumber, UUID supplierId, String supplierName, UUID warehouseId,
@@ -24,13 +28,6 @@ public record ReceiptOrigin(UUID goodsReceiptId, String goodsReceiptNumber, UUID
         if (productionOrderId != null && (purchaseOrderId != null || supplierId != null)) {
             throw new IllegalArgumentException("Goods come from a production order or from a purchase, not both");
         }
-    }
-
-    /** Goods received against a purchase order, or none (a blind receipt). */
-    public ReceiptOrigin(UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId,
-                         String purchaseOrderNumber, UUID supplierId, String supplierName, UUID warehouseId) {
-        this(goodsReceiptId, goodsReceiptNumber, purchaseOrderId, purchaseOrderNumber, supplierId, supplierName,
-                warehouseId, null, null);
     }
 
     /** Goods received against a production order (4A-5). */
