@@ -62,10 +62,10 @@ SELECT pg_temp.expect_fail('P1b a customer price for another customer''s SKU', $
 SELECT pg_temp.expect_fail('P2 a second price for the same customer and SKU', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'QA-CP-OWN', NOW()) $q$);
-SELECT pg_temp.expect_fail('P3 a SKU that does not exist', $q$
+SELECT pg_temp.expect_fail('P3 a SKU that does not exist (no customer owns it: tg_customer_price_own_sku, before the key)', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'QA-NO-SUCH-SKU', NOW()) $q$);
-SELECT pg_temp.expect_fail('P4 a customer that does not exist', $q$
+SELECT pg_temp.expect_fail('P4 a customer that does not exist (owns no SKU: tg_customer_price_own_sku, before the key)', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
     VALUES (gen_random_uuid(), gen_random_uuid(), 'TABLE-OAK-160', NOW()) $q$);
 SELECT pg_temp.expect_fail('P5 a currency other than VND', $q$

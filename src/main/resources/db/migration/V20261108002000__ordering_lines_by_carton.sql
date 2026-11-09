@@ -17,7 +17,12 @@
 --   * A carton unit a quote or order line counts in keeps its factor, item and name (01 BR-10): the lines' trigger
 --     takes the unit's advisory lock shared before it reads the unit and checks the unit is the SKU's and the
 --     factor is the one fixed on the line, as purchase lines do (V20261020000400, V20261020000600);
---     inventory.unit_in_use names both tables, and inventory.item_in_use names quote_line.sku.
+--     inventory.unit_in_use names both tables, and inventory.item_in_use names quote_line.sku. A new quote line is
+--     never written in a retired unit; an order line copies the unit its accepted quote line fixed, retired since or
+--     not (14 BR-08: a later carton spec does not move a quote already made).
+--   * The SKU of a carton line is the customer's own (14 BR-04): the quote's or the order's customer owns it. And a
+--     quote's lines are all carton lines or all lines drafted before, checked when the transaction commits - a draft
+--     revised onto the customer's SKUs replaces its lines in one go.
 --   * catalog.customer_price: a price set from now on is for one of the customer's own SKUs (13 BR-02, BR-05), its
 --     tiers counted in cartons. Prices set before on stock variants stay, counted in units, for checkout until it is
 --     removed (team plan 5-2); tg_customer_price_own_sku refuses a new one.
@@ -108,6 +113,8 @@ DECLARE
     unit      inventory.uom_conversions%ROWTYPE;
     item_sku  VARCHAR(64);
     new_unit  BOOLEAN;
+    owner     UUID;
+    customer  UUID;
 BEGIN
     PERFORM pg_advisory_xact_lock_shared(inventory.unit_lock_key(NEW.uom_conversion_id));
     SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id;
@@ -123,7 +130,21 @@ BEGIN
         RAISE EXCEPTION '% line: % holds % pieces, not %', TG_TABLE_NAME, unit.unit_of_measure, unit.factor,
             NEW.units_per_carton USING ERRCODE = 'check_violation';
     END IF;
-    IF TG_OP = 'INSERT' THEN
+    -- 14 BR-04: the customer's own SKU.
+    SELECT v.owner_customer_id INTO owner FROM product.variants v WHERE v.sku = NEW.sku;
+    IF TG_TABLE_NAME = 'quote_line' THEN
+        SELECT q.customer_id INTO customer FROM ordering.quote q WHERE q.id = NEW.quote_id;
+    ELSE
+        SELECT o.customer_id INTO customer FROM ordering.customer_order o WHERE o.id = NEW.order_id;
+    END IF;
+    IF owner IS DISTINCT FROM customer THEN
+        RAISE EXCEPTION '% line: % is not a SKU of customer % (14 BR-04)', TG_TABLE_NAME, NEW.sku, customer
+            USING ERRCODE = 'check_violation';
+    END IF;
+    -- A new quote line takes an active unit; an order line copies the unit of its accepted quote line.
+    IF TG_TABLE_NAME = 'order_line' THEN
+        new_unit := FALSE;
+    ELSIF TG_OP = 'INSERT' THEN
         new_unit := TRUE;
     ELSE
         new_unit := NEW.uom_conversion_id IS DISTINCT FROM OLD.uom_conversion_id;
@@ -147,6 +168,29 @@ CREATE TRIGGER tg_order_line_carton_unit
     ON ordering.order_line
     FOR EACH ROW WHEN (NEW.uom_conversion_id IS NOT NULL)
     EXECUTE FUNCTION ordering.check_line_carton_unit();
+
+-- A quote's lines are all carton lines or all lines drafted before ----------------------------------------------
+CREATE FUNCTION ordering.check_quote_line_kinds()
+    RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+DECLARE
+    the_quote UUID;
+BEGIN
+    the_quote := CASE WHEN TG_OP = 'DELETE' THEN OLD.quote_id ELSE NEW.quote_id END;
+    IF EXISTS (SELECT 1 FROM ordering.quote_line WHERE quote_id = the_quote AND sku IS NULL)
+        AND EXISTS (SELECT 1 FROM ordering.quote_line WHERE quote_id = the_quote AND sku IS NOT NULL) THEN
+        RAISE EXCEPTION 'quote %: its lines are all cartons of the customer''s SKUs or all drafted before (QD-16)',
+            the_quote USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NULL;
+END
+$$;
+
+CREATE CONSTRAINT TRIGGER tg_quote_line_kinds
+    AFTER INSERT OR UPDATE OF sku ON ordering.quote_line
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION ordering.check_quote_line_kinds();
 
 -- "Is this unit / item used by a document?" now names the quote and order lines -------------------------------
 CREATE OR REPLACE FUNCTION inventory.unit_in_use(p_uom_conversion_id UUID) RETURNS BOOLEAN

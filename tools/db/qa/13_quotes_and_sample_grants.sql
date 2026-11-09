@@ -150,6 +150,31 @@ SELECT pg_temp.expect_ok('QT24 an order line of 20 cartons, 1,000 pieces, with t
                                      units_per_carton, requested_delivery_date)
     VALUES (gen_random_uuid(), md5('qa9:c:order')::uuid, 'QA-QC-OWN', 1000, 1800, 'VND', md5('qa9:c:carton')::uuid,
             20, 50, CURRENT_DATE + 30) $q$);
+SELECT pg_temp.expect_fail('QT25 a carton line of another customer''s SKU (14 BR-04)', $q$
+    INSERT INTO customer.customer (id, full_name, email, status, version, created_at)
+    VALUES (md5('qa9:c:other')::uuid, 'QA khach khac', 'qa9-other@example.com', 'ACTIVE', 0, NOW());
+    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until)
+    VALUES (md5('qa9:c:other-quote')::uuid, 'QT-QA-4', gen_random_uuid(), md5('qa9:c:other')::uuid, 'DRAFT', 'PREPAID',
+            NOW() + interval '7 days');
+    INSERT INTO ordering.quote_line (id, quote_id, line_no, sku, uom_conversion_id, cartons, units_per_carton)
+    VALUES (gen_random_uuid(), md5('qa9:c:other-quote')::uuid, 1, 'QA-QC-OWN', md5('qa9:c:carton')::uuid, 5, 50) $q$);
+SELECT pg_temp.expect_fail('QT26 a quote mixing a carton line and a line on a blank and a design (QD-16)', $q$
+    INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
+    VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 9, 'SOFA-3S-GREY', md5('qa9:snap')::uuid, 500) $q$);
+SELECT pg_temp.expect_ok('QT27 the carton unit retired, then an order line copying it from the accepted quote line', $q$
+    UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+     WHERE id = md5('qa9:c:carton')::uuid;
+    INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, uom_conversion_id, cartons,
+                                     units_per_carton)
+    VALUES (gen_random_uuid(), md5('qa9:c:order')::uuid, 'QA-QC-OWN', 500, 1800, 'VND', md5('qa9:c:carton')::uuid,
+            10, 50) $q$);
+SELECT pg_temp.expect_fail('QT28 a new quote line in a retired carton unit', $q$
+    UPDATE ordering.quote_line SET line_no = 1 WHERE id = md5('qa9:c:line')::uuid;
+    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until)
+    SELECT md5('qa9:c:quote5')::uuid, 'QT-QA-5', gen_random_uuid(), c.id, 'DRAFT', 'PREPAID', NOW() + interval '7 days'
+      FROM customer.customer c ORDER BY c.id LIMIT 1;
+    INSERT INTO ordering.quote_line (id, quote_id, line_no, sku, uom_conversion_id, cartons, units_per_carton)
+    VALUES (gen_random_uuid(), md5('qa9:c:quote5')::uuid, 1, 'QA-QC-OWN', md5('qa9:c:carton')::uuid, 5, 50) $q$);
 
 \echo '--- who answers (V20261017000200 / 000300)'
 CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$

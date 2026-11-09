@@ -3,18 +3,22 @@ package com.stockflow;
 import com.stockflow.support.RawSql;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
  * V20261108002000 on the real upgrade path (kltn-docs 14 BR-04, BR-07, BR-08; 01 BR-10; 13 BR-02, BR-05; team plan
  * 4B-2, QD-16): a database holding a quote line, an order line and a customer price written before - on a blank, its
  * design and units - is upgraded. They are kept as they were. A new quote or order line is cartons of the customer's own
- * SKU in its carton unit at the unit's factor, one line per SKU; the unit keeps its factor once a line counts in it; a
- * new customer price names the customer's own SKU.
+ * SKU in its carton unit at the unit's factor, one line per SKU, the SKU the quote's or order's customer's; a quote is
+ * all carton lines or all old ones; the unit keeps its factor once a line counts in it, and a retired unit takes no new
+ * quote line though an order line still copies it; a new customer price names the customer's own SKU. Each refusal is
+ * checked to come from its own rule.
  */
 class QuoteLinesByCartonMigrationUpgradeTest {
 
@@ -29,6 +33,9 @@ class QuoteLinesByCartonMigrationUpgradeTest {
     private static final String SNAPSHOT = "00000000-0000-4000-8000-0000000000e5";
     private static final String OLD_QUOTE = "00000000-0000-4000-8000-0000000000f1";
     private static final String NEW_QUOTE = "00000000-0000-4000-8000-0000000000f2";
+    private static final String EMPTY_QUOTE = "00000000-0000-4000-8000-0000000000f4";
+    private static final String OTHER_QUOTE = "00000000-0000-4000-8000-0000000000f5";
+    private static final String OTHER_ORDER = "00000000-0000-4000-8000-0000000000f6";
     private static final String ORDER = "00000000-0000-4000-8000-0000000000f3";
     private static final String CARTON = "00000000-0000-4000-8000-0000000000a1";
     private static final String BLANK = "UPG-BLANK";
@@ -97,17 +104,36 @@ class QuoteLinesByCartonMigrationUpgradeTest {
                         + "revision, payment_term, valid_until, version, created_at) VALUES (?::uuid, 'QT-UPG-2', "
                         + "gen_random_uuid(), ?::uuid, 'DRAFT', 1, 'PREPAID', NOW() + interval '7 days', 0, NOW())",
                         NEW_QUOTE, CUSTOMER);
-                RawSql.update(db, cartonLine(1, OWN, CARTON, 20, 50));
-                RawSql.refused(db, "uk_quote_line_customer_sku: one line per SKU", cartonLine(2, OWN, CARTON, 5, 50));
-                RawSql.refused(db, "the factor fixed on the line is the unit's", cartonLine(3, OWN, CARTON, 5, 40));
-                RawSql.refused(db, "not the SKU's unit", cartonLine(4, BLANK, CARTON, 5, 50));
-                RawSql.refused(db, "ck_quote_line_cartons: at most 10,000,000 pieces",
-                        cartonLine(5, OWN, CARTON, 200_001, 50));
-                RawSql.refused(db, "ck_quote_line_shape: never a mix", "INSERT INTO ordering.quote_line (id, quote_id, "
+                RawSql.update(db, cartonLine(NEW_QUOTE, 1, OWN, CARTON, 20, 50));
+                refusedBy(db, "uk_quote_line_customer_sku", cartonLine(NEW_QUOTE, 2, OWN, CARTON, 5, 50));
+                // Each rule on a quote of its own, so the one-line-per-SKU key cannot be what refuses it.
+                quote(db, EMPTY_QUOTE, "QT-UPG-3", CUSTOMER);
+                refusedBy(db, "holds 50 pieces, not 40", cartonLine(EMPTY_QUOTE, 1, OWN, CARTON, 5, 40));
+                refusedBy(db, "is not a unit of " + BLANK, cartonLine(EMPTY_QUOTE, 1, BLANK, CARTON, 5, 50));
+                refusedBy(db, "ck_quote_line_cartons", cartonLine(EMPTY_QUOTE, 1, OWN, CARTON, 200_001, 50));
+                refusedBy(db, "ck_quote_line_shape", "INSERT INTO ordering.quote_line (id, quote_id, "
                         + "line_no, sku, uom_conversion_id, cartons, units_per_carton, blank_sku, design_snapshot_id, "
-                        + "quantity) VALUES (gen_random_uuid(), '" + NEW_QUOTE + "', 6, '" + OWN + "', '" + CARTON
+                        + "quantity) VALUES (gen_random_uuid(), '" + EMPTY_QUOTE + "', 1, '" + OWN + "', '" + CARTON
                         + "', 5, 50, '" + BLANK + "', '" + SNAPSHOT + "', 250)");
-                RawSql.refused(db, "ck_quote_line_accepted: cartons with a price", "UPDATE ordering.quote_line SET "
+                // 14 BR-04: another customer's quote does not take this customer's SKU.
+                quote(db, OTHER_QUOTE, "QT-UPG-4", OTHER);
+                refusedBy(db, "is not a SKU of customer", cartonLine(OTHER_QUOTE, 1, OWN, CARTON, 5, 50));
+                // QD-16: a quote is all carton lines or all lines drafted before - checked at commit.
+                db.setAutoCommit(false);
+                try {
+                    RawSql.update(db, "INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, "
+                            + "design_snapshot_id, quantity) VALUES (gen_random_uuid(), ?::uuid, 2, ?, ?::uuid, 600)",
+                            NEW_QUOTE, BLANK, SNAPSHOT);
+                    SQLException mixed = catchThrowableOfType(SQLException.class, db::commit);
+                    if (mixed == null) {
+                        throw new AssertionError("a mixed quote is refused at commit");
+                    }
+                    assertThat(mixed.getMessage()).contains("all cartons of the customer's SKUs or all drafted before");
+                } finally {
+                    db.rollback();
+                    db.setAutoCommit(true);
+                }
+                refusedBy(db, "ck_quote_line_accepted", "UPDATE ordering.quote_line SET "
                         + "accepted_cartons = 20 WHERE quote_id = '" + NEW_QUOTE + "'");
                 RawSql.update(db, "UPDATE ordering.quote_line SET accepted_cartons = 20, accepted_unit_price = 1800 "
                         + "WHERE quote_id = ?::uuid", NEW_QUOTE);
@@ -117,6 +143,18 @@ class QuoteLinesByCartonMigrationUpgradeTest {
                 RawSql.update(db, orderLine(1000, 20));
                 assertThat(RawSql.number(db, "SELECT count(*) FROM ordering.order_line WHERE cartons = 20 AND "
                         + "requested_delivery_date IS NOT NULL")).isEqualTo(1);
+                // 14 BR-04 for the order too: the order's customer owns the SKU.
+                RawSql.update(db, "INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, "
+                        + "status, total_amount, currency, placed_at, created_at) VALUES (?::uuid, 'SO-UPG-2', ?::uuid, "
+                        + "gen_random_uuid(), 'DRAFT', 1000000, 'VND', NOW(), NOW())", OTHER_ORDER, OTHER);
+                refusedBy(db, "is not a SKU of customer", orderLine(OTHER_ORDER, 1000, 20));
+
+                // The carton unit retired (a new carton spec declared): a new quote line no longer takes it, but an
+                // order line placed from a quote accepted in it still does (14 BR-08).
+                RawSql.update(db, "UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE "
+                        + "WHERE id = ?::uuid", CARTON);
+                refusedBy(db, "is retired", cartonLine(EMPTY_QUOTE, 1, OWN, CARTON, 5, 50));
+                RawSql.update(db, orderLine(ORDER, 500, 10));
 
                 // The unit now counts quote and order lines: its factor is kept (01 BR-10).
                 assertThat(RawSql.text(db, "SELECT inventory.unit_in_use(?::uuid)::text", CARTON)).isEqualTo("true");
@@ -138,16 +176,36 @@ class QuoteLinesByCartonMigrationUpgradeTest {
         }
     }
 
-    private static String cartonLine(int lineNo, String sku, String unit, int cartons, int perCarton) {
+    private static String cartonLine(String quote, int lineNo, String sku, String unit, int cartons, int perCarton) {
         return "INSERT INTO ordering.quote_line (id, quote_id, line_no, sku, uom_conversion_id, cartons, "
-                + "units_per_carton) VALUES (gen_random_uuid(), '" + NEW_QUOTE + "', " + lineNo + ", '" + sku + "', '"
+                + "units_per_carton) VALUES (gen_random_uuid(), '" + quote + "', " + lineNo + ", '" + sku + "', '"
                 + unit + "', " + cartons + ", " + perCarton + ")";
     }
 
     private static String orderLine(int pieces, int cartons) {
+        return orderLine(ORDER, pieces, cartons);
+    }
+
+    private static String orderLine(String order, int pieces, int cartons) {
         return "INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, uom_conversion_id, "
-                + "cartons, units_per_carton, requested_delivery_date) VALUES (gen_random_uuid(), '" + ORDER + "', '"
+                + "cartons, units_per_carton, requested_delivery_date) VALUES (gen_random_uuid(), '" + order + "', '"
                 + OWN + "', " + pieces + ", 1800, 'VND', '" + CARTON + "', " + cartons + ", 50, CURRENT_DATE + 30)";
+    }
+
+    private static void quote(Connection db, String id, String number, String customer) throws SQLException {
+        RawSql.update(db, "INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, revision, "
+                + "payment_term, valid_until, version, created_at) VALUES (?::uuid, ?, gen_random_uuid(), ?::uuid, "
+                + "'DRAFT', 1, 'PREPAID', NOW() + interval '7 days', 0, NOW())", id, number, customer);
+    }
+
+    /** Refused as an integrity violation, by the rule {@code because} names - not by another one that happens first. */
+    private static void refusedBy(Connection db, String because, String sql) {
+        SQLException refusal = catchThrowableOfType(SQLException.class, () -> RawSql.update(db, sql));
+        if (refusal == null) {
+            throw new AssertionError("refused by " + because + ", but the database accepted: " + sql);
+        }
+        assertThat(refusal.getSQLState()).as(refusal.getMessage()).startsWith("23");
+        assertThat(refusal.getMessage()).as("refused by its own rule").contains(because);
     }
 
     private static Flyway flyway(PostgreSQLContainer<?> postgres, String target) {
