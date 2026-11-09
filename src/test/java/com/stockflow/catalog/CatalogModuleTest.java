@@ -11,9 +11,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.modulith.test.ApplicationModuleTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import java.util.Set;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -41,9 +39,11 @@ class CatalogModuleTest {
     @Test
     @DisplayName("catalog starts and answers through its api with the other modules absent")
     void bootsInIsolation() {
-        // Reads the pricing tables: a SKU nobody sells is refused, not priced at zero.
-        assertThatThrownBy(() -> catalog.checkoutPrices(Set.of("NO-SUCH-SKU"))).isInstanceOf(BusinessException.class);
-        assertThat(catalog.checkoutPrices(Set.of())).isEmpty();
+        // Reads the customer and pricing tables: a customer nobody knows is refused, not priced at zero.
+        assertThatThrownBy(() -> catalog.priceSchedule(java.util.UUID.randomUUID(), "NO-SUCH-SKU"))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> catalog.customerPrice(java.util.UUID.randomUUID(), "NO-SUCH-SKU"))
+                .isInstanceOf(BusinessException.class);
     }
 
     /** The negative half: a module catalog has no business with is genuinely not in this context. */
