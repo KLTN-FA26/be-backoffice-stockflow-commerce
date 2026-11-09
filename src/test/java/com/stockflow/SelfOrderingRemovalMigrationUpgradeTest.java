@@ -86,10 +86,10 @@ class SelfOrderingRemovalMigrationUpgradeTest {
                         + "(?, 'com.stockflow.notification.internal.service.OrderReferralNotificationListener.on(x)', "
                         + "'com.stockflow.contracts.OrderCancellationReferred', '{\"orderId\":\"o\"}', NOW(), NULL), "
                         + "(?, '" + quoteHandler + "', 'com.stockflow.contracts.CustomerActedOnQuote', "
-                        + "'{\"quoteId\":\"q\",\"action\":\"REORDER_REQUESTED\",\"sourceOrderNumber\":\"SO-1\"}', "
+                        + "'{\"quoteId\":\"q\",\"action\":\"REORDER_REQUESTED\",\"sourceOrderNumber\":\"SO-1\",\"salesUserId\":\"s\"}', "
                         + "NOW(), NULL), "
                         + "(?, '" + quoteHandler + "', 'com.stockflow.contracts.CustomerActedOnQuote', "
-                        + "'{\"quoteId\":\"q\",\"action\":\"ACCEPTED\",\"sourceOrderNumber\":null}', NOW(), NULL), "
+                        + "'{\"quoteId\":\"q\",\"action\":\"ACCEPTED\",\"sourceOrderNumber\":null,\"salesUserId\":\"s\"}', NOW(), NULL), "
                         + "(?, 'com.stockflow.order.internal.service.OrderEventListeners.on(x)', "
                         + "'com.stockflow.contracts.OrderPlaced', '{\"orderId\":\"o\"}', NOW(), NULL), "
                         + "(?, 'com.stockflow.order.internal.service.InventoryEventListener.on(x)', "
@@ -125,7 +125,7 @@ class SelfOrderingRemovalMigrationUpgradeTest {
                         + "'public.event_publication' AND row_id IN (?, ?, ?)", expiryEvent, referralEvent,
                         reorderNotice)).isEqualTo(3);
                 assertThat(RawSql.text(db, "SELECT serialized_event FROM event_publication WHERE id = ?", acceptedNotice))
-                        .isEqualTo("{\"quoteId\":\"q\",\"action\":\"ACCEPTED\"}");
+                        .isEqualTo("{\"quoteId\":\"q\",\"action\":\"ACCEPTED\",\"salesUserId\":\"s\"}");
                 assertThat(RawSql.text(db, "SELECT serialized_event FROM event_publication WHERE id = ?", keptEvent))
                         .isEqualTo("{\"orderId\":\"o\"}");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM event_publication WHERE id = ?", finishedEvent))
