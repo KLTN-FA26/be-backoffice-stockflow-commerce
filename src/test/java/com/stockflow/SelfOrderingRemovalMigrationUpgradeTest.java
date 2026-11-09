@@ -52,6 +52,12 @@ class SelfOrderingRemovalMigrationUpgradeTest {
                 UUID convertedCart = UUID.randomUUID();
                 UUID guestCart = UUID.randomUUID();
                 UUID guestLine = UUID.randomUUID();
+                UUID expiryEvent = UUID.randomUUID();
+                UUID referralEvent = UUID.randomUUID();
+                UUID reorderNotice = UUID.randomUUID();
+                UUID acceptedNotice = UUID.randomUUID();
+                UUID keptEvent = UUID.randomUUID();
+                UUID finishedEvent = UUID.randomUUID();
 
                 // Customers, orders and SKUs are not what this test is about: foreign keys and row triggers are off
                 // while the old state is written.
@@ -69,6 +75,26 @@ class SelfOrderingRemovalMigrationUpgradeTest {
                         guestCart);
                 RawSql.update(db, "INSERT INTO ordering.cart_line (id, cart_id, sku, quantity, added_at, version, "
                         + "created_at) VALUES (?, ?, 'CUP-OLD', 2, NOW(), 0, NOW())", guestLine, guestCart);
+                // Unfinished event publications: three only the removed code could handle, a quote notice that must
+                // survive without the field a reorder filled, a listener that stays, and a finished one of a removed
+                // listener (never read again, left alone).
+                String quoteHandler = "com.stockflow.notification.internal.service.QuoteNotificationListener.on(x)";
+                RawSql.update(db, "INSERT INTO event_publication (id, listener_id, event_type, serialized_event, "
+                        + "publication_date, completion_date) VALUES "
+                        + "(?, 'com.stockflow.order.internal.service.InventoryEventListener.on(x)', "
+                        + "'com.stockflow.contracts.StockReservationExpired', '{\"reservationId\":\"r\"}', NOW(), NULL), "
+                        + "(?, 'com.stockflow.notification.internal.service.OrderReferralNotificationListener.on(x)', "
+                        + "'com.stockflow.contracts.OrderCancellationReferred', '{\"orderId\":\"o\"}', NOW(), NULL), "
+                        + "(?, '" + quoteHandler + "', 'com.stockflow.contracts.CustomerActedOnQuote', "
+                        + "'{\"quoteId\":\"q\",\"action\":\"REORDER_REQUESTED\",\"sourceOrderNumber\":\"SO-1\"}', "
+                        + "NOW(), NULL), "
+                        + "(?, '" + quoteHandler + "', 'com.stockflow.contracts.CustomerActedOnQuote', "
+                        + "'{\"quoteId\":\"q\",\"action\":\"ACCEPTED\",\"sourceOrderNumber\":null}', NOW(), NULL), "
+                        + "(?, 'com.stockflow.order.internal.service.OrderEventListeners.on(x)', "
+                        + "'com.stockflow.contracts.OrderPlaced', '{\"orderId\":\"o\"}', NOW(), NULL), "
+                        + "(?, 'com.stockflow.order.internal.service.InventoryEventListener.on(x)', "
+                        + "'com.stockflow.contracts.StockReservationExpired', '{\"reservationId\":\"done\"}', NOW(), NOW())",
+                        expiryEvent, referralEvent, reorderNotice, acceptedNotice, keptEvent, finishedEvent);
                 RawSql.update(db, "SET session_replication_role = DEFAULT");
 
                 var result = flyway(postgres, MIGRATION).migrate();
@@ -91,6 +117,20 @@ class SelfOrderingRemovalMigrationUpgradeTest {
                         + "source_table = 'ordering.cart_line' AND row_id = ?", guestLine))
                         .isEqualTo(guestCart.toString());
 
+                // The unfinished publications nobody can handle any more are archived and gone; the rest stay, the
+                // quote notice without the field a reorder filled and otherwise byte for byte.
+                assertThat(RawSql.number(db, "SELECT count(*) FROM event_publication WHERE id IN (?, ?, ?)",
+                        expiryEvent, referralEvent, reorderNotice)).isZero();
+                assertThat(RawSql.number(db, "SELECT count(*) FROM platform.legacy_archive WHERE source_table = "
+                        + "'public.event_publication' AND row_id IN (?, ?, ?)", expiryEvent, referralEvent,
+                        reorderNotice)).isEqualTo(3);
+                assertThat(RawSql.text(db, "SELECT serialized_event FROM event_publication WHERE id = ?", acceptedNotice))
+                        .isEqualTo("{\"quoteId\":\"q\",\"action\":\"ACCEPTED\"}");
+                assertThat(RawSql.text(db, "SELECT serialized_event FROM event_publication WHERE id = ?", keptEvent))
+                        .isEqualTo("{\"orderId\":\"o\"}");
+                assertThat(RawSql.number(db, "SELECT count(*) FROM event_publication WHERE id = ?", finishedEvent))
+                        .as("a finished publication is never read again").isEqualTo(1);
+
                 // The tables and everything that pointed at them are gone.
                 assertThat(RawSql.number(db, "SELECT count(*) FROM information_schema.tables WHERE table_schema = "
                         + "'ordering' AND table_name IN ('cart', 'cart_line')")).isZero();
@@ -108,6 +148,9 @@ class SelfOrderingRemovalMigrationUpgradeTest {
                 assertThat(holder(db, "SALES_STAFF", "sales-orders:CREATE")).isTrue();
                 assertThat(RawSql.number(db, "SELECT count(*) FROM identity.permission WHERE code = "
                         + "'sales-orders:CREATE'")).isEqualTo(1);
+
+                assertThat(RawSql.number(db, "SELECT count(*) FROM platform.legacy_archive WHERE source_table = "
+                        + "'identity.role_permission'")).as("the grants taken away are archived").isGreaterThan(0);
 
                 // A role whose grants changed moves its version; one whose grants did not, does not.
                 Map<String, Long> versionAfter = versions(db);
