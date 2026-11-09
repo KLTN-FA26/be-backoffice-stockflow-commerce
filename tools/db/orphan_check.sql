@@ -97,8 +97,8 @@ WITH checks(step, reference, orphans) AS (
         (SELECT count(*) FROM warehouse.putaway_task c WHERE NOT EXISTS (SELECT 1 FROM inventory.inventory_items p WHERE p.sku = c.sku))),
     ('C4', 'warehouse.putaway_task.goods_receipt_id -> procurement.goods_receipts',
         (SELECT count(*) FROM warehouse.putaway_task c WHERE c.goods_receipt_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM procurement.goods_receipts p WHERE p.id = c.goods_receipt_id))),
-    ('C4', 'warehouse.putaway_task without exactly one source line',
-        (SELECT count(*) FROM warehouse.putaway_task WHERE num_nonnulls(goods_receipt_line_id, return_request_line_id) <> 1))
+    ('C4', 'warehouse.putaway_task whose source does not match its receipt line (V20261112000200)',
+        (SELECT count(*) FROM warehouse.putaway_task WHERE (source = 'RECEIPT') <> (goods_receipt_line_id IS NOT NULL)))
 )
 SELECT step, reference, orphans, CASE WHEN orphans = 0 THEN 'ok' ELSE 'FIX' END AS status
 FROM checks
