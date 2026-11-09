@@ -10,6 +10,7 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReserveStockCommand;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -120,8 +121,18 @@ class CartonAllocationIntegrationTest {
     }
 
     private void moveByHand(List<String> lpns, String to) {
-        tx.executeWithoutResult(s -> inventory.moveStockPackages(new MoveStockPackagesCommand(lpns, to,
-                MoveReference.MOVE_TASK, Identifiers.newId(), clerk)));
+        moveByHand(Identifiers.newId(), lpns, to);
+    }
+
+    private List<String> moveByHand(UUID request, List<String> lpns, String to) {
+        return tx.execute(s -> inventory.moveStockPackages(new MoveStockPackagesCommand(lpns, to,
+                MoveReference.MOVE_TASK, request, clerk))).stream().map(StockPackageView::lpn).toList();
+    }
+
+    private int handMoves(String lpn) {
+        return jdbc.queryForObject("""
+                select count(*) from inventory.stock_movement m join inventory.stock_package p on p.id = m.to_stock_package_id
+                 where p.lpn = ? and m.movement_type = 'MOVE' and m.reference_type = 'MOVE_TASK'""", Integer.class, lpn);
     }
 
     @Test
@@ -183,6 +194,27 @@ class CartonAllocationIntegrationTest {
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
         assertThat(refused.getMessage()).contains(held);
         assertThat(locationOf(held)).isEqualTo(SHELF);
+    }
+
+    @Test
+    @DisplayName("11 BR-07: the same request again is answered from the ledger; its id reused for other cartons or"
+            + " another place is IDEMPOTENCY_KEY_REUSED, and nothing moves")
+    void moveRequestIdIsOneRequest() {
+        String a = carton(2);
+        String b = carton(3);
+        UUID request = Identifiers.newId();
+        moveByHand(request, List.of(a), OTHER_BIN);
+
+        assertThat(moveByHand(request, List.of(a), OTHER_BIN)).as("the same request").containsExactly(a);
+        assertThat(handMoves(a)).isEqualTo(1);
+        for (Runnable other : List.<Runnable>of(() -> moveByHand(request, List.of(b), OTHER_BIN),
+                () -> moveByHand(request, List.of(a, b), OTHER_BIN), () -> moveByHand(request, List.of(a), SHELF))) {
+            assertThat(catchThrowableOfType(BusinessException.class, other::run).errorCode())
+                    .isEqualTo(ErrorCode.IDEMPOTENCY_KEY_REUSED);
+        }
+        assertThat(locationOf(a)).isEqualTo(OTHER_BIN);
+        assertThat(locationOf(b)).isEqualTo(SHELF);
+        assertThat(handMoves(a)).isEqualTo(1);
     }
 
     @Test
