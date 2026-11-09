@@ -157,8 +157,7 @@ class GoodsReceiptController {
     @PostMapping("/{receiptId}/cancellation")
     @Operation(summary = "Cancel a receipt that has counted nothing in; a confirmed one is corrected by a stock adjustment (BR-05)",
             description = """
-                    A DRAFT; or a historical purchase receipt left in PENDING_APPROVAL by the over-tolerance approval \
-                    there was. The cartons labelled while counting are voided; a production order lets its draft go.""")
+                    A DRAFT. The cartons labelled while counting are voided; a production order lets its draft go.""")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> cancel(@PathVariable UUID receiptId) {
         return ApiResponse.ok(mapper.toResponse(receipts.cancel(receiptId)));
