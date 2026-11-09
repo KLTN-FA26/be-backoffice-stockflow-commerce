@@ -11,7 +11,8 @@ import java.util.UUID;
 
 /**
  * Stock as the warehouse keeps it since team plan 4C-2: whole, sealed LPN cartons of the SKU's one carton unit, one
- * stock row each (kltn-docs 20 BR-14, BR-18). Written as rows, for a test whose subject is not receiving: the way
+ * stock row each (kltn-docs 20 BR-14, BR-18), always with a lot (BR-22: a missing lot is 'UNTRACED', team plan 4C-3).
+ * Written as rows, for a test whose subject is not receiving: the way
  * a receipt makes them is {@code ReceivingPackagesIntegrationTest}'s. The SKU's inventory item must exist.
  */
 public final class CartonRows {
@@ -69,7 +70,7 @@ public final class CartonRows {
                     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
                                                       status, version, created_at, received_at, stock_package_id)
                     VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, NOW(), ?, ?)""",
-                    row, sku, location, lotNumber, expiryDate == null ? null : java.sql.Date.valueOf(expiryDate),
+                    row, sku, location, lotNumber == null ? "UNTRACED" : lotNumber, expiryDate == null ? null : java.sql.Date.valueOf(expiryDate),
                     perCarton, status, Timestamp.from(receivedAt), id);
             made.add(new Carton(id, lpn, row));
         }

@@ -3,7 +3,6 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.internal.domain.InsufficientStockException;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -44,16 +43,15 @@ class StockPackageContentsTest {
     private final StockItemRepository stockItems = mock(StockItemRepository.class);
     private final StockPackageContents contents = new StockPackageContents(stockPackages, stockItems);
 
-    private static StockPackage carton(StockPackageId id, boolean unopened, int counted) {
+    private static StockPackage carton(StockPackageId id, int counted) {
         return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, counted,
-                new LocationId("HCM-A01-1-A"), StockPackageStatus.IN_STOCK, unopened, UUID.randomUUID(), null, 0L);
+                new LocationId("HCM-A01-1-A"), StockPackageStatus.IN_STOCK, UUID.randomUUID(), null, 0L);
     }
 
-    private static StockPackage cartonWith(StockPackageId id, StockPackageStatus status, boolean unopened,
-                                           int counted) {
+    private static StockPackage cartonWith(StockPackageId id, StockPackageStatus status, int counted) {
         Instant closed = status.isClosed() ? NOW : null;
         return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, counted,
-                new LocationId("HCM-A01-1-A"), status, unopened, UUID.randomUUID(), closed, 0L);
+                new LocationId("HCM-A01-1-A"), status, UUID.randomUUID(), closed, 0L);
     }
 
     private static StockItem row(StockPackageId carton, int onHand) {
@@ -82,10 +80,10 @@ class StockPackageContentsTest {
         }
 
         @Test
-        @DisplayName("a carton taken from in part is refused (STOCK_PACKAGE_TAKEN_WHOLE): it is neither opened nor saved")
+        @DisplayName("a carton taken from in part is refused (STOCK_PACKAGE_TAKEN_WHOLE): it is neither consumed nor saved")
         void partiallyTakenIsRefused() {
             StockPackageId id = new StockPackageId(UUID.randomUUID());
-            StockPackage carton = carton(id, true, 24);
+            StockPackage carton = carton(id, 24);
             StockItem row = row(id, 24);
             when(stockPackages.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(carton));
             when(stockItems.onHandInStockPackage(id)).thenReturn(14);
@@ -94,7 +92,6 @@ class StockPackageContentsTest {
             locked.tookFrom(row);
 
             assertThat(codeOf(() -> contents.settle(locked, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(carton.unopened()).isTrue();
             assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
             verify(stockPackages, never()).save(org.mockito.ArgumentMatchers.any());
         }
@@ -103,7 +100,7 @@ class StockPackageContentsTest {
         @DisplayName("a carton emptied by the take is closed CONSUMED at that time")
         void emptiedIsConsumed() {
             StockPackageId id = new StockPackageId(UUID.randomUUID());
-            StockPackage carton = carton(id, true, 24);
+            StockPackage carton = carton(id, 24);
             StockItem row = row(id, 24);
             when(stockPackages.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(carton));
             when(stockItems.onHandInStockPackage(id)).thenReturn(0);
@@ -120,13 +117,12 @@ class StockPackageContentsTest {
         @DisplayName("a locked carton nobody took from is left as it was")
         void untouchedCartonIsNotSaved() {
             StockPackageId id = new StockPackageId(UUID.randomUUID());
-            StockPackage carton = carton(id, true, 24);
+            StockPackage carton = carton(id, 24);
             when(stockPackages.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(carton));
 
             StockPackageContents.LockedCartons locked = contents.lockFor(List.of(row(id, 24)));
             contents.settle(locked, NOW);
 
-            assertThat(carton.unopened()).isTrue();
             verify(stockPackages, never()).save(org.mockito.ArgumentMatchers.any());
         }
 
@@ -143,7 +139,7 @@ class StockPackageContentsTest {
         @DisplayName("two rows of one carton lock it once, and settle it once")
         void oneCartonManyRows() {
             StockPackageId id = new StockPackageId(UUID.randomUUID());
-            StockPackage carton = carton(id, true, 24);
+            StockPackage carton = carton(id, 24);
             StockItem a = row(id, 10);
             StockItem b = row(id, 14);
             when(stockPackages.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(carton));
@@ -189,115 +185,126 @@ class StockPackageContentsTest {
         @Test
         @DisplayName("a carton without a stock row cannot be adjusted")
         void noRows() {
-            rowsOf(carton(id, false, 24));
+            rowsOf(carton(id, 24));
 
             assertThatThrownBy(() -> contents.adjust(id, -1, false, NOW)).isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("no stock row");
         }
 
         @Test
-        @DisplayName("written down in part: refused before any row changes (STOCK_PACKAGE_TAKEN_WHOLE) - a carton is not "
-                + "opened; a count states it present or missing (team plan 4C-3)")
+        @DisplayName("written down in part: refused before any row changes (STOCK_PACKAGE_TAKEN_WHOLE) - a count states "
+                + "a carton present or missing, never a number of units (team plan 4C-3)")
         void writeDownInPartIsRefused() {
-            StockPackage carton = carton(id, true, 24);
-            StockItem a = row(id, 10);
-            StockItem b = row(id, 14);
-            rowsOf(carton, a, b);
+            StockPackage carton = carton(id, 24);
+            StockItem only = row(id, 24);
+            rowsOf(carton, only);
 
             assertThat(codeOf(() -> contents.adjust(id, -12, false, NOW)))
                     .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(a.onHand().value() + b.onHand().value()).isEqualTo(24);
-            assertThat(carton.unopened()).isTrue();
+            assertThat(only.onHand().value()).isEqualTo(24);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
             verify(stockPackages, never()).save(org.mockito.ArgumentMatchers.any());
             verify(stockItems, never()).save(org.mockito.ArgumentMatchers.any());
         }
 
         @Test
-        @DisplayName("written down to nothing: CONSUMED, or LOST when the count found nothing")
-        void writeDownToNothing() {
-            StockPackage consumed = carton(id, true, 24);
-            rowsOf(consumed, row(id, 24));
-            contents.adjust(id, -24, false, NOW);
-            assertThat(consumed.status()).isEqualTo(StockPackageStatus.CONSUMED);
+        @DisplayName("written up in part, or by more than a carton, is refused too")
+        void writeUpInPartIsRefused() {
+            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, 24);
+            rowsOf(lost, row(id, 0));
 
-            StockPackage lost = carton(id, true, 24);
+            assertThat(codeOf(() -> contents.adjust(id, 4, false, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(codeOf(() -> contents.adjust(id, 48, false, NOW)))
+                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(lost.status()).isEqualTo(StockPackageStatus.LOST);
+        }
+
+        @Test
+        @DisplayName("written off whole: CONSUMED, or LOST when a count did not find it or it was written off as lost")
+        void writeDownToNothing() {
+            StockPackage consumed = carton(id, 24);
+            StockItem consumedRow = row(id, 24);
+            rowsOf(consumed, consumedRow);
+            List<StockPackageContents.RowChange> changes = contents.adjust(id, -24, false, NOW);
+            assertThat(consumed.status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(consumed.closedAt()).isEqualTo(NOW);
+            assertThat(consumedRow.onHand().value()).isZero();
+            assertThat(changes).singleElement().satisfies(c -> assertThat(c.delta()).isEqualTo(-24));
+
+            StockPackage lost = carton(id, 24);
             rowsOf(lost, row(id, 24));
             contents.adjust(id, -24, true, NOW);
             assertThat(lost.status()).isEqualTo(StockPackageStatus.LOST);
         }
 
         @Test
-        @DisplayName("a write-down that would cut into a hold is refused whole: a customer's hold is never cancelled by a correction")
+        @DisplayName("a carton held for an order is not written off: a customer's hold is never cancelled by a correction")
         void writeDownCannotCutIntoHolds() {
-            StockPackage carton = carton(id, true, 24);
+            StockPackage carton = carton(id, 24);
             StockItem held = row(id, 24);
-            held.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(20), NOW);
+            held.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(24), NOW);
             rowsOf(carton, held);
 
-            InsufficientStockException refused = catchThrowableOfType(InsufficientStockException.class,
-                    () -> contents.adjust(id, -10, false, NOW));
+            assertThat(codeOf(() -> contents.adjust(id, -24, false, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
 
-            assertThat(refused.requested()).isEqualTo(10);
-            assertThat(refused.available()).isEqualTo(4);
             assertThat(held.onHand().value()).isEqualTo(24);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
             verify(stockPackages, never()).save(org.mockito.ArgumentMatchers.any());
         }
 
         @Test
-        @DisplayName("only an IN_STOCK carton can be written down")
+        @DisplayName("only an IN_STOCK carton can be written off")
         void writeDownNeedsInStock() {
-            rowsOf(cartonWith(id, StockPackageStatus.CONSUMED, false, 24), row(id, 0));
+            rowsOf(cartonWith(id, StockPackageStatus.CONSUMED, 24), row(id, 0));
 
-            assertThat(codeOf(() -> contents.adjust(id, -1, false, NOW)))
+            assertThat(codeOf(() -> contents.adjust(id, -24, false, NOW)))
                     .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
         }
 
         @Test
-        @DisplayName("an unopened carton holds exactly what was counted into it: a write-up overfills it")
-        void writeUpOfUnopenedIsOverfill() {
-            rowsOf(carton(id, true, 24), row(id, 24));
+        @DisplayName("a carton in stock is whole: nothing is written up onto it")
+        void writeUpOfACartonInStockIsRefused() {
+            rowsOf(carton(id, 24), row(id, 24));
 
-            assertThat(codeOf(() -> contents.adjust(id, 1, false, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_OVERFILLED);
+            assertThat(codeOf(() -> contents.adjust(id, 24, false, NOW)))
+                    .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
         }
 
         @Test
-        @DisplayName("an opened carton can be written up, up to what was counted into it - never above")
-        void writeUpUpToCounted() {
-            StockPackage carton = carton(id, false, 24);
-            StockItem remaining = row(id, 20);
-            rowsOf(carton, remaining);
-
-            List<StockPackageContents.RowChange> changes = contents.adjust(id, 4, false, NOW);
-
-            assertThat(remaining.onHand().value()).isEqualTo(24);
-            assertThat(changes).singleElement().satisfies(c -> assertThat(c.delta()).isEqualTo(4));
-            verify(stockItems).saveMerged(remaining);
-            assertThat(codeOf(() -> {
-                rowsOf(carton(id, false, 24), row(id, 24));
-                contents.adjust(id, 1, false, NOW);
-            })).isEqualTo(ErrorCode.STOCK_PACKAGE_OVERFILLED);
-        }
-
-        @Test
-        @DisplayName("a LOST carton that is found goes back IN_STOCK on its first row")
+        @DisplayName("a LOST carton that is found goes back IN_STOCK whole on its own row, merged so it keeps its age")
         void lostCartonIsFound() {
-            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, false, 24);
+            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, 24);
             StockItem emptied = row(id, 0);
             rowsOf(lost, emptied);
 
-            contents.adjust(id, 24, false, NOW);
+            List<StockPackageContents.RowChange> changes = contents.adjust(id, 24, false, NOW);
 
             assertThat(lost.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(lost.closedAt()).isNull();
             assertThat(emptied.onHand().value()).isEqualTo(24);
+            assertThat(changes).singleElement().satisfies(c -> assertThat(c.delta()).isEqualTo(24));
+            verify(stockItems).saveMerged(emptied);
+            verify(stockPackages).save(lost);
+        }
+
+        @Test
+        @DisplayName("a LOST carton counted in at another figure than its standard (history) is not found again")
+        void offStandardLostCartonStaysLost() {
+            StockPackage lost = new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, 20,
+                    new LocationId("HCM-A01-1-A"), StockPackageStatus.LOST, UUID.randomUUID(), NOW, 0L);
+            rowsOf(lost, row(id, 0));
+
+            assertThat(codeOf(() -> contents.adjust(id, 24, false, NOW)))
+                    .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
         }
 
         @Test
         @DisplayName("a consumed or void carton takes nothing back")
         void closedCartonTakesNothing() {
-            rowsOf(cartonWith(id, StockPackageStatus.CONSUMED, false, 24), row(id, 0));
+            rowsOf(cartonWith(id, StockPackageStatus.CONSUMED, 24), row(id, 0));
 
             BusinessException refused = catchThrowableOfType(BusinessException.class,
-                    () -> contents.adjust(id, 5, false, NOW));
+                    () -> contents.adjust(id, 24, false, NOW));
 
             assertThat(refused.errorCode()).isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
         }
