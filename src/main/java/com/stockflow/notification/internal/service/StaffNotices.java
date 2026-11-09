@@ -15,7 +15,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 /**
- * How a staff notice is delivered, the way develop's stock alerts are (#102, {@code InventoryAlertNotificationListener}):
+ * How a staff notice is delivered (the way the stock alerts removed in team plan 5-1 were, #102):
  * <b>in-app first</b>, one inbox row per recipient and {@code dedupeKey}, in the listener's transaction - that row is
  * the record, and it needs no mail server; then <b>e-mail, best effort</b>, only to the people newly given the row,
  * so a redelivered event mails nobody twice, and a mail server that refuses is logged (by its class name) and never

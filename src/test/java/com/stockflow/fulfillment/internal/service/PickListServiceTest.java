@@ -120,7 +120,7 @@ class PickListServiceTest {
         private final UUID resB = UUID.randomUUID();
 
         private HoldView held(UUID reservation, String sku, String location, int qty, HoldView.Status status) {
-            return new HoldView(reservation, sku, location, "LOT-1", qty, status, null, null);
+            return new HoldView(reservation, sku, location, "LOT-1", qty, status, null);
         }
 
         private void locationsIn(UUID warehouse, String... codes) {
@@ -157,7 +157,7 @@ class PickListServiceTest {
             OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
                     List.of(FulfillmentFixtures.stockLine("SKU-A", resA)), null);
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(resA, "SKU-A", "HCM-A-01", "LOT-1", 10,
-                    HoldView.Status.HELD, null, null, null, "LPN-20261028-000001", true)));
+                    HoldView.Status.HELD, null, null, "LPN-20261028-000001", true)));
             locationsIn(WAREHOUSE, "HCM-A-01");
 
             service.planLines(task, order);
@@ -246,7 +246,7 @@ class PickListServiceTest {
             OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
                     List.of(FulfillmentFixtures.stockLine("SKU-A", res)), null);
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(res, "SKU-A", "HCM-A-01", "L", 2,
-                    HoldView.Status.HELD, null, null)));
+                    HoldView.Status.HELD, null)));
             when(warehouses.findLocation("HCM-A-01")).thenReturn(Optional.empty());
 
             assertThat(refusal(() -> service.requireAllPicked(task, order)).errorCode())

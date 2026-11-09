@@ -27,7 +27,7 @@ class GoodsReceiptTest {
 
     private static ReceiptLine line(int qty, boolean lotted) {
         return ReceiptLine.counted(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), qty,
-                lotted ? "LOT-1" : null, null, null, null);
+                lotted ? "LOT-1" : null, null, null);
     }
 
     private static ErrorCode code(Throwable e) {
@@ -65,7 +65,7 @@ class GoodsReceiptTest {
     void distinctLines() {
         ReceiptLine a = line(2, true);
         ReceiptLine b = new ReceiptLine(UUID.randomUUID(), a.poLineId(), a.inventoryItemId(), a.locationId(), 1,
-                a.lotNumber(), null, null, null);
+                a.lotNumber(), null, null);
         assertThatThrownBy(() -> draft().replaceLines(List.of(a, b))).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
     }
@@ -242,14 +242,11 @@ class GoodsReceiptTest {
     void cutBack() {
         UUID poLine = UUID.randomUUID();
         UUID other = UUID.randomUUID();
-        ReceiptLine a = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 70, "A", null,
-                null, null);
-        ReceiptLine b = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 30, "B", null,
-                null, null);
-        ReceiptLine c = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 20, "C", null,
-                null, null);
+        ReceiptLine a = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 70, "A", null, null);
+        ReceiptLine b = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 30, "B", null, null);
+        ReceiptLine c = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 20, "C", null, null);
         ReceiptLine unrelated = new ReceiptLine(UUID.randomUUID(), other, UUID.randomUUID(), UUID.randomUUID(), 9, null,
-                null, null, null);
+                null, null);
         GoodsReceipt receipt = waiting(a, b, c, unrelated);
 
         receipt.cutBackTo(Map.of(poLine, 85, other, 9));
@@ -267,7 +264,7 @@ class GoodsReceiptTest {
     void rejectExcess() {
         UUID poLine = UUID.randomUUID();
         ReceiptLine a = new ReceiptLine(UUID.randomUUID(), poLine, UUID.randomUUID(), UUID.randomUUID(), 20, null,
-                null, null, null);
+                null, null);
         GoodsReceipt receipt = waiting(a);
         receipt.cutBackTo(Map.of(poLine, 12));
         receipt.rejectExcess(MANAGER, "8 back to the supplier", NOW);
@@ -303,7 +300,7 @@ class GoodsReceiptTest {
     }
 
     private static ReceiptLine itemLine(int qty) {
-        return ReceiptLine.counted(UUID.randomUUID(), null, UUID.randomUUID(), UUID.randomUUID(), qty, null, null, null,
+        return ReceiptLine.counted(UUID.randomUUID(), null, UUID.randomUUID(), UUID.randomUUID(), qty, null, null,
                 null);
     }
 
@@ -332,8 +329,7 @@ class GoodsReceiptTest {
     void blindLinesAreDistinctByItem() {
         GoodsReceipt receipt = blindDraft();
         ReceiptLine a = itemLine(2);
-        ReceiptLine same = new ReceiptLine(UUID.randomUUID(), null, a.inventoryItemId(), a.locationId(), 1, null, null,
-                null, null);
+        ReceiptLine same = new ReceiptLine(UUID.randomUUID(), null, a.inventoryItemId(), a.locationId(), 1, null, null, null);
         assertThatThrownBy(() -> receipt.replaceLines(List.of(a, same))).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
         receipt.replaceLines(List.of(a, itemLine(3)));

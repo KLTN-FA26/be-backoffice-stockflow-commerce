@@ -40,7 +40,7 @@ class SaveMergedErrorIntegrationTest {
     void theOriginalErrorSurvivesTheCleanup() {
         // A layer at a location that does not exist: the INSERT breaks fk_stock_item_location.
         StockItem nowhere = StockItem.receiveInbound(new Sku("SOFA-3S-GREY"), new LocationId("HCM-ZZ99-9-Z"), null,
-                null, Quantity.of(1), Instant.now());
+                Quantity.of(1), Instant.now());
 
         Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(s -> stockItems.saveMerged(nowhere)));
 

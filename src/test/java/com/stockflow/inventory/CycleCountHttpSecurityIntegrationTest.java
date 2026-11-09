@@ -23,10 +23,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -80,10 +78,9 @@ class CycleCountHttpSecurityIntegrationTest {
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Cycle count HTTP fixture");
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, expiry_date, received_at, on_hand,
-                        reserved, status, version, created_at) values (?, ?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
-                    Identifiers.newId(), sku, BIN, Date.valueOf(LocalDate.now().plusYears(1)),
-                    Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
+                    insert into inventory.stock_item (id, sku, location_code, received_at, on_hand,
+                        reserved, status, version, created_at) values (?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
+                    Identifiers.newId(), sku, BIN, Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
         });
     }
 

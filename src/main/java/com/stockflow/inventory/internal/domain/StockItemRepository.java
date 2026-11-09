@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.domain;
 
 import com.stockflow.common.domain.Sku;
 
-import java.time.LocalDate;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -63,10 +62,9 @@ public interface StockItemRepository {
     List<StockItem> findAvailableBySku(Sku sku);
 
     /** Aggregated query port: no reservation history is needed for storefront availability. */
-    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
+    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus) {
         return skus.stream().collect(java.util.stream.Collectors.toMap(code -> code,
                 code -> findAvailableBySku(new Sku(code)).stream()
-                        .filter(item -> item.expiryDate() == null || !item.expiryDate().isBefore(today))
                         .mapToLong(item -> item.available().value()).sum()));
     }
 
@@ -80,7 +78,7 @@ public interface StockItemRepository {
     Map<String, Integer> findAllocatedBySku(Sku sku);
 
     /** Sellable units ({@code onHand − reserved} of AVAILABLE stock) per SKU; absent when none. */
-    Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today);
+    Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus);
 
     /**
      * The loose stock rows of {@code sku} at {@code location}: rows in a stock package are left out. A row in a
@@ -157,7 +155,7 @@ public interface StockItemRepository {
      * left or into their layer at another bin). The database refuses to raise an existing FIFO layer's
      * {@code on_hand} — replenishment must be a new layer, or FIFO loses the age of the incoming units — and
      * this tells it, for this row and this statement only, that nothing new is entering: the units carry the
-     * same receipt time, lot, expiry and serial, which the database checks as before.
+     * same receipt time, lot and serial, which the database checks as before.
      */
     StockItem saveMerged(StockItem stockItem);
 }

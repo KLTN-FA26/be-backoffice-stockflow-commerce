@@ -5,7 +5,6 @@ import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.domain.ReceiptApproval;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -44,24 +43,21 @@ public interface GoodsReceipts {
      * <p>SCRUM-478: on a receipt without a PO there is no PO line; the line names the item by {@code sku}
      * ({@code purchaseOrderLineId} is then absent). On a receipt against a PO it is the reverse.</p>
      */
-    record NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
-                   String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {
+    record NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {
 
         public NewLine {
             packages = packages == null ? List.of() : List.copyOf(packages);
         }
 
         /** A line of a receipt against a PO. */
-        public NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
-                       String locationCode, String note, String unitOfMeasure, List<NewPackage> packages) {
-            this(purchaseOrderLineId, quantity, lotNumber, expiryDate, locationCode, note, unitOfMeasure, packages,
-                    null);
+        public NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, String locationCode, String note,
+                       String unitOfMeasure, List<NewPackage> packages) {
+            this(purchaseOrderLineId, quantity, lotNumber, locationCode, note, unitOfMeasure, packages, null);
         }
 
         /** A loose line, counted in the base unit. */
-        public NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
-                       String locationCode, String note) {
-            this(purchaseOrderLineId, quantity, lotNumber, expiryDate, locationCode, note, null, List.of());
+        public NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, String locationCode, String note) {
+            this(purchaseOrderLineId, quantity, lotNumber, locationCode, note, null, List.of());
         }
     }
 
@@ -79,8 +75,8 @@ public interface GoodsReceipts {
      * the unit catalogue sits behind.
      */
     record LineView(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
-                    int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
-                    boolean lotTracked, boolean expiryTracked, int quantityForPutaway,
+                    int quantity, String lotNumber, String locationCode, String note,
+                    boolean lotTracked, int quantityForPutaway,
                     List<String> warnings, String unitOfMeasure,
                     int looseQuantity, List<PackageView> packages, List<UnitView> units,
                     String orderedUnitOfMeasure) {
@@ -116,9 +112,7 @@ public interface GoodsReceipts {
 
     /**
      * The names next to the ids are for display (SCRUM-464); a name is null when its row is gone.
-     * {@code warnings} are non-blocking business warnings: {@code EXPIRY_NEAR} (docs 03 BR-06) when a line's
-     * expiry is within the configured window of the receiving date, empty on a cancelled receipt; and
-     * {@link #OVER_TOLERANCE} (BR-RCP-001) on a count not yet posted that goes beyond a tolerance. {@code approval}:
+     * {@code warnings} are non-blocking business warnings: {@link #OVER_TOLERANCE} (BR-RCP-001) on a count not yet posted that goes beyond a tolerance. {@code approval}:
      * null for a receipt that never needed the manager. {@code withoutPurchaseOrder} (SCRUM-478, BR-RCP-002): no PO
      * (so {@code purchaseOrderId} and {@code purchaseOrderNumber} are null; {@code supplierId} is the receipt's own and
      * {@code blindReason} says why); {@code referencedPurchaseOrder*} is a PO attached to it afterwards, a reference only.
@@ -158,7 +152,7 @@ public interface GoodsReceipts {
     ReceiptView referencePurchaseOrder(UUID receiptId, UUID purchaseOrderId);
 
     /**
-     * Replace the whole count of a DRAFT (BR-03 lot and expiry, RECEIVING locations), and label, recount or void each
+     * Replace the whole count of a DRAFT (BR-03 lot, RECEIVING locations), and label, recount or void each
      * line's cartons to match it (SCRUM-473). A count beyond the tolerance (BR-02) is flagged, not refused (SCRUM-477).
      */
     ReceiptView replaceLines(UUID receiptId, List<NewLine> lines);

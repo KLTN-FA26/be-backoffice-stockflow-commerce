@@ -33,14 +33,11 @@ class LotTraceService implements LotTraces {
     private final LotTraceSearch search;
     private final SlotsUnderCount underCount;
     private final WarehouseDirectory warehouses;
-    private final java.time.Clock clock;
 
-    LotTraceService(LotTraceSearch search, SlotsUnderCount underCount, WarehouseDirectory warehouses,
-                    java.time.Clock clock) {
+    LotTraceService(LotTraceSearch search, SlotsUnderCount underCount, WarehouseDirectory warehouses) {
         this.search = search;
         this.underCount = underCount;
         this.warehouses = warehouses;
-        this.clock = clock;
     }
 
     @Override
@@ -50,7 +47,7 @@ class LotTraceService implements LotTraces {
         LotTraceSearch.Filter filter = new LotTraceSearch.Filter(
                 query.sku() == null || query.sku().isBlank() ? null : new Sku(query.sku()).code(),
                 query.lotNumber() == null || query.lotNumber().isBlank() ? null : query.lotNumber().strip(),
-                scope, startOf(query.from(), query.to()), endOf(query.to()), today());
+                scope, startOf(query.from(), query.to()), endOf(query.to()));
         long total = search.countLots(filter);
         return PageResponse.of(total == 0 ? java.util.List.of() : search.lots(filter, page.getOffset(), page.getPageSize()),
                 page.getPageNumber(), page.getPageSize(), total);
@@ -59,7 +56,7 @@ class LotTraceService implements LotTraces {
     @Override
     public LotTrace trace(UUID lotId, UUID warehouse, BookVisibility visibility) {
         Set<String> scope = warehousesFor(warehouse);
-        LotTrace.Summary lot = search.lot(lotId, scope, today())
+        LotTrace.Summary lot = search.lot(lotId, scope)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No lot " + lotId));
         List<LotTrace.Balance> balances = search.balances(lotId, scope);
         if (visibility.hidesCountedSlots()) {
@@ -74,7 +71,7 @@ class LotTraceService implements LotTraces {
                                                      int page, int size, BookVisibility visibility) {
         Pageable pageable = Pages.of(page, size);
         Set<String> scope = warehousesFor(warehouse);
-        search.lot(lotId, scope, today()).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No lot " + lotId));
+        search.lot(lotId, scope).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No lot " + lotId));
         Instant start = startOf(from, to);
         Instant end = endOf(to);
         boolean hide = visibility.hidesCountedSlots();
@@ -95,10 +92,6 @@ class LotTraceService implements LotTraces {
                 // Bound to warehouses yet assigned none: nothing to see, not everything.
                 ? Set.of("")
                 : Set.copyOf(allowed.prefixes())).orElse(Set.of());
-    }
-
-    private LocalDate today() {
-        return BusinessCalendar.date(clock.instant());
     }
 
     private static Instant startOf(LocalDate from, LocalDate to) {

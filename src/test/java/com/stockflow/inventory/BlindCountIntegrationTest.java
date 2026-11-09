@@ -28,10 +28,8 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -98,11 +96,10 @@ class BlindCountIntegrationTest {
                     Identifiers.newId(), product, sku, "Blind count fixture");
             // The lot is made by the table's trigger (an UNTRACED one), as for any stock that entered without a receipt.
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, expiry_date, received_at, on_hand,
+                    insert into inventory.stock_item (id, sku, location_code, received_at, on_hand,
                         reserved, status, version, created_at)
-                    values (?, ?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
-                    stockItem, sku, BIN, Date.valueOf(LocalDate.now().plusYears(1)),
-                    Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
+                    values (?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
+                    stockItem, sku, BIN, Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
             lot = jdbc.queryForObject("select lot_id from inventory.stock_item where id = ?", UUID.class, stockItem);
             movement(BIN, BIN2, 4);
             movement(BIN2, BIN3, 2);
@@ -193,10 +190,10 @@ class BlindCountIntegrationTest {
     void warehouseStockRows() throws Exception {
         UUID other = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, expiry_date, received_at, on_hand, reserved,
+                insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved,
                     status, version, created_at)
-                values (?, ?, ?, ?, ?, 6, 0, 'AVAILABLE', 0, now())""", other, sku, BIN3,
-                Date.valueOf(LocalDate.now().plusYears(1)), Timestamp.from(Instant.parse("2026-01-02T00:00:00Z"))));
+                values (?, ?, ?, ?, 6, 0, 'AVAILABLE', 0, now())""", other, sku, BIN3,
+                Timestamp.from(Instant.parse("2026-01-02T00:00:00Z"))));
         plan();
         String url = INVENTORY + "/warehouses/" + WAREHOUSE_HCM + "/stock-items?sku=" + sku + "&sort=onHand,desc";
 

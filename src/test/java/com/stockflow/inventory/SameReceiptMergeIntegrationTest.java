@@ -249,7 +249,7 @@ class SameReceiptMergeIntegrationTest {
                 insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
                     status, version, created_at) values (?, ?, ?, ?, clock_timestamp() + interval '1 hour', 1, 0,
                     'INBOUND', 0, now())""", Identifiers.newId(), sku, "HCM-RCV01", lot + "-L")))
-                .hasMessageContaining("Invalid receipt/expiry date");
+                .hasMessageContaining("Invalid receipt date");
         tx.executeWithoutResult(s -> jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
                     status, version, created_at) values (?, ?, ?, ?, clock_timestamp() + interval '2 seconds', 1, 0,

@@ -31,23 +31,21 @@ final class InventoryFixtures {
     }
 
     /** A sellable (AVAILABLE) row holding {@code onHand} units at {@code location}, received a minute apart. */
-    static StockItem available(String sku, String location, String lot, LocalDate expiry, int onHand) {
-        StockItem item = new StockItem(StockItemId.newId(), new Sku(sku), new LocationId(location), lot, expiry,
-                Quantity.of(onHand), StockStatus.QUARANTINE, List.of(), 0L);
+    static StockItem available(String sku, String location, String lot, int onHand) {
+        StockItem item = new StockItem(StockItemId.newId(), new Sku(sku), new LocationId(location), lot, Quantity.of(onHand), StockStatus.QUARANTINE, List.of(), 0L);
         item.releaseFromQuarantine();
         item.pullDomainEvents();
         return item;
     }
 
     /** As above, with the receipt time a FIFO policy ranks by. */
-    static StockItem availableReceived(String sku, String location, String lot, LocalDate expiry, int onHand,
+    static StockItem availableReceived(String sku, String location, String lot, int onHand,
                                        Instant receivedAt) {
-        return new StockItem(StockItemId.newId(), new Sku(sku), new LocationId(location), lot, expiry,
-                Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L, receivedAt, null);
+        return new StockItem(StockItemId.newId(), new Sku(sku), new LocationId(location), lot, Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L, receivedAt, null);
     }
 
     static StockItem available(String location, int onHand) {
-        return available(SKU.code(), location, null, null, onHand);
+        return available(SKU.code(), location, null, onHand);
     }
 
     static UUID id() {

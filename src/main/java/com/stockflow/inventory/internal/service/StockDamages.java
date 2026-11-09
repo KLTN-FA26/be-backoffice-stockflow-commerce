@@ -28,7 +28,7 @@ public interface StockDamages {
      *
      * @throws com.stockflow.common.error.BusinessException {@code STOCK_ITEM_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
      *         {@code DAMAGE_PHOTO_REQUIRED}, {@code UNSUPPORTED_MEDIA_TYPE}, {@code PAYLOAD_TOO_LARGE};
-     *         {@code STOCK_STATUS_MISMATCH} unless AVAILABLE; {@code STOCK_EXPIRED};
+     *         {@code STOCK_STATUS_MISMATCH} unless AVAILABLE;
      *         {@code DAMAGE_EXCEEDS_FREE_STOCK} beyond the free units; {@code DAMAGE_AREA_MISSING},
      *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code LOCATION_AREA_MISMATCH} for the
      *         quarantine area; {@code VALIDATION_FAILED} (OTHER without a note, a serial unit counted twice)
@@ -46,7 +46,7 @@ public interface StockDamages {
      *
      * @throws com.stockflow.common.error.BusinessException {@code DAMAGE_REPORT_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
      *         {@code DAMAGE_SELF_DISPOSITION}; {@code DAMAGE_DISPOSITION_EXCEEDS_PENDING}; {@code DAMAGED_STOCK_HELD}
-     *         while an order still holds the units; {@code DAMAGE_RESTORE_LOCATION_INVALID}, {@code STOCK_EXPIRED},
+     *         while an order still holds the units; {@code DAMAGE_RESTORE_LOCATION_INVALID},
      *         {@code STOCK_STATUS_MISMATCH} for a restore; {@code VALIDATION_FAILED} for a missing note
      */
     DamageReportView dispose(UUID reportId, DisposeDamageCommand command);

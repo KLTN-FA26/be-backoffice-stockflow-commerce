@@ -115,7 +115,7 @@ class PutawayConfirmationIntegrationTest {
                     poLine, po, revision, item);
         });
         receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PC", null), clerk).id();
-        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 30, null, null, receiving, null,
+        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 30, null, receiving, null,
                 "CARTON", List.of(new NewPackage(null, 10), new NewPackage(null, 10), new NewPackage(null, 10)))));
         GoodsReceipts.LineView line = receipts.confirm(receiptId, clerk).lines().getFirst();
         lpn1 = line.packages().get(0).lpn();

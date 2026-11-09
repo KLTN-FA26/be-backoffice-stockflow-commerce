@@ -1,7 +1,6 @@
 package com.stockflow.procurement.internal.controller.dto;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -10,8 +9,7 @@ import java.util.UUID;
  * (there is no quality check at the warehouse, kltn-docs 03 BR-07).
  *
  * <p>{@code warnings}: non-blocking business warnings, on the receipt and on the line they come from.
- * {@code EXPIRY_NEAR} (docs 03 BR-06): the lot expires within {@code stockflow.inventory.expiry-warning-days}
- * (30) of the receiving date; the manager decides whether to accept it. {@code OVER_TOLERANCE} (BR-RCP-001): the
+ * {@code OVER_TOLERANCE} (BR-RCP-001): the
  * count, not yet posted, goes beyond the PO line's over-receipt tolerance; confirming it sends the receipt to the
  * warehouse manager ({@code status = PENDING_APPROVAL}). Empty when there is none.</p>
  *
@@ -42,14 +40,14 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
     }
 
     /**
-     * {@code lotTracked} / {@code expiryTracked}: whether the line needs a lot / an expiry date (BR-03).
+     * {@code lotTracked}: whether the line needs a lot (BR-03). A receipt records no expiry (03 BR-06).
      * {@code unitOfMeasure}: the packing unit of the line's cartons, null for a loose line. {@code looseQuantity}:
      * the part counted into no carton (the line less the cartons' {@code receivedQty}). {@code packages}: the line's cartons by LPN, voided ones left out (SCRUM-473).
      * {@code units}: every unit of the line's item, for the counting screen's unit picker.
      */
     public record Line(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
-                       int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
-                       boolean lotTracked, boolean expiryTracked, int quantityForPutaway,
+                       int quantity, String lotNumber, String locationCode, String note,
+                       boolean lotTracked, int quantityForPutaway,
                        List<String> warnings, String unitOfMeasure,
                        int looseQuantity, List<Package> packages, List<Unit> units,
                        @io.swagger.v3.oas.annotations.media.Schema(description = "SCRUM-473: the unit the PO line was"

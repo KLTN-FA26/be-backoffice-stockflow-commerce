@@ -537,10 +537,10 @@ class StockOperationsServiceImpl implements StockOperations {
             }
         }
 
-        // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number, expiry) - so a lot number
+        // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number) - so a lot number
         // another receipt used before is a different lot, and the trace knows the supplier and the documents.
         UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(), lot,
-                command.expiryDate(), command.receivedAt(), command.origin().goodsReceiptId(),
+                command.receivedAt(), command.origin().goodsReceiptId(),
                 command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
                 command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
                 command.origin().warehouseId()));
@@ -551,7 +551,7 @@ class StockOperationsServiceImpl implements StockOperations {
             carton.putInStock();   // refuses a carton never counted, or not at its standard count, before its row
             int counted = carton.receivedQty();
             stockItems.save(StockItem.receiveInboundInto(carton.id(), command.sku(), location, lot,
-                    command.expiryDate(), Quantity.of(counted), command.receivedAt(), lotId));
+                    Quantity.of(counted), command.receivedAt(), lotId));
             stockPackages.save(carton);
             StockMovement line = receiptLine(command, lot, location, counted, lotId, now).arriving(carton.id());
             ledger.append(line);
@@ -746,7 +746,7 @@ class StockOperationsServiceImpl implements StockOperations {
             // The same receipt, not a replenishment: the policy trigger lets a FIFO layer grow only when told so.
             stockItems.saveMerged(item);
         } else {
-            stockItems.save(StockItem.receive(command.sku(), location, lot, null, quantity, command.receivedAt(), null));
+            stockItems.save(StockItem.receive(command.sku(), location, lot, quantity, command.receivedAt(), null));
         }
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RETURN_IN,
                 command.sku(), lot, null, location, quantity.value(), StockStatus.QUARANTINE,
@@ -766,6 +766,12 @@ class StockOperationsServiceImpl implements StockOperations {
         // (ck_stock_adjustment_count_variance), which reaches the client as a 500.
         if (command.reason() == StockAdjustmentReason.COUNT_VARIANCE) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A count variance comes from a cycle count");
+        }
+        // Cups and packaging have no expiry (kltn-docs 01 BR-17, 20 BR-13): EXPIRED stays only on adjustments made
+        // before team plan 5-1. tg_stock_adjustment_no_new_expired refuses it in the table as well.
+        if (command.reason() == StockAdjustmentReason.EXPIRED) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Stock does not expire; write it off as DAMAGED, LOST or OTHER");
         }
         WarehouseScope.requireLocation(command.locationCode());
         LocationId location = new LocationId(command.locationCode());
@@ -809,8 +815,7 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         List<CountVariance.Layer> layers = stockItems.findLooseBySkuAndLocation(slot.sku(), slot.location()).stream()
                 .filter(item -> Objects.equals(blankToNull(item.lotNumber()), slot.lotNumber()))
-                .map(item -> new CountVariance.Layer(item.id(), item.receivedAt(), item.expiryDate(),
-                        item.onHand().value(), item.reserved().value()))
+                .map(item -> new CountVariance.Layer(item.id(), item.receivedAt(), item.onHand().value(), item.reserved().value()))
                 .toList();
         List<StockAdjustmentSummary> asked = new ArrayList<>();
         for (CountVariance.Share share : CountVariance.split(delta, layers)) {

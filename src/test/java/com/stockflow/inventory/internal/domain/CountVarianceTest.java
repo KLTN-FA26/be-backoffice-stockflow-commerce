@@ -7,7 +7,6 @@ import com.stockflow.inventory.internal.domain.CountVariance.Share;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -18,18 +17,20 @@ class CountVarianceTest {
     private static final Instant T1 = Instant.parse("2026-09-01T00:00:00Z");
     private static final Instant T2 = Instant.parse("2026-10-01T00:00:00Z");
 
-    private static Layer layer(Instant receivedAt, LocalDate expiry, int onHand) {
-        return layer(receivedAt, expiry, onHand, 0);
+    private static final Instant T0 = Instant.parse("2026-08-01T00:00:00Z");
+
+    private static Layer layer(Instant receivedAt, int onHand) {
+        return layer(receivedAt, onHand, 0);
     }
 
-    private static Layer layer(Instant receivedAt, LocalDate expiry, int onHand, int reserved) {
-        return new Layer(StockItemId.newId(), receivedAt, expiry, onHand, reserved);
+    private static Layer layer(Instant receivedAt, int onHand, int reserved) {
+        return new Layer(StockItemId.newId(), receivedAt, onHand, reserved);
     }
 
     @Test
     void surplusGoesToTheNewestLayer() {
-        Layer old = layer(T1, null, 10);
-        Layer recent = layer(T2, null, 5);
+        Layer old = layer(T1, 10);
+        Layer recent = layer(T2, 5);
 
         List<Share> shares = CountVariance.split(3, List.of(old, recent));
 
@@ -37,30 +38,30 @@ class CountVarianceTest {
     }
 
     @Test
-    void shortageFollowsFefo() {
-        Layer nov = layer(T2, LocalDate.of(2026, 11, 1), 2);
-        Layer dec = layer(T1, LocalDate.of(2026, 12, 1), 10);
-        Layer none = layer(T1, null, 4);
+    void shortageFollowsFifo() {
+        Layer aug = layer(T0, 2);
+        Layer sep = layer(T1, 10);
+        Layer oct = layer(T2, 4);
 
-        List<Share> shares = CountVariance.split(-5, List.of(none, dec, nov));
+        List<Share> shares = CountVariance.split(-5, List.of(oct, sep, aug));
 
-        assertThat(shares).containsExactly(new Share(nov.id(), T2, -2), new Share(dec.id(), T1, -3));
+        assertThat(shares).containsExactly(new Share(aug.id(), T0, -2), new Share(sep.id(), T1, -3));
     }
 
     @Test
     void shortageTakesFreeUnitsBeforeHeldOnes() {
-        // FEFO would start with nov, but all of it is held for customers; dec has 6 free of 10.
-        Layer nov = layer(T2, LocalDate.of(2026, 11, 1), 4, 4);
-        Layer dec = layer(T1, LocalDate.of(2026, 12, 1), 10, 4);
+        // FIFO would start with sep, but all of it is held for customers; oct has 6 free of 10.
+        Layer sep = layer(T1, 4, 4);
+        Layer oct = layer(T2, 10, 4);
 
-        assertThat(CountVariance.split(-5, List.of(nov, dec))).as("free units only, from the layer that has them")
-                .containsExactly(new Share(dec.id(), T1, -5));
-        assertThat(CountVariance.split(-8, List.of(nov, dec)))
-                .as("every free unit first, then held ones in FEFO order: nov's held before dec's")
-                .containsExactly(new Share(nov.id(), T2, -2), new Share(dec.id(), T1, -6));
-        assertThat(CountVariance.split(-14, List.of(nov, dec))).as("everything on hand, held or not")
-                .containsExactly(new Share(nov.id(), T2, -4), new Share(dec.id(), T1, -10));
-        assertThatThrownBy(() -> CountVariance.split(-15, List.of(nov, dec)))
+        assertThat(CountVariance.split(-5, List.of(sep, oct))).as("free units only, from the layer that has them")
+                .containsExactly(new Share(oct.id(), T2, -5));
+        assertThat(CountVariance.split(-8, List.of(sep, oct)))
+                .as("every free unit first, then held ones in FIFO order: sep's held before oct's")
+                .containsExactly(new Share(sep.id(), T1, -2), new Share(oct.id(), T2, -6));
+        assertThat(CountVariance.split(-14, List.of(sep, oct))).as("everything on hand, held or not")
+                .containsExactly(new Share(sep.id(), T1, -4), new Share(oct.id(), T2, -10));
+        assertThatThrownBy(() -> CountVariance.split(-15, List.of(sep, oct)))
                 .as("still stale only beyond what is on hand")
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CYCLE_COUNT_STALE));
@@ -68,8 +69,8 @@ class CountVarianceTest {
 
     @Test
     void shortageCappedPerLayer() {
-        List<Layer> layers = List.of(layer(T1, LocalDate.of(2026, 11, 1), 2),
-                layer(T2, LocalDate.of(2026, 12, 1), 3), layer(T2, null, 1));
+        List<Layer> layers = List.of(layer(T1, 2),
+                layer(T2, 3), layer(T2, 1));
 
         List<Share> shares = CountVariance.split(-6, layers);
 
@@ -82,7 +83,7 @@ class CountVarianceTest {
 
     @Test
     void shortageBeyondEveryLayerIsStale() {
-        List<Layer> layers = List.of(layer(T1, null, 2), layer(T2, null, 1));
+        List<Layer> layers = List.of(layer(T1, 2), layer(T2, 1));
         assertThatThrownBy(() -> CountVariance.split(-5, layers))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CYCLE_COUNT_STALE));
@@ -90,7 +91,7 @@ class CountVarianceTest {
 
     @Test
     void zeroDeltaHasNoShares() {
-        assertThat(CountVariance.split(0, List.of(layer(T1, null, 2)))).isEmpty();
+        assertThat(CountVariance.split(0, List.of(layer(T1, 2)))).isEmpty();
     }
 
     @Test

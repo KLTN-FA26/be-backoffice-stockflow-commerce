@@ -5,8 +5,9 @@ import java.util.UUID;
 
 /**
  * One purchase order line. {@code quantityReceived} is what the confirmed goods receipts counted in
- * against it; {@code status} is OPEN, PARTIALLY_RECEIVED, RECEIVED, CLOSED or CANCELLED. The two
- * flags are the item's receiving policy (BR-03), for a receipt form to check before saving (SCRUM-464).
+ * against it; {@code status} is OPEN, PARTIALLY_RECEIVED, RECEIVED, CLOSED or CANCELLED. {@code lotTracked} is
+ * the item's receiving policy (BR-03), for a receipt form to check before saving (SCRUM-464); a receipt records no
+ * expiry (03 BR-06).
  */
 public record POLineSummary(
         UUID lineId,
@@ -22,7 +23,6 @@ public record POLineSummary(
         BigDecimal lineTotal,
         String status,
         boolean lotTracked,
-        boolean expiryTracked,
         String unitOfMeasure,
         Integer unitFactor,
         Integer unitQuantity

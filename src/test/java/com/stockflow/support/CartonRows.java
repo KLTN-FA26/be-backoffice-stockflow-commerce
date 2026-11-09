@@ -45,13 +45,12 @@ public final class CartonRows {
     /** {@code count} AVAILABLE cartons of {@code factor} units at {@code location}, received at {@code receivedAt}. */
     public static List<Carton> stock(JdbcTemplate jdbc, String sku, String location, int count, int factor,
                                      String lotNumber, Instant receivedAt) {
-        return stock(jdbc, sku, location, count, factor, lotNumber, null, receivedAt, "AVAILABLE");
+        return stock(jdbc, sku, location, count, factor, lotNumber, receivedAt, "AVAILABLE");
     }
 
-    /** The same, with the expiry date and stock status of the rows. */
+    /** The same, with the stock status of the rows. */
     public static List<Carton> stock(JdbcTemplate jdbc, String sku, String location, int count, int factor,
-                                     String lotNumber, java.time.LocalDate expiryDate, Instant receivedAt,
-                                     String status) {
+                                     String lotNumber, Instant receivedAt, String status) {
         UUID unit = unit(jdbc, sku, factor);
         int perCarton = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?", Integer.class,
                 unit);
@@ -66,11 +65,10 @@ public final class CartonRows {
                       FROM inventory.uom_conversions WHERE id = ?""", id, lpn, location, unit);
             UUID row = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
+                    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
                                                       status, version, created_at, received_at, stock_package_id)
-                    VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, NOW(), ?, ?)""",
-                    row, sku, location, lotNumber, expiryDate == null ? null : java.sql.Date.valueOf(expiryDate),
-                    perCarton, status, Timestamp.from(receivedAt), id);
+                    VALUES (?, ?, ?, ?, ?, 0, ?, 0, NOW(), ?, ?)""",
+                    row, sku, location, lotNumber, perCarton, status, Timestamp.from(receivedAt), id);
             made.add(new Carton(id, lpn, row));
         }
         return made;

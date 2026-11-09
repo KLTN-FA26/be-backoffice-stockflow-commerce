@@ -71,8 +71,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * who did not report them writes them off (posted at once, destruction record numbered), restores them or sends them
  * back; and every way of getting it wrong is refused with its own code and changes nothing.
  *
- * <p>Each test owns a fresh SKU with one lot-tracked layer at {@code HCM-A01-1-A}: 10 units, lot {@code L1},
- * expiring in 60 days. The demo map gives HCM two QUARANTINE areas, {@code HCM-QC01} and {@code HCM-RTV01}.</p>
+ * <p>Each test owns a fresh SKU with one lot-tracked layer at {@code HCM-A01-1-A}: 10 units, lot {@code L1}. The demo map gives HCM two QUARANTINE areas, {@code HCM-QC01} and {@code HCM-RTV01}.</p>
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class, RecordedEvents.class})
@@ -121,7 +120,7 @@ class StockDamageIntegrationTest {
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Damage fixture','')", Identifiers.newId(), product, sku);
         });
-        row = stock(BIN, 10, "L1", today.plusDays(60), "AVAILABLE", null);
+        row = stock(BIN, 10, "L1", "AVAILABLE", null);
         staff = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         otherStaff = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         manager = staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
@@ -133,12 +132,12 @@ class StockDamageIntegrationTest {
 
     // ---- fixtures ------------------------------------------------------------------------------------
 
-    private UUID stock(String location, int onHand, String lot, LocalDate expiry, String status, String serial) {
+    private UUID stock(String location, int onHand, String lot, String status, String serial) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
                                                   status, received_at, serial_number, version, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, NOW())""", id, sku, location, lot, expiry, onHand, status,
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 0, NOW())""", id, sku, location, lot, onHand, status,
                 Timestamp.from(Instant.parse("2026-10-01T03:00:00Z")), serial));
         return id;
     }
@@ -383,21 +382,6 @@ class StockDamageIntegrationTest {
     }
 
     @Test
-    @DisplayName("restore onto a bin holding the same lot as other goods: refused, naming the bin and what it holds")
-    void restoreOntoAnotherLayerOfTheLot() throws Exception {
-        stock("HCM-A01-2-B", 3, "L1", today.plusDays(90), "AVAILABLE", null);
-        UUID reportId = UUID.fromString(body(report(UUID.randomUUID(), row, 2).andExpect(status().isCreated())
-                .andReturn()).path("id").asText());
-
-        dispose(manager, "WAREHOUSE_MANAGER", reportId, "RESTORE", 2, "cups sound", "HCM-A01-2-B")
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("STOCK_STATUS_MISMATCH"))
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
-                        "HCM-A01-2-B holds these goods as AVAILABLE; restore them to another bin")));
-        assertThat(damagedAt(QC01)).as("still in quarantine").isEqualTo(2);
-    }
-
-    @Test
     @DisplayName("return to the supplier: the decision is recorded, the units stay DAMAGED in quarantine, out of sale")
     void returnToSupplierRecordsIntent() throws Exception {
         UUID reportId = UUID.fromString(body(report(UUID.randomUUID(), row, 2).andExpect(status().isCreated())
@@ -534,14 +518,13 @@ class StockDamageIntegrationTest {
     }
 
     @Test
-    @DisplayName("more than on hand, or any of a carton held for an order: refused; only AVAILABLE unexpired stock")
+    @DisplayName("more than on hand, or any of a carton held for an order: refused; only AVAILABLE stock")
     void quantitiesAndStatuses() throws Exception {
         report(UUID.randomUUID(), row, 11).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DAMAGE_EXCEEDS_FREE_STOCK"));
         // A sealed carton of 6 on the same bin, allocated whole to an order released to HCM (whole cartons only, team
         // plan 4C-2): none of its units is free, so a shelf report may take none of them.
-        UUID held = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, 6, "L1", today.plusDays(60),
-                Instant.parse("2026-10-01T03:00:00Z"), "AVAILABLE")).getFirst().stockItemId();
+        UUID held = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, 6, "L1", Instant.parse("2026-10-01T03:00:00Z"), "AVAILABLE")).getFirst().stockItemId();
         UUID order = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
@@ -564,21 +547,18 @@ class StockDamageIntegrationTest {
         assertThat(onHand(row)).isEqualTo(6);
 
         // IN_PRODUCTION: blanks in the print shop are production's to scrap, never a damage report's.
-        for (String status : List.of("DAMAGED", "QUARANTINE", "EXPIRED", "INBOUND", "IN_PRODUCTION")) {
-            UUID other = stock("HCM-B01-2-" + (status.equals("DAMAGED") ? "A" : "B"), 2, "L-" + status,
-                    today.plusDays(30), status, null);
+        // EXPIRED is not tried: no stock row becomes EXPIRED any more (tg_stock_item_no_new_expired, team plan 5-1).
+        for (String status : List.of("DAMAGED", "QUARANTINE", "INBOUND", "IN_PRODUCTION")) {
+            UUID other = stock("HCM-B01-2-" + (status.equals("DAMAGED") ? "A" : "B"), 2, "L-" + status, status, null);
             report(UUID.randomUUID(), other, 1).andExpect(status().isConflict())
                     .andExpect(jsonPath("$.errorCode").value("STOCK_STATUS_MISMATCH"));
         }
-        UUID expired = stock("HCM-A02-1-A", 2, "OLD", today.minusDays(1), "AVAILABLE", null);
-        report(UUID.randomUUID(), expired, 1).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("STOCK_EXPIRED"));
     }
 
     @Test
     @DisplayName("quarantine areas holding the layer in another status are skipped; none left is DAMAGE_AREA_MISSING")
     void destinations() throws Exception {
-        stock(QC01, 1, "L1", today.plusDays(60), "QUARANTINE", null);
+        stock(QC01, 1, "L1", "QUARANTINE", null);
         report(UUID.randomUUID(), row, 1).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.damageLocationCode").value(RTV01));
         report(staff, "WAREHOUSE_STAFF", reportJson(UUID.randomUUID(), row, 1, "BROKEN", null, QC01), jpeg("x.jpg"))
@@ -588,9 +568,9 @@ class StockDamageIntegrationTest {
                 .andExpect(jsonPath("$.data.damageLocationCode").value(RTV01));
         assertThat(damagedAt(RTV01)).isEqualTo(3);
 
-        UUID otherLayer = stock("HCM-A01-2-A", 5, "L9", today.plusDays(60), "AVAILABLE", null);
-        stock(QC01, 1, "L9", today.plusDays(60), "QUARANTINE", null);
-        stock(RTV01, 1, "L9", today.plusDays(60), "BLOCKED", null);
+        UUID otherLayer = stock("HCM-A01-2-A", 5, "L9", "AVAILABLE", null);
+        stock(QC01, 1, "L9", "QUARANTINE", null);
+        stock(RTV01, 1, "L9", "BLOCKED", null);
         report(UUID.randomUUID(), otherLayer, 1).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DAMAGE_AREA_MISSING"));
         assertThat(onHand(otherLayer)).isEqualTo(5);
@@ -617,7 +597,7 @@ class StockDamageIntegrationTest {
     @Test
     @DisplayName("two reports of the same row at once: the row lock decides, the second sees what is left")
     void concurrentReports() throws Exception {
-        UUID small = stock("HCM-A02-2-B", 5, "L1", today.plusDays(60), "AVAILABLE", null);
+        UUID small = stock("HCM-A02-2-B", 5, "L1", "AVAILABLE", null);
         List<String> bodies = List.of(reportJson(UUID.randomUUID(), small, 3, "BROKEN", null, null),
                 reportJson(UUID.randomUUID(), small, 3, "BROKEN", null, null));
         List<String> headers = List.of(token(staff, "WAREHOUSE_STAFF"), token(otherStaff, "WAREHOUSE_STAFF"));
@@ -656,7 +636,7 @@ class StockDamageIntegrationTest {
     @Test
     @DisplayName("a serial unit is reported one at a time and keeps its serial number in quarantine")
     void serialUnit() throws Exception {
-        UUID unit = stock("HCM-B01-1-A", 1, null, null, "AVAILABLE", "SN-" + sku);
+        UUID unit = stock("HCM-B01-1-A", 1, null, "AVAILABLE", "SN-" + sku);
         report(UUID.randomUUID(), unit, 2).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DAMAGE_EXCEEDS_FREE_STOCK"));
 
@@ -677,8 +657,7 @@ class StockDamageIntegrationTest {
         // together are that one layer.
         tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET removal_strategy = 'FIFO',"
                 + " policy_configured = true WHERE sku = ?", sku));
-        List<CartonRows.Carton> made = tx.execute(s -> CartonRows.stock(jdbc, sku, "HCM-A01-2-B", 2, 5, null, null,
-                Instant.parse("2026-09-01T03:00:00Z"), "AVAILABLE"));
+        List<CartonRows.Carton> made = tx.execute(s -> CartonRows.stock(jdbc, sku, "HCM-A01-2-B", 2, 5, null, Instant.parse("2026-09-01T03:00:00Z"), "AVAILABLE"));
         UUID carton = made.get(0).id();
         UUID contents = made.get(0).stockItemId();
         UUID secondCarton = made.get(1).id();

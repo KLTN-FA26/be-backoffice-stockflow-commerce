@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.domain;
 
 import com.stockflow.common.domain.AggregateRoot;
-import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -11,7 +10,6 @@ import com.stockflow.contracts.StockReserved;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -47,7 +45,7 @@ import java.util.UUID;
  *
  * <p><b>Known limit — one order line can span several stock items.</b> The aggregate is keyed per
  * location and layer, so 100 units spread over three locations means mutating three aggregates in
- * one transaction. {@link StockAllocator} owns the choice of which ones and in what order (FEFO),
+ * one transaction. {@link StockAllocator} owns the choice of which ones and in what order (FIFO),
  * and keeps that decision out of the caller. Within a single-database monolith that multi-aggregate
  * transaction is correct and atomic; it is recorded here because it is the assumption that would
  * break first if inventory were ever split back out into its own service. See {@code
@@ -70,7 +68,6 @@ public final class StockItem extends AggregateRoot {
     private final Sku sku;
     private LocationId location;
     private final String lotNumber;
-    private final LocalDate expiryDate;
     private Instant receivedAt;
     private String serialNumber;
     /**
@@ -118,7 +115,6 @@ public final class StockItem extends AggregateRoot {
             Sku sku,
             LocationId location,
             String lotNumber,
-            LocalDate expiryDate,
             Quantity onHand,
             StockStatus status,
             List<Reservation> reservations,
@@ -126,7 +122,7 @@ public final class StockItem extends AggregateRoot {
             Instant receivedAt,
             String serialNumber,
             StockPackageId stockPackageId) {
-        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version, receivedAt, serialNumber);
+        this(id, sku, location, lotNumber, onHand, status, reservations, version, receivedAt, serialNumber);
         this.stockPackageId = stockPackageId;
     }
 
@@ -135,14 +131,13 @@ public final class StockItem extends AggregateRoot {
             Sku sku,
             LocationId location,
             String lotNumber,
-            LocalDate expiryDate,
             Quantity onHand,
             StockStatus status,
             List<Reservation> reservations,
             long version,
             Instant receivedAt,
             String serialNumber) {
-        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version);
+        this(id, sku, location, lotNumber, onHand, status, reservations, version);
         this.receivedAt = receivedAt;
         this.serialNumber = serialNumber;
         if (serialNumber != null && (serialNumber.isBlank() || onHand.value() > 1))
@@ -150,19 +145,19 @@ public final class StockItem extends AggregateRoot {
     }
 
     /** Full constructor, as stored, with the lot the units belong to. */
-    public StockItem(StockItemId id, Sku sku, LocationId location, String lotNumber, LocalDate expiryDate,
+    public StockItem(StockItemId id, Sku sku, LocationId location, String lotNumber,
                      Quantity onHand, StockStatus status, List<Reservation> reservations, long version,
                      Instant receivedAt, String serialNumber, UUID lotId) {
-        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version, receivedAt,
+        this(id, sku, location, lotNumber, onHand, status, reservations, version, receivedAt,
                 serialNumber);
         this.lotId = lotId;
     }
 
     /** Full constructor, as stored: the lot the units belong to and their stock package ({@code null}: loose). */
-    public StockItem(StockItemId id, Sku sku, LocationId location, String lotNumber, LocalDate expiryDate,
+    public StockItem(StockItemId id, Sku sku, LocationId location, String lotNumber,
                      Quantity onHand, StockStatus status, List<Reservation> reservations, long version,
                      Instant receivedAt, String serialNumber, UUID lotId, StockPackageId stockPackageId) {
-        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version, receivedAt,
+        this(id, sku, location, lotNumber, onHand, status, reservations, version, receivedAt,
                 serialNumber, lotId);
         this.stockPackageId = stockPackageId;
     }
@@ -175,7 +170,6 @@ public final class StockItem extends AggregateRoot {
             Sku sku,
             LocationId location,
             String lotNumber,
-            LocalDate expiryDate,
             Quantity quantity,
             Instant receivedAt,
             String serialNumber) {
@@ -185,7 +179,6 @@ public final class StockItem extends AggregateRoot {
                 sku,
                 location,
                 lotNumber,
-                expiryDate,
                 quantity,
                 StockStatus.QUARANTINE,
                 List.of(),
@@ -204,7 +197,6 @@ public final class StockItem extends AggregateRoot {
             Sku sku,
             LocationId location,
             String lotNumber,
-            LocalDate expiryDate,
             Quantity onHand,
             StockStatus status,
             List<Reservation> reservations,
@@ -213,7 +205,6 @@ public final class StockItem extends AggregateRoot {
         this.sku = Objects.requireNonNull(sku, "sku");
         this.location = Objects.requireNonNull(location, "location");
         this.lotNumber = lotNumber;
-        this.expiryDate = expiryDate;
         this.onHand = Objects.requireNonNull(onHand, "onHand");
         this.status = Objects.requireNonNull(status, "status");
         this.reservations = new ArrayList<>(reservations == null ? List.of() : reservations);
@@ -232,14 +223,12 @@ public final class StockItem extends AggregateRoot {
             Sku sku,
             LocationId location,
             String lotNumber,
-            LocalDate expiryDate,
             Quantity quantity) {
         return new StockItem(
                 StockItemId.newId(),
                 sku,
                 location,
                 lotNumber,
-                expiryDate,
                 quantity,
                 StockStatus.QUARANTINE,
                 List.of(),
@@ -254,15 +243,15 @@ public final class StockItem extends AggregateRoot {
      * apart from other receipts of the same SKU and lot at the same location.</p>
      */
     public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
-                                           LocalDate expiryDate, Quantity quantity, Instant receivedAt) {
-        return receiveInbound(sku, location, lotNumber, expiryDate, quantity, receivedAt, null);
+                                           Quantity quantity, Instant receivedAt) {
+        return receiveInbound(sku, location, lotNumber, quantity, receivedAt, null);
     }
 
     /** The same, into the lot the receipt opened (SCRUM-142). */
     public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
-                                           LocalDate expiryDate, Quantity quantity, Instant receivedAt, UUID lotId) {
+                                           Quantity quantity, Instant receivedAt, UUID lotId) {
         Objects.requireNonNull(receivedAt, "receivedAt");
-        return new StockItem(StockItemId.newId(), sku, location, lotNumber, expiryDate, quantity,
+        return new StockItem(StockItemId.newId(), sku, location, lotNumber, quantity,
                 StockStatus.INBOUND, List.of(), 0L, receivedAt, null, lotId);
     }
 
@@ -271,10 +260,10 @@ public final class StockItem extends AggregateRoot {
      * the row is the carton's contents ({@code check_stock_package_contents} wants the row at its carton's location).
      */
     public static StockItem receiveInboundInto(StockPackageId carton, Sku sku, LocationId location, String lotNumber,
-                                               LocalDate expiryDate, Quantity quantity, Instant receivedAt, UUID lotId) {
+                                               Quantity quantity, Instant receivedAt, UUID lotId) {
         Objects.requireNonNull(carton, "carton");
         Objects.requireNonNull(receivedAt, "receivedAt");
-        return new StockItem(StockItemId.newId(), sku, location, lotNumber, expiryDate, quantity,
+        return new StockItem(StockItemId.newId(), sku, location, lotNumber, quantity,
                 StockStatus.INBOUND, List.of(), 0L, receivedAt, null, lotId, carton);
     }
 
@@ -346,24 +335,6 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * QC failed, damage found, or the lot expired.
-     *
-     * <p>Blocking does not silently drop live holds — that would let an order believe it still has
-     * stock. The caller must release them first, and this refuses until they have.
-     */
-    public void block(StockStatus blockedStatus) {
-        if (blockedStatus.isReservable()) {
-            throw new IllegalArgumentException(blockedStatus + " is not a blocking status");
-        }
-        if (!reserved().isZero()) {
-            throw new IllegalStateException(
-                    "Cannot block stock item %s: %s units are still reserved"
-                            .formatted(id, reserved()));
-        }
-        this.status = blockedStatus;
-    }
-
-    /**
      * The carton this row is the contents of moved: the row follows it, in place. Id, reservations and carton stay,
      * which is why this is not a {@code move} (that splits a layer and mints a row); a carton moves whole, and the
      * commit-time check wants every row of it at the carton's location.
@@ -378,7 +349,7 @@ public final class StockItem extends AggregateRoot {
     /**
      * A whole carton is put on hold or condemned, or put away as sellable stock: the row changes status in
      * place, keeping its carton, so the carton is never split by a decision about its contents. Units still
-     * reserved would silently lose their hold, as in {@link #block}.
+     * reserved would silently lose their hold.
      *
      * <p>AVAILABLE is putaway's target and comes from INBOUND only: quarantined stock becomes sellable through
      * re-inspection, and a putaway task must not be a way around it.</p>
@@ -509,9 +480,6 @@ public final class StockItem extends AggregateRoot {
     }
 
     private void requireHoldable(Quantity quantity, Instant now, String holder) {
-        if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
-            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-        }
         if (!status.isReservable()) {
             throw new IllegalStateException(
                     "Stock in status %s cannot be reserved for %s".formatted(status, holder));
@@ -587,8 +555,7 @@ public final class StockItem extends AggregateRoot {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
                     "Reservation %s is already %s".formatted(reservationId, reservation.status()));
         }
-        if (!status.isReservable()
-                || expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
+        if (!status.isReservable()) {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
         }
         reservation.consume(now);
@@ -700,7 +667,7 @@ public final class StockItem extends AggregateRoot {
      */
     public void takeOverReservation(StockItem from, Reservation reservation) {
         if (!sku.equals(from.sku) || !Objects.equals(lotNumber, from.lotNumber)
-                || !Objects.equals(serialNumber, from.serialNumber) || !Objects.equals(expiryDate, from.expiryDate)) {
+                || !Objects.equals(serialNumber, from.serialNumber)) {
             throw new IllegalArgumentException(
                     "Stock item %s cannot take a hold of stock item %s: other goods".formatted(id, from.id));
         }
@@ -714,21 +681,20 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * An empty layer of {@code source}'s goods at {@code destination} in {@code status} — the same SKU, lot,
-     * expiry and receipt time — for {@link #takeOverReservation} to fill. Kept apart from {@link #arrivedAs},
+     * An empty layer of {@code source}'s goods at {@code destination} in {@code status} — the same SKU, lot
+     * and receipt time — for {@link #takeOverReservation} to fill. Kept apart from {@link #arrivedAs},
      * which arrives with unheld units.
      */
     public static StockItem emptyLayerOf(StockItem source, LocationId destination, StockStatus status) {
         if (source.location.equals(destination)) {
             throw new IllegalArgumentException("A move needs two different locations");
         }
-        return new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber, source.expiryDate,
-                Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L, source.receivedAt,
+        return new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber, Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L, source.receivedAt,
                 source.serialNumber, source.lotId);
     }
 
     /**
-     * An empty new layer beside {@code source} - same SKU, location, lot, lot id, expiry and status - received at
+     * An empty new layer beside {@code source} - same SKU, location, lot, lot id and status - received at
      * {@code receivedAt}, for units a correction found on top of {@code source} when the SKU is FIFO (SCRUM-164). A
      * FIFO layer is never raised (the policy trigger refuses it): loose units found have no provable receipt, so they
      * are as young as the day they were found rather than as old as the layer they were counted against. No serial
@@ -736,13 +702,12 @@ public final class StockItem extends AggregateRoot {
      */
     public static StockItem newLayerBeside(StockItem source, Instant receivedAt) {
         Objects.requireNonNull(receivedAt, "receivedAt");
-        return new StockItem(StockItemId.newId(), source.sku, source.location, source.lotNumber, source.expiryDate,
-                Quantity.ZERO, source.status, List.of(), 0L, receivedAt, null, source.lotId);
+        return new StockItem(StockItemId.newId(), source.sku, source.location, source.lotNumber, Quantity.ZERO, source.status, List.of(), 0L, receivedAt, null, source.lotId);
     }
 
     /**
-     * A new stock item at {@code destination} for units moved out of {@code source}: same SKU, lot,
-     * expiry and status. Status travels with the goods — moving quarantined stock to a bin does not
+     * A new stock item at {@code destination} for units moved out of {@code source}: same SKU, lot
+     * and status. Status travels with the goods — moving quarantined stock to a bin does not
      * make it sellable, only QC does (see {@link #receive}).
      */
     public static StockItem arrivedFrom(
@@ -756,7 +721,6 @@ public final class StockItem extends AggregateRoot {
                         source.sku,
                         destination,
                         source.lotNumber,
-                        source.expiryDate,
                         Quantity.ZERO,
                         source.status,
                         List.of(),
@@ -776,7 +740,7 @@ public final class StockItem extends AggregateRoot {
      */
     public static StockItem putBackBeside(StockItem source, LocationId bin, Quantity quantity) {
         StockItem back = new StockItem(StockItemId.newId(), source.sku, Objects.requireNonNull(bin, "bin"),
-                source.lotNumber, source.expiryDate, Quantity.ZERO, StockStatus.AVAILABLE, List.of(), 0L,
+                source.lotNumber, Quantity.ZERO, StockStatus.AVAILABLE, List.of(), 0L,
                 source.receivedAt, source.serialNumber, source.lotId);
         back.moveIn(quantity);
         return back;
@@ -793,7 +757,7 @@ public final class StockItem extends AggregateRoot {
             throw new IllegalArgumentException("A move needs two different locations");
         }
         StockItem arrived = new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber,
-                source.expiryDate, Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L,
+                Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L,
                 source.receivedAt, source.serialNumber, source.lotId);
         arrived.moveIn(quantity);
         return arrived;
@@ -810,16 +774,14 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Whether {@code other} is a layer of the same goods, whatever its status: SKU, lot number, expiry, receipt time
-     * and serial. One receipt may bring a lot number twice with two expiries (two {@code stock_lot} rows), so the lot
-     * number alone does not tell them apart.
+     * Whether {@code other} is a layer of the same goods, whatever its status: SKU, lot number, receipt time and
+     * serial, and never two lots.
      */
     public boolean isSameGoodsAs(StockItem other) {
         return sku.equals(other.sku)
                 && Objects.equals(lotNumber, other.lotNumber)
                 && Objects.equals(receivedAt, other.receivedAt)
                 && Objects.equals(serialNumber, other.serialNumber)
-                && Objects.equals(expiryDate, other.expiryDate)
                 // Two lots never merge into one layer; a layer the database has not tagged yet takes any.
                 && (lotId == null || other.lotId == null || lotId.equals(other.lotId));
     }
@@ -872,8 +834,8 @@ public final class StockItem extends AggregateRoot {
      * are reported damaged where they are taken ({@link #giveUpDamagedHeld} for a pick), so the hold's owner learns
      * of it in the same transaction instead of finding its promise gone.</p>
      *
-     * @throws BusinessException {@code STOCK_STATUS_MISMATCH} unless the row is AVAILABLE, {@code STOCK_EXPIRED}
-     *         past its expiry date, {@code DAMAGE_EXCEEDS_FREE_STOCK} beyond the free units
+     * @throws BusinessException {@code STOCK_STATUS_MISMATCH} unless the row is AVAILABLE,
+     *         {@code DAMAGE_EXCEEDS_FREE_STOCK} beyond the free units
      */
     public void giveUpDamaged(Quantity quantity, Instant now) {
         requireDamageable(now);
@@ -1023,7 +985,7 @@ public final class StockItem extends AggregateRoot {
         checkInvariants();
     }
 
-    /** AVAILABLE, unexpired stock is what can be found damaged; everything else has its own path. */
+    /** AVAILABLE stock is what can be found damaged; everything else has its own path. */
     private void requireDamageable(Instant now) {
         if (status != StockStatus.AVAILABLE) {
             throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, switch (status) {
@@ -1032,10 +994,6 @@ public final class StockItem extends AggregateRoot {
                 default -> "%s at %s is already %s; only AVAILABLE stock is reported damaged"
                         .formatted(sku, location, status);
             });
-        }
-        if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
-            throw new BusinessException(ErrorCode.STOCK_EXPIRED, ("%s at %s expired on %s; it is written off as "
-                    + "EXPIRED, not reported damaged").formatted(sku, location, expiryDate));
         }
     }
 
@@ -1076,10 +1034,6 @@ public final class StockItem extends AggregateRoot {
 
     public String lotNumber() {
         return lotNumber;
-    }
-
-    public LocalDate expiryDate() {
-        return expiryDate;
     }
 
     public Quantity onHand() {

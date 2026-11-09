@@ -5,6 +5,11 @@ public enum StockAdjustmentReason {
     DAMAGED,
     LOST,
     FOUND,
+    /**
+     * Legacy: stock past its expiry date. Cups and packaging have none (kltn-docs 01 BR-17, 20 BR-13), so nothing asks
+     * for it since team plan 5-1 and a request typed in with it is refused ({@code VALIDATION_FAILED}); kept because
+     * adjustments recorded before carry it.
+     */
     EXPIRED,
     DATA_CORRECTION,
     SCRAP,

@@ -119,7 +119,7 @@ class GoodsReceiptController {
     }
 
     @PutMapping("/{receiptId}/lines")
-    @Operation(summary = "Replace the count of a DRAFT receipt (tolerance BR-02, lot/expiry BR-03, RECEIVING areas)",
+    @Operation(summary = "Replace the count of a DRAFT receipt (tolerance BR-02, lot BR-03, RECEIVING areas)",
             description = """
                     The whole count each time. `quantity` is a line's total in base units. A line may carry \
                     `packages`, its labelled cartons (SCRUM-473): an entry with an `lpn` recounts that carton, one \
@@ -147,7 +147,7 @@ class GoodsReceiptController {
                                                           @Valid @RequestBody ReceiptLinesRequest request) {
         return ApiResponse.ok(mapper.toResponse(receipts.replaceLines(receiptId, request.lines().stream()
                 .map(l -> new GoodsReceipts.NewLine(l.purchaseOrderLineId(), l.quantity(), l.lotNumber(),
-                        l.expiryDate(), l.locationCode(), l.note(), l.unitOfMeasure(),
+                        l.locationCode(), l.note(), l.unitOfMeasure(),
                         l.packages() == null ? List.of() : l.packages().stream()
                                 .map(p -> new GoodsReceipts.NewPackage(p.lpn(), p.quantity())).toList(), l.sku()))
                 .toList())));

@@ -202,7 +202,7 @@ values (?,?,'Table',?,'DRAFT')
     void inventoryControlsRequireTheMatchingPermission() throws Exception {
         String path = "/api/v1/inventory/items/" + UUID.randomUUID() + "/policy";
         String body =
-                "{\"version\":0,\"reorderPoint\":5,\"removalStrategy\":\"FIFO\",\"trackingMode\":\"NONE\",\"expiryTracked\":false}";
+                "{\"version\":0,\"removalStrategy\":\"FIFO\",\"trackingMode\":\"NONE\"}";
         mvc.perform(put(path).contentType("application/json").content(body))
                 .andExpect(status().isUnauthorized());
         mvc.perform(

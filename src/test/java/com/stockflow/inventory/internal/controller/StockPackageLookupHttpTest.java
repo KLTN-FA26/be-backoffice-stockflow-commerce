@@ -107,7 +107,7 @@ class StockPackageLookupHttpTest {
                 "SELECT id FROM procurement.goods_receipt_lines WHERE receipt_id = ?", UUID.class, receiptId);
         lpns = jdbc.queryForList("select lpn from inventory.stock_package where goods_receipt_line_id = ? order by lpn",
                 String.class, receiptLineId);
-        inventory.receive(new ReceiveStockCommand(receiptLineId, new Sku(sku), null, null, RECEIVING, 2000, clerk,
+        inventory.receive(new ReceiveStockCommand(receiptLineId, new Sku(sku), null, RECEIVING, 2000, clerk,
                 Instant.parse("2026-01-02T00:00:00Z")));
     }
 

@@ -132,7 +132,7 @@ class SupplierInvoiceIntegrationTest {
         GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-" + lot, null), clerk);
         boolean tracked = sku.equals(TABLE);
         receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine(po, sku), quantity,
-                tracked ? lot : null, tracked ? LocalDate.now().plusYears(1) : null, "HCM-RCV01", null,
+                tracked ? lot : null, "HCM-RCV01", null,
                 ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(quantity))));
         return receipts.confirm(draft.id(), clerk);
     }

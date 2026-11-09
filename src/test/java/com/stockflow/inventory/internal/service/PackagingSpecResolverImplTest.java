@@ -48,8 +48,7 @@ class PackagingSpecResolverImplTest {
     }
 
     private static ItemRow row(boolean rotatable) {
-        return new ItemRow(ITEM, SKU.code(), 1, logistics(rotatable), new InventoryPolicy(null, null, null,
-                RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
+        return new ItemRow(ITEM, SKU.code(), 1, logistics(rotatable), new InventoryPolicy(RemovalStrategy.FEFO, TrackingMode.NONE));
     }
 
     private static UomConversion base() {

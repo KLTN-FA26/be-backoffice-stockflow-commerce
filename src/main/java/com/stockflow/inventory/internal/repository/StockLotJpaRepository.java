@@ -9,6 +9,6 @@ import java.util.UUID;
 /** Package-private Spring Data over {@code inventory.stock_lot}; the module uses {@code StockLots}. */
 interface StockLotJpaRepository extends JpaRepository<StockLotJpaEntity, UUID> {
 
-    /** Every lot one receipt opened for a SKU: a handful at most (one per lot number and expiry). */
+    /** Every lot one receipt opened for a SKU: a handful at most (one per lot number). */
     List<StockLotJpaEntity> findByGoodsReceiptIdAndSku(UUID goodsReceiptId, String sku);
 }

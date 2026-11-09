@@ -113,12 +113,11 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
             if (row == null) {
                 row = new GoodsReceiptLineJpaEntity(line.id(), line.poLineId(), line.inventoryItemId(),
                         line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.lotNumber(),
-                        line.expiryDate(), line.note(), line.uomConversionId());
+                        line.note(), line.uomConversionId());
                 entity.addLine(row);
             } else if (receipt.status() == GoodsReceiptStatus.DRAFT
                     || receipt.status() == GoodsReceiptStatus.PENDING_APPROVAL) {
-                row.recount(line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.expiryDate(),
-                        line.note(), line.uomConversionId());
+                row.recount(line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.note(), line.uomConversionId());
             }
         }
         entity.apply(receipt.status(), receipt.confirmedAt(), receipt.confirmedBy(), receipt.closedAt(),
@@ -230,7 +229,7 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
     static GoodsReceipt toDomain(GoodsReceiptJpaEntity e) {
         List<ReceiptLine> lines = e.getLines().stream().map(l -> new ReceiptLine(l.getId(), l.getPoLineId(),
                 l.getInventoryItemId(), l.getLocationId(), l.getReceivedQty().intValueExact(), l.getLotNumber(),
-                l.getExpiryDate(), l.getNote(), l.getUomConversionId())).toList();
+                l.getNote(), l.getUomConversionId())).toList();
         return new GoodsReceipt(e.getId(), e.getReceiptNumber(), e.getPurchaseOrderId(),
                 e.getPurchaseOrderRevisionId(), e.getWarehouseId(), e.getSupplierId(), e.getBlindReason(),
                 e.getReferencedPurchaseOrderId(), e.getReceivedAt(), e.getReceivedBy(),

@@ -5,7 +5,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.procurement.api.CreateSubcontractOrderCommand;
 import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
-import com.stockflow.support.AlertFixtures;
+import com.stockflow.support.StaffFixtures;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
@@ -49,13 +49,13 @@ class SubcontractWarehouseScopeIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
 
-    private AlertFixtures fixtures;
+    private StaffFixtures fixtures;
     private UUID hcm;
     private UUID requester;
 
     @BeforeEach
     void setUp() {
-        fixtures = new AlertFixtures(jdbc, tx, entityManager);
+        fixtures = new StaffFixtures(jdbc, tx, entityManager);
         hcm = fixtures.hcm();
         requester = tx.execute(s -> ReferenceRows.user(entityManager));
     }

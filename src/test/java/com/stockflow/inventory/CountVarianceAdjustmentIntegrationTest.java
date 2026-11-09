@@ -28,10 +28,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -66,8 +64,6 @@ class CountVarianceAdjustmentIntegrationTest {
 
     private String sku;
     private String lot;
-    /** What a carton's row expires on; null once {@link #fifo} turns expiry tracking off. */
-    private LocalDate cartonExpiry = LocalDate.now().plusYears(1);
     private UUID item;
     private UUID cartonUnit;
     private UUID clerk;
@@ -85,9 +81,10 @@ class CountVarianceAdjustmentIntegrationTest {
                     "Count fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Count fixture");
-            // FEFO, lot and expiry tracked: the loose split follows expiry, and a write-up is allowed (FIFO refuses
-            // raising an existing layer - "FIFO replenishment requires a new receipt layer").
-            jdbc.update("update inventory.inventory_items set lot_tracked=true, expiry_tracked=true,"
+            // Lot tracked, and a write-up allowed: a configured FIFO item refuses raising an existing layer ("FIFO
+            // replenishment requires a new receipt layer"), which fifo() switches on. The loose split is FIFO either way
+            // (CountVariance, kltn-docs 01 BR-17).
+            jdbc.update("update inventory.inventory_items set lot_tracked=true,"
                     + " removal_strategy='FEFO', policy_configured=true where sku=?", sku);
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             cartonUnit = Identifiers.newId();
@@ -98,19 +95,18 @@ class CountVarianceAdjustmentIntegrationTest {
 
     // ------------------------------------------------------------------ fixtures
 
-    /** The SKU becomes FIFO, before it holds stock: expiry tracking goes with FEFO (ck_inventory_control_removal). */
+    /** The SKU becomes a configured FIFO item, before it holds stock: an existing layer is never raised. */
     private void fifo() {
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set expiry_tracked=false,"
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set"
                 + " removal_strategy='FIFO' where sku=?", sku));
-        cartonExpiry = null;
     }
 
-    private UUID loose(Instant receivedAt, LocalDate expiry, int onHand) {
+    private UUID loose(Instant receivedAt, int onHand) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, expiry_date, received_at, on_hand,
-                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
-                id, sku, BIN, lot, expiry == null ? null : Date.valueOf(expiry), Timestamp.from(receivedAt), onHand));
+                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
+                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
+                id, sku, BIN, lot, Timestamp.from(receivedAt), onHand));
         return id;
     }
 
@@ -123,11 +119,10 @@ class CountVarianceAdjustmentIntegrationTest {
                         received_qty, location_code, status, unopened) values (?, ?, ?, ?, ?, ?, ?, 'IN_STOCK', ?)""",
                     id, "LPN-" + sku + "-" + name, item, cartonUnit, CARTON_FACTOR, quantity, BIN, unopened);
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, expiry_date, received_at,
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at,
                         on_hand, reserved, status, version, created_at, stock_package_id)
-                    values (?, ?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, BIN, lot, cartonExpiry == null ? null : Date.valueOf(cartonExpiry),
-                    Timestamp.from(EARLY), quantity, id);
+                    values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
+                    Identifiers.newId(), sku, BIN, lot, Timestamp.from(EARLY), quantity, id);
         });
         return id;
     }
@@ -224,7 +219,7 @@ class CountVarianceAdjustmentIntegrationTest {
     @Test
     @DisplayName("a typed-in request cannot claim a count variance: VALIDATION_FAILED, nothing written")
     void manualAdjustmentCannotClaimACountVariance() {
-        loose(EARLY, LocalDate.now().plusYears(1), 10);
+        loose(EARLY, 10);
 
         assertThatThrownBy(() -> operations.requestAdjustment(new RequestAdjustmentCommand(BIN, new Sku(sku), lot, -1,
                 StockAdjustmentReason.COUNT_VARIANCE, "x", clerk)))
@@ -235,10 +230,10 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     @Test
-    @DisplayName("a loose shortage is split in FEFO order, one adjustment per layer, and posts on approval")
-    void looseShortageSplitsFefoAndPostsOnApproval() {
-        UUID soon = loose(LATE, LocalDate.now().plusMonths(6), 2);
-        UUID later = loose(EARLY, LocalDate.now().plusYears(1), 10);
+    @DisplayName("a loose shortage is split in FIFO order, one adjustment per layer, and posts on approval")
+    void looseShortageSplitsFifoAndPostsOnApproval() {
+        UUID soon = loose(EARLY, 2);
+        UUID later = loose(LATE, 10);
         UUID line = countLine(null);
 
         List<StockAdjustmentSummary> asked = operations.requestCountVariance(line, looseSlot(), -5, clerk, "CC-1");
@@ -261,10 +256,10 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     @Test
-    @DisplayName("a loose shortage takes free units first: a FEFO-first layer held whole for a customer is left alone")
+    @DisplayName("a loose shortage takes free units first: a FIFO-first layer held whole for a customer is left alone")
     void looseShortageSparesAFullyHeldLayer() {
-        UUID soon = loose(LATE, LocalDate.now().plusMonths(6), 3);
-        UUID later = loose(EARLY, LocalDate.now().plusYears(1), 10);
+        UUID soon = loose(EARLY, 3);
+        UUID later = loose(LATE, 10);
         UUID hold = looseHold(confirmedOrder(), soon, 3);
         UUID line = countLine(null);
 
@@ -283,8 +278,8 @@ class CountVarianceAdjustmentIntegrationTest {
     @Test
     @DisplayName("a loose surplus lands on the newest layer")
     void looseSurplusOnTheNewestLayer() {
-        UUID older = loose(EARLY, LocalDate.now().plusMonths(6), 4);
-        UUID newer = loose(LATE, LocalDate.now().plusYears(1), 6);
+        UUID older = loose(EARLY, 4);
+        UUID newer = loose(LATE, 6);
         UUID line = countLine(null);
 
         List<StockAdjustmentSummary> asked = operations.requestCountVariance(line, looseSlot(), 3, clerk, null);
@@ -304,7 +299,7 @@ class CountVarianceAdjustmentIntegrationTest {
     @DisplayName("FIFO: a loose surplus opens a new layer received at approval; the counted layer is not raised")
     void fifoLooseSurplusOpensANewLayer() {
         fifo();
-        UUID old = loose(EARLY, null, 4);
+        UUID old = loose(EARLY, 4);
         UUID line = countLine(null);
 
         List<StockAdjustmentSummary> asked = operations.requestCountVariance(line, looseSlot(), 3, clerk, null);

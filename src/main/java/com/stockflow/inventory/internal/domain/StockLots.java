@@ -3,12 +3,11 @@ package com.stockflow.inventory.internal.domain;
 import com.stockflow.common.domain.Sku;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.UUID;
 
 /**
  * Port: the lots received goods belong to ({@code inventory.stock_lot}, SCRUM-142). A lot is one goods receipt's
- * units of one SKU, lot number and expiry — so a lot number reused by another receipt is another lot.
+ * units of one SKU and lot number — so a lot number reused by another receipt is another lot.
  */
 public interface StockLots {
 
@@ -30,7 +29,7 @@ public interface StockLots {
     }
 
     /** What a receipt knows about the goods it brings in, snapshotted onto the lot. */
-    record ReceiptLot(Sku sku, String lotNumber, LocalDate expiryDate, Instant receivedAt, UUID goodsReceiptId,
+    record ReceiptLot(Sku sku, String lotNumber, Instant receivedAt, UUID goodsReceiptId,
                       String goodsReceiptNumber, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
                       String supplierName, UUID warehouseId) {
     }

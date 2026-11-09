@@ -99,8 +99,7 @@ class PutawayTasksIntegrationTest {
         });
         GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-PUT", null), clerk);
         receipt = draft.id();
-        line = receipts.replaceLines(receipt, List.of(new GoodsReceipts.NewLine(poLine, 2000, null, null,
-                RECEIVING, null))).lines().getFirst().id();
+        line = receipts.replaceLines(receipt, List.of(new GoodsReceipts.NewLine(poLine, 2000, null, RECEIVING, null))).lines().getFirst().id();
         List<StockPackageView> counted = inventory.countReceivingPackages(new CountReceivingPackagesCommand(line,
                 new Sku(sku), cartonUnit, RECEIVING, List.of(PackageCount.fresh(), PackageCount.fresh()), clerk));
         carton = counted.get(0).id();

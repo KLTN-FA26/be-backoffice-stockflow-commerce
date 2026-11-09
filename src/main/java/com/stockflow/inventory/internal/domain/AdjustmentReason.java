@@ -12,6 +12,10 @@ public enum AdjustmentReason {
     DAMAGED,
     LOST,
     FOUND,
+    /**
+     * Legacy, read only: adjustments recorded before team plan 5-1 carry it. Stock no longer expires (kltn-docs 01
+     * BR-17), the request path refuses it and {@code tg_stock_adjustment_no_new_expired} refuses a new row with it.
+     */
     EXPIRED,
     DATA_CORRECTION,
     /** Blanks spoiled in printing or failed at QC (kltn-docs 19). Stock only goes down. */

@@ -2,7 +2,7 @@ package com.stockflow.identity.internal.service;
 
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.StaffContact;
-import com.stockflow.support.AlertFixtures;
+import com.stockflow.support.StaffFixtures;
 import com.stockflow.support.SecuredIntegrationTest;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,9 +32,9 @@ class NotificationRecipientsIntegrationTest {
     @Autowired EntityManager entityManager;
     @MockitoBean JwtDecoder decoder;
 
-    private AlertFixtures fixtures;
+    private StaffFixtures fixtures;
     private UUID hcm;
-    private AlertFixtures.Warehouse other;
+    private StaffFixtures.Warehouse other;
     private UUID planner;
     private UUID admin;
     private UUID managerHcm;
@@ -45,7 +45,7 @@ class NotificationRecipientsIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        fixtures = new AlertFixtures(jdbc, tx, entityManager);
+        fixtures = new StaffFixtures(jdbc, tx, entityManager);
         hcm = fixtures.hcm();
         other = fixtures.otherWarehouse();
         planner = fixtures.staff("INVENTORY_PLANNER");

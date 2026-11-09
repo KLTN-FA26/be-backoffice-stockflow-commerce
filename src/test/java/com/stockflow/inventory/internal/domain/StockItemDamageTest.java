@@ -8,7 +8,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -28,13 +27,13 @@ class StockItemDamageTest {
     private static final LocationId BIN = new LocationId("HCM-A01-1-A");
     private static final LocationId QUARANTINE = new LocationId("HCM-QC01");
 
-    private static StockItem row(StockStatus status, int onHand, LocalDate expiry) {
-        return new StockItem(StockItemId.newId(), SKU, BIN, "L1", expiry, Quantity.of(onHand), status, List.of(), 0L,
+    private static StockItem row(StockStatus status, int onHand) {
+        return new StockItem(StockItemId.newId(), SKU, BIN, "L1", Quantity.of(onHand), status, List.of(), 0L,
                 RECEIVED, null);
     }
 
     private static StockItem available(int onHand) {
-        return row(StockStatus.AVAILABLE, onHand, null);
+        return row(StockStatus.AVAILABLE, onHand);
     }
 
     private static ErrorCode refusal(ThrowableAssert.ThrowingCallable call) {
@@ -66,15 +65,13 @@ class StockItemDamageTest {
     }
 
     @Test
-    @DisplayName("only AVAILABLE, unexpired stock is found damaged; everything else has its own path")
-    void onlyAvailableUnexpiredStock() {
+    @DisplayName("only AVAILABLE stock is found damaged; everything else has its own path")
+    void onlyAvailableStock() {
         for (StockStatus status : List.of(StockStatus.DAMAGED, StockStatus.EXPIRED, StockStatus.QUARANTINE,
                 StockStatus.BLOCKED, StockStatus.INBOUND, StockStatus.IN_PRODUCTION)) {
-            assertThat(refusal(() -> row(status, 5, null).giveUpDamaged(Quantity.of(1), NOW))).as(status.name())
+            assertThat(refusal(() -> row(status, 5).giveUpDamaged(Quantity.of(1), NOW))).as(status.name())
                     .isEqualTo(ErrorCode.STOCK_STATUS_MISMATCH);
         }
-        StockItem expired = row(StockStatus.AVAILABLE, 5, LocalDate.of(2026, 10, 1));
-        assertThat(refusal(() -> expired.giveUpDamaged(Quantity.of(1), NOW))).isEqualTo(ErrorCode.STOCK_EXPIRED);
     }
 
     @Test
@@ -159,7 +156,7 @@ class StockItemDamageTest {
     @Test
     @DisplayName("a serial unit is one unit on its damaged row too")
     void serialUnit() {
-        StockItem unit = new StockItem(StockItemId.newId(), SKU, BIN, null, null, Quantity.of(1),
+        StockItem unit = new StockItem(StockItemId.newId(), SKU, BIN, null, Quantity.of(1),
                 StockStatus.AVAILABLE, List.of(), 0L, RECEIVED, "SN-0001");
         StockItem damaged = StockItem.emptyLayerOf(unit, QUARANTINE, StockStatus.DAMAGED);
 

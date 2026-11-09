@@ -1,13 +1,9 @@
 package com.stockflow.inventory.internal.domain;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.RemovalStrategy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -21,19 +17,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class StockAllocatorTest {
 
-    private static final LocalDate TODAY = LocalDate.of(2026, 11, 9);
     private static final Instant DAY_1 = Instant.parse("2026-10-01T00:00:00Z");
     private static final Instant DAY_2 = Instant.parse("2026-10-02T00:00:00Z");
     private static final Instant DAY_3 = Instant.parse("2026-10-03T00:00:00Z");
 
     /** A sealed carton of {@code units}, nothing of it held. */
     private static StockAllocator.Candidate carton(String location, Instant received, int units) {
-        return new StockAllocator.Candidate(StockItemId.newId(), new LocationId(location), "LOT-" + location, null,
-                StockStatus.AVAILABLE, Quantity.of(units), received, UUID.randomUUID(), true);
+        return new StockAllocator.Candidate(StockItemId.newId(), new LocationId(location), "LOT-" + location, StockStatus.AVAILABLE, Quantity.of(units), received, UUID.randomUUID(), true);
     }
 
     private static StockAllocator.Plan plan(List<StockAllocator.Candidate> pool, int units) {
-        return StockAllocator.plan("CUP-PET-500", pool, Quantity.of(units), RemovalStrategy.FIFO, TODAY);
+        return StockAllocator.plan("CUP-PET-500", pool, Quantity.of(units));
     }
 
     @Test
@@ -73,10 +67,8 @@ class StockAllocatorTest {
     @Test
     @DisplayName("loose units, an opened carton and a carton another order holds part of are never drawn on")
     void onlySealedUnheldCartons() {
-        var loose = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-01"), "L", null,
-                StockStatus.AVAILABLE, Quantity.of(5000), DAY_1);
-        var partOfACarton = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-02"), "L", null,
-                StockStatus.AVAILABLE, Quantity.of(400), DAY_1, UUID.randomUUID(), false);
+        var loose = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-01"), "L", StockStatus.AVAILABLE, Quantity.of(5000), DAY_1);
+        var partOfACarton = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-02"), "L", StockStatus.AVAILABLE, Quantity.of(400), DAY_1, UUID.randomUUID(), false);
         var whole = carton("HCM-A-03", DAY_3, 1000);
 
         StockAllocator.Plan plan = plan(List.of(loose, partOfACarton, whole), 2000);
@@ -98,44 +90,40 @@ class StockAllocatorTest {
     }
 
     @Test
-    @DisplayName("blocked, quarantined, expired and empty cartons are not stock to give")
+    @DisplayName("quarantined and empty cartons are not stock to give")
     void unusableCartonsAreSkipped() {
-        var quarantined = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-QC-01"), "L", null,
-                StockStatus.QUARANTINE, Quantity.of(10), DAY_1, UUID.randomUUID(), true);
-        var expired = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-01"), "L",
-                TODAY.minusDays(1), StockStatus.AVAILABLE, Quantity.of(10), DAY_1, UUID.randomUUID(), true);
-        var empty = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-02"), "L", null,
-                StockStatus.AVAILABLE, Quantity.of(0), DAY_1, UUID.randomUUID(), true);
+        var quarantined = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-QC-01"), "L", StockStatus.QUARANTINE, Quantity.of(10), DAY_1, UUID.randomUUID(), true);
+        var empty = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-02"), "L", StockStatus.AVAILABLE, Quantity.of(0), DAY_1, UUID.randomUUID(), true);
         var good = carton("HCM-A-03", DAY_2, 10);
 
-        StockAllocator.Plan plan = plan(List.of(quarantined, expired, empty, good), 20);
+        StockAllocator.Plan plan = plan(List.of(quarantined, empty, good), 20);
 
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(good.stockItemId());
     }
 
     @Test
-    @DisplayName("a FEFO SKU gives the carton that expires first, then the one received first")
-    void fefoWhereThePolicySaysSo() {
-        var later = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-01"), "L1",
-                TODAY.plusDays(60), StockStatus.AVAILABLE, Quantity.of(10), DAY_1, UUID.randomUUID(), true);
-        var sooner = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-02"), "L2",
-                TODAY.plusDays(30), StockStatus.AVAILABLE, Quantity.of(10), DAY_3, UUID.randomUUID(), true);
+    @DisplayName("FIFO for every SKU: no expiry orders cartons (kltn-docs 01 BR-17), the receipt time does")
+    void fifoForEverySku() {
+        var older = carton("HCM-A-02", DAY_1, 10);
+        var newer = carton("HCM-A-01", DAY_3, 10);
 
-        StockAllocator.Plan plan = StockAllocator.plan("INK", List.of(later, sooner), Quantity.of(10),
-                RemovalStrategy.FEFO, TODAY);
+        StockAllocator.Plan plan = StockAllocator.plan("INK", List.of(newer, older), Quantity.of(10));
 
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId)
-                .containsExactly(sooner.stockItemId());
+                .containsExactly(older.stockItemId());
     }
 
     @Test
-    @DisplayName("a FIFO SKU with a carton of no receipt time cannot be ordered: INVENTORY_POLICY_STOCK_CONFLICT")
-    void fifoNeedsReceiptTimes() {
+    @DisplayName("a carton of no receipt time goes after every timed one; it is still given when nothing else is left")
+    void undatedCartonsGoLast() {
         var undated = carton("HCM-A-01", null, 10);
+        var dated = carton("HCM-Z-01", DAY_3, 10);
 
-        assertThatThrownBy(() -> plan(List.of(undated), 10)).isInstanceOfSatisfying(BusinessException.class,
-                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT));
+        assertThat(plan(List.of(undated, dated), 10).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
+                .containsExactly(dated.stockItemId());
+        assertThat(plan(List.of(undated, dated), 20).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
+                .containsExactly(dated.stockItemId(), undated.stockItemId());
     }
 
     @Test
@@ -154,7 +142,7 @@ class StockAllocatorTest {
     @DisplayName("only a row in a carton can be a whole carton")
     void wholeCartonNeedsACarton() {
         assertThatThrownBy(() -> new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-01"), "L",
-                null, StockStatus.AVAILABLE, Quantity.of(1), DAY_1, null, true))
+                StockStatus.AVAILABLE, Quantity.of(1), DAY_1, null, true))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

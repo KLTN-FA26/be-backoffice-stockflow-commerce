@@ -543,8 +543,7 @@ public class ReturnRequestService {
     /**
      * What arrived for a line, as its SKU's inventory policy takes it: a SKU that is not a stock item of ours cannot
      * become stock (it is recorded as an unexpected item instead); a lot-tracked SKU needs the lot read off the goods,
-     * and an untracked one keeps none (the stock policy refuses either otherwise). Returns of expiry-tracked SKUs are
-     * not taken here: their expiry date is not known from the parcel (a goods receipt counts them).
+     * and an untracked one keeps none (the stock policy refuses either otherwise).
      */
     private ReturnRequest.Receipt withLotPolicy(ReturnRequest request, ReturnRequest.Receipt receipt) {
         String code = receipt.sku() == null || receipt.sku().isBlank()
@@ -563,10 +562,6 @@ public class ReturnRequestService {
         var item = inventory.itemPolicy(sku).orElseThrow(() -> new BusinessException(
                 ErrorCode.RETURN_QUANTITIES_INVALID,
                 "%s is not one of our stock items: record it as an unexpected item".formatted(code)));
-        if (item.expiryTracked()) {
-            throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                    "%s is expiry-tracked: count it in through a goods receipt with its expiry date".formatted(code));
-        }
         boolean lotGiven = receipt.lotNumber() != null && !receipt.lotNumber().isBlank();
         if (item.lotTracked() && !lotGiven) {
             throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,

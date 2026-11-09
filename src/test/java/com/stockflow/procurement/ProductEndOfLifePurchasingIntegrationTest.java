@@ -166,7 +166,7 @@ class ProductEndOfLifePurchasingIntegrationTest {
         int factor = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?", Integer.class,
                 unit);
         var draft = receipts.create(new GoodsReceipts.Create(po, "DN-EL", null), editor);
-        receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(lineOf(po), quantity, null, null, "HCM-RCV01",
+        receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(lineOf(po), quantity, null, "HCM-RCV01",
                 null, code, ReceiptCartons.of(quantity / factor, factor))));
         assertThat(receipts.confirm(draft.id(), editor).lines()).singleElement()
                 .satisfies(l -> assertThat(l.quantity()).isEqualTo(quantity));

@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.contracts.SkuInventoryControlChanged;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.RemovalStrategy;
@@ -19,20 +18,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 
 import java.math.BigDecimal;
-import java.time.Clock;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-import static com.stockflow.inventory.internal.service.InventoryFixtures.NOW;
-import static com.stockflow.inventory.internal.service.InventoryFixtures.TODAY;
 import static com.stockflow.inventory.internal.service.InventoryFixtures.codeOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -53,25 +47,22 @@ class InventoryItemsImplTest {
     private final InventoryPolicyRepository policies = mock(InventoryPolicyRepository.class);
     private final InventoryItemSearch search = mock(InventoryItemSearch.class);
     private final CurrentUserProvider users = mock(CurrentUserProvider.class);
-    private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     @SuppressWarnings("unchecked")
     private final ObjectProvider<SkuRetirement> retirement = mock(ObjectProvider.class);
     private final SkuRetirement retired = mock(SkuRetirement.class);
-    private final InventoryItemsImpl service = new InventoryItemsImpl(policies, search,
-            Clock.fixed(NOW, ZoneOffset.UTC), users, events, retirement);
+    private final InventoryItemsImpl service = new InventoryItemsImpl(policies, search, users, retirement);
 
     private static ItemLogistics logistics(String unit, String barcode) {
         return new ItemLogistics(unit, barcode, BigDecimal.ONE, null, null, null, null, null, null, null, 1, 1,
                 StorageClass.NORMAL, false, null);
     }
 
-    private static InventoryPolicy policy(Integer reorder, Integer safety, Integer max, RemovalStrategy strategy,
-                                          TrackingMode tracking, boolean expiry, Integer shelfLife) {
-        return new InventoryPolicy(reorder, safety, max, strategy, tracking, expiry, shelfLife);
+    private static InventoryPolicy policy(RemovalStrategy strategy, TrackingMode tracking) {
+        return new InventoryPolicy(strategy, tracking);
     }
 
     private static final InventoryPolicy CURRENT_POLICY =
-            policy(20, 5, 100, RemovalStrategy.FEFO, TrackingMode.LOT, false, null);
+            policy(RemovalStrategy.FEFO, TrackingMode.LOT);
 
     private ItemRow row(long version, String unit) {
         return new ItemRow(ID, SKU, version, logistics(unit, null), CURRENT_POLICY);
@@ -92,35 +83,21 @@ class InventoryItemsImplTest {
     class Reading {
 
         @Test
+        @DisplayName("the detail has the logistics and the policy, and no thresholds (kltn-docs 20 BR-13)")
+        void detail() {
+            var detail = service.get(ID);
+
+            assertThat(detail.policy()).isEqualTo(CURRENT_POLICY);
+            assertThat(detail.logistics().unitOfMeasure()).isEqualTo("PCS");
+        }
+
+        @Test
         @DisplayName("an unknown item is INVENTORY_ITEM_NOT_FOUND")
         void unknown() {
             UUID other = UUID.randomUUID();
             when(policies.findById(other)).thenReturn(Optional.empty());
 
             assertThat(codeOf(() -> service.get(other))).isEqualTo(ErrorCode.INVENTORY_ITEM_NOT_FOUND);
-        }
-
-        @Test
-        @DisplayName("the detail evaluates the thresholds against today's usable on-hand: reorder needed at or under the point")
-        void detailEvaluatesThresholds() {
-            when(policies.usableOnHand(SKU, TODAY)).thenReturn(20L);
-
-            var evaluation = service.get(ID).evaluation();
-
-            assertThat(evaluation.usableOnHand()).isEqualTo(20L);
-            assertThat(evaluation.reorderRequired()).isTrue();
-            assertThat(evaluation.belowSafetyStock()).isFalse();
-        }
-
-        @Test
-        @DisplayName("below the safety stock is flagged on its own")
-        void belowSafety() {
-            when(policies.usableOnHand(SKU, TODAY)).thenReturn(4L);
-
-            var evaluation = service.get(ID).evaluation();
-
-            assertThat(evaluation.reorderRequired()).isTrue();
-            assertThat(evaluation.belowSafetyStock()).isTrue();
         }
 
         @Test
@@ -244,38 +221,6 @@ class InventoryItemsImplTest {
     class Configuring {
 
         @Test
-        @DisplayName("the reorder point cannot be under the safety stock")
-        void safetyAboveReorder() {
-            assertThat(codeOf(() -> service.configure(ID, 3,
-                    policy(5, 20, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null))))
-                    .isEqualTo(ErrorCode.INVENTORY_POLICY_INVALID);
-            verify(policies, never()).lock(anyString());
-        }
-
-        @Test
-        @DisplayName("an order-up-to level under a threshold is refused, naming its own field")
-        void maxBelowThreshold() {
-            var thrown = org.assertj.core.api.Assertions.catchThrowableOfType(
-                    com.stockflow.common.error.BusinessException.class,
-                    () -> service.configure(ID, 3, policy(20, 5, 10, RemovalStrategy.FEFO, TrackingMode.NONE, false,
-                            null)));
-
-            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.INVENTORY_POLICY_INVALID);
-            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("maxQty");
-        }
-
-        @Test
-        @DisplayName("expiry tracking needs a lot-tracked item removed first-expired-first-out")
-        void expiryNeedsLotAndFefo() {
-            assertThat(codeOf(() -> service.configure(ID, 3,
-                    policy(null, null, null, RemovalStrategy.FIFO, TrackingMode.LOT, true, null))))
-                    .isEqualTo(ErrorCode.INVENTORY_POLICY_INVALID);
-            assertThat(codeOf(() -> service.configure(ID, 3,
-                    policy(null, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, true, null))))
-                    .isEqualTo(ErrorCode.INVENTORY_POLICY_INVALID);
-        }
-
-        @Test
         @DisplayName("a retired SKU is VARIANT_OBSOLETE")
         void retiredSku() {
             when(retired.retired(SKU)).thenReturn(true);
@@ -284,10 +229,10 @@ class InventoryItemsImplTest {
         }
 
         @Test
-        @DisplayName("a stale version is OPTIMISTIC_LOCK and nothing is published")
+        @DisplayName("a stale version is OPTIMISTIC_LOCK and nothing is saved")
         void staleVersion() {
             assertThat(codeOf(() -> service.configure(ID, 1, CURRENT_POLICY))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
-            verify(events, never()).publishEvent(any(Object.class));
+            verify(policies, never()).save(anyString(), anyLong(), any(), anyString());
         }
 
         @Test
@@ -296,18 +241,8 @@ class InventoryItemsImplTest {
             when(policies.hasActiveCount(SKU)).thenReturn(true);
 
             assertThat(codeOf(() -> service.configure(ID, 3,
-                    policy(20, 5, 100, RemovalStrategy.FIFO, TrackingMode.LOT, false, null))))
+                    policy(RemovalStrategy.FIFO, TrackingMode.LOT))))
                     .isEqualTo(ErrorCode.COUNT_POLICY_CONFLICT);
-        }
-
-        @Test
-        @DisplayName("changing only thresholds during a count is allowed: they do not move stock")
-        void thresholdChangeDuringCountIsAllowed() {
-            when(policies.hasActiveCount(SKU)).thenReturn(true);
-
-            service.configure(ID, 3, policy(30, 5, 100, RemovalStrategy.FEFO, TrackingMode.LOT, false, null));
-
-            verify(policies).save(eq(SKU), eq(3L), any(), eq("system"));
         }
 
         @Test
@@ -316,7 +251,7 @@ class InventoryItemsImplTest {
             when(policies.incompatible(eq(SKU), any())).thenReturn(true);
 
             assertThat(codeOf(() -> service.configure(ID, 3,
-                    policy(20, 5, 100, RemovalStrategy.FEFO, TrackingMode.SERIAL, false, null))))
+                    policy(RemovalStrategy.FEFO, TrackingMode.SERIAL))))
                     .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
             verify(policies, never()).save(anyString(), anyLong(), any(), anyString());
         }
@@ -327,17 +262,7 @@ class InventoryItemsImplTest {
             when(policies.save(anyString(), anyLong(), any(), anyString())).thenReturn(false);
 
             assertThat(codeOf(() -> service.configure(ID, 3, CURRENT_POLICY))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
-            verify(events, never()).publishEvent(any(Object.class));
         }
 
-        @Test
-        @DisplayName("a saved policy publishes the control change with the NEW revision, so alerts are re-evaluated")
-        void publishesNewRevision() {
-            service.configure(ID, 3, policy(30, 5, 100, RemovalStrategy.FEFO, TrackingMode.LOT, false, null));
-
-            ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
-            verify(events).publishEvent(published.capture());
-            assertThat(published.getValue()).isEqualTo(new SkuInventoryControlChanged(SKU, 4L, NOW));
-        }
     }
 }

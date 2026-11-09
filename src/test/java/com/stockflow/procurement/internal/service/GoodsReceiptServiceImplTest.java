@@ -6,7 +6,6 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.GoodsReceiptConfirmed;
 import com.stockflow.contracts.ReceiptStockReadyForPutaway;
 import com.stockflow.identity.api.IdentityService;
-import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReceiveStockCommand;
@@ -69,7 +68,6 @@ class GoodsReceiptServiceImplTest {
 
     // 03:00Z = 10:00 in Saigon, 2026-10-22
     private static final Instant NOW = Instant.parse("2026-10-22T03:00:00Z");
-    private static final LocalDate TODAY = LocalDate.of(2026, 10, 22);
 
     private final GoodsReceiptRepository receipts = mock(GoodsReceiptRepository.class);
     private final GoodsReceiptSearch search = mock(GoodsReceiptSearch.class);
@@ -78,7 +76,6 @@ class GoodsReceiptServiceImplTest {
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final IdentityService identity = mock(IdentityService.class);
-    private final InventoryControlService inventoryControl = mock(InventoryControlService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final UomConversionService units = mock(UomConversionService.class);
     private final CurrentUserProvider users = mock(CurrentUserProvider.class);
@@ -103,11 +100,11 @@ class GoodsReceiptServiceImplTest {
 
     private GoodsReceiptServiceImpl service(Instant now) {
         return new GoodsReceiptServiceImpl(receipts, search, orders, locations, inventory, warehouses, identity,
-                inventoryControl, units, users, events, Clock.fixed(now, ZoneOffset.UTC));
+                units, users, events, Clock.fixed(now, ZoneOffset.UTC));
     }
 
     private InventoryItemPolicy plainItem() {
-        return new InventoryItemPolicy(itemId, "CUP-01", false, false);
+        return new InventoryItemPolicy(itemId, "CUP-01", false);
     }
 
     @BeforeEach
@@ -120,7 +117,6 @@ class GoodsReceiptServiceImplTest {
         when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, plainItem()));
         when(inventory.receiptLinesWithStockPackages(anyCollection())).thenReturn(Set.of());
         when(identity.displayNames(anyCollection())).thenAnswer(call -> new java.util.HashMap<UUID, String>());
-        when(inventoryControl.expiryWarningDays()).thenReturn(30);
         when(search.orderLabels(anyCollection())).thenAnswer(call -> new java.util.HashMap<UUID, GoodsReceiptSearch.OrderLabel>());
         when(warehouses.findWarehouse(warehouse))
                 .thenReturn(Optional.of(new WarehouseView(warehouse, "HCM", "Kho HCM", "HCM", true)));
@@ -156,11 +152,11 @@ class GoodsReceiptServiceImplTest {
     }
 
     private ReceiptLine counted(int qty) {
-        return ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), qty, null, null, null, null);
+        return ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), qty, null, null, null);
     }
 
     private NewLine newLine(int qty) {
-        return new NewLine(poLineId, qty, null, null, "HCM-RCV-01", null);
+        return new NewLine(poLineId, qty, null, "HCM-RCV-01", null);
     }
 
     private static ErrorCode code(Runnable call) {
@@ -288,7 +284,7 @@ class GoodsReceiptServiceImplTest {
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft();
             BusinessException e = thrown(() -> service.replaceLines(receipt.id(),
-                    List.of(new NewLine(UUID.randomUUID(), 1, null, null, "HCM-RCV-01", null))));
+                    List.of(new NewLine(UUID.randomUUID(), 1, null, "HCM-RCV-01", null))));
             assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_ON_PO);
             assertThat(e.fieldErrors()).extracting(FieldError::field).containsExactly("lines[0].purchaseOrderLineId");
         }
@@ -314,15 +310,15 @@ class GoodsReceiptServiceImplTest {
             when(locations.byCode("NOPE")).thenReturn(Optional.empty());
 
             assertThat(code(() -> service.replaceLines(receipt.id(),
-                    List.of(new NewLine(poLineId, 1, null, null, "nope", null))))).isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
+                    List.of(new NewLine(poLineId, 1, null, "nope", null))))).isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
             assertThat(code(() -> service.replaceLines(receipt.id(),
-                    List.of(new NewLine(poLineId, 1, null, null, "HN-RCV-01", null)))))
+                    List.of(new NewLine(poLineId, 1, null, "HN-RCV-01", null)))))
                     .isEqualTo(ErrorCode.LOCATION_AREA_MISMATCH);
             assertThat(code(() -> service.replaceLines(receipt.id(),
-                    List.of(new NewLine(poLineId, 1, null, null, "HCM-QC-01", null)))))
+                    List.of(new NewLine(poLineId, 1, null, "HCM-QC-01", null)))))
                     .isEqualTo(ErrorCode.LOCATION_AREA_MISMATCH);
             assertThat(code(() -> service.replaceLines(receipt.id(),
-                    List.of(new NewLine(poLineId, 1, null, null, null, null))))).isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
+                    List.of(new NewLine(poLineId, 1, null, null, null))))).isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
         }
 
         @Test
@@ -331,19 +327,14 @@ class GoodsReceiptServiceImplTest {
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft();
             ReceiptView view = service.replaceLines(receipt.id(),
-                    List.of(new NewLine(poLineId, 3, null, null, "  hcm-rcv-01 ", null)));
+                    List.of(new NewLine(poLineId, 3, null, "  hcm-rcv-01 ", null)));
             assertThat(view.lines().get(0).locationCode()).isEqualTo("HCM-RCV-01");
         }
 
-        // ---- BR-03 / BR-06: lot and expiry
+        // ---- BR-03: lot (a receipt records no expiry, 03 BR-06)
 
-        private void tracked(boolean lot, boolean expiry) {
-            trackedWithMaxShelfLife(lot, expiry, null);
-        }
-
-        private void trackedWithMaxShelfLife(boolean lot, boolean expiry, Integer maxShelfLifeDays) {
-            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", lot, expiry,
-                    maxShelfLifeDays);
+        private void tracked(boolean lot) {
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", lot);
             when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
             when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
         }
@@ -359,99 +350,30 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("BR-03: a lot-tracked item needs a lot number; an untracked one refuses one")
         void lotRules() {
-            tracked(true, false);
+            tracked(true);
             assertThat(fieldCodes(newLine(1))).containsExactly("LOT_REQUIRED");
-            tracked(false, false);
-            assertThat(fieldCodes(new NewLine(poLineId, 1, "L1", null, "HCM-RCV-01", null)))
+            tracked(false);
+            assertThat(fieldCodes(new NewLine(poLineId, 1, "L1", "HCM-RCV-01", null)))
                     .containsExactly("LOT_NOT_ALLOWED");
-        }
-
-        @Test
-        @DisplayName("BR-03: an expiry-tracked item needs an expiry date; an untracked one refuses one")
-        void expiryRules() {
-            tracked(false, true);
-            assertThat(fieldCodes(newLine(1))).containsExactly("EXPIRY_REQUIRED");
-            tracked(false, false);
-            assertThat(fieldCodes(new NewLine(poLineId, 1, null, TODAY.plusDays(90), "HCM-RCV-01", null)))
-                    .containsExactly("EXPIRY_NOT_ALLOWED");
-        }
-
-        @Test
-        @DisplayName("BR-RCP-004: an expiry date up to receiving day + maximum shelf life is accepted, one day more is refused "
-                + "on that line with the latest allowed date in the message")
-        void expiryWithinMaxShelfLife() {
-            trackedWithMaxShelfLife(true, true, 30);
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt ok = draft();
-            ReceiptView view = service.replaceLines(ok.id(),
-                    List.of(new NewLine(poLineId, 1, "L1", TODAY.plusDays(30), "HCM-RCV-01", null)));
-            assertThat(view.lines()).hasSize(1);
-
-            GoodsReceipt receipt = draft();
-            BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
-                    new NewLine(poLineId, 1, "L1", TODAY.plusDays(10), "HCM-RCV-01", null),
-                    new NewLine(poLineId, 1, "L2", TODAY.plusDays(31), "HCM-RCV-01", null))));
-            assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
-            assertThat(e.fieldErrors()).hasSize(1);
-            FieldError error = e.fieldErrors().get(0);
-            assertThat(error.field()).isEqualTo("lines[1].expiryDate");
-            assertThat(error.code()).isEqualTo("EXPIRY_EXCEEDS_MAX_SHELF_LIFE");
-            assertThat(error.message()).contains(TODAY.plusDays(30).toString());
-        }
-
-        @Test
-        @DisplayName("BR-RCP-004: with no maximum shelf life configured the expiry date has no upper bound")
-        void noMaxShelfLifeNoUpperBound() {
-            trackedWithMaxShelfLife(true, true, null);
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft();
-            ReceiptView view = service.replaceLines(receipt.id(),
-                    List.of(new NewLine(poLineId, 1, "L1", TODAY.plusYears(50), "HCM-RCV-01", null)));
-            assertThat(view.lines()).hasSize(1);
-        }
-
-        @Test
-        @DisplayName("BR-RCP-004: an expiry date not after the receiving day stays EXPIRY_NOT_AFTER_RECEIPT whatever the maximum")
-        void lowerBoundUnchangedWithMax() {
-            trackedWithMaxShelfLife(true, true, 30);
-            assertThat(fieldCodes(new NewLine(poLineId, 1, "L1", TODAY.minusDays(1), "HCM-RCV-01", null)))
-                    .containsExactly("EXPIRY_NOT_AFTER_RECEIPT");
-        }
-
-        @Test
-        @DisplayName("BR-06: an expiry date must be after the receiving day (Saigon): today and yesterday are refused, "
-                + "tomorrow is fine")
-        void expiryAfterReceiving() {
-            tracked(true, true);
-            assertThat(fieldCodes(new NewLine(poLineId, 1, "L1", TODAY, "HCM-RCV-01", null)))
-                    .containsExactly("EXPIRY_NOT_AFTER_RECEIPT");
-            assertThat(fieldCodes(new NewLine(poLineId, 1, "L1", TODAY.minusDays(1), "HCM-RCV-01", null)))
-                    .containsExactly("EXPIRY_NOT_AFTER_RECEIPT");
-
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft();
-            ReceiptView view = service.replaceLines(receipt.id(),
-                    List.of(new NewLine(poLineId, 1, "L1", TODAY.plusDays(1), "HCM-RCV-01", null)));
-            assertThat(view.lines().get(0).lotNumber()).isEqualTo("L1");
         }
 
         @Test
         @DisplayName("a lot number that is blank counts as none")
         void blankLotIsNone() {
-            tracked(true, false);
-            assertThat(fieldCodes(new NewLine(poLineId, 1, "   ", null, "HCM-RCV-01", null)))
+            tracked(true);
+            assertThat(fieldCodes(new NewLine(poLineId, 1, "   ", "HCM-RCV-01", null)))
                     .containsExactly("LOT_REQUIRED");
         }
 
         @Test
         @DisplayName("the same PO line and lot twice in one count is DUPLICATE_RECEIPT_LINE")
         void duplicateLot() {
-            tracked(true, false);
+            tracked(true);
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft();
             BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
-                    new NewLine(poLineId, 1, "L1", null, "HCM-RCV-01", null),
-                    new NewLine(poLineId, 2, "L1", null, "HCM-RCV-01", null))));
+                    new NewLine(poLineId, 1, "L1", "HCM-RCV-01", null),
+                    new NewLine(poLineId, 2, "L1", "HCM-RCV-01", null))));
             assertThat(e.errorCode()).isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
             assertThat(e.fieldErrors()).extracting(FieldError::field).containsExactly("lines[1].lotNumber");
         }
@@ -459,28 +381,28 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("two lots of the same PO line are two lines")
         void twoLotsAreFine() {
-            tracked(true, false);
+            tracked(true);
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft();
             ReceiptView view = service.replaceLines(receipt.id(), List.of(
-                    new NewLine(poLineId, 1, "L1", null, "HCM-RCV-01", null),
-                    new NewLine(poLineId, 2, "L2", null, "HCM-RCV-01", null)));
+                    new NewLine(poLineId, 1, "L1", "HCM-RCV-01", null),
+                    new NewLine(poLineId, 2, "L2", "HCM-RCV-01", null)));
             assertThat(view.lines()).hasSize(2);
         }
 
         @Test
         @DisplayName("every refusal of a count is reported at once; the code is the first line's, and the message counts the rest")
         void reportsEveryLineAtOnce() {
-            tracked(true, true);
+            tracked(true);
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft();
             BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
-                    new NewLine(poLineId, 1, null, null, "HCM-RCV-01", null),
-                    new NewLine(UUID.randomUUID(), 1, null, null, "HCM-RCV-01", null))));
+                    new NewLine(poLineId, 1, null, "HCM-RCV-01", null),
+                    new NewLine(UUID.randomUUID(), 1, null, "HCM-RCV-01", null))));
             assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
             assertThat(e.fieldErrors()).extracting(FieldError::field)
-                    .containsExactly("lines[0].lotNumber", "lines[0].expiryDate", "lines[1].purchaseOrderLineId");
-            assertThat(e.getMessage()).startsWith("Receipt line 1:").endsWith("(and 2 more)");
+                    .containsExactly("lines[0].lotNumber", "lines[1].purchaseOrderLineId");
+            assertThat(e.getMessage()).startsWith("Receipt line 1:").endsWith("(and 1 more)");
         }
 
         // ---- BR-02 tolerance: flagged on the count, decided by the manager at confirmation (SCRUM-477)
@@ -530,12 +452,12 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("BR-02: two lots of one PO line are summed against the limit, and both lines are flagged")
         void toleranceSumsLots() {
-            tracked(true, false);
+            tracked(true);
             po(Status.CONFIRMED, "10", null, false);
             GoodsReceipt receipt = draft();
             ReceiptView view = service.replaceLines(receipt.id(), List.of(
-                    new NewLine(poLineId, 6, "L1", null, "HCM-RCV-01", null),
-                    new NewLine(poLineId, 6, "L2", null, "HCM-RCV-01", null)));
+                    new NewLine(poLineId, 6, "L1", "HCM-RCV-01", null),
+                    new NewLine(poLineId, 6, "L2", "HCM-RCV-01", null)));
             assertThat(view.lines()).extracting(l -> l.warnings()).containsExactly(
                     List.of(GoodsReceipts.OVER_TOLERANCE), List.of(GoodsReceipts.OVER_TOLERANCE));
         }
@@ -709,10 +631,10 @@ class GoodsReceiptServiceImplTest {
             ReceiptLine[] lines = new ReceiptLine[quantities.length];
             for (int i = 0; i < quantities.length; i++) {
                 lines[i] = ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), quantities[i],
-                        quantities.length == 1 ? null : "L" + i, null, null, null);
+                        quantities.length == 1 ? null : "L" + i, null, null);
             }
             if (quantities.length > 1) {
-                InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, false);
+                InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true);
                 when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
                 when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
             }
@@ -970,7 +892,7 @@ class GoodsReceiptServiceImplTest {
         }
 
         private ReceiptLine item(int qty) {
-            return ReceiptLine.counted(UUID.randomUUID(), null, itemId, receivingBin.id(), qty, null, null, null, null);
+            return ReceiptLine.counted(UUID.randomUUID(), null, itemId, receivingBin.id(), qty, null, null, null);
         }
 
         private GoodsReceipts.CreateWithoutPo create(String reason) {
@@ -1017,7 +939,7 @@ class GoodsReceiptServiceImplTest {
             GoodsReceipt receipt = blind();
 
             ReceiptView view = service.replaceLines(receipt.id(), List.of(
-                    new NewLine(null, 7, null, null, "HCM-RCV-01", "gift", null, null, " cup-01 ")));
+                    new NewLine(null, 7, null, "HCM-RCV-01", "gift", null, null, " cup-01 ")));
 
             assertThat(view.lines()).hasSize(1);
             assertThat(view.lines().get(0).sku()).isEqualTo("CUP-01");
@@ -1026,7 +948,7 @@ class GoodsReceiptServiceImplTest {
             assertThat(view.warnings()).isEmpty();
 
             BusinessException wrongArea = thrown(() -> service.replaceLines(receipt.id(), List.of(
-                    new NewLine(null, 7, null, null, "HCM-QC-01", null, null, null, "CUP-01"))));
+                    new NewLine(null, 7, null, "HCM-QC-01", null, null, null, "CUP-01"))));
             assertThat(wrongArea.fieldErrors()).extracting(FieldError::field).containsExactly("lines[0].locationCode");
         }
 
@@ -1037,11 +959,11 @@ class GoodsReceiptServiceImplTest {
             when(inventory.itemPolicy(new Sku("NOPE"))).thenReturn(Optional.empty());
 
             BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
-                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, null),
-                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, "NOPE"),
-                    new NewLine(poLineId, 1, null, null, "HCM-RCV-01", null, null, null, "CUP-01"),
-                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, "CUP-01"),
-                    new NewLine(null, 2, null, null, "HCM-RCV-01", null, null, null, "cup-01"))));
+                    new NewLine(null, 1, null, "HCM-RCV-01", null, null, null, null),
+                    new NewLine(null, 1, null, "HCM-RCV-01", null, null, null, "NOPE"),
+                    new NewLine(poLineId, 1, null, "HCM-RCV-01", null, null, null, "CUP-01"),
+                    new NewLine(null, 1, null, "HCM-RCV-01", null, null, null, "CUP-01"),
+                    new NewLine(null, 2, null, "HCM-RCV-01", null, null, null, "cup-01"))));
 
             assertThat(e.fieldErrors()).extracting(f -> f.field() + ":" + f.code()).containsExactly(
                     "lines[0].sku:VALIDATION_FAILED",
@@ -1054,17 +976,17 @@ class GoodsReceiptServiceImplTest {
         @Test
         @DisplayName("a lot-tracked item still needs its lot (BR-03), and a line of a receipt against a PO still needs its PO line")
         void lotRulesAndPoLines() {
-            InventoryItemPolicy tracked = new InventoryItemPolicy(itemId, "CUP-01", true, false);
+            InventoryItemPolicy tracked = new InventoryItemPolicy(itemId, "CUP-01", true);
             when(inventory.itemPolicy(new Sku("CUP-01"))).thenReturn(Optional.of(tracked));
             GoodsReceipt receipt = blind();
             BusinessException e = thrown(() -> service.replaceLines(receipt.id(), List.of(
-                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, "CUP-01"))));
+                    new NewLine(null, 1, null, "HCM-RCV-01", null, null, null, "CUP-01"))));
             assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
 
             po(Status.CONFIRMED, "10", null, false);
             GoodsReceipt withPo = draft();
             BusinessException bySku = thrown(() -> service.replaceLines(withPo.id(), List.of(
-                    new NewLine(null, 1, null, null, "HCM-RCV-01", null, null, null, "CUP-01"))));
+                    new NewLine(null, 1, null, "HCM-RCV-01", null, null, null, "CUP-01"))));
             assertThat(bySku.errorCode()).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_ON_PO);
         }
 
@@ -1231,32 +1153,14 @@ class GoodsReceiptServiceImplTest {
     class Reads {
 
         @Test
-        @DisplayName("BR-06: a lot expiring within the warning window of the receiving day is flagged EXPIRY_NEAR, never refused")
-        void expiryNearWarning() {
-            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, true);
-            when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
-            when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
-            po(Status.CONFIRMED, "100", null, false);
-            GoodsReceipt receipt = draft();
-
-            ReceiptView view = service.replaceLines(receipt.id(), List.of(
-                    new NewLine(poLineId, 1, "NEAR", TODAY.plusDays(30), "HCM-RCV-01", null),
-                    new NewLine(poLineId, 1, "FAR", TODAY.plusDays(31), "HCM-RCV-01", null)));
-
-            assertThat(view.lines().get(0).warnings()).containsExactly("EXPIRY_NEAR");
-            assertThat(view.lines().get(1).warnings()).isEmpty();
-            assertThat(view.warnings()).containsExactly("EXPIRY_NEAR");
-        }
-
-        @Test
         @DisplayName("a cancelled receipt counted nothing: it flags nothing")
         void cancelledFlagsNothing() {
-            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true, true);
+            InventoryItemPolicy policy = new InventoryItemPolicy(itemId, "CUP-01", true);
             when(inventory.itemPolicy(itemId)).thenReturn(Optional.of(policy));
             when(inventory.itemPolicies(anyCollection())).thenAnswer(call -> Map.of(itemId, policy));
             po(Status.CONFIRMED, "100", null, false);
             GoodsReceipt receipt = draft(ReceiptLine.counted(UUID.randomUUID(), poLineId, itemId, receivingBin.id(), 1,
-                    "NEAR", TODAY.plusDays(2), null, null));
+                    "NEAR", null, null));
             ReceiptView view = service.cancel(receipt.id());
             assertThat(view.warnings()).isEmpty();
         }

@@ -62,7 +62,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import(PostgresContainer.class)
 class LotTraceIntegrationTest {
 
-    private static final String TABLE = "TABLE-OAK-160";   // lot- and expiry-tracked in the demo data
+    private static final String TABLE = "TABLE-OAK-160";   // lot-tracked in the demo data
     private static final String BIN = "HCM-B01-1-A";
 
     @Autowired GoodsReceipts receipts;
@@ -76,14 +76,12 @@ class LotTraceIntegrationTest {
 
     private UUID clerk;
     private String lotNumber;
-    private LocalDate expiry;
 
     @BeforeEach
     void setUp() {
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         lotNumber = "TR-" + UUID.randomUUID().toString().substring(0, 8);
         // Earlier than any other TABLE stock, so FEFO allocates these lots first.
-        expiry = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")).plusDays(20);
     }
 
     /** A CONFIRMED purchase order of {@code quantity} TABLE, received in full into HCM-RCV01 as lot {@link #lotNumber}. */
@@ -112,8 +110,7 @@ class LotTraceIntegrationTest {
         });
         UUID line = jdbc.queryForObject("SELECT id FROM procurement.purchase_order_lines WHERE po_id = ?", UUID.class, po);
         GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-LT", null), clerk);
-        receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(line, quantity, lotNumber, expiry,
-                "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(quantity))));
+        receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(line, quantity, lotNumber, "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(quantity))));
         return receipts.confirm(draft.id(), clerk);
     }
 
@@ -269,36 +266,32 @@ class LotTraceIntegrationTest {
     }
 
     @Test
-    @DisplayName("an expired lot is on hand but never available; a fresh one is, less what is held")
-    void expiredLotIsNotAvailable() {
+    @DisplayName("a lot's available units are its AVAILABLE units less what is held: nothing expires (01 BR-17)")
+    void lotIsAvailableLessWhatIsHeld() {
         String sku = "LOTX-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(java.util.Locale.ROOT);
-        LocalDate today = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
         tx.executeWithoutResult(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku, "Lot fixture",
                     sku.toLowerCase(java.util.Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Lot fixture','')", Identifiers.newId(), product, sku);
-            for (Object[] row : List.of(new Object[] {"HCM-A01-1-A", today.minusDays(1), 4, 0},
-                    new Object[] {"HCM-A01-1-B", today.plusDays(9), 5, 2})) {
+            // Two rows of one lot received together: the stock-row trigger puts both in the same UNTRACED lot.
+            java.time.Instant received = java.time.Instant.now().minusSeconds(30L * 24 * 3600);
+            for (Object[] row : List.of(new Object[] {"HCM-A01-1-A", 4, 0}, new Object[] {"HCM-A01-1-B", 5, 2})) {
                 jdbc.update("""
-                        INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
+                        INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
                                                           status, received_at, version, created_at)
-                        VALUES (?, ?, ?, 'X1', ?, ?, ?, 'AVAILABLE', NOW() - interval '30 days', 0, NOW())""",
-                        Identifiers.newId(), sku, row[0], row[1], row[2], row[3]);
+                        VALUES (?, ?, ?, 'X1', ?, ?, 'AVAILABLE', ?, 0, NOW())""",
+                        Identifiers.newId(), sku, row[0], row[1], row[2], java.sql.Timestamp.from(received));
             }
         });
 
         var lots = traces.lots(new LotTraces.Query(sku, "X1", null, null, null, 0, 20)).items();
-        assertThat(lots).hasSize(2).allSatisfy(lot -> assertThat(lot.origin()).isEqualTo("UNTRACED"));
-        assertThat(lots).filteredOn(lot -> lot.expiryDate().isBefore(today)).singleElement().satisfies(expired -> {
-            assertThat(expired.onHand()).isEqualTo(4);
-            assertThat(expired.available()).isZero();
-        });
-        assertThat(lots).filteredOn(lot -> !lot.expiryDate().isBefore(today)).singleElement().satisfies(fresh -> {
-            assertThat(fresh.onHand()).isEqualTo(5);
-            assertThat(fresh.held()).isEqualTo(2);
-            assertThat(fresh.available()).isEqualTo(3);
+        assertThat(lots).singleElement().satisfies(lot -> {
+            assertThat(lot.origin()).isEqualTo("UNTRACED");
+            assertThat(lot.onHand()).isEqualTo(9);
+            assertThat(lot.held()).isEqualTo(2);
+            assertThat(lot.available()).isEqualTo(7);
         });
     }
 }

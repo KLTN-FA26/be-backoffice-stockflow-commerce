@@ -17,17 +17,12 @@ class InventoryItemWebMapper {
     InventoryItemResponse toResponse(InventoryItems.Detail d) {
         var l = d.logistics();
         var p = d.policy();
-        var e = d.evaluation();
         return new InventoryItemResponse(d.id(), d.sku(), d.version(),
                 new InventoryItemResponse.Logistics(l.unitOfMeasure(), l.barcode(), l.weightKg(), l.lengthCm(),
                         l.widthCm(), l.heightCm(), l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(),
                         l.packageHeightCm(), l.packageCount(), l.packSize(), l.storageClass().name(),
                         l.requiresAdultSignature(), l.shippingRestrictionNote(), l.rotatable()),
-                new InventoryItemResponse.Policy(p.reorderPoint(), p.safetyStock(), p.maxQty(),
-                        p.removalStrategy().name(), p.trackingMode().name(), p.expiryTracked(),
-                        p.maxShelfLifeDays()),
-                new InventoryItemResponse.Evaluation(e.usableOnHand(), e.reorderPoint(), e.safetyStock(),
-                        e.reorderRequired(), e.belowSafetyStock()));
+                new InventoryItemResponse.Policy(p.removalStrategy().name(), p.trackingMode().name()));
     }
 
     InventoryItemSummaryResponse toSummary(InventoryItems.Summary s) {
@@ -44,7 +39,6 @@ class InventoryItemWebMapper {
     }
 
     InventoryPolicy toPolicy(UpdateItemPolicyRequest r) {
-        return new InventoryPolicy(r.reorderPoint(), r.safetyStock(), r.maxQty(), r.removalStrategy(),
-                r.trackingMode(), r.expiryTracked(), r.maxShelfLifeDays());
+        return new InventoryPolicy(r.removalStrategy(), r.trackingMode());
     }
 }

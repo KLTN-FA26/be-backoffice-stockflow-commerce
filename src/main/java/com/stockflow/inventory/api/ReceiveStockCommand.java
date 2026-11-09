@@ -3,7 +3,6 @@ package com.stockflow.inventory.api;
 import com.stockflow.common.domain.Sku;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -22,7 +21,7 @@ import java.util.UUID;
  * @param lotNumber     null for a SKU that is not lot-tracked
  * @param actorId       who confirmed the receipt, for the ledger
  * @param receivedAt    when the receipt was confirmed: the new stock layer's receipt time (one layer
- *                      per receipt), which FIFO and the shelf-life policy read
+ *                      per receipt), which FIFO reads. There is no expiry date: a receipt records none (03 BR-06)
  * @param origin        the receipt, purchase order and supplier, for the lot the receipt opens (SCRUM-142); null
  *                      when the caller has none, and the stock then joins an UNTRACED lot
  */
@@ -30,7 +29,6 @@ public record ReceiveStockCommand(
         UUID receiptLineId,
         Sku sku,
         String lotNumber,
-        LocalDate expiryDate,
         String locationCode,
         int quantity,
         UUID actorId,
@@ -38,9 +36,9 @@ public record ReceiveStockCommand(
         ReceiptOrigin origin
 ) {
 
-    public ReceiveStockCommand(UUID receiptLineId, Sku sku, String lotNumber, LocalDate expiryDate, String locationCode,
-                               int quantity, UUID actorId, Instant receivedAt) {
-        this(receiptLineId, sku, lotNumber, expiryDate, locationCode, quantity, actorId, receivedAt, null);
+    public ReceiveStockCommand(UUID receiptLineId, Sku sku, String lotNumber, String locationCode, int quantity,
+                               UUID actorId, Instant receivedAt) {
+        this(receiptLineId, sku, lotNumber, locationCode, quantity, actorId, receivedAt, null);
     }
 
     public ReceiveStockCommand {

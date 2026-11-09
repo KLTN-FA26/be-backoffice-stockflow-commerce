@@ -28,8 +28,7 @@ class StockItemTest {
     private static final Instant NOW = Instant.parse("2026-09-07T10:00:00Z");
 
     private static StockItem availableWith(int onHand) {
-        StockItem item = new StockItem(StockItemId.newId(), SKU, LOCATION, null, null,
-                Quantity.of(onHand), StockStatus.QUARANTINE, List.of(), 0L);
+        StockItem item = new StockItem(StockItemId.newId(), SKU, LOCATION, null, Quantity.of(onHand), StockStatus.QUARANTINE, List.of(), 0L);
         item.releaseFromQuarantine();
         item.pullDomainEvents();
         return item;
@@ -42,7 +41,7 @@ class StockItemTest {
         @Test
         @DisplayName("arrives in quarantine, not on sale")
         void receivedStockIsQuarantined() {
-            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", null, Quantity.of(10));
+            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", Quantity.of(10));
 
             assertThat(item.status()).isEqualTo(StockStatus.QUARANTINE);
             // The units are physically present but must not be sellable before QC.
@@ -53,7 +52,7 @@ class StockItemTest {
         @Test
         @DisplayName("becomes sellable only after QC passes")
         void quarantineReleaseMakesStockAvailable() {
-            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", null, Quantity.of(10));
+            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", Quantity.of(10));
 
             item.releaseFromQuarantine();
 
@@ -92,7 +91,7 @@ class StockItemTest {
         @Test
         @DisplayName("quarantined stock cannot be sold")
         void reservingQuarantinedStockIsRejected() {
-            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", null, Quantity.of(10));
+            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", Quantity.of(10));
 
             assertThatThrownBy(() ->
                     item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(1), NOW))
@@ -292,8 +291,7 @@ class StockItemTest {
             item.putBack(Quantity.of(3));
             assertThat(item.onHand()).isEqualTo(Quantity.of(13));
 
-            StockItem quarantined = new StockItem(StockItemId.newId(), SKU, LOCATION, null, null,
-                    Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L);
+            StockItem quarantined = new StockItem(StockItemId.newId(), SKU, LOCATION, null, Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L);
             assertThatThrownBy(() -> quarantined.putBack(Quantity.of(1)))
                     .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
                             assertThat(refusal.errorCode())
@@ -320,25 +318,13 @@ class StockItemTest {
         }
 
         @Test
-        @DisplayName("stock with live holds cannot be blocked out from under them")
-        void blockingReservedStockIsRejected() {
-            StockItem item = availableWith(10);
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
-
-            assertThatThrownBy(() -> item.block(StockStatus.DAMAGED))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("still reserved");
-        }
-
-        @Test
         @DisplayName("a corrupted row cannot be rehydrated into a valid aggregate")
         void constructingWithReservedAboveOnHandIsRejected() {
             Reservation tooBig = new Reservation(ReservationId.newId(), UUID.randomUUID(),
                     UUID.randomUUID(), UUID.randomUUID(), Quantity.of(20), NOW,
                     NOW.plusSeconds(600), ReservationStatus.HELD, null, null);
 
-            assertThatThrownBy(() -> new StockItem(StockItemId.newId(), SKU, LOCATION, null, null,
-                    Quantity.of(5), StockStatus.AVAILABLE, List.of(tooBig), 0L))
+            assertThatThrownBy(() -> new StockItem(StockItemId.newId(), SKU, LOCATION, null, Quantity.of(5), StockStatus.AVAILABLE, List.of(tooBig), 0L))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("Invariant violated");
         }
@@ -408,7 +394,7 @@ class StockItemTest {
         private final LocationId destination = new LocationId("HCM-QC01");
 
         private StockItem cartonRow(StockStatus status, List<Reservation> holds) {
-            return new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", null, Quantity.of(10), status, holds, 0L,
+            return new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", Quantity.of(10), status, holds, 0L,
                     NOW, null, UUID.randomUUID(), carton);
         }
 
@@ -417,7 +403,7 @@ class StockItemTest {
         void receiveInboundIntoKeepsTheCarton() {
             UUID lot = UUID.randomUUID();
 
-            StockItem item = StockItem.receiveInboundInto(carton, SKU, LOCATION, "LOT-1", null, Quantity.of(980),
+            StockItem item = StockItem.receiveInboundInto(carton, SKU, LOCATION, "LOT-1", Quantity.of(980),
                     NOW, lot);
 
             assertThat(item.stockPackageId()).isEqualTo(carton);

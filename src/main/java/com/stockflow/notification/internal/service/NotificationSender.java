@@ -211,15 +211,6 @@ class NotificationSender {
     }
 
     /**
-     * Sends one plain e-mail with a system-generated subject and body (the inventory alert digest). Throws when the
-     * transport refuses; the caller decides whether that matters. Neither the subject nor the body is logged.
-     */
-    void sendInventoryAlertEmail(String toEmail, String subject, String body) {
-        transport.send(new Email(mailFrom, List.of(toEmail), null, subject, body, null, null,
-                "staff_inventory_alert"));
-    }
-
-    /**
      * A staff notice by e-mail, worded as its in-app message (title as the subject; the body, then the page to open).
      * System text only, as the in-app message is.
      */

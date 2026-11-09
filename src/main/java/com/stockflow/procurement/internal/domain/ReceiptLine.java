@@ -1,6 +1,5 @@
 package com.stockflow.procurement.internal.domain;
 
-import java.time.LocalDate;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -23,12 +22,11 @@ public final class ReceiptLine {
     private final UUID locationId;
     private final int receivedQuantity;
     private final String lotNumber;
-    private final LocalDate expiryDate;
     private final String note;
     private final UUID uomConversionId;
 
     public ReceiptLine(UUID id, UUID poLineId, UUID inventoryItemId, UUID locationId, int receivedQuantity,
-                       String lotNumber, LocalDate expiryDate, String note, UUID uomConversionId) {
+                       String lotNumber, String note, UUID uomConversionId) {
         this.id = Objects.requireNonNull(id, "id");
         this.poLineId = poLineId;
         this.inventoryItemId = Objects.requireNonNull(inventoryItemId, "inventoryItemId");
@@ -38,14 +36,13 @@ public final class ReceiptLine {
         }
         this.receivedQuantity = receivedQuantity;
         this.lotNumber = lotNumber;
-        this.expiryDate = expiryDate;
         this.note = note;
         this.uomConversionId = uomConversionId;
     }
 
     public static ReceiptLine counted(UUID id, UUID poLineId, UUID inventoryItemId, UUID locationId, int quantity,
-                                      String lotNumber, LocalDate expiryDate, String note, UUID uomConversionId) {
-        return new ReceiptLine(id, poLineId, inventoryItemId, locationId, quantity, lotNumber, expiryDate, note,
+                                      String lotNumber, String note, UUID uomConversionId) {
+        return new ReceiptLine(id, poLineId, inventoryItemId, locationId, quantity, lotNumber, note,
                 uomConversionId);
     }
 
@@ -54,7 +51,7 @@ public final class ReceiptLine {
      * The aggregate cuts only receipts that are waiting for approval, whose goods are not counted in yet.
      */
     ReceiptLine withReceivedQuantity(int quantity) {
-        return new ReceiptLine(id, poLineId, inventoryItemId, locationId, quantity, lotNumber, expiryDate, note,
+        return new ReceiptLine(id, poLineId, inventoryItemId, locationId, quantity, lotNumber, note,
                 uomConversionId);
     }
 
@@ -64,7 +61,6 @@ public final class ReceiptLine {
     public UUID locationId() { return locationId; }
     public int receivedQuantity() { return receivedQuantity; }
     public String lotNumber() { return lotNumber; }
-    public LocalDate expiryDate() { return expiryDate; }
     public String note() { return note; }
     public UUID uomConversionId() { return uomConversionId; }
 }

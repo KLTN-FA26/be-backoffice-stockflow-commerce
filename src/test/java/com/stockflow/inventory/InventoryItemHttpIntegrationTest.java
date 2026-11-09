@@ -71,13 +71,12 @@ class InventoryItemHttpIntegrationTest {
                 + "\"weightKg\":0.120,\"requiresAdultSignature\":false}";
     }
 
-    private static String policyBody(long version, int reorderPoint) {
-        return "{\"version\":" + version + ",\"reorderPoint\":" + reorderPoint
-                + ",\"removalStrategy\":\"FEFO\",\"trackingMode\":\"NONE\",\"expiryTracked\":false}";
+    private static String policyBody(long version, String trackingMode) {
+        return "{\"version\":" + version + ",\"removalStrategy\":\"FIFO\",\"trackingMode\":\"" + trackingMode + "\"}";
     }
 
     @Test
-    void detailHasLogisticsPolicyAndEvaluation() throws Exception {
+    void detailHasLogisticsAndPolicy() throws Exception {
         UUID id = item("HTTP-D-" + suffix, null, "NORMAL");
         mvc.perform(get(BASE + "/" + id))
                 .andExpect(status().isOk())
@@ -85,7 +84,8 @@ class InventoryItemHttpIntegrationTest {
                 .andExpect(jsonPath("$.data.sku").value("HTTP-D-" + suffix))
                 .andExpect(jsonPath("$.data.logistics.unitOfMeasure").value("EACH"))
                 .andExpect(jsonPath("$.data.policy.removalStrategy").value("FEFO"))
-                .andExpect(jsonPath("$.data.evaluation.usableOnHand").value(0));
+                .andExpect(jsonPath("$.data.evaluation").doesNotExist())
+                .andExpect(jsonPath("$.data.policy.reorderPoint").doesNotExist());
     }
 
     @Test
@@ -104,17 +104,17 @@ class InventoryItemHttpIntegrationTest {
     void putPolicyReturnsTheWholeItem() throws Exception {
         UUID id = item("HTTP-P-" + suffix, null, "NORMAL");
         mvc.perform(put(BASE + "/" + id + "/policy").contentType(MediaType.APPLICATION_JSON)
-                        .content(policyBody(versionOf(id), 500)))
+                        .content(policyBody(versionOf(id), "LOT")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.policy.reorderPoint").value(500))
+                .andExpect(jsonPath("$.data.policy.trackingMode").value("LOT"))
                 .andExpect(jsonPath("$.data.logistics.unitOfMeasure").value("EACH"));
     }
 
     @Test
-    void negativeReorderPointIs400() throws Exception {
+    void aTrackingModeThatDoesNotExistIs400() throws Exception {
         UUID id = item("HTTP-N-" + suffix, null, "NORMAL");
         mvc.perform(put(BASE + "/" + id + "/policy").contentType(MediaType.APPLICATION_JSON)
-                        .content(policyBody(versionOf(id), -1)))
+                        .content(policyBody(versionOf(id), "BY_EXPIRY")))
                 .andExpect(status().isBadRequest());
     }
 
@@ -242,7 +242,7 @@ class InventoryItemHttpIntegrationTest {
         mvc.perform(get(BASE).param("sku", sku).param("policyConfigured", "true"))
                 .andExpect(jsonPath("$.data.totalElements").value(0));
         mvc.perform(put(BASE + "/" + id + "/policy").contentType(MediaType.APPLICATION_JSON)
-                        .content(policyBody(versionOf(id), 10)))
+                        .content(policyBody(versionOf(id), "NONE")))
                 .andExpect(status().isOk());
         mvc.perform(get(BASE).param("sku", sku).param("policyConfigured", "true"))
                 .andExpect(jsonPath("$.data.totalElements").value(1))

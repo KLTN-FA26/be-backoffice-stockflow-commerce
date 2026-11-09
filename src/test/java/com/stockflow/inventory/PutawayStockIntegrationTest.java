@@ -93,12 +93,11 @@ class PutawayStockIntegrationTest {
                     poLine, po, revision, item);
         });
         GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-PUT", null), clerk);
-        line = receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine, 2000, null, null,
-                RECEIVING, null))).lines().getFirst().id();
+        line = receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine, 2000, null, RECEIVING, null))).lines().getFirst().id();
         lpn = inventory.countReceivingPackages(new CountReceivingPackagesCommand(line, new Sku(sku), carton,
                 RECEIVING, List.of(PackageCount.fresh(), PackageCount.fresh()), clerk))
                 .getFirst().lpn();
-        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
+        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, RECEIVING, 2000, clerk, RECEIVED));
     }
 
     @Test

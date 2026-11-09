@@ -153,7 +153,7 @@ class GoodsReceiptPutawayCloseIntegrationTest {
 
     /** {@code cartons} cartons of {@code perCarton} on the PO line. */
     private GoodsReceipts.NewLine line(UUID poLine, int cartons, int perCarton) {
-        return new GoodsReceipts.NewLine(poLine, cartons * perCarton, null, null, receiving, null, "CARTON",
+        return new GoodsReceipts.NewLine(poLine, cartons * perCarton, null, receiving, null, "CARTON",
                 java.util.Collections.nCopies(cartons, new GoodsReceipts.NewPackage(null, perCarton)));
     }
 

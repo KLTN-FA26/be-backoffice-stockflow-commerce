@@ -22,7 +22,6 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.time.LocalDate;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -253,8 +252,7 @@ class GoodsReceiptWithoutPoIntegrationTest {
                 "{\"sku\":\"" + TABLE + "\",\"quantity\":1,\"locationCode\":\"" + RECEIVING + "\"}")
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.fieldErrors[*].field", org.hamcrest.Matchers.contains(
-                        "lines[0].purchaseOrderLineId", "lines[1].sku", "lines[2].sku", "lines[3].lotNumber",
-                        "lines[3].expiryDate")));
+                        "lines[0].purchaseOrderLineId", "lines[1].sku", "lines[2].sku", "lines[3].lotNumber")));
         // The same item and lot twice.
         count(clerk, receipt, sofaLoose(1), sofaLoose(2)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[1].lotNumber"));
@@ -349,14 +347,14 @@ class GoodsReceiptWithoutPoIntegrationTest {
     }
 
     @Test
-    @DisplayName("the lot and expiry rules of a normal receipt apply; once approved it goes to putaway")
-    void lotAndExpiryApply() throws Exception {
+    @DisplayName("the lot rules of a normal receipt apply; once approved it goes to putaway")
+    void lotRulesApply() throws Exception {
         String suffix = UUID.randomUUID().toString().substring(0, 6);
         String receipt = draft(clerk, supplier(), "gift");
         String tableLine = """
-                {"sku":"%s","quantity":3,"lotNumber":"NP-%s","expiryDate":"%s","locationCode":"%s",\
+                {"sku":"%s","quantity":3,"lotNumber":"NP-%s","locationCode":"%s",\
                 "unitOfMeasure":"%s","packages":%s}"""
-                .formatted(TABLE, suffix, LocalDate.now().plusYears(1), RECEIVING, ReceiptCartons.DEMO_UNIT,
+                .formatted(TABLE, suffix, RECEIVING, ReceiptCartons.DEMO_UNIT,
                         ReceiptCartons.json(3, 1));
         count(clerk, receipt, tableLine).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lines[0].lotTracked").value(true));

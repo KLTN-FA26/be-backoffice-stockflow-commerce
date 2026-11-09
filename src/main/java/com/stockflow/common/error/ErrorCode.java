@@ -32,9 +32,6 @@ public enum ErrorCode {
     /** A customization template's model, limits or print areas cannot be printed as given (kltn-docs 01 BR-21). */
     PRINT_CONFIG_INVALID("The customization template is not valid", 400),
     INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
-    /** A field-error code on {@link #INVENTORY_POLICY_INVALID}: {@code maxQty} sits below the reorder point or the safety stock. */
-    INVENTORY_MAX_QTY_BELOW_THRESHOLD(
-            "The order-up-to level must not be below the reorder point or the safety stock", 400),
     INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
     CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
@@ -112,8 +109,6 @@ public enum ErrorCode {
     SUPPLIER_INVOICE_NOT_FOUND("Supplier invoice not found", 404),
     /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
     NOTIFICATION_NOT_FOUND("Notification not found", 404),
-    /** An alert of a warehouse outside the caller's scope is {@code OUT_OF_DATA_SCOPE}, not this. */
-    ALERT_NOT_FOUND("Stock alert not found", 404),
     /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
     ZONE_NOT_FOUND("Zone not found", 404),
     SHELF_NOT_FOUND("Shelf not found", 404),
@@ -261,9 +256,8 @@ public enum ErrorCode {
     /** The location exists but is not the kind of area this step needs (RECEIVING, QUARANTINE), or is in another
      *  warehouse. */
     LOCATION_AREA_MISMATCH("The location is not an area of the right kind in this warehouse", 409),
-    /** BR-03: a lot-tracked or expiry-tracked item was received without its lot or expiry date, or an
-     *  untracked one with a lot. */
-    RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
+    /** BR-03: a lot-tracked item was received without its lot, or an untracked one with a lot. */
+    RECEIPT_LOT_DATA_INVALID("Lot data does not match how the item is tracked", 409),
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
     RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
@@ -310,8 +304,6 @@ public enum ErrorCode {
     CUSTOMER_NOT_ACTIVE("This customer is not active and cannot take on new work", 409),
     /** SCRUM-394: a sample is linked only to a quote still being negotiated. */
     QUOTE_NOT_OPEN("The quote is no longer open", 409),
-    /** Review of #109: goods past their expiry cannot move to a new location; they are written off (EXPIRED). */
-    STOCK_EXPIRED("This stock is past its expiry date and can only be written off", 409),
     /**
      * SCRUM-475: more units reported damaged than the stock row has free. Held units are reported where they are
      * taken - a picker's damage report (SCRUM-277) - so their order learns of it in the same transaction.
@@ -901,7 +893,6 @@ public enum ErrorCode {
     INVALID_USER_STATUS_TRANSITION("This account cannot move to that status", 409),
     /** The administrator asked for a status the account already has (lock a locked account, enable an active one). */
     USER_STATUS_UNCHANGED("The account is already in this status", 409),
-    INVALID_ALERT_TRANSITION("This alert cannot be acknowledged in its current state", 409),
     /** User management acts on staff accounts; customer accounts belong to the customer screens. */
     STAFF_ACCOUNT_REQUIRED("Customer accounts are managed from the customer screens", 409),
 

@@ -7,7 +7,6 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -15,7 +14,7 @@ import java.util.UUID;
  * The whole count of a draft receipt, replacing the previous one. One line per PO line and lot (SCRUM-478: on a receipt
  * without a PO, per item and lot, and a line names its item by {@code sku} instead of {@code purchaseOrderLineId};
  * the service checks which one a receipt takes, and answers on that field);
- * {@code lotNumber} and {@code expiryDate} only for items tracked that way (BR-03).
+ * {@code lotNumber} only for items tracked that way (BR-03); a receipt records no expiry (03 BR-06).
  *
  * <p>SCRUM-473: {@code quantity} stays the line's total in base units. {@code packages} are the labelled cartons
  * holding part or all of it, the whole list each time - an entry with an {@code lpn} recounts that carton, one
@@ -28,7 +27,6 @@ public record ReceiptLinesRequest(@NotEmpty @Size(max = 200) List<@Valid @NotNul
             UUID purchaseOrderLineId,
             @Positive int quantity,
             @Size(max = 64) String lotNumber,
-            LocalDate expiryDate,
             @NotBlank @Size(max = 64) String locationCode,
             @Size(max = 255) String note,
             @Size(max = 16) String unitOfMeasure,

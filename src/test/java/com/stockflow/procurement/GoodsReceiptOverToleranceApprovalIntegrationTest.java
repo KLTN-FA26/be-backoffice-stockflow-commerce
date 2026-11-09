@@ -22,7 +22,6 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.time.LocalDate;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -165,16 +164,16 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
 
     private String lot(UUID poLine, int quantity, String lotNumber) {
         return """
-                {"purchaseOrderLineId":"%s","quantity":%d,"lotNumber":"%s","expiryDate":"%s","locationCode":"%s",\
+                {"purchaseOrderLineId":"%s","quantity":%d,"lotNumber":"%s","locationCode":"%s",\
                 "unitOfMeasure":"%s","packages":%s}"""
-                .formatted(poLine, quantity, lotNumber, LocalDate.now().plusYears(1), RECEIVING,
+                .formatted(poLine, quantity, lotNumber, RECEIVING,
                         ReceiptCartons.DEMO_UNIT, ReceiptCartons.json(quantity, 1));
     }
 
     private String lotLoose(UUID poLine, int quantity, String lotNumber) {
         return """
-                {"purchaseOrderLineId":"%s","quantity":%d,"lotNumber":"%s","expiryDate":"%s","locationCode":"%s"}"""
-                .formatted(poLine, quantity, lotNumber, LocalDate.now().plusYears(1), RECEIVING);
+                {"purchaseOrderLineId":"%s","quantity":%d,"lotNumber":"%s","locationCode":"%s"}"""
+                .formatted(poLine, quantity, lotNumber, RECEIVING);
     }
 
     private ResultActions count(UUID by, String receipt, String... lines) throws Exception {

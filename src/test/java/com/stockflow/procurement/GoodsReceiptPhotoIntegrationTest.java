@@ -40,7 +40,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -102,8 +101,8 @@ class GoodsReceiptPhotoIntegrationTest {
         receipt = receipts.create(new GoodsReceipts.Create(po, "DN-PHOTO", null), clerk).id();
         lot = "PH-" + UUID.randomUUID().toString().substring(0, 8);
         var counted = receipts.replaceLines(receipt, List.of(
-                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "HCM-RCV01", null),
-                new GoodsReceipts.NewLine(poLine(po, TABLE), 6, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null)));
+                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, "HCM-RCV01", null),
+                new GoodsReceipts.NewLine(poLine(po, TABLE), 6, lot, "HCM-RCV01", null)));
         sofaLine = lineOf(counted, po, SOFA);
         tableLine = lineOf(counted, po, TABLE);
     }
@@ -190,9 +189,9 @@ class GoodsReceiptPhotoIntegrationTest {
 
         // Counted into cartons of one before it is posted (team plan 4C-2, kltn-docs 03 BR-12); the lines keep their ids.
         receipts.replaceLines(receipt, List.of(
-                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT,
+                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT,
                         ReceiptCartons.demo(4)),
-                new GoodsReceipts.NewLine(poLine(po, TABLE), 6, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null,
+                new GoodsReceipts.NewLine(poLine(po, TABLE), 6, lot, "HCM-RCV01", null,
                         ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(6))));
         assertThat(receipts.confirm(receipt, clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(code(() -> photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("late.jpg"), clerk)))
@@ -288,9 +287,9 @@ class GoodsReceiptPhotoIntegrationTest {
 
         // Correcting the lot makes the line a new one: the old line is dropped from the count.
         var recounted = receipts.replaceLines(receipt, List.of(
-                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "HCM-RCV01", null),
+                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, "HCM-RCV01", null),
                 new GoodsReceipts.NewLine(poLine(po, TABLE), 6, "PH-FIXED-" + UUID.randomUUID().toString().substring(0, 6),
-                        LocalDate.now().plusYears(1), "HCM-RCV01", null)));
+                        "HCM-RCV01", null)));
 
         assertThat(lineOf(recounted, po, TABLE)).isNotEqualTo(tableLine);
         assertThat(photos.list(receipt)).singleElement().satisfies(photo -> {

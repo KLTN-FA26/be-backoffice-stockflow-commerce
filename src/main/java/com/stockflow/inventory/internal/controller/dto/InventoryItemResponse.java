@@ -5,10 +5,12 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.math.BigDecimal;
 import java.util.UUID;
 
-/** An inventory item as the back office edits it: logistics, stock policy, and what the policy says about stock now. */
+/**
+ * An inventory item as the back office edits it: logistics and stock policy. There are no stock thresholds and no
+ * expiry settings: the module raises no stock alert and tracks no expiry (kltn-docs 20 BR-13, 01 BR-17).
+ */
 @Schema(name = "InventoryItem")
-public record InventoryItemResponse(UUID id, String sku, long version, Logistics logistics, Policy policy,
-                                    Evaluation evaluation) {
+public record InventoryItemResponse(UUID id, String sku, long version, Logistics logistics, Policy policy) {
 
     public record Logistics(String unitOfMeasure, String barcode, BigDecimal weightKg, BigDecimal lengthCm,
                             BigDecimal widthCm, BigDecimal heightCm, BigDecimal packageWeightKg,
@@ -19,11 +21,6 @@ public record InventoryItemResponse(UUID id, String sku, long version, Logistics
                             boolean rotatable) {
     }
 
-    public record Policy(Integer reorderPoint, Integer safetyStock, Integer maxQty, String removalStrategy,
-                         String trackingMode, boolean expiryTracked, Integer maxShelfLifeDays) {
-    }
-
-    public record Evaluation(long usableOnHand, Integer reorderPoint, Integer safetyStock, Boolean reorderRequired,
-                             Boolean belowSafetyStock) {
+    public record Policy(String removalStrategy, String trackingMode) {
     }
 }

@@ -9,7 +9,6 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -18,7 +17,7 @@ import java.util.UUID;
  * as it is.
  *
  * <p>The PO line, item and lot are what the line IS and are never written again. What was counted —
- * where, how many, expiry, note — is recounted while the receipt is a draft
+ * where, how many, note — is recounted while the receipt is a draft
  * ({@link #recount}); {@code tg_goods_receipt_lines_frozen} refuses it once the receipt is past DRAFT.</p>
  *
  * <p>{@code uom_conversion_id}: the packing unit the line's cartons are in, NULL for a line counted loose in the
@@ -48,9 +47,6 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @Column(name = "lot_number", length = 64, updatable = false)
     private String lotNumber;
 
-    @Column(name = "expiry_date")
-    private LocalDate expiryDate;
-
     @Column(name = "note", length = 255)
     private String note;
 
@@ -61,7 +57,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     }
 
     public GoodsReceiptLineJpaEntity(UUID id, UUID poLineId, UUID inventoryItemId, UUID locationId,
-                                     BigDecimal receivedQty, String lotNumber, LocalDate expiryDate, String note,
+                                     BigDecimal receivedQty, String lotNumber, String note,
                                      UUID uomConversionId) {
         super(id);
         this.poLineId = poLineId;
@@ -69,7 +65,6 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
         this.locationId = locationId;
         this.receivedQty = receivedQty;
         this.lotNumber = lotNumber;
-        this.expiryDate = expiryDate;
         this.note = note;
         this.uomConversionId = uomConversionId;
     }
@@ -79,13 +74,11 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     }
 
     /** The draft's line counted again. Unchanged values leave the row clean, so a confirmed line is not written. */
-    public void recount(UUID locationId, BigDecimal receivedQty, LocalDate expiryDate, String note,
-                        UUID uomConversionId) {
+    public void recount(UUID locationId, BigDecimal receivedQty, String note, UUID uomConversionId) {
         this.locationId = locationId;
         if (this.receivedQty == null || this.receivedQty.compareTo(receivedQty) != 0) {
             this.receivedQty = receivedQty;
         }
-        this.expiryDate = expiryDate;
         this.note = note;
         this.uomConversionId = uomConversionId;
     }
@@ -95,7 +88,6 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     public UUID getLocationId() { return locationId; }
     public BigDecimal getReceivedQty() { return receivedQty; }
     public String getLotNumber() { return lotNumber; }
-    public LocalDate getExpiryDate() { return expiryDate; }
     public String getNote() { return note; }
     public UUID getUomConversionId() { return uomConversionId; }
 }

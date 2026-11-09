@@ -36,10 +36,10 @@ public interface StockPackageSearch {
 
     Optional<StockPackageBalance> byLpn(String lpn);
 
-    /** Its stock rows holding something, earliest expiry first, then oldest receipt. */
+    /** Its stock rows holding something, oldest receipt first. */
     List<StockPackageBalance.Content> contentsOf(UUID stockPackageId);
 
-    /** Grouped by SKU, lot, expiry and stock status; rows holding nothing are left out. */
+    /** Grouped by SKU, lot and stock status; rows holding nothing are left out. */
     List<StockPackageBalance.LocationLine> atLocation(String locationCode);
 
     /** Sortable by {@link #SORTABLE}. */

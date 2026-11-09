@@ -27,7 +27,7 @@ class SkuReservationTest {
     }
 
     private static StockItem stock(int onHand) {
-        return new StockItem(StockItemId.newId(), SKU, new LocationId("HCM-A01-1-A"), null, null, Quantity.of(onHand),
+        return new StockItem(StockItemId.newId(), SKU, new LocationId("HCM-A01-1-A"), null, Quantity.of(onHand),
                 StockStatus.AVAILABLE, java.util.List.of(), 0L);
     }
 
@@ -92,27 +92,25 @@ class SkuReservationTest {
     }
 
     @Test
-    @DisplayName("FEFO at allocation: earliest expiry first; without one, the earliest real receipt time; whole cartons")
-    void fefoThenFifo() {
+    @DisplayName("FIFO at allocation: the earliest real receipt time first, whole cartons (kltn-docs 01 BR-17)")
+    void fifoAtAllocation() {
         LocationId bin = new LocationId("HCM-A01-1-A");
-        var late = carton(bin, "L", java.time.LocalDate.of(2027, 1, 1), "2026-01-01T00:00:00Z");
-        var early = carton(bin, "L", java.time.LocalDate.of(2026, 12, 1), "2026-06-01T00:00:00Z");
-        var oldReceipt = carton(bin, null, null, "2025-01-01T00:00:00Z");
-        var newReceipt = carton(bin, null, null, "2025-06-01T00:00:00Z");
-        var expired = carton(bin, "L", java.time.LocalDate.of(2026, 10, 1), "2024-01-01T00:00:00Z");
+        var late = carton(bin, "L", "2026-01-01T00:00:00Z");
+        var early = carton(bin, "L", "2024-01-01T00:00:00Z");
+        var oldReceipt = carton(bin, null, "2025-01-01T00:00:00Z");
+        var newReceipt = carton(bin, null, "2025-06-01T00:00:00Z");
 
-        var plan = StockAllocator.plan("SOFA", java.util.List.of(newReceipt, late, oldReceipt, expired, early),
-                Quantity.of(20), com.stockflow.inventory.api.RemovalStrategy.FEFO, java.time.LocalDate.of(2026, 10, 17));
+        var plan = StockAllocator.plan("SOFA", java.util.List.of(newReceipt, late, oldReceipt, early),
+                Quantity.of(20));
 
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId).containsExactly(
-                early.stockItemId(), late.stockItemId(), oldReceipt.stockItemId(), newReceipt.stockItemId());
+                early.stockItemId(), oldReceipt.stockItemId(), newReceipt.stockItemId(), late.stockItemId());
         assertThat(plan.isShort()).isFalse();
     }
 
     /** A sealed carton of 5. */
-    private static StockAllocator.Candidate carton(LocationId bin, String lot, java.time.LocalDate expiry,
-                                                   String received) {
-        return new StockAllocator.Candidate(StockItemId.newId(), bin, lot, expiry, StockStatus.AVAILABLE,
+    private static StockAllocator.Candidate carton(LocationId bin, String lot, String received) {
+        return new StockAllocator.Candidate(StockItemId.newId(), bin, lot, StockStatus.AVAILABLE,
                 Quantity.of(5), Instant.parse(received), java.util.UUID.randomUUID(), true);
     }
 }

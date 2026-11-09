@@ -11,7 +11,6 @@ import com.stockflow.inventory.api.TrackingMode;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDate;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -31,15 +30,10 @@ public class InventoryPolicyRepository {
         jdbc.query("select pg_advisory_xact_lock(hashtextextended(?, 701))", rs -> {}, sku);
     }
 
-    /**
-     * Deletes the items of these SKUs; a foreign key that still points at one refuses the whole statement. Their stock
-     * alerts go with them (ON DELETE CASCADE, V20261016000100); their rows on the alert queue, which has no foreign key
-     * so that it never blocks a stock write, are removed here.
-     */
+    /** Deletes the items of these SKUs; a foreign key that still points at one refuses the whole statement. */
     public void deleteItems(java.util.Collection<String> skus) {
         if (skus.isEmpty()) return;
         String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
-        jdbc.update("delete from inventory.stock_alert_dirty where sku in (" + placeholders + ")", skus.toArray());
         jdbc.update("delete from inventory.inventory_items where sku in (" + placeholders + ")", skus.toArray());
     }
 
@@ -111,13 +105,8 @@ public class InventoryPolicyRepository {
 
     private static InventoryPolicy policy(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new InventoryPolicy(
-                rs.getObject("reorder_point", Integer.class),
-                rs.getObject("safety_stock", Integer.class),
-                rs.getObject("max_qty", Integer.class),
                 RemovalStrategy.valueOf(rs.getString("removal_strategy")),
-                TrackingMode.of(rs.getBoolean("lot_tracked"), rs.getBoolean("serial_tracked")),
-                rs.getBoolean("expiry_tracked"),
-                rs.getObject("max_shelf_life_days", Integer.class));
+                TrackingMode.of(rs.getBoolean("lot_tracked"), rs.getBoolean("serial_tracked")));
     }
 
     private static ItemLogistics logistics(java.sql.ResultSet rs) throws java.sql.SQLException {
@@ -157,138 +146,35 @@ select count(*) from inventory.stock_item where sku = ? and (on_hand > 0 or rese
 and ((? and nullif(trim(lot_number), '') is null)
   or (? and (nullif(trim(serial_number), '') is null or on_hand > 1))
   or (not ? and serial_number is not null)
-  or (? and expiry_date is null) or (not ? and expiry_date is not null)
-  or (? = 'FIFO' and received_at is null)
-  or (cast(? as integer) is not null and
-      (received_at is null or expiry_date >
-          (received_at at time zone 'Asia/Ho_Chi_Minh')::date + cast(? as integer))))
+  or (? = 'FIFO' and received_at is null))
 """,
                         Long.class,
                         sku,
                         p.trackingMode().lotTracked(),
                         p.trackingMode().serialTracked(),
                         p.trackingMode().serialTracked(),
-                        p.expiryTracked(),
-                        p.expiryTracked(),
-                        p.removalStrategy().name(),
-                        p.maxShelfLifeDays(),
-                        p.maxShelfLifeDays());
+                        p.removalStrategy().name());
         return count != null && count > 0;
     }
 
-    /** Saves the policy. There is no {@code min_qty} any more: the minimum threshold is the reorder point (V20261019000500). */
+    /**
+     * Saves the policy. There are no thresholds and no expiry settings any more: the module raises no stock alert and
+     * tracks no expiry (kltn-docs 20 BR-13, 01 BR-17; team plan 5-1).
+     */
     public boolean save(String sku, long version, InventoryPolicy p, String actor) {
         return jdbc.update(
                         """
-update inventory.inventory_items set reorder_point=?, safety_stock=?, max_qty=?, removal_strategy=?,
-    lot_tracked=?, serial_tracked=?, expiry_tracked=?, max_shelf_life_days=?,
+update inventory.inventory_items set removal_strategy=?, lot_tracked=?, serial_tracked=?,
     policy_configured=true, version=version+1, last_modified_at=now(), last_modified_by=?
 where sku=? and version=?
 """,
-                        p.reorderPoint(),
-                        p.safetyStock(),
-                        p.maxQty(),
                         p.removalStrategy().name(),
                         p.trackingMode().lotTracked(),
                         p.trackingMode().serialTracked(),
-                        p.expiryTracked(),
-                        p.maxShelfLifeDays(),
                         actor,
                         sku,
                         version)
                 == 1;
-    }
-
-    /**
-     * What counts as usable stock, in one place: AVAILABLE and not expired on the business date. Reservations are
-     * not subtracted (this is not ATP). {@code usableOnHand}, {@code thresholds} and {@code thresholdPage} all read
-     * through it, so the alert evaluator, the reconcile and the dashboard cannot drift apart (plan A8).
-     */
-    private static final String USABLE =
-            " status = 'AVAILABLE' AND (expiry_date IS NULL OR expiry_date >= ?) ";
-
-    public long usableOnHand(String sku, LocalDate today) {
-        Long quantity =
-                jdbc.queryForObject(
-                        "select coalesce(sum(on_hand),0) from inventory.stock_item where sku=? and" + USABLE,
-                        Long.class,
-                        sku,
-                        today);
-        return quantity == null ? 0 : quantity;
-    }
-
-    /** A SKU's thresholds next to its usable on-hand; the input of every comparison in {@code StockThresholds}. */
-    public record ThresholdRow(String sku, long usableOnHand, Integer reorderPoint, Integer safetyStock) {
-    }
-
-    /** The row of each of these SKUs that has an inventory item, thresholds set or not. */
-    public java.util.List<ThresholdRow> thresholds(java.util.Collection<String> skus, LocalDate today) {
-        if (skus == null || skus.isEmpty()) {
-            return java.util.List.of();
-        }
-        return jdbc.query("""
-                SELECT i.sku, coalesce(u.qty, 0) AS qty, i.reorder_point, i.safety_stock
-                FROM inventory.inventory_items i
-                LEFT JOIN (SELECT sku, sum(on_hand) AS qty FROM inventory.stock_item
-                           WHERE sku = ANY (?) AND """ + USABLE + """
-                           GROUP BY sku) u ON u.sku = i.sku
-                WHERE i.sku = ANY (?)""",
-                ps -> {
-                    java.sql.Array array = ps.getConnection().createArrayOf("varchar", skus.toArray());
-                    ps.setArray(1, array);
-                    ps.setObject(2, today);
-                    ps.setArray(3, array);
-                }, (rs, n) -> thresholdRow(rs));
-    }
-
-    /**
-     * The next {@code limit} SKUs after {@code afterSku}, in SKU order, that have a reorder point or a safety stock,
-     * with their usable on-hand: one page of the scan {@code InventoryService.lowStockBatch} and the nightly
-     * reconcile walk. Keyset paging, so a page costs the same however far in it is.
-     */
-    public java.util.List<ThresholdRow> thresholdPage(String afterSku, int limit, LocalDate today) {
-        return jdbc.query("""
-                WITH page AS (
-                    SELECT sku, reorder_point, safety_stock FROM inventory.inventory_items
-                    WHERE sku > ? AND (reorder_point IS NOT NULL OR safety_stock IS NOT NULL)
-                    ORDER BY sku LIMIT ?)
-                SELECT p.sku, coalesce(u.qty, 0) AS qty, p.reorder_point, p.safety_stock
-                FROM page p
-                LEFT JOIN (SELECT sku, sum(on_hand) AS qty FROM inventory.stock_item
-                           WHERE sku IN (SELECT sku FROM page) AND """ + USABLE + """
-                           GROUP BY sku) u ON u.sku = p.sku
-                ORDER BY p.sku""", (rs, n) -> thresholdRow(rs), afterSku == null ? "" : afterSku, limit, today);
-    }
-
-    private static ThresholdRow thresholdRow(java.sql.ResultSet rs) throws java.sql.SQLException {
-        return new ThresholdRow(rs.getString("sku"), rs.getLong("qty"), rs.getObject("reorder_point", Integer.class),
-                rs.getObject("safety_stock", Integer.class));
-    }
-
-    /** One SKU with stock that no alert can ever be raised for, because it has no reorder point. */
-    public record UnconfiguredRow(String sku, long usableOnHand, Integer safetyStock) {
-    }
-
-    /** SKUs that hold usable stock but have no reorder point, in SKU order (the planner's "set a threshold" tab). */
-    public java.util.List<UnconfiguredRow> unconfigured(int limit, long offset, LocalDate today) {
-        return jdbc.query("""
-                SELECT i.sku, u.qty, i.safety_stock FROM inventory.inventory_items i
-                JOIN (SELECT sku, sum(on_hand) AS qty FROM inventory.stock_item
-                      WHERE """ + USABLE + """
-                      GROUP BY sku HAVING sum(on_hand) > 0) u ON u.sku = i.sku
-                WHERE i.reorder_point IS NULL
-                ORDER BY i.sku LIMIT ? OFFSET ?""",
-                (rs, n) -> new UnconfiguredRow(rs.getString("sku"), rs.getLong("qty"),
-                        rs.getObject("safety_stock", Integer.class)), today, limit, offset);
-    }
-
-    public long countUnconfigured(LocalDate today) {
-        Long count = jdbc.queryForObject("""
-                SELECT count(*) FROM inventory.inventory_items i
-                WHERE i.reorder_point IS NULL AND EXISTS (
-                    SELECT 1 FROM inventory.stock_item WHERE sku = i.sku AND """ + USABLE + """
-                    GROUP BY sku HAVING sum(on_hand) > 0)""", Long.class, today);
-        return count == null ? 0 : count;
     }
 
     public Optional<InventoryItemLogistics> findLogistics(String sku) {

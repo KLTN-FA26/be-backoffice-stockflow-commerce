@@ -36,8 +36,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 class InventoryItemSecurityIntegrationTest {
 
     private static final String POLICY_BODY =
-            "{\"version\":%d,\"reorderPoint\":20,\"removalStrategy\":\"FEFO\",\"trackingMode\":\"NONE\","
-                    + "\"expiryTracked\":false}";
+            "{\"version\":%d,\"removalStrategy\":\"FIFO\",\"trackingMode\":\"NONE\"}";
     private static final String LOGISTICS_BODY =
             "{\"version\":%d,\"unitOfMeasure\":\"EACH\",\"storageClass\":\"NORMAL\",\"requiresAdultSignature\":false}";
     /** The role whose grants the last test rewrites; restored afterwards, as InventoryCatalogSecurityIntegrationTest does. */

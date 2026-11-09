@@ -10,14 +10,14 @@ class StockPackageBalanceTest {
 
     @Test
     void aLocationLinesTotalIsItsPartsAdded() {
-        var line = new StockPackageBalance.LocationLine("SKU-1", null, null, StockStatus.AVAILABLE, 1, 1000, 1, 880, 20);
+        var line = new StockPackageBalance.LocationLine("SKU-1", null, StockStatus.AVAILABLE, 1, 1000, 1, 880, 20);
 
         assertThat(line.totalUnits()).isEqualTo(1900);
     }
 
     @Test
     void aTotalThatIsNotItsPartsIsRefused() {
-        assertThatThrownBy(() -> new StockPackageBalance.LocationLine("SKU-1", null, null, StockStatus.AVAILABLE,
+        assertThatThrownBy(() -> new StockPackageBalance.LocationLine("SKU-1", null, StockStatus.AVAILABLE,
                 1, 1000, 1, 880, 20, 2000))
                 .isInstanceOf(IllegalArgumentException.class);
     }

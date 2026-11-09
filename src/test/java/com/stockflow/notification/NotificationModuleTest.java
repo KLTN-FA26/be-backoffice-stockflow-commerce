@@ -37,6 +37,8 @@ class NotificationModuleTest {
      * test does for OrderPayables. Not a widening: no other module is booted.
      */
     @MockitoBean CustomerDirectory customerDirectory;
+    /** Identity's own dependency, not notification's: warehouse is not booted here, as in the other module tests. */
+    @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
 
     @Test
     @DisplayName("notification starts and answers through its api with the other modules absent")

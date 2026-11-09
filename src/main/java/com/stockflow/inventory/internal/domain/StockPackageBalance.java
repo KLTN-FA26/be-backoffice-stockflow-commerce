@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.domain;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -14,17 +13,16 @@ import java.util.UUID;
  * @param nominalQty  what it was made to hold: its packing unit's factor then
  * @param receivedQty what was counted into it at receipt; null until counted
  * @param lotNumber   of its rows holding stock - a carton holds one lot at most - and null when it holds nothing
- * @param expiryDate  of those rows likewise
  * @param onHand      what is left in it, the sum of its rows; 0 for a carton with none yet (RECEIVING)
  * @param reserved    of that, what orders hold
  * @param closedAt    when it was emptied, lost or voided
  */
 public record StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
                                   Integer receivedQty, String locationCode, StockPackageStatus status, boolean unopened,
-                                  String lotNumber, LocalDate expiryDate, int onHand, int reserved,
+                                  String lotNumber, int onHand, int reserved,
                                   UUID goodsReceiptLineId, Instant closedAt) {
 
-    /** A carton with its stock rows holding something, earliest expiry first. */
+    /** A carton with its stock rows holding something, oldest receipt first. */
     public record Detail(StockPackageBalance carton, List<Content> contents) {
 
         public Detail {
@@ -33,7 +31,7 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
     }
 
     /** One stock row inside a carton. */
-    public record Content(String lotNumber, LocalDate expiryDate, Instant receivedAt, StockStatus status, int onHand,
+    public record Content(String lotNumber, Instant receivedAt, StockStatus status, int onHand,
                           int reserved) {
     }
 
@@ -43,7 +41,7 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
      *
      * @param totalUnits the three unit columns added; any other value is refused
      */
-    public record LocationLine(String sku, String lotNumber, LocalDate expiryDate, StockStatus status,
+    public record LocationLine(String sku, String lotNumber, StockStatus status,
                                int wholeCartons, int wholeCartonUnits, int openedCartons, int openedCartonUnits,
                                int looseUnits, int totalUnits) {
 
@@ -54,9 +52,9 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
             }
         }
 
-        public LocationLine(String sku, String lotNumber, LocalDate expiryDate, StockStatus status, int wholeCartons,
+        public LocationLine(String sku, String lotNumber, StockStatus status, int wholeCartons,
                             int wholeCartonUnits, int openedCartons, int openedCartonUnits, int looseUnits) {
-            this(sku, lotNumber, expiryDate, status, wholeCartons, wholeCartonUnits, openedCartons, openedCartonUnits,
+            this(sku, lotNumber, status, wholeCartons, wholeCartonUnits, openedCartons, openedCartonUnits,
                     looseUnits, wholeCartonUnits + openedCartonUnits + looseUnits);
         }
     }

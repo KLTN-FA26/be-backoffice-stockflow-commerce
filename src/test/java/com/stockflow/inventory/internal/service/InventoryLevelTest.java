@@ -5,7 +5,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.stockflow.common.domain.Sku;
-import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
@@ -15,11 +14,8 @@ import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
 import java.time.Clock;
-import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -28,47 +24,6 @@ import java.util.List;
  * reservations, and a warehouse is whatever precedes the first hyphen of a location code.
  */
 class InventoryLevelTest {
-
-    @Test
-    void oneBusinessDateIsUsedEvenWhenClockCrossesMidnight() {
-        var clock = mock(Clock.class);
-        when(clock.instant())
-                .thenReturn(
-                        Instant.parse("2026-09-28T16:59:59Z"),
-                        Instant.parse("2026-09-28T17:00:00Z"));
-        when(repository.findLevelLinesBySku(SKU))
-                .thenReturn(
-                        List.of(
-                                new StockLevelLine(
-                                        new LocationId("HN-A"),
-                                        StockStatus.AVAILABLE,
-                                        10,
-                                        0,
-                                        LocalDate.of(2026, 9, 28)),
-                                new StockLevelLine(
-                                        new LocationId("HN-B"),
-                                        StockStatus.AVAILABLE,
-                                        10,
-                                        0,
-                                        LocalDate.of(2026, 9, 28))));
-        var tested =
-                new InventoryServiceImpl(
-                        repository,
-                        mock(InventoryEventPublisher.class),
-                        mock(StockOperations.class),
-                        mock(com.stockflow.inventory.internal.domain.InventoryItemDirectory.class),
-                        clock,
-                        mock(InventoryControlService.class),
-                        mock(InventoryPolicyRepository.class),
-                        mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class),
-                        mock(com.stockflow.inventory.internal.domain.LocationDirectory.class),
-                        mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class),
-                        mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
-                        mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class),
-                        java.time.Duration.ofMinutes(30));
-        assertThat(tested.levelsOf(SKU).getFirst().atp()).isEqualTo(20);
-        Mockito.verify(clock, Mockito.times(1)).instant();
-    }
 
     private static final Sku SKU = new Sku("SOFA-3S-GREY");
 
@@ -80,7 +35,6 @@ class InventoryLevelTest {
                     mock(StockOperations.class),
                     mock(com.stockflow.inventory.internal.domain.InventoryItemDirectory.class),
                     Clock.systemUTC(),
-                    mock(InventoryControlService.class),
                     mock(InventoryPolicyRepository.class),
                         mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class),
                         mock(com.stockflow.inventory.internal.domain.LocationDirectory.class),

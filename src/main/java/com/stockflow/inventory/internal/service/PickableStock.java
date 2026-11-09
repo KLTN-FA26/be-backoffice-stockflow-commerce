@@ -1,6 +1,5 @@
 package com.stockflow.inventory.internal.service;
 
-import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
@@ -9,7 +8,6 @@ import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -40,8 +38,8 @@ final class PickableStock {
     }
 
     /** Sellable stock of {@code sku} on pickable, usable locations of {@code warehouseCode}, never at {@code excluded}. */
-    List<StockAllocator.Candidate> candidates(Sku sku, String warehouseCode, LocationId excluded, Instant now) {
-        Set<StockItemId> frozen = cycleCounts.frozen(List.of(sku.code()), BusinessCalendar.date(now)).stream()
+    List<StockAllocator.Candidate> candidates(Sku sku, String warehouseCode, LocationId excluded) {
+        Set<StockItemId> frozen = cycleCounts.frozen(List.of(sku.code())).stream()
                 .map(layer -> new StockItemId(layer.stockItemId())).collect(Collectors.toSet());
         List<StockAllocator.Candidate> inWarehouse = stockItems.findAvailabilityBySku(sku).stream()
                 .filter(c -> c.location().warehouseCode().equals(warehouseCode))

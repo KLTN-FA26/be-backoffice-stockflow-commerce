@@ -130,7 +130,7 @@ class GoodsReceiptPackageIntegrationTest {
     }
 
     private GoodsReceipts.NewLine lotLine(String lot, int quantity, String unit, String at, NewPackage... packages) {
-        return new GoodsReceipts.NewLine(poLine, quantity, lot, null, at, null, unit, List.of(packages));
+        return new GoodsReceipts.NewLine(poLine, quantity, lot, at, null, unit, List.of(packages));
     }
 
     private GoodsReceipts.LineView count(GoodsReceipts.NewLine line) {

@@ -171,8 +171,8 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         StockItem sourceView = stockItems.findByReservationIdForUpdate(ReservationId.of(command.reservationId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                         "No reservation with id " + command.reservationId()));
-        // The goods come back as the layer they left: same SKU, lot, expiry and receipt time, so FEFO and
-        // FIFO still see them in their place - as loose stock. At the bin they left, that layer is the source
+        // The goods come back as the layer they left: same SKU, lot and receipt time, so FIFO
+        // still sees them in their place - as loose stock. At the bin they left, that layer is the source
         // row itself when it is loose; a carton's row is never refilled by a put-back, whatever bin it is on:
         // emptied by the pick, the carton is CONSUMED and must stay empty, and opened, it would take back units
         // that may never have left it (the put-back names no carton). Picking from a carton is SCRUM-473's.

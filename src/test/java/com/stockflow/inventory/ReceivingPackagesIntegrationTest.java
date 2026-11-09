@@ -104,8 +104,7 @@ class ReceivingPackagesIntegrationTest {
                     poLine, po, revision, item);
         });
         GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-RP", null), clerk);
-        line = receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine, 2000, null, null,
-                RECEIVING, null))).lines().getFirst().id();
+        line = receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine, 2000, null, RECEIVING, null))).lines().getFirst().id();
     }
 
     private List<StockPackageView> count(PackageCount... packages) {
@@ -114,7 +113,7 @@ class ReceivingPackagesIntegrationTest {
     }
 
     private StockMove receive(int quantity) {
-        return inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, quantity, clerk,
+        return inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, RECEIVING, quantity, clerk,
                 RECEIVED));
     }
 

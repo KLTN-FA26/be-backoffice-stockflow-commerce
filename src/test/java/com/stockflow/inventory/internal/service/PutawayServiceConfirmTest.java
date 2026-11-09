@@ -118,7 +118,7 @@ class PutawayServiceConfirmTest {
         ItemLogistics logistics = new ItemLogistics("PCS", null, new BigDecimal("0.010"), null, null, null, null, null,
                 null, null, 1, 1, storageClass, false, null);
         return new ItemRow(UUID.randomUUID(), SKU, 1, logistics,
-                new InventoryPolicy(null, null, null, RemovalStrategy.FEFO, TrackingMode.LOT, false, null));
+                new InventoryPolicy(RemovalStrategy.FEFO, TrackingMode.LOT));
     }
 
     private static CurrentUser clerkOf(String prefix) {

@@ -64,8 +64,10 @@ class InventoryCatalogMigrationUpgradeTest {
                 assertThat(normal.migrate().migrations).allSatisfy(m -> assertThat(
                         new java.math.BigInteger(m.version)).isGreaterThan(new java.math.BigInteger("20261008000200")));
                 normal.validate();
-                try (var row = sql.executeQuery("select safety_stock,reorder_point from "
-                        + "inventory.inventory_items where sku='SOFA-3S-GREY'")) {
+                // The thresholds were carried over, then archived when stock alerts went (V20261111000300).
+                try (var row = sql.executeQuery("select (row_data->>'safety_stock')::int, (row_data->>'reorder_point')::int"
+                        + " from platform.legacy_archive where source_table = 'inventory.inventory_items'"
+                        + " and row_data->>'sku' = 'SOFA-3S-GREY'")) {
                     assertThat(row.next()).isTrue();
                     assertThat(row.getInt(1)).isEqualTo(5);
                     assertThat(row.getInt(2)).isEqualTo(12);
@@ -305,12 +307,16 @@ values ('00000000-0000-0000-0000-000000000070','legacy-slug','Preserved SEO','Pr
                         "update product.products set slug='legacy-slug' where code='UPGRADE'");
                 upgrade.migrate();
                 upgrade.validate();
+                // min_qty is gone (V20261019000500): the minimum threshold is the reorder point. The thresholds and
+                // the shelf life were carried over, then archived when stock alerts and expiry went (V20261111000300).
                 try (var row =
                         sql.executeQuery(
-                                "select"
-                                    + " safety_stock,reorder_point,max_qty,version,max_shelf_life_days"
-                                    + " from inventory.inventory_items where sku='UPGRADE-SKU'")) {
-                    // min_qty is gone (V20261019000500): the minimum threshold is the reorder point.
+                                "select (a.row_data->>'safety_stock')::int, (a.row_data->>'reorder_point')::int,"
+                                    + " (a.row_data->>'max_qty')::int, i.version,"
+                                    + " (a.row_data->>'max_shelf_life_days')::int"
+                                    + " from inventory.inventory_items i join platform.legacy_archive a"
+                                    + " on a.source_table = 'inventory.inventory_items' and a.row_id = i.id"
+                                    + " where i.sku='UPGRADE-SKU'")) {
                     assertThat(row.next()).isTrue();
                     assertThat(row.getInt(1)).isEqualTo(5);
                     assertThat(row.getInt(2)).isEqualTo(10);

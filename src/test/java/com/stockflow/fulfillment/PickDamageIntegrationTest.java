@@ -151,8 +151,7 @@ class PickDamageIntegrationTest {
      * carton size is fixed by the first call, so a test uses one factor throughout.
      */
     private List<CartonRows.Carton> cartons(String location, int count, int factor, String lot, LocalDate expiry) {
-        return tx.execute(s -> CartonRows.stock(jdbc, sku, location, count, factor, lot, expiry,
-                Instant.parse("2026-10-01T03:00:00Z"), "AVAILABLE"));
+        return tx.execute(s -> CartonRows.stock(jdbc, sku, location, count, factor, lot, Instant.parse("2026-10-01T03:00:00Z"), "AVAILABLE"));
     }
 
     /** The SKU's AVAILABLE stock at a bin, over all its cartons. */

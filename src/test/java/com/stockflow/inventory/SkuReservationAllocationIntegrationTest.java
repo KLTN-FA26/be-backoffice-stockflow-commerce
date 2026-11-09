@@ -46,19 +46,18 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * SCRUM-152 against a real database: checkout reserves quantity of a SKU on no location; releasing the order to a
- * warehouse allocates it to pickable bins of that warehouse by BR-STK-006 (earliest expiry, then the earliest real
- * receipt time), never on expired stock, a non-pickable area or another warehouse; the SKU never promises more
+ * warehouse allocates it to pickable bins of that warehouse FIFO, by the earliest real receipt time (kltn-docs 01
+ * BR-17, 07 BR-03), never on a non-pickable area or another warehouse; the SKU never promises more
  * than it has, under concurrency too, and the database refuses what the application would not.
  *
  * <p>Each test owns a fresh SKU with this stock (today = the business date), all of it in sealed cartons of one unit
  * each, so an allocation takes one whole carton per unit (team plan 4C-2: whole cartons only):</p>
  * <pre>
- *   HCM-A01-1-A  bin   5  expires today+30   received 2026-01-01
- *   HCM-A01-1-B  bin   5  expires today+10   received 2026-02-01   (earliest expiry)
- *   HCM-A01-2-A  bin   5  no expiry          received 2025-12-01
- *   HCM-A02-2-A  bin   2  no expiry          received 2025-11-01   (oldest receipt)
- *   HCM-RCV01    area  5  expires today+1    not pickable: never allocated, though sellable
- *   HCM-A02-1-A  bin   4  expired yesterday  never promised, never allocated
+ *   HCM-A01-1-B  bin   5  received 2025-09-01   (oldest receipt)
+ *   HCM-A01-1-A  bin   5  received 2025-10-01
+ *   HCM-A02-2-A  bin   2  received 2025-11-01
+ *   HCM-A01-2-A  bin   5  received 2025-12-01
+ *   HCM-RCV01    area  5  received 2026-03-01   not pickable: never allocated, though sellable
  * </pre>
  * Available to promise is therefore 22.
  */
@@ -89,19 +88,17 @@ class SkuReservationAllocationIntegrationTest {
                     "Allocation fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Allocation fixture','')", Identifiers.newId(), product, sku);
-            row("HCM-A01-1-A", 5, today.plusDays(30), "2026-01-01T00:00:00Z");
-            row("HCM-A01-1-B", 5, today.plusDays(10), "2026-02-01T00:00:00Z");
-            row("HCM-A01-2-A", 5, null, "2025-12-01T00:00:00Z");
-            row("HCM-A02-2-A", 2, null, "2025-11-01T00:00:00Z");
-            row("HCM-RCV01", 5, today.plusDays(1), "2026-03-01T00:00:00Z");
-            row("HCM-A02-1-A", 4, today.minusDays(1), "2025-10-01T00:00:00Z");
+            row("HCM-A01-1-A", 5, "2025-10-01T00:00:00Z");
+            row("HCM-A01-1-B", 5, "2025-09-01T00:00:00Z");
+            row("HCM-A01-2-A", 5, "2025-12-01T00:00:00Z");
+            row("HCM-A02-2-A", 2, "2025-11-01T00:00:00Z");
+            row("HCM-RCV01", 5, "2026-03-01T00:00:00Z");
         });
     }
 
     /** {@code onHand} sealed cartons of one unit at {@code location}. */
-    private void row(String location, int onHand, LocalDate expiry, String receivedAt) {
-        rows.put(location, com.stockflow.support.CartonRows.stock(jdbc, sku, location, onHand, 1, null, expiry,
-                        Instant.parse(receivedAt), "AVAILABLE").stream()
+    private void row(String location, int onHand, String receivedAt) {
+        rows.put(location, com.stockflow.support.CartonRows.stock(jdbc, sku, location, onHand, 1, null, Instant.parse(receivedAt), "AVAILABLE").stream()
                 .map(com.stockflow.support.CartonRows.Carton::stockItemId).toList());
     }
 
@@ -200,9 +197,8 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("release allocates whole cartons FEFO on pickable bins: earliest expiry, then the oldest receipt; "
-            + "never an area")
-    void allocationFollowsFefoThenFifoOnPickableBins() {
+    @DisplayName("release allocates whole cartons FIFO on pickable bins: the oldest receipt first; never an area")
+    void allocationFollowsFifoOnPickableBins() {
         UUID order = order();
         StockReservation soft = reserve(order, 12);
         int atpBefore = atp();
@@ -221,7 +217,6 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(reservedOn("HCM-A02-2-A")).isEqualTo(2);
         assertThat(reservedOn("HCM-A01-2-A")).isZero();
         assertThat(reservedOn("HCM-RCV01")).as("not pickable").isZero();
-        assertThat(reservedOn("HCM-A02-1-A")).as("expired").isZero();
         assertThat(status(soft.reservationId())).isEqualTo("ALLOCATED");
         assertThat(atp()).as("an allocation moves units from reserved to held, it does not promise more").isEqualTo(atpBefore);
         assertThat(jdbc.queryForList("""
@@ -238,7 +233,7 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(reservedEverywhere()).isEqualTo(12);
         // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds, ATP unchanged.
         assertThat(inventory.levelsOf(new Sku(sku)))
-                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 26, 22, 0, 12, 10));
+                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 22, 22, 0, 12, 10));
     }
 
     @Test
@@ -379,7 +374,7 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a short pick's carton is reallocated FEFO elsewhere in the warehouse, never on the short bin")
+    @DisplayName("a short pick's carton is reallocated FIFO elsewhere in the warehouse, never on the short bin")
     void reallocationAfterAShortPick() {
         UUID order = order();
         StockReservation soft = reserve(order, 4);
@@ -458,7 +453,7 @@ class SkuReservationAllocationIntegrationTest {
         UUID next = order();
         reserve(next, 1);
         StockReservation nextHold = allocate(next, "HCM").allocations().get(0).holds().get(0);
-        assertThat(nextHold.locationCode()).as("FEFO: the bin's last free carton").isEqualTo("HCM-A01-1-B");
+        assertThat(nextHold.locationCode()).as("FIFO: the bin's last free carton").isEqualTo("HCM-A01-1-B");
         assertThat(nextHold.stockItemId()).isNotEqualTo(allocation.stockItemId());
 
         var cancelled = tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "Bin checked by hand", "manager"));

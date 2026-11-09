@@ -3,25 +3,23 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.StockThresholdEvaluation;
 import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.TrackingMode;
 
 import java.util.UUID;
 
 /**
- * An inventory item addressed by its own id. The item is what stock, thresholds and picking hang off, so it is read
+ * An inventory item addressed by its own id. The item is what stock and picking hang off, so it is read
  * and edited without going through a product or a variant: nothing here knows either exists. The version an edit
  * quotes back is the item's, and every method answers with the same {@link Detail} so a client never has to read
  * twice to see what it changed.
  */
 public interface InventoryItems {
 
-    /** The item's three groups: identity and logistics, stock policy, and what the policy says about stock now. */
-    record Detail(UUID id, String sku, long version, ItemLogistics logistics, InventoryPolicy policy,
-                  StockThresholdEvaluation evaluation) {}
+    /** The item's two groups: identity and logistics, and stock policy. */
+    record Detail(UUID id, String sku, long version, ItemLogistics logistics, InventoryPolicy policy) {}
 
-    /** One row of the item list: what a picker of items needs, without the dimensions and thresholds of a detail. */
+    /** One row of the item list: what a picker of items needs, without the dimensions and policy of a detail. */
     record Summary(UUID id, String sku, String unitOfMeasure, String barcode, StorageClass storageClass,
                    TrackingMode trackingMode, boolean policyConfigured) {}
 

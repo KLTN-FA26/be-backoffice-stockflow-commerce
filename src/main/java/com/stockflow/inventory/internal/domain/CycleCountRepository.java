@@ -61,7 +61,7 @@ public interface CycleCountRepository {
     /** Who entered the line's figure; empty when the line is unknown or was never counted. */
     Optional<UUID> countedByOf(UUID lineId);
 
-    List<Frozen> frozen(Collection<String> skus, LocalDate today);
+    List<Frozen> frozen(Collection<String> skus);
 
     /** A variance adjustment raised from a count line. */
     record LineAdjustment(UUID id, String number, int quantityDelta, String status) { }

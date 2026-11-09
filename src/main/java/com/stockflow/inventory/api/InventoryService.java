@@ -23,7 +23,7 @@ import java.util.UUID;
 public interface InventoryService {
 
     /**
-     * Available to promise for one SKU (docs 01): sellable units on hand — AVAILABLE, not past expiry — minus
+     * Available to promise for one SKU (docs 01): sellable units on hand — AVAILABLE — minus
      * every hold on them (allocations, checkout holds made before SCRUM-152) minus the live
      * SKU reservations, which sit on no stock item. Never negative.
      */
@@ -60,7 +60,7 @@ public interface InventoryService {
      */
     int availableToPromise(Sku sku, String warehouseCode);
 
-    /** Per-location breakdown, earliest expiry first (FEFO). Used by fulfilment when allocating. */
+    /** Per-location breakdown, oldest receipt first (FIFO, kltn-docs 01 BR-17). Used by fulfilment when allocating. */
     List<StockAvailability> availabilityOf(Sku sku);
 
     /**
@@ -90,7 +90,7 @@ public interface InventoryService {
      * HELD → ALLOCATED (docs 03 §6, 04c F-FUL step 02): the order was released to a warehouse; each live SKU
      * reservation of the order becomes allocations of whole LPN cartons on pickable bins of that warehouse, one
      * allocation per carton, in the SKU's removal order - the earliest receipt first (FIFO, kltn-docs 07 BR-03) - and
-     * never on loose units, on a carton another order holds part of, or on expired, blocked or non-pickable stock.
+     * never on loose units, on a carton another order holds part of, or on blocked or non-pickable stock.
      * Allocations are pinned (X-RESV: they do not expire). All or nothing: when the warehouse has too few whole
      * cartons for every line, nothing is allocated (k &lt; N waits for {@code AWAITING_STOCK}, team plan 4A-6). Idempotent: an order with no SKU reservation left
      * gets an empty result. Joins the caller's transaction; locks the SKUs, then the reservations, then the stock
@@ -246,8 +246,7 @@ public interface InventoryService {
      *
      * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: stock rows, movements,
      * adjustments, counts, purchase order and receipt lines, pick lines and putaway or move tasks
-     * all point at an item through foreign keys, and any of them refuses the delete. The item's stock alerts are
-     * not a use: they are deleted with it.</p>
+     * all point at an item through foreign keys, and any of them refuses the delete.</p>
      *
      * @throws org.springframework.dao.DataIntegrityViolationException when something still refers to an item;
      *         the caller's transaction is then rolled back as a whole
@@ -261,16 +260,6 @@ public interface InventoryService {
      * SKU rename guard asks the same question in the database ({@code inventory.item_in_use}).
      */
     java.util.List<String> skusInUse(java.util.Collection<String> skus);
-
-    /**
-     * SKUs that are low on stock, in SKU order, the {@code limit} after {@code afterSku} ({@code null} or empty for
-     * the first page): pass the last SKU returned to get the next page; fewer than {@code limit} back means the end.
-     *
-     * <p>The one definition of "low stock" (plan A8): usable on-hand at or below the reorder point, or below the
-     * safety stock; a threshold that is not set never makes a SKU low. The stock alerts and the dashboard read it
-     * from here, so they cannot disagree about which SKUs are low.</p>
-     */
-    java.util.List<LowStockItem> lowStockBatch(String afterSku, int limit);
 
     /**
      * Ask for a stock correction with a reason (SCRUM-145). The stock does not change until a

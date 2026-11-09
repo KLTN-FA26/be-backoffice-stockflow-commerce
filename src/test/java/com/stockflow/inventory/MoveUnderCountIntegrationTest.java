@@ -25,10 +25,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -78,19 +76,17 @@ class MoveUnderCountIntegrationTest {
                     "Move under count fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Move under count fixture");
-            CartonRows.stock(jdbc, sku, A, 1, 10, null, LocalDate.now().plusYears(1),
-                    Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE");
+            CartonRows.stock(jdbc, sku, A, 1, 10, null, Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE");
             stock(C, 5);
         });
     }
 
     private void stock(String bin, int onHand) {
         jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, expiry_date, received_at, on_hand,
+                insert into inventory.stock_item (id, sku, location_code, received_at, on_hand,
                     reserved, status, version, created_at)
-                values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
-                Identifiers.newId(), sku, bin, Date.valueOf(LocalDate.now().plusYears(1)),
-                Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")), onHand);
+                values (?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
+                Identifiers.newId(), sku, bin, Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")), onHand);
     }
 
     private UUID user(String role) {

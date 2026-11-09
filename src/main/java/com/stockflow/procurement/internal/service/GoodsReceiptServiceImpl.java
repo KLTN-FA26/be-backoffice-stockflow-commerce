@@ -16,7 +16,6 @@ import com.stockflow.contracts.GoodsReceiptConfirmed;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.contracts.ReceiptStockReadyForPutaway;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
-import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReceiveStockCommand;
@@ -24,7 +23,6 @@ import com.stockflow.inventory.api.ReceiptOrigin;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionService;
-import com.stockflow.procurement.internal.domain.ExpiryWarning;
 import com.stockflow.procurement.internal.domain.GoodsReceipt;
 import com.stockflow.procurement.internal.domain.GoodsReceiptRepository;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
@@ -78,7 +76,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     private static final Logger log = LoggerFactory.getLogger(GoodsReceiptServiceImpl.class);
 
-    /** Receipt numbers and the BR-06 expiry check follow the business's calendar, not UTC. */
+    /** Receipt numbers follow the business's calendar, not UTC. */
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
     private static final String RECEIVING = "RECEIVING";
@@ -93,7 +91,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final IdentityService identity;
-    private final InventoryControlService inventoryControl;
     private final UomConversionService units;
     private final CurrentUserProvider users;
     private final ApplicationEventPublisher events;
@@ -101,8 +98,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     GoodsReceiptServiceImpl(GoodsReceiptRepository receipts, GoodsReceiptSearch search, ReceivingPurchaseOrders orders,
                             ReceivingLocations locations, InventoryService inventory, WarehouseService warehouses,
-                            IdentityService identity, InventoryControlService inventoryControl,
-                            UomConversionService units, CurrentUserProvider users,
+                            IdentityService identity, UomConversionService units, CurrentUserProvider users,
                             ApplicationEventPublisher events, Clock clock) {
         this.receipts = receipts;
         this.search = search;
@@ -111,7 +107,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         this.inventory = inventory;
         this.warehouses = warehouses;
         this.identity = identity;
-        this.inventoryControl = inventoryControl;
         this.units = units;
         this.users = users;
         this.events = events;
@@ -213,7 +208,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         receipt.requireCountable();
         // SCRUM-478: a receipt without a PO has no order; its lines name the item by SKU.
         ReceivingPurchaseOrder order = receipt.blind() ? null : orderOf(receipt);
-        LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
         Map<String, ReceiptLine> current = new HashMap<>();
         for (ReceiptLine line : receipt.lines()) {
             current.put(lineKey(line.poLineId(), line.inventoryItemId(), line.lotNumber()), line);
@@ -223,8 +217,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 : inventory.receivingPackagesOf(receipt.lines().stream().map(ReceiptLine::id).toList());
         // Every unit of every item a line names a unit of, in one query: a lookup per line was a query per line.
         Map<UUID, InventoryItemPolicy> items = new HashMap<>();
-        // The policies of every item the lines name, in one read (maxShelfLifeDays is part of it); an item it does
-        // not return falls back to the single read below.
+        // The policies of every item the lines name, in one read; an item it does not return falls back to the single
+        // read below.
         if (order != null) {
             items.putAll(inventory.itemPolicies(newLines.stream()
                     .flatMap(in -> order.line(in.purchaseOrderLineId()).stream())
@@ -306,7 +300,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             String lot = blankToNull(in.lotNumber());
             int before = errors.size();
             ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());
-            checkLotData(errors, i, item, lot, in.expiryDate(), receivedOn);
+            checkLotData(errors, i, item, lot);
             if (!seen.add(lineKey(poLineId, itemId, lot))) {
                 errors.add(i, "lotNumber", ErrorCode.DUPLICATE_RECEIPT_LINE,
                         "%s with this lot is already counted above; put the whole quantity of a lot on one line"
@@ -320,7 +314,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     poLine == null ? null : poLine.uomConversionId(), cartonsBefore);
             if (errors.size() == before) {
                 counted.add(ReceiptLine.counted(lineId, poLineId, itemId,
-                        location.id(), in.quantity(), lot, in.expiryDate(), blankToNull(in.note()),
+                        location.id(), in.quantity(), lot, blankToNull(in.note()),
                         unit == null ? null : unit.id()));
                 if (!in.packages().isEmpty() || !cartonsBefore.isEmpty()) {
                     cartonCounts.add(new CartonCount(lineId, item.sku(), unit == null ? null : unit.id(),
@@ -691,7 +685,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 .thenComparing(ReceiptLine::id)).toList()) {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
             inventory.receive(new ReceiveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(),
-                    line.expiryDate(), where.get(line.locationId()).code(), line.receivedQuantity(), userId,
+                    where.get(line.locationId()).code(), line.receivedQuantity(), userId,
                     saved.confirmedAt(), origin));
         }
         List<GoodsReceiptConfirmed.Line> confirmedLines = new ArrayList<>();
@@ -874,11 +868,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     }
 
     /**
-     * BR-03 and BR-06, each refusal on its own field with its own code ({@code LOT_REQUIRED},
-     * {@code EXPIRY_NOT_AFTER_RECEIPT}, {@code EXPIRY_EXCEEDS_MAX_SHELF_LIFE}…) under RECEIPT_LOT_DATA_INVALID.
+     * BR-03, each refusal on its own field with its own code ({@code LOT_REQUIRED}, {@code LOT_NOT_ALLOWED}) under
+     * RECEIPT_LOT_DATA_INVALID. There is no expiry to check: a receipt records none (03 BR-06).
      */
-    private static void checkLotData(LineErrors errors, int index, InventoryItemPolicy item, String lot,
-                                     LocalDate expiry, LocalDate receivedOn) {
+    private static void checkLotData(LineErrors errors, int index, InventoryItemPolicy item, String lot) {
         ErrorCode code = ErrorCode.RECEIPT_LOT_DATA_INVALID;
         if (item.lotTracked() && lot == null) {
             errors.add(index, "lotNumber", code, "LOT_REQUIRED",
@@ -887,26 +880,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         if (!item.lotTracked() && lot != null) {
             errors.add(index, "lotNumber", code, "LOT_NOT_ALLOWED",
                     "%s is not lot-tracked; leave the lot number empty".formatted(item.sku()));
-        }
-        if (item.expiryTracked() && expiry == null) {
-            errors.add(index, "expiryDate", code, "EXPIRY_REQUIRED",
-                    "%s is expiry-tracked: each line needs an expiry date (BR-03)".formatted(item.sku()));
-        }
-        if (!item.expiryTracked() && expiry != null) {
-            errors.add(index, "expiryDate", code, "EXPIRY_NOT_ALLOWED",
-                    "%s is not expiry-tracked; leave the expiry date empty".formatted(item.sku()));
-        }
-        if (expiry != null && !expiry.isAfter(receivedOn)) {
-            errors.add(index, "expiryDate", code, "EXPIRY_NOT_AFTER_RECEIPT",
-                    "Expiry date %s must be after the receiving date %s (BR-06)".formatted(expiry, receivedOn));
-        }
-        // BR-RCP-004 (SCRUM-479): no later than the receiving date plus the SKU's maximum shelf life, when it has one.
-        if (expiry != null && item.expiryTracked() && item.maxShelfLifeDays() != null
-                && expiry.isAfter(receivedOn.plusDays(item.maxShelfLifeDays()))) {
-            errors.add(index, "expiryDate", code, "EXPIRY_EXCEEDS_MAX_SHELF_LIFE",
-                    "Expiry date %s is later than %s, the receiving date %s plus the maximum shelf life of %d day(s) of %s (BR-RCP-004)"
-                            .formatted(expiry, receivedOn.plusDays(item.maxShelfLifeDays()), receivedOn,
-                                    item.maxShelfLifeDays(), item.sku()));
         }
     }
 
@@ -994,11 +967,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 : units.conversionsOf(items.values().stream().map(i -> new Sku(i.sku())).toList());
         Map<UUID, String> unitCodes = new HashMap<>();
         unitsBySku.values().forEach(list -> list.forEach(u -> unitCodes.put(u.id(), u.unitOfMeasure())));
-        // BR-06: a lot that expires soon after it arrives is flagged, never refused. Counted from the day it was
-        // received, in the business's calendar; a cancelled receipt counted nothing, so it flags nothing.
-        boolean flags = receipt.status() != GoodsReceiptStatus.CANCELLED;
-        LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
-        int window = flags ? inventoryControl.expiryWarningDays() : 0;
         // SCRUM-477: a count not yet posted that goes beyond a PO line's tolerance is flagged, on the lines concerned
         // and on the receipt: confirming it sends it to the manager, and the manager sees which lines to decide on.
         Set<UUID> overPoLines = new HashSet<>();
@@ -1010,9 +978,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         List<LineView> lines = receipt.lines().stream().map(line -> {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
             List<String> lineWarnings = new ArrayList<>();
-            if (flags && ExpiryWarning.isNear(line.expiryDate(), receivedOn, window)) {
-                lineWarnings.add(ExpiryWarning.EXPIRY_NEAR);
-            }
             if (overPoLines.contains(line.poLineId())) {
                 lineWarnings.add(GoodsReceipts.OVER_TOLERANCE);
             }
@@ -1028,8 +993,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     order == null ? null
                             : order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::lineNo).orElse(null),
                     line.inventoryItemId(), item == null ? null : item.sku(), line.receivedQuantity(),
-                    line.lotNumber(), line.expiryDate(), code(where, line.locationId()), line.note(),
-                    item != null && item.lotTracked(), item != null && item.expiryTracked(),
+                    line.lotNumber(), code(where, line.locationId()), line.note(),
+                    item != null && item.lotTracked(),
                     line.receivedQuantity(), lineWarnings, line.uomConversionId() == null ? null : unitCodes.get(line.uomConversionId()),
                     line.receivedQuantity() - inCartons, packages,
                     item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()
@@ -1040,9 +1005,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                             .map(ReceivingPurchaseOrder.Line::uomConversionId).map(unitCodes::get).orElse(null));
         }).toList();
         List<String> warnings = new ArrayList<>();
-        if (lines.stream().anyMatch(l -> l.warnings().contains(ExpiryWarning.EXPIRY_NEAR))) {
-            warnings.add(ExpiryWarning.EXPIRY_NEAR);
-        }
         if (!overPoLines.isEmpty()) {
             warnings.add(GoodsReceipts.OVER_TOLERANCE);
         }

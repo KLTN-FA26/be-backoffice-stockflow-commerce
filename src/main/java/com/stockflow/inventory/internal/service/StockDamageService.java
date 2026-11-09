@@ -25,7 +25,6 @@ import com.stockflow.inventory.consumption.ReportPickDamageResult;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.DamageReason;
-import com.stockflow.inventory.internal.domain.ExpiryPolicy;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
@@ -466,10 +465,9 @@ class StockDamageService implements StockDamages, PickDamageReporting {
      */
     private List<StockAllocator.AllocationLine> planReplacement(StockItem source, Quantity quantity, Instant now) {
         List<StockAllocator.Candidate> pool = pickable.candidates(source.sku(), source.location().warehouseCode(),
-                null, now);
+                null);
         try {
-            StockAllocator.Plan plan = StockAllocator.plan(source.sku().code(), pool, quantity,
-                    controls.policy(source.sku()).removalStrategy(), BusinessCalendar.date(now));
+            StockAllocator.Plan plan = StockAllocator.plan(source.sku().code(), pool, quantity);
             if (plan.isShort()) {
                 log.info("No replacement for {} damaged x {} in {}: whole cartons cover {}", quantity, source.sku(),
                         source.location().warehouseCode(), plan.planned());
@@ -642,11 +640,6 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                     "%s is not a bin of the warehouse damage report %s belongs to".formatted(to, report.number()));
         }
         StockItem damagedView = stockItems.findById(report.damagedStockItem()).orElseThrow();
-        if (ExpiryPolicy.isExpired(damagedView.expiryDate(), BusinessCalendar.date(now))) {
-            throw new BusinessException(ErrorCode.STOCK_EXPIRED, ("%s%s expired on %s; it is written off, not put "
-                    + "back on sale").formatted(damagedView.sku(), lotSuffix(damagedView.lotNumber()),
-                    damagedView.expiryDate()));
-        }
         Optional<StockItem> layerThere = layerAt(damagedView, to);
         if (layerThere.isPresent() && (layerThere.get().status() != StockStatus.AVAILABLE
                 || !layerThere.get().isSameGoodsAs(damagedView))) {
@@ -987,9 +980,8 @@ class StockDamageService implements StockDamages, PickDamageReporting {
      * units, so damage cannot release it; it can only leave it uncovered, and the release will then fall short.
      */
     private int shortfall(Sku sku, Instant now) {
-        LocalDate today = BusinessCalendar.date(now);
-        long free = stockItems.availableQuantities(Set.of(sku.code()), today).getOrDefault(sku.code(), 0L)
-                - cycleCounts.frozen(List.of(sku.code()), today).stream().mapToLong(CycleCountRepository.Frozen::free).sum();
+        long free = stockItems.availableQuantities(Set.of(sku.code())).getOrDefault(sku.code(), 0L)
+                - cycleCounts.frozen(List.of(sku.code())).stream().mapToLong(CycleCountRepository.Frozen::free).sum();
         long promised = skuReservations.heldBySku(List.of(sku.code())).getOrDefault(sku.code(), 0L);
         int shortfall = (int) Math.max(0, promised - Math.max(0, free));
         if (shortfall > 0) {

@@ -1,11 +1,7 @@
 package com.stockflow.inventory.internal.domain;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.RemovalStrategy;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -26,9 +22,9 @@ import java.util.UUID;
  * drawn on; loose units and a carton another order already holds part of are left alone. Every carton of a SKU holds
  * the SKU's standard count (01 BR-11, 03 BR-13), so N cartons in any order are the line's quantity.</p>
  *
- * <p><b>FIFO, k &lt; N.</b> Cartons go in the SKU's removal order - received first, first out (finished goods have no
- * expiry, 07 BR-03.3), or earliest expiry first for a SKU whose policy says so - and the plan takes them while each fits
- * in what is still needed. When the warehouse has only k of the N cartons, the plan holds those k and reports the
+ * <p><b>FIFO, k &lt; N.</b> Cartons go received first, first out, for every SKU (kltn-docs 01 BR-17, 07 BR-03.3): cups
+ * and packaging have no expiry, so there is no earliest-expiry order to prefer and no expired carton to skip, and the
+ * removal order is not configurable (team plan 5-1). The plan takes them while each fits in what is still needed. When the warehouse has only k of the N cartons, the plan holds those k and reports the
  * rest short ({@link Plan#shortUnits}); whether a short plan may be used is the caller's decision (07 BR-03.4 sends
  * the shortfall to a Production Order once the order can wait for it, team plan 4A-6). A carton larger than what is
  * still needed is never broken to fill the gap: it is skipped, and the gap stays short.</p>
@@ -61,17 +57,16 @@ public final class StockAllocator {
             StockItemId stockItemId,
             LocationId location,
             String lotNumber,
-            LocalDate expiryDate,
             StockStatus status,
             Quantity available,
             Instant receivedAt,
             UUID stockPackageId,
             boolean wholeCarton
     ) {
-        /** Loose stock, for ordering a list by the removal strategy; never planned. */
-        public Candidate(StockItemId id, LocationId location, String lotNumber, LocalDate expiryDate,
-                         StockStatus status, Quantity available, Instant receivedAt) {
-            this(id, location, lotNumber, expiryDate, status, available, receivedAt, null, false);
+        /** Loose stock, for ordering a list in removal order; never planned. */
+        public Candidate(StockItemId id, LocationId location, String lotNumber, StockStatus status,
+                         Quantity available, Instant receivedAt) {
+            this(id, location, lotNumber, status, available, receivedAt, null, false);
         }
 
         public Candidate {
@@ -86,41 +81,30 @@ public final class StockAllocator {
     }
 
     /**
-     * The removal order, as a comparator: FIFO by receipt time, or for a FEFO SKU the earliest expiry first and then
-     * receipt time. Unknown dates sort last. The final tie-breaks on location code and id make the plan deterministic:
-     * without them, two runs over the same data could produce different orders, and a test asserting on the plan
-     * would be flaky.
+     * The removal order, as a comparator: FIFO by receipt time. A row with no receipt time (stock that predates timed
+     * receipts) sorts after every timed one, as it did before FEFO went: no SKU's order changes under it. The final
+     * tie-breaks on location code and id make the plan deterministic: without them, two runs over the same data could
+     * produce different orders, and a test asserting on the plan would be flaky.
      */
-    public static Comparator<Candidate> comparator(RemovalStrategy strategy) {
-        Comparator<Candidate> receipt = Comparator.comparing(Candidate::receivedAt,
-                Comparator.nullsLast(Comparator.naturalOrder()));
-        Comparator<Candidate> primary = strategy == RemovalStrategy.FIFO ? receipt
-                : Comparator.comparing(Candidate::expiryDate, Comparator.nullsLast(Comparator.<LocalDate>naturalOrder()))
-                    .thenComparing(receipt);
-        return primary.thenComparing(c -> c.location().code()).thenComparing(c -> c.stockItemId().value());
+    public static Comparator<Candidate> comparator() {
+        return Comparator.comparing(Candidate::receivedAt, Comparator.nullsLast(Comparator.<Instant>naturalOrder()))
+                .thenComparing(c -> c.location().code())
+                .thenComparing(c -> c.stockItemId().value());
     }
 
     /**
-     * Whole cartons for {@code required} units, in the SKU's removal order. Never throws for a shortage: a plan of
-     * k &lt; N cartons says so in {@link Plan#shortUnits}.
-     *
-     * @throws BusinessException {@code INVENTORY_POLICY_STOCK_CONFLICT} when a FIFO SKU has a sellable carton with no
-     *         receipt time: FIFO cannot place it, and guessing would ship the wrong carton first
+     * Whole cartons for {@code required} units, FIFO. Never throws for a shortage: a plan of k &lt; N cartons says so
+     * in {@link Plan#shortUnits}.
      */
-    public static Plan plan(String sku, List<Candidate> candidates, Quantity required, RemovalStrategy strategy,
-                            LocalDate today) {
+    public static Plan plan(String sku, List<Candidate> candidates, Quantity required) {
         List<Candidate> cartons = candidates.stream()
                 .filter(Candidate::wholeCarton)
                 .filter(c -> c.status().isReservable())
                 .filter(c -> !c.available().isZero())
-                .filter(c -> c.expiryDate() == null || !c.expiryDate().isBefore(today))
                 .toList();
-        if (strategy == RemovalStrategy.FIFO && cartons.stream().anyMatch(c -> c.receivedAt() == null)) {
-            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-        }
         List<AllocationLine> lines = new ArrayList<>();
         int outstanding = required.value();
-        for (Candidate carton : cartons.stream().sorted(comparator(strategy)).toList()) {
+        for (Candidate carton : cartons.stream().sorted(comparator()).toList()) {
             if (outstanding == 0) {
                 break;
             }

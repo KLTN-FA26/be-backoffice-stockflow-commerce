@@ -428,7 +428,8 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(media.describe(id, defaultId, image.id(), "Alt", 1, false).altText()).isEqualTo("Alt");
         var item = items.get(itemOf(defaultId));
         assertThat(items.configure(item.id(), item.version(),
-                new InventoryPolicy(4, 1, null, RemovalStrategy.FIFO, TrackingMode.NONE, false, null)).policy().reorderPoint()).isEqualTo(4);
+                new InventoryPolicy(RemovalStrategy.FIFO, TrackingMode.NONE)).policy().removalStrategy())
+                .isEqualTo(RemovalStrategy.FIFO);
         assertThat(variants.block(id, defaultId).status()).isEqualTo(VariantStatus.BLOCKED);
     }
 
@@ -579,65 +580,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(products.findById(created.productId())).isPresent();
     }
 
-    // ------------------------------------------------------------------ stock alerts and SKU-keyed references
-
-    /** A REORDER episode of the SKU, open or already resolved, and a row on the alert queue: what a reorder point leaves. */
-    private void alertsOf(String sku) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, status, opened_at, last_observed_at)
-                    VALUES (?, 'REORDER', ?, 0, 10, 'OPEN', NOW(), NOW())""", Identifiers.newId(), sku);
-            jdbc.update("""
-                    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, status, opened_at, last_observed_at,
-                        resolved_at, resolution)
-                    VALUES (?, 'SAFETY', ?, 0, 5, 'RESOLVED', NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day', NOW(), 'RECOVERED')""",
-                    Identifiers.newId(), sku);
-            jdbc.update("INSERT INTO inventory.stock_alert_dirty (sku) VALUES (?)", sku);
-        });
-    }
-
-    private long alertRows(String sku) {
-        return jdbc.queryForObject("SELECT count(*) FROM inventory.stock_alert WHERE sku = ?", Long.class, sku);
-    }
-
-    @Test
-    @DisplayName("a draft whose SKU got a reorder point (and so stock alerts) is still deleted: the alerts and queue rows go with its item")
-    void deleteDraftTakesItsStockAlertsAlong() {
-        ProductSummary created = draft();
-        UUID id = created.productId();
-        UUID defaultId = defaultVariant(id);
-        var item = items.get(itemOf(defaultId));
-        items.configure(item.id(), item.version(),
-                new InventoryPolicy(10, 5, null, RemovalStrategy.FIFO, TrackingMode.NONE, false, null));
-        alertsOf(created.code());
-        assertThat(alertRows(created.code())).isEqualTo(2);
-
-        products.deleteDraft(id, products.findById(id).orElseThrow().version());
-
-        assertThat(products.findById(id)).isEmpty();
-        assertThat(alertRows(created.code())).isZero();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_alert_dirty WHERE sku = ?", Long.class,
-                created.code())).isZero();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class,
-                created.code())).isZero();
-    }
-
-    @Test
-    @DisplayName("a DRAFT SKU with stock alerts is still renamed: its alerts follow the new code")
-    void renamingADraftSkuMovesItsAlerts() {
-        ProductSummary created = draft();
-        UUID id = created.productId();
-        UUID defaultId = defaultVariant(id);
-        alertsOf(created.code());
-        String renamed = created.code() + "-NEW";
-
-        var view = variants.update(id, defaultId, new NewVariant(renamed, null, null, null));
-
-        assertThat(view.sku()).isEqualTo(renamed);
-        assertThat(alertRows(created.code())).isZero();
-        assertThat(alertRows(renamed)).isEqualTo(2);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, renamed)).isOne();
-    }
+    // ------------------------------------------------------------------ SKU-keyed references
 
     @Test
     @DisplayName("a DRAFT SKU an adjustment refers to (no stock row) is in use: rename INVALID_VARIANT_TRANSITION, delete PRODUCT_IN_USE naming it")
@@ -707,7 +650,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(obsolete.sku()).isEqualTo(extra.sku());
 
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> items.configure(obsolete.id(),
-                obsolete.version(), new InventoryPolicy(4, 1, null, RemovalStrategy.FIFO, TrackingMode.NONE, false, null))))
+                obsolete.version(), new InventoryPolicy(RemovalStrategy.FIFO, TrackingMode.NONE))))
                 .errorCode()).isEqualTo(ErrorCode.VARIANT_OBSOLETE);
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> items.describe(obsolete.id(),
                 obsolete.version(), obsolete.logistics()))).errorCode()).isEqualTo(ErrorCode.VARIANT_OBSOLETE);

@@ -117,7 +117,7 @@ class PutawayTaskCreatorIntegrationTest {
                     poLine, po, revision, item);
         });
         receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PT", null), clerk).id();
-        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, quantity, null, null, receiving, null,
+        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, quantity, null, receiving, null,
                 "CARTON", List.of(packages))));
         GoodsReceipts.LineView confirmed = receipts.confirm(receiptId, clerk).lines().getFirst();
         lineId = confirmed.id();

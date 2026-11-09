@@ -28,7 +28,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.io.ByteArrayInputStream;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -132,10 +131,10 @@ class StockDamagePhotoFailureIntegrationTest {
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Fixture','')", Identifiers.newId(), product, sku);
             jdbc.update("""
-                    INSERT INTO inventory.stock_item (id, sku, location_code, expiry_date, on_hand, reserved, status,
+                    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status,
                                                       received_at, version, created_at)
-                    VALUES (?, ?, 'HCM-A01-2-B', ?, 5, 0, 'AVAILABLE', ?, 0, NOW())""", row, sku,
-                    LocalDate.now().plusDays(90), Timestamp.from(Instant.parse("2026-10-01T03:00:00Z")));
+                    VALUES (?, ?, 'HCM-A01-2-B', 5, 0, 'AVAILABLE', ?, 0, NOW())""", row, sku,
+                    Timestamp.from(Instant.parse("2026-10-01T03:00:00Z")));
         });
         return row;
     }

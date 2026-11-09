@@ -1449,7 +1449,7 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
     private void receive(PurchaseOrderSummary po, int quantity) {
         var receipt = receipts.create(new GoodsReceipts.Create(po.purchaseOrderId(), null, null), buyer);
         receipts.replaceLines(receipt.id(), List.of(new GoodsReceipts.NewLine(po.lines().getFirst().lineId(), quantity,
-                null, null, "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(quantity))));
+                null, "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(quantity))));
         receipts.confirm(receipt.id(), buyer);
     }
 }

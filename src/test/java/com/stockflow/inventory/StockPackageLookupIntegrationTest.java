@@ -108,8 +108,7 @@ class StockPackageLookupIntegrationTest {
                     poLine, po, revision, item);
         });
         GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-SPL", null), clerk);
-        line = receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine, 2000, null, null,
-                RECEIVING, null))).lines().getFirst().id();
+        line = receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine, 2000, null, RECEIVING, null))).lines().getFirst().id();
         lpns = count(PackageCount.fresh(), PackageCount.fresh()).stream()
                 .map(StockPackageView::lpn).toList();
     }
@@ -121,7 +120,7 @@ class StockPackageLookupIntegrationTest {
 
     /** Both cartons IN_STOCK, unopened, at the receiving area; nothing loose. */
     private void receive() {
-        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
+        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, RECEIVING, 2000, clerk, RECEIVED));
     }
 
     private PageResponse<StockPackageBalance> list(String location, String sku, List<StockPackageStatus> statuses) {
@@ -186,7 +185,7 @@ class StockPackageLookupIntegrationTest {
         receive();
 
         assertThat(lookup.atLocation(RECEIVING.toLowerCase(Locale.ROOT))).filteredOn(l -> l.sku().equals(sku))
-                .containsExactly(new LocationLine(sku, null, null, StockStatus.INBOUND, 2, 2000, 0, 0, 0, 2000));
+                .containsExactly(new LocationLine(sku, null, StockStatus.INBOUND, 2, 2000, 0, 0, 0, 2000));
     }
 
     @Test

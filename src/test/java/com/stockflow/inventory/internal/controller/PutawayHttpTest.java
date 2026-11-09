@@ -109,7 +109,7 @@ class PutawayHttpTest {
                     poLine, po, revision, item);
         });
         UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PH", null), clerk).id();
-        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 40, null, null, RECEIVING, null,
+        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 40, null, RECEIVING, null,
                 "CARTON", List.of(new NewPackage(null, 20), new NewPackage(null, 20)))));
         receipts.confirm(receiptId, clerk);
         Await.until("two putaway tasks", Duration.ofSeconds(20),

@@ -55,7 +55,7 @@ public interface PickDamageReporting {
      *
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (unknown, or another order's);
      *         {@code RESERVATION_NOT_ACTIVE}; {@code VALIDATION_FAILED} for more units than the allocation keeps;
-     *         {@code STOCK_STATUS_MISMATCH}, {@code STOCK_EXPIRED}; {@code DAMAGE_AREA_MISSING},
+     *         {@code STOCK_STATUS_MISMATCH}; {@code DAMAGE_AREA_MISSING},
      *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code LOCATION_AREA_MISMATCH} for the
      *         quarantine area; {@code DAMAGE_PHOTO_REQUIRED}; {@code OUT_OF_DATA_SCOPE}
      */

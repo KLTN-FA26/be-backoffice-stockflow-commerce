@@ -33,11 +33,9 @@ import org.springframework.test.util.AopTestUtils;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -102,7 +100,7 @@ class CycleCountIntegrationTest {
                     "Cycle count fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Cycle count fixture");
-            jdbc.update("update inventory.inventory_items set lot_tracked=true, expiry_tracked=true,"
+            jdbc.update("update inventory.inventory_items set lot_tracked=true,"
                     + " removal_strategy='FEFO', policy_configured=true where sku=?", sku);
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             cartonUnit = Identifiers.newId();
@@ -116,9 +114,9 @@ class CycleCountIntegrationTest {
     private UUID loose(String location, int onHand) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, expiry_date, received_at, on_hand,
-                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
-                id, sku, location, lot, Date.valueOf(LocalDate.now().plusYears(1)), Timestamp.from(EARLY), onHand));
+                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
+                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
+                id, sku, location, lot, Timestamp.from(EARLY), onHand));
         return id;
     }
 
@@ -131,11 +129,10 @@ class CycleCountIntegrationTest {
                         received_qty, location_code, status, unopened) values (?, ?, ?, ?, ?, ?, ?, 'IN_STOCK', ?)""",
                     id, lpn(name), item, cartonUnit, CARTON_FACTOR, quantity, location, unopened);
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, expiry_date, received_at,
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at,
                         on_hand, reserved, status, version, created_at, stock_package_id)
-                    values (?, ?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, location, lot, Date.valueOf(LocalDate.now().plusYears(1)),
-                    Timestamp.from(EARLY), quantity, id);
+                    values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
+                    Identifiers.newId(), sku, location, lot, Timestamp.from(EARLY), quantity, id);
         });
         return id;
     }
@@ -241,7 +238,7 @@ class CycleCountIntegrationTest {
     }
 
     private List<CycleCountRepository.Frozen> frozen() {
-        return repository.frozen(List.of(sku), LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")));
+        return repository.frozen(List.of(sku));
     }
 
     private static ErrorCode code(Throwable thrown) {

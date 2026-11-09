@@ -826,7 +826,7 @@ class PackingServiceTest {
             when(pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).thenReturn(List.of(
                     pickedLine(lineId, 1, "L1", reservation)));
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(reservation, "SKU-A", "HCM-A-01", "L1", 1,
-                    HoldView.Status.CONSUMED, null, null, "SN-1")));
+                    HoldView.Status.CONSUMED, null, "SN-1")));
 
             service.session(pick.getId(), actor);
 
@@ -841,7 +841,7 @@ class PackingServiceTest {
             when(pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).thenReturn(List.of(
                     pickedLine(lineId, 4, "LSX-1", hold)));
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(hold, "CUP-PRINT", "HCM-A-01", "LSX-1", 4,
-                    HoldView.Status.CONSUMED, null, null)));
+                    HoldView.Status.CONSUMED, null)));
 
             service.session(pick.getId(), actor);
 
@@ -859,8 +859,8 @@ class PackingServiceTest {
             printedOrder(List.of(delivered, blanks));
             when(pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).thenReturn(List.of());
             when(inventory.holds(any())).thenReturn(List.of(
-                    new HoldView(delivered, "CUP-PRINT", "HCM-PCK01", "LOT-P", 3, HoldView.Status.CONSUMED, null, null),
-                    new HoldView(blanks, "CUP-PRINT", "HCM-A-01", "LOT-B", 1, HoldView.Status.HELD, null, null)));
+                    new HoldView(delivered, "CUP-PRINT", "HCM-PCK01", "LOT-P", 3, HoldView.Status.CONSUMED, null),
+                    new HoldView(blanks, "CUP-PRINT", "HCM-A-01", "LOT-B", 1, HoldView.Status.HELD, null)));
 
             service.session(pick.getId(), actor);
 
