@@ -605,7 +605,7 @@ class InventoryServiceImpl implements InventoryService {
         }
         String warehouse = view.location().warehouseCode();
         List<StockAllocator.AllocationLine> lines = plan(view.sku(),
-                pickableCandidates(view.sku(), warehouse, view.location()), shortHold.quantity(), warehouse, today);
+                pickableCandidates(view.sku(), warehouse, view.id()), shortHold.quantity(), warehouse, today);
         UUID origin = shortHold.allocatedFrom() != null ? shortHold.allocatedFrom() : shortHold.id().value();
 
         Set<StockItemId> ids = new java.util.TreeSet<>(Comparator.comparing(id -> id.value().toString()));
@@ -662,7 +662,7 @@ class InventoryServiceImpl implements InventoryService {
      * {@code excluded}; read as projections, so nothing lands in the persistence context before the locked reads.
      * The one definition, shared with the damage reported at picking: {@link PickableStock}.
      */
-    private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, LocationId excluded) {
+    private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, StockItemId excluded) {
         return new PickableStock(repository, locations, cycleCounts).candidates(sku, warehouse, excluded, clock.instant());
     }
 

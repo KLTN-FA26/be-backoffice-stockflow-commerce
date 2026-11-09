@@ -402,7 +402,7 @@ class PickConfirmationIntegrationTest {
         assertThat(added).hasSize(1);
         String newLine = added.get(0).path("lineId").asText();
         String newLocation = added.get(0).path("locationCode").asText();
-        assertThat(newLocation).as("never the short bin").isNotEqualTo(location);
+        assertThat(lpn(newLine)).as("never the short carton (07 BR-09)").isNotEqualTo(lpn(lineId));
         assertThat(lineStatus(lineId)).isEqualTo("CANCELLED");
         assertThat(holdStatus(lineId)).isEqualTo("RELEASED");
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("back where it was held from")

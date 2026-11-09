@@ -379,7 +379,8 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a short pick's carton is reallocated FEFO elsewhere in the warehouse, never on the short bin")
+    @DisplayName("a short pick's carton is reallocated as the next carton in FEFO order, its own bin's included, never"
+            + " the short carton itself (07 BR-09)")
     void reallocationAfterAShortPick() {
         UUID order = order();
         StockReservation soft = reserve(order, 4);
@@ -391,8 +392,12 @@ class SkuReservationAllocationIntegrationTest {
                 new ReallocateStockCommand(order, first.reservationId(), request)));
 
         assertThat(again).extracting(StockReservation::locationCode, StockReservation::quantity)
-                .as("the short carton's unit, as another whole carton")
-                .containsExactly(org.assertj.core.groups.Tuple.tuple("HCM-A01-1-A", 1));
+                .as("the short carton's unit, as the bin's free carton: only the short one is in doubt")
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("HCM-A01-1-B", 1));
+        assertThat(jdbc.queryForObject("SELECT stock_item_id FROM inventory.stock_reservation WHERE id = ?", UUID.class,
+                again.get(0).reservationId())).isNotEqualTo(jdbc.queryForObject(
+                "SELECT stock_item_id FROM inventory.stock_reservation WHERE id = ?", UUID.class,
+                first.reservationId()));
         assertThat(jdbc.queryForObject("SELECT status || ':' || release_reason FROM inventory.stock_reservation WHERE id = ?",
                 String.class, first.reservationId())).isEqualTo("RELEASED:SHORT_PICKED");
         assertThat(jdbc.queryForObject("SELECT allocated_from_id FROM inventory.stock_reservation WHERE id = ?",
