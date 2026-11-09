@@ -48,8 +48,8 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 SELECT pg_temp.qa_warehouse(md5('qa:wh:HN')::uuid, 'HN', 'M', 30, 20);
-INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-VALUES (md5('qa:loc:HN-RCV')::uuid, md5('qa:wh:HN')::uuid, 'AREA', 'HN-RCV01', 'NORMAL', FALSE, FALSE, 'ACTIVE');
+INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+VALUES (md5('qa:loc:HN-RCV')::uuid, md5('qa:wh:HN')::uuid, 'AREA', 'HN-RCV01', FALSE, FALSE, 'ACTIVE');
 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
 VALUES (gen_random_uuid(), md5('qa:wh:HN')::uuid, md5('qa:loc:HN-RCV')::uuid, 'RCV01', 'RECEIVING', 'x', 1, 1, 5, 5, 0, FALSE, 'ACTIVE');
 

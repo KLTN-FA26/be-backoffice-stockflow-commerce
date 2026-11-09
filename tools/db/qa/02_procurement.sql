@@ -48,8 +48,8 @@ CREATE FUNCTION pg_temp.id(name TEXT) RETURNS UUID LANGUAGE sql IMMUTABLE AS $$ 
 
 INSERT INTO procurement.suppliers (id, code, name) VALUES (md5('qa:supplier:OTHER')::uuid, 'OTHER', 'NCC khác');
 SELECT pg_temp.qa_warehouse(md5('qa:wh:HN')::uuid, 'HN', 'M', 30, 20);
-INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-VALUES (md5('qa:loc:HN-RCV')::uuid, md5('qa:wh:HN')::uuid, 'AREA', 'HN-RCV01', 'NORMAL', FALSE, FALSE, 'ACTIVE');
+INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+VALUES (md5('qa:loc:HN-RCV')::uuid, md5('qa:wh:HN')::uuid, 'AREA', 'HN-RCV01', FALSE, FALSE, 'ACTIVE');
 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
 VALUES (gen_random_uuid(), md5('qa:wh:HN')::uuid, md5('qa:loc:HN-RCV')::uuid, 'RCV01', 'RECEIVING', 'x', 1, 1, 5, 5, 0, FALSE, 'ACTIVE');
 
@@ -303,8 +303,8 @@ SELECT pg_temp.expect_ok('R47 a draft PO with history is deleted with it (cascad
 
 \echo '--- receipt lifecycle (V20260929000250, V20261108000200, docs 03 §4-5)'
 SELECT pg_temp.expect_ok('QC1 an Area of type QUALITY_CONTROL (returns still receive into one)', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa:loc:HCM-QC02')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC02', 'OVERSIZE', FALSE, FALSE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa:loc:HCM-QC02')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC02', FALSE, FALSE, 'ACTIVE');
     INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
     VALUES (md5('qa:area:HCM-QC02')::uuid, md5('demo:wh:HCM')::uuid, md5('qa:loc:HCM-QC02')::uuid, 'QC02', 'QUALITY_CONTROL',
             'Khu kiểm tra chất lượng', 52, 2, 6, 6, 0, FALSE, 'ACTIVE') $q$);
