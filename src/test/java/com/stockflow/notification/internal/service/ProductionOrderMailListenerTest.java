@@ -11,6 +11,7 @@ import com.stockflow.notification.api.ProductionOrderMail;
 import com.stockflow.notification.internal.domain.DeliveryStatus;
 import com.stockflow.notification.internal.domain.Email;
 import com.stockflow.notification.internal.domain.EmailDeliveryException;
+import com.stockflow.notification.internal.domain.ProductionOrderMailResend;
 import com.stockflow.notification.internal.entity.DeliveryLogJpaEntity;
 import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -189,7 +190,8 @@ class ProductionOrderMailListenerTest {
     @Test
     @DisplayName("stopped: the producer is told to stop, with the reason, and no link")
     void stopped() {
-        when(logs.existsByExternalReference("production-order:" + ID + ":sent")).thenReturn(true);
+        when(logs.countByOperationReferenceAndStatus("production-order:" + ID + ":sent", DeliveryStatus.SENT))
+                .thenReturn(1L);
         when(directory.stop(ID)).thenReturn(Optional.of(stop("CANCELLED", "Khách huỷ đơn")));
 
         listener.on(new ProductionOrderStopped(UUID.randomUUID(), ID, "PRD-20261110-0001", "CANCELLED", NOW));
@@ -206,7 +208,8 @@ class ProductionOrderMailListenerTest {
     @Test
     @DisplayName("closed after mass printing started: 'closed, deliver nothing more'")
     void closed() {
-        when(logs.existsByExternalReference("production-order:" + ID + ":sample-approved")).thenReturn(true);
+        when(logs.countByOperationReferenceAndStatus("production-order:" + ID + ":sample-approved",
+                DeliveryStatus.SENT)).thenReturn(1L);
         when(directory.stop(ID)).thenReturn(Optional.of(stop("CLOSED", "Xưởng dừng")));
 
         listener.on(new ProductionOrderStopped(UUID.randomUUID(), ID, "PRD-20261110-0001", "CLOSED", NOW));
@@ -242,7 +245,7 @@ class ProductionOrderMailListenerTest {
 
         assertThatThrownBy(() -> listener(failing).on(sent())).isSameAs(down);
         verify(attempts).failed(eq("don@xuong.vn"), any(), eq(down), eq("production-order:" + ID + ":sent"),
-                eq("production_order_sent"), eq(false), eq(0));
+                eq("production_order_sent"), eq(false), eq(0), eq(NOW.plus(Duration.ofMinutes(1))));
     }
 
     @Test
@@ -311,20 +314,66 @@ class ProductionOrderMailListenerTest {
 
         assertThatThrownBy(() -> listener.on(sent())).isSameAs(broken);
         verify(attempts).failed(eq("-"), any(), eq(broken), eq("production-order:" + ID + ":sent"),
-                eq("production_order_sent"), eq(false), eq(0));
+                eq("production_order_sent"), eq(false), eq(0), any(Instant.class));
         assertThat(transport.sent()).isEmpty();
     }
 
     @Test
     @DisplayName("a stop never reads the lines: a SKU's missing packaging cannot keep the producer from being told")
     void stopReadsNoLines() {
-        when(logs.existsByExternalReference("production-order:" + ID + ":sent")).thenReturn(true);
+        when(logs.countByOperationReferenceAndStatus("production-order:" + ID + ":sent", DeliveryStatus.SENT))
+                .thenReturn(1L);
         when(directory.mail(any(), any())).thenThrow(new IllegalStateException("no packaging for CUP-1"));
         when(directory.stop(ID)).thenReturn(Optional.of(stop("CANCELLED", "Khách huỷ")));
 
         listener.on(new ProductionOrderStopped(UUID.randomUUID(), ID, "PRD-20261110-0001", "CANCELLED", NOW));
 
         assertThat(transport.sent()).singleElement().satisfies(email -> assertThat(email.subject()).contains("ĐÃ HUỶ"));
+    }
+
+    @Test
+    @DisplayName("a re-send: the next generation goes under a key of its own, with links fresh from the request")
+    void resendIsANewGeneration() {
+        var issued = ArgumentCaptor.forClass(Instant.class);
+        Instant requested = NOW.plus(Duration.ofDays(40));
+        when(directory.mail(eq(ID), issued.capture())).thenReturn(Optional.of(mail("EMAIL", "don@xuong.vn", "SENT",
+                null)));
+        when(logs.latestGeneration("production-order:" + ID + ":sent")).thenReturn(1);
+        when(logs.existsByExternalReference("production-order:" + ID + ":sent")).thenReturn(true);
+
+        listener.on(new ProductionOrderMailResend(UUID.randomUUID(), ID, "SENT", 1, requested));
+
+        assertThat(issued.getValue()).as("the links count from the re-send, not the approval").isEqualTo(requested);
+        assertThat(transport.sent()).singleElement().satisfies(email ->
+                assertThat(email.idempotencyKey()).isEqualTo("production-order:" + ID + ":sent:1"));
+        DeliveryLogJpaEntity row = savedRow();
+        assertThat(row.getStatus()).isEqualTo(DeliveryStatus.SENT);
+        assertThat(row.getExternalReference()).isEqualTo("production-order:" + ID + ":sent:1");
+        assertThat(row.getOperationReference()).as("one message, every generation")
+                .isEqualTo("production-order:" + ID + ":sent");
+        assertThat(row.getDeliveryGeneration()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("an older generation's event after a re-send was asked for: nothing, the new generation is the message")
+    void olderGenerationDoesNothing() {
+        when(logs.latestGeneration("production-order:" + ID + ":sent")).thenReturn(2);
+
+        listener.on(new ProductionOrderMailResend(UUID.randomUUID(), ID, "SENT", 1, NOW));
+        listener.on(sent());
+
+        assertThat(transport.sent()).isEmpty();
+        verify(directory, never()).mail(any(), any());
+        verify(logs, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("the back-off: 1 minute, 10 minutes, 1 hour, then 6 hours - the fifth failure some 7 hours after the first")
+    void backoff() {
+        assertThat(ProductionOrderMailListener.retryAfter(1)).isEqualTo(Duration.ofMinutes(1));
+        assertThat(ProductionOrderMailListener.retryAfter(2)).isEqualTo(Duration.ofMinutes(10));
+        assertThat(ProductionOrderMailListener.retryAfter(3)).isEqualTo(Duration.ofHours(1));
+        assertThat(ProductionOrderMailListener.retryAfter(4)).isEqualTo(Duration.ofHours(6));
     }
 
     @Test

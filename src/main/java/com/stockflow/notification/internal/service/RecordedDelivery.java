@@ -9,6 +9,8 @@ import com.stockflow.notification.internal.entity.DeliveryLogJpaEntity;
 import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
 
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 
 /**
  * The shared part of sending a document to a business partner (team plan QD-7): one message per reference and
@@ -22,18 +24,20 @@ import java.time.Clock;
  *              already SENT, or this generation already final?           -> nothing to do
  * 2. the caller's own checks (a newer message replaced this one?)         -> close: one final FAILED row with its code
  *                                                                           skip:  one final SKIPPED row with its reason
- * 3. send      accepted                                                    -> SENT row, external_reference = reference
+ * 3. send      accepted                                                    -> SENT row, external_reference = the
+ *                                                                           delivery's sent reference
  *              refused for good (invalid, or the transport says so),
  *              or the fifth failure of the generation                     -> final FAILED row
  *              anything else                                               -> FAILED row, and the failure is rethrown
+ *                                                                           (after the caller's back-off, if any)
  * </pre>
  *
  * <p><b>At least once, not exactly once.</b> The SENT row is written in the listener's transaction after the transport
  * accepted the message. If that transaction then fails to commit (the database gone at that moment, the JVM killed),
  * the event stays incomplete and the message is sent again. With Resend (the dev and prod transport) the provider drops
- * the second one when the message carries an idempotency key - the production order's messages carry their reference,
- * the same on every attempt. Plain {@code smtp} has no such key, so there the partner may receive it twice. No database
- * write can close that window: the send happens outside the transaction.</p>
+ * the second one when the message carries an idempotency key - the production order's messages carry their sent
+ * reference, the same on every attempt at one generation. Plain {@code smtp} has no such key, so there the partner
+ * may receive it twice. No database write can close that window: the send happens outside the transaction.</p>
  *
  * <p>Not a bean: each listener builds one over the repository, clock and recorder it is given, so the listeners keep
  * the constructors their tests call. Call it inside the listener's transaction, which the advisory lock lasts for.</p>
@@ -49,9 +53,24 @@ final class RecordedDelivery {
      * @param reference    what names the message for good ({@code purchase-order:<id>}, {@code production-order:<id>:sent})
      * @param generation   a deliberate resend is a new generation; a retry of one generation is the same message
      * @param templateCode what kind of message it is, kept on each row
+     * @param sentReference what the SENT row carries as {@code external_reference} (unique): the reference itself, so
+     *                      the message goes once whatever its generations - unless a sender lets one message go again
+     *                      deliberately, and names each generation's sending apart (a producer's re-sent order, 4A-3)
      */
     record Delivery(String reference, int generation, String templateCode, NotificationChannel channel,
-                    String recipient) {
+                    String recipient, String sentReference) {
+
+        /** A message that goes once, whatever its generations: the purchase order's. */
+        Delivery(String reference, int generation, String templateCode, NotificationChannel channel,
+                 String recipient) {
+            this(reference, generation, templateCode, channel, recipient, reference);
+        }
+    }
+
+    /** How long a failure worth retrying waits before the next attempt, given how many failures there were. */
+    @FunctionalInterface
+    interface Backoff {
+        Duration after(long failures);
     }
 
     /** The message itself: hands it to the transport and returns its receipt, or null when there is none to keep. */
@@ -63,11 +82,22 @@ final class RecordedDelivery {
     private final DeliveryLogJpaRepository logs;
     private final Clock clock;
     private final DeliveryAttemptRecorder attempts;
+    private final Backoff backoff;
 
+    /** Retries as often as the caller's retry runs: the purchase order's. */
     RecordedDelivery(DeliveryLogJpaRepository logs, Clock clock, DeliveryAttemptRecorder attempts) {
+        this(logs, clock, attempts, null);
+    }
+
+    /**
+     * @param backoff how long each failure worth retrying waits ({@code next_attempt_at}); the caller's retry honours
+     *                it. Null: no wait
+     */
+    RecordedDelivery(DeliveryLogJpaRepository logs, Clock clock, DeliveryAttemptRecorder attempts, Backoff backoff) {
         this.logs = logs;
         this.clock = clock;
         this.attempts = attempts;
+        this.backoff = backoff;
     }
 
     /**
@@ -78,10 +108,15 @@ final class RecordedDelivery {
      *         incomplete and is tried again
      */
     boolean pending(String reference, int generation) {
+        return pending(reference, generation, reference);
+    }
+
+    /** {@link #pending(String, int)} for a message whose generation is sent under {@code sentReference}. */
+    boolean pending(String reference, int generation, String sentReference) {
         if (!logs.tryLockDelivery(reference)) {
             throw new IllegalStateException("Delivery " + reference + " is already in progress");
         }
-        if (logs.existsByExternalReference(reference)) {
+        if (logs.existsByExternalReference(sentReference)) {
             return false;
         }
         return !logs.existsByOperationReferenceAndDeliveryGenerationAndTerminalTrue(reference, generation);
@@ -92,7 +127,8 @@ final class RecordedDelivery {
         try {
             EmailReceipt receipt = transmission.send();
             var success = new DeliveryLogJpaEntity(Identifiers.newId(), delivery.templateCode(), delivery.channel(),
-                    delivery.recipient(), DeliveryStatus.SENT, null, clock.instant(), delivery.reference());
+                    delivery.recipient(), DeliveryStatus.SENT, null, clock.instant(), delivery.sentReference());
+            success.correlate(delivery.reference());
             success.recordGeneration(delivery.generation());
             success.recordAttempt(nextAttempt(delivery));
             if (receipt != null) {
@@ -113,12 +149,19 @@ final class RecordedDelivery {
     void failed(Delivery delivery, RuntimeException failure) {
         // A transport that says the message will never be accepted (an invalid address, a revoked key) is not
         // retried four more times: the delivery is final now and waits for a deliberate new generation.
+        long failures = logs.countByOperationReferenceAndDeliveryGenerationAndStatus(delivery.reference(),
+                delivery.generation(), DeliveryStatus.FAILED);
         boolean terminal = failure instanceof IllegalArgumentException
                 || failure instanceof EmailDeliveryException refused && !refused.retryable()
-                || logs.countByOperationReferenceAndDeliveryGenerationAndStatus(delivery.reference(),
-                delivery.generation(), DeliveryStatus.FAILED) >= RETRIED_FAILURES;
-        attempts.failed(delivery.recipient(), delivery.channel(), failure, delivery.reference(),
-                delivery.templateCode(), terminal, delivery.generation());
+                || failures >= RETRIED_FAILURES;
+        if (terminal || backoff == null) {
+            attempts.failed(delivery.recipient(), delivery.channel(), failure, delivery.reference(),
+                    delivery.templateCode(), terminal, delivery.generation());
+        } else {
+            Instant notBefore = clock.instant().plus(backoff.after(failures + 1));
+            attempts.failed(delivery.recipient(), delivery.channel(), failure, delivery.reference(),
+                    delivery.templateCode(), false, delivery.generation(), notBefore);
+        }
         if (!terminal) {
             throw failure;
         }

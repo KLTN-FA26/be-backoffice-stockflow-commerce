@@ -30,6 +30,7 @@ import com.stockflow.inventory.api.PackagingSpecResolver;
 import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.ProductionOrderMail;
+import com.stockflow.notification.api.ProductionOrderResends;
 import com.stockflow.order.internal.domain.DeliveryBatch;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -144,6 +145,7 @@ public class ProductionOrderDispatch {
     private final PackagingSpecResolver packaging;
     private final DesignService designs;
     private final NotificationService notifications;
+    private final ProductionOrderResends resends;
     private final ProductionOrderSlipDocument document;
     private final FileTransfers files;
     private final FileStorage storage;
@@ -157,7 +159,8 @@ public class ProductionOrderDispatch {
                             ProducerRepository producers, OrderRepository orders, SalesContractRepository contracts,
                             CustomerService customers, IdentityService identity, WarehouseService warehouses,
                             CustomerSkus customerSkus, PackagingSpecResolver packaging, DesignService designs,
-                            NotificationService notifications, ProductionOrderSlipDocument document,
+                            NotificationService notifications, ProductionOrderResends resends,
+                            ProductionOrderSlipDocument document,
                             FileTransfers files, FileStorage storage, SignedLinks links,
                             ApplicationEventPublisher events, Clock clock, PlatformTransactionManager transactions,
                             @Value("${stockflow.order.production-order.file-links-valid-for:P30D}")
@@ -174,6 +177,7 @@ public class ProductionOrderDispatch {
         this.packaging = packaging;
         this.designs = designs;
         this.notifications = notifications;
+        this.resends = resends;
         this.document = document;
         this.files = files;
         this.storage = storage;
@@ -304,6 +308,35 @@ public class ProductionOrderDispatch {
         };
         events.publishEvent(new ProductionOrderStopped(Identifiers.newId(), production.id(), production.code(),
                 production.status().name(), at));
+    }
+
+    /**
+     * Sends the producer of a production order still open its latest message again, with links fresh from now: the way
+     * back after the automatic retries gave up, the coordinator corrected the producer's address, or the links died
+     * (expired, or the links key was rotated). Notification decides which message and refuses one still on its way.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_NOT_FOUND} (also outside a warehouse-bound caller's
+     *         warehouses); {@code PRODUCTION_ORDER_RESEND_NOT_ALLOWED} when it is not sent or no longer open, its
+     *         producer is handed the slip by the coordinator, or its latest message is still being sent
+     */
+    public ProductionOrderResends.Resend resend(UUID id) {
+        ProductionOrder production = visible(id);
+        if (!production.sentAndOpen()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_RESEND_NOT_ALLOWED, ("Production order %s is %s: "
+                    + "only a sent production order still open is sent again").formatted(production.code(),
+                    production.status()));
+        }
+        Producer producer = producers.findById(production.producerId()).orElseThrow(() -> new BusinessException(
+                ErrorCode.PRODUCER_NOT_FOUND, "No producer " + production.producerId()));
+        if (producer.channel() != Producer.Channel.EMAIL) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_RESEND_NOT_ALLOWED, ("Production order %s: its "
+                    + "producer is handed the slip by the coordinator, nothing is e-mailed").formatted(
+                    production.code()));
+        }
+        ProductionOrderResends.Resend resend = resends.resend(id, clock.instant());
+        log.info("Production order {}: its {} message goes to the producer again (generation {})", production.code(),
+                resend.message(), resend.generation());
+        return resend;
     }
 
     // ---- reading ----------------------------------------------------------------------------------------------------

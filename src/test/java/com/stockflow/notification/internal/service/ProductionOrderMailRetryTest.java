@@ -5,6 +5,8 @@ import com.stockflow.common.events.PendingPublicationReader.PendingPublication;
 import com.stockflow.contracts.ProductionOrderSampleApproved;
 import com.stockflow.contracts.ProductionOrderSent;
 import com.stockflow.contracts.ProductionOrderStopped;
+import com.stockflow.notification.internal.domain.ProductionOrderMailResend;
+import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -23,21 +25,28 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * The retry of messages to producers (4A-3): each incomplete publication of the three handlers - and of the warehouse
- * managers' notice - is handed back to its handler, through the shared loop of the purchase-order retry (QD-7); one
- * instance at a time.
+ * The retry of messages to producers (4A-3): each incomplete publication of the listener's handlers - and of the
+ * warehouse managers' notice - is handed back to its handler, through the shared loop of the purchase-order retry
+ * (QD-7), once the wait its last failure set is over; one instance at a time.
  */
 class ProductionOrderMailRetryTest {
 
     private static final Instant NOW = Instant.parse("2026-11-10T03:00:00Z");
 
+    private final DeliveryLogJpaRepository logs = mock(DeliveryLogJpaRepository.class);
     private final ProductionOrderArrivalNotificationListener arrivals =
             mock(ProductionOrderArrivalNotificationListener.class);
+
+    private ProductionOrderMailRetry retry(PendingPublicationReader reader, EventSerializer serializer, Clock clock,
+                                           ProductionOrderMailListener listener) {
+        return new ProductionOrderMailRetry(reader, serializer, clock, listener, arrivals, logs);
+    }
 
     @Test
     @DisplayName("every pending message, of every kind, goes back to its handler")
@@ -59,7 +68,7 @@ class ProductionOrderMailRetryTest {
         when(serializer.deserialize("sample", ProductionOrderSampleApproved.class)).thenReturn(sample);
         when(serializer.deserialize("stopped", ProductionOrderStopped.class)).thenReturn(stopped);
 
-        new ProductionOrderMailRetry(reader, serializer, Clock.fixed(NOW, ZoneOffset.UTC), listener, arrivals).retry();
+        retry(reader, serializer, Clock.fixed(NOW, ZoneOffset.UTC), listener).retry();
 
         verify(listener).on(sent);
         verify(listener).on(sample);
@@ -70,13 +79,41 @@ class ProductionOrderMailRetryTest {
     }
 
     @Test
+    @DisplayName("a message still waiting out its back-off is left for a later run; the warehouse notice is retried too")
+    void waitsOutTheBackoff() {
+        var reader = mock(PendingPublicationReader.class);
+        var serializer = mock(EventSerializer.class);
+        var listener = mock(ProductionOrderMailListener.class);
+        UUID id = UUID.randomUUID();
+        var sent = new ProductionOrderSent(UUID.randomUUID(), id, "PRD-1", UUID.randomUUID(), null, 1, null, NOW);
+        var resend = new ProductionOrderMailResend(UUID.randomUUID(), id, "SENT", 2, NOW);
+        when(reader.page(anyString(), anyString(), any(), nullable(UUID.class), eq(ProductionOrderMailRetry.PAGE)))
+                .thenReturn(List.of());
+        when(reader.page(eq(ProductionOrderSent.class.getName()), anyString(), any(), nullable(UUID.class),
+                eq(ProductionOrderMailRetry.PAGE))).thenReturn(List.of(new PendingPublication(new UUID(0, 1), "sent")));
+        when(reader.page(eq(ProductionOrderMailResend.class.getName()), anyString(), any(), nullable(UUID.class),
+                eq(ProductionOrderMailRetry.PAGE))).thenReturn(List.of(new PendingPublication(new UUID(0, 4), "resend")));
+        when(serializer.deserialize("sent", ProductionOrderSent.class)).thenReturn(sent);
+        when(serializer.deserialize("resend", ProductionOrderMailResend.class)).thenReturn(resend);
+        String reference = "production-order:" + id + ":sent";
+        when(logs.nextAttemptAt(reference, 0)).thenReturn(NOW.plusSeconds(300));
+        when(logs.nextAttemptAt(reference, 2)).thenReturn(NOW.minusSeconds(1));
+
+        retry(reader, serializer, Clock.fixed(NOW, ZoneOffset.UTC), listener).retry();
+
+        verify(listener, never()).on(sent);
+        verify(listener).on(resend);
+        verify(arrivals).on(sent);
+    }
+
+    @Test
     @DisplayName("nothing pending: nothing dispatched")
     void idle() {
         var reader = mock(PendingPublicationReader.class);
         var listener = mock(ProductionOrderMailListener.class);
         when(reader.page(anyString(), anyString(), any(), nullable(UUID.class), eq(ProductionOrderMailRetry.PAGE))).thenReturn(List.of());
 
-        new ProductionOrderMailRetry(reader, mock(EventSerializer.class), Clock.systemUTC(), listener, arrivals).retry();
+        retry(reader, mock(EventSerializer.class), Clock.systemUTC(), listener).retry();
 
         verifyNoInteractions(listener);
     }

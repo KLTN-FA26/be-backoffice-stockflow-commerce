@@ -17,6 +17,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -47,7 +48,14 @@ class ProductionOrderDispatchController {
     record MessageResponse(@Schema(description = "production_order_sent, production_order_sample_approved or "
             + "production_order_stopped") String message, String status, Instant attemptedAt, Instant sentAt,
                            @Schema(description = "Why it failed or was not sent, a code") String failure,
-                           int attemptNumber, String recipient) {
+                           int attemptNumber, String recipient,
+                           @Schema(description = "0 for the message as the production order's events sent it; each "
+                                   + "re-send by staff is the next") int generation) {
+    }
+
+    /** Which message goes to the producer again. */
+    @Schema(name = "ProductionOrderResend")
+    record ResendResponse(@Schema(description = "SENT or SAMPLE_APPROVED") String message, int generation) {
     }
 
     /** How the production order went to its producer. */
@@ -87,8 +95,20 @@ class ProductionOrderDispatchController {
                 view.messages().map(ProductionOrderDispatchController::message)));
     }
 
+    @PostMapping("/dispatch/resend")
+    @Operation(summary = "Send the producer its latest message again (the order, or the approved sample) with fresh "
+            + "links: after its retries are spent, its address was corrected, or its links died. 409 "
+            + "PRODUCTION_ORDER_RESEND_NOT_ALLOWED: not sent or no longer open, a producer handed the slip, or the "
+            + "latest message still on its way")
+    @RequiresPermission(resource = OrderResources.PRODUCTION_ORDERS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ResendResponse> resend(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        var resend = dispatch.resend(id);
+        return ApiResponse.ok(new ResendResponse(resend.message(), resend.generation()));
+    }
+
     private static MessageResponse message(DeliveryAttemptSummary attempt) {
         return new MessageResponse(attempt.templateCode(), attempt.status(), attempt.attemptedAt(), attempt.sentAt(),
-                attempt.failure(), attempt.attemptNumber(), attempt.recipient());
+                attempt.failure(), attempt.attemptNumber(), attempt.recipient(), attempt.generation());
     }
 }

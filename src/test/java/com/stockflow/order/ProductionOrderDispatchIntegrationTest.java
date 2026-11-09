@@ -254,6 +254,42 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     }
 
     @Test
+    @DisplayName("staff re-send the order: a new generation, a key of its own, fresh links")
+    void resend() {
+        ProductionOrder sent = approved(producer);
+        Email first = awaitMail(sent.code());
+        awaitRecorded(sent.id());
+        Await.until("the first deliveries complete", ASYNC, () -> pendingPublications(sent.id()) == 0);
+
+        var resend = dispatch.resend(sent.id());
+
+        assertThat(resend.message()).isEqualTo("SENT");
+        assertThat(resend.generation()).isEqualTo(1);
+        Await.until("the re-sent e-mail", ASYNC, () -> mailTo(producerEmail).size() == 2);
+        Email again = mailTo(producerEmail).get(1);
+        assertThat(again.idempotencyKey()).isEqualTo("production-order:" + sent.id() + ":sent:1");
+        assertThat(link(again.text(), "/slip").signature()).as("links signed afresh")
+                .isNotEqualTo(link(first.text(), "/slip").signature());
+        Await.until("the re-send is recorded", ASYNC, () -> deliveries(sent.id(), "sent").stream()
+                .filter(row -> "SENT".equals(row.get("status"))).count() == 2);
+        assertThat(deliveries(sent.id(), "sent")).extracting(row -> row.get("external_reference"))
+                .contains("production-order:" + sent.id() + ":sent", "production-order:" + sent.id() + ":sent:1");
+        assertThat(dispatch.dispatch(sent.id(), 0, 20).messages().items())
+                .anySatisfy(attempt -> assertThat(attempt.generation()).isEqualTo(1));
+
+        Producer handed = producers.register(producerCode(), new Producer.Details("Xưởng nhận phiếu tay", null, null,
+                null, Producer.Channel.PDF, 14, null));
+        ProductionOrder byHand = approved(handed);
+        assertThatThrownBy(() -> dispatch.resend(byHand.id())).as("nothing is e-mailed to a producer handed the slip")
+                .extracting(ProductionOrderDispatchIntegrationTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_RESEND_NOT_ALLOWED);
+        ProductionOrder pending = pending(producer);
+        assertThatThrownBy(() -> dispatch.resend(pending.id())).as("not sent yet")
+                .extracting(ProductionOrderDispatchIntegrationTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_RESEND_NOT_ALLOWED);
+    }
+
+    @Test
     @DisplayName("a producer the coordinator hands the slip: no e-mail, the message recorded as skipped")
     void handedTheSlip() {
         Producer handed = producers.register(producerCode(), new Producer.Details("Xưởng nhận phiếu tay", null, null,

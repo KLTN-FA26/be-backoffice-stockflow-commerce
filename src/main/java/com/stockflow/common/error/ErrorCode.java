@@ -387,6 +387,8 @@ public enum ErrorCode {
     PRODUCTION_ORDER_SLIP_NOT_FOUND("The production order has no slip", 404),
     /** 4A-3: the digest the store keeps for the slip is no longer the one recorded when it was sent. */
     PRODUCTION_ORDER_SLIP_MISMATCH("The stored slip no longer matches what was sent", 409),
+    /** 4A-3: a production order's message to its producer cannot go again now (not open, not e-mailed, on its way). */
+    PRODUCTION_ORDER_RESEND_NOT_ALLOWED("The production order's message cannot be sent to its producer again now", 409),
     /** 4B-7 (17 §4.2 step 2): only a CONFIRMED order of a contract gets a shipping warehouse. */
     ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED("The shipping warehouse is chosen for a confirmed order of a contract", 409),
     /** 4B-7 (17 BR-22): the shipping warehouse changes only while nothing is held for the order. */
