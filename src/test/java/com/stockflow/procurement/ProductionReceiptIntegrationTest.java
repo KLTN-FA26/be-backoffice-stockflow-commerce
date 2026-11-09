@@ -13,6 +13,8 @@ import com.stockflow.common.storage.FileStorage;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.inventory.internal.service.PutawayService;
+import com.stockflow.order.api.CancelOrderCommand;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.PaymentTerm;
@@ -745,6 +747,34 @@ class ProductionReceiptIntegrationTest {
                 + "AND status = 'AVAILABLE' AND location_code = ?", Long.class, sku.sku(), a.bin()))
                 .isEqualTo(3L * PER_CARTON);
         assertThat(reread(production.id()).status()).isEqualTo(ProductionOrderStatus.PARTIALLY_RECEIVED);
+    }
+
+    @Test
+    @DisplayName("17 BR-07: the sales order cancelled while a draft receipt is open - the last draft settled, the "
+            + "production order is stopped and the producer told to stop, once")
+    void cancelledOrderStopsItsProductionOrderWhenTheLastDraftSettles() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder production = sentWithoutSample(orderId, 1);
+        ReceiptView receipt = start(production);
+        count(receipt, lineId(production), cartons(2));
+
+        asSales(() -> orders.cancel(orderId, new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST,
+                "Customer changed supplier", null, sales.userId())));
+        assertThat(reread(production.id()).status().open()).as("a draft receipt keeps it open").isTrue();
+        assertThat(stoppedNotices(production.id())).isZero();
+
+        receipts.confirm(receipt.id(), clerk);
+
+        assertThat(reread(production.id()).status().open()).as("the last draft settled: stopped").isFalse();
+        Await.until("the producer is told to stop", Duration.ofSeconds(20),
+                () -> stoppedNotices(production.id()) >= 1);
+        assertThat(stoppedNotices(production.id())).as("exactly once").isEqualTo(1);
+    }
+
+    private long stoppedNotices(UUID productionOrderId) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE event_type = ? AND serialized_event LIKE ?""", Long.class,
+                com.stockflow.contracts.ProductionOrderStopped.class.getName(), "%" + productionOrderId + "%");
     }
 
     @Test
