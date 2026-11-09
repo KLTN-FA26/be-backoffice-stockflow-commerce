@@ -297,6 +297,11 @@ public enum ErrorCode {
      * horizontal when its item allows. Every move of a carton into a bin is refused for it: putaway, put-back, a move.
      */
     CARTON_DOES_NOT_FIT_BIN("This carton does not fit the bin", 422),
+    /**
+     * kltn-docs 06 BR-23: resizing a bin, a level's clear height or a carton unit would leave a carton standing where it
+     * no longer fits, or a bin holding more volume than it has. The details list the bins and cartons; move them first.
+     */
+    CARTONS_WOULD_NOT_FIT("This change would leave cartons that no longer fit where they stand", 409),
     /** kltn-docs 05 BR-13: a carton goes to the OVERFLOW area only when no bin of its warehouse takes it. */
     PUTAWAY_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it away into a bin", 409),
     /**

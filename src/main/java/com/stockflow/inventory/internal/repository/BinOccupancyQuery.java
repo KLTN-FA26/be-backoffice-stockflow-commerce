@@ -157,6 +157,40 @@ public class BinOccupancyQuery {
         });
     }
 
+    /** A carton standing at {@code locationCode}, in carton unit {@code unitId}, with what it measures. */
+    public record CartonIn(String locationCode, UUID cartonId, UUID unitId, String lpn, CartonFit.Carton carton) {
+    }
+
+    /** The cartons holding units at these locations, in LPN order; an empty carton (picked, closed) is not there. */
+    public java.util.List<CartonIn> cartonsIn(Collection<String> locationCodes) {
+        if (locationCodes.isEmpty()) {
+            return java.util.List.of();
+        }
+        return jdbc.query("""
+                select p.location_code, p.id, p.uom_conversion_id, p.lpn, u.length_cm, u.width_cm, u.height_cm,
+                       i.rotatable
+                from inventory.stock_package p
+                join inventory.uom_conversions u on u.id = p.uom_conversion_id
+                join inventory.inventory_items i on i.id = p.inventory_item_id
+                where p.location_code = any (?)
+                  and exists (select 1 from inventory.stock_item s where s.stock_package_id = p.id and s.on_hand > 0)
+                order by p.lpn""",
+                ps -> ps.setArray(1, ps.getConnection().createArrayOf("text", locationCodes.toArray())),
+                (rs, n) -> new CartonIn(rs.getString("location_code"), rs.getObject("id", UUID.class),
+                        rs.getObject("uom_conversion_id", UUID.class), rs.getString("lpn"),
+                        new CartonFit.Carton(rs.getBigDecimal("length_cm"), rs.getBigDecimal("width_cm"),
+                                rs.getBigDecimal("height_cm"), rs.getBoolean("rotatable"))));
+    }
+
+    /** Where cartons of this carton unit holding units stand, by location code. */
+    public java.util.List<String> locationsOfUnit(UUID unitId) {
+        return jdbc.queryForList("""
+                select distinct p.location_code from inventory.stock_package p
+                where p.uom_conversion_id = ?
+                  and exists (select 1 from inventory.stock_item s where s.stock_package_id = p.id and s.on_hand > 0)
+                order by 1""", String.class, unitId);
+    }
+
     private static BigDecimal orZero(BigDecimal value) {
         return value == null ? BigDecimal.ZERO : value;
     }
