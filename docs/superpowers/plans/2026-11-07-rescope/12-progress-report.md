@@ -1,8 +1,14 @@
-# Báo cáo tiến độ rescope BE — 08/11/2026
+# Báo cáo tiến độ rescope BE — 09/11/2026
 
 Rescope theo tài liệu nghiệp vụ 04–05/11: kho thành phẩm + bán B2B. In do nhà sản xuất bên ngoài làm, hàng về đã in sẵn và đóng thùng. Mọi đơn giao nguyên chuyến xe. Khách trả bằng chuyển khoản theo các đợt của hợp đồng.
 
-Báo cáo này nói về những gì **đã làm xong**: đợt 1, 2a–2e (xoá phạm vi cũ) và **Design Studio 2F-1 → 2F-10** (khách tự thiết kế, Sales Manager duyệt). Phần còn lại (3, 4, 5) nằm trong kế hoạch nhóm: [11-team-plan.md](11-team-plan.md).
+Báo cáo này nói về những gì **đã làm xong**:
+- đợt 1, 2a–2e: xoá phạm vi cũ;
+- **Design Studio 2F-1 → 2F-10**: khách tự thiết kế, Sales Manager duyệt;
+- **nhóm 3 (3-1 → 3-6)**: giao nguyên chuyến qua nhà xe;
+- **nhóm 4B, gói 4B-1 → 4B-4**: lịch thanh toán mặc định, báo giá theo SKU riêng và thùng, VAT và dòng phí, hợp đồng mua bán.
+
+Phần còn lại nằm trong kế hoạch nhóm: [11-team-plan.md](11-team-plan.md).
 
 ---
 
@@ -255,6 +261,54 @@ Khách tự thiết kế bao bì trên khuôn 2D của quy cách, server tự ki
 - chạy cùng FE storefront thật trên trình duyệt (FE phải đổi theo hợp đồng trước, §10 của tài liệu);
 - seed demo cho Design Studio (gói 5-10);
 - báo giá / đơn dùng SKU riêng (D5, nay là 4B-2 và 4A-2).
+
+---
+
+## 3b. Giao hàng qua nhà xe — nhóm 3 (#273 → #278)
+
+Xếp chồng tiếp sau #272.
+
+| Gói | PR | Nhánh | Nội dung | Migration | Test (toàn bộ) |
+|---|---|---|---|---|---|
+| 3-1 | [#273](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/273) | `feature/3-1-carrier-connection` | Cấu hình kết nối nhà xe, khoá bí mật, mã dịch vụ | `V20261108001300`, `V20261108001310` | 5.123, 0 lỗi |
+| 3-2 | [#274](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/274) | `feature/3-2-waybill` | Mã vận đơn theo chuyến, lịch sử, file | `V20261108001400` | 5.157, 0 lỗi (chạy trên nhánh 3-4) |
+| 3-3 | [#275](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/275) | `feature/3-3-waybill-import` | Nhập mã vận đơn từ file | `V20261108001500` | như 3-2 |
+| 3-4 | [#276](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/276) | `feature/3-4-ahamove-booking` | Đặt / huỷ xe qua API Ahamove | `V20261108001600` | 5.157, 0 lỗi |
+| 3-5 | [#277](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/277) | `feature/3-5-carrier-webhooks` | Webhook nhà xe, nhật ký sự kiện, danh sách lỗi | `V20261108001700` | 5.179, 0 lỗi |
+| 3-6 | [#278](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/278) | `feature/3-6-delivery-tracking` | Theo dõi giao theo xe, sửa kết quả sai, bằng chứng giao | `V20261108001800` | 5.187; 1 lỗi test nâng cấp chưa biết cạnh mới, đã sửa |
+
+## 3c. Bán hàng & tiền — nhóm 4B (#279 → …)
+
+Xếp chồng tiếp sau #278:
+
+> … ← #278 ← #279 ← #280 ← #283 ← #284
+
+| Gói | PR | Nhánh | Nội dung | Migration | Test (toàn bộ) |
+|---|---|---|---|---|---|
+| 4B-1 | [#279](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/279) | `feature/4b-1-payment-schedule` | Lịch thanh toán mặc định của khách; đợt sau giao hàng cần kế toán duyệt | `V20261108001900` | 5.193, 0 lỗi |
+| 4B-2 | [#280](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/280) | `feature/4b-2-sku-quotes` | Báo giá và đơn theo thùng của SKU riêng; báo giá cũ chỉ đọc | `V20261108002000` | 5.205, 0 lỗi |
+| 4B-3 | [#283](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/283) | `feature/4b-3-vat-fees` | VAT từng dòng, dòng phí khuôn / vận chuyển, ba tổng; dashboard doanh thu trước thuế | `V20261108002100` | 5.224, 0 lỗi |
+| 4B-4 | [#284](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/284) | `feature/4b-4-sales-contract` | Hợp đồng mua bán, lịch giao, lịch thanh toán nháp, PDF, file đã ký; thông tin pháp lý của khách | `V20261108002200` | 5.241, 0 lỗi (trước khi sửa review) |
+
+(#281, #282 là PR của dependabot, không thuộc đợt này.)
+
+**Review độc lập tìm ra và đã sửa** (chi tiết trong từng PR):
+- **4B-3:**
+  - phí khuôn / vận chuyển bị mất khi chuyến đầu bị trả về;
+  - báo giá gửi trước 4B-3 mất tổng tiền;
+  - danh sách đơn báo sai tổng trước thuế;
+  - email và portal không cộng ra được tổng.
+- **4B-4:**
+  - sửa riêng lịch giao không tăng version, nên ghi đè lẫn nhau;
+  - PDF tràn lề với tên công ty dài;
+  - gửi hợp đồng giữ khoá đơn trong lúc lưu file;
+  - trigger trạng thái để lọt thay đổi nội dung khi chuyển trạng thái.
+
+**Chưa làm trong 4B-1 → 4B-4, để gói sau:**
+- trạng thái đơn chưa đi theo hợp đồng (4B-5);
+- đợt thanh toán thật và phiếu thu (4B-6);
+- dời cửa sổ giao sau khi ký, và hợp đồng `Completed` (4B-8);
+- tiền hoàn có thuế (4B-9).
 
 ---
 
