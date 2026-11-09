@@ -90,7 +90,8 @@ class QuoteServiceTransitionsTest {
                 VERSION)));
         when(search.history(any())).thenReturn(List.of());
         when(products.lockedPurchasability(any())).thenReturn(Map.of());
-        when(customerSkus.ownerOf("LY12-ACME-01")).thenReturn(Optional.of(customer));
+        when(customerSkus.ownersOf(org.mockito.ArgumentMatchers.anyCollection()))
+                .thenReturn(Map.of("LY12-ACME-01", customer));
     }
 
     private Quote stored(QuoteStatus status, Instant validUntil) {

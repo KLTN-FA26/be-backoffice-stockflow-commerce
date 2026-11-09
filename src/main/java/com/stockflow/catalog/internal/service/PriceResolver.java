@@ -51,8 +51,9 @@ class PriceResolver {
     }
 
     /**
-     * As {@link #schedule}, counted in units for checkout: a customer's own price on one of its own SKUs counts cartons
-     * and is not read here (that SKU is quoted - 14 BR-01, BR-08 - so checkout finds no unit price for it).
+     * As {@link #schedule}, counted in units for checkout and the storefront: a customer's own price on one of its own
+     * SKUs counts cartons and is never read here. Their callers refuse or skip such a SKU first (it is quoted - 14 BR-01,
+     * BR-08); this keeps a carton price from being read as a unit price should one reach here anyway.
      */
     PriceSchedule checkoutSchedule(CustomerSummary customer, String sku) {
         Optional<CustomerPrice> own = prices.find(customer.customerId(), sku)

@@ -70,7 +70,7 @@ import java.util.function.Consumer;
  * credit terms, addresses) the whole conversion rolls back and the quote stays ACCEPTED.</p>
  *
  * <p><b>Active SKUs only</b> (review of #109, item 6; BR-PRD-005): drafting, revising, sending, accepting and
- * converting each ask again whether every blank on the quote is still ACTIVE, the answer held until the step
+ * converting each ask again whether every SKU on the quote is still ACTIVE, the answer held until the step
  * commits. An old quote is no exception. A line at fault is named; Sales puts an active SKU on it and sends
  * the quote again - nothing is substituted. A reorder draft is the one step that does not ask: it is a request
  * for Sales to look at, and its sending asks. Orders already placed carry on whatever happens to the product.</p>
@@ -476,9 +476,8 @@ class QuoteService implements Quotes {
         }
     }
 
-    /** kltn-docs 15 BR-01: a quote offers only a payment term the customer's commercial terms allow. */
     /**
-     * Every blank on the offer is still ACTIVE - product APPROVED or PUBLISHED, variant ACTIVE - and stays so
+     * Every SKU on the offer is still ACTIVE - product APPROVED or PUBLISHED, variant ACTIVE - and stays so
      * until this step commits ({@link ProductService#lockedPurchasability}). One refusal names every line at
      * fault with why, on {@code lines[i].sku}, so the form can put it next to the SKU.
      */
@@ -510,6 +509,7 @@ class QuoteService implements Quotes {
         }
     }
 
+    /** kltn-docs 15 BR-01: a quote offers only a payment term the customer's commercial terms allow. */
     private void requireTermAllowed(UUID customerId, Quote.Offer offer) {
         if (!customers.creditTerms(customerId).allows(CommercialTerm.valueOf(offer.paymentTerm().name()))) {
             throw new BusinessException(ErrorCode.PAYMENT_TERM_NOT_ALLOWED,
@@ -624,9 +624,10 @@ class QuoteService implements Quotes {
      */
     private void requireOwnSkus(UUID customerId, List<String> skus) {
         customerSkus.requireVisibleTo(skus, customerId);
+        Map<String, UUID> owners = customerSkus.ownersOf(skus);
         List<FieldError> errors = new ArrayList<>();
         for (int i = 0; i < skus.size(); i++) {
-            if (!customerSkus.ownerOf(skus.get(i)).map(customerId::equals).orElse(false)) {
+            if (!customerId.equals(owners.get(skus.get(i)))) {
                 errors.add(new FieldError("lines[" + i + "].sku", "%s is not a SKU of this customer"
                         .formatted(skus.get(i)), "CUSTOMER_SKU_REQUIRED"));
             }

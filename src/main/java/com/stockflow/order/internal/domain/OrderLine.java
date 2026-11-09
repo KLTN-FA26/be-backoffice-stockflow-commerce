@@ -201,7 +201,21 @@ public final class OrderLine {
     /** Pieces per carton fixed on the line; null for a line not ordered in cartons. */
     public Integer unitsPerCarton() { return unitsPerCarton; }
 
+    /**
+     * A line carrying a design snapshot: a print line placed before 4B-2, whose goods are received from the producer
+     * before the order is released ({@code Order.hasPrintLines}). A line of the customer's own SKU is not one - its
+     * goods are stock - though it is printed to the customer's design too ({@link #printedToCustomerDesign()}).
+     */
     public boolean isMadeToOrder() {
         return designSnapshotId != null;
+    }
+
+    /**
+     * Whether the goods are printed to the customer's design (kltn-docs 17 §4.10, BR-RMA-002): a print line, or a line
+     * of the customer's own SKU in cartons (4B-2) - every SKU is a customer's own design. Such goods come back only for a
+     * named defect, and a closure after printing started may keep an agreed fee for them.
+     */
+    public boolean printedToCustomerDesign() {
+        return designSnapshotId != null || cartons != null;
     }
 }

@@ -818,6 +818,111 @@ class QuoteIntegrationTest {
                 .isEqualTo(QuoteStatus.CANCELLED);
     }
 
+    @Test
+    @DisplayName("4B-2, 14 BR-08: the carton spec changed after acceptance (the unit retired, a new one declared) - the "
+            + "accepted quote still converts at the cartons and pieces it fixed; a new draft takes the new spec")
+    void aCartonSpecChangedAfterAcceptanceDoesNotMoveTheQuote() {
+        Quotes.QuoteView sent = sentQuote();
+        Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
+                quotes.get(portal, sent.id()).version(), Map.of()));
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE "
+                    + "WHERE unit_of_measure = 'CARTON' AND inventory_item_id = (SELECT id FROM inventory.inventory_items "
+                    + "WHERE sku = ?)", sku);
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
+                        default_purchase, active, version, created_at, default_shipping)
+                    SELECT ?, i.id, 'CARTON20', 20, FALSE, FALSE, TRUE, 0, NOW(), TRUE FROM inventory.inventory_items i
+                     WHERE i.sku = ?""", Identifiers.newId(), sku);
+        });
+
+        UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId();
+        assertThat(orders.findById(orderId).orElseThrow().lines()).singleElement().satisfies(line -> {
+            assertThat(line.cartons()).isEqualTo(3);
+            assertThat(line.unitsPerCarton()).as("as accepted, not the new spec").isEqualTo(PER_CARTON);
+            assertThat(line.quantity()).isEqualTo(3 * PER_CARTON);
+        });
+        Quotes.QuoteView next = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                draft(PaymentTerm.PREPAID, Instant.now().plus(Duration.ofDays(7)))));
+        assertThat(next.lines().getFirst().unitsPerCarton()).as("a new line takes today's carton").isEqualTo(20);
+    }
+
+    @Test
+    @DisplayName("QD-16 through the database: a quote drafted on a blank and a design reads as kept, is not sent, and is "
+            + "revised onto the customer's SKU; a cancelled one shows the customer the offer it was sent, from the "
+            + "history written before 4B-2")
+    void aQuoteDraftedOnBlanksIsKeptToReadAndRevisedOntoSkus() {
+        UUID snapshot = jdbc.queryForObject("SELECT design_snapshot_id FROM product.variants WHERE sku = ?", UUID.class,
+                sku);
+        UUID draftId = Identifiers.newId();
+        UUID cancelledId = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            for (UUID id : List.of(draftId, cancelledId)) {
+                boolean cancelled = id.equals(cancelledId);
+                jdbc.update("""
+                        INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, revision, payment_term,
+                            valid_until, sent_at, sent_by, cancellation_reason, version, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, 'PREPAID', NOW() + interval '7 days', ?, ?, ?, 0, NOW())""",
+                        id, "QT-LEGACY-" + id.toString().substring(24), UUID.randomUUID(), customerId,
+                        cancelled ? "CANCELLED" : "DRAFT", cancelled ? 2 : 1,
+                        cancelled ? java.sql.Timestamp.from(Instant.now()) : null, cancelled ? sales.userId() : null,
+                        cancelled ? "Khach chon noi khac" : null);
+                UUID line = Identifiers.newId();
+                jdbc.update("INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, "
+                        + "print_spec, quantity) VALUES (?, ?, 1, ?, ?, 'Logo', 600)", line, id,
+                        com.stockflow.support.ConfirmedDesigns.BLANK, snapshot);
+                jdbc.update("INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price) "
+                        + "VALUES (?, 500, 2000)", line);
+            }
+            // The cancelled one: sent at revision 1 (the offer as written before 4B-2), reopened, dropped as a draft.
+            String offer = """
+                    {"revision": 1, "paymentTerm": "PREPAID", "depositPercent": null, "validUntil": "%s", "terms": null,
+                     "requestedDeliveryDate": null, "lines": [{"lineNo": 1, "blankSku": "%s", "designSnapshotId": "%s",
+                     "printSpec": "Logo", "quantity": 600, "tiers": [{"minQuantity": 500, "unitPrice": 2100}]}]}"""
+                    .formatted(Instant.now().plus(Duration.ofDays(7)), com.stockflow.support.ConfirmedDesigns.BLANK,
+                            snapshot);
+            int minute = 0;
+            for (String[] step : List.of(new String[] {null, "DRAFT"}, new String[] {"DRAFT", "SENT"},
+                    new String[] {"SENT", "CHANGES_REQUESTED"}, new String[] {"CHANGES_REQUESTED", "DRAFT"},
+                    new String[] {"DRAFT", "CANCELLED"})) {
+                jdbc.update("""
+                        INSERT INTO ordering.quote_status_history (id, quote_id, revision, from_status, to_status, reason,
+                            offer, changed_at, changed_by)
+                        VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), NOW() + make_interval(mins => ?), ?)""",
+                        Identifiers.newId(), cancelledId, minute < 3 ? 1 : 2, step[0], step[1],
+                        "CHANGES_REQUESTED".equals(step[1]) ? "re hon?" : null, "SENT".equals(step[1]) ? offer : null,
+                        minute++, sales.userId());
+            }
+        });
+
+        Quotes.QuoteView kept = quotes.get(sales, draftId);
+        assertThat(kept.legacy()).isTrue();
+        assertThat(kept.lines()).singleElement().satisfies(line -> {
+            assertThat(line.measure()).isEqualTo("UNIT");
+            assertThat(line.units()).isEqualTo(600);
+            assertThat(line.cartons()).isNull();
+            assertThat(line.proposedLineTotal()).isEqualByComparingTo("1200000");
+        });
+        assertThatThrownBy(() -> quotes.send(sales, draftId, kept.version())).extracting(QuoteIntegrationTest::code)
+                .isEqualTo(ErrorCode.QUOTE_LINES_LEGACY);
+
+        Quotes.QuoteView revised = quotes.edit(sales, draftId, kept.version(),
+                draft(PaymentTerm.PREPAID, Instant.now().plus(Duration.ofDays(7))));
+        assertThat(revised.legacy()).isFalse();
+        assertThat(jdbc.queryForList("SELECT COALESCE(sku, blank_sku) FROM ordering.quote_line WHERE quote_id = ?",
+                String.class, draftId)).containsExactly(sku);
+        assertThat(quotes.send(sales, draftId, revised.version()).status()).isEqualTo(QuoteStatus.SENT);
+
+        Quotes.QuoteView seen = quotes.get(portal, cancelledId);
+        assertThat(seen.status()).isEqualTo(QuoteStatus.CANCELLED);
+        assertThat(seen.legacy()).as("the offer the customer was sent, read from the old history").isTrue();
+        assertThat(seen.lines()).singleElement().satisfies(line -> {
+            assertThat(line.units()).isEqualTo(600);
+            assertThat(line.tiers().getFirst().unitPrice()).isEqualByComparingTo("2100");
+        });
+    }
+
     /** Starts {@code callers} copies of {@code work} at the same moment; each result or exception, in order. */
     private static List<Object> race(int callers, Callable<?> work) throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(callers);

@@ -18,6 +18,8 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
 
     Optional<VariantJpaEntity> findBySku(String sku);
 
+    List<VariantJpaEntity> findBySkuIn(java.util.Collection<String> skus);
+
     Optional<VariantJpaEntity> findByDesignSnapshotId(UUID designSnapshotId);
 
     List<VariantJpaEntity> findByDesignSnapshotIdIn(java.util.Collection<UUID> designSnapshotIds);

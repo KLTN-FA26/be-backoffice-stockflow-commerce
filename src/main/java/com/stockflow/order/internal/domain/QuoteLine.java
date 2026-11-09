@@ -148,7 +148,11 @@ public final class QuoteLine {
      */
     public Money priceFor(int quantity) {
         requirePriced();
-        if (quantity < moq() || (long) quantity * unitsPerCarton > MAX_UNITS) {
+        if ((long) quantity * unitsPerCarton > MAX_UNITS) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line %d: %d %s is more than %d pieces"
+                    .formatted(lineNo, quantity, noun(), MAX_UNITS));
+        }
+        if (quantity < moq()) {
             throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
                     "Line %d: %d %s is below its MOQ of %d".formatted(lineNo, quantity, noun(), moq()));
         }

@@ -112,8 +112,21 @@ class QuoteServiceTest {
         return new UomConversion(id, sku, code, factor, base, null, null, null, null, false, true, 0, !base);
     }
 
+    /** The customer's own SKUs, as {@code CustomerSkus.ownersOf} answers them. */
+    private final Map<String, UUID> owned = new java.util.HashMap<>();
+
     private void ownedByTheCustomer(String sku) {
+        owned.put(sku, customer);
         when(customerSkus.ownerOf(sku)).thenReturn(Optional.of(customer));
+        when(customerSkus.ownersOf(anyCollection())).thenAnswer(call -> {
+            Map<String, UUID> found = new java.util.HashMap<>();
+            for (Object code : (java.util.Collection<?>) call.getArgument(0)) {
+                if (owned.containsKey(code)) {
+                    found.put((String) code, owned.get(code));
+                }
+            }
+            return found;
+        });
     }
 
     private static QuoteLine line(int lineNo, String sku, int cartons, Integer accepted, Money price) {

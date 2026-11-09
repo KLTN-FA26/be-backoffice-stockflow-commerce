@@ -23,7 +23,8 @@ class CatalogServiceListingsTest {
 
     private final ListingRepository listings = mock(ListingRepository.class);
     private final ProductPublication products = mock(ProductPublication.class);
-    private final CatalogServiceImpl service = new CatalogServiceImpl(listings, products, null);
+    private final CatalogServiceImpl service = new CatalogServiceImpl(listings, products, null,
+            org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class));
 
     @Test
     @DisplayName("a SKU on sale comes back with its slug, title and primary image; one that is not has no entry")

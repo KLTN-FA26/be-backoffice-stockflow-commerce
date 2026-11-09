@@ -1402,7 +1402,7 @@ public final class Order extends AggregateRoot {
         Money closedPrints = Money.zero(total().currency());
         for (OrderLine line : lines) {
             int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
-            if (left > 0 && line.isMadeToOrder()) {
+            if (left > 0 && line.printedToCustomerDesign()) {
                 closedPrints = closedPrints.plus(line.unitPrice().times(left));
             }
         }

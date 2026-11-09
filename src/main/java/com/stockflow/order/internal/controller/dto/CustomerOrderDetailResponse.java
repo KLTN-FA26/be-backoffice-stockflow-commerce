@@ -136,7 +136,12 @@ public record CustomerOrderDetailResponse(
             @Schema(description = "The product's published title today; null as productSlug")
             String productTitle,
             @Schema(description = "The product's primary public image today; null without one or as productSlug")
-            String productImageUrl) {
+            String productImageUrl,
+            @Schema(description = "4B-2 (14 BR-08): cartons ordered; quantity is cartons x unitsPerCarton pieces. Null "
+                    + "for a line not ordered in cartons")
+            Integer cartons,
+            @Schema(description = "4B-2: pieces per carton fixed on the line")
+            Integer unitsPerCarton) {
     }
 
     @Schema(name = "CustomerOrderLineProduction")

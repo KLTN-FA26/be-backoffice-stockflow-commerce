@@ -672,9 +672,14 @@ class ProductHistoryAndRemovalIntegrationTest {
         ProductSummary created = draft();
         UUID id = created.productId();
         UUID defaultId = defaultVariant(id);
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
-                VALUES (?, 'c0000000-0000-4000-8000-000000000001', ?, NOW())""", Identifiers.newId(), created.code()));
+        // A price kept from before 4B-2 on a stock variant: tg_customer_price_own_sku refuses a new one, so the row is
+        // written as the old data has it, with the session's triggers off.
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("""
+                    INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
+                    VALUES (?, 'c0000000-0000-4000-8000-000000000001', ?, NOW())""", Identifiers.newId(), created.code());
+        });
 
         BusinessException rename = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
                 variants.update(id, defaultId, new NewVariant(created.code() + "-NEW", null, null, null))));

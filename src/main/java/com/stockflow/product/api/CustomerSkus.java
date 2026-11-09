@@ -53,6 +53,9 @@ public interface CustomerSkus {
     /** The owner of {@code sku}, or empty for an ordinary variant (or an unknown SKU). */
     Optional<UUID> ownerOf(String sku);
 
+    /** {@link #ownerOf} of each of {@code skus} in one read, by SKU as stored; ordinary and unknown SKUs are absent. */
+    java.util.Map<String, UUID> ownersOf(java.util.Collection<String> skus);
+
     /** The customer's own SKUs, of one product when {@code productId} is not null. */
     List<CustomerSku> ownedBy(UUID customerId, UUID productId);
 }

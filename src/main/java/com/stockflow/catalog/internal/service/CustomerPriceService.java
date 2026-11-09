@@ -20,6 +20,7 @@ import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -73,14 +74,19 @@ public class CustomerPriceService {
     @Transactional(readOnly = true)
     public List<PriceView> list(UUID customerId, Collection<String> skus) {
         resolver.customer(customerId);
-        return prices.ofCustomer(customerId, skus.stream().map(CustomerPriceService::sku).toList()).stream()
-                .map(this::view).toList();
+        List<CustomerPrice> found = prices.ofCustomer(customerId, skus.stream().map(CustomerPriceService::sku).toList());
+        Map<String, UUID> owners = customerSkus.ownersOf(found.stream().map(CustomerPrice::sku).toList());
+        return found.stream().map(price -> view(price, owners)).toList();
     }
 
     @Transactional(readOnly = true)
     public PriceView get(UUID customerId, String sku) {
         return prices.find(customerId, sku(sku)).map(this::view)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_PRICE_NOT_FOUND));
+    }
+
+    private PriceView view(CustomerPrice price, Map<String, UUID> owners) {
+        return view(price, price.customerId().equals(owners.get(price.sku())));
     }
 
     /** What the customer pays for the SKU now: own tiers, else group or base price. */
@@ -153,8 +159,11 @@ public class CustomerPriceService {
     }
 
     private PriceView view(CustomerPrice price) {
-        String measure = customerSkus.ownerOf(price.sku()).map(price.customerId()::equals).orElse(false)
-                ? "CARTON" : "UNIT";
+        return view(price, customerSkus.ownerOf(price.sku()).map(price.customerId()::equals).orElse(false));
+    }
+
+    private static PriceView view(CustomerPrice price, boolean ownSku) {
+        String measure = ownSku ? "CARTON" : "UNIT";
         return new PriceView(price.customerId(), price.sku(), measure, price.moq(),
                 price.tiers().stream().map(t -> new TierInput(t.minQuantity(), t.unitPrice())).toList(),
                 price.note(), price.version());

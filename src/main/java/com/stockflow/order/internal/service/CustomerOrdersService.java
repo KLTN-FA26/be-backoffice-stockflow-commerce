@@ -106,7 +106,7 @@ class CustomerOrdersService implements CustomerOrders {
                             line.lineTotal().amount(), line.designSnapshotId(),
                             production(line, summary.status()),
                             listing == null ? null : listing.slug(), listing == null ? null : listing.title(),
-                            listing == null ? null : listing.imageUrl());
+                            listing == null ? null : listing.imageUrl(), line.cartons(), line.unitsPerCarton());
                 })
                 .toList();
         Optional<CreditChecks.Check> latestCheck = summary.status() == OrderStatus.ON_HOLD

@@ -31,7 +31,11 @@ public class StorefrontPriceService {
     private final PriceResolver resolver;
     private final ListingRepository listings;
 
-    StorefrontPriceService(CustomerService customers, PriceResolver resolver, ListingRepository listings) {
+    private final com.stockflow.product.api.CustomerSkus customerSkus;
+
+    StorefrontPriceService(CustomerService customers, PriceResolver resolver, ListingRepository listings,
+                           com.stockflow.product.api.CustomerSkus customerSkus) {
+        this.customerSkus = customerSkus;
         this.customers = customers;
         this.resolver = resolver;
         this.listings = listings;
@@ -48,8 +52,10 @@ public class StorefrontPriceService {
         var skus = new LinkedHashSet<String>();
         for (String code : codes) skus.add(code == null ? "" : code.strip().toUpperCase(Locale.ROOT));
         List<PriceSchedule> schedules = new ArrayList<>();
+        // 13 BR-10, 4B-2: a customer's own SKU has an internal price only, which the customer never sees: no price here.
+        java.util.Set<String> owned = customerSkus.ownersOf(skus).keySet();
         for (String sku : skus) {
-            if (listings.publishedProductForSku(sku).isEmpty()) continue;
+            if (owned.contains(sku) || listings.publishedProductForSku(sku).isEmpty()) continue;
             try {
                 // 13 BR-10: a price of the customer's own on its own SKU is internal - Sales quotes from it, the
                 // customer never sees it - so the storefront reads what checkout reads.

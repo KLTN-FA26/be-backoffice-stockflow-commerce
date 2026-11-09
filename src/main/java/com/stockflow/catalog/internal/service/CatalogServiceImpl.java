@@ -31,7 +31,11 @@ class CatalogServiceImpl implements CatalogService {
     private final ProductPublication products;
     private final PriceResolver resolver;
 
-    CatalogServiceImpl(ListingRepository listings, ProductPublication products, PriceResolver resolver) {
+    private final com.stockflow.product.api.CustomerSkus customerSkus;
+
+    CatalogServiceImpl(ListingRepository listings, ProductPublication products, PriceResolver resolver,
+                       com.stockflow.product.api.CustomerSkus customerSkus) {
+        this.customerSkus = customerSkus;
         this.listings = listings;
         this.products = products;
         this.resolver = resolver;
@@ -56,6 +60,13 @@ class CatalogServiceImpl implements CatalogService {
     @Override
     public Map<String, Money> checkoutPrices(UUID customerId, Map<String, Integer> quantities) {
         var customer = resolver.customer(customerId);
+        // 4B-2 (14 BR-01, BR-08): a customer's own SKU is quoted by the carton, never bought here - refused, not priced
+        // by whatever group or base rule would match it.
+        Map<String, UUID> owned = customerSkus.ownersOf(quantities.keySet());
+        if (!owned.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCT_NOT_PURCHASABLE, ("%s is a customer's own SKU: it is quoted, "
+                    + "not bought at checkout").formatted(String.join(", ", owned.keySet())));
+        }
         lockPurchasable(quantities.keySet());
         Map<String, Money> prices = new HashMap<>();
         for (var entry : quantities.entrySet()) {

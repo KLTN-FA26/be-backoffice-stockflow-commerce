@@ -155,6 +155,16 @@ public class CustomerSkuService implements CustomerSkus {
 
     @Override
     @Transactional(readOnly = true)
+    public Map<String, UUID> ownersOf(java.util.Collection<String> skus) {
+        if (skus == null || skus.isEmpty()) {
+            return Map.of();
+        }
+        return variants.findBySkuIn(skus).stream().filter(v -> v.getOwnerCustomerId() != null)
+                .collect(Collectors.toMap(VariantJpaEntity::getSku, VariantJpaEntity::getOwnerCustomerId));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<CustomerSku> ownedBy(UUID customerId, UUID productId) {
         List<VariantJpaEntity> owned = variants.ownedBy(customerId, productId);
         Map<UUID, String> sources = variants.findAllById(owned.stream().map(VariantJpaEntity::getSourceVariantId)

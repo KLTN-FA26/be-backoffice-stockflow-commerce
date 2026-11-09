@@ -96,7 +96,7 @@ public interface CustomerOrders {
      */
     record Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                 UUID designSnapshotId, Production production, String productSlug, String productTitle,
-                String productImageUrl) {
+                String productImageUrl, Integer cartons, Integer unitsPerCarton) {
     }
 
     /**

@@ -973,4 +973,28 @@ class ReturnRequestTest {
         assertThatThrownBy(() -> new ReturnDiscrepancy(UUID.randomUUID(), null, ReturnDiscrepancy.Kind.SHORT, "X", 1,
                 null, WAREHOUSE, NOW)).isInstanceOf(IllegalArgumentException.class);
     }
+
+    @org.junit.jupiter.api.Test
+    @DisplayName("4B-2: a line of the customer's own SKU in cartons carries no design snapshot, yet it is printed to the "
+            + "customer's design - it comes back for a named defect only (17 §4.10, BR-RMA-002)")
+    void aLineOfTheCustomersOwnSkuIsPrintedGoods() {
+        UUID ownLine = UUID.randomUUID();
+        Order order = new Order(new OrderId(UUID.randomUUID()), OrderNumber.of(LocalDate.of(2026, 10, 15), 4), CUSTOMER,
+                UUID.randomUUID(), List.of(new OrderLine(ownLine, new Sku("LY12-ACME-01"), 100, Money.vnd(2_000), null,
+                        List.of()).withCartons(UUID.randomUUID(), 2, 50)),
+                OrderStatus.DELIVERED, DELIVERED.minus(Duration.ofDays(10)), null, 3L);
+        order.restoreLifecycle(null, null, null, DELIVERED.minus(Duration.ofDays(1)), DELIVERED, null, null, null, null,
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        assertThat(order.lines().getFirst().isMadeToOrder()).as("not a print line: released from stock").isFalse();
+        assertThat(order.lines().getFirst().printedToCustomerDesign()).isTrue();
+
+        assertThat(code(catchThrowable(() -> ReturnRequest.open("RMA-20261022-0009", UUID.randomUUID(), order,
+                ReturnChannel.PORTAL, ReturnReason.OTHER, "Không thích", ReturnResolution.REFUND,
+                List.of(new ReturnRequest.Claim(ownLine, 1)), Map.of(), Set.of(), CUSTOMER, NOW, POLICY))))
+                .isEqualTo(ErrorCode.RETURN_CUSTOM_ITEM_NOT_DEFECTIVE);
+        ReturnRequest misprint = ReturnRequest.open("RMA-20261022-0010", UUID.randomUUID(), order, ReturnChannel.PORTAL,
+                ReturnReason.PRINT_DEFECT, "Mực in bị lem", ReturnResolution.REPLACEMENT,
+                List.of(new ReturnRequest.Claim(ownLine, 10)), Map.of(), Set.of(), CUSTOMER, NOW, POLICY);
+        assertThat(misprint.lines()).singleElement().satisfies(l -> assertThat(l.customPrinted()).isTrue());
+    }
 }
