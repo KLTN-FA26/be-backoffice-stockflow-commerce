@@ -31,9 +31,9 @@ import java.util.UUID;
  *
  * <p><b>Purchase receipts are history</b> (4A-8, purchasing removed: kltn-docs 00 of 04/11). A receipt with no
  * production order ({@link GoodsReceiptType#PURCHASE}) was counted against a purchase order or none before 4A-5; it is
- * read as it stands and, while it has counted nothing in (DRAFT, or PENDING_APPROVAL from the old over-tolerance
- * approval), it may only be cancelled - nothing is counted or posted against a purchase order any more. Its purchase
- * order, supplier and approval columns are not read: 4A-9 archives and drops them.</p>
+ * read as it stands - nothing is counted or posted against a purchase order any more. None is left counting:
+ * {@code V20261113000200} refuses to run while one is DRAFT or PENDING_APPROVAL, and archived and dropped its purchase
+ * order, supplier and approval columns. The cancellation of such a receipt is kept for a database migrated by hand.</p>
  *
  * <p>What the aggregate decides: the order of the steps, and that a confirmed count is never edited (BR-05). What it
  * cannot see, and the service checks against the production order, the item and the map: BR-01, BR-02, BR-13 and the

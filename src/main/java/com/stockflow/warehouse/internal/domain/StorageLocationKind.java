@@ -10,8 +10,9 @@ public enum StorageLocationKind {
     AREA,
     /**
      * Legacy. Not on the map: blanks a print subcontractor held for this warehouse, outside available-to-promise.
-     * Subcontracting went with purchasing (4A-8) and no location of this kind is made any more; the constant stays
-     * for the rows that have it until 4A-9 archives {@code warehouse.subcontractor_site}.
+     * Subcontracting went with purchasing (4A-8): {@code V20261113000200} archived and dropped
+     * {@code warehouse.subcontractor_site}, and {@code check_storage_location_owned} refuses a new location of this
+     * kind. The constant stays for the locations that have it: ledger lines name them.
      */
     SUBCONTRACTOR
 }

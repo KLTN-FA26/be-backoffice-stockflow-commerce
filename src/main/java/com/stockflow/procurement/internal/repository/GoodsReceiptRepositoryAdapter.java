@@ -86,8 +86,8 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
      * IMMEDIATE once the receipt is flushed runs it here, and a refusal is a {@code DataIntegrityViolationException}
      * from this call (a 409) rather than a failed commit (a 500). The check that a production receipt is registered
      * with its production order ({@code tg_goods_receipts_production_registered}) stays deferred: the registration
-     * follows the save in the same transaction. The purchase receipts' tolerance triggers are not named: nothing posts
-     * a purchase receipt any more (4A-8), and 4A-9 drops them.</p>
+     * follows the save in the same transaction. There is no tolerance trigger to name: the purchase receipts' went with
+     * purchasing ({@code V20261113000200}).</p>
      *
      * <p>The lines of a draft are recounted in place; those of a posted one are not touched here (BR-05).</p>
      */

@@ -35,7 +35,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
 
     /**
      * 4A-5: the production order line a line of a production receipt counts; null on a historical purchase receipt,
-     * whose {@code po_line_id} is left unmapped since purchasing went (4A-8) - 4A-9 drops it.
+     * whose {@code po_line_id} went with purchasing ({@code V20261113000200} archived and dropped it).
      */
     @Column(name = "production_order_line_id", updatable = false)
     private UUID productionOrderLineId;

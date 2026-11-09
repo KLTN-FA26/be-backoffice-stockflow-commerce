@@ -21,9 +21,8 @@ import java.util.UUID;
  * {@code procurement.goods_receipts}. Not the domain model; see {@code GoodsReceipt}.
  *
  * <p>The purchase columns ({@code po_id}, {@code po_revision_id}, {@code supplier_id}, {@code blind_reason},
- * {@code referenced_po_id}, {@code approval_*}) are left unmapped since purchasing went (4A-8): a production receipt
- * leaves them null, a historical purchase receipt keeps what it had, and nothing reads them. {@code ddl-auto: validate}
- * accepts a column with no field; 4A-9 archives and drops them.</p>
+ * {@code referenced_po_id}, {@code approval_*}) went with purchasing: 4A-8 stopped mapping them and
+ * {@code V20261113000200} archived the purchase receipts whole and dropped them.</p>
  */
 @Entity
 @Table(name = "goods_receipts", schema = "procurement")
