@@ -40,10 +40,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * kltn-docs 15 BR-01 over HTTP, through the real filter chain: the storefront checkout reads the payment terms
- * the signed-in customer may use ({@code GET /orders/payment-terms}) and places the order with one of them
- * ({@code POST /orders}); a term the customer may not use is refused with {@code PAYMENT_TERM_NOT_ALLOWED}, and
- * a customer cannot pick the deposit share.
+ * kltn-docs 15 BR-01 over HTTP, through the real filter chain: the portal reads the payment terms the signed-in
+ * customer may use ({@code GET /orders/payment-terms}) and what it owes. It no longer places an order with one of
+ * them: the customer does not place orders (kltn-docs 14 BR-01, BR-02; team plan 5-2), so {@code POST /orders} is
+ * refused whatever it carries. What the order does with the terms is tested on the service.
  */
 @SecuredIntegrationTest
 class CheckoutPaymentTermsApiIntegrationTest {
@@ -98,17 +98,31 @@ class CheckoutPaymentTermsApiIntegrationTest {
                 "test terms", approver, null));
     }
 
-    /** These tests are about terms, not about ordering twice (SCRUM-190): every placement confirms a duplicate. */
-    private ResultActions place(String extra) throws Exception {
-        return http().asCustomer(user, post(ORDERS).contentType(MediaType.APPLICATION_JSON).content("""
-                {"requestId":"%s","customerId":"%s","confirmDuplicate":true,"lines":[{"sku":"SOFA-3S-GREY","quantity":1,"unitPrice":12500000}]%s}"""
-                .formatted(UUID.randomUUID(), customer, extra)));
+    /** The order a test needs: placed through the service, the fixture until 4B-10; the customer has no way to. */
+    private UUID anOrderOfTheCustomer() {
+        UUID[] id = new UUID[1];
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
+            id[0] = orders.placeOrder(new com.stockflow.order.api.PlaceOrderCommand(UUID.randomUUID(), customer, null,
+                    null, true, List.of(new com.stockflow.order.api.PlaceOrderCommand.Line(
+                            new com.stockflow.common.domain.Sku("SOFA-3S-GREY"), 1,
+                            com.stockflow.common.domain.Money.vnd(12_500_000), null)))).orderId();
+            placed.add(id[0]);
+        });
+        return id[0];
     }
 
-    private JsonNode placedBody(ResultActions result) throws Exception {
-        JsonNode body = json.readTree(result.andReturn().getResponse().getContentAsString());
-        if (body.at("/data/orderId").isTextual()) placed.add(UUID.fromString(body.at("/data/orderId").asText()));
-        return body;
+    @Test
+    @DisplayName("team plan 5-2: a customer cannot place an order over HTTP, with any term; nothing is created")
+    void aCustomerCannotPlaceAnOrder() throws Exception {
+        terms(true, true, CommercialTerm.DEPOSIT);
+        for (String term : List.of("PREPAID", "DEPOSIT", "CREDIT")) {
+            http().asCustomer(user, post(ORDERS).contentType(MediaType.APPLICATION_JSON).content("""
+                    {"requestId":"%s","customerId":"%s","paymentTerm":"%s",
+                     "lines":[{"sku":"SOFA-3S-GREY","quantity":1,"unitPrice":12500000}]}"""
+                    .formatted(UUID.randomUUID(), customer, term))).andExpect(status().isForbidden());
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.customer_order WHERE customer_id = ?", Long.class,
+                customer)).isZero();
     }
 
     @Test
@@ -141,53 +155,6 @@ class CheckoutPaymentTermsApiIntegrationTest {
         http().asRole(com.stockflow.common.security.Role.SALES_STAFF, UUID.randomUUID(), get(TERMS))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("CUSTOMER_NOT_FOUND"));
         http().anonymous(get(TERMS)).andExpect(status().isUnauthorized());
-    }
-
-    @Test
-    @DisplayName("BR-01: POST /orders with a term the customer may not use is 409 PAYMENT_TERM_NOT_ALLOWED")
-    void aTermNotAllowedIsRefused() throws Exception {
-        place(",\"paymentTerm\":\"CREDIT\"").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PAYMENT_TERM_NOT_ALLOWED"));
-        place(",\"paymentTerm\":\"DEPOSIT\"").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PAYMENT_TERM_NOT_ALLOWED"));
-        place(",\"paymentTerm\":\"BARTER\"").andExpect(status().isBadRequest());
-        // nothing was reserved or created by the refusals
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.customer_order WHERE customer_id = ?", Long.class, customer))
-                .isZero();
-    }
-
-    @Test
-    @DisplayName("an allowed term, or none (the default), places the order on that term")
-    void anAllowedTermIsAccepted() throws Exception {
-        terms(true, false, CommercialTerm.DEPOSIT);
-        JsonNode byDefault = placedBody(place("").andExpect(status().isCreated()));
-        assertThat(byDefault.at("/data/paymentTerm").asText()).isEqualTo("DEPOSIT");
-        assertThat(byDefault.at("/data/depositRequired").decimalValue()).isEqualByComparingTo("3750000");
-        JsonNode prepaid = placedBody(place(",\"paymentTerm\":\"PREPAID\"").andExpect(status().isCreated()));
-        assertThat(prepaid.at("/data/paymentTerm").asText()).isEqualTo("PREPAID");
-        place(",\"paymentTerm\":\"CREDIT\"").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PAYMENT_TERM_NOT_ALLOWED"));
-    }
-
-    @Test
-    @DisplayName("a customer cannot pick the deposit share: theirs applies, whatever they send")
-    void theDepositShareIsNotTheCustomersToPick() throws Exception {
-        terms(true, false, CommercialTerm.PREPAID);
-        JsonNode body = placedBody(place(",\"paymentTerm\":\"DEPOSIT\",\"depositPercent\":1")
-                .andExpect(status().isCreated()));
-        assertThat(body.at("/data/depositRequired").decimalValue()).isEqualByComparingTo("3750000");
-    }
-
-    /** A receivable of {@code amount}, {@code paid} of it settled, on a fresh order of the customer. */
-    private void receivable(String status, String collector, long amount, long paid, int dueInDays) throws Exception {
-        UUID order = UUID.fromString(placedBody(place(",\"paymentTerm\":\"PREPAID\"").andExpect(status().isCreated()))
-                .at("/data/orderId").asText());
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO payment.receivable (id, order_id, customer_id, amount, paid_amount, currency, issued_at,
-                    due_date, status, collector, kind)
-                VALUES (gen_random_uuid(), ?, ?, ?, ?, 'VND', NOW() - INTERVAL '40 days', CURRENT_DATE + ?, ?, ?, ?)""",
-                order, customer, amount, paid, dueInDays, status, collector,
-                "CARRIER".equals(collector) ? "DEPOSIT_BALANCE" : "CREDIT_ORDER"));
     }
 
     @Test
@@ -242,12 +209,6 @@ class CheckoutPaymentTermsApiIntegrationTest {
                 currentTermsVersion(), policy));
     }
 
-    private ResultActions placeTwo(String extra) throws Exception {
-        return http().asCustomer(user, post(ORDERS).contentType(MediaType.APPLICATION_JSON).content("""
-                {"requestId":"%s","customerId":"%s","lines":[{"sku":"SOFA-3S-GREY","quantity":2,"unitPrice":12500000}],
-                 "paymentTerm":"DEPOSIT"%s}""".formatted(UUID.randomUUID(), customer, extra)));
-    }
-
     @Test
     @DisplayName("SCRUM-193: payment-terms lists the balance policies the customer may pick: none without deposits; "
             + "paid first and the credit one with credit; paid first only without credit")
@@ -266,73 +227,4 @@ class CheckoutPaymentTermsApiIntegrationTest {
                 .andExpect(jsonPath("$.data.allowedBalancePolicies[0]").value("BEFORE_DELIVERY"));
     }
 
-    @Test
-    @DisplayName("SCRUM-193 CREDIT-PORTAL: a portal order whose balance does not fit on credit is 409 "
-            + "BALANCE_CREDIT_LIMIT_EXCEEDED with the credit left and the currency in details - no order, no silent "
-            + "switch to BEFORE_DELIVERY - whether the policy is the customer's default or their own pick")
-    void aBalanceOverTheLimitIsRefusedWithTheCreditLeft() throws Exception {
-        depositTerms(true, "10000000", com.stockflow.customer.api.DepositBalancePolicy.ON_CREDIT);
-        // 25M order, 7.5M deposit, 17.5M balance on credit > the 10M limit
-        placeTwo("").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("BALANCE_CREDIT_LIMIT_EXCEEDED"))
-                .andExpect(jsonPath("$.details.availableCredit").value(10000000))
-                .andExpect(jsonPath("$.details.creditLimit").value(10000000))
-                .andExpect(jsonPath("$.details.requiredAmount").value(17500000))
-                .andExpect(jsonPath("$.details.currency").value("VND"));
-        placeTwo(",\"balancePolicy\":\"ON_CREDIT\"").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("BALANCE_CREDIT_LIMIT_EXCEEDED"));
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.customer_order WHERE customer_id = ?", Long.class,
-                customer)).isZero();
-    }
-
-    @Test
-    @DisplayName("SCRUM-193: the customer picks BEFORE_DELIVERY and is placed even over the limit; within the limit the "
-            + "ON_CREDIT default is placed and the credit left shrinks; a limit used up leaves availableCredit 0, not below")
-    void aCustomerMayPickAnAllowedPolicy() throws Exception {
-        depositTerms(true, "10000000", com.stockflow.customer.api.DepositBalancePolicy.ON_CREDIT);
-        JsonNode paidFirst = placedBody(placeTwo(",\"balancePolicy\":\"BEFORE_DELIVERY\"").andExpect(status().isCreated()));
-        assertThat(paidFirst.at("/data/balancePolicy").asText()).isEqualTo("BEFORE_DELIVERY");
-        // one sofa: 12.5M, deposit 3.75M, balance 8.75M fits in 10M
-        JsonNode onCredit = placedBody(place(",\"paymentTerm\":\"DEPOSIT\"").andExpect(status().isCreated()));
-        assertThat(onCredit.at("/data/balancePolicy").asText()).isEqualTo("ON_CREDIT");
-        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.exposure").value(8750000))
-                .andExpect(jsonPath("$.data.availableCredit").value(1250000));
-        // the next one no longer fits: refused, with what is left
-        place(",\"paymentTerm\":\"DEPOSIT\"").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("BALANCE_CREDIT_LIMIT_EXCEEDED"))
-                .andExpect(jsonPath("$.details.availableCredit").value(1250000));
-    }
-
-    @Test
-    @DisplayName("SCRUM-193: a policy the customer's terms do not allow is 409 BALANCE_POLICY_NOT_ALLOWED; ON_DELIVERY, "
-            + "which no longer exists (09 BR-08), and a balance policy on a term with no balance are a 400")
-    void aPolicyNotAllowedIsRefused() throws Exception {
-        depositTerms(false, null, com.stockflow.customer.api.DepositBalancePolicy.BEFORE_DELIVERY);
-        place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"ON_CREDIT\"").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("BALANCE_POLICY_NOT_ALLOWED"));
-        place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"ON_DELIVERY\"").andExpect(status().isBadRequest());
-        place(",\"paymentTerm\":\"PREPAID\",\"balancePolicy\":\"BEFORE_DELIVERY\"")
-                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        JsonNode own = placedBody(place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"BEFORE_DELIVERY\"")
-                .andExpect(status().isCreated()));
-        assertThat(own.at("/data/balancePolicy").asText()).isEqualTo("BEFORE_DELIVERY");
-    }
-
-    @Test
-    @DisplayName("SCRUM-193: an overdue customer's ON_CREDIT balance is 409 CUSTOMER_CREDIT_OVERDUE with the overdue "
-            + "amount, its oldest due date and the credit left in details; BEFORE_DELIVERY is still theirs to pick")
-    void anOverdueCustomerIsToldHowMuch() throws Exception {
-        depositTerms(true, "10000000", com.stockflow.customer.api.DepositBalancePolicy.ON_CREDIT);
-        receivable("OVERDUE", "CUSTOMER", 1_000_000, 0, -12);
-        place(",\"paymentTerm\":\"DEPOSIT\"").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_CREDIT_OVERDUE"))
-                .andExpect(jsonPath("$.details.overdueAmount").value(1000000))
-                .andExpect(jsonPath("$.details.oldestOverdueDueDate").value(java.time.LocalDate.now().minusDays(12).toString()))
-                .andExpect(jsonPath("$.details.availableCredit").value(9000000))
-                .andExpect(jsonPath("$.details.currency").value("VND"));
-        JsonNode paidFirst = placedBody(place(",\"paymentTerm\":\"DEPOSIT\",\"balancePolicy\":\"BEFORE_DELIVERY\"")
-                .andExpect(status().isCreated()));
-        assertThat(paidFirst.at("/data/balancePolicy").asText()).isEqualTo("BEFORE_DELIVERY");
-    }
 }

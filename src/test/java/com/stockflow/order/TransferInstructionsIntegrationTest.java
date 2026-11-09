@@ -9,7 +9,12 @@ import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.DepositBalancePolicy;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
+import com.stockflow.common.domain.Money;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.PaymentTerm;
+import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.payment.internal.service.ReceivableService;
 import com.stockflow.support.Await;
@@ -107,15 +112,19 @@ class TransferInstructionsIntegrationTest {
                 version == null || version < 0 ? null : version, policy));
     }
 
-    /** One sofa (12 500 000) on {@code term}; the order's id and number. */
-    private JsonNode place(String term) throws Exception {
-        ResultActions result = http().asCustomer(user, post(ORDERS).contentType(MediaType.APPLICATION_JSON).content("""
-                {"requestId":"%s","customerId":"%s","lines":[{"sku":"SOFA-3S-GREY","quantity":1,"unitPrice":12500000}],
-                 "paymentTerm":"%s"}""".formatted(UUID.randomUUID(), customer, term)));
-        JsonNode body = json.readTree(result.andExpect(status().isCreated()).andReturn().getResponse()
-                .getContentAsString()).get("data");
-        placed.add(UUID.fromString(body.get("orderId").asText()));
-        return body;
+    /**
+     * One sofa (12 500 000) on {@code term}; the order's id and number. Placed through the service, the fixture until
+     * 4B-10: the customer places no order itself (team plan 5-2), only reads what to pay for the ones Sales drew up.
+     */
+    private JsonNode place(String term) {
+        var summary = new OrderSummary[1];
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> summary[0] = orders.placeOrder(
+                new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, true,
+                        List.of(new PlaceOrderCommand.Line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(12_500_000), null)),
+                        PaymentTerm.valueOf(term), null, null)));
+        placed.add(summary[0].orderId());
+        return json.createObjectNode().put("orderId", summary[0].orderId().toString())
+                .put("orderNumber", summary[0].orderNumber());
     }
 
     private ResultActions instructions(JsonNode order) throws Exception {
