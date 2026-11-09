@@ -22,7 +22,7 @@ public enum ErrorCode {
     INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
     CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
-    /** Publishing, and since SCRUM-461 a purchase order line too (the field error carries this code): the product is not approved. */
+    /** Publishing, or a quote or order line (the field error carries this code): the product is not approved. */
     PRODUCT_NOT_APPROVED("The product is not approved", 409),
     PRODUCT_CATEGORY_REQUIRED("A valid product category is required", 409),
     PRODUCT_SKU_REQUIRED("At least one sellable SKU is required", 409),
@@ -40,8 +40,8 @@ public enum ErrorCode {
     CATEGORY_INACTIVE("This category is inactive and cannot be chosen for a product", 409),
     /** SCRUM-461, kltn-docs 01 BR-02: only a draft is deleted. */
     PRODUCT_NOT_DELETABLE("Only a draft product can be deleted", 409),
-    /** SCRUM-461: stock, a purchase order, an order or a design already points at the product. */
-    PRODUCT_IN_USE("The product is referenced by stock, purchasing, orders or designs", 409),
+    /** SCRUM-461: stock, a production order, an order or a design already points at the product. */
+    PRODUCT_IN_USE("The product is referenced by stock, production orders, orders or designs", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
     /** kltn-docs 13 BR-05: the first tier of a customer's own price is its minimum order quantity. */
     /** Direct checkout never falls back to another price below the list's first tier (P4): Sales quotes it. */
@@ -201,13 +201,12 @@ public enum ErrorCode {
     /** BR-03: a lot-tracked or expiry-tracked item was received without its lot or expiry date, or an
      *  untracked one with a lot. */
     RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
-    /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
-    DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
+    /** Two receipt lines for the same production order line (uk_goods_receipt_lines_production_order_line). */
+    DUPLICATE_RECEIPT_LINE("The same production order line appears twice on this receipt", 409),
     /**
      * SCRUM-473: a receipt line that has ever had labelled cartons - VOID ones too, which still point at it
-     * ({@code fk_stock_package_receipt_line}) - keeps its PO line and lot and cannot be removed from the draft, and
-     * its unit cannot change while it keeps cartons in the old one. A lot or PO line on such a line is corrected by
-     * cancelling the receipt and counting it again.
+     * ({@code fk_stock_package_receipt_line}) - cannot be removed from the draft, and its unit cannot change while it
+     * keeps cartons in the old one. Such a line is dropped by cancelling the receipt and counting it again.
      */
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
