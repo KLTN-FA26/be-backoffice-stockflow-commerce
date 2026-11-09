@@ -142,10 +142,15 @@ SELECT pg_temp.expect_fail('SC13 a draft signed without being sent', $q$
 SELECT pg_temp.expect_fail('SC14 sent without the PDF the customer received', $q$
     UPDATE ordering.sales_contract SET status = 'SENT', sent_at = NOW(), sent_by = md5('demo:user:editor')::uuid
      WHERE id = md5('qa17:contract')::uuid $q$);
-SELECT pg_temp.expect_ok('SC15 sent, with its PDF', $q$
+SELECT pg_temp.expect_fail('SC15a sent while its order stays a draft (V20261108002300, 14 §5.3)', $q$
     UPDATE ordering.sales_contract SET status = 'SENT', sent_at = NOW(), sent_by = md5('demo:user:editor')::uuid,
            sent_document_key = 'documents/hd-qa-1.pdf'
      WHERE id = md5('qa17:contract')::uuid $q$);
+SELECT pg_temp.expect_ok('SC15 sent, with its PDF; the order waits for the signature', $q$
+    UPDATE ordering.sales_contract SET status = 'SENT', sent_at = NOW(), sent_by = md5('demo:user:editor')::uuid,
+           sent_document_key = 'documents/hd-qa-1.pdf'
+     WHERE id = md5('qa17:contract')::uuid;
+    UPDATE ordering.customer_order SET status = 'PENDING_CONTRACT' WHERE id = md5('qa17:order')::uuid $q$);
 SELECT pg_temp.expect_fail('SC16 a sent contract''s free sample rounds changed', $q$
     UPDATE ordering.sales_contract SET free_sample_rounds = 5 WHERE id = md5('qa17:contract')::uuid $q$);
 SELECT pg_temp.expect_fail('SC17 a sent contract''s delivery window moved', $q$
@@ -154,10 +159,19 @@ SELECT pg_temp.expect_fail('SC18 signed on a day after it was recorded', $q$
     UPDATE ordering.sales_contract SET status = 'SIGNED', signed_at = NOW(), signed_by = md5('demo:user:editor')::uuid,
            signed_on = CURRENT_DATE + 3, signed_file_key = 'documents/s.pdf', signed_file_name = 's.pdf'
      WHERE id = md5('qa17:contract')::uuid $q$);
-SELECT pg_temp.expect_ok('SC19 signed, with the signed file and the day', $q$
+SELECT pg_temp.expect_fail('SC19a signed while its order still waits for the signature', $q$
     UPDATE ordering.sales_contract SET status = 'SIGNED', signed_at = NOW(), signed_by = md5('demo:user:editor')::uuid,
            signed_on = CURRENT_DATE, signed_file_key = 'documents/s.pdf', signed_file_name = 's.pdf'
      WHERE id = md5('qa17:contract')::uuid $q$);
+SELECT pg_temp.expect_fail('SC19b the order moved on while its contract is still to sign', $q$
+    UPDATE ordering.customer_order SET status = 'CONFIRMED', contract_signed_at = NOW()
+     WHERE id = md5('qa17:order')::uuid $q$);
+SELECT pg_temp.expect_ok('SC19 signed, with the signed file and the day; the order confirmed', $q$
+    UPDATE ordering.sales_contract SET status = 'SIGNED', signed_at = NOW(), signed_by = md5('demo:user:editor')::uuid,
+           signed_on = CURRENT_DATE, signed_file_key = 'documents/s.pdf', signed_file_name = 's.pdf'
+     WHERE id = md5('qa17:contract')::uuid;
+    UPDATE ordering.customer_order SET status = 'CONFIRMED', contract_signed_at = NOW()
+     WHERE id = md5('qa17:order')::uuid $q$);
 SELECT pg_temp.expect_fail('SC20 a signed contract cancelled', $q$
     UPDATE ordering.sales_contract SET status = 'CANCELLED', cancelled_at = NOW(),
            cancelled_by = md5('demo:user:editor')::uuid, cancellation_reason = 'x'
@@ -166,6 +180,21 @@ SELECT pg_temp.expect_fail('SC20b a signed contract''s signed file swapped', $q$
     UPDATE ordering.sales_contract SET signed_file_key = 'documents/other.pdf' WHERE id = md5('qa17:contract')::uuid $q$);
 SELECT pg_temp.expect_fail('SC20c a signed contract''s buyer changed', $q$
     UPDATE ordering.sales_contract SET buyer_name = 'Someone else' WHERE id = md5('qa17:contract')::uuid $q$);
+
+\echo '--- the order through its contract (V20261108002300, 4B-5)'
+INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
+                                     currency, placed_at, created_at)
+SELECT md5('qa17:order2')::uuid, 'SO-QA-HD2', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()
+  FROM customer.customer c ORDER BY c.id LIMIT 1;
+SELECT pg_temp.expect_fail('SC22 an order waiting for a contract it does not have', $q$
+    UPDATE ordering.customer_order SET status = 'PENDING_CONTRACT' WHERE id = md5('qa17:order2')::uuid $q$);
+SELECT pg_temp.expect_fail('SC23 a draft order straight to the warehouse, without a contract', $q$
+    UPDATE ordering.customer_order SET status = 'READY_TO_FULFILL' WHERE id = md5('qa17:order2')::uuid $q$);
+SELECT pg_temp.expect_true('SC24 the edges of 17 §5.1 around the contract',
+    (SELECT count(*) FROM ordering.order_status_transition
+      WHERE (from_status, to_status) IN (('DRAFT', 'PENDING_CONTRACT'), ('PENDING_CONTRACT', 'DRAFT'),
+            ('PENDING_CONTRACT', 'PENDING_PAYMENT'), ('PENDING_CONTRACT', 'CONFIRMED'),
+            ('PENDING_CONTRACT', 'ON_HOLD'), ('PENDING_CONTRACT', 'CANCELLED'))) = 6);
 
 \echo '--- who works on contracts'
 CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$
