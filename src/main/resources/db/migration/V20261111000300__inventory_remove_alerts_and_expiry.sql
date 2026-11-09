@@ -24,6 +24,12 @@
 --      SkuInventoryControlChanged): their listeners are gone, so a publication left incomplete would be retried
 --      for ever against a class that no longer exists.
 --
+-- Stock already past its expiry date when this runs would otherwise turn sellable, since no sweep is left to catch it:
+-- AVAILABLE rows past their date (business calendar) with nothing held are marked EXPIRED first, each with a
+-- STATUS_CHANGE ledger line (reference EXPIRY_SWEEP, the stock row as document, as the sweep wrote them), and listed
+-- in a NOTICE; rows past their date that are held stay as they are and are listed too. An approved adjustment writes
+-- them off (reason OTHER or DATA_CORRECTION: no new adjustment takes the reason EXPIRED).
+--
 -- Kept, read only: the stock status EXPIRED and the adjustment reason EXPIRED, which rows recorded before carry. Nothing
 -- enters either from here: StockStatus / AdjustmentReason say so first (the request path refuses EXPIRED), and two
 -- triggers say it again (tg_stock_item_no_new_expired, tg_stock_adjustment_no_new_expired). The ledger reference
@@ -328,6 +334,54 @@ UPDATE inventory.stock_damage_report d SET lot_id = m.keeper_id FROM lot_merge m
 ALTER TABLE inventory.stock_damage_report ENABLE TRIGGER tg_stock_damage_report_immutable;
 
 DELETE FROM inventory.stock_lot WHERE id IN (SELECT duplicate_id FROM lot_merge);
+
+
+-- ---------------------------------------------------------------------------------------------
+-- 3c. Stock past its expiry date now is EXPIRED, as the last sweep would have made it
+-- ---------------------------------------------------------------------------------------------
+-- Before the column goes and before the triggers of section 5 refuse new EXPIRED rows.
+CREATE TEMP TABLE expired_at_deploy ON COMMIT DROP AS
+SELECT id, sku, lot_number, lot_id, location_code, stock_package_id, on_hand, expiry_date
+  FROM inventory.stock_item
+ WHERE status = 'AVAILABLE' AND on_hand > 0 AND reserved = 0
+   AND expiry_date < (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date;
+
+DO $$
+DECLARE
+    expired text;
+    held text;
+BEGIN
+    SELECT string_agg(format('%s %s at %s (%s, expired %s)', on_hand, sku, location_code, coalesce(lot_number, 'no lot'),
+                             expiry_date), '; ' ORDER BY sku, location_code)
+      INTO expired FROM expired_at_deploy;
+    IF expired IS NOT NULL THEN
+        RAISE NOTICE 'V20261111000300: stock past its expiry date marked EXPIRED (write it off by an approved adjustment, reason OTHER or DATA_CORRECTION): %', expired;
+    END IF;
+    SELECT string_agg(format('%s %s at %s (%s, expired %s, %s held)', on_hand, sku, location_code,
+                             coalesce(lot_number, 'no lot'), expiry_date, reserved), '; ' ORDER BY sku, location_code)
+      INTO held FROM inventory.stock_item
+     WHERE status = 'AVAILABLE' AND on_hand > 0 AND reserved > 0
+       AND expiry_date < (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date;
+    IF held IS NOT NULL THEN
+        RAISE NOTICE 'V20261111000300: stock past its expiry date left AVAILABLE because orders hold it: %', held;
+    END IF;
+END
+$$;
+
+INSERT INTO platform.legacy_archive (source_table, row_id, row_data)
+SELECT 'inventory.stock_item', s.id, to_jsonb(s) FROM inventory.stock_item s
+ WHERE s.id IN (SELECT id FROM expired_at_deploy);
+
+UPDATE inventory.stock_item SET status = 'EXPIRED' WHERE id IN (SELECT id FROM expired_at_deploy);
+
+INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, quantity,
+                                      from_status, to_status, reference_type, reference_id, reason, occurred_at,
+                                      from_stock_package_id, to_stock_package_id, lot_id, version, created_at,
+                                      created_by)
+SELECT gen_random_uuid(), 'STATUS_CHANGE', sku, lot_number, location_code, location_code, on_hand, 'AVAILABLE',
+       'EXPIRED', 'EXPIRY_SWEEP', id, 'V20261111000300: past its expiry date when expiry tracking ended', now(),
+       stock_package_id, stock_package_id, lot_id, 0, now(), 'flyway'
+  FROM expired_at_deploy;
 
 
 -- ---------------------------------------------------------------------------------------------

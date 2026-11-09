@@ -16,7 +16,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * stock, lots and receipt lines, go - each archived first in {@code platform.legacy_archive}; the alert permission
  * goes from every role, whose version moves; the pending publications of the two events only the alerts used are
  * archived and cleared, while other publications stay. Lots of one receipt told apart by expiry alone are merged into
- * the oldest, their stock rows and ledger lines repointed. Afterwards nothing becomes EXPIRED, stock or adjustment, while what was EXPIRED stays readable.
+ * the oldest, their stock rows and ledger lines repointed. Stock already past its expiry date, and held by nobody, is
+ * marked EXPIRED with its ledger line, so it does not turn sellable once nothing sweeps it. Afterwards nothing becomes EXPIRED, stock or adjustment, while what was EXPIRED stays readable.
  */
 class StockAlertExpiryRemovalMigrationUpgradeTest {
 
@@ -37,6 +38,8 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
     private static final String OLD_EXPIRED = "00000000-0000-4000-8000-0000000e5601";
     private static final String ROW_B = "00000000-0000-4000-8000-0000000e5202";
     private static final String LINE_B = "00000000-0000-4000-8000-0000000e5701";
+    private static final String PAST_DATE = "00000000-0000-4000-8000-0000000e5801";
+    private static final String PAST_DATE_HELD = "00000000-0000-4000-8000-0000000e5802";
 
     @Test
     void alertsAndExpiryGoArchivedAndTheAlertPermissionWithThem() throws Exception {
@@ -114,6 +117,18 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
                 assertThat(RawSql.text(db, "SELECT lot_number FROM procurement.goods_receipt_lines WHERE id = ?::uuid",
                         RECEIPT_LINE)).isEqualTo("LOT-UPG");
 
+                // Stock past its date at the upgrade: EXPIRED with a STATUS_CHANGE line; held stock is left alone.
+                assertThat(RawSql.text(db, "SELECT status FROM inventory.stock_item WHERE id = ?::uuid", PAST_DATE))
+                        .isEqualTo("EXPIRED");
+                assertThat(RawSql.text(db, """
+                        SELECT movement_type || ':' || from_status || '>' || to_status || ':' || quantity
+                          FROM inventory.stock_movement WHERE reference_type = 'EXPIRY_SWEEP' AND reference_id = ?::uuid""",
+                        PAST_DATE)).isEqualTo("STATUS_CHANGE:AVAILABLE>EXPIRED:4");
+                assertThat(RawSql.text(db, "SELECT status FROM inventory.stock_item WHERE id = ?::uuid", PAST_DATE_HELD))
+                        .isEqualTo("AVAILABLE");
+                assertThat(RawSql.text(db, "SELECT status FROM inventory.stock_item WHERE id = ?::uuid", ROW))
+                        .as("not yet past its date").isEqualTo("AVAILABLE");
+
                 // The permission, and every holder's version moved; a role that never held it keeps its version.
                 assertThat(RawSql.number(db,
                         "SELECT count(*) FROM identity.permission WHERE resource = 'inventory-alerts'")).isZero();
@@ -157,6 +172,17 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
                                                   status, created_at, received_at)
                 VALUES (?::uuid, ?, 'HCM-A01-1-A', 'LOT-UPG-S', CURRENT_DATE + 30, 3, 0, 'AVAILABLE', NOW(),
                         NOW() - interval '1 day')""", ROW, TABLE);
+        // Two loose sofa rows already past their date at the upgrade, one of them held; the sofa's policy is off for the
+        // insert, which would refuse an expiry date on a SKU that is not expiry-tracked.
+        RawSql.update(db, "UPDATE inventory.inventory_items SET policy_configured = FALSE WHERE sku = ?", SOFA);
+        RawSql.update(db, """
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
+                                                  status, created_at, received_at)
+                VALUES (?::uuid, ?, 'HCM-A02-1-A', 'LOT-OLD', CURRENT_DATE - 1, 4, 0, 'AVAILABLE', NOW(),
+                        NOW() - interval '400 days'),
+                       (?::uuid, ?, 'HCM-A02-1-B', 'LOT-OLD', CURRENT_DATE - 1, 3, 3, 'AVAILABLE', NOW(),
+                        NOW() - interval '400 days')""", PAST_DATE, SOFA, PAST_DATE_HELD, SOFA);
+        RawSql.update(db, "UPDATE inventory.inventory_items SET policy_configured = TRUE WHERE sku = ?", SOFA);
         // A row the old expiry sweep left EXPIRED.
         RawSql.update(db, """
                 INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,
