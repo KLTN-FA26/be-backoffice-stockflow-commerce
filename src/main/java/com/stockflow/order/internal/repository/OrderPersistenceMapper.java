@@ -194,7 +194,18 @@ final class OrderPersistenceMapper {
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
                         entity.getBilledAmount(), null, null, null, List.of(), List.of(),
-                        entity.isAllowPartialShipment()));
+                        entity.isAllowPartialShipment()),
+                rowCharges(entity));
+    }
+
+    /**
+     * The totals a row holds (4B-3): before tax is {@code net_amount}, which the database generates as the total less
+     * the VAT. The fee lines are not loaded for a row: null, so nobody reads "no fee lines" from it.
+     */
+    private static OrderSummary.Charges rowCharges(OrderJpaEntity entity) {
+        Currency currency = Currency.getInstance(entity.getCurrency());
+        return new OrderSummary.Charges(new Money(entity.getTotalAmount().subtract(entity.getTaxAmount()), currency),
+                new Money(entity.getTaxAmount(), currency), null);
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {

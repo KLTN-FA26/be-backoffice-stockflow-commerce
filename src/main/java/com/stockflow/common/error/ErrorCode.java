@@ -338,6 +338,9 @@ public enum ErrorCode {
     QUOTE_LINES_LEGACY("This quote was drafted on blanks and designs; quote the customer's own SKUs instead", 409),
     /** 4B-3 (kltn-docs 14 §4.1 step 3, BR-21): a line's VAT follows its product's tax class, which is not set yet. */
     QUOTE_TAX_CLASS_MISSING("A product on this quote has no tax class; set it before the quote is sent", 409),
+    /** 4B-3 (kltn-docs 14 BR-17): a SKU produced for the first time is sent with its plate fee. */
+    QUOTE_PLATE_FEE_MISSING("A SKU on this quote is produced for the first time and has no plate fee; edit the quote",
+            409),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
      * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.

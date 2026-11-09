@@ -44,7 +44,10 @@ final class CustomerOrderWebMapper {
                         detail.cancellationRequest().decidedAt(), detail.cancellationRequest().decisionNote()),
                 detail.shipments().stream().map(s -> new CustomerOrderDetailResponse.Shipment(s.shipmentCode(),
                         s.status().name(), s.packageCount(), s.carrierName(), s.handedOverAt(),
-                        s.outcomeAt(), s.failureReason() == null ? null : s.failureReason().name())).toList());
+                        s.outcomeAt(), s.failureReason() == null ? null : s.failureReason().name())).toList(),
+                detail.charges().netTotal(), detail.charges().taxTotal(),
+                detail.charges().fees().stream().map(fee -> new CustomerOrderDetailResponse.Fee(fee.kind(), fee.sku(),
+                        fee.amount(), fee.taxRate(), fee.taxAmount())).toList());
     }
 
     private static CustomerOrderDetailResponse.Payment toResponse(CustomerOrders.Payment payment) {
@@ -60,7 +63,8 @@ final class CustomerOrderWebMapper {
                 line.lineTotal(), line.designSnapshotId(),
                 new CustomerOrderDetailResponse.Production(line.production().state().name(),
                         line.production().goodQuantity()),
-                line.productSlug(), line.productTitle(), line.productImageUrl(), line.cartons(), line.unitsPerCarton());
+                line.productSlug(), line.productTitle(), line.productImageUrl(), line.cartons(), line.unitsPerCarton(),
+                line.taxRate(), line.taxAmount());
     }
 
     private static CustomerOrderDetailResponse.TimelineEntry toResponse(CustomerOrders.TimelineEntry entry) {

@@ -106,7 +106,8 @@ class CustomerOrdersService implements CustomerOrders {
                             line.lineTotal().amount(), line.designSnapshotId(),
                             production(line, summary.status()),
                             listing == null ? null : listing.slug(), listing == null ? null : listing.title(),
-                            listing == null ? null : listing.imageUrl(), line.cartons(), line.unitsPerCarton());
+                            listing == null ? null : listing.imageUrl(), line.cartons(), line.unitsPerCarton(),
+                            line.taxRate(), line.taxAmount() == null ? null : line.taxAmount().amount());
                 })
                 .toList();
         Optional<CreditChecks.Check> latestCheck = summary.status() == OrderStatus.ON_HOLD
@@ -122,7 +123,7 @@ class CustomerOrdersService implements CustomerOrders {
                         .map(r -> new CancellationRequestView(r.status().name(), r.reasonCode(), r.note(),
                                 r.requestedAt(), r.decidedAt(), r.decisionNote()))
                         .orElse(null),
-                shipments(summary));
+                shipments(summary), charges(summary));
     }
 
     /**
@@ -298,5 +299,18 @@ class CustomerOrdersService implements CustomerOrders {
         return payment == null ? null
                 : new Payment(payment.status(), payment.paidAmount(), payment.depositRequired(),
                         payment.creditTermDays());
+    }
+
+    /** Before tax, the VAT and the fee lines; an order placed without VAT is all before tax, with no fee lines. */
+    private static CustomerOrders.Charges charges(OrderSummary summary) {
+        if (summary.charges() == null) {
+            return new CustomerOrders.Charges(summary.total().amount(), java.math.BigDecimal.ZERO, List.of());
+        }
+        OrderSummary.Charges charges = summary.charges();
+        return new CustomerOrders.Charges(charges.netTotal().amount(), charges.taxTotal().amount(),
+                charges.fees() == null ? List.of() : charges.fees().stream()
+                        .map(fee -> new CustomerOrders.Fee(fee.kind().name(), fee.sku(), fee.amount().amount(),
+                                fee.taxRate(), fee.taxAmount().amount()))
+                        .toList());
     }
 }

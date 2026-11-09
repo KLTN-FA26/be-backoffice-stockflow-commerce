@@ -67,8 +67,27 @@ public record CustomerOrderDetailResponse(
         @Schema(description = "G4-2a: the shipments handed over to a carrier, oldest first (kltn-docs 09 BR-05); empty "
                 + "until the first handover. Every order ships as a full truckload (09 BR-08). Nothing is tracked "
                 + "between handover and the outcome staff record")
-        List<Shipment> shipments
+        List<Shipment> shipments,
+
+        @Schema(description = "4B-3 (14 BR-09): the total before tax - the lines and the fee lines; total is it plus "
+                + "taxAmount. An order placed without VAT has its total here and taxAmount 0")
+        BigDecimal netAmount,
+
+        @Schema(description = "4B-3 (14 BR-21): the VAT of every line and fee line, each rounded to the dong")
+        BigDecimal taxAmount,
+
+        @Schema(description = "4B-3: the plate fee of each SKU produced for the first time, and the shipping fee")
+        List<Fee> fees
 ) {
+
+    @Schema(name = "CustomerOrderFee")
+    public record Fee(
+            @Schema(example = "PLATE_FEE", description = "PLATE_FEE or SHIPPING_FEE") String kind,
+            @Schema(description = "The SKU a plate fee is for; null on the shipping fee") String sku,
+            BigDecimal amount,
+            BigDecimal taxRate,
+            BigDecimal taxAmount) {
+    }
 
     @Schema(name = "CustomerOrderShipment")
     public record Shipment(
@@ -141,7 +160,11 @@ public record CustomerOrderDetailResponse(
                     + "for a line not ordered in cartons")
             Integer cartons,
             @Schema(description = "4B-2: pieces per carton fixed on the line")
-            Integer unitsPerCarton) {
+            Integer unitsPerCarton,
+            @Schema(description = "4B-3 (14 BR-21): the line's VAT rate; null on a line placed without VAT")
+            BigDecimal taxRate,
+            @Schema(description = "4B-3: the line's VAT, lineTotal x taxRate rounded to the dong")
+            BigDecimal taxAmount) {
     }
 
     @Schema(name = "CustomerOrderLineProduction")

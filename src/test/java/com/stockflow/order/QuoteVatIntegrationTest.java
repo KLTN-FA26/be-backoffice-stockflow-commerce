@@ -57,6 +57,7 @@ class QuoteVatIntegrationTest {
     private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired Quotes quotes;
+    @Autowired com.stockflow.order.internal.service.CustomerOrders customerOrders;
     @Autowired OrderService orders;
     @Autowired CustomerService customers;
     @Autowired JdbcTemplate jdbc;
@@ -148,6 +149,15 @@ class QuoteVatIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT net_amount || '/' || tax_amount || '/' || total_amount FROM "
                 + "ordering.customer_order WHERE id = ?", String.class, orderId))
                 .isEqualTo("890000.0000/89000.0000/979000.0000");
+        // The portal shows the same three totals, each line's VAT and the fee lines: the lines and fees add up.
+        var mine = customerOrders.myOrder(customerId, orderId);
+        assertThat(mine.total()).isEqualByComparingTo("979000");
+        assertThat(mine.charges().netTotal()).isEqualByComparingTo("890000");
+        assertThat(mine.charges().taxTotal()).isEqualByComparingTo("89000");
+        assertThat(mine.charges().fees()).extracting(com.stockflow.order.internal.service.CustomerOrders.Fee::kind)
+                .containsExactlyInAnyOrder("PLATE_FEE", "SHIPPING_FEE");
+        assertThat(mine.lines()).singleElement().satisfies(line ->
+                assertThat(line.taxAmount()).isEqualByComparingTo("9000"));
 
         // The dashboard (17 §4.11, D33): revenue before tax, the fee lines included; the SKU's cartons counted.
         Await.until("the order rolled up", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
@@ -165,6 +175,26 @@ class QuoteVatIntegrationTest {
         CustomerSkuRows.produced(jdbc, tx, customerId, sku);
         assertThat(quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId, draft(sku, List.of())))
                 .fees()).as("produced before").isEmpty();
+    }
+
+    @Test
+    @DisplayName("produced before when drafted, its only order gone since: the quote is sent with a plate fee (BR-17)")
+    void thePlateFeeIsCheckedAgainWhenSent() {
+        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10, "STANDARD", true).sku();
+        Quotes.QuoteView drafted = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                draft(sku, List.of())));
+        assertThat(drafted.fees()).as("a reorder").isEmpty();
+        tx.executeWithoutResult(s -> {
+            List<UUID> orders = jdbc.queryForList("SELECT order_id FROM ordering.order_line WHERE sku = ?", UUID.class,
+                    sku);
+            jdbc.update("DELETE FROM ordering.order_line WHERE sku = ?", sku);
+            orders.forEach(order -> jdbc.update("DELETE FROM ordering.customer_order WHERE id = ?", order));
+        });
+        assertThatThrownBy(() -> quotes.send(sales, drafted.id(), drafted.version()))
+                .extracting(QuoteVatIntegrationTest::code).isEqualTo(ErrorCode.QUOTE_PLATE_FEE_MISSING);
+        Quotes.QuoteView waived = quotes.edit(sales, drafted.id(), drafted.version(), draft(sku, List.of(
+                new Quotes.Fee(FeeKind.PLATE_FEE, sku, BigDecimal.ZERO))));
+        assertThat(quotes.send(sales, drafted.id(), waived.version()).status()).isEqualTo(QuoteStatus.SENT);
     }
 
     @Test

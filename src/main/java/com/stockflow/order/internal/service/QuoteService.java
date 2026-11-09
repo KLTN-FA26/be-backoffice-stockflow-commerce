@@ -204,6 +204,7 @@ class QuoteService implements Quotes {
         requireNewWorkFor(quote.customerId());
         requireTermAllowed(quote.customerId(), quote.offer());
         requireActiveSkus(quote.quoteNumber(), quote.offer());
+        requirePlateFees(quote);
         QuoteStatus from = quote.status();
         quote.send(user.userId(), clock.instant());
         quotes.save(quote);
@@ -641,6 +642,28 @@ class QuoteService implements Quotes {
     }
 
     /**
+     * A SKU still produced for the first time when the quote is sent has its plate fee (14 BR-17): the draft got one when
+     * it was last edited, but an order of the SKU may have been cancelled since, or the draft may predate fee lines.
+     * Sales edits the draft, which adds it, and prices or waives it.
+     */
+    private void requirePlateFees(Quote quote) {
+        if (quote.offer().legacy()) {
+            return;
+        }
+        List<String> skus = quote.offer().lines().stream().map(line -> line.sku().code()).distinct().toList();
+        java.util.Set<String> produced = production.producedBefore(skus);
+        java.util.Set<String> withFee = quote.offer().fees().stream()
+                .filter(fee -> fee.kind() == com.stockflow.order.api.FeeKind.PLATE_FEE)
+                .map(fee -> fee.sku().code()).collect(java.util.stream.Collectors.toSet());
+        List<String> missing = skus.stream().filter(sku -> !produced.contains(sku) && !withFee.contains(sku)).sorted()
+                .toList();
+        if (!missing.isEmpty()) {
+            throw new BusinessException(ErrorCode.QUOTE_PLATE_FEE_MISSING, ("Quote %s: %s produced for the first time "
+                    + "without a plate fee; edit the quote to add it").formatted(quote.quoteNumber(), missing));
+        }
+    }
+
+    /**
      * The fee lines of a draft (14 BR-17, BR-20): a plate fee for each SKU on it produced for the first time - added by
      * the system, priced by Sales (its amount from the draft when Sales gave one) - and the shipping fee Sales added, at
      * most one. A plate fee for a SKU produced before, or not on the quote, is refused rather than dropped.
@@ -888,8 +911,11 @@ class QuoteService implements Quotes {
         }
         boolean priced = offer.priced();
         boolean accepted = !offer.lines().isEmpty() && offer.lines().stream().allMatch(l -> l.acceptedQuantity() != null);
-        // 4B-3: a legacy quote predates VAT: its lines' tax is 0 by definition, not unknown.
-        boolean untaxed = offer.legacy();
+        // 4B-3: a legacy quote predates VAT: its lines' tax is 0 by definition, not unknown. So is an offer sent before
+        // 4B-3: a quote is never sent with a line missing its rate since, so a line without one on a quote past DRAFT
+        // was offered, accepted and placed without VAT. Only a draft's missing rate is unknown.
+        boolean untaxed = offer.legacy() || quote.status() != QuoteStatus.DRAFT
+                && offer.lines().stream().anyMatch(line -> line.taxRate() == null);
         TotalsBuilder proposedTotals = new TotalsBuilder();
         TotalsBuilder acceptedTotals = new TotalsBuilder();
         List<LineView> lines = new ArrayList<>();

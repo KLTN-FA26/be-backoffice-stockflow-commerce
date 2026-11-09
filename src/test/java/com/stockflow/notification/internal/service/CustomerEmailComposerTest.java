@@ -52,6 +52,24 @@ class CustomerEmailComposerTest {
     }
 
     @Test
+    @DisplayName("4B-3: an order with fee lines and VAT says what lies between its lines and its total")
+    void orderPlacedWithFeesAndVat() {
+        var plain = placed(customer, null);
+        // Lines 1,500,000 + fees 800,000 = 2,300,000 before tax; VAT 230,000; 2,530,000 with it.
+        var event = new com.stockflow.contracts.OrderPlaced(plain.orderId(), customer, null, plain.orderNumber(),
+                plain.lines(), new java.math.BigDecimal("2530000"), "VND", new java.math.BigDecimal("2300000"),
+                new java.math.BigDecimal("230000"));
+        EmailContent content = composer.orderPlaced(event).orElseThrow().draft().write("A");
+        assertThat(content.facts()).extracting(EmailContent.Fact::value)
+                .containsExactly("SO-20261024-0001", "800.000 ₫", "2.300.000 ₫", "230.000 ₫", "2.530.000 ₫");
+        assertThat(content.facts()).extracting(EmailContent.Fact::label).contains("Thuế GTGT", "Tổng chưa thuế");
+        // Without VAT or fee lines nothing is added: the lines make the total.
+        var untaxed = new com.stockflow.contracts.OrderPlaced(plain.orderId(), customer, null, plain.orderNumber(),
+                plain.lines(), plain.totalAmount(), "VND", plain.totalAmount(), java.math.BigDecimal.ZERO);
+        assertThat(composer.orderPlaced(untaxed).orElseThrow().draft().write("A").facts()).hasSize(2);
+    }
+
+    @Test
     @DisplayName("regression (review of G4-2a): a guest order's confirmation goes to the contact e-mail it carries")
     void guestOrder() {
         CustomerMessage message = composer.orderPlaced(placed(null, "guest@cup-maker.vn")).orElseThrow();

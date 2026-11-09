@@ -94,9 +94,26 @@ public interface CustomerOrders {
      *                     (suspended, discontinued, unpublished): the portal skips such a line. They describe
      *                     today's catalogue, not what the order froze
      */
+    /** @param taxRate the line's VAT rate (4B-3); null, with {@code taxAmount}, on a line placed without VAT */
     record Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                 UUID designSnapshotId, Production production, String productSlug, String productTitle,
-                String productImageUrl, Integer cartons, Integer unitsPerCarton) {
+                String productImageUrl, Integer cartons, Integer unitsPerCarton, BigDecimal taxRate,
+                BigDecimal taxAmount) {
+    }
+
+    /**
+     * The order's money as its documents show it (4B-3; kltn-docs 14 BR-09, BR-21): before tax - the lines and the fee
+     * lines - the VAT, and the total with it ({@link Detail#total()}).
+     */
+    record Charges(BigDecimal netTotal, BigDecimal taxTotal, List<Fee> fees) {
+
+        public Charges {
+            fees = fees == null ? List.of() : List.copyOf(fees);
+        }
+    }
+
+    /** A plate fee (with the SKU it is for) or the shipping fee, with its VAT. */
+    record Fee(String kind, String sku, BigDecimal amount, BigDecimal taxRate, BigDecimal taxAmount) {
     }
 
     /**
@@ -134,7 +151,7 @@ public interface CustomerOrders {
                   String holdReasonPublic, PaymentTerm paymentTerm, BigDecimal total, String currency,
                   Instant placedAt, OrderSummary.AddressSummary shippingAddress, Payment payment, List<Line> lines,
                   List<TimelineEntry> timeline, DeliveryState deliveryState, AllowedActions allowedActions,
-                  CancellationRequestView cancellationRequest, List<Shipment> shipments) {
+                  CancellationRequestView cancellationRequest, List<Shipment> shipments, Charges charges) {
 
         public Detail {
             shipments = shipments == null ? List.of() : List.copyOf(shipments);

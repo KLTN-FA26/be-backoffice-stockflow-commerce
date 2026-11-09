@@ -89,10 +89,11 @@ class CustomerEmailComposer {
                 event.customerId() == null ? event.contactEmail() : null,
                 addressee -> {
                     ResourceBundle m = bundle();
-                    List<Fact> facts = List.of(
-                            new Fact(m.getString("email.customer.fact.order"), event.orderNumber()),
-                            new Fact(m.getString("email.customer.fact.total"),
-                                    money(event.totalAmount(), event.currency())));
+                    List<Fact> facts = new ArrayList<>();
+                    facts.add(new Fact(m.getString("email.customer.fact.order"), event.orderNumber()));
+                    facts.addAll(charges(m, event));
+                    facts.add(new Fact(m.getString("email.customer.fact.total"),
+                            money(event.totalAmount(), event.currency())));
                     return content(m, ORDER_PLACED, addressee, event.orderNumber(), facts,
                             orderLines(m, event.lines(), event.currency()));
                 }));
@@ -486,6 +487,31 @@ class CustomerEmailComposer {
             outro.add(m.getString("email.customer.owed"));
         }
         return outro;
+    }
+
+    /**
+     * 4B-3 (kltn-docs 14 BR-09): the lines are listed before tax, so an order with VAT or fee lines says what comes
+     * between them and its total - the fee lines and the VAT - for the e-mail to add up. Nothing for an order without
+     * either, or an event published before the split.
+     */
+    private static List<Fact> charges(ResourceBundle m, OrderPlaced event) {
+        if (event.netAmount() == null || event.taxAmount() == null || event.lines() == null) {
+            return List.of();
+        }
+        BigDecimal goods = event.lines().stream().filter(line -> line.unitPrice() != null)
+                .map(line -> line.unitPrice().multiply(BigDecimal.valueOf(line.quantity())))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal fees = event.netAmount().subtract(goods);
+        if (event.taxAmount().signum() == 0 && fees.signum() == 0) {
+            return List.of();
+        }
+        List<Fact> facts = new ArrayList<>();
+        if (fees.signum() > 0) {
+            facts.add(new Fact(m.getString("email.customer.fact.fees"), money(fees, event.currency())));
+        }
+        facts.add(new Fact(m.getString("email.customer.fact.net"), money(event.netAmount(), event.currency())));
+        facts.add(new Fact(m.getString("email.customer.fact.tax"), money(event.taxAmount(), event.currency())));
+        return facts;
     }
 
     private static Table orderLines(ResourceBundle m, List<OrderPlaced.OrderLine> lines, String currency) {

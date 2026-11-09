@@ -57,8 +57,9 @@ public record OrderSummary(
      */
     public record Charges(Money netTotal, Money taxTotal, List<FeeSummary> fees) {
 
+        /** {@code fees} null: not loaded (a list row carries the totals, not the fee lines). */
         public Charges {
-            fees = fees == null ? List.of() : List.copyOf(fees);
+            fees = fees == null ? null : List.copyOf(fees);
         }
     }
 

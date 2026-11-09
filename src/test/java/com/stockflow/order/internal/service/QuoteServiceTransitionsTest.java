@@ -64,12 +64,13 @@ class QuoteServiceTransitionsTest {
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final com.stockflow.product.api.CustomerSkus customerSkus =
             mock(com.stockflow.product.api.CustomerSkus.class);
+    private final com.stockflow.order.internal.domain.SkuProductionHistory production =
+            mock(com.stockflow.order.internal.domain.SkuProductionHistory.class);
     private final QuoteService service = new QuoteService(quotes, search, customers,
             mock(com.stockflow.inventory.api.UomConversionService.class), mock(QuotedOrders.class),
             mock(OrderService.class), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
             mock(com.stockflow.catalog.api.CatalogService.class), events, products, customerSkus,
-            mock(com.stockflow.order.internal.domain.TaxRates.class),
-            mock(com.stockflow.order.internal.domain.SkuProductionHistory.class));
+            mock(com.stockflow.order.internal.domain.TaxRates.class), production);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -91,6 +92,9 @@ class QuoteServiceTransitionsTest {
                 customer, QuoteStatus.SENT, 1, PaymentTerm.DEPOSIT, NOW.plusSeconds(3600), NOW, null, NOW, "sales",
                 VERSION)));
         when(search.history(any())).thenReturn(List.of());
+        // Every SKU here was produced before: these transitions carry no plate fee (QuoteServiceTest covers fees).
+        when(production.producedBefore(org.mockito.ArgumentMatchers.anyCollection()))
+                .thenAnswer(call -> Set.copyOf(call.<java.util.Collection<String>>getArgument(0)));
         when(products.lockedPurchasability(any())).thenReturn(Map.of());
         when(customerSkus.ownersOf(org.mockito.ArgumentMatchers.anyCollection()))
                 .thenReturn(Map.of("LY12-ACME-01", customer));
