@@ -35,7 +35,7 @@ COLORS = {"product": "#2E86AB", "inventory": "#3E7C4A", "warehouse": "#8E6C3A", 
 
 cols = json.loads(q("""
 select json_agg(json_build_object('s',c.table_schema,'t',c.table_name,'c',c.column_name,'pos',c.ordinal_position,
-  'type', format_type(a.atttypid, a.atttypmod), 'nn', c.is_nullable='NO', 'def', c.column_default) order by c.table_schema, c.table_name, c.ordinal_position)
+  'type', format_type(a.atttypid, a.atttypmod), 'nn', c.is_nullable='NO', 'def', c.column_default, 'gen', c.generation_expression) order by c.table_schema, c.table_name, c.ordinal_position)
 from information_schema.columns c
 join pg_attribute a on a.attrelid = (quote_ident(c.table_schema)||'.'||quote_ident(c.table_name))::regclass and a.attname = c.column_name
 join information_schema.tables t on t.table_schema=c.table_schema and t.table_name=c.table_name and t.table_type='BASE TABLE'
@@ -159,6 +159,9 @@ for s in SCHEMAS:
             d = default(c["def"])
             if d is not None:
                 attrs.append("default: %s" % d)
+            if c.get("gen"):
+                # A generated column (GENERATED ALWAYS AS ... STORED): no default, nothing writes it.
+                attrs.append("note: 'generated: %s'" % c["gen"].replace("'", "\\'"))
             out.append("  %s %s%s" % (c["c"].ljust(width), typ, (" [%s]" % ", ".join(attrs)) if attrs else ""))
         ind = []
         if len(pkcols) > 1:

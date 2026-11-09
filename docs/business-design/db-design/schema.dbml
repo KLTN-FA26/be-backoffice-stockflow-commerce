@@ -565,6 +565,11 @@ Enum ordering.order_credit_check_outcome {
   REJECTED
 }
 
+Enum ordering.order_fee_line_kind {
+  PLATE_FEE
+  SHIPPING_FEE
+}
+
 Enum ordering.order_hold_reason {
   CREDIT
   DESIGN_MISMATCH
@@ -597,6 +602,11 @@ Enum ordering.quote_status {
   EXPIRED
   CANCELLED
   CONVERTED
+}
+
+Enum ordering.quote_fee_line_kind {
+  PLATE_FEE
+  SHIPPING_FEE
 }
 
 Enum ordering.return_request_channel {
@@ -650,6 +660,12 @@ Enum ordering.return_request_line_item_condition {
   GOOD
   DAMAGED
   DEFECTIVE
+}
+
+Enum ordering.tax_rate_tax_class {
+  STANDARD
+  REDUCED
+  EXEMPT
 }
 
 Enum customer.address_type {
@@ -2701,6 +2717,8 @@ Table ordering.customer_order [headercolor: #C0392B] {
   goods_left_at                 timestamptz
   replaces_return_request_id    uuid
   closed_amount                 decimal(19,4) [not null, default: 0]
+  tax_amount                    decimal(19,4) [not null, default: 0]
+  net_amount                    decimal(19,4) [note: 'generated: (total_amount - tax_amount)']
 }
 
 Table ordering.order_cancellation_request [headercolor: #C0392B] {
@@ -2740,6 +2758,17 @@ Table ordering.order_credit_check [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
+Table ordering.order_fee_line [headercolor: #C0392B] {
+  id         uuid [pk]
+  order_id   uuid [not null]
+  kind       ordering.order_fee_line_kind [not null]
+  sku        varchar(64)
+  amount     decimal(19,4) [not null]
+  tax_rate   decimal(5,2) [not null]
+  tax_amount decimal(19,4) [not null]
+  currency   varchar(3) [not null]
+}
+
 Table ordering.order_hold [headercolor: #C0392B] {
   id               uuid [pk]
   order_id         uuid [not null]
@@ -2771,6 +2800,8 @@ Table ordering.order_line [headercolor: #C0392B] {
   uom_conversion_id       uuid
   cartons                 int
   units_per_carton        int
+  tax_rate                decimal(5,2)
+  tax_amount              decimal(19,4)
 }
 
 Table ordering.order_line_reservation [headercolor: #C0392B] {
@@ -2890,6 +2921,16 @@ Table ordering.quote [headercolor: #C0392B] {
   requested_delivery_date date
 }
 
+Table ordering.quote_fee_line [headercolor: #C0392B] {
+  id        uuid [pk]
+  quote_id  uuid [not null]
+  kind      ordering.quote_fee_line_kind [not null]
+  sku       varchar(64)
+  amount    decimal(19,4)
+  tax_class varchar(16)
+  tax_rate  decimal(5,2)
+}
+
 Table ordering.quote_line [headercolor: #C0392B] {
   id                  uuid [pk]
   quote_id            uuid [not null]
@@ -2905,6 +2946,8 @@ Table ordering.quote_line [headercolor: #C0392B] {
   cartons             int
   units_per_carton    int
   accepted_cartons    int
+  tax_class           varchar(16)
+  tax_rate            decimal(5,2)
   indexes {
     (quote_id, line_no) [unique]
   }
@@ -3076,6 +3119,16 @@ Table ordering.return_request_status_history [headercolor: #C0392B] {
   occurred_at       timestamptz [not null]
   created_at        timestamptz [not null, default: `now()`]
   created_by        varchar(100)
+}
+
+Table ordering.tax_rate [headercolor: #C0392B] {
+  tax_class        ordering.tax_rate_tax_class [pk]
+  rate             decimal(5,2) [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
 }
 
 // =============================================================================
@@ -4378,7 +4431,7 @@ Table catalog.product_listing [headercolor: #1B998B] {
   published_seo_title       varchar(255)
   published_seo_description text
   last_attempt_at           timestamptz
-  search_document           tsvector
+  search_document           tsvector [note: 'generated: (setweight(to_tsvector(\'simple\'::regconfig, catalog.immutable_unaccent((COALESCE(published_title, \'\'::character varying))::text)), \'A\'::"char") || setweight(to_tsvector(\'simple\'::regconfig, catalog.immutable_unaccent(COALESCE(published_description, \'\'::text))), \'C\'::"char"))']
 }
 
 Table catalog.promotion [headercolor: #1B998B] {
@@ -4573,6 +4626,7 @@ Table reporting.product_sales_summary [headercolor: #607D8B] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  cartons_sold     int [not null, default: 0]
   indexes {
     (sku, period) [unique]
   }
@@ -5023,6 +5077,8 @@ Ref: ordering.order_cancellation_request.order_id > ordering.customer_order.id [
 Ref: ordering.order_cancellation_request.requested_by > identity.app_user.id
 Ref: ordering.order_credit_check.decided_by > identity.app_user.id
 Ref: ordering.order_credit_check.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_fee_line.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_fee_line.sku > product.variants.sku [delete: restrict]
 Ref: ordering.order_hold.order_id > ordering.customer_order.id
 Ref: ordering.order_hold.raised_by > identity.app_user.id
 Ref: ordering.order_hold.resolved_by > identity.app_user.id
@@ -5047,6 +5103,8 @@ Ref: ordering.quote.converted_order_id > ordering.customer_order.id [delete: res
 Ref: ordering.quote.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.quote.responded_by > identity.app_user.id
 Ref: ordering.quote.sent_by > identity.app_user.id
+Ref: ordering.quote_fee_line.quote_id > ordering.quote.id [delete: cascade]
+Ref: ordering.quote_fee_line.sku > product.variants.sku [delete: restrict]
 Ref: ordering.quote_line.blank_sku > product.variants.sku [delete: restrict]
 Ref: ordering.quote_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: ordering.quote_line.quote_id > ordering.quote.id [delete: cascade]
@@ -5368,6 +5426,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.customer_order
   ordering.order_cancellation_request
   ordering.order_credit_check
+  ordering.order_fee_line
   ordering.order_hold
   ordering.order_line
   ordering.order_line_reservation
@@ -5379,6 +5438,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.order_status_history
   ordering.order_status_transition
   ordering.quote
+  ordering.quote_fee_line
   ordering.quote_line
   ordering.quote_price_tier
   ordering.quote_status_history
@@ -5388,6 +5448,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.return_request_evidence
   ordering.return_request_line
   ordering.return_request_status_history
+  ordering.tax_rate
 }
 
 TableGroup customer_group [color: #D68910] {
