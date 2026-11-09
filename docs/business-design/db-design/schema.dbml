@@ -1982,20 +1982,20 @@ Table warehouse.move_task [headercolor: #8E6C3A] {
 }
 
 Table warehouse.putaway_task [headercolor: #8E6C3A] {
-  id                     uuid [pk]
-  goods_receipt_id       uuid
-  sku                    varchar(64) [not null]
-  quantity               int [not null]
-  target_location_id     uuid
-  status                 warehouse.putaway_task_status [not null]
-  version                bigint [not null, default: 0]
-  created_at             timestamptz [not null]
-  created_by             varchar(100)
-  last_modified_at       timestamptz
-  last_modified_by       varchar(100)
-  goods_receipt_line_id  uuid
-  return_request_line_id uuid
-  stock_package_id       uuid
+  id                    uuid [pk]
+  goods_receipt_id      uuid
+  sku                   varchar(64) [not null]
+  quantity              int [not null]
+  target_location_id    uuid
+  status                warehouse.putaway_task_status [not null]
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
+  goods_receipt_line_id uuid
+  stock_package_id      uuid
+  source                varchar(32) [not null, default: 'RECEIPT']
 }
 
 Table warehouse.shelf [headercolor: #8E6C3A] {
@@ -5165,7 +5165,6 @@ Ref: warehouse.move_task.to_location_id > warehouse.storage_location.id [delete:
 Ref: warehouse.move_task.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: warehouse.putaway_task.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: warehouse.putaway_task.goods_receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
-Ref: warehouse.putaway_task.return_request_line_id > ordering.return_request_line.id [delete: restrict]
 Ref: warehouse.putaway_task.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: warehouse.putaway_task.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: warehouse.putaway_task.target_location_id > warehouse.storage_location.id [delete: restrict]
