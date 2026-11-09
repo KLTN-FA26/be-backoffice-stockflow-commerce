@@ -5,8 +5,6 @@ import com.stockflow.contracts.OrderReleased;
 import com.stockflow.contracts.OrderRemainderClosed;
 import com.stockflow.contracts.VehicleHandedOver;
 import com.stockflow.order.internal.domain.ProductionOrderSaved;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
@@ -26,12 +24,11 @@ import java.util.UUID;
  * (a putaway, a hold released) is left to the nightly sweep: it says nothing about which order it serves.
  *
  * <p>After the commit and asynchronous ({@code @ApplicationModuleListener}): an alert never holds up, and never fails,
- * the operation that changed it. A recompute that fails is logged; the next operation or the night tries again.</p>
+ * the operation that changed it. A recompute that fails is thrown, so its publication stays incomplete in the event
+ * registry and is retried; the nightly sweep is the last net.</p>
  */
 @Component
 class DelayAlertListener {
-
-    private static final Logger log = LoggerFactory.getLogger(DelayAlertListener.class);
 
     private final DelayAlertService alerts;
 
@@ -64,12 +61,12 @@ class DelayAlertListener {
         recompute(event.orderId());
     }
 
+    /**
+     * Not caught: a recompute that throws leaves its event's publication incomplete in the registry, to be resubmitted,
+     * instead of marking it done and losing the trigger until the night. After the commit and asynchronous, the failure
+     * reaches nobody's operation.
+     */
     private void recompute(UUID salesOrderId) {
-        try {
-            alerts.recompute(salesOrderId);
-        } catch (RuntimeException failed) {
-            log.warn("Delay alerts of order {} were not recomputed ({}); the nightly sweep tries again", salesOrderId,
-                    failed.toString());
-        }
+        alerts.recompute(salesOrderId);
     }
 }
