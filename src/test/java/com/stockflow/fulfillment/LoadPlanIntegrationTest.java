@@ -220,11 +220,11 @@ class LoadPlanIntegrationTest {
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         for (Map<String, Object> line : jdbc.queryForList(
-                "SELECT id, location_code, COALESCE(lpn, sku) AS scan, allocated_qty "
+                "SELECT id, location_code, lpn AS scan "
                         + "FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
             packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
-                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("scan")
-                            + "\",\"quantity\":" + line.get("allocated_qty") + "}")).andExpect(status().isOk());
+                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + line.get("scan")
+                            + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
@@ -256,7 +256,7 @@ class LoadPlanIntegrationTest {
 
     private void scan(UUID task, String parcel) throws Exception {
         packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"quantity\":1}"))
+                + UUID.randomUUID() + "\",\"lpn\":\"" + SOFA_BARCODE + "\"}"))
                 .andExpect(status().isOk());
     }
 
@@ -700,11 +700,11 @@ class LoadPlanIntegrationTest {
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         for (Map<String, Object> line : jdbc.queryForList(
-                "SELECT id, location_code, COALESCE(lpn, sku) AS scan, allocated_qty "
+                "SELECT id, location_code, lpn AS scan "
                         + "FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
             packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
-                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("scan")
-                            + "\",\"quantity\":" + line.get("allocated_qty") + "}")).andExpect(status().isOk());
+                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + line.get("scan")
+                            + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());

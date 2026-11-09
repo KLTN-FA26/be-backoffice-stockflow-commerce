@@ -231,7 +231,7 @@ class PickConfirmationIntegrationTest {
                 DataScope.ALL, Set.of());
         for (UUID order : placed) {
             List<Map<String, Object>> picked = jdbc.queryForList("""
-                    SELECT l.id, l.pick_id, l.location_code FROM fulfillment.pick_line l
+                    SELECT l.id, l.pick_id, l.location_code, l.lpn FROM fulfillment.pick_line l
                       JOIN fulfillment.pick p ON p.id = l.pick_id
                      WHERE p.order_id = ? AND l.status = 'PICKED'""", order);
             if (picked.isEmpty()) {
@@ -240,9 +240,9 @@ class PickConfirmationIntegrationTest {
             Await.until("task of the cancelled order cancelled", ASYNC, () -> "CANCELLED".equals(jdbc.queryForObject(
                     "SELECT status FROM fulfillment.pick WHERE order_id = ?", String.class, order)));
             for (Map<String, Object> line : picked) {
-                // Onto the bin they left, beside their emptied carton row, as loose units.
+                // The carton, whole, onto the bin it left: IN_STOCK again, its row refilled.
                 pickLists.putBack((UUID) line.get("pick_id"), (UUID) line.get("id"),
-                        (String) line.get("location_code"), system);
+                        (String) line.get("location_code"), (String) line.get("lpn"), system);
             }
         }
     }
@@ -330,8 +330,17 @@ class PickConfirmationIntegrationTest {
         return jdbc.queryForObject("SELECT lpn FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, line);
     }
 
-    private static String scan(String location, String code, int quantity) {
-        return "{\"locationCode\":\"" + location + "\",\"scannedCode\":\"" + code + "\",\"quantity\":" + quantity + "}";
+    /** The body of a confirmation: the bin, then the carton's LPN (kltn-docs 07 section 4.2 step 5) - nothing else. */
+    private static String scan(String location, String lpn) {
+        return "{\"locationCode\":\"" + location + "\",\"lpn\":\"" + lpn + "\"}";
+    }
+
+    private static String putBackBody(String location, String lpn) {
+        return "{\"locationCode\":\"" + location + "\",\"lpn\":\"" + lpn + "\"}";
+    }
+
+    private static String shortBody(String location, String reason) {
+        return "{\"locationCode\":\"" + location + "\",\"reason\":\"" + reason + "\"}";
     }
 
     private ResultActions confirm(UUID task, String line, String user, String role, String scan) throws Exception {
@@ -358,6 +367,10 @@ class PickConfirmationIntegrationTest {
                  WHERE l.id = ?::uuid""", String.class, line);
     }
 
+    private String cartonStatus(String lpn) {
+        return jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?", String.class, lpn);
+    }
+
     private String lineStatus(String line) {
         return jdbc.queryForObject("SELECT status FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, line);
     }
@@ -376,10 +389,12 @@ class PickConfirmationIntegrationTest {
 
         call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
-                .contentType("application/json").content("{\"locationCode\":\"" + location + "\",\"foundQuantity\":0}"))
+                .contentType("application/json").content(shortBody(location, "NOT_FOUND")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SHORT"))
-                .andExpect(jsonPath("$.data.shortQty").value(1));
+                .andExpect(jsonPath("$.data.shortQty").value(1))
+                .andExpect(jsonPath("$.data.shortReason").value("NOT_FOUND"))
+                .andExpect(jsonPath("$.data.lpn").value(lpn(lineId)));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
         assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().holdReason())
                 .as("X-SHORT: held for stock").isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
@@ -390,11 +405,27 @@ class PickConfirmationIntegrationTest {
                 + " ON l.cycle_count_id = c.id WHERE c.trigger_type = 'SHORT_PICK' AND c.status = 'PLANNED' AND c.is_blind"
                 + " AND l.location_code = ? AND l.sku = 'SOFA-3S-GREY'";
         assertThat(jdbc.queryForObject(recount, Integer.class, location)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT c.note FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                 WHERE c.trigger_type = 'SHORT_PICK' AND l.location_code = ? AND l.sku = 'SOFA-3S-GREY'
+                   AND c.status = 'PLANNED'""", String.class, location))
+                .as("the picker took none of the carton: found 0").contains("found 0");
+        assertThat(jdbc.queryForObject("""
+                SELECT short_reason FROM fulfillment.pick_line WHERE id = ?::uuid""", String.class, lineId))
+                .isEqualTo("NOT_FOUND");
         call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
-                .contentType("application/json").content("{\"locationCode\":\"" + location + "\",\"foundQuantity\":0}"))
+                .contentType("application/json").content(shortBody(location, "NOT_FOUND")))
                 .andExpect(status().isOk());
         assertThat(jdbc.queryForObject(recount, Integer.class, location)).as("the same report again").isEqualTo(1);
+        // Another reason on a line already short is not the same report: the first reason stands.
+        call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
+                .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
+                .contentType("application/json").content(shortBody(location, "DAMAGED")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PICK_LINE_NOT_OPEN"));
+        assertThat(jdbc.queryForObject("SELECT short_reason FROM fulfillment.pick_line WHERE id = ?::uuid",
+                String.class, lineId)).isEqualTo("NOT_FOUND");
 
         JsonNode added = body(call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/reallocation")
                 .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
@@ -413,7 +444,7 @@ class PickConfirmationIntegrationTest {
 
         // Whatever whole carton the allocator found next is confirmed by its LPN.
         String newScan = lpn(newLine);
-        confirm(task, newLine, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(newLocation, newScan, 1))
+        confirm(task, newLine, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(newLocation, newScan))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PICKED"));
         assertThat(ledgerRows("PICK", newLine)).isEqualTo(1);
@@ -442,11 +473,11 @@ class PickConfirmationIntegrationTest {
         int before = onHand(location, SOFA);
 
         // A carton's line: neither the barcode nor the SKU confirms it, only the carton's LPN.
-        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, SOFA_BARCODE, 1))
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, SOFA_BARCODE))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
-        // Scanned by LPN, the location in lower case: accepted.
+        // Scanned by LPN, the bin and the LPN in lower case: accepted (07 BR-10).
         confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF",
-                scan(location.toLowerCase(Locale.ROOT), lpn, 1))
+                scan(location.toLowerCase(Locale.ROOT), lpn.toLowerCase(Locale.ROOT)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PICKED"))
                 .andExpect(jsonPath("$.data.pickedQty").value(1))
@@ -475,7 +506,7 @@ class PickConfirmationIntegrationTest {
                 .anyMatch(event -> event.orderId().equals(order.orderId()) && event.quantity() == 1));
 
         // The same scan again: 200, nothing more deducted.
-        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn, 1))
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PICKED"));
         assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
@@ -537,7 +568,7 @@ class PickConfirmationIntegrationTest {
         String lpn = lpn(lineId);
         // Each sofa carton holds one: the line is that carton, one unit.
         assertThat(line.path("allocatedQty").asInt()).isEqualTo(1);
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, lpn, 1))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, lpn))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PICK_TASK_STATE_CONFLICT"));
         call(post("/api/v1/fulfillment/tasks/" + task + "/picking-start")
@@ -545,27 +576,38 @@ class PickConfirmationIntegrationTest {
         int before = onHand(location, SOFA);
         String otherBin = otherSofaBin(location);
 
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(otherBin, lpn, 1))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(otherBin, lpn))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_LOCATION_MISMATCH"));
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "TABLE-OAK-160", 1))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "TABLE-OAK-160"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
         // The SKU is not enough for a carton's line: it would let the picker take any sofa carton of the bin.
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 1))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, lpn, 2))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PICK_QUANTITY_EXCEEDS_ALLOCATION"));
-        // PICK_QUANTITY_SHORT needs a carton of more than one unit; a sofa carton holds one (PickListTest has it).
-        confirm(task, UUID.randomUUID().toString(), picker, "WAREHOUSE_STAFF", scan(location, lpn, 1))
+        // Nor is the barcode.
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, SOFA_BARCODE))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
+        // Nor another carton of the same SKU: the order's second line is a carton of its own.
+        String otherLpn = lpn(lines(task).get(1).path("lineId").asText());
+        assertThat(otherLpn).isNotEqualTo(lpn);
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, otherLpn))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
+        confirm(task, UUID.randomUUID().toString(), picker, "WAREHOUSE_STAFF", scan(location, lpn))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("NOT_FOUND"));
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", "{\"locationCode\":\"" + location
-                + "\",\"scannedCode\":\"" + lpn + "\",\"quantity\":0}")
+        // The request is the bin and the LPN: either one missing or blank is a validation error, naming the field.
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", "{\"locationCode\":\"" + location + "\"}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("quantity"));
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", "{\"scannedCode\":\"" + lpn + "\",\"quantity\":1}")
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("lpn"));
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, ""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("lpn"));
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", "{\"lpn\":\"" + lpn + "\"}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("locationCode"));
+        // An LPN is at most 30 characters (stock_package.lpn): a longer scan is a validation error, not a mismatch.
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "L".repeat(31)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("lpn"));
         call(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF")))
                 .andExpect(status().isConflict())
@@ -606,7 +648,7 @@ class PickConfirmationIntegrationTest {
             }
             int before = onHand(location, SOFA);
 
-            confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn(lineId), 1))
+            confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn(lineId)))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.errorCode").value("RESERVATION_NOT_ACTIVE"));
 
@@ -629,7 +671,7 @@ class PickConfirmationIntegrationTest {
         String lineId = line.path("lineId").asText();
         String location = line.path("locationCode").asText();
         int before = onHand(location, SOFA);
-        String scan = scan(location, lpn(lineId), 1);
+        String scan = scan(location, lpn(lineId));
         String header = token(pickerHcm, "WAREHOUSE_STAFF");
         String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/confirmation";
 
@@ -667,7 +709,7 @@ class PickConfirmationIntegrationTest {
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
         String lineId = line.path("lineId").asText();
-        String scan = scan(line.path("locationCode").asText(), lpn(lineId), 1);
+        String scan = scan(line.path("locationCode").asText(), lpn(lineId));
 
         confirm(task, lineId, pickerHn.toString(), "WAREHOUSE_STAFF", scan)
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
@@ -733,7 +775,7 @@ class PickConfirmationIntegrationTest {
         assertThat(lines(task)).hasSize(1);
 
         confirm(task, lines.get(0).path("lineId").asText(), pickerHcm.toString(), "WAREHOUSE_STAFF",
-                scan(lines.get(0).path("locationCode").asText(), lpn(lines.get(0).path("lineId").asText()), 1))
+                scan(lines.get(0).path("locationCode").asText(), lpn(lines.get(0).path("lineId").asText())))
                 .andExpect(status().isOk());
         call(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion").header("Authorization", picker))
                 .andExpect(status().isOk());
@@ -744,17 +786,18 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("cancelled after picking: the line waits in /put-backs; put back restores on_hand once, with a ledger row")
     void putBackAfterCancellation() throws Exception {
-        // The carton's unit comes back loose (team plan 4C-4 puts it back in a carton), here onto the other sofa bin;
-        // putBackOntoTheBinItLeft covers the bin it left.
+        // The whole carton comes back, IN_STOCK and sealed, here onto the other sofa bin; putBackOntoTheBinItLeft
+        // covers the bin it left.
         OrderSummary order = confirmedOrder(sofa(1));
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
         String lineId = line.path("lineId").asText();
         String location = line.path("locationCode").asText();
         String target = otherSofaBin(location);
+        String lpn = lpn(lineId);
         int before = onHand(location, SOFA);
         int beforeTarget = onHand(target, SOFA);
-        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn(lineId), 1))
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn))
                 .andExpect(status().isOk());
         assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
         String putBackUrl = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/put-back";
@@ -762,7 +805,7 @@ class PickConfirmationIntegrationTest {
 
         // Not cancelled yet: nothing to put back.
         call(post(putBackUrl).header("Authorization", picker).contentType("application/json")
-                .content("{\"locationCode\":\"" + target + "\"}"))
+                .content(putBackBody(target, lpn)))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PUT_BACK_NOT_REQUIRED"));
 
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
@@ -779,35 +822,49 @@ class PickConfirmationIntegrationTest {
                 .andExpect(jsonPath("$.data.items[*].lineId", hasItem(lineId)))
                 .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].orderNumber")
                         .value(org.hamcrest.Matchers.contains(order.orderNumber())))
+                .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].lpn")
+                        .value(org.hamcrest.Matchers.contains(lpn)))
                 .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].fromLocationCode")
                         .value(org.hamcrest.Matchers.contains(location)))
                 .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].pickedQty")
                         .value(org.hamcrest.Matchers.contains(1)));
         // Picking a cancelled task's line again is refused.
-        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn(lineId), 1))
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn(lineId)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PICK_TASK_STATE_CONFLICT"));
 
         // Wrong targets: a bin of another warehouse, an area, an unknown code.
         for (String wrong : List.of(hnBin, "HCM-PACK01", "HCM-ZZ9-9-Z")) {
             call(post(putBackUrl).header("Authorization", picker).contentType("application/json")
-                    .content("{\"locationCode\":\"" + wrong + "\"}"))
+                    .content(putBackBody(wrong, lpn)))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.errorCode").value("PUT_BACK_LOCATION_INVALID"));
         }
         // Another warehouse's staff cannot reach the task at all.
         call(post(putBackUrl).header("Authorization", token(pickerHn, "WAREHOUSE_STAFF"))
-                .contentType("application/json").content("{\"locationCode\":\"" + target + "\"}"))
+                .contentType("application/json").content(putBackBody(target, lpn)))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
         call(post(putBackUrl).header("Authorization", picker).contentType("application/json").content("{}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("locationCode"));
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        call(post(putBackUrl).header("Authorization", picker).contentType("application/json")
+                .content("{\"locationCode\":\"" + target + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("lpn"));
+        // The carton is scanned: the SKU, the barcode and another carton are not it.
+        for (String wrong : List.of("SOFA-3S-GREY", SOFA_BARCODE, "T-NOT-THIS-CARTON")) {
+            call(post(putBackUrl).header("Authorization", picker).contentType("application/json")
+                    .content(putBackBody(target, wrong)))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
+        }
+        assertThat(cartonStatus(lpn)).as("nothing of the above moved the carton").isEqualTo("CONSUMED");
         assertThat(ledgerRows("PUT_BACK", lineId)).isZero();
         assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
         assertThat(onHand(target, SOFA)).isEqualTo(beforeTarget);
 
         call(post(putBackUrl).header("Authorization", picker).contentType("application/json")
-                .content("{\"locationCode\":\"" + target + "\"}"))
+                .content(putBackBody(target, lpn.toLowerCase(Locale.ROOT))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PUT_BACK"))
                 .andExpect(jsonPath("$.data.putBackQty").value(1))
@@ -816,14 +873,28 @@ class PickConfirmationIntegrationTest {
         assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
         assertThat(jdbc.queryForMap("""
-                SELECT from_location_code, to_location_code, to_status, actor_id FROM inventory.stock_movement
-                 WHERE movement_type = 'PUT_BACK' AND reference_type = 'PICK_LINE' AND reference_id = ?::uuid""", lineId))
+                SELECT from_location_code, to_location_code, to_status, actor_id,
+                       to_stock_package_id = (SELECT id FROM inventory.stock_package WHERE lpn = ?) AS names_the_carton
+                  FROM inventory.stock_movement
+                 WHERE movement_type = 'PUT_BACK' AND reference_type = 'PICK_LINE' AND reference_id = ?::uuid""",
+                lpn, lineId))
                 .containsEntry("from_location_code", null).containsEntry("to_location_code", target)
-                .containsEntry("to_status", "AVAILABLE").containsEntry("actor_id", otherPickerHcm);
+                .containsEntry("to_status", "AVAILABLE").containsEntry("actor_id", otherPickerHcm)
+                .containsEntry("names_the_carton", true);
+        // The carton is back: IN_STOCK at the target, sealed, holding what was counted in; its row follows it.
+        assertThat(jdbc.queryForMap("""
+                SELECT status, location_code, unopened AS sealed FROM inventory.stock_package WHERE lpn = ?""",
+                lpn)).containsEntry("status", "IN_STOCK").containsEntry("location_code", target)
+                .containsEntry("sealed", true);
+        assertThat(jdbc.queryForMap("""
+                SELECT i.status, i.location_code, i.on_hand, i.reserved FROM inventory.stock_item i
+                  JOIN inventory.stock_package p ON p.id = i.stock_package_id WHERE p.lpn = ?""", lpn))
+                .containsEntry("status", "AVAILABLE").containsEntry("location_code", target)
+                .containsEntry("on_hand", 1).containsEntry("reserved", 0);
 
         // Again: 200, nothing more.
         call(post(putBackUrl).header("Authorization", picker).contentType("application/json")
-                .content("{\"locationCode\":\"" + target + "\"}"))
+                .content(putBackBody(target, lpn)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PUT_BACK"));
         assertThat(onHand(target, SOFA)).isEqualTo(beforeTarget + 1);
@@ -835,30 +906,133 @@ class PickConfirmationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a carton's units put back onto the very bin they were picked from come back loose beside its row")
+    @DisplayName("a carton put back onto the very bin it was picked from refills its own row; no loose row appears")
     void putBackOntoTheBinItLeft() throws Exception {
         OrderSummary order = confirmedOrder(sofa(1));
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
         String lineId = line.path("lineId").asText();
         String location = line.path("locationCode").asText();
+        String lpn = lpn(lineId);
         int before = onHand(location, SOFA);
-        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn(lineId), 1))
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn))
                 .andExpect(status().isOk());
+        assertThat(cartonStatus(lpn)).isEqualTo("CONSUMED");
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
         Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(
                 jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task)));
 
         call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/put-back")
                 .header("Authorization", token(otherPickerHcm, "WAREHOUSE_STAFF")).contentType("application/json")
-                .content("{\"locationCode\":\"" + location + "\"}"))
+                .content(putBackBody(location, lpn)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.putBackLocationCode").value(location));
         assertThat(onHand(location, SOFA)).isEqualTo(before);
-        assertThat(jdbc.queryForObject("SELECT p.status FROM fulfillment.pick_line l JOIN inventory.stock_package p"
-                + " ON p.lpn = l.lpn WHERE l.id = ?::uuid", String.class, lineId))
-                .as("the carton itself stays consumed").isEqualTo("CONSUMED");
+        assertThat(cartonStatus(lpn)).as("the carton is IN_STOCK again").isEqualTo("IN_STOCK");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.stock_item WHERE sku = 'SOFA-3S-GREY' AND stock_package_id IS NULL""",
+                Integer.class)).as("no loose row: the carton's own row took its units back").isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.stock_item i JOIN inventory.stock_package p ON p.id = i.stock_package_id
+                 WHERE p.lpn = ? AND i.on_hand = 1 AND i.status = 'AVAILABLE' AND i.location_code = ?""",
+                Integer.class, lpn, location)).isEqualTo(1);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a carton put back is allocatable again: the next order is given it, sealed, by the same FEFO/FIFO order")
+    void putBackCartonIsAllocatableAgain() throws Exception {
+        OrderSummary order = confirmedOrder(sofa(1));
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String location = line.path("locationCode").asText();
+        String lpn = lpn(lineId);
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn)).andExpect(status().isOk());
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
+        Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(
+                jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task)));
+        call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/put-back")
+                .header("Authorization", token(otherPickerHcm, "WAREHOUSE_STAFF")).contentType("application/json")
+                .content(putBackBody(location, lpn))).andExpect(status().isOk());
+
+        // Nothing is left half-way: no hold on the carton's row, no reservation counted, the books add up.
+        assertThat(jdbc.queryForObject("""
+                SELECT i.reserved FROM inventory.stock_item i JOIN inventory.stock_package p ON p.id = i.stock_package_id
+                 WHERE p.lpn = ?""", Integer.class, lpn)).isZero();
+        OrderSummary next = confirmedOrder(sofa(1));
+        assertThat(next.lines().getFirst().reservationIds()).hasSize(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.stock_reservation r JOIN inventory.stock_item i ON i.id = r.stock_item_id
+                 WHERE r.id = ?""", Integer.class, next.lines().getFirst().reservationIds().getFirst()))
+                .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("X-SHORT, reason DAMAGED: the same stop and blind count; the reason is on the line, the order is held for stock")
+    void shortPickDamagedReason() throws Exception {
+        OrderSummary order = confirmedOrder(sofa(1));
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String location = line.path("locationCode").asText();
+        int before = onHand(location, SOFA);
+
+        call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
+                .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
+                .contentType("application/json").content(shortBody(location, "DAMAGED")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SHORT"))
+                .andExpect(jsonPath("$.data.shortReason").value("DAMAGED"))
+                .andExpect(jsonPath("$.data.shortQty").value(1));
+
+        OrderSummary held = orders.findById(order.orderId()).orElseThrow();
+        assertThat(held.status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
+        assertThat(onHand(location, SOFA)).as("nothing deducted").isEqualTo(before);
+        assertThat(holdStatus(lineId)).as("the allocation is kept until the coordinator reallocates").isEqualTo("HELD");
+        assertThat(ledgerRows("PICK", lineId)).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                 WHERE c.trigger_type = 'SHORT_PICK' AND c.is_blind AND c.status = 'PLANNED' AND l.location_code = ?
+                   AND l.sku = 'SOFA-3S-GREY'""", Integer.class, location)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a short pick needs a reason, a known one, and the line's own bin")
+    void shortPickNeedsAReason() throws Exception {
+        OrderSummary order = confirmedOrder(sofa(1));
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String location = line.path("locationCode").asText();
+        String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short";
+        String picker = token(pickerHcm, "WAREHOUSE_STAFF");
+
+        call(post(url).header("Authorization", picker).contentType("application/json")
+                .content("{\"locationCode\":\"" + location + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("reason"));
+        call(post(url).header("Authorization", picker).contentType("application/json")
+                .content(shortBody(location, "LOST_IN_TRANSIT")))
+                .andExpect(status().is4xxClientError());
+        call(post(url).header("Authorization", picker).contentType("application/json")
+                .content(shortBody(otherSofaBin(location), "NOT_FOUND")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PICK_LOCATION_MISMATCH"));
+        // The old body - a count of units found - is not a short report any more.
+        call(post(url).header("Authorization", picker).contentType("application/json")
+                .content("{\"locationCode\":\"" + location + "\",\"foundQuantity\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("reason"));
+
+        assertThat(lineStatus(lineId)).isEqualTo("OPEN");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isNotEqualTo(OrderStatus.ON_HOLD);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                 WHERE c.trigger_type = 'SHORT_PICK' AND l.location_code = ? AND l.sku = 'SOFA-3S-GREY'
+                   AND c.status = 'PLANNED'""", Integer.class, location)).isZero();
     }
 
     @Test
