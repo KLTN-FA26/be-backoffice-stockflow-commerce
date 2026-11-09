@@ -772,7 +772,9 @@ public final class StockItem extends AggregateRoot {
      * Picked units of {@code source} put back AVAILABLE and loose at {@code bin} (kltn-docs 07 BR-05, a cancelled
      * order's pick line), as the layer they left. Unlike {@link #arrivedAs} the bin may be the one they were picked
      * from: when {@code source} is a carton's row, that row stays with its CONSUMED carton and empty, and the units
-     * come back beside it as a loose row of their own. Whether they go back into a carton is team plan 4C-4's.
+     * come back beside it as a loose row of their own. Only where the carton cannot come back whole (some of it went
+     * to quarantine damaged) or the line was picked loose; a whole carton is restocked as itself
+     * ({@code StockPackageContents#restock}). Whether such units are boxed again is team plan 4C-4's.
      */
     public static StockItem putBackBeside(StockItem source, LocationId bin, Quantity quantity) {
         StockItem back = new StockItem(StockItemId.newId(), source.sku, Objects.requireNonNull(bin, "bin"),

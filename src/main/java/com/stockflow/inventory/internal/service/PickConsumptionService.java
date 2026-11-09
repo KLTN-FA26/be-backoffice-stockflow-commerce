@@ -151,6 +151,28 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         }
     }
 
+    /**
+     * The picked carton itself back into stock at {@code target}, whole and sealed: CONSUMED → IN_STOCK with its LPN,
+     * its row following it, one PUT_BACK ledger line naming it. Only the whole carton: the put-back of a carton line
+     * names everything its pick took.
+     */
+    private void putBackCarton(PutBackCommand command, StockItem view, LocationId target) {
+        Reservation consumed = view.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
+        if (command.quantity() != consumed.quantity().value()) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("The pick took a whole carton of %s "
+                    + "unit(s) on allocation %s; it comes back whole, not %d").formatted(consumed.quantity(),
+                    command.reservationId(), command.quantity()));
+        }
+        StockItem row = cartons.restock(view.stockPackageId(), view.id(), target, command.quantity());
+        Instant now = clock.instant();
+        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
+                row.sku(), row.lotNumber(), null, target, command.quantity(), StockStatus.AVAILABLE,
+                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now)
+                .ofLot(row.lotId()).forOrder(consumed.orderId()).arriving(row.stockPackageId()));
+        log.info("Pick line {} put back: carton {} ({} x {}) back in stock at {}", command.pickLineId(),
+                row.stockPackageId().value(), command.quantity(), row.sku(), target);
+    }
+
     @Override
     public void putBack(PutBackCommand command) {
         LocationId target = new LocationId(command.locationCode());
@@ -168,14 +190,23 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                     "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(target));
             case USABLE -> { }
         }
+        // A carton line comes back as its carton, whole and sealed (07 BR-05; 20 §4.6 steps 5-6). Read unlocked to
+        // choose the path: the carton path locks the carton before its row, the global lock order.
+        Optional<StockItem> peek = stockItems.findIdByReservationId(ReservationId.of(command.reservationId()))
+                .flatMap(stockItems::findById);
+        if (peek.isPresent() && peek.get().stockPackageId() != null
+                && damageReports.damagedAfterPick(command.reservationId()) == 0) {
+            putBackCarton(command, peek.get(), target);
+            return;
+        }
         StockItem sourceView = stockItems.findByReservationIdForUpdate(ReservationId.of(command.reservationId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                         "No reservation with id " + command.reservationId()));
-        // The goods come back as the layer they left: same SKU, lot, expiry and receipt time, so FEFO and
-        // FIFO still see them in their place - as loose stock. At the bin they left, that layer is the source
-        // row itself when it is loose; a carton's row is never refilled by a put-back, whatever bin it is on:
-        // emptied by the pick, the carton is CONSUMED and must stay empty, and opened, it would take back units
-        // that may never have left it (the put-back names no carton). Picking from a carton is SCRUM-473's.
+        // Loose only where a carton cannot come back whole: a legacy line picked from loose stock, or a carton some
+        // of whose units went to quarantine damaged at packing (the rest come back loose; team plan 4C-4 decides
+        // whether they are boxed again). The goods come back as the layer they left: same SKU, lot, expiry and
+        // receipt time, so FEFO and FIFO still see them in their place. At the bin they left, that layer is the
+        // source row itself when it is loose; a carton's row is never refilled here, whatever bin it is on.
         Optional<StockItem> destinationView = sourceView.location().equals(target) && sourceView.isLoose()
                 ? Optional.of(sourceView)
                 : stockItems.findLooseBySkuAndLocation(sourceView.sku(), target).stream()
@@ -210,6 +241,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         }
         if (destination == null) {
             // A carton's row may be on the very bin they come back to: a new loose row beside it (StockItem#putBackBeside).
+            // Reached for a carton only when part of it went to quarantine damaged; a whole one is restocked above.
             stockItems.save(StockItem.putBackBeside(source, target, quantity));
         } else {
             // Units rejoining their own receipt layer, not replenishment: a FIFO SKU's policy trigger refuses
