@@ -3067,6 +3067,14 @@ Table ordering.production_order_line [headercolor: #C0392B] {
   }
 }
 
+Table ordering.production_order_slip [headercolor: #C0392B] {
+  production_order_id uuid [pk]
+  storage_key         varchar(512) [not null, unique]
+  sha256              character(64) [not null]
+  size_bytes          bigint [not null]
+  created_at          timestamptz [not null, default: `now()`]
+}
+
 Table ordering.production_order_status_history [headercolor: #C0392B] {
   id                  uuid [pk]
   production_order_id uuid [not null]
@@ -5422,6 +5430,7 @@ Ref: ordering.production_order.sales_order_id > ordering.customer_order.id
 Ref: ordering.production_order_line.design_snapshot_id > design.design_snapshot.id
 Ref: ordering.production_order_line.order_line_id > ordering.order_line.id
 Ref: ordering.production_order_line.production_order_id > ordering.production_order.id [delete: cascade]
+Ref: ordering.production_order_slip.production_order_id > ordering.production_order.id
 Ref: ordering.production_order_status_history.changed_by > identity.app_user.id
 Ref: ordering.production_order_status_history.production_order_id > ordering.production_order.id
 Ref: ordering.quote.converted_order_id > ordering.customer_order.id [delete: restrict]
@@ -5783,6 +5792,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.producer
   ordering.production_order
   ordering.production_order_line
+  ordering.production_order_slip
   ordering.production_order_status_history
   ordering.production_order_status_transition
   ordering.quote
