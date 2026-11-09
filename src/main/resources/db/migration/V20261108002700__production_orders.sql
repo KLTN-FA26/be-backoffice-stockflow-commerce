@@ -78,6 +78,9 @@ CREATE TABLE ordering.production_order
     CONSTRAINT ck_production_order_sent CHECK ((sent_at IS NULL) = (approved_at IS NULL)
         AND ((status IN ('DRAFT', 'PENDING_APPROVAL')) = (sent_at IS NULL) OR status = 'CANCELLED')),
     CONSTRAINT ck_production_order_submitted CHECK (status <> 'PENDING_APPROVAL' OR submitted_at IS NOT NULL),
+    -- BR-23: a draft that was submitted before is one the approver returned, with a reason.
+    CONSTRAINT ck_production_order_returned CHECK (status <> 'DRAFT' OR submitted_at IS NULL
+        OR returned_reason IS NOT NULL),
     -- BR-06: cancelled and closed with who, when and why - and each only as its own status.
     CONSTRAINT ck_production_order_cancelled CHECK ((status = 'CANCELLED') = (cancelled_at IS NOT NULL)
         AND (cancelled_at IS NULL) = (cancelled_by IS NULL) AND (cancelled_at IS NULL) = (cancellation_reason IS NULL)
@@ -167,7 +170,7 @@ CREATE TRIGGER tg_production_order_status_history_append_only
     BEFORE UPDATE OR DELETE ON ordering.production_order_status_history
     FOR EACH ROW EXECUTE FUNCTION ordering.forbid_production_order_history_change();
 
--- 17 §5.3: the edges, as data (the Java enum is held to it by a test, as OrderStatus is).
+-- 17 §5.3: the edges, as data (ProductionOrderIntegrationTest holds the Java enum to it).
 CREATE TABLE ordering.production_order_status_transition
 (
     from_status VARCHAR(24) NOT NULL,
@@ -196,6 +199,9 @@ BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'production order %: production orders are kept', OLD.code USING ERRCODE = 'check_violation';
     END IF;
+    IF TG_OP = 'INSERT' AND NEW.status <> 'DRAFT' THEN
+        RAISE EXCEPTION 'production order %: drawn up as a draft (17 §5.3)', NEW.code USING ERRCODE = 'check_violation';
+    END IF;
     IF TG_OP = 'UPDATE' THEN
         IF NEW.code IS DISTINCT FROM OLD.code OR NEW.sales_order_id IS DISTINCT FROM OLD.sales_order_id
             OR NEW.delivery_batch_id IS DISTINCT FROM OLD.delivery_batch_id
@@ -208,13 +214,21 @@ BEGIN
             RAISE EXCEPTION 'production order %: % -> % is not a transition (17 §5.3)', OLD.code, OLD.status,
                 NEW.status USING ERRCODE = 'check_violation';
         END IF;
-        -- Producer, warehouse, need-by date and sample flag are settled once it is submitted (B33; the warehouse moves
-        -- with the order's shipping warehouse while it is not yet sent).
+        -- What the coordinator edits is settled once it is submitted (B33; the warehouse moves with the order's
+        -- shipping warehouse while it is not yet sent).
         IF OLD.status NOT IN ('DRAFT') AND (NEW.producer_id IS DISTINCT FROM OLD.producer_id
             OR NEW.need_by_date IS DISTINCT FROM OLD.need_by_date
             OR NEW.sample_approval_required IS DISTINCT FROM OLD.sample_approval_required
-            OR NEW.unit_price IS DISTINCT FROM OLD.unit_price) THEN
+            OR NEW.sample_waiver_reason IS DISTINCT FROM OLD.sample_waiver_reason
+            OR NEW.unit_price IS DISTINCT FROM OLD.unit_price OR NEW.note IS DISTINCT FROM OLD.note) THEN
             RAISE EXCEPTION 'production order %: a % production order is not edited', OLD.code, OLD.status
+                USING ERRCODE = 'check_violation';
+        END IF;
+        -- Who approved and sent it, and when, is written once (BR-23).
+        IF OLD.approved_at IS NOT NULL AND (NEW.approved_by IS DISTINCT FROM OLD.approved_by
+            OR NEW.approved_at IS DISTINCT FROM OLD.approved_at OR NEW.sent_at IS DISTINCT FROM OLD.sent_at
+            OR NEW.submitted_at IS DISTINCT FROM OLD.submitted_at) THEN
+            RAISE EXCEPTION 'production order %: its approval is kept as written', OLD.code
                 USING ERRCODE = 'check_violation';
         END IF;
         IF OLD.status NOT IN ('DRAFT', 'PENDING_APPROVAL')
@@ -248,8 +262,9 @@ CREATE TRIGGER tg_production_order
     BEFORE INSERT OR UPDATE OR DELETE ON ordering.production_order
     FOR EACH ROW EXECUTE FUNCTION ordering.check_production_order();
 
--- A line is a line of the production order's sales order, its SKU; changed only while the production order is a draft
--- (what is received is counted by 4A-5).
+-- A line is a line of the production order's sales order scheduled in its delivery batch, with its SKU, never more
+-- cartons than the batch delivers; changed only while the production order is a draft (what is received is counted by
+-- 4A-5).
 CREATE FUNCTION ordering.check_production_order_line() RETURNS TRIGGER
     LANGUAGE plpgsql AS
 $$
@@ -257,7 +272,7 @@ DECLARE
     po          RECORD;
     line        RECORD;
 BEGIN
-    SELECT p.code, p.status, p.sales_order_id INTO po FROM ordering.production_order p
+    SELECT p.code, p.status, p.sales_order_id, p.delivery_batch_id INTO po FROM ordering.production_order p
      WHERE p.id = CASE WHEN TG_OP = 'DELETE' THEN OLD.production_order_id ELSE NEW.production_order_id END;
     IF TG_OP = 'DELETE' THEN
         IF po.status IS NOT NULL AND po.status <> 'DRAFT' THEN
@@ -283,6 +298,12 @@ BEGIN
     IF line.order_id IS DISTINCT FROM po.sales_order_id OR line.sku IS DISTINCT FROM NEW.sku
         OR line.units_per_carton IS DISTINCT FROM NEW.units_per_carton THEN
         RAISE EXCEPTION 'production order %: a line is one of its order''s lines, with its SKU and carton (17 BR-05)',
+            po.code USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM ordering.delivery_batch_line b
+                    WHERE b.delivery_batch_id = po.delivery_batch_id AND b.order_line_id = NEW.order_line_id
+                      AND b.cartons >= NEW.cartons) THEN
+        RAISE EXCEPTION 'production order %: a line is of its delivery batch, never above its cartons (17 BR-05)',
             po.code USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;

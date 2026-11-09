@@ -129,6 +129,18 @@ SELECT pg_temp.expect_fail('PO3 a line with another SKU than its order line''s',
 SELECT pg_temp.expect_fail('PO4 a print sample required by default waived without a reason (BR-24)', $q$
     SELECT pg_temp.draft(md5('qa21:po0')::uuid, 'HCM', TRUE, FALSE, NULL, 'PRD-20261109-0901');
     SELECT pg_temp.line(md5('qa21:po0')::uuid, 10, 'QA-PRD-OWN') $q$);
+SELECT pg_temp.expect_fail('PO4a more cartons than the batch delivers (BR-05)', $q$
+    SELECT pg_temp.draft(md5('qa21:po0')::uuid, 'HCM', TRUE, TRUE, NULL, 'PRD-20261109-0901');
+    SELECT pg_temp.line(md5('qa21:po0')::uuid, 11, 'QA-PRD-OWN') $q$);
+SELECT pg_temp.expect_fail('PO4b drawn up as anything but a draft (17 §5.3)', $q$
+    SELECT pg_temp.draft(md5('qa21:po0')::uuid, 'HCM', TRUE, TRUE, NULL, 'PRD-20261109-0901');
+    SELECT pg_temp.line(md5('qa21:po0')::uuid, 10, 'QA-PRD-OWN');
+    INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
+                                           receiving_warehouse_id, need_by_date, status, submitted_at,
+                                           sample_approval_required, sample_required_by_default, drawn_up_by)
+    SELECT md5('qa21:po9')::uuid, 'PRD-20261109-0909', sales_order_id, delivery_batch_id, customer_id, producer_id,
+           receiving_warehouse_id, need_by_date, 'PENDING_APPROVAL', NOW(), TRUE, TRUE, drawn_up_by
+      FROM ordering.production_order WHERE id = md5('qa21:po0')::uuid $q$);
 SELECT pg_temp.expect_ok('PO5 a draft for batch 2: 10 cartons of 50 at HCM, a sample wanted', $q$
     SELECT pg_temp.draft(md5('qa21:po1')::uuid, 'HCM', TRUE, TRUE, NULL, 'PRD-20261109-0901');
     SELECT pg_temp.line(md5('qa21:po1')::uuid, 10, 'QA-PRD-OWN') $q$);
@@ -146,6 +158,10 @@ SELECT pg_temp.expect_ok('PO8 submitted for approval', $q$
      WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO9 its need-by date changed once submitted (B33)', $q$
     UPDATE ordering.production_order SET need_by_date = need_by_date + 1 WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO9a its note changed once submitted (B33)', $q$
+    UPDATE ordering.production_order SET note = 'one more thing' WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO9b returned to draft without a reason (BR-23)', $q$
+    UPDATE ordering.production_order SET status = 'DRAFT' WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO10 its lines changed once submitted', $q$
     UPDATE ordering.production_order_line SET cartons = 9 WHERE production_order_id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO11 approved by the one who drew it up', $q$
@@ -154,6 +170,9 @@ SELECT pg_temp.expect_fail('PO11 approved by the one who drew it up', $q$
 SELECT pg_temp.expect_ok('PO12 approved by the approver, so sent', $q$
     UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
            approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO12a its approval rewritten (BR-23)', $q$
+    UPDATE ordering.production_order SET approved_at = approved_at - INTERVAL '1 hour',
+           sent_at = sent_at - INTERVAL '1 hour' WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO13 sent, received at another warehouse', $q$
     UPDATE ordering.production_order SET receiving_warehouse_id = gen_random_uuid()
      WHERE id = md5('qa21:po1')::uuid $q$);
