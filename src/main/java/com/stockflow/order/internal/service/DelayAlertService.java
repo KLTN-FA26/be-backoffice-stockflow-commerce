@@ -30,7 +30,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
@@ -55,7 +54,7 @@ import java.util.stream.Collectors;
  * changed. An alert opening publishes {@link DelayAlertOpened}, which the notification module turns into in-app
  * messages; a close tells nobody.
  *
- * <p><b>Never blocking.</b> A recompute runs in its own transaction after the operation committed, and its failure is
+ * <p><b>Never blocking.</b> A recompute runs in a transaction of its own after the operation committed, and its failure is
  * logged, never thrown back at anyone: the nightly sweep is the safety net. Nothing reads an alert to refuse anything.</p>
  *
  * <p><b>One at a time per order.</b> A recompute takes the order's advisory lock ({@link DelayAlertRepository#lockSalesOrder})
@@ -127,8 +126,12 @@ public class DelayAlertService {
     /**
      * Opens and closes the alerts of {@code salesOrderId} to match its facts now. Idempotent: run twice, the second
      * changes nothing.
+     *
+     * <p>Joins the caller's transaction: the listener's own ({@code @ApplicationModuleListener} is REQUIRES_NEW
+     * already) or the one the sweep opens per order. A REQUIRES_NEW here would hold a second pooled connection for the
+     * whole recompute while the caller's sat idle.</p>
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     public Recomputed recompute(UUID salesOrderId) {
         Objects.requireNonNull(salesOrderId, "salesOrderId");
         alerts.lockSalesOrder(salesOrderId);

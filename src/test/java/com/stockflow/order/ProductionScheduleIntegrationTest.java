@@ -659,6 +659,41 @@ class ProductionScheduleIntegrationTest {
                 .containsExactly("SALES_MANAGER", "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER");
     }
 
+    @Test
+    @DisplayName("a recompute joins its caller's transaction: nothing of it is seen outside, and it rolls back with it")
+    void recomputeJoinsTheCallersTransaction() {
+        UUID orderId = confirmedOrder(oneBatchIn(15), a);
+        UUID batch = batchId(orderId, 1);
+        awaitListeners(orderId);
+        moveWindow(batch, today.minusDays(5), today.minusDays(2));
+
+        tx.executeWithoutResult(status -> {
+            assertThat(alerts.recompute(orderId).opened()).as("DELIVERY_LATE and PO_NEEDED").isEqualTo(2);
+            assertThat(openAlert(DelayAlertType.DELIVERY_LATE, batch)).as("seen inside").isNotNull();
+            assertThat(committedOpen(batch)).as("not committed by a transaction of its own").isZero();
+            status.setRollbackOnly();
+        });
+        assertThat(openAlert(DelayAlertType.DELIVERY_LATE, batch)).as("rolled back with its caller").isNull();
+        assertThat(alerts.recompute(orderId).opened()).as("on its own: a transaction of its own").isEqualTo(2);
+        assertThat(committedOpen(batch)).isEqualTo(2);
+    }
+
+    /** Open alerts on {@code subject} as another connection sees them: committed ones only. */
+    private long committedOpen(UUID subject) {
+        TransactionTemplate other = new TransactionTemplate(tx.getTransactionManager());
+        other.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRES_NEW);
+        return other.execute(s -> jdbc.queryForObject(
+                "SELECT count(*) FROM ordering.delay_alert WHERE subject_id = ? AND closed_at IS NULL", Long.class,
+                subject));
+    }
+
+    /** Every listener of the events naming {@code id} has finished, so none of them races what the test does next. */
+    private void awaitListeners(UUID id) {
+        await().atMost(WAIT).until(() -> jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE serialized_event LIKE ? AND completion_date IS NULL""",
+                Long.class, "%" + id + "%") == 0);
+    }
+
     private List<String> holders(String permission) {
         return jdbc.queryForList("""
                 SELECT r.code FROM identity.role_permission rp

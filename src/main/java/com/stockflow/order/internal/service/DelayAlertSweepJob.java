@@ -5,6 +5,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.UUID;
 
@@ -21,9 +23,12 @@ class DelayAlertSweepJob {
     private static final Logger log = LoggerFactory.getLogger(DelayAlertSweepJob.class);
 
     private final DelayAlertService alerts;
+    /** One transaction per order: the recompute joins it, and a failure rolls back that order only. */
+    private final TransactionTemplate eachOrder;
 
-    DelayAlertSweepJob(DelayAlertService alerts) {
+    DelayAlertSweepJob(DelayAlertService alerts, PlatformTransactionManager transactions) {
         this.alerts = alerts;
+        this.eachOrder = new TransactionTemplate(transactions);
     }
 
     /** Just after midnight in Vietnam, when the day that makes something late has begun. */
@@ -36,7 +41,7 @@ class DelayAlertSweepJob {
         int failed = 0;
         for (UUID salesOrderId : alerts.sweepCandidates()) {
             try {
-                DelayAlertService.Recomputed result = alerts.recompute(salesOrderId);
+                DelayAlertService.Recomputed result = eachOrder.execute(status -> alerts.recompute(salesOrderId));
                 opened += result.opened();
                 closed += result.closed();
                 orders++;
