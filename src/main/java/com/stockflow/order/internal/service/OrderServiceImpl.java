@@ -579,6 +579,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         }
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .filter(found -> customerId != null && customerId.equals(found.customerId()))
+                // 17 §5.2: a DRAFT order is not the customer's - nothing to ask about.
+                .filter(found -> found.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
         CancellationReasonCode code = reasonCode == null ? CancellationReasonCode.CUSTOMER_REQUEST : reasonCode;
@@ -624,8 +626,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .filter(contract -> contract.status().canTransitionTo(
                         com.stockflow.order.internal.domain.SalesContractStatus.CANCELLED))
                 .ifPresent(contract -> {
+                    // Someone cancels an order that has a contract: Sales, accounting or the customer's approved
+                    // request - never the system on its own, which would have no one to name on the contract.
                     contract.cancel("Order cancelled: " + command.reasonCode(), clock.instant(),
-                            command.cancelledBy() == null ? contract.sentBy() : command.cancelledBy());
+                            java.util.Objects.requireNonNull(command.cancelledBy(),
+                                    "an order with a contract is cancelled by someone"));
                     contracts.save(contract);
                 });
 

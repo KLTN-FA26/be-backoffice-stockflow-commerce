@@ -78,6 +78,8 @@ class OrderThroughContractIntegrationTest {
     @Autowired OrderRepository orderRepository;
     @Autowired CustomerOrders customerOrders;
     @Autowired CreditHoldService creditHolds;
+    @Autowired com.stockflow.order.internal.service.OrderReleases releases;
+    @Autowired com.stockflow.order.internal.service.TransferInstructions transfers;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -179,16 +181,29 @@ class OrderThroughContractIntegrationTest {
                 .extracting(CustomerOrders.Card::orderId).doesNotContain(orderId);
         assertThatThrownBy(() -> customerOrders.myOrder(customerId, orderId))
                 .extracting(OrderThroughContractIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatThrownBy(() -> orders.cancelOwn(orderId, customerId, CancellationReasonCode.CUSTOMER_REQUEST, null,
+                null)).as("nothing of a DRAFT order to ask about").extracting(OrderThroughContractIntegrationTest::code)
+                .isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatThrownBy(() -> transfers.of(customerId, orderId))
+                .extracting(OrderThroughContractIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
 
         SalesContracts.ContractView sent = sent(orderId, List.of(share("All", "ON_SIGNING", "100")));
+        assertThatThrownBy(() -> transfers.of(customerId, orderId))
+                .as("paid by its contract's installments (4B-6)").extracting(OrderThroughContractIntegrationTest::code)
+                .isEqualTo(ErrorCode.ORDER_PAID_BY_CONTRACT);
         assertThat(status(orderId)).isEqualTo(OrderStatus.PENDING_CONTRACT);
         CustomerOrders.Detail mine = customerOrders.myOrder(customerId, orderId);
         assertThat(mine.statusGroup()).isEqualTo(CustomerOrders.StatusGroup.AWAITING_CONTRACT);
         assertThat(mine.allowedActions().cancel()).as("17 §4.8: never at once").isFalse();
         assertThat(mine.allowedActions().requestCancellation()).isTrue();
 
+        CancellationOutcome asked = orders.cancelOwn(orderId, customerId, CancellationReasonCode.CUSTOMER_REQUEST,
+                "not sure yet", null);
         asSales(() -> contracts.cancel(sales, orderId, sent.version(), "The customer wants another window"));
         assertThat(status(orderId)).as("14 §4.3 step 16: drawn up again").isEqualTo(OrderStatus.DRAFT);
+        assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?",
+                String.class, asked.requestId())).as("out of the customer's sight: the request closes")
+                .isEqualTo("EXPIRED");
         assertThat(jdbc.queryForObject("SELECT string_agg(to_status, '>' ORDER BY occurred_at, id) FROM "
                 + "ordering.order_status_history WHERE order_id = ?", String.class, orderId))
                 .contains("PENDING_CONTRACT").endsWith("DRAFT");
@@ -204,8 +219,13 @@ class OrderThroughContractIntegrationTest {
         UUID confirmed = draftOrder();
         signed(confirmed, sent(confirmed, List.of(share("All before delivery", "BEFORE_DELIVERY", "100"))));
         assertThat(status(confirmed)).as("14 BR-15: signed, nothing due on signing").isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(jdbc.queryForObject("SELECT contract_signed_at IS NOT NULL FROM ordering.customer_order WHERE id = ?",
-                Boolean.class, confirmed)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT contract_signed_at IS NOT NULL AND placed_at = contract_signed_at FROM "
+                + "ordering.customer_order WHERE id = ?", Boolean.class, confirmed))
+                .as("placed when signed: the day the dashboard counts it from").isTrue();
+        assertThatThrownBy(() -> releases.release(confirmed, com.stockflow.support.DemoData.WAREHOUSE_HCM,
+                sales.userId())).as("no stock held until the shipping warehouse is chosen (4B-7)")
+                .extracting(OrderThroughContractIntegrationTest::code).isEqualTo(ErrorCode.ORDER_STOCK_NOT_HELD);
+        assertThat(status(confirmed)).isEqualTo(OrderStatus.CONFIRMED);
         // OrderPlaced: the dashboard counts it from the signature on.
         Await.until("the order rolled up", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
                 + "reporting.processed_order_events WHERE order_id = ? AND event_type = 'PLACED'", Long.class,

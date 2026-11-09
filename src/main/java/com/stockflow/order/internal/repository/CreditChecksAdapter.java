@@ -29,7 +29,9 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
      * so a new status cannot leak an order out of it - what the order has still to bill: its total, less the units
      * closed out of it ({@code closed_amount}, their share of their lines with tax as the order computed it - not their
      * price alone, which would leave their VAT counted), less what its deliveries billed (the receivables count that),
-     * less money paid ahead outside receivables. A split order is counted once: its delivered shipments as receivables, the rest here. An order on
+     * less money paid ahead outside receivables. And what the customer's signed contracts pay after delivery while their
+     * orders are not settled (4B-5, 15 BR-10) - until those installments exist themselves (4B-6) - so that checkout,
+     * a contract's signature and accounting's decision all read one exposure. A split order is counted once: its delivered shipments as receivables, the rest here. An order on
      * a credit hold is not credit given yet.
      *
      * <p>BALCREDIT: a deposit order whose balance goes on credit counts the same way, from the moment it is placed
@@ -39,7 +41,7 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
     @Override
     public BigDecimal undeliveredCreditExposure(UUID customerId, UUID excludingOrderId) {
         Object sum = entityManager.createNativeQuery("""
-                        SELECT COALESCE(SUM(GREATEST(0,
+                        SELECT (SELECT COALESCE(SUM(GREATEST(0,
                                    o.total_amount - o.closed_amount
                                  - o.billed_amount
                                  - GREATEST(CASE WHEN o.payment_term = 'DEPOSIT' THEN o.deposit_required ELSE 0 END,
@@ -50,7 +52,16 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
                              OR o.payment_term = 'DEPOSIT' AND o.balance_policy = 'ON_CREDIT'
                                 AND o.status IN (:balanceStatuses))
                            AND o.id <> :excluding
-                           AND o.hold_reason IS DISTINCT FROM 'CREDIT'""")
+                           AND o.hold_reason IS DISTINCT FROM 'CREDIT'
+                           AND o.contract_signed_at IS NULL)
+                     + (SELECT COALESCE(SUM(i.amount), 0)
+                          FROM ordering.contract_payment_installment i
+                          JOIN ordering.sales_contract c ON c.id = i.contract_id
+                          JOIN ordering.customer_order o ON o.id = c.order_id
+                         WHERE o.customer_id = :customer AND o.id <> :excluding
+                           AND c.status = 'SIGNED' AND i.milestone = 'AFTER_DELIVERY'
+                           AND o.status NOT IN ('CANCELLED', 'COMPLETED', 'CLOSED', 'REFUNDED', 'PARTIALLY_REFUNDED')
+                           AND o.hold_reason IS DISTINCT FROM 'CREDIT')""")
                 .setParameter("customer", customerId)
                 .setParameter("statuses", OrderStatus.creditExposureStatuses().stream().map(Enum::name).toList())
                 .setParameter("balanceStatuses", java.util.stream.Stream.concat(

@@ -187,6 +187,8 @@ class OrderController {
                 // A customer sees only their own orders. The order carries the shipping address and
                 // phone of whoever placed it, so answering 200 to anyone would leak both.
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
+                // 17 §5.2: a DRAFT order is Sales' work, not yet the customer's to see.
+                .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
                 .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
@@ -327,11 +329,13 @@ class OrderController {
         UUID ownCustomerId = ownCustomerIdOrNull(user);
         orderService.findById(orderId)
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
+                .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
         List<com.stockflow.order.api.OrderStatusChange> changes = orderService.history(orderId);
         if (ownCustomerId != null) {
             // A customer reads why their order was cancelled; a hold's note and who did what are the shop's (G3-2).
-            return ApiResponse.ok(changes.stream()
+            // Its drafting is not theirs either (17 §5.2): the steps into DRAFT are left out.
+            return ApiResponse.ok(changes.stream().filter(change -> change.to() != OrderStatus.DRAFT)
                     .map(change -> new OrderStatusChangeResponse(change.from(), change.to(),
                             change.to() == OrderStatus.CANCELLED ? change.reason() : null, change.occurredAt(),
                             null, null))

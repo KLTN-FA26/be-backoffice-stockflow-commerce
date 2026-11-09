@@ -42,11 +42,13 @@ class OrderReleaseService implements OrderReleases {
     private final InventoryService inventory;
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final OrderStockAllocation allocation;
+    private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
 
     OrderReleaseService(OrderRepository repository, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
                         InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
-                        OrderStockAllocation allocation) {
+                        OrderStockAllocation allocation, com.stockflow.order.internal.domain.SalesContractRepository contracts) {
+        this.contracts = contracts;
         this.allocation = allocation;
         this.repository = repository;
         this.warehouses = warehouses;
@@ -73,7 +75,9 @@ class OrderReleaseService implements OrderReleases {
 
         // kltn-docs 15 §4.3 step 4, 17 BR-02: no credit order is released for a customer who is overdue - nor a deposit
         // order whose balance goes on credit (BALCREDIT, review of #150): it gives the same credit on delivery.
-        if ((order.paymentTerm() == com.stockflow.order.api.PaymentTerm.CREDIT || order.balanceOnCredit())
+        // 4B-5: so is an order whose contract pays after delivery - credit, whatever the order's own term says.
+        if ((order.paymentTerm() == com.stockflow.order.api.PaymentTerm.CREDIT || order.balanceOnCredit()
+                || paysAfterDelivery(order))
                 && paymentService.creditPosition(order.customerId()).hasOverdue()) {
             throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE,
                     "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));
@@ -90,5 +94,12 @@ class OrderReleaseService implements OrderReleases {
         events.publishEventsOf(order);
         log.info("Released order {} from {}: {}", order.orderNumber(), warehouseCode, order.status());
         return orders.findById(orderId).orElseThrow();
+    }
+
+    /** Whether the order's signed contract pays after delivery (15 BR-09): credit given on delivery. */
+    private boolean paysAfterDelivery(Order order) {
+        return order.paidByContract() && contracts.findLiveByOrderId(order.id().value()).stream()
+                .flatMap(contract -> contract.plan().stream())
+                .anyMatch(i -> i.milestone() == com.stockflow.order.internal.domain.PaymentMilestone.AFTER_DELIVERY);
     }
 }

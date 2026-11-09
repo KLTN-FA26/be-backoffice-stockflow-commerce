@@ -168,6 +168,10 @@ class CustomerEmailComposer {
 
     /** kltn-docs 17 §4.5: the order is cancelled; what is refunded and what fee is still owed (Q6a), if any. */
     Optional<CustomerMessage> orderCancelled(OrderCancelled event) {
+        if ("DRAFT".equals(event.previousStatus())) {
+            // 4B-5 (17 §5.2): an order cancelled while it was drafted was never the customer's to see.
+            return Optional.empty();
+        }
         return Optional.of(new CustomerMessage(ORDER_CANCELLED, event.orderId().toString(), event.customerId(), null,
                 addressee -> {
                     ResourceBundle m = bundle();

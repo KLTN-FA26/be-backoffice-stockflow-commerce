@@ -28,8 +28,11 @@ class TransferInstructionsService implements TransferInstructions {
     private final OrderService orders;
     private final PaymentService payments;
     private final Messages messages;
+    private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
 
-    TransferInstructionsService(OrderService orders, PaymentService payments, Messages messages) {
+    TransferInstructionsService(OrderService orders, PaymentService payments, Messages messages,
+                                com.stockflow.order.internal.domain.SalesContractRepository contracts) {
+        this.contracts = contracts;
         this.orders = orders;
         this.payments = payments;
         this.messages = messages;
@@ -39,7 +42,14 @@ class TransferInstructionsService implements TransferInstructions {
     public Instructions of(UUID customerId, UUID orderId) {
         OrderSummary order = orders.findById(orderId)
                 .filter(o -> customerId.equals(o.customerId()))
+                // 17 §5.2: a DRAFT order is not the customer's to see.
+                .filter(o -> o.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        if (contracts.findLiveByOrderId(orderId).isPresent()) {
+            // 4B-5: paid by the contract's installments - their transfer instructions come with them (4B-6).
+            throw new BusinessException(ErrorCode.ORDER_PAID_BY_CONTRACT, ("Order %s is paid by its sales contract's "
+                    + "installments").formatted(order.orderNumber()));
+        }
         var bank = payments.companyBankAccount()
                 .orElseThrow(() -> new BusinessException(ErrorCode.TRANSFER_INSTRUCTIONS_UNAVAILABLE,
                         "stockflow.payment.company-bank is not configured"));

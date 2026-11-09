@@ -70,7 +70,7 @@ public final class Order extends AggregateRoot {
 
     /** 4B-3: the fee lines copied from the quote when the order was placed (14 BR-09, BR-17, BR-20); fixed. */
     private final List<OrderFee> fees = new ArrayList<>();
-    private final Instant placedAt;
+    private Instant placedAt;
 
     private OrderStatus status;
     private String cancellationReason;
@@ -677,6 +677,9 @@ public final class Order extends AggregateRoot {
             throw new InvalidOrderTransitionException(orderNumber, status, "record its contract signed");
         }
         this.contractSignedAt = java.util.Objects.requireNonNull(at, "at");
+        // Placed when its contract is signed: the day the dashboard counts it from (17 §4.11) - not the day the quote
+        // was converted into a draft.
+        this.placedAt = at;
         if (creditHold) {
             transitionTo(OrderStatus.ON_HOLD, by, HoldReason.CREDIT.name(), at);
             // A credit hold goes nowhere back: accounting's approval decides it, a refusal cancels it.
@@ -946,6 +949,12 @@ public final class Order extends AggregateRoot {
         }
         if (status != OrderStatus.CONFIRMED) {
             throw new InvalidOrderTransitionException(orderNumber, status, "only a confirmed order can be released");
+        }
+        if (lines.stream().anyMatch(line -> !line.isReserved())) {
+            // An order confirmed by its contract holds nothing until its shipping warehouse is chosen and its stock held
+            // there (17 §4.2, 4B-7): released now, it would go to the warehouse with nothing to pick.
+            throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("Order %s holds no stock for some of its "
+                    + "lines: choose its shipping warehouse and hold its stock first").formatted(orderNumber));
         }
         transitionTo(OrderStatus.READY_TO_FULFILL);
         this.warehouseId = warehouse;
@@ -1735,6 +1744,11 @@ public final class Order extends AggregateRoot {
     }
 
     private BigDecimal amountDueBeforeHandover(LedgerMoney ledger) {
+        if (paidByContract()) {
+            // Its contract's installments say what is paid before the goods leave (15 BR-08), not its own terms - the
+            // installments gate the handover from 4B-6 on.
+            return BigDecimal.ZERO;
+        }
         BigDecimal paid = paid(ledger);
         BigDecimal due = billable().subtract(paid).max(BigDecimal.ZERO);
         return switch (paymentTerm) {
@@ -2161,6 +2175,12 @@ public final class Order extends AggregateRoot {
 
     /** 4B-5: when its sales contract was signed - what confirms it, not a payment its own terms ask for. */
     public Instant contractSignedAt() { return contractSignedAt; }
+
+    /**
+     * 4B-5: paid by its contract's installments, not by its own payment term - which an order of a contract carries
+     * only as the money ledger's neutral PREPAID until the ledger goes (4B-10).
+     */
+    public boolean paidByContract() { return contractSignedAt != null; }
 
     /**
      * Goods of the order leave on a load plan's vehicle (SCRUM-392, LP-3) - part of a shipment that is handed over only

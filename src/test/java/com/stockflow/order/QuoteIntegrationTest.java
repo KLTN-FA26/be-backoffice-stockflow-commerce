@@ -91,6 +91,7 @@ class QuoteIntegrationTest {
     @Autowired RecordedEvents.Recorder recorded;
     @Autowired CustomerPriceService prices;
     @Autowired com.stockflow.order.internal.service.OrderReleases releases;
+    @Autowired com.stockflow.order.internal.service.SalesContracts contracts;
     /** Sales notices are captured, never sent: no SMTP server is reached from a test. */
     @MockitoBean JavaMailSenderImpl mail;   // the concrete type: the actuator's mail health check needs it
 
@@ -140,6 +141,41 @@ class QuoteIntegrationTest {
         return new Quotes.Draft(term, null, validUntil, "Prices exclude VAT",
                 List.of(new Quotes.Line(sku, 3,
                         List.of(new Quotes.Tier(2, new BigDecimal("3000")), new Quotes.Tier(5, new BigDecimal("2500"))))));
+    }
+
+    /**
+     * The converted order's contract drawn up - one batch three weeks out, the customer's default plan - sent and signed
+     * today with a one-page scan (4B-5): the order is then the customer's to see.
+     */
+    private void signContract(UUID orderId) {
+        tx.executeWithoutResult(status -> jdbc.update("INSERT INTO customer.customer_legal_profile (id, customer_id, "
+                + "registered_address, representative_name, representative_title, version, created_at) VALUES (?, ?, "
+                + "'1 Le Loi', 'Tran Van A', 'Director', 0, NOW()) ON CONFLICT (customer_id) DO NOTHING",
+                Identifiers.newId(), customerId));
+        java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
+        UUID line = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class, orderId);
+        Integer cartons = jdbc.queryForObject("SELECT cartons FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId);
+        var drafted = com.stockflow.support.WithCurrentUser.call(sales, DataScope.ALL, () -> contracts.create(sales,
+                orderId, new com.stockflow.order.internal.service.SalesContracts.Draft(null, List.of(
+                        new com.stockflow.order.internal.service.SalesContracts.Batch(today.plusDays(21),
+                                today.plusDays(21), List.of(new com.stockflow.order.internal.service.SalesContracts
+                                .BatchLine(line, cartons)))), null)));
+        var sent = com.stockflow.support.WithCurrentUser.call(sales, DataScope.ALL,
+                () -> contracts.send(sales, orderId, drafted.version()));
+        byte[] scan;
+        try (var document = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            var bytes = new java.io.ByteArrayOutputStream();
+            document.save(bytes);
+            scan = bytes.toByteArray();
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        com.stockflow.support.WithCurrentUser.call(sales, DataScope.ALL, () -> contracts.sign(sales, orderId,
+                sent.version(), com.stockflow.common.storage.IncomingFiles.sent(List.of(
+                        new com.stockflow.common.storage.FileUpload("signed.pdf", "application/pdf", scan.length,
+                                new java.io.ByteArrayInputStream(scan)))), today));
     }
 
     private Quotes.QuoteView sentQuote() {
@@ -236,6 +272,9 @@ class QuoteIntegrationTest {
         assertThat(order.shippingAddress()).isNotNull();
         assertThat(ordersOf(customerId)).isEqualTo(before + 1);
 
+        assertThat(quotes.get(portal, accepted.id()).convertedOrder())
+                .as("17 §5.2: the customer meets the order once its contract is sent").isNull();
+        assertThat(quotes.get(sales, accepted.id()).convertedOrder().orderId()).isEqualTo(order.orderId());
         Quotes.QuoteView again = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null));
         assertThat(again.convertedOrder().orderId()).as("one quote, one order").isEqualTo(order.orderId());
         assertThat(ordersOf(customerId)).isEqualTo(before + 1);
@@ -258,6 +297,8 @@ class QuoteIntegrationTest {
                 Map.of(seen.lines().getFirst().id(), 5)));
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
                 .convertedOrder().orderId();
+        // A past order: its contract signed, so the customer sees it and may reorder it (4B-5, 17 §5.2).
+        signContract(orderId);
         int ordersBefore = ordersOf(customerId);
 
         // Another customer cannot reorder it, nor learn it exists.
@@ -461,6 +502,8 @@ class QuoteIntegrationTest {
                 quotes.get(portal, sent.id()).version(), Map.of()));
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
                 .convertedOrder().orderId();
+        // A past order: its contract signed, so the customer sees it and may reorder it (4B-5, 17 §5.2).
+        signContract(orderId);
         // Today the customer's own price starts at 1,000 cartons.
         prices.create(customerId, sku, List.of(new CustomerPriceService.TierInput(1000, new BigDecimal("2000"))), null);
         int ordersBefore = ordersOf(customerId);
@@ -554,6 +597,8 @@ class QuoteIntegrationTest {
                 quotes.get(portal, sent.id()).version(), Map.of()));
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
                 .convertedOrder().orderId();
+        // A past order: its contract signed, so the customer sees it and may reorder it (4B-5, 17 §5.2).
+        signContract(orderId);
         // 4B-5: the order carries no term of its own - its contract's plan says how it is paid.
         assertThat(orders.findById(orderId).orElseThrow().paymentTerm()).isEqualTo(PaymentTerm.PREPAID);
 

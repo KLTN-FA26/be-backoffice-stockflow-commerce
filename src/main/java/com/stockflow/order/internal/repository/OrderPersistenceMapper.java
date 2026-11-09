@@ -135,6 +135,7 @@ final class OrderPersistenceMapper {
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyGoodsLeft(order.goodsLeftAt());
         entity.applyContractSigned(order.contractSignedAt());
+        entity.applyPlaced(order.placedAt());
         entity.applyBalance(order.balancePolicy());
         entity.applyPartialShipment(order.allowPartialShipment());
         entity.applyRemainderFee(order.remainderFeeAmount(), order.remainderFeeRetainedAmount(),

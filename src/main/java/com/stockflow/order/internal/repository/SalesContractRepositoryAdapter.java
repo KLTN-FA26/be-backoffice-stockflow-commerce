@@ -97,21 +97,6 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
     }
 
     @Override
-    public java.math.BigDecimal afterDeliveryCommitted(UUID customerId, UUID excludingOrderId) {
-        java.math.BigDecimal sum = named.queryForObject("""
-                SELECT COALESCE(SUM(i.amount), 0)
-                  FROM ordering.contract_payment_installment i
-                  JOIN ordering.sales_contract c ON c.id = i.contract_id
-                  JOIN ordering.customer_order o ON o.id = c.order_id
-                 WHERE o.customer_id = :customer AND o.id <> :excluding
-                   AND c.status = 'SIGNED' AND i.milestone = 'AFTER_DELIVERY'
-                   AND o.status NOT IN ('CANCELLED', 'COMPLETED', 'CLOSED', 'REFUNDED', 'PARTIALLY_REFUNDED')""",
-                new MapSqlParameterSource("customer", customerId).addValue("excluding",
-                        excludingOrderId == null ? new UUID(0, 0) : excludingOrderId), java.math.BigDecimal.class);
-        return sum == null ? java.math.BigDecimal.ZERO : sum;
-    }
-
-    @Override
     public Set<String> referencedKeys(Collection<String> keys) {
         if (keys.isEmpty()) {
             return Set.of();

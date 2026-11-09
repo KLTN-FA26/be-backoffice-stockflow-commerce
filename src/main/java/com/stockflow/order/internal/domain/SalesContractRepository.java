@@ -24,12 +24,6 @@ public interface SalesContractRepository {
      */
     SalesContract save(SalesContract contract);
 
-    /**
-     * What the customer's signed contracts, other than {@code excludingOrderId}'s, pay after delivery while their orders
-     * are not settled: the credit they took (15 BR-10), until the installments themselves exist (4B-6).
-     */
-    java.math.BigDecimal afterDeliveryCommitted(UUID customerId, UUID excludingOrderId);
-
     /** Of {@code keys}, those a contract names - its sent PDF or its signed file - for the orphaned-file sweep. */
     Set<String> referencedKeys(Collection<String> keys);
 }

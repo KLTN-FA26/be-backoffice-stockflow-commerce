@@ -45,7 +45,8 @@ class OrderPayablesAdapter implements OrderPayables {
     private static PayableOrder toPayable(Order order) {
         boolean holdable = order.status().mayBePutOnHold();
         return new PayableOrder(order.id().value(), order.orderNumber().value(), order.customerId(),
-                order.status().name(), order.paymentTerm().name(),
+                // 4B-5: an order of a contract is paid by its installments, which the money ledger does not take.
+                order.status().name(), order.paidByContract() ? "CONTRACT" : order.paymentTerm().name(),
                 order.balancePolicy() == null ? null : order.balancePolicy().name(),
                 order.total().currency().getCurrencyCode(), order.billable(), order.depositRequired(),
                 order.status() == OrderStatus.CANCELLED ? null : order.confirmationThreshold(),

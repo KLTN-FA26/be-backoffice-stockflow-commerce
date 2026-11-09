@@ -82,15 +82,18 @@ class SalesContractService implements SalesContracts {
     private final Clock clock;
     private final OrderEventPublisher events;
     private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
+    private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
                          PaymentService payments, CreditChecks creditChecks, FileTransfers files, StagedUploads staged,
                          SalesContractDocument document, SellerProperties seller, ContractProperties defaults,
                          TransactionTemplate tx, Clock clock, OrderEventPublisher events,
-                         com.stockflow.order.internal.repository.OrderHoldJpaRepository holds) {
+                         com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
+                         com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests) {
         this.events = events;
         this.holds = holds;
+        this.cancellationRequests = cancellationRequests;
         this.orders = orders;
         this.contracts = contracts;
         this.customers = customers;
@@ -279,9 +282,17 @@ class SalesContractService implements SalesContracts {
         Instant now = clock.instant();
         contract.cancel(reason, now, user.userId());
         SalesContract saved = contracts.save(contract);
-        // 14 §4.3 step 16: cancelled to be drawn up again - the order goes back to DRAFT (4B-5).
+        // 14 §4.3 step 16: cancelled to be drawn up again - the order goes back to DRAFT (4B-5). A cancellation request
+        // the customer sent meanwhile closes: the order is out of their sight until a new contract is sent.
+        boolean wasWaiting = order.status() == com.stockflow.order.api.OrderStatus.PENDING_CONTRACT;
         order.withdrawContract(user.userId(), now);
         orders.save(order);
+        if (wasWaiting) {
+            cancellationRequests.findPending(orderId).ifPresent(request -> {
+                request.expire("Closed: the contract was withdrawn to be drawn up again; ask once it is sent.", now);
+                cancellationRequests.save(request);
+            });
+        }
         log.info("Sales contract {} of order {} cancelled", saved.contractNumber(), order.orderNumber());
         return view(saved, order, null);
     }
@@ -491,9 +502,10 @@ class SalesContractService implements SalesContracts {
             return null;
         }
         CreditPosition position = payments.creditPosition(order.customerId());
+        // The exposure counts the other signed contracts' after-delivery parts too (CreditChecks), as every credit
+        // check does.
         BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
-                .add(position.outstandingReceivables())
-                .add(contracts.afterDeliveryCommitted(order.customerId(), order.id().value()));
+                .add(position.outstandingReceivables());
         CreditTerms credit = customers.creditTerms(order.customerId());
         BigDecimal limit = credit == null || credit.creditLimit() == null ? BigDecimal.ZERO : credit.creditLimit();
         CreditChecks.Outcome outcome = position.hasOverdue() ? CreditChecks.Outcome.OVERDUE
@@ -509,6 +521,9 @@ class SalesContractService implements SalesContracts {
      * otherwise the order waits for the installment on signing, or is confirmed. Then {@code OrderPlaced}.
      */
     private void placeSigned(Order order, SalesContract contract, UUID by, Instant now) {
+        // The customer row locked first, as checkout does (15 BR-03): two contracts of one customer signed at once are
+        // checked against the limit one after the other, each seeing the other's after-delivery part.
+        customers.lockCreditTerms(order.customerId());
         CreditCheck check = creditCheck(order, contract);
         boolean hold = check != null && check.outcome() != CreditChecks.Outcome.WITHIN_LIMIT;
         boolean paysOnSigning = paysOnSigning(contract);

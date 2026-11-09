@@ -52,6 +52,17 @@ class CustomerEmailComposerTest {
     }
 
     @Test
+    @DisplayName("4B-5: an order cancelled while it was drafted was never the customer's - no e-mail")
+    void aDraftCancelledSendsNothing() {
+        var confirmed = EmailFixtures.cancelled(customer, "OTHER", java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO);
+        var drafted = new com.stockflow.contracts.OrderCancelled(confirmed.orderId(), confirmed.orderNumber(),
+                customer, "DRAFT", "OTHER", null, java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO, "VND", null,
+                java.time.Instant.now(), java.math.BigDecimal.ZERO);
+        assertThat(composer.orderCancelled(drafted)).isEmpty();
+        assertThat(composer.orderCancelled(confirmed)).isPresent();
+    }
+
+    @Test
     @DisplayName("4B-3: an order with fee lines and VAT says what lies between its lines and its total")
     void orderPlacedWithFeesAndVat() {
         var plain = placed(customer, null);

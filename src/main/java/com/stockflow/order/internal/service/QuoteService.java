@@ -339,6 +339,7 @@ class QuoteService implements Quotes {
         Optional<UUID> own = portalCustomer(user);
         OrderSummary order = orders.findById(orderId)
                 .filter(o -> own.isEmpty() || own.get().equals(o.customerId()))
+                .filter(o -> own.isEmpty() || o.status() != com.stockflow.order.api.OrderStatus.DRAFT)
                 .orElseThrow(() -> new NotFoundException("order", orderId));
         quotes.lockRequest(requestId);
         Optional<Quote> earlier = quotes.findByRequestId(requestId);
@@ -950,6 +951,8 @@ class QuoteService implements Quotes {
         Totals proposedView = proposedTotals.build();
         Totals acceptedView = accepted ? acceptedTotals.build() : null;
         ConvertedOrder converted = quote.convertedOrderId() == null ? null : orders.findById(quote.convertedOrderId())
+                // 17 §5.2: the customer meets the order once its contract is sent, not while it is drafted.
+                .filter(o -> !forCustomer || o.status() != com.stockflow.order.api.OrderStatus.DRAFT)
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))
                 .orElse(null);
         return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), revision,

@@ -299,7 +299,9 @@ class CustomerOrdersService implements CustomerOrders {
     static List<TimelineEntry> timeline(OrderSummary summary, List<OrderStatusChange> history) {
         List<TimelineEntry> entries = new ArrayList<>();
         for (OrderStatusChange change : history) {
-            if (change.to() == null) {
+            // A step into DRAFT - the order made from the quote, or its contract withdrawn - is Sales' drafting, not a
+            // step the customer reads (17 §5.2).
+            if (change.to() == null || change.to() == OrderStatus.DRAFT) {
                 continue;
             }
             var reasonCode = change.to() == OrderStatus.CANCELLED && summary.cancellation() != null

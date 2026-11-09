@@ -360,6 +360,10 @@ public enum ErrorCode {
     /** 4B-4 (18 §3): the legal profile read before it was recorded. */
     LEGAL_PROFILE_NOT_FOUND("The customer's legal profile is not recorded yet", 404),
     /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
+    /** 4B-5: an order confirmed by its contract holds no stock until its shipping warehouse is chosen (4B-7). */
+    ORDER_STOCK_NOT_HELD("This order holds no stock yet; its shipping warehouse is chosen and its stock held first", 409),
+    /** 4B-5: an order of a contract is paid by the contract's installments, not by the order's own terms. */
+    ORDER_PAID_BY_CONTRACT("This order is paid by its sales contract's installments", 409),
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one

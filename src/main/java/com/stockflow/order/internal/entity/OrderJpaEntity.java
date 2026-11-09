@@ -130,7 +130,8 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "currency", nullable = false, length = 3)
     private String currency;
 
-    @Column(name = "placed_at", nullable = false, updatable = false)
+    /** Updatable since 4B-5: an order of a contract is placed when the contract is signed. */
+    @Column(name = "placed_at", nullable = false)
     private Instant placedAt;
 
     @Column(name = "cancellation_reason", length = 500)
@@ -453,6 +454,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public void applyContractSigned(Instant at) {
         this.contractSignedAt = at;
+    }
+
+    public void applyPlaced(Instant at) {
+        this.placedAt = at;
     }
 
     /** Written on insert only (the column is not updatable): an order replaces a return from the day it is placed. */

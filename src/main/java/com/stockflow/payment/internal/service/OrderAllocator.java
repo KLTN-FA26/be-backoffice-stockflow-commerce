@@ -74,6 +74,10 @@ class OrderAllocator {
             throw new BusinessException(ErrorCode.ALLOCATION_ORDER_CANCELLED,
                     "Order %s is cancelled; the money stays as the customer's credit".formatted(order.orderNumber()));
         }
+        if ("CONTRACT".equals(order.paymentTerm())) {
+            throw new BusinessException(ErrorCode.ALLOCATION_ORDER_NOT_PAYABLE,
+                    "Order %s is paid by its sales contract's installments".formatted(order.orderNumber()));
+        }
         if ("CREDIT".equals(order.paymentTerm())) {
             throw new BusinessException(ErrorCode.ALLOCATION_ORDER_NOT_PAYABLE,
                     "Order %s is sold on credit: its deliveries are billed as receivables; pay those"

@@ -39,7 +39,7 @@ class TransferInstructionsServiceTest {
     private final OrderService orders = mock(OrderService.class);
     private final PaymentService payments = mock(PaymentService.class);
     private final TransferInstructionsService service = new TransferInstructionsService(orders, payments,
-            new Messages(new StaticMessageSource()));
+            new Messages(new StaticMessageSource()), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
     private static BigDecimal vnd(long amount) {
         return BigDecimal.valueOf(amount);
