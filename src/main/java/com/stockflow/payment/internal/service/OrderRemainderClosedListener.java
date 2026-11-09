@@ -53,8 +53,8 @@ class OrderRemainderClosedListener {
             log.info("Order {}: rest closed, {} {} to refund", event.orderNumber(), refundable, event.currency());
         }
         // 4B-6 (15 D23): the rest closed after the last delivery, a contract order's installments paid after delivery are
-        // due from the day it was delivered in full. After the order's lock, if any: orders, then installments. (Lowering
-        // what they owe by what was closed is 4B-9's, 15 §4.6 step 19.)
+        // due from the day it was delivered in full. After the order's lock, if any: orders, then installments. What
+        // they owe was already lowered by what was closed, in the closing transaction (OrderSettlementService, 4B-9).
         installments.delivered(event.orderId(), event.closedAt(), false);
     }
 }

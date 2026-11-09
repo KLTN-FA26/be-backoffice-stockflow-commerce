@@ -323,6 +323,12 @@ class PermissionMatrixTest {
                     Role.ORDER_COORDINATOR, Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("payment-receipts:CREATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("payment-receipts:UPDATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // 4B-9, kltn-docs 15 §4.5 step 16: the accountant records and voids refunds; Sales and the customer (scope
+            // OWN) follow what is to refund.
+            Map.entry("payment-refunds:READ", Set.of(Role.ACCOUNTANT, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.CUSTOMER, Role.SYSTEM_ADMIN)),
+            Map.entry("payment-refunds:CREATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("payment-refunds:UPDATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,

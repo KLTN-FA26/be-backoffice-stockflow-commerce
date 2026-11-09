@@ -20,14 +20,16 @@ class PaymentServiceImpl implements PaymentService {
     private final CompanyBankProperties bank;
     private final com.stockflow.payment.internal.domain.InstallmentBook installmentBook;
     private final InstallmentService installments;
+    private final OrderSettlementService settlements;
 
     PaymentServiceImpl(ReceivableBook book, CompanyBankProperties bank,
                        com.stockflow.payment.internal.domain.InstallmentBook installmentBook,
-                       InstallmentService installments) {
+                       InstallmentService installments, OrderSettlementService settlements) {
         this.book = book;
         this.bank = bank;
         this.installmentBook = installmentBook;
         this.installments = installments;
+        this.settlements = settlements;
     }
 
     /**
@@ -58,6 +60,18 @@ class PaymentServiceImpl implements PaymentService {
     @Transactional(readOnly = true)
     public com.stockflow.payment.api.InstallmentStanding installmentStanding(UUID orderId) {
         return installments.standing(orderId);
+    }
+
+    @Override
+    public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleCancellation(
+            com.stockflow.payment.api.SettleCancellationCommand command) {
+        return settlements.settleCancellation(command);
+    }
+
+    @Override
+    public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleRemainderClosure(
+            com.stockflow.payment.api.SettleRemainderClosureCommand command) {
+        return settlements.settleRemainderClosure(command);
     }
 
     @Override

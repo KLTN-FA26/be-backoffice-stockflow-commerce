@@ -545,6 +545,14 @@ public enum ErrorCode {
     /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
     PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
             409),
+    /** 4B-9, 15 BR-14: a refund recorded is never more than what the order still has to refund. */
+    REFUND_EXCEEDS_REFUNDABLE("This refund is more than the order still has to refund", 409),
+    /** 4B-9: no refund record with that id. */
+    REFUND_RECORD_NOT_FOUND("Refund record not found", 404),
+    /** 4B-9, 15 §4.5 step 16: a refund record is voided once. */
+    REFUND_RECORD_ALREADY_VOIDED("This refund record is already voided", 409),
+    /** 4B-9: one outgoing bank statement line, one live refund record. */
+    REFUND_REFERENCE_IN_USE("This bank statement line is already recorded as a refund", 409),
     /**
      * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
      * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and

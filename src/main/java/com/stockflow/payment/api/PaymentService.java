@@ -29,6 +29,28 @@ public interface PaymentService {
     InstallmentStanding installmentStanding(UUID orderId);
 
     /**
+     * 4B-9 (15 §4.6 step 18, BR-15): a contract order was cancelled. Its installments not paid in full are cancelled;
+     * the money collected on them pays the fee first, the rest is to be refunded, and a shortfall becomes the
+     * cancellation fee item, due from the cancellation day. Written in the caller's transaction, after the order's row
+     * lock (orders, then installments - the order every money movement keeps), so the cancellation and its money commit
+     * together. Settling a cancellation twice settles nothing more.
+     *
+     * @return empty for an order without installments (no signed contract)
+     */
+    java.util.Optional<OrderSettlementResult> settleCancellation(SettleCancellationCommand command);
+
+    /**
+     * 4B-9 (15 §4.6 step 19, BR-16): the rest of a contract order was closed. What its installments still owe is
+     * lowered by the goods closed - those tied to an undelivered batch first, then the latest - so the customer never
+     * pays more than the goods received and the fees; what was paid above that pays the closure's fee first and the
+     * rest is to be refunded; a shortfall becomes the cancellation fee item. In the caller's transaction, after the
+     * order's lock; once per closure.
+     *
+     * @return empty for an order without installments
+     */
+    java.util.Optional<OrderSettlementResult> settleRemainderClosure(SettleRemainderClosureCommand command);
+
+    /**
      * The order's money in the ledger now (G2-3). The order module reads it under the order's row lock at the handover:
      * every allocation takes that lock first, so one committed a moment ago is counted.
      */

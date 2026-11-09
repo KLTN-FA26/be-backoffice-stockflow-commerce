@@ -16,8 +16,10 @@ import com.stockflow.payment.internal.domain.Installment;
 import com.stockflow.payment.internal.domain.InstallmentBook;
 import com.stockflow.payment.internal.domain.InstallmentMilestone;
 import com.stockflow.payment.internal.domain.InstallmentStatus;
+import com.stockflow.payment.internal.domain.OrderSettlement;
 import com.stockflow.payment.internal.domain.PaymentReceipt;
 import com.stockflow.payment.internal.domain.PaymentReceiptStatus;
+import com.stockflow.payment.internal.domain.SettlementBook;
 import com.stockflow.payment.internal.repository.InstallmentSearch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,7 +52,9 @@ import java.util.stream.Collectors;
  *       an installment not yet due included. Then {@code PaymentReceiptRecorded}: the order confirms itself once its
  *       installments on signing are paid (BR-07).</li>
  *   <li><b>Void</b>: kept, with who, when and why (BR-04); the installments it paid say again what is left. Refused
- *       for an order cancelled, completed, closed, being returned or refunded (§4.4 step 13). A confirmed order left
+ *       for an order cancelled, completed, closed, being returned or refunded, or one whose closure left money to
+ *       refund (§4.4 step 13; 4B-9) - unless the receipt paid a cancellation fee item, whose money no settlement
+ *       counted. A confirmed order left
  *       short of its installment on signing must be put on hold - the accountant says so ({@code holdOrders}), or the
  *       void is refused (BR-13); {@code PaymentReceiptVoided} then holds it.</li>
  * </ul>
@@ -85,15 +89,18 @@ public class PaymentReceiptService {
     }
 
     private final InstallmentBook book;
+    private final SettlementBook settlements;
     private final InstallmentSearch search;
     private final OrderPayables orders;
     private final CustomerService customers;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
-    PaymentReceiptService(InstallmentBook book, InstallmentSearch search, OrderPayables orders,
-                          CustomerService customers, ApplicationEventPublisher events, Clock clock) {
+    PaymentReceiptService(InstallmentBook book, SettlementBook settlements, InstallmentSearch search,
+                          OrderPayables orders, CustomerService customers, ApplicationEventPublisher events,
+                          Clock clock) {
         this.book = book;
+        this.settlements = settlements;
         this.search = search;
         this.orders = orders;
         this.customers = customers;
@@ -143,7 +150,8 @@ public class PaymentReceiptService {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "One receipt is in one currency");
             }
             PayableOrder order = payable.get(installment.orderId());
-            if (order != null && "CANCELLED".equals(order.status())) {
+            // A cancelled order's fee item is what it still owes (4B-9, 15 §4.6 step 18): that money is taken.
+            if (order != null && "CANCELLED".equals(order.status()) && !installment.isFeeItem()) {
                 // 15 BR-06, edge "tiền về sau khi đơn đã huỷ": money for a cancelled order is settled outside.
                 throw new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, ("Installment %d of contract %s is of "
                         + "order %s, which is cancelled").formatted(installment.seq(), installment.contractNumber(),
@@ -199,6 +207,15 @@ public class PaymentReceiptService {
                 .toList();
         Map<UUID, Installment> installments = book.lock(all).stream()
                 .collect(Collectors.toMap(Installment::id, Function.identity()));
+        // 4B-9 (§4.4 step 13): a cancellation, or a closure that left money to refund, worked the refund out from what
+        // had been paid by then; taking such a payment back would leave that refund wrong. A receipt recorded after the
+        // last such settlement was counted by none. tg_payment_receipt_void says it again.
+        Set<UUID> settledOnPaid = new java.util.HashSet<>();
+        orderIds.forEach(orderId -> settlements.ofOrder(orderId).stream()
+                .filter(s -> s.kind() == OrderSettlement.Kind.ORDER_CANCELLED || s.surplus().signum() > 0)
+                .map(OrderSettlement::settledAt).max(Instant::compareTo)
+                .filter(last -> !receipt.recordedAt().isAfter(last))
+                .ifPresent(last -> settledOnPaid.add(orderId)));
         Map<UUID, Boolean> paidOnSigningBefore = new HashMap<>();
         orderIds.forEach(orderId -> paidOnSigningBefore.put(orderId, paidOnSigning(orderId, installments)));
         for (PaymentReceipt.Line line : receipt.lines()) {
@@ -208,7 +225,10 @@ public class PaymentReceiptService {
                 throw new IllegalStateException("Receipt %s pays installment %s, which has no order"
                         .formatted(receipt.reference(), line.installmentId()));
             }
-            if (installment.status() == InstallmentStatus.CANCELLED || SETTLED.contains(order.status())) {
+            // A fee item's money is the fee's alone - no settlement counted it - so a receipt recorded wrong against it
+            // is voided whatever its order became (4B-9).
+            if (!installment.isFeeItem() && (installment.status() == InstallmentStatus.CANCELLED
+                    || SETTLED.contains(order.status()) || settledOnPaid.contains(installment.orderId()))) {
                 throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED, ("Receipt %s paid order %s, "
                         + "which is %s: its money is settled with the order").formatted(receipt.reference(),
                         order.orderNumber(), order.status()));
