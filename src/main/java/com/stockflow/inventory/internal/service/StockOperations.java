@@ -48,8 +48,21 @@ public interface StockOperations {
     List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command);
 
     /**
-     * A person's request to write stock up or down. Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a
-     * cycle count asks for that, through {@link #requestCountVariance}.
+     * A warehouse manager quarantines one whole, free carton into a QUARANTINE area of its warehouse (kltn-docs 20
+     * §4.8, BR-21; team plan 4D-1). Reached through {@code CartonQuarantineService}, which settles the carton's open
+     * putaway task.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code STOCK_PACKAGE_NOT_FOUND},
+     *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code LOCATION_AREA_MISMATCH},
+     *         {@code MOVE_ACROSS_WAREHOUSES}, {@code INVALID_STOCK_PACKAGE_TRANSITION}, {@code STOCK_PACKAGE_HELD},
+     *         {@code STOCK_PACKAGE_QUARANTINED}, {@code STOCK_STATUS_MISMATCH}, {@code STOCK_SLOT_UNDER_COUNT}
+     */
+    StockPackageView quarantine(String lpn, String toLocationCode, String reason, UUID actorId);
+
+    /**
+     * A person's request to write stock up or down: loose stock by (location, SKU, lot), or a whole carton by its LPN
+     * (written off whole, team plan 4D-1). Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a cycle
+     * count asks for that, through {@link #requestCountVariance}.
      */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 

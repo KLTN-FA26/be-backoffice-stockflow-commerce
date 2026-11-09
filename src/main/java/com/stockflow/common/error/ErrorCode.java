@@ -579,6 +579,15 @@ public enum ErrorCode {
     STOCK_PACKAGE_HELD("The carton is held for an order and cannot be moved by hand", 409),
     /** Team plan 4C-2 (07 BR-03, 11 BR-04): stock leaves a carton whole; nothing takes part of one. */
     STOCK_PACKAGE_TAKEN_WHOLE("A carton is taken whole; part of it cannot be taken", 409),
+    /** Team plan 4D-1 (kltn-docs 20 §4.8): the carton is quarantined already. */
+    STOCK_PACKAGE_QUARANTINED("The carton is already in quarantine", 409),
+    /** Team plan 4D-1 (kltn-docs 05 BR-01, BR-14): only a quarantined carton is released to a putaway task. */
+    STOCK_PACKAGE_NOT_QUARANTINED("The carton is not in quarantine", 409),
+    /**
+     * Team plan 4D-1 (kltn-docs 20 §4.8 step 3): a carton is released or written off, not both - one has an open
+     * putaway task, or a write-off of it awaits approval, or it is not yet given the putaway task of its receipt.
+     */
+    STOCK_PACKAGE_DECISION_PENDING("A decision about this carton is already under way", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),

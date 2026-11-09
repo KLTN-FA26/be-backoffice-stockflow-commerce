@@ -107,13 +107,18 @@ class StockOperationsController {
 
     @PostMapping("/adjustments")
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Ask for a stock correction with a reason; nothing changes until someone else approves")
+    @Operation(summary = "Ask for a stock correction with a reason; nothing changes until someone else approves",
+            description = "Loose stock by locationCode, sku and lotNumber, or a whole carton by lpn (written off "
+                    + "whole: quantityDelta is minus what it holds; a quarantined carton that cannot be used is "
+                    + "written off as DAMAGED). An lpn with an open putaway task is 409 STOCK_PACKAGE_DECISION_PENDING.")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
     public ApiResponse<StockAdjustmentResponse> requestAdjustment(@Valid @RequestBody RequestAdjustmentRequest request,
                                                                   @AuthenticatedUser CurrentUser user) {
+        boolean byLpn = request.lpn() != null && !request.lpn().isBlank();
         return ApiResponse.ok(mapper.toResponse(operations.requestAdjustment(new RequestAdjustmentCommand(
-                request.locationCode(), new Sku(request.sku()), request.lotNumber(), request.quantityDelta(),
-                request.reason(), request.note(), user.userId()))));
+                request.locationCode(), request.sku() == null || request.sku().isBlank() ? null : new Sku(request.sku()),
+                byLpn ? null : request.lotNumber(), request.quantityDelta(), request.reason(), request.note(),
+                user.userId(), null, byLpn ? request.lpn() : null))));
     }
 
     @GetMapping("/adjustments")

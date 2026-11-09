@@ -85,11 +85,12 @@ class PutawayController {
                 actor.userId())));
     }
 
-    private static PutawayTaskResponse toResponse(TaskView task) {
+    /** Package-private: a quarantine release answers the task it opened in the same shape. */
+    static PutawayTaskResponse toResponse(TaskView task) {
         return new PutawayTaskResponse(task.id(), task.goodsReceiptId(), task.goodsReceiptLineId(), task.sku(),
                 task.lotNumber(), task.quantity(), task.left(), task.sourceLocationCode(), task.lpn(), task.status(),
                 task.targetLocationCode(), task.suggestions().stream()
                 .map(s -> new PutawaySuggestionResponse(s.locationCode(), s.reason().name(), s.freeUnits(),
-                        s.freeWeightKg())).toList());
+                        s.freeWeightKg())).toList(), task.source().name());
     }
 }

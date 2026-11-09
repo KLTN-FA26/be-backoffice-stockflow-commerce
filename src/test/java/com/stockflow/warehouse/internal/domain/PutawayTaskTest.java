@@ -39,6 +39,28 @@ class PutawayTaskTest {
     }
 
     @Test
+    @DisplayName("a receipt's task is RECEIPT; a quarantine release names no receipt line (05 BR-01, team plan 4D-1)")
+    void sources() {
+        assertThat(carton(10).source()).isEqualTo(com.stockflow.warehouse.api.PutawaySource.RECEIPT);
+        UUID box = Identifiers.newId();
+        PutawayTask release = PutawayTask.open(Identifiers.newId(), NewPutawayTask.quarantineRelease("SKU-1", 10, box));
+        assertThat(release.source()).isEqualTo(com.stockflow.warehouse.api.PutawaySource.QUARANTINE_RELEASE);
+        assertThat(release.goodsReceiptId()).isNull();
+        assertThat(release.goodsReceiptLineId()).isNull();
+        assertThat(release.stockPackageId()).isEqualTo(box);
+        assertThat(release.status()).isEqualTo(PutawayStatus.PENDING);
+
+        assertThat(code(org.assertj.core.api.Assertions.catchThrowable(() -> PutawayTask.open(Identifiers.newId(),
+                new NewPutawayTask(Identifiers.newId(), Identifiers.newId(), "SKU-1", 10, box,
+                        com.stockflow.warehouse.api.PutawaySource.QUARANTINE_RELEASE)))))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(org.assertj.core.api.Assertions.catchThrowable(() -> PutawayTask.open(Identifiers.newId(),
+                NewPutawayTask.quarantineRelease("SKU-1", 10, null))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> PutawayTask.open(Identifiers.newId(), new NewPutawayTask(null, null, "SKU-1", 10,
+                box))).isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
     @DisplayName("a new task is PENDING with no target")
     void newTaskIsPending() {
         PutawayTask task = carton(100);

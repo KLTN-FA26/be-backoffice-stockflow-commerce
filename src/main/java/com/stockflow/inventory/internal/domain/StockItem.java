@@ -380,8 +380,9 @@ public final class StockItem extends AggregateRoot {
      * place, keeping its carton, so the carton is never split by a decision about its contents. Units still
      * reserved would silently lose their hold, as in {@link #block}.
      *
-     * <p>AVAILABLE is putaway's target and comes from INBOUND only: quarantined stock becomes sellable through
-     * re-inspection, and a putaway task must not be a way around it.</p>
+     * <p>AVAILABLE is putaway's target: from INBOUND (a receipt's carton), or from QUARANTINE (a carton a warehouse
+     * manager released, kltn-docs 05 §4.4, BR-14 - team plan 4D-1). Which of the two a putaway may take is the
+     * putaway's to check against its task's source; this only refuses what no putaway makes AVAILABLE.</p>
      */
     public void reclassifyInPackage(StockStatus target) {
         if (stockPackageId == null) {
@@ -393,15 +394,48 @@ public final class StockItem extends AggregateRoot {
         if (target != StockStatus.QUARANTINE && target != StockStatus.BLOCKED && target != StockStatus.AVAILABLE) {
             throw new IllegalStateException(target + " is not AVAILABLE, QUARANTINE or BLOCKED");
         }
-        if (target == StockStatus.AVAILABLE && status != StockStatus.INBOUND) {
-            throw new IllegalStateException("Stock item %s is %s; only INBOUND stock is put away as AVAILABLE"
-                    .formatted(id, status));
-        }
         if (!reserved().isZero()) {
             throw new IllegalStateException(
                     "Cannot reclassify stock item %s: %s units are still reserved".formatted(id, reserved()));
         }
         this.status = target;
+    }
+
+    /**
+     * Putaway: the carton's row becomes AVAILABLE from the status its task puts away - INBOUND for a receipt's task,
+     * QUARANTINE for a quarantine release's (kltn-docs 05 BR-01, BR-14; team plan 4D-1) - and from nothing else, so
+     * neither task can put the other's goods on sale.
+     */
+    public void putAwayInPackage(StockStatus from) {
+        if (from != StockStatus.INBOUND && from != StockStatus.QUARANTINE) {
+            throw new IllegalArgumentException("A putaway takes INBOUND or QUARANTINE stock, not " + from);
+        }
+        if (status != from) {
+            throw new IllegalStateException("Stock item %s is %s; this putaway takes %s stock".formatted(id, status,
+                    from));
+        }
+        reclassifyInPackage(StockStatus.AVAILABLE);
+    }
+
+    /**
+     * A warehouse manager quarantines the carton this row is the contents of (kltn-docs 20 §4.8, BR-21; team plan
+     * 4D-1): sellable or still-to-be-put-away stock goes on hold, in place, keeping its carton. Only a free carton:
+     * units held for an order would lose their hold silently, so the caller reallocates them first; the table says it
+     * again ({@code ck_stock_item_quarantine_unheld}). Quarantined stock is not reservable
+     * ({@link StockStatus#isReservable}), so it stays out of ATP and allocation until a putaway makes it AVAILABLE.
+     */
+    public void quarantineInPackage() {
+        if (stockPackageId == null) {
+            throw new IllegalStateException("Stock item %s is loose; only a carton is quarantined".formatted(id));
+        }
+        if (status != StockStatus.AVAILABLE && status != StockStatus.INBOUND) {
+            throw new IllegalStateException("Stock item %s is %s, not AVAILABLE or INBOUND".formatted(id, status));
+        }
+        if (!reserved().isZero()) {
+            throw new IllegalStateException(
+                    "Cannot quarantine stock item %s: %s units are held for an order".formatted(id, reserved()));
+        }
+        this.status = StockStatus.QUARANTINE;
     }
 
     /**

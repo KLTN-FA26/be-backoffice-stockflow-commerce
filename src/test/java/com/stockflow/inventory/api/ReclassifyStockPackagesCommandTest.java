@@ -30,6 +30,18 @@ class ReclassifyStockPackagesCommandTest {
     }
 
     @Test
+    @DisplayName("the putaway of a released carton is a putaway to AVAILABLE and nothing else (team plan 4D-1)")
+    void quarantineReleaseIsAPutaway() {
+        assertThat(new ReclassifyStockPackagesCommand("LPN-20261026-000001", "HCM-A01-2-B", StockDisposition.AVAILABLE,
+                MoveReference.PUTAWAY_TASK, Identifiers.newId(), Identifiers.newId(), null, true).quarantineRelease())
+                .isTrue();
+        assertThatThrownBy(() -> new ReclassifyStockPackagesCommand("LPN-20261026-000001", "HCM-QC01",
+                StockDisposition.QUARANTINE, MoveReference.PUTAWAY_TASK, Identifiers.newId(), Identifiers.newId(), null,
+                true)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(command(StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK).quarantineRelease()).isFalse();
+    }
+
+    @Test
     @DisplayName("a carton may still be quarantined or blocked under another reference")
     void cartonsAreStillQuarantined() {
         assertThat(command(StockDisposition.QUARANTINE, MoveReference.MOVE_TASK).disposition())

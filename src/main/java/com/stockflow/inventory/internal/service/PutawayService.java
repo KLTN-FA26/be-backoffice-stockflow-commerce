@@ -24,7 +24,10 @@ import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
+import com.stockflow.inventory.internal.domain.StockItem;
+import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.warehouse.api.PutawayCandidate;
+import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
 import com.stockflow.warehouse.api.StorageLocationView;
@@ -49,6 +52,11 @@ import java.util.stream.Collectors;
  * Reading putaway tasks (SCRUM-92): a task with what is still to put away and ranked bins to put it into, and a list
  * of tasks. The warehouse module keeps the tasks; what is left, where the goods stand and where they could go are
  * facts of the stock, so they are read here.
+ *
+ * <p>A task has one of two sources (kltn-docs 05 BR-01): a carton of a confirmed receipt, INBOUND at the receiving
+ * area, or a carton a warehouse manager released from quarantine (team plan 4D-1), QUARANTINE at the quarantine area;
+ * putting either away makes it AVAILABLE (05 BR-14). A release names no receipt line, so its lot is read from the
+ * carton's own rows, and finishing it announces nothing: {@link PutawayCompleted} is for the receipt's closing.</p>
  *
  * <p>Every task is one carton, put away whole (kltn-docs 05 BR-08; team plan 4C-2). Where a task's goods stand now
  * (its <i>source</i>) is derived, never stored: the carton's current bin, wherever a hand move has taken it. Loose
@@ -90,10 +98,13 @@ public class PutawayService {
     private final BinOccupancyQuery occupancy;
     private final StockOperations operations;
     private final ApplicationEventPublisher events;
+    private final StockItemRepository stockItems;
 
     public PutawayService(PutawayTasks tasks, WarehouseService warehouses, StockPackageRepository stockPackages,
                           StockMovementLog ledger, InventoryPolicyRepository items,
-                          BinOccupancyQuery occupancy, StockOperations operations, ApplicationEventPublisher events) {
+                          BinOccupancyQuery occupancy, StockOperations operations, ApplicationEventPublisher events,
+                          StockItemRepository stockItems) {
+        this.stockItems = stockItems;
         this.tasks = tasks;
         this.warehouses = warehouses;
         this.stockPackages = stockPackages;
@@ -112,10 +123,12 @@ public class PutawayService {
      * @param lpn                the carton's, null for a loose task
      * @param targetLocationCode the bin of the latest putaway; null until something was put away
      * @param suggestions        ranked bins; filled by {@link #get} only
+     * @param source             why the task exists; a {@code QUARANTINE_RELEASE} has no receipt or receipt line
      */
     public record TaskView(UUID id, UUID goodsReceiptId, UUID goodsReceiptLineId, String sku, String lotNumber,
                            int quantity, int left, String sourceLocationCode, String lpn, String status,
-                           String targetLocationCode, List<PutawayRanker.Suggestion> suggestions) {
+                           String targetLocationCode, List<PutawayRanker.Suggestion> suggestions,
+                           PutawaySource source) {
     }
 
     /** Where a task's goods stand now. */
@@ -127,6 +140,7 @@ public class PutawayService {
         final Map<UUID, Optional<StockMovement>> receiptLine = new HashMap<>();
         final Map<UUID, Optional<StockMovement>> looseReceiptLine = new HashMap<>();
         final Map<UUID, String> locationCodes = new HashMap<>();
+        final Map<UUID, Optional<String>> cartonLot = new HashMap<>();
     }
 
     /**
@@ -160,12 +174,13 @@ public class PutawayService {
                 .map(c -> new Bin(c.locationCode(), c.capacityUnits(), c.maxWeightKg())).toList(), occupied);
         return new TaskView(view.id(), view.goodsReceiptId(), view.goodsReceiptLineId(), view.sku(), view.lotNumber(),
                 view.quantity(), view.left(), view.sourceLocationCode(), view.lpn(), view.status(),
-                view.targetLocationCode(), suggestions);
+                view.targetLocationCode(), suggestions, view.source());
     }
 
     /**
      * Puts goods away: the task's carton moves whole into {@code locationCode} and its units turn AVAILABLE, in one
-     * step (kltn-docs 05 BR-08), and the task is DONE and publishes {@link PutawayCompleted}.
+     * step (kltn-docs 05 BR-08) - from INBOUND for a receipt's task, from QUARANTINE for a quarantine release's (05
+     * BR-14) - and the task is DONE; a receipt's task publishes {@link PutawayCompleted}.
      *
      * <p>A retried request is answered by the idempotency filter; without a key a repeat finds the task DONE.</p>
      *
@@ -204,10 +219,11 @@ public class PutawayService {
                 .getOrDefault(new StockPackageId(task.stockPackageId()), 0);
         StorageLocationView bin = requireTarget(locationCode, source, item, task, moving, reads);
 
+        boolean release = task.source() == PutawaySource.QUARANTINE_RELEASE;
         operations.reclassifyStockPackages(new ReclassifyStockPackagesCommand(source.lpn(), bin.locationCode(),
-                StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, task.id(), actorId, null));
+                StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, task.id(), actorId, null, release));
         PutawayTaskView after = tasks.recordPutaway(task.id(), units, left, bin.id());
-        if ("DONE".equals(after.status())) {
+        if ("DONE".equals(after.status()) && !release) {
             events.publishEvent(new PutawayCompleted(task.goodsReceiptId(), task.goodsReceiptLineId(), task.id()));
         }
         return view(after, locate(List.of(after), reads, false).get(after.id()), reads);
@@ -253,7 +269,7 @@ public class PutawayService {
         PutawayCandidate candidate = warehouses.putawayCandidate(bin.warehouseId(), itemClass, bin.locationCode())
                 .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
                         bin.locationCode() + " is not a putaway target"));
-        String lot = receiptLine(task.goodsReceiptLineId(), reads).map(StockMovement::lotNumber).orElse(null);
+        String lot = lotOf(task, reads);
         // Before the occupancy is read, so two putaways into one bin cannot both see it as it was.
         occupancy.lockBin(bin.locationCode());
         Occupancy occupied = withoutOwnGoods(occupancy.occupancyOf(List.of(bin.locationCode()), task.sku(), lot)
@@ -336,11 +352,26 @@ public class PutawayService {
     }
 
     private TaskView view(PutawayTaskView task, Source source, Reads reads) {
-        String lot = (task.stockPackageId() != null ? receiptLine(task.goodsReceiptLineId(), reads)
+        return new TaskView(task.id(), task.goodsReceiptId(), task.goodsReceiptLineId(), task.sku(),
+                lotOf(task, reads), task.quantity(), leftOf(task), source.locationCode(), source.lpn(), task.status(),
+                task.targetLocationId() == null ? null : locationCodeOf(task.targetLocationId(), reads), List.of(),
+                task.source());
+    }
+
+    /**
+     * The lot of a task's goods: its receipt line's, or - for a quarantine release, which has no line - that of the
+     * carton's own rows (a carton holds one lot).
+     */
+    private String lotOf(PutawayTaskView task, Reads reads) {
+        if (task.goodsReceiptLineId() == null) {
+            return task.stockPackageId() == null ? null : reads.cartonLot.computeIfAbsent(task.stockPackageId(),
+                    carton -> stockItems.findIdsInStockPackage(new StockPackageId(carton)).stream()
+                            .map(stockItems::findById).flatMap(Optional::stream)
+                            .map(StockItem::lotNumber).filter(java.util.Objects::nonNull).findFirst())
+                    .orElse(null);
+        }
+        return (task.stockPackageId() != null ? receiptLine(task.goodsReceiptLineId(), reads)
                 : looseReceiptLine(task.goodsReceiptLineId(), reads)).map(StockMovement::lotNumber).orElse(null);
-        return new TaskView(task.id(), task.goodsReceiptId(), task.goodsReceiptLineId(), task.sku(), lot,
-                task.quantity(), leftOf(task), source.locationCode(), source.lpn(), task.status(),
-                task.targetLocationId() == null ? null : locationCodeOf(task.targetLocationId(), reads), List.of());
     }
 
     /** PENDING needs no ledger read, DONE and CANCELLED have nothing left: only a task in progress asks the ledger. */

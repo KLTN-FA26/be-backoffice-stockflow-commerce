@@ -19,4 +19,7 @@ public interface StockAdjustmentRepository {
 
     /** The write-off of {@code reservationId}'s units that still stands: pending or posted. */
     Optional<StockAdjustment> findLiveForHold(UUID reservationId);
+
+    /** Whether an adjustment of carton {@code stockPackageId} awaits approval (team plan 4D-1). */
+    boolean existsPendingForPackage(StockPackageId stockPackageId);
 }

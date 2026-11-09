@@ -5,6 +5,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockMovement;
+import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
@@ -55,7 +56,7 @@ class PutawayServiceListTest {
     private final StockMovementLog ledger = mock(StockMovementLog.class);
     private final PutawayService service = new PutawayService(tasks, warehouses, stockPackages, ledger,
             mock(InventoryPolicyRepository.class), mock(BinOccupancyQuery.class), mock(StockOperations.class),
-            mock(ApplicationEventPublisher.class));
+            mock(ApplicationEventPublisher.class), mock(StockItemRepository.class));
 
     private final UUID warehouse = UUID.randomUUID();
 
