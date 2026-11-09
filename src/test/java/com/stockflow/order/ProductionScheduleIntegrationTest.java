@@ -109,6 +109,7 @@ class ProductionScheduleIntegrationTest {
     @Autowired ProductionScheduleService schedule;
     @Autowired DelayAlertService alerts;
     @Autowired ProductionOrderService productionOrders;
+    @Autowired com.stockflow.order.internal.service.ProductionSampleService samples;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
     @Autowired OrderRepository orderRepository;
@@ -564,14 +565,15 @@ class ProductionScheduleIntegrationTest {
         assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET expected_completion_date = ? WHERE id = ?",
                 today, sent.id())).as("the producer gives the day when it accepts").isInstanceOf(
                 DataAccessException.class).hasMessageContaining("ck_production_order_expected_completion");
-        sql("""
-                UPDATE ordering.production_order SET status = 'ACCEPTED', expected_completion_date = ?,
-                       version = version + 1 WHERE id = ?""", today.plusDays(5), sent.id());
+        // Accepted the way the coordinator records it (4A-4): the database refuses the status written around it.
+        productionOrders.accept(sent.id(), productionOrders.detail(sent.id()).order().version(), today.plusDays(5),
+                coordinator);
         alerts.recompute(orderId);
         UUID risk = openAlert(DelayAlertType.AT_RISK, sent.id());
         assertThat(risk).as("expected after the need-by day").isNotNull();
         assertThat(openAlert(DelayAlertType.PRODUCTION_LATE, sent.id())).as("the same episode").isEqualTo(late);
 
+        // By SQL: the service takes no day in the past, and this one has to be on or before the need-by day, gone already.
         sql("UPDATE ordering.production_order SET expected_completion_date = ? WHERE id = ?", today.minusDays(1),
                 sent.id());
         alerts.recompute(orderId);
@@ -583,10 +585,10 @@ class ProductionScheduleIntegrationTest {
         assertThat(flagged.get("closed_at")).isNotNull();
 
         // Mass printing started, then closed short: the listener closes PRODUCTION_LATE.
-        sql("""
-                UPDATE ordering.production_order SET status = 'IN_PRODUCTION', production_started_at = NOW(),
-                       version = version + 1 WHERE id = ?""", sent.id());
-        ProductionOrder printing = productionOrders.detail(sent.id()).order();
+        // Through the coordinator's start or the customer's approval of the sample (4A-4), as production takes it.
+        ProductionOrder printing = com.stockflow.support.PrintSamples.started(productionOrders, samples,
+                productionOrders.detail(sent.id()).order(), coordinator,
+                com.stockflow.support.PrintSamples.portalUser(jdbc, tx, entityManager, customerId));
         productionOrders.close(printing.id(), printing.version(), "The producer stopped", coordinator);
         await().atMost(WAIT).untilAsserted(() -> assertThat(openAlert(DelayAlertType.PRODUCTION_LATE, sent.id()))
                 .isNull());

@@ -63,6 +63,17 @@ public final class PrintSamples {
                                                UUID coordinator, UUID customerUser) {
         ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(),
                 LocalDate.now().plusDays(10), coordinator);
+        return started(productionOrders, samples, accepted, coordinator, customerUser);
+    }
+
+    /**
+     * {@code accepted} (ACCEPTED by its producer) in mass production, as {@link #massPrinting} takes it from there: the
+     * coordinator's start, or round 1 approved by {@code customerUser}.
+     *
+     * @return the production order as stored after it
+     */
+    public static ProductionOrder started(ProductionOrderService productionOrders, ProductionSampleService samples,
+                                          ProductionOrder accepted, UUID coordinator, UUID customerUser) {
         if (!accepted.sampleApprovalRequired()) {
             return productionOrders.startProduction(accepted.id(), accepted.version(), null, coordinator);
         }
