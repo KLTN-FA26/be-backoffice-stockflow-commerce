@@ -1,5 +1,6 @@
 -- =============================================================================
--- Customer prices (SCRUM-428, V20261017000510), customer-group prices (P7, V20261017000530), customer groups (V20261017000600) and the customer status history (SCRUM-429 follow-up,
+-- Customer prices (SCRUM-428, V20261017000510; since 4B-2, V20261108002000, the customer's own SKUs only), customer-group
+-- prices (P7, V20261017000530), customer groups (V20261017000600) and the customer status history (SCRUM-429 follow-up,
 -- V20261017000500). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -29,12 +30,38 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 \echo '--- customer prices (catalog.customer_price, catalog.customer_price_tier)'
-SELECT pg_temp.expect_ok('P1 a customer price for a real SKU', $q$
+-- The demo customer's own SKU (2F-7), drawn on a customizable product of this script's own.
+INSERT INTO product.products (id, code, name, slug, status, kind, version, created_at)
+VALUES (md5('qa:cp428:product')::uuid, 'QACP', 'QA ly giay', 'qa-cp', 'DRAFT', 'CUSTOMIZABLE', 0, NOW());
+INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
+                              created_at)
+VALUES (md5('qa:cp428:blank')::uuid, md5('qa:cp428:product')::uuid, 'QA-CP-BLANK', 'QA ly', 'ACTIVE', TRUE, 'DEFAULT', 0, 0,
+        NOW());
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+VALUES (md5('qa:cp428:draft')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('qa:cp428:product')::uuid, 'DRAFT',
+        NOW(), '{}'::jsonb);
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa:cp428:snapshot')::uuid, md5('qa:cp428:draft')::uuid, repeat('e', 64), 'https://example.com/p.pdf', NOW(),
+        NOW(), '[]'::jsonb);
+INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
+                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
+VALUES (md5('qa:cp428:own')::uuid, md5('qa:cp428:product')::uuid, 'QA-CP-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
+        'OWNED-SKU:QA-CP-OWN', 1, 0, NOW(), 'c0000000-0000-4000-8000-000000000001', md5('qa:cp428:snapshot')::uuid,
+        md5('qa:cp428:blank')::uuid);
+INSERT INTO customer.customer (id, full_name, email, status, version, created_at)
+VALUES (md5('qa:cp428:other')::uuid, 'QA khach khac', 'qa-cp-other@example.com', 'ACTIVE', 0, NOW());
+SELECT pg_temp.expect_ok('P1 a customer price for the customer''s own SKU', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
-    VALUES (md5('qa:cp428:1')::uuid, 'c0000000-0000-4000-8000-000000000001', 'SOFA-3S-GREY', NOW()) $q$);
-SELECT pg_temp.expect_fail('P2 a second price for the same customer and SKU', $q$
+    VALUES (md5('qa:cp428:1')::uuid, 'c0000000-0000-4000-8000-000000000001', 'QA-CP-OWN', NOW()) $q$);
+SELECT pg_temp.expect_fail('P1a a customer price for a stock variant (13 BR-05: own SKUs only, 4B-2)', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'SOFA-3S-GREY', NOW()) $q$);
+SELECT pg_temp.expect_fail('P1b a customer price for another customer''s SKU', $q$
+    INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
+    VALUES (gen_random_uuid(), md5('qa:cp428:other')::uuid, 'QA-CP-OWN', NOW()) $q$);
+SELECT pg_temp.expect_fail('P2 a second price for the same customer and SKU', $q$
+    INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
+    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'QA-CP-OWN', NOW()) $q$);
 SELECT pg_temp.expect_fail('P3 a SKU that does not exist', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'QA-NO-SUCH-SKU', NOW()) $q$);
@@ -42,9 +69,8 @@ SELECT pg_temp.expect_fail('P4 a customer that does not exist', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
     VALUES (gen_random_uuid(), gen_random_uuid(), 'TABLE-OAK-160', NOW()) $q$);
 SELECT pg_temp.expect_fail('P5 a currency other than VND', $q$
-    INSERT INTO catalog.customer_price (id, customer_id, sku, currency, created_at)
-    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'TABLE-OAK-160', 'USD', NOW()) $q$);
-SELECT pg_temp.expect_ok('P6 two tiers', $q$
+    UPDATE catalog.customer_price SET currency = 'USD' WHERE id = md5('qa:cp428:1')::uuid $q$);
+SELECT pg_temp.expect_ok('P6 two tiers, from 1 and 10 cartons', $q$
     INSERT INTO catalog.customer_price_tier (id, customer_price_id, min_quantity, unit_price, created_at)
     VALUES (gen_random_uuid(), md5('qa:cp428:1')::uuid, 1, 11000000, NOW()),
            (gen_random_uuid(), md5('qa:cp428:1')::uuid, 10, 10000000, NOW()) $q$);
