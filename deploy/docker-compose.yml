@@ -156,10 +156,11 @@ services:
       STOCKFLOW_SECRETS_KEY: ${STOCKFLOW_SECRETS_KEY:-}
       # Links a producer opens without signing in (4A-3: its production order slip and print files). Every link
       # starts with the public base URL; blank makes none and the mail says the coordinator sends the files. With a
-      # base URL the application refuses to start without the HMAC key (openssl rand -base64 32). Changing the key
-      # breaks every link already mailed.
+      # base URL the APPLICATION refuses to start without the HMAC key (openssl rand -base64 32) - not compose: a
+      # ':?' here would break every compose command, a rollback included, until the server's .env is edited.
+      # Changing the key breaks every link already mailed (staff re-send them from the production order).
       STOCKFLOW_PUBLIC_BASE_URL: ${STOCKFLOW_PUBLIC_BASE_URL-https://api.${DOMAIN}}
-      STOCKFLOW_LINKS_KEY: ${STOCKFLOW_LINKS_KEY:?STOCKFLOW_LINKS_KEY is required (openssl rand -base64 32)}
+      STOCKFLOW_LINKS_KEY: ${STOCKFLOW_LINKS_KEY:-}
       # Off until the customer mail phase of the business documents: no customer order mail, staff and supplier
       # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
       CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}
