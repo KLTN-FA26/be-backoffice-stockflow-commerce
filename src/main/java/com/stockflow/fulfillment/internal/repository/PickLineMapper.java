@@ -17,7 +17,7 @@ public final class PickLineMapper {
                 e.getPickedBy(), e.getPickedAt(), e.getConsumedAt(), e.getScannedLocationCode(), e.getScannedCode(),
                 e.getPutBackQty(), e.getPutBackLocationCode(), e.getPutBackBy(), e.getPutBackAt(), e.getShortQty(),
                 e.getShortReason(), e.getLpn(), e.isWholeCarton(), e.getDamagedQty(), e.getDamageReportId(),
-                e.getPackingDamagedQty());
+                e.getPackingDamagedQty(), e.getStagedAt(), e.getStagedLocationCode());
     }
 
     /** A row for a line the aggregate just planned. */
@@ -36,5 +36,6 @@ public final class PickLineMapper {
         entity.recordShort(line.shortQty(), line.shortReason());
         entity.recordDamage(line.damagedQty(), line.damageReportId());
         entity.recordDamageAfterPick(line.packingDamagedQty());
+        entity.recordStaged(line.stagedAt(), line.stagedLocationCode());
     }
 }

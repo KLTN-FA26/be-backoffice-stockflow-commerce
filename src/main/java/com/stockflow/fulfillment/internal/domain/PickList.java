@@ -30,9 +30,14 @@ import java.util.function.Supplier;
  *       SKU, a barcode or another carton's LPN is refused, and no quantity is entered - the carton is taken whole
  *       (BR-04);</li>
  *   <li>a carton that cannot be taken is reported short, whole, with a reason (§4.4 step 9, BR-09);</li>
- *   <li>the task completes only when every line is picked (§4.2 step 6);</li>
- *   <li>the carton of a cancelled task's picked line goes back onto an active bin of the same warehouse whole,
- *       confirmed by scanning its LPN (§4.5 step 14, BR-05).</li>
+ *   <li>a STAGING task stages its lines instead of picking them (team plan 4C-5, §4.2 step 5): the carton goes to the
+ *       staging area, still held for the order, and is deducted only when the whole task moves to dispatch (§4.3 step
+ *       8, BR-11);</li>
+ *   <li>the task completes only when every line is picked - or staged (§4.2 step 6);</li>
+ *   <li>holds added to the order after its lines were planned - a top-up (§4.3 step 7, BR-07) - get lines in the same
+ *       task, after the last stop;</li>
+ *   <li>the carton of a cancelled task's picked or staged line goes back onto an active bin of the same warehouse
+ *       whole, confirmed by scanning its LPN (§4.5 step 14, BR-05).</li>
  * </ul>
  *
  * <p>Repeats are answers, not errors: a line confirmed again with the same scan, or put back again,
@@ -64,52 +69,80 @@ public final class PickList {
     /** A confirmation's outcome: the line, and whether it had been picked by an earlier identical scan. */
     public record Confirmation(PickLine line, boolean repeated) { }
 
-    /** A put-back's outcome: the line, and whether it had been put back already. */
-    public record PutBack(PickLine line, boolean repeated) { }
+    /**
+     * A put-back's outcome: the line, whether it had been put back already, and whether it came from the staging area -
+     * never deducted, so the carton is moved back rather than booked back (07 §4.5 step 14).
+     */
+    public record PutBack(PickLine line, boolean repeated, boolean fromStaging) {
+        public PutBack(PickLine line, boolean repeated) {
+            this(line, repeated, false);
+        }
+    }
 
     private final UUID taskId;
     private final UUID warehouseId;
     private final PickStatus status;
     private final boolean needsPutBack;
+    /** The staging area a confirmed line's carton goes to (team plan 4C-5); null when lines are picked to dispatch. */
+    private final String stagingLocationCode;
     private final List<PickLine> lines;
 
+    /** A task that picks to dispatch. */
     public PickList(UUID taskId, UUID warehouseId, PickStatus status, boolean needsPutBack, List<PickLine> lines) {
+        this(taskId, warehouseId, status, needsPutBack, null, lines);
+    }
+
+    /**
+     * @param stagingLocationCode where a confirmed line's carton goes, for a STAGING task not moved to dispatch yet; null
+     *                            when a confirmation deducts the carton (a DISPATCH task, or one moved to dispatch since,
+     *                            whose top-up lines go straight to dispatch, 07 §4.3 step 7)
+     */
+    public PickList(UUID taskId, UUID warehouseId, PickStatus status, boolean needsPutBack, String stagingLocationCode,
+                    List<PickLine> lines) {
         this.taskId = Objects.requireNonNull(taskId, "taskId");
         this.warehouseId = Objects.requireNonNull(warehouseId, "warehouseId");
         this.status = Objects.requireNonNull(status, "status");
         this.needsPutBack = needsPutBack;
+        this.stagingLocationCode = stagingLocationCode;
         this.lines = new ArrayList<>(lines == null ? List.of() : lines);
     }
 
     // ------------------------------------------------------------------ planning
 
     /**
-     * Plans the lines of a task that has none yet: one per live hold of each stock line, ordered by
-     * location so the picker walks the aisles once (docs 07 step 3, simplest route). A task that already
-     * has lines gets nothing new, which is what makes generating them at creation and again, lazily, at
-     * picking-start safe.
+     * Plans a line for every live hold of the order that has none yet: at creation, lazily at picking-start for a
+     * task opened before lines existed, and for a top-up (07 §4.3 step 7, BR-07) - holds the order gained since, whose
+     * lines join the same task after its last stop, keeping its destination. New stops are ordered by location so the
+     * picker walks the aisles once (07 step 3, simplest route). A hold that had a line once, in any status, never gets
+     * another: a superseded or reallocated line's hold is the business of whoever replaced it, and planning twice
+     * is harmless.
      *
-     * @return the lines added; empty when the task had lines already, is past picking, or the order has
-     *         nothing to pick
-     * @throws BusinessException {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} when a hold of a stock line sits
+     * <p>A STAGED or PICKED task with lines takes a top-up, and the caller reopens it to PICKING; one with no lines
+     * (picked before lines existed) is left as it is - packing deducts what such a task never did (G4-5). A
+     * cancelled task takes nothing.</p>
+     *
+     * @return the lines added; empty when every live hold has a line already, or the task takes none
+     * @throws BusinessException {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} when a new hold of a stock line sits
      *         in another warehouse than the task's; the message names the SKUs. {@code CONFLICT} when a live hold is
      *         on no carton: allocation takes whole cartons only (4C-2) and V20261111000110 boxed every hold before, so
      *         such a hold was written around both, and a line for it could be confirmed by no LPN
      */
     public List<PickLine> plan(List<OrderLine> orderLines, Map<UUID, Hold> holds, Supplier<UUID> ids) {
-        // A task already picked before lines existed (or cancelled, or short) is left as it is: packing
-        // deducts what such a task never did (G4-5).
-        if (!lines.isEmpty() || status != PickStatus.PENDING && status != PickStatus.PICKING) {
+        boolean opening = status == PickStatus.PENDING || status == PickStatus.PICKING;
+        boolean topUp = (status == PickStatus.STAGED || status == PickStatus.PICKED) && !lines.isEmpty();
+        if (!opening && !topUp) {
             return List.of();
         }
+        Set<UUID> planned = new java.util.HashSet<>();
+        lines.stream().map(PickLine::reservationId).filter(Objects::nonNull).forEach(planned::add);
         record Stop(UUID orderLineId, Hold hold) { }
         List<Stop> stops = new ArrayList<>();
         Set<String> elsewhere = new TreeSet<>();
         for (OrderLine line : orderLines) {
             for (UUID reservationId : line.reservationIds()) {
                 Hold hold = holds.get(reservationId);
-                if (hold == null || !hold.live()) {
-                    continue;       // consumed, released or expired: nothing left to take off a shelf
+                if (hold == null || !hold.live() || planned.contains(reservationId)) {
+                    continue;       // consumed, released or expired, or a line has it: nothing new to take off a shelf
                 }
                 if (!warehouseId.equals(hold.warehouseId())) {
                     elsewhere.add(hold.sku());
@@ -134,7 +167,7 @@ public final class PickList {
                 .thenComparing(stop -> stop.hold().sku())
                 .thenComparing(stop -> stop.hold().reservationId()));
         List<PickLine> added = new ArrayList<>();
-        int sequence = 1;
+        int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0) + 1;
         for (Stop stop : stops) {
             Hold hold = stop.hold();
             added.add(PickLine.open(ids.get(), stop.orderLineId(), hold.reservationId(), hold.sku(),
@@ -147,11 +180,17 @@ public final class PickList {
     // ------------------------------------------------------------------ confirming
 
     /**
-     * The picker scanned a stop: its location, then its carton's LPN (07 §4.2 step 5). On success the line is PICKED
-     * with the whole carton - no quantity is entered (BR-04); the caller deducts its hold in the same transaction and
-     * records it with {@link PickLine#recordConsumed}. Only the line's own LPN is accepted, in any case (BR-10): the
-     * hold is deducted from that carton, and the SKU, the barcode or another carton of the same SKU would let the
-     * picker take a carton the books do not say left.
+     * The picker scanned a stop: its location, then its carton's LPN (07 §4.2 step 5). On success the line takes the
+     * whole carton - no quantity is entered (BR-04) - and, by the task's destination:
+     * <ul>
+     *   <li>DISPATCH: PICKED; the caller deducts its hold in the same transaction and records it with
+     *       {@link PickLine#recordConsumed};</li>
+     *   <li>STAGING: STAGED; the caller moves the carton to the staging area in the same transaction, still held for
+     *       the order, nothing deducted (team plan 4C-5).</li>
+     * </ul>
+     * Only the line's own LPN is accepted, in any case (BR-10): the hold is deducted from (or moves with) that carton,
+     * and the SKU, the barcode or another carton of the same SKU would let the picker take a carton the books do not
+     * say left.
      *
      * @throws BusinessException {@code NOT_FOUND} for a line of another task; {@code PICK_TASK_STATE_CONFLICT}
      *         unless the task is PICKING; {@code PICK_LINE_NOT_OPEN}, also for a line with no carton to scan;
@@ -159,8 +198,8 @@ public final class PickList {
      */
     public Confirmation confirm(UUID lineId, String scannedLocation, String scannedLpn, UUID actor, Instant now) {
         PickLine line = requireLine(lineId);
-        if (line.status() == PickLineStatus.PICKED && sameCode(scannedLocation, line.locationCode())
-                && lpnMatches(line, scannedLpn)) {
+        if ((line.status() == PickLineStatus.PICKED || line.status() == PickLineStatus.STAGED)
+                && sameCode(scannedLocation, line.locationCode()) && lpnMatches(line, scannedLpn)) {
             return new Confirmation(line, true);
         }
         if (status != PickStatus.PICKING) {
@@ -178,24 +217,50 @@ public final class PickList {
         if (!lpnMatches(line, scannedLpn)) {
             throw new BusinessException(ErrorCode.PICK_ITEM_MISMATCH, "This line picks carton " + line.lpn());
         }
-        line.pick(scannedLocation.trim(), line.lpn(), actor, now);
+        if (stagingLocationCode != null) {
+            line.stage(scannedLocation.trim(), line.lpn(), stagingLocationCode, actor, now);
+        } else {
+            line.pick(scannedLocation.trim(), line.lpn(), actor, now);
+        }
         return new Confirmation(line, false);
     }
 
     /**
-     * Docs 07 step 9: a task closes when every line is picked. A task with no lines (an order of print
-     * lines only, or one opened before lines existed) has nothing to wait for.
+     * Docs 07 step 6: a task closes when every line is picked - or staged, for a STAGING task. A task with no lines (an
+     * order of print lines only, or one opened before lines existed) has nothing to wait for.
      *
      * @throws BusinessException {@code PICK_LINES_INCOMPLETE}, naming how many lines are still open
      */
     public void requireAllPicked() {
         // A CANCELLED line of a live task is a short line whose allocation was moved: its new lines count instead.
         long open = lines.stream().filter(line -> line.status() != PickLineStatus.PICKED
-                && line.status() != PickLineStatus.CANCELLED).count();
+                && line.status() != PickLineStatus.STAGED && line.status() != PickLineStatus.CANCELLED).count();
         if (open > 0) {
             throw new BusinessException(ErrorCode.PICK_LINES_INCOMPLETE,
                     "%d of %d lines are not picked yet".formatted(open, lines.size()));
         }
+    }
+
+    // ------------------------------------------------------------------ the staging area (team plan 4C-5)
+
+    /**
+     * The warehouse manager moves the whole STAGED task to dispatch (07 §4.3 step 8, BR-11): every STAGED line turns
+     * PICKED where its carton stands; the caller deducts each in the same transaction and records it with
+     * {@link PickLine#recordConsumed}, then moves the task itself. Done once, for the whole task.
+     *
+     * @return the lines moved, in walking order
+     * @throws BusinessException {@code PICK_TASK_STATE_CONFLICT} unless the task is STAGED
+     */
+    public List<PickLine> moveToDispatch() {
+        if (status != PickStatus.STAGED) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "A task moves to dispatch from STAGED; it is " + status);
+        }
+        requireAllPicked();
+        List<PickLine> moved = lines.stream().filter(line -> line.status() == PickLineStatus.STAGED)
+                .sorted(Comparator.comparingInt(PickLine::sequenceNo)).toList();
+        moved.forEach(PickLine::dispatchStaged);
+        return moved;
     }
 
     // ------------------------------------------------------------------ short picks (X-SHORT)
@@ -456,7 +521,7 @@ public final class PickList {
 
     /**
      * The order was cancelled: lines nobody picked are cancelled with it (their holds were released by
-     * the order); picked lines stay PICKED and wait for a put-back.
+     * the order); picked and staged lines stay as they are and wait for a put-back (07 §4.5 step 13).
      *
      * @return the lines this call cancelled
      */
@@ -474,9 +539,10 @@ public final class PickList {
     /**
      * Puts the carton a line picked back onto a bin, whole (07 BR-05, §4.5 step 14, 17 §4.5 step 15), confirmed by
      * scanning its LPN: the carton keeps its LPN and its count. Only for a task cancelled after picking started, only
-     * for a PICKED line, only onto an active bin of the task's own warehouse - stock never changes warehouse, a
-     * put-back least of all. A line whose units were all found damaged at packing has nothing to put back; one with
-     * only some of them is not a whole carton any more and cannot go back as one (unit-level damage at packing goes
+     * for a PICKED or STAGED line, only onto an active bin of the task's own warehouse - stock never changes warehouse,
+     * a put-back least of all. A STAGED line's carton was never deducted: it is moved back from the staging area
+     * ({@link PutBack#fromStaging}). A line whose units were all found damaged at packing has nothing to put back; one
+     * with only some of them is not a whole carton any more and cannot go back as one (unit-level damage at packing goes
      * with team plan 5-6). Whether the carton fits the bin (BR-12, else an OVERFLOW area) is team plan 5-4's.
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code PUT_BACK_NOT_REQUIRED}, also for a loose line of before
@@ -489,7 +555,9 @@ public final class PickList {
         if (line.status() == PickLineStatus.PUT_BACK && lpnMatches(line, scannedLpn)) {
             return new PutBack(line, true);
         }
-        if (status != PickStatus.CANCELLED || !needsPutBack || line.status() != PickLineStatus.PICKED
+        boolean staged = line.status() == PickLineStatus.STAGED;
+        if (status != PickStatus.CANCELLED || !needsPutBack
+                || line.status() != PickLineStatus.PICKED && !staged
                 || line.goodQty() == 0 || line.lpn() == null) {
             throw new BusinessException(ErrorCode.PUT_BACK_NOT_REQUIRED,
                     "Task %s, line %s: nothing to put back".formatted(status, line.status()));
@@ -507,7 +575,7 @@ public final class PickList {
                     "Goods go back onto an active bin of this task's warehouse");
         }
         line.putBack(target.locationCode(), actor, now);
-        return new PutBack(line, false);
+        return new PutBack(line, false, staged);
     }
 
     // ------------------------------------------------------------------ queries
@@ -524,6 +592,7 @@ public final class PickList {
     public UUID taskId() { return taskId; }
     public UUID warehouseId() { return warehouseId; }
     public PickStatus status() { return status; }
+    public String stagingLocationCode() { return stagingLocationCode; }
 
     private PickLine requireLine(UUID lineId) {
         return line(lineId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,

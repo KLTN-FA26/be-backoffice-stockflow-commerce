@@ -13,6 +13,7 @@ import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTask;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.api.PackingCompletion;
+import com.stockflow.fulfillment.api.PickDestination;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
@@ -81,6 +82,18 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor) {
+        return createTask(orderId, assignedUserId, PickDestination.DISPATCH, null, actor);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The staging area is resolved after the warehouse is known and before anything is written: a STAGING task that
+     * could stage nowhere is refused whole.</p>
+     */
+    @Override
+    public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, PickDestination destination,
+                                      String stagingLocationCode, CurrentUser actor) {
         require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.CREATE);
         var existing = picks.findByOrderId(orderId);
         if (existing.isPresent()) {
@@ -98,11 +111,13 @@ class FulfillmentServiceImpl implements FulfillmentService {
         UUID warehouseId = pickingWarehouse(order);
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
+        PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
+        String stagingArea = stagingAreaFor(warehouseId, to, stagingLocationCode);
         // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING.
         orders.startPicking(orderId, actor.userId());
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
-                PickStatus.PENDING);
+                PickStatus.PENDING, to, stagingArea);
         pick.assign(assignedUserId, now);
         picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
         packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
@@ -173,6 +188,85 @@ class FulfillmentServiceImpl implements FulfillmentService {
     }
 
     @Override
+    public FulfillmentTask changeDestination(UUID taskId, PickDestination destination, String stagingLocationCode,
+                                             CurrentUser actor) {
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE);
+        var pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        if (pick.getStatus() != PickStatus.PENDING) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "A task is given another destination only while PENDING; it is " + pick.getStatus());
+        }
+        PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
+        pick.changeDestination(to, stagingAreaFor(pick.getWarehouseId(), to, stagingLocationCode));
+        return toTask(picks.save(pick));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks: the pick, then the order (read under its lock: a cancellation locks the order before the stock rows it
+     * releases), then inventory's - the SKUs, the cartons, the rows - as every write of a task. The same request again,
+     * the task already moved, answers the task as it is before the order is looked at.</p>
+     */
+    @Override
+    public FulfillmentTask moveToDispatch(UUID taskId, CurrentUser actor) {
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE);
+        var pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        if (pick.getStatus() == PickStatus.PICKED && pick.getMovedToDispatchAt() != null) {
+            return toTask(pick);
+        }
+        if (pick.getStatus() != PickStatus.STAGED) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "A task moves to dispatch from STAGED; it is " + pick.getStatus());
+        }
+        TaskAccess.requireStillInFulfilment(orders, pick);
+        if (orders.lockedStatus(pick.getOrderId()).orElseThrow() == OrderStatus.ON_HOLD) {
+            // 07 edge case, an order on hold while its task is STAGED: its cartons stay in the staging area until the
+            // hold is resolved.
+            throw new BusinessException(ErrorCode.PICK_ORDER_ON_HOLD, "Order %s is on hold; task %s stays staged"
+                    .formatted(pick.getOrderNumber(), taskId));
+        }
+        pickLists.moveStagedLinesToDispatch(pick, actor.userId());
+        pick.moveToDispatch(actor.userId(), clock.instant());
+        return toTask(picks.save(pick));
+    }
+
+    /**
+     * The staging area a task of {@code warehouseId} takes its cartons to (07 §3): none for a DISPATCH task, whatever
+     * was sent (a form may still carry an earlier choice); for a STAGING task the one named - an active STAGING area of
+     * that warehouse - or, none named, the warehouse's only active one.
+     *
+     * @throws BusinessException {@code STAGING_AREA_INVALID} otherwise
+     */
+    private String stagingAreaFor(UUID warehouseId, PickDestination destination, String requested) {
+        if (destination != PickDestination.STAGING) {
+            return null;
+        }
+        if (requested != null && !requested.isBlank()) {
+            return warehouses.findLocation(requested.trim())
+                    .filter(view -> view.areaType() == StorageLocationView.AreaType.STAGING)
+                    .filter(view -> warehouseId.equals(view.warehouseId()) && view.usable())
+                    .map(StorageLocationView::locationCode)
+                    .orElseThrow(() -> new BusinessException(ErrorCode.STAGING_AREA_INVALID,
+                            "%s is not an active staging area of the task's warehouse".formatted(requested.trim()),
+                            List.of(FieldError.of("stagingLocationCode", "must be an active staging area of the "
+                                    + "task's warehouse"))));
+        }
+        List<String> areas = warehouses.areasOf(warehouseId, StorageLocationView.AreaType.STAGING).stream()
+                .filter(StorageLocationView::usable).map(StorageLocationView::locationCode).toList();
+        if (areas.size() != 1) {
+            throw new BusinessException(ErrorCode.STAGING_AREA_INVALID, areas.isEmpty()
+                    ? "The warehouse has no active staging area" : "The warehouse has %d active staging areas; name one"
+                            .formatted(areas.size()),
+                    List.of(FieldError.of("stagingLocationCode", areas.isEmpty()
+                            ? "the warehouse has no active staging area" : "name one of " + String.join(", ", areas))));
+        }
+        return areas.get(0);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public FulfillmentTask findTask(UUID taskId, CurrentUser actor) {
         var pick = requirePick(taskId);
@@ -197,8 +291,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
     }
 
     /**
-     * Docs 07 step 9: only when every line is picked ({@code PICK_LINES_INCOMPLETE} otherwise).
-     * Completing a task that is already PICKED by its assignee is answered with the task as it is
+     * Docs 07 step 6: only when every line is picked - or staged ({@code PICK_LINES_INCOMPLETE} otherwise). A STAGING
+     * task completes STAGED, its cartons waiting in the staging area for the warehouse manager (team plan 4C-5).
+     * Completing a task that is already PICKED (or STAGED) by its assignee is answered with the task as it is
      * (SCRUM-482): a scanner retrying a lost response must get the first answer back, not a 409. It is
      * answered before the order is looked at, because the order has moved on since; nothing is applied
      * again. Another user, or any other status, is refused as before.
@@ -208,7 +303,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         pick.requireAssigned(actor.userId());
-        if (pick.getStatus() == PickStatus.PICKED) {
+        if (pick.getStatus() == PickStatus.PICKED || pick.getStatus() == PickStatus.STAGED) {
             return toTask(pick);
         }
         var order = requireOrderInFulfilment(pick);
@@ -260,7 +355,8 @@ class FulfillmentServiceImpl implements FulfillmentService {
                 pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(),
                 (pack == null ? PackStatus.PENDING : pack.getStatus()).name(),
                 pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack == null ? null : pack.getPackedAt(),
-                lines);
+                lines, null, null, pick.getDestination(), pick.getStagingLocationCode(), pick.getStagedAt(),
+                pick.getMovedToDispatchAt());
     }
 
     /**

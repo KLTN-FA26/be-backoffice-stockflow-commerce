@@ -76,7 +76,8 @@ class FulfillmentController {
     @Auditable(action = AuditAction.CREATE, resourceType = "fulfillment-task", resourceId = "#result?.data()?.taskId()")
     public ApiResponse<FulfillmentTaskResponse> create(@Valid @RequestBody CreateTaskRequest request,
                                                @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(fulfillment.createTask(request.orderId(), request.assignedUserId(), actor)));
+        return ApiResponse.ok(mapper.toResponse(fulfillment.createTask(request.orderId(), request.assignedUserId(),
+                request.destination(), request.stagingLocationCode(), actor)));
     }
 
     @GetMapping("/tasks")
@@ -113,6 +114,46 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.assign(taskId, request.assignedUserId(), actor)));
     }
 
+    /**
+     * Where a PENDING task takes its cartons (kltn-docs 07 §4.1 step 3, BR-08): {@code DISPATCH}, or {@code STAGING}
+     * into {@code stagingLocationCode} (optional when the warehouse has one active staging area). Past PENDING, 409
+     * {@code PICK_TASK_STATE_CONFLICT}; a staging area that is not one of the warehouse's, 422 {@code STAGING_AREA_INVALID}.
+     */
+    @PutMapping("/tasks/{taskId}/destination")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<FulfillmentTaskResponse> changeDestination(@PathVariable UUID taskId,
+            @Valid @RequestBody DestinationRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(fulfillment.changeDestination(taskId, request.destination(),
+                request.stagingLocationCode(), actor)));
+    }
+
+    /**
+     * Moves a STAGED task to dispatch, all of it (kltn-docs 07 §4.3 step 8, BR-11): every staged carton is deducted
+     * where it stands and the task is PICKED, ready for checking and labelling. A decision of whoever assigns the work
+     * (the warehouse manager). Not STAGED, 409 {@code PICK_TASK_STATE_CONFLICT}; the order on hold, 409
+     * {@code PICK_ORDER_ON_HOLD}. Again, 200 with the task as it is.
+     */
+    @PostMapping("/tasks/{taskId}/dispatch-transfer")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<FulfillmentTaskResponse> moveToDispatch(@PathVariable UUID taskId,
+                                                               @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(fulfillment.moveToDispatch(taskId, actor)));
+    }
+
+    /**
+     * A top-up (kltn-docs 07 §4.3 step 7, BR-07): cartons the order holds that no line of the task takes yet become new
+     * lines of the same task, keeping its destination; a STAGED or PICKED task goes back to PICKING. The answer is the
+     * new lines - none when there is nothing new.
+     */
+    @PostMapping("/tasks/{taskId}/top-up")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<List<PickLineResponse>> topUp(@PathVariable UUID taskId, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(pickLists.topUp(taskId, actor).stream().map(mapper::toResponse).toList());
+    }
+
     @GetMapping("/tasks/{taskId}")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
     public ApiResponse<FulfillmentTaskResponse> find(@PathVariable UUID taskId,
@@ -132,7 +173,10 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.startPicking(taskId, actor)));
     }
 
-    /** Closes picking once every line is PICKED: {@code 409 PICK_LINES_INCOMPLETE} otherwise (docs 07 step 9). */
+    /**
+     * Closes picking once every line is PICKED - or STAGED, for a STAGING task, which then waits STAGED for the move to
+     * dispatch: {@code 409 PICK_LINES_INCOMPLETE} otherwise (docs 07 step 6).
+     */
     @PostMapping("/tasks/{taskId}/picking-completion")
     @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
@@ -157,7 +201,8 @@ class FulfillmentController {
     /**
      * Confirms one line by scan (kltn-docs 07 §4.2 step 5): the bin, then the carton's LPN - only the line's own; a SKU,
      * a barcode or another carton is 409 {@code PICK_ITEM_MISMATCH} (BR-10). No quantity: the carton is taken whole
-     * (BR-04). The line's hold is deducted in the same transaction ({@code inventory :: consumption}, SCRUM-275). Only
+     * (BR-04). In the same transaction ({@code inventory :: consumption}, SCRUM-275): a DISPATCH task deducts the line's
+     * hold (PICKED); a STAGING task moves the carton to its staging area, still held, nothing deducted (STAGED). Only
      * the assignee; the same scan again answers 200 with the line unchanged. Send an {@code Idempotency-Key} per scan.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/confirmation")
@@ -311,7 +356,16 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.completePacking(taskId, completion, actor)));
     }
 
-    record CreateTaskRequest(@NotNull UUID orderId, @NotNull UUID assignedUserId) { }
+    /**
+     * {@code destination} defaults to {@code DISPATCH}; {@code stagingLocationCode} names the staging area of a
+     * {@code STAGING} task, optional when the warehouse has exactly one active staging area.
+     */
+    record CreateTaskRequest(@NotNull UUID orderId, @NotNull UUID assignedUserId,
+                             com.stockflow.fulfillment.api.PickDestination destination,
+                             @Size(max = 64) String stagingLocationCode) { }
+    /** As {@link CreateTaskRequest}: the staging area is ignored for a {@code DISPATCH} task. */
+    record DestinationRequest(@NotNull com.stockflow.fulfillment.api.PickDestination destination,
+                              @Size(max = 64) String stagingLocationCode) { }
     /** The bin, as scanned, and why its carton cannot be taken. A carton is short whole: no quantity is entered. */
     record ShortPickRequest(@NotBlank @Size(max = 64) String locationCode,
                             @NotNull com.stockflow.fulfillment.internal.domain.ShortPickReason reason) { }

@@ -22,7 +22,8 @@ class FulfillmentWebMapper {
                         .toList(),
                 task.paymentDue() == null ? null : new FulfillmentTaskResponse.PaymentDue(
                         task.paymentDue().amountDueBeforeHandover(), task.paymentDue().currency()),
-                task.shipmentId());
+                task.shipmentId(), task.destination().name(), task.stagingLocationCode(), task.stagedAt(),
+                task.movedToDispatchAt());
     }
 
     AssigneeResponse toResponse(FulfillmentAssignee assignee) {
@@ -34,7 +35,8 @@ class FulfillmentWebMapper {
                 line.barcode(), line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(),
                 line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(),
                 line.shortQty(), line.shortReason() == null ? null : line.shortReason().name(), line.lpn(),
-                line.wholeCarton(), line.damagedQty(), line.damageReportId(), line.packingDamagedQty());
+                line.wholeCarton(), line.damagedQty(), line.damageReportId(), line.packingDamagedQty(),
+                line.stagedAt(), line.stagedLocationCode());
     }
 
     PickDamageResponse toResponse(PickLists.PickDamageView damage) {

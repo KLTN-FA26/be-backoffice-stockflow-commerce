@@ -13,7 +13,7 @@
 -- What this states in the database (each rule is first in the code named after it):
 --   1. warehouse.area: STAGING is an area type; PACKING is gone - picking takes cartons straight to the dispatch area,
 --      where they are checked and labelled (06 BR-22). An old PACKING area becomes a DISPATCH area, keeping its code and
---      location (the ledger and the pick lines refer to them), archived first. A STAGING area's location is never
+--      location (the ledger and the pick lines refer to them). A STAGING area's location is never
 --      pickable nor a putaway target (06 BR-18, BR-12: stock arrives there only by picking). An area holding stock does
 --      not turn into a STAGING area nor out of one: its stock would change meaning under it. Area, the trigger.
 --   2. inventory.stock_movement: stock moves into or out of a STAGING area only by picking - a MOVE naming a pick line
@@ -27,17 +27,15 @@
 --   4. fulfillment.pick_line: STAGED as a status, with when and where the carton was staged. A STAGED line is picked
 --      in full by someone, not deducted; a line put back from staging was never deducted either. PickLine.
 --
--- Changes data: the PACKING areas become DISPATCH areas, each archived first in platform.legacy_archive. Every pick
--- already written is a DISPATCH task (the column's default), which is what it was.
+-- Changes data: the PACKING areas become DISPATCH areas. Nothing is archived and nothing stops the upgrade: the owner's
+-- decision QD-1 (2026-11-10) rebuilds the database on deploy, so only the demo data of earlier migrations has to pass.
+-- Every pick already written is a DISPATCH task (the column's default), which is what it was.
 -- =============================================================================
 
 
 -- ---------------------------------------------------------------------------------------------
 -- 1. Area types: STAGING in, PACKING merged into DISPATCH
 -- ---------------------------------------------------------------------------------------------
-INSERT INTO platform.legacy_archive (source_table, row_id, row_data)
-SELECT 'warehouse.area', a.id, to_jsonb(a) FROM warehouse.area a WHERE a.type = 'PACKING';
-
 UPDATE warehouse.area
    SET type = 'DISPATCH', version = version + 1, last_modified_at = NOW(), last_modified_by = 'V20261113000600'
  WHERE type = 'PACKING';

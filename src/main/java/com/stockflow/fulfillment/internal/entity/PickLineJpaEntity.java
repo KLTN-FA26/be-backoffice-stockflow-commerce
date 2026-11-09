@@ -81,6 +81,12 @@ public class PickLineJpaEntity extends BaseEntity {
     /** R8: units of a picked line found damaged at the packing bench. */
     @Column(name = "packing_damaged_qty", nullable = false)
     private int packingDamagedQty;
+    /** 4C-5: when the carton was moved to the staging area; {@code ck_pick_line_staged}. */
+    @Column(name = "staged_at")
+    private Instant stagedAt;
+    /** 4C-5: the staging area it was moved to. */
+    @Column(name = "staged_location_code", length = 64)
+    private String stagedLocationCode;
 
     protected PickLineJpaEntity() {
     }
@@ -144,6 +150,15 @@ public class PickLineJpaEntity extends BaseEntity {
     public void recordDamageAfterPick(int packingDamagedQty) {
         this.packingDamagedQty = packingDamagedQty;
     }
+
+    /** When and where the carton was staged (4C-5); {@code ck_pick_line_staged} keeps the two together. */
+    public void recordStaged(Instant stagedAt, String stagedLocationCode) {
+        this.stagedAt = stagedAt;
+        this.stagedLocationCode = stagedLocationCode;
+    }
+
+    public Instant getStagedAt() { return stagedAt; }
+    public String getStagedLocationCode() { return stagedLocationCode; }
 
     public int getPackingDamagedQty() { return packingDamagedQty; }
     /** What the line picked less what was found damaged at packing: what reached packing and is still there. */

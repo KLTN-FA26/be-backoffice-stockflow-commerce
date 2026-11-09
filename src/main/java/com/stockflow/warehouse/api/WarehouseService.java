@@ -41,6 +41,13 @@ public interface WarehouseService {
     java.util.List<StorageLocationView> areasOf(UUID warehouseId, StorageLocationView.AreaType type);
 
     /**
+     * The location codes of every storage area of {@code type}, in every warehouse, whatever their status. Inventory
+     * leaves the stock standing in a {@code STAGING} area out of available to promise with these (kltn-docs 20 BR-20):
+     * staging areas are a handful of locations, so the set is small, and asking for it beats a cross-schema join.
+     */
+    java.util.Set<String> areaLocationCodes(StorageLocationView.AreaType type);
+
+    /**
      * The locations among {@code locationCodes} a picker may take stock from right now: flagged pickable
      * ({@code is_pickable}, module 06 BR-12) and usable, i.e. their effective status is ACTIVE. Each maps to its
      * warehouse. A code that is unknown, not pickable or not usable is absent. Allocation (SCRUM-152) chooses bins

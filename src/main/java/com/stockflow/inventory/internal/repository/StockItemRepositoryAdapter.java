@@ -168,6 +168,18 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public Map<String, Long> unheldAt(Collection<String> skus, Collection<String> locationCodes, LocalDate today) {
+        if (skus.isEmpty() || locationCodes.isEmpty()) {
+            return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask
+        }
+        Map<String, Long> totals = new HashMap<>();
+        for (SkuAtpRow row : jpa.sumAvailableAtLocations(skus, locationCodes, today)) {
+            totals.put(row.sku(), row.atp());
+        }
+        return totals;
+    }
+
+    @Override
     public int onHandInStockPackage(com.stockflow.inventory.internal.domain.StockPackageId stockPackageId) {
         return Math.toIntExact(jpa.sumOnHandInStockPackage(stockPackageId.value()));
     }

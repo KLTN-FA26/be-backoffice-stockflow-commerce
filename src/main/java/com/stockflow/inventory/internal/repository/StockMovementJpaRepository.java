@@ -12,6 +12,9 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
     Optional<StockMovementJpaEntity> findFirstByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
 
+    java.util.List<StockMovementJpaEntity> findByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(
+            StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
+
     Optional<StockMovementJpaEntity>
             findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndFromStockPackageIdIsNullAndToStockPackageIdIsNullOrderByIdAsc(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);

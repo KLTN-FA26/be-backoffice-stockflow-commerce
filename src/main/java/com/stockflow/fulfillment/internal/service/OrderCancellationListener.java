@@ -11,8 +11,9 @@ import org.springframework.stereotype.Component;
 /**
  * kltn-docs 17 §4.5, BR-03: cancelling an order before it ships stops the warehouse work — the pick
  * and the pack of the order are cancelled, and a pick already started is flagged for its goods to be
- * put back (SCRUM-460). Its open pick lines are cancelled with it; picked lines stay PICKED and show up
- * in the put-back queue (SCRUM-275). Parcels packed for it and not shipped are voided, with their labels, and a
+ * put back (SCRUM-460). Its open pick lines are cancelled with it; picked lines stay PICKED and staged lines STAGED
+ * (their cartons in the staging area, the allocation released by the cancellation - team plan 4C-5), and both show up
+ * in the put-back queue (SCRUM-275, kltn-docs 07 §4.5 step 13). Parcels packed for it and not shipped are voided, with their labels, and a
  * shipment still waiting for dispatch is cancelled (kltn-docs 08 BR-05, G4-5) - an order with a completed package is
  * not cancelled at all (decision 2026-10-17). An order that never reached fulfillment has nothing here.
  *

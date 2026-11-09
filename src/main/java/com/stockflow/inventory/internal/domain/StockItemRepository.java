@@ -83,6 +83,15 @@ public interface StockItemRepository {
     Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today);
 
     /**
+     * {@link #sumAvailableBySkus}, by SKU code, counting only the rows standing at {@code locationCodes}: what the
+     * sellable figures must leave out when those locations are staging areas (kltn-docs 20 BR-20). Empty when either
+     * collection is. The default answers nothing, for a store that has no staging areas.
+     */
+    default Map<String, Long> unheldAt(Collection<String> skus, Collection<String> locationCodes, LocalDate today) {
+        return Map.of();
+    }
+
+    /**
      * The loose stock rows of {@code sku} at {@code location}: rows in a stock package are left out. A row in a
      * carton is keyed by the carton, not the bin (V20261020000200), and loose units merged into an unopened one
      * would break its counted quantity at commit.

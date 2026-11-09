@@ -9,7 +9,9 @@ import java.util.UUID;
  * @param barcode         the SKU's barcode, for the picker to read; scanning it confirms nothing (07 BR-10). Null when
  *                        the SKU has none
  * @param allocatedQty    the carton's standard count: the line takes it whole, no quantity is entered (BR-04)
- * @param status          {@code OPEN}, {@code PICKED}, {@code SHORT}, {@code CANCELLED} or {@code PUT_BACK}
+ * @param status          {@code OPEN}, {@code STAGED}, {@code PICKED}, {@code SHORT}, {@code CANCELLED} or
+ *                        {@code PUT_BACK}. {@code STAGED}: the carton is in the task's staging area, held for the order,
+ *                        not deducted (team plan 4C-5)
  * @param putBackLocationCode the bin the carton went back onto; null unless {@code PUT_BACK}
  * @param shortQty        units the picker could not take (X-SHORT): the whole carton for a short reported since 4C-4,
  *                        0 unless the line was short. A {@code CANCELLED} line with a shortfall was reallocated: the
@@ -22,10 +24,13 @@ import java.util.UUID;
  * @param damageReportId  the damage report that superseded or made the line; null otherwise
  * @param packingDamagedQty units of a PICKED line found damaged at the packing bench: back in quarantine, no longer
  *                        packed or put back; the lines with the report's {@code damageReportId} pick what replaced them
+ * @param stagedAt        when the carton was moved to the staging area; null for a line never staged
+ * @param stagedLocationCode the staging area it was moved to; null for a line never staged
  */
 public record PickLineResponse(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                                String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                                Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
                                int shortQty, String shortReason, String lpn, boolean wholeCarton, int damagedQty,
-                               UUID damageReportId, int packingDamagedQty) {
+                               UUID damageReportId, int packingDamagedQty, Instant stagedAt,
+                               String stagedLocationCode) {
 }

@@ -8,10 +8,15 @@ import java.util.UUID;
  * any other: they are printed outside the system and received into stock before they are picked, and packing deducts
  * nothing.
  *
- * <p>Both methods join the caller's transaction and are idempotent per pick line: the ledger row a
+ * <p>A task whose destination is the staging area (team plan 4C-5, kltn-docs 07 §1, 20 §4.9) takes three steps instead
+ * of one: {@link #stage} moves the carton to the staging area and leaves it held for the order; {@link #consumeStaged}
+ * deducts it there when the whole task moves to dispatch; or, the order cancelled, {@link #unstage} moves it back to a
+ * bin, nothing having been deducted.</p>
+ *
+ * <p>Every method joins the caller's transaction and is idempotent per pick line: the ledger row a
  * line wrote ({@code inventory.stock_movement}, reference {@code PICK_LINE}) is how a repeat is
- * recognised, and a unique index on it is the last line of defence. Both lock the stock row they
- * change, so a caller that also locks its own pick task must take that lock first — fulfillment
+ * recognised, and a unique index on it is the last line of defence. Each locks the stock row it
+ * changes, so a caller that also locks its own pick task must take that lock first — fulfillment
  * always locks the pick, then calls in here, never the other way round.</p>
  */
 public interface PickConsumption {
@@ -44,6 +49,45 @@ public interface PickConsumption {
      *         {@code OUT_OF_DATA_SCOPE}
      */
     void putBack(PutBackCommand command);
+
+    /**
+     * Moves the carton a pick line takes from its bin to a staging area, whole (kltn-docs 07 §4.2 step 5 "STAGING", 20
+     * §4.9 step 1): the carton and its stock row stand there now, the allocation still HELD on it, so the order keeps it
+     * and nobody else can promise it (20 BR-20); one {@code MOVE} ledger row names the pick line and the carton. Nothing
+     * is deducted. Called again for the same pick line, it changes nothing and answers {@code alreadyStaged = true}.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND}; {@code RESERVATION_NOT_ACTIVE}
+     *         when the allocation was released or consumed; {@code STOCK_PACKAGE_TAKEN_WHOLE} unless the allocation is a
+     *         whole carton in stock; {@code LOCATION_NOT_FOUND} / {@code LOCATION_NOT_USABLE} /
+     *         {@code STAGING_AREA_INVALID} / {@code MOVE_ACROSS_WAREHOUSES} for the staging area;
+     *         {@code STOCK_STATUS_MISMATCH} when the stock is not AVAILABLE; {@code OUT_OF_DATA_SCOPE}
+     */
+    StagedPick stage(StageCommand command);
+
+    /**
+     * Deducts a carton {@link #stage} put in a staging area, where it stands (kltn-docs 07 §4.3 step 8, 20 §4.9 step 3):
+     * as {@link #consumeForPick} - the allocation CONSUMED, {@code on_hand} falls, the carton CONSUMED, one {@code PICK}
+     * ledger row from the staging area names the pick line. Called again for the same pick line, it changes nothing and
+     * answers {@code alreadyConsumed = true}.
+     *
+     * @throws com.stockflow.common.error.BusinessException as {@link #consumeForPick}
+     * @throws IllegalStateException when this pick line never staged the carton, or it is no longer in a staging area
+     */
+    ConsumedPick consumeStaged(UUID reservationId, UUID pickLineId, UUID actorId);
+
+    /**
+     * Moves a carton {@link #stage} put in a staging area back onto a bin, whole, after its order was cancelled (kltn-docs
+     * 07 §4.5 steps 13-14, 20 §4.9 step 3): nothing was deducted, so this is a {@code MOVE} from the staging area naming
+     * the pick line and the carton, and the carton is IN_STOCK at the bin as it was - available to promise again, its
+     * allocation released by the cancellation. Called again for the same pick line, it changes nothing. Whether the
+     * carton fits the bin (07 BR-12) is not checked here (team plan 5-4).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND}; {@code CONFLICT} while the
+     *         allocation is still held for its order; {@code LOCATION_NOT_FOUND} / {@code LOCATION_NOT_USABLE} /
+     *         {@code MOVE_ACROSS_WAREHOUSES} / {@code STAGING_MOVE_NOT_ALLOWED} for the bin; {@code OUT_OF_DATA_SCOPE}
+     * @throws IllegalStateException when this pick line never staged the carton
+     */
+    void unstage(PutBackCommand command);
 
     /**
      * A picker came up short at an allocation's bin (docs 04c X-SHORT step 03): the books and the shelf disagree, so the

@@ -250,6 +250,11 @@ class StockOperationsServiceImpl implements StockOperations {
      * that ships), and a destination that can take stock. Only the destination is checked (issue
      * #67): taking stock out of a blocked bin or a shelf in maintenance is how it gets emptied, and an adjustment
      * at a bin blocked for counting must still post.
+     *
+     * <p>Neither end is a staging area (kltn-docs 11 BR-09, 20 BR-20, team plan 4C-5): a carton there was picked for an
+     * order and leaves only when its task moves to dispatch or, the order cancelled, by the put-back - both picking's
+     * own moves ({@code PickConsumptionService}), never this one. {@code tg_stock_movement_staging} says the same of the
+     * ledger.</p>
      */
     private void requireMovableBetween(LocationId from, LocationId to) {
         if (from.equals(to)) {
@@ -258,6 +263,13 @@ class StockOperationsServiceImpl implements StockOperations {
         if (!from.warehouseCode().equals(to.warehouseCode())) {
             throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
                     "%s and %s are in different warehouses; stock moves only inside one".formatted(from, to));
+        }
+        for (LocationId end : List.of(from, to)) {
+            if (locations.isStagingArea(end)) {
+                throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED, ("%s is a staging area: stock enters it "
+                        + "only by picking for an order, and leaves it by dispatch or put-back").formatted(end),
+                        List.of(), Map.of("locationCode", end.code()));
+            }
         }
         requireUsable(to);
     }

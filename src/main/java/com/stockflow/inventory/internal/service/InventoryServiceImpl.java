@@ -311,7 +311,19 @@ class InventoryServiceImpl implements InventoryService {
         LocalDate today = BusinessCalendar.date(clock.instant());
         Map<String, Long> unheld = new java.util.HashMap<>(repository.availableQuantities(normalized, today));
         frozenBySku(normalized, today).forEach((sku, frozen) -> unheld.merge(sku, -frozen, Long::sum));
+        stagedBySku(normalized, today).forEach((sku, staged) -> unheld.merge(sku, -staged, Long::sum));
         return netOfSkuReservations(unheld, normalized);
+    }
+
+    /**
+     * Unheld sellable units standing in a staging area, per SKU code (kltn-docs 20 §4.9, BR-20): a carton there was
+     * picked for an order and is not promised to anyone else - held by that order, or, the order cancelled, waiting to
+     * be put back. Held units are out of every figure already; these are the ones a cancellation released. Every
+     * figure of available to promise subtracts them, as it subtracts {@link #frozenBySku}.
+     */
+    private Map<String, Long> stagedBySku(Collection<String> skus, LocalDate today) {
+        Set<String> staging = locations.stagingAreas();
+        return staging.isEmpty() ? Map.of() : repository.unheldAt(skus, staging, today);
     }
 
     /**
@@ -337,10 +349,12 @@ class InventoryServiceImpl implements InventoryService {
         Map<Sku, Integer> found = repository.sumAvailableBySkus(wanted, today);
         Map<String, Long> reserved = skuReservations.heldBySku(wanted.stream().map(Sku::code).toList());
         Map<String, Long> frozen = frozenBySku(wanted.stream().map(Sku::code).toList(), today);
+        Map<String, Long> staged = stagedBySku(wanted.stream().map(Sku::code).toList(), today);
         Map<Sku, Integer> result = new LinkedHashMap<>();
         // Every SKU asked for gets an answer: no stock is an answer (0), not a missing key.
         wanted.forEach(sku -> result.put(sku, (int) Math.max(0, found.getOrDefault(sku, 0)
-                - reserved.getOrDefault(sku.code(), 0L) - frozen.getOrDefault(sku.code(), 0L))));
+                - reserved.getOrDefault(sku.code(), 0L) - frozen.getOrDefault(sku.code(), 0L)
+                - staged.getOrDefault(sku.code(), 0L))));
         return result;
     }
 
@@ -359,10 +373,13 @@ class InventoryServiceImpl implements InventoryService {
     public List<StockAvailability> availabilityOf(Sku sku) {
         var today = BusinessCalendar.date(clock.instant());
         Set<StockItemId> frozen = frozenLayers(sku, today);
+        // A staging area's cartons are an order's, or wait to be put back: nobody takes stock from there (20 BR-20).
+        Set<String> staging = locations.stagingAreas();
         // Use the configured picking order and one business date for the entire result.
         return repository.findAvailableBySku(sku).stream()
                 .filter(item -> notExpired(item, today))
                 .filter(item -> !frozen.contains(item.id()))
+                .filter(item -> !staging.contains(item.location().code()))
                 .sorted(Comparator.comparing(item ->
                                         new StockAllocator.Candidate(
                                                 item.id(),
@@ -386,13 +403,14 @@ class InventoryServiceImpl implements InventoryService {
     @Transactional(readOnly = true)
     public List<StockLevel> levelsOf(Sku sku) {
         record Totals(int onHand, int available, int reserved, int atp) {
-            static Totals of(StockLevelLine line, LocalDate today) {
+            /** A staging area's stock is AVAILABLE, but promised to nobody else (kltn-docs 20 §5.1, BR-20). */
+            static Totals of(StockLevelLine line, LocalDate today, boolean staged) {
                 boolean usable = line.status() == StockStatus.AVAILABLE
                                 && (line.expiryDate() == null
                                         || !line.expiryDate().isBefore(today));
                 int sellable = usable ? line.onHand() : 0;
                 return new Totals(line.onHand(), sellable, line.reserved(),
-                        usable ? line.onHand() - line.reserved() : 0);
+                        usable && !staged ? line.onHand() - line.reserved() : 0);
             }
 
             Totals plus(Totals other) {
@@ -403,8 +421,10 @@ class InventoryServiceImpl implements InventoryService {
         }
         Map<String, Totals> byWarehouse = new TreeMap<>();
         var today = BusinessCalendar.date(clock.instant());
+        Set<String> staging = locations.stagingAreas();
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
-            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
+            byWarehouse.merge(line.location().warehouseCode(),
+                    Totals.of(line, today, staging.contains(line.location().code())), Totals::plus);
         }
         // Allocations are holds on these same rows: counted in reserved above, shown apart below (glossary: a
         // reservation is a soft hold on the SKU, an allocation a hard hold on a bin), so the two never add up twice.

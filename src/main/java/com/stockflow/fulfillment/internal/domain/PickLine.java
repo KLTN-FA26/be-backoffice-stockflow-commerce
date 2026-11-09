@@ -14,6 +14,11 @@ import java.util.UUID;
  * plan 5-6). A stored line is rehydrated as it was, loose history included ({@code ck_pick_line_lpn} spares rows written
  * before V20261113000400).</p>
  *
+ * <p>A line of a STAGING task is staged rather than picked (team plan 4C-5, 07 §4.2 step 5): the whole carton taken
+ * ({@code pickedQty}), moved to the staging area ({@code stagedAt}, {@code stagedLocationCode}), not deducted
+ * ({@code consumedAt} null) until the task moves to dispatch and the line turns PICKED ({@code ck_pick_line_staged},
+ * {@code ck_pick_line_picked}).</p>
+ *
  * <p>An entity of the {@link PickList} aggregate: it changes only through the list, which checks the
  * task's status and the scan before it lets a line move. Mutable, because its status genuinely
  * changes over its life.</p>
@@ -56,6 +61,10 @@ public final class PickLine {
     private UUID damageReportId;
     /** Units of a picked line found damaged at the packing bench (R8): back in quarantine, no longer this line's. */
     private int packingDamagedQty;
+    /** When the carton was moved to the staging area (4C-5); kept once the line moved on to PICKED or PUT_BACK. */
+    private Instant stagedAt;
+    /** The staging area the carton was moved to; set with {@link #stagedAt}. */
+    private String stagedLocationCode;
 
     /** Rehydrates a stored line that was never short. */
     public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
@@ -165,6 +174,29 @@ public final class PickLine {
     }
 
     /**
+     * Rehydrates a stored line with when and where its carton was staged ({@code ck_pick_line_staged}: both or
+     * neither; a STAGED line not deducted).
+     */
+    public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
+                    String lotNumber, int sequenceNo, int allocatedQty, int pickedQty, PickLineStatus status,
+                    UUID pickedBy, Instant pickedAt, Instant consumedAt, String scannedLocationCode,
+                    String scannedCode, int putBackQty, String putBackLocationCode, UUID putBackBy,
+                    Instant putBackAt, int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton,
+                    int damagedQty, UUID damageReportId, int packingDamagedQty, Instant stagedAt,
+                    String stagedLocationCode) {
+        this(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, pickedQty, status,
+                pickedBy, pickedAt, consumedAt, scannedLocationCode, scannedCode, putBackQty, putBackLocationCode,
+                putBackBy, putBackAt, shortQty, shortReason, lpn, wholeCarton, damagedQty, damageReportId,
+                packingDamagedQty);
+        if ((stagedAt == null) != (stagedLocationCode == null)
+                || status == PickLineStatus.STAGED && (stagedAt == null || consumedAt != null)) {
+            throw new IllegalArgumentException("A staged line says when and where, and is not deducted");
+        }
+        this.stagedAt = stagedAt;
+        this.stagedLocationCode = stagedLocationCode;
+    }
+
+    /**
      * A line a damage report made (SCRUM-277): a replacement carton elsewhere (OPEN, {@code shortQty} 0, its
      * {@code lpn}), or the damaged carton's units nothing could replace (SHORT by all of it, waiting for the
      * coordinator's reallocation like any short line). Only the latter names no carton: inventory keeps those units on a
@@ -202,6 +234,32 @@ public final class PickLine {
         this.pickedAt = Objects.requireNonNull(now, "now");
         this.scannedLocationCode = scannedLocation;
         this.scannedCode = scannedLpn;
+    }
+
+    /**
+     * The carton was taken whole, for a STAGING task (07 §4.2 step 5): the line is STAGED - the carton moved to
+     * {@code stagingLocationCode} by the caller in the same transaction, still held for the order, nothing deducted.
+     */
+    void stage(String scannedLocation, String scannedLpn, String stagingLocationCode, UUID actor, Instant now) {
+        this.status = PickLineStatus.STAGED;
+        this.pickedQty = allocatedQty;
+        this.pickedBy = Objects.requireNonNull(actor, "actor");
+        this.pickedAt = Objects.requireNonNull(now, "now");
+        this.scannedLocationCode = scannedLocation;
+        this.scannedCode = scannedLpn;
+        this.stagedAt = now;
+        this.stagedLocationCode = Objects.requireNonNull(stagingLocationCode, "stagingLocationCode");
+    }
+
+    /**
+     * The task moved to dispatch (07 §4.3 step 8): the staged carton is PICKED where it stands; the caller deducts it in
+     * the same transaction and records it with {@link #recordConsumed}. Who picked it and when stay the picker's scan.
+     */
+    void dispatchStaged() {
+        if (status != PickLineStatus.STAGED) {
+            throw new IllegalStateException("Only a STAGED line moves to dispatch; it is " + status);
+        }
+        this.status = PickLineStatus.PICKED;
     }
 
     /** The hold behind the line was deducted, in the same transaction as {@link #pick}. */
@@ -297,4 +355,6 @@ public final class PickLine {
     public int damagedQty() { return damagedQty; }
     public UUID damageReportId() { return damageReportId; }
     public int packingDamagedQty() { return packingDamagedQty; }
+    public Instant stagedAt() { return stagedAt; }
+    public String stagedLocationCode() { return stagedLocationCode; }
 }

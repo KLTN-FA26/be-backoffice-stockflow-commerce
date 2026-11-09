@@ -119,6 +119,22 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     List<SkuAtpRow> sumAvailableBySkus(@Param("skus") Collection<String> skus,
                                      @Param("today") LocalDate today);
 
+    /** {@link #sumAvailableBySkus} at these locations only: the staging areas' share, which ATP leaves out (4C-5). */
+    @Query("""
+            select new com.stockflow.inventory.internal.repository.SkuAtpRow(
+                s.sku, sum(s.onHand - s.reserved))
+            from StockItemJpaEntity s
+            where s.sku in :skus
+              and s.locationCode in :locations
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
+              and s.onHand > s.reserved
+              and (s.expiryDate is null or s.expiryDate >= :today)
+            group by s.sku
+            """)
+    List<SkuAtpRow> sumAvailableAtLocations(@Param("skus") Collection<String> skus,
+                                            @Param("locations") Collection<String> locations,
+                                            @Param("today") LocalDate today);
+
     /** Subtotals for the warehouse roll-up; every status, because on-hand counts them all. */
     @Query("""
             select new com.stockflow.inventory.internal.repository.StockLevelRow(

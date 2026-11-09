@@ -13,8 +13,17 @@ public enum AreaType {
     QUALITY_CONTROL,
     /** After QC: goods put on hold or rejected, waiting for a decision or the return to the supplier. */
     QUARANTINE,
-    PACKING,
+    /**
+     * The dispatch area: picked cartons are brought here, checked and labelled where they stand, grouped by shipment and
+     * wait for the vehicle (kltn-docs 06 BR-22). The former PACKING area merged into it (V20261113000600).
+     */
     DISPATCH,
+    /**
+     * The staging area (kltn-docs 06 §4.5, BR-18; 07 §1): cartons picked for an order that may not leave yet, moved
+     * here whole and still held for it - out of available to promise, never moved by hand (11 BR-09, 20 BR-20). Stock
+     * arrives only by picking, so it is never pickable nor a putaway target ({@link Area}).
+     */
+    STAGING,
     OVERFLOW,
     /** The print shop: blanks issued for a production order, printed there (V20261010000200, SCRUM-397). */
     PRODUCTION,

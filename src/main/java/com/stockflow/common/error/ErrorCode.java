@@ -592,6 +592,18 @@ public enum ErrorCode {
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /**
+     * Kltn-docs 11 BR-09, 20 BR-20 (team plan 4C-5): a staging area holds cartons picked for an order; stock enters it
+     * only by picking, and leaves it only when the task moves to dispatch or by the put-back - never by hand.
+     */
+    STAGING_MOVE_NOT_ALLOWED("Stock enters a staging area only by picking, and leaves it by dispatch or put-back", 409),
+    /** Kltn-docs 07 §3 (4C-5): a STAGING task names an active staging area of its own warehouse. */
+    STAGING_AREA_INVALID("Choose an active staging area of the task's warehouse", 422),
+    /**
+     * Kltn-docs 07 §4.3 step 8 and its edge case of an order on hold while its task is STAGED (4C-5): the order keeps
+     * its cartons in the staging area; the task moves to dispatch once the hold is resolved.
+     */
+    PICK_ORDER_ON_HOLD("The order is on hold; its cartons stay in the staging area until the hold is resolved", 409),
     /** G4-5 (docs 08 step 1): packing starts once picking is complete. */
     PACKING_NOT_READY("Picking must finish before packing starts", 409),
     /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */

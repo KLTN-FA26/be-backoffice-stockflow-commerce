@@ -21,6 +21,9 @@ public interface LocationLookupRepository {
 
     java.util.List<LocationRow> findAreas(UUID warehouseId, com.stockflow.warehouse.internal.domain.AreaType type);
 
+    /** The location codes of every area of {@code type}, in every warehouse, whatever their status. */
+    java.util.List<String> findAreaLocationCodes(com.stockflow.warehouse.internal.domain.AreaType type);
+
     /** The locations among {@code locationCodes} flagged {@code is_pickable}, whatever their status. */
     java.util.List<LocationRow> findPickable(java.util.Collection<String> locationCodes);
 

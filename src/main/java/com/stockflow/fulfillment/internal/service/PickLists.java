@@ -32,8 +32,10 @@ public interface PickLists {
 
     /**
      * The assignee scanned a line: its location, then its carton's LPN - nothing else is accepted, and no quantity is
-     * entered (07 BR-04, BR-10). Deducts the line's hold, the whole carton, in the same transaction (in-process,
-     * {@code inventory :: consumption}). The same scan again is answered with the line as it is.
+     * entered (07 BR-04, BR-10). In the same transaction (in-process, {@code inventory :: consumption}), by the task's
+     * destination: a DISPATCH task deducts the line's hold, the whole carton (PICKED); a STAGING task moves the carton
+     * to its staging area, still held for the order (STAGED, team plan 4C-5). The same scan again is answered with the
+     * line as it is.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} (task, line, or not the
      *         assignee); {@code OUT_OF_DATA_SCOPE}; {@code PICK_TASK_STATE_CONFLICT};
@@ -43,8 +45,8 @@ public interface PickLists {
     PickLineView confirm(UUID taskId, UUID lineId, String locationCode, String lpn, CurrentUser actor);
 
     /**
-     * Picked lines of cancelled tasks still waiting to go back onto a bin, oldest first; limited to the
-     * caller's warehouses and, when given, to one of them.
+     * Picked and staged lines of cancelled tasks still waiting to go back onto a bin, oldest first; limited to the
+     * caller's warehouses and, when given, to one of them. A staged line's carton is in the staging area.
      *
      * @throws com.stockflow.common.error.BusinessException {@code OUT_OF_DATA_SCOPE}
      */
@@ -52,8 +54,9 @@ public interface PickLists {
 
     /**
      * Puts the carton a line picked back onto a bin of the task's warehouse, whole, confirmed by scanning its LPN (07
-     * §4.5 step 14): it is IN_STOCK there again, sealed, AVAILABLE, with one {@code PUT_BACK} ledger line. Again for the
-     * same line and LPN, it answers with the line as it is.
+     * §4.5 step 14): it is IN_STOCK there again, sealed, AVAILABLE, with one {@code PUT_BACK} ledger line - or, for a
+     * line staged and never deducted, one {@code MOVE} from the staging area (team plan 4C-5). Again for the same line
+     * and LPN, it answers with the line as it is.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
      *         {@code PUT_BACK_NOT_REQUIRED}; {@code PICK_ITEM_MISMATCH}; {@code STOCK_PACKAGE_TAKEN_WHOLE} when part
@@ -83,6 +86,19 @@ public interface PickLists {
      *         {@code PICK_LINE_NOT_OPEN} unless SHORT; {@code INSUFFICIENT_STOCK}, and then nothing changes
      */
     List<PickLineView> reallocateShort(UUID taskId, UUID lineId, CurrentUser actor);
+
+    /**
+     * A top-up (07 §4.3 step 7, BR-07; team plan 4C-5): the order holds cartons that no line of its task takes yet - the
+     * rest of an order that waited for stock, allocated since - and they become lines of the same task, after its last
+     * stop, keeping its destination. A STAGED or PICKED task goes back to PICKING for its assignee. The warehouse
+     * manager (or the coordinator). Nothing new to plan is answered with no lines, changing nothing.
+     *
+     * @return the lines added
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code PICK_TASK_STATE_CONFLICT} when the task is cancelled, or its order is no longer in fulfilment;
+     *         {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE}
+     */
+    List<PickLineView> topUp(UUID taskId, CurrentUser actor);
 
     /**
      * SCRUM-277: the assignee is at the line's bin and finds its carton damaged, and reports it with photos
@@ -138,17 +154,32 @@ public interface PickLists {
      * @param damageReportId the damage report that superseded or made the line; null otherwise
      * @param packingDamagedQty units of a picked line found damaged at the packing bench (R8): no longer packed or put
      *                          back; the lines a report made at packing pick what replaced them
+     * @param stagedAt when the carton was moved to the staging area (4C-5); null for a line never staged
+     * @param stagedLocationCode the staging area it was moved to; null for a line never staged
      */
     record PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                         String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                         Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
                         int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton, int damagedQty,
-                        UUID damageReportId, int packingDamagedQty) { }
+                        UUID damageReportId, int packingDamagedQty, Instant stagedAt, String stagedLocationCode) {
+
+        /** A line as it was shown before team plan 4C-5: never staged. */
+        public PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
+                            String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
+                            Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
+                            int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton, int damagedQty,
+                            UUID damageReportId, int packingDamagedQty) {
+            this(lineId, taskId, sequenceNo, orderLineId, sku, barcode, locationCode, lotNumber, allocatedQty,
+                    pickedQty, status, pickedAt, putBackQty, putBackLocationCode, putBackAt, shortQty, shortReason,
+                    lpn, wholeCarton, damagedQty, damageReportId, packingDamagedQty, null, null);
+        }
+    }
 
     /**
-     * A picked line of a cancelled task, waiting to go back onto a bin.
+     * A picked or staged line of a cancelled task, waiting to go back onto a bin.
      *
      * @param lpn       the carton that goes back, scanned to put it back
+     * @param fromLocationCode where the carton was picked from - or, for a staged line, the staging area it stands in
      * @param pickedQty what goes back: what the line picked, less what was found damaged at packing - the whole
      *                  carton, or the put-back is refused
      */

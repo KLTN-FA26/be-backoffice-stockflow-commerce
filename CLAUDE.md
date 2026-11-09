@@ -251,6 +251,18 @@ of the same warehouse whole, scanned by LPN: CONSUMED → IN_STOCK sealed, its r
 A short pick is per carton with a reason (`NOT_FOUND` / `DAMAGED`): the line SHORT, the order on hold, a blind
 count of the carton (07 §4.4 step 9, BR-09).
 
+**The staging area (team plan 4C-5, 07 §1, §4.3; 20 §4.9).** A task has a `destination`, chosen while it is PENDING
+(as is its assignee, 07 BR-08; `tg_pick_pending_edits`): `DISPATCH` deducts each carton at the scan, as above;
+`STAGING` calls `PickConsumption.stage` instead - the carton and its one row move whole to the task's staging area
+(one `MOVE, PICK_LINE` row), the allocation still HELD on it; the line is STAGED and the task completes STAGED. The
+warehouse manager moves the whole task to dispatch (`POST /fulfillment/tasks/{id}/dispatch-transfer`, refused while
+the order is ON_HOLD): `consumeStaged` per line, lines PICKED, task PICKED. A cancelled order's staged carton goes back
+by `unstage` (a second `MOVE`, nothing was deducted). Stock in a STAGING area is out of ATP even once a cancellation
+released it (`InventoryServiceImpl.stagedBySku`), never pickable, and never moved by hand
+(`StockOperationsServiceImpl.requireMovableBetween`, `tg_stock_movement_staging`). Lock order of the move to
+dispatch: pick → order → SKU locks → carton → row. A top-up (`POST …/top-up`, 07 §4.3 step 7) plans lines for holds no
+line has yet, in the same task; a STAGED or PICKED task goes back to PICKING.
+
 `POST /api/v1/inventory/reservations/{reservationId}/consumption` still exists for operations (closing a
 hold by hand) and runs the same implementation, writing a `PICK` ledger row that names the order. Nothing
 in the repo calls it; picking never goes over HTTP. (The original design did — "fulfillment calls the
