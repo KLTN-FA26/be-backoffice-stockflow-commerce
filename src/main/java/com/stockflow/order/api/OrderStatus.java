@@ -19,6 +19,7 @@ import java.util.stream.Collectors;
  *     ▲                       │                       ON_HOLD (credit, over the limit or overdue)
  *     └──contract cancelled───┘
  *   PENDING_PAYMENT ─paid─▶ CONFIRMED ─release─▶ READY_TO_FULFILL
+ *                           CONFIRMED ─short, a production order sent─▶ AWAITING_STOCK ─release─▶ READY_TO_FULFILL
  *   DRAFT ─▶ PENDING_PAYMENT / CONFIRMED / ON_HOLD: checkout, until it is removed (4B-10)
  *
  *   READY_TO_FULFILL ─▶ PICKING ─▶ PACKED ─handover─▶ SHIPPED ─▶ DELIVERED ─▶ COMPLETED ─▶ CLOSED
@@ -39,6 +40,12 @@ import java.util.stream.Collectors;
  * <p><b>No printing here.</b> The goods are printed outside the system and received into stock before an order is
  * released (kltn-docs 07/11), so release goes straight to READY_TO_FULFILL. {@link #IN_PRODUCTION} and its edges stay
  * only because status history written before that change carries them.</p>
+ *
+ * <p><b>Waiting for stock</b> (4A-6, 17 §4.2 step 5, §5.1, BR-04). An order of a contract whose next delivery batch is
+ * short at its shipping warehouse waits {@link #AWAITING_STOCK} once a production order for that batch is sent to a
+ * producer. READY_TO_FULFILL keeps meaning "released" here ({@code ck_order_release_status}, fulfillment opens a task
+ * only for it), so the order leaves AWAITING_STOCK when it is released with every carton held, as a CONFIRMED order
+ * does - not the moment the last carton is put away.</p>
  *
  * <p><b>Hold</b> (17 §5, 09 edge). {@code ON_HOLD} is entered from any status up to {@code PACKED} (and
  * {@code PARTIALLY_FULFILLED}) and left back to the status it was entered from, or to {@code CANCELLED}; a credit hold
@@ -69,6 +76,14 @@ public enum OrderStatus {
      * Its stock holds are pinned; the coordinator may release it.
      */
     CONFIRMED,
+
+    /**
+     * 4A-6 (kltn-docs 17 §4.2 step 5, §4.4 step 15, §5.1 "Awaiting Stock", BR-04): an order of a contract short of
+     * finished goods for its next delivery batch at its shipping warehouse, with a production order for that batch sent
+     * to a producer. What is available there is held for it and topped up as goods are put away; it is released once
+     * every carton is held (until 4B-8 releases batch by batch). The customer sees "Đang chờ hàng" (17 §5.2).
+     */
+    AWAITING_STOCK,
 
     /**
      * Legacy: released with lines printed in house (SCRUM-423). No order enters it since in-house production was
@@ -127,17 +142,17 @@ public enum OrderStatus {
     public boolean isTerminal() {
         return switch (this) {
             case CANCELLED, CLOSED -> true;
-            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
-                 PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED,
-                 REFUNDED, PARTIALLY_REFUNDED, COMPLETED -> false;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                 PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED,
+                 RETURNED, REFUNDED, PARTIALLY_REFUNDED, COMPLETED -> false;
         };
     }
 
     /** True while the order still holds stock that must be released if it is cancelled. */
     public boolean holdsStock() {
         return switch (this) {
-            case PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED,
-                 ON_HOLD -> true;
+            case PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
+                 PARTIALLY_FULFILLED, PACKED, ON_HOLD -> true;
             case DRAFT, PENDING_CONTRACT, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED,
                  PARTIALLY_REFUNDED, COMPLETED, CANCELLED, CLOSED -> false;
         };
@@ -166,17 +181,19 @@ public enum OrderStatus {
      */
     public boolean countsTowardCreditExposure() {
         return switch (this) {
-            case CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED,
-                 DELIVERY_FAILED -> true;
+            case CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED,
+                 ON_HOLD, SHIPPED, DELIVERY_FAILED -> true;
             case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED,
                  PARTIALLY_REFUNDED, COMPLETED, CANCELLED, CLOSED -> false;
         };
     }
 
-    /** The statuses an order may be put on hold from, and resolved back to (17 §5, 09 edge "sai địa chỉ"). */
+    /**
+     * The statuses an order may be put on hold from, and resolved back to (17 §4.9 step 35, §5, 09 edge "sai địa chỉ").
+     */
     public boolean mayBePutOnHold() {
         return switch (this) {
-            case CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> true;
+            case CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> true;
             case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, ON_HOLD, SHIPPED, DELIVERY_FAILED, DELIVERED,
                  RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED, COMPLETED, CANCELLED, CLOSED -> false;
         };
@@ -202,7 +219,12 @@ public enum OrderStatus {
             // kltn-docs 15 BR-02: nothing leaves PENDING_PAYMENT for production or the warehouse directly. No
             // PAYMENT_FAILED (G3-Q2): a bank transfer that never comes is a cancellation once the hold runs out.
             case PENDING_PAYMENT -> target == CONFIRMED || target == CANCELLED;
-            case CONFIRMED -> target == IN_PRODUCTION || target == READY_TO_FULFILL || target == ON_HOLD
+            // AWAITING_STOCK (4A-6, BR-04): its next delivery batch is short and a production order for it was sent.
+            case CONFIRMED -> target == AWAITING_STOCK || target == IN_PRODUCTION || target == READY_TO_FULFILL
+                    || target == ON_HOLD || target == CANCELLED;
+            // 17 §5.1: READY_TO_FULFILL when released with every carton held (the release, as from CONFIRMED);
+            // PARTIALLY_FULFILLED when what it has is handed over first (17 §4.4 step 15, a partial shipment - 4B-8).
+            case AWAITING_STOCK -> target == READY_TO_FULFILL || target == PARTIALLY_FULFILLED || target == ON_HOLD
                     || target == CANCELLED;
             // PARTIALLY_FULFILLED: PACK-EARLY (lead's decision 2026-10-21) - the stock lines of a mixed order that allows
             // partial shipments were packed and handed over while its print lines are still printed.
@@ -222,9 +244,9 @@ public enum OrderStatus {
             // part of it was handed over.
             case PACKED -> target == SHIPPED || target == PARTIALLY_FULFILLED || target == ON_HOLD;
             // Back to where it was held from; CONFIRMED / PENDING_PAYMENT also as a credit decision (15 §4.3).
-            case ON_HOLD -> target == CONFIRMED || target == PENDING_PAYMENT || target == IN_PRODUCTION
-                    || target == READY_TO_FULFILL || target == PICKING || target == PARTIALLY_FULFILLED
-                    || target == PACKED || target == CANCELLED;
+            case ON_HOLD -> target == CONFIRMED || target == PENDING_PAYMENT || target == AWAITING_STOCK
+                    || target == IN_PRODUCTION || target == READY_TO_FULFILL || target == PICKING
+                    || target == PARTIALLY_FULFILLED || target == PACKED || target == CANCELLED;
             // PARTIALLY_FULFILLED: a shipment came back while the others arrived.
             case SHIPPED -> target == DELIVERED || target == DELIVERY_FAILED || target == PARTIALLY_FULFILLED;
             case DELIVERY_FAILED -> target == DELIVERED || target == RETURNED || target == PARTIALLY_FULFILLED;

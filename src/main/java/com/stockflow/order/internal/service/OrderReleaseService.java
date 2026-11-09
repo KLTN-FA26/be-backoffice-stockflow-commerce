@@ -21,12 +21,15 @@ import java.util.UUID;
 
 /**
  * Releasing an order to a warehouse (SCRUM-423, kltn-docs 17 §4.2): its SKU reservations become allocations on bins
- * of that warehouse and it is READY_TO_FULFILL.
+ * of that warehouse and it is READY_TO_FULFILL - from CONFIRMED, or from AWAITING_STOCK once every carton is held at
+ * the order's shipping warehouse (4A-6).
  *
- * <p>An order with a print line is not released yet ({@code ORDER_PRINT_GOODS_NOT_RECEIVED}). The goods are printed
- * by a producer outside the system (kltn-docs 07/11) and enter stock only when received against a Production Order,
- * which is not built yet; until then a print line names the blank its design goes on, and releasing would allocate,
- * pick and ship plain blanks. The order waits CONFIRMED. The rule goes when lines name the customer's printed SKU.</p>
+ * <p>A line of the customer's own SKU is stock like any other (team plan QD-16): its goods arrive printed from the
+ * producer, are received against a production order and put away, and are held for the order like any stock - so it
+ * is released as soon as every carton is held. Only a legacy print line - a blank with a design snapshot, placed before
+ * lines named the customer's SKU (4B-2) - is still refused ({@code ORDER_PRINT_GOODS_NOT_RECEIVED}): it names the
+ * blank its design goes on, whose printed goods were never received into stock, and releasing it would allocate, pick
+ * and ship plain blanks. Such a line is kept as history, read only (QD-16).</p>
  */
 @Service
 @Transactional
@@ -72,6 +75,7 @@ class OrderReleaseService implements OrderReleases {
         String warehouseCode = warehouses.codeOf(warehouseId).orElseThrow(() ->
                 new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
         if (order.hasPrintLines()) {
+            // QD-16: a legacy line of a blank and a design snapshot only; the customer's own SKU is stock.
             throw new BusinessException(ErrorCode.ORDER_PRINT_GOODS_NOT_RECEIVED, ("Order %s has print lines; their "
                     + "goods are received from the producer before it is released").formatted(order.orderNumber()));
         }
@@ -87,7 +91,8 @@ class OrderReleaseService implements OrderReleases {
         }
         if (order.paidByContract()) {
             // 4B-7 (17 §4.2 step 5): released when its stock is all held at its shipping warehouse - every carton of
-            // every line (until 4B-8 releases batch by batch). Order#release checks the warehouse itself.
+            // every line (until 4B-8 releases batch by batch), CONFIRMED or AWAITING_STOCK alike (4A-6). Order#release
+            // checks the warehouse itself.
             shippingWarehouses.requireFullyHeld(order);
         }
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant());

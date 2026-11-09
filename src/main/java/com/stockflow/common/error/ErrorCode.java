@@ -402,9 +402,10 @@ public enum ErrorCode {
     /** A deposit order is released only once the deposit has arrived (kltn-docs 15 §4.2). */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /**
-     * A print line names the blank its design is printed on, and printed goods enter stock only from a producer outside
-     * the system, against a Production Order (kltn-docs 17) that is not built yet: releasing would allocate, pick and
-     * ship plain blanks. Lifted when lines name the customer's own printed SKU and its goods are received.
+     * A legacy print line - a blank with a design snapshot, placed before lines named the customer's own SKU (4B-2) -
+     * names the blank its design is printed on, whose printed goods were never received into stock: releasing would
+     * allocate, pick and ship plain blanks. A line of the customer's own SKU is not refused: its goods arrive printed,
+     * received against a production order, as stock (4A-6, team plan QD-16).
      */
     ORDER_PRINT_GOODS_NOT_RECEIVED("This order has printed goods that are not in stock yet; it is released once they "
             + "are received from the producer", 409),

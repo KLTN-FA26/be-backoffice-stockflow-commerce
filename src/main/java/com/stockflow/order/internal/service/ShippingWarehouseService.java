@@ -51,9 +51,12 @@ import java.util.UUID;
  *       batch, the earliest batch served first, and topped up when stock arrives. The warehouse changes only while
  *       nothing is held and no production order of the order has been sent to a producer (BR-22); the production
  *       orders not yet sent move with it.</li>
- *   <li><b>Top up</b>: when goods are put away, every confirmed order waiting for stock at a warehouse holds what it
- *       can, the earliest signed first.</li>
+ *   <li><b>Top up</b>: when goods are put away, every order waiting for stock at a warehouse - CONFIRMED, or
+ *       AWAITING_STOCK once a production order was sent for it (4A-6) - holds what it can, the earliest signed
+ *       first.</li>
  *   <li><b>Release</b> needs every carton held at the shipping warehouse (until 4B-8 releases batch by batch).</li>
+ *   <li><b>Next batch</b> (4A-6, BR-04): whether the batch the order delivers next is held in full - what decides,
+ *       with a production order sent for it, that the order waits for stock.</li>
  * </ul>
  *
  * <p>Locks: the order row first, then the SKUs' advisory locks (sorted, {@code prepareReservation}), as checkout and
@@ -91,6 +94,10 @@ public class ShippingWarehouseService {
     /** Where an order's stock stands at its shipping warehouse: per line, and per delivery batch. */
     public record Coverage(UUID orderId, UUID warehouseId, String warehouseCode, boolean fullyHeld,
                            List<LineCoverage> lines, List<BatchCoverage> batches) {
+    }
+
+    /** The delivery batch an order delivers next, and whether every carton of it is held (4A-6). */
+    public record NextBatch(UUID batchId, int seq, boolean fullyHeld) {
     }
 
     private final OrderRepository orders;
@@ -194,9 +201,11 @@ public class ShippingWarehouseService {
     }
 
     /**
-     * Stock arrived (goods put away): every confirmed order of a contract waiting at a warehouse holds what it can now,
-     * the earliest signed first (17 §4.2 step 3: "hàng nhập về sau bù đợt sớm nhất còn thiếu"). One transaction per
-     * order, so one order's failure does not hold back the others.
+     * Stock arrived (goods put away): every order of a contract waiting at a warehouse - CONFIRMED or AWAITING_STOCK -
+     * holds what it can now, the earliest signed first (17 §4.2 step 3: "hàng nhập về sau bù đợt sớm nhất còn thiếu";
+     * §4.3 step 11). One transaction per order, so one order's failure does not hold back the others. Holding more
+     * changes no status: an order waiting for stock is released once every carton is held, as a confirmed one is
+     * ({@code OrderStatus} javadoc).
      *
      * @return how many orders held more
      */
@@ -212,7 +221,7 @@ public class ShippingWarehouseService {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public int topUpWaiting(String sku) {
         int toppedUp = 0;
-        for (UUID orderId : orders.confirmedWithShippingWarehouse()) {
+        for (UUID orderId : orders.waitingForStockAtShippingWarehouse()) {
             if (!shortOf(orderId, sku)) {
                 continue;
             }
@@ -241,7 +250,8 @@ public class ShippingWarehouseService {
 
     private boolean topUp(UUID orderId) {
         Order order = orders.findByIdForUpdate(new OrderId(orderId)).orElse(null);
-        if (order == null || order.status() != OrderStatus.CONFIRMED || order.shippingWarehouseId() == null) {
+        if (order == null || order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.AWAITING_STOCK
+                || order.shippingWarehouseId() == null) {
             return false;
         }
         String code = warehouses.codeOf(order.shippingWarehouseId()).orElse(null);
@@ -309,6 +319,28 @@ public class ShippingWarehouseService {
             throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("Order %s is not all held at its shipping "
                     + "warehouse: %s").formatted(order.orderNumber(), String.join(", ", short_)));
         }
+    }
+
+    /**
+     * 4A-6 (17 §4.2 step 5 "đủ hàng / thiếu hàng ở trên xét cho đợt giao kế tiếp", BR-04): the delivery batch the order
+     * delivers next, and whether every carton of it is held at the shipping warehouse - held cartons counting for the
+     * earliest batch first, as {@link #coverage} counts them. An order not released has handed nothing over, so its next
+     * batch is its earliest one; telling the next batch after a first handover is 4B-8's (release batch by batch). Read
+     * under the caller's lock on the order, in its transaction.
+     *
+     * @return empty for an order with no live contract, or none with a delivery schedule
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public java.util.Optional<NextBatch> nextBatch(Order order) {
+        DeliveryBatch first = contracts.findLiveByOrderId(order.id().value()).stream()
+                .flatMap(contract -> contract.schedule().stream())
+                .min(Comparator.comparingInt(DeliveryBatch::seq)).orElse(null);
+        if (first == null) {
+            return java.util.Optional.empty();
+        }
+        boolean held = coverageOf(order, null).batches().stream().filter(batch -> batch.seq() == first.seq())
+                .findFirst().map(BatchCoverage::fullyHeld).orElse(false);
+        return java.util.Optional.of(new NextBatch(first.id(), first.seq(), held));
     }
 
     /**

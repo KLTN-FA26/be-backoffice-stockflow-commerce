@@ -56,9 +56,10 @@ import java.util.stream.Collectors;
  * Production orders (4A-2, kltn-docs 17 §4.3 steps 6-7, 12-13, §5.3; BR-05, BR-06, BR-23, BR-24, BR-26).
  *
  * <ul>
- *   <li><b>Draw up</b> (Production Coordinator): from a confirmed order of a contract with a shipping warehouse, for one
- *       delivery batch - its lines filled with what the batch lacks there after the stock held for it (17 §4.2 step 3)
- *       and what other open production orders of the batch still bring. Received at the shipping warehouse; needed by
+ *   <li><b>Draw up</b> (Production Coordinator): from a confirmed order of a contract with a shipping warehouse - or
+ *       one already waiting for stock, for its other batches (4A-6) - for one delivery batch, its lines filled with what
+ *       the batch lacks there after the stock held for it (17 §4.2 step 3) and what other open production orders of the
+ *       batch still bring. Received at the shipping warehouse; needed by
  *       the batch's window start (BR-26); a sample required when one of its SKUs was never produced (BR-24).</li>
  *   <li><b>Edit</b> while a draft (B33), <b>submit</b>, <b>approve</b> (Sales Manager, not the one who drew it up -
  *       BR-23; the print files are checked byte by byte first) which sends it, or <b>return</b> it with a reason.
@@ -114,8 +115,9 @@ public class ProductionOrderService {
     /**
      * Draws up a production order for what delivery batch {@code batchSeq} of the order lacks (17 §4.3 step 6).
      *
-     * @throws BusinessException {@code NOT_FOUND}; {@code PRODUCTION_ORDER_NOT_ALLOWED} for an order not confirmed, not
-     *         of a contract, or with no shipping warehouse; {@code PRODUCER_NOT_FOUND}; {@code PRODUCER_INACTIVE};
+     * @throws BusinessException {@code NOT_FOUND}; {@code PRODUCTION_ORDER_NOT_ALLOWED} for an order neither confirmed
+     *         nor waiting for stock, not of a contract, or with no shipping warehouse; {@code PRODUCER_NOT_FOUND};
+     *         {@code PRODUCER_INACTIVE};
      *         {@code PRODUCTION_ORDER_NOTHING_SHORT} when the batch lacks nothing
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "production-order", resourceId = "#result?.id()")
@@ -357,8 +359,13 @@ public class ProductionOrderService {
                         + "its delivery batch is gone").formatted(production.code())));
     }
 
+    /**
+     * CONFIRMED, or AWAITING_STOCK (4A-6): an order waiting for stock has one production order sent and may need more -
+     * another batch, or what a production order closed short no longer brings (17 §4.4 step 16).
+     */
     private static void requireProducible(Order order) {
-        if (!order.paidByContract() || order.status() != OrderStatus.CONFIRMED) {
+        if (!order.paidByContract()
+                || order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.AWAITING_STOCK) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s is %s: production orders are "
                     + "drawn up for a confirmed order of a contract").formatted(order.orderNumber(), order.status()));
         }

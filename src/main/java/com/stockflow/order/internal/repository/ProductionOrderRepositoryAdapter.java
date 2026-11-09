@@ -7,9 +7,11 @@ import com.stockflow.common.persistence.Specs;
 import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
+import com.stockflow.order.internal.domain.ProductionOrderStatusChanged;
 import com.stockflow.order.internal.entity.ProductionOrderJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -32,16 +34,24 @@ import java.util.stream.Collectors;
  * {@link ProductionOrderRepository} and {@link ProductionOrderSearch} over {@code ordering.production_order}, its lines
  * and its history. A lock refreshes what it locked: a production order already in the persistence context would
  * otherwise come back as read before the lock (CLAUDE.md §4).
+ *
+ * <p>Every change of status it writes to the history is also published, once written, as a
+ * {@link ProductionOrderStatusChanged} (4A-6): here, where every save passes, so a path added later (sample rounds,
+ * progress, receiving) moves the sales order with it without anyone remembering to - the argument the order's own
+ * repository makes for its history rows. The listener runs in the caller's transaction.</p>
  */
 @Repository
 class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, ProductionOrderSearch {
 
     private final ProductionOrderJpaRepository jpa;
     private final EntityManager entityManager;
+    private final ApplicationEventPublisher events;
 
-    ProductionOrderRepositoryAdapter(ProductionOrderJpaRepository jpa, EntityManager entityManager) {
+    ProductionOrderRepositoryAdapter(ProductionOrderJpaRepository jpa, EntityManager entityManager,
+                                     ApplicationEventPublisher events) {
         this.jpa = jpa;
         this.entityManager = entityManager;
+        this.events = events;
     }
 
     @Override
@@ -122,7 +132,8 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
             entityManager.lock(saved, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
         }
         writeLines(order, created);
-        for (ProductionOrder.Change change : order.pullChanges()) {
+        List<ProductionOrder.Change> changes = order.pullChanges();
+        for (ProductionOrder.Change change : changes) {
             entityManager.createNativeQuery("""
                             INSERT INTO ordering.production_order_status_history (id, production_order_id, from_status,
                                                                                   to_status, reason, changed_by,
@@ -136,6 +147,12 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                     .setParameter("by", change.by())
                     .setParameter("at", change.at())
                     .executeUpdate();
+        }
+        // After the row, its lines and its history are written: a listener reading the production orders of the sales
+        // order sees this one as it now is.
+        for (ProductionOrder.Change change : changes) {
+            events.publishEvent(new ProductionOrderStatusChanged(order.id(), order.code(), order.salesOrderId(),
+                    order.deliveryBatchId(), change.from(), change.to(), change.by(), change.at()));
         }
         return toDomain(saved, linesOf(List.of(order.id())).getOrDefault(order.id(), List.of()));
     }
