@@ -43,13 +43,20 @@ public class SignedLinks {
     private final String baseUrl;
 
     /**
-     * @throws IllegalStateException when a key is configured but is not base64 of at least 32 bytes, or the base URL is
-     *         not an http(s) address: refusing to start beats handing out links nobody can open
+     * @throws IllegalStateException when a key is configured but is not base64 of at least 32 bytes, when the base URL
+     *         is not an http(s) address, or when it is set with no key and no permission for a process key: refusing to
+     *         start beats handing out links nobody can open
      */
     public SignedLinks(SignedLinkProperties properties) {
         String configured = properties == null ? null : properties.key();
+        boolean addressed = properties != null && properties.baseUrl() != null && !properties.baseUrl().isBlank();
         byte[] bytes;
         if (configured == null || configured.isBlank()) {
+            if (addressed && !properties.processKeyAllowed()) {
+                // Links would be sent that die at the next deploy and fail on every other instance.
+                throw new IllegalStateException("stockflow.security.links.base-url is set but the key is not "
+                        + "(STOCKFLOW_LINKS_KEY, openssl rand -base64 32)");
+            }
             bytes = new byte[MIN_KEY_BYTES];
             new SecureRandom().nextBytes(bytes);
             log.warn("stockflow.security.links.key is not set: links sent to partners stop working at the next restart "

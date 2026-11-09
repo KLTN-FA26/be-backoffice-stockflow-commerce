@@ -101,10 +101,12 @@ class SignedLinksTest {
                 .isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> new SignedLinks(new SignedLinkProperties(KEY, "ftp://a.vn")))
                 .isInstanceOf(IllegalStateException.class);
-        var generated = new SignedLinks(new SignedLinkProperties(null, "https://a.vn"));
+        assertThatThrownBy(() -> new SignedLinks(new SignedLinkProperties(null, "https://a.vn")))
+                .as("an address with no key: links that die at the next deploy").isInstanceOf(IllegalStateException.class);
+        var generated = new SignedLinks(new SignedLinkProperties(null, "https://a.vn", true));
         String url = generated.url(PATH, NOW.plusSeconds(60));
         assertThat(generated.verify(PATH, NOW.plusSeconds(60).getEpochSecond(), query(url, "signature"), NOW))
-                .as("no key configured: one made for this process still signs and verifies")
+                .as("a process key where it is allowed still signs and verifies")
                 .isEqualTo(SignedLinks.Verdict.VALID);
     }
 }
