@@ -183,7 +183,7 @@ class PreparedFilesTest {
 
     @Test
     void aDownloadKeepsTheUploadersWordsButTheStoredTypesExtension() {
-        String jpegKey = "supplier-invoices/2026/11/06/0192f4c1-8e3a-7b21-9c44-3f2a1b8d5e60.jpg";
+        String jpegKey = "documents/2026/11/06/0192f4c1-8e3a-7b21-9c44-3f2a1b8d5e60.jpg";
         assertThat(StorageKeys.downloadName("invoice.pdf", jpegKey))
                 .as("a JPEG that also parses as a PDF opens as the JPEG it was checked as").isEqualTo("invoice.jpg");
         assertThat(StorageKeys.downloadName("Hoá đơn tháng 11", "documents/2026/11/06/x.pdf")).isEqualTo("Hoá đơn tháng 11.pdf");

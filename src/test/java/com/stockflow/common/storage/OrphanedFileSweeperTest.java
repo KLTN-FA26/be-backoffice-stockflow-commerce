@@ -61,7 +61,7 @@ class OrphanedFileSweeperTest {
         storage.storeDerived(copy, "image/jpeg", JPEG);
         String kept = stored(storage, FileCategory.QC_EVIDENCE, JPEG, "image/jpeg", Duration.ofDays(30));
         String young = stored(storage, FileCategory.QC_EVIDENCE, JPEG, "image/jpeg", Duration.ofHours(2));
-        String invoice = stored(storage, FileCategory.SUPPLIER_INVOICE, PDF, "application/pdf", Duration.ofDays(400));
+        String unclaimed = stored(storage, FileCategory.PRODUCT_IMAGE, JPEG, "image/jpeg", Duration.ofDays(400));
         List<StoredFileReferences> owners = List.of(owner(FileCategory.QC_EVIDENCE, Set.of(kept)));
 
         var reportOnly = new OrphanedFileSweeper(storage, owners, new OrphanSweepProperties(false, Duration.ofDays(7), 2),
@@ -80,7 +80,7 @@ class OrphanedFileSweeperTest {
         assertThat(storage.exists(copy)).as("its display copies go with it").isFalse();
         assertThat(storage.exists(kept)).isTrue();
         assertThat(storage.exists(young)).isTrue();
-        assertThat(storage.exists(invoice)).as("a category nobody claims is never swept").isTrue();
+        assertThat(storage.exists(unclaimed)).as("a category nobody claims is never swept").isTrue();
     }
 
     @Test

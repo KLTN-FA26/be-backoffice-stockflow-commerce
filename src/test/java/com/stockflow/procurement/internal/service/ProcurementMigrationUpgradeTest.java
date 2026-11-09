@@ -3,8 +3,6 @@ package com.stockflow.procurement.internal.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.stockflow.common.domain.CommercialTerms;
-
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.exception.FlywayValidateException;
 import org.junit.jupiter.api.Test;
@@ -21,6 +19,10 @@ import java.util.HexFormat;
 
 /** Unlike a fresh-context test, exercises the exact develop-to-feature upgrade path. */
 class ProcurementMigrationUpgradeTest {
+    /** The defaults the seeded purchase order terms had (they were CommercialTerms constants until purchasing went). */
+    private static final int PAYMENT_DAYS = 30;
+    private static final int LEAD_DAYS = 7;
+
     @Test
     void publishedRemoteBaselineRequiresTargetedReconciliationBeforeNormalUpgrade(
             @TempDir Path baseline) throws Exception {
@@ -291,8 +293,8 @@ where r.code='ECOMMERCE_ADMIN' and p.code='procurement-suppliers:DELETE'
                                 .isEqualTo(
                                         Integer.toString(
                                                 defaults.getString(1).equals("payment_term_days")
-                                                        ? CommercialTerms.PAYMENT_DAYS
-                                                        : CommercialTerms.LEAD_DAYS));
+                                                        ? PAYMENT_DAYS
+                                                        : LEAD_DAYS));
                 }
                 try (var checks =
                         sql.executeQuery(

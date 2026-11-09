@@ -63,9 +63,9 @@ class PdfContentPolicyTest {
 
     @Test
     void javaScriptAnywhereIsRefused() throws Exception {
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("open.pdf", document -> document.getDocumentCatalog()
+        refused(FileCategory.DOCUMENT, pdf("open.pdf", document -> document.getDocumentCatalog()
                 .setOpenAction(new PDActionJavaScript("app.alert('x')"))), "JavaScript");
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("named.pdf", document -> {
+        refused(FileCategory.DOCUMENT, pdf("named.pdf", document -> {
             var scripts = new PDJavascriptNameTreeNode();
             scripts.setNames(Map.of("init", new PDActionJavaScript("app.alert('x')")));
             var names = new PDDocumentNameDictionary(document.getDocumentCatalog());
@@ -86,7 +86,7 @@ class PdfContentPolicyTest {
 
     @Test
     void javaScriptChainedAfterAnInnocentActionIsRefused() throws Exception {
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("chained.pdf", document -> {
+        refused(FileCategory.DOCUMENT, pdf("chained.pdf", document -> {
             var go = new org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo();
             var destination = new org.apache.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitDestination();
             destination.setPage(document.getPage(0));
@@ -107,13 +107,13 @@ class PdfContentPolicyTest {
             go.getCOSObject().setItem(org.apache.pdfbox.cos.COSName.getPDFName("Next"), go.getCOSObject());
             document.getDocumentCatalog().setOpenAction(go);
         });
-        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", loop))
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.DOCUMENT, "application/pdf", loop))
                 .doesNotThrowAnyException();
     }
 
     @Test
     void aFormFieldsCalculateScriptIsRefused() throws Exception {
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("field.pdf", document -> {
+        refused(FileCategory.DOCUMENT, pdf("field.pdf", document -> {
             var form = new org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm(document);
             document.getDocumentCatalog().setAcroForm(form);
             var field = new org.apache.pdfbox.pdmodel.interactive.form.PDTextField(form);
@@ -138,7 +138,7 @@ class PdfContentPolicyTest {
             }
         });
         refused(FileCategory.DESIGN_RENDER, attachment, "attached files");
-        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", attachment))
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.DOCUMENT, "application/pdf", attachment))
                 .doesNotThrowAnyException();
     }
 
@@ -169,7 +169,7 @@ class PdfContentPolicyTest {
             }
         });
         refused(FileCategory.DESIGN_RENDER, attached, "attached files");
-        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", attached))
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.DOCUMENT, "application/pdf", attached))
                 .doesNotThrowAnyException();
     }
 
@@ -177,15 +177,15 @@ class PdfContentPolicyTest {
     void encryptionIsRefusedInAPrintFileAndAPasswordEverywhere() throws Exception {
         Path permissionsOnly = pdf("protected.pdf", document -> protect(document, ""));
         refused(FileCategory.DESIGN_RENDER, permissionsOnly, "encrypted");
-        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", permissionsOnly))
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.DOCUMENT, "application/pdf", permissionsOnly))
                 .doesNotThrowAnyException();
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("locked.pdf", document -> protect(document, "secret")), "password");
+        refused(FileCategory.DOCUMENT, pdf("locked.pdf", document -> protect(document, "secret")), "password");
     }
 
     @Test
     void anUnreadablePdfIsRefused() throws Exception {
         Path broken = Files.write(directory.resolve("broken.pdf"), "%PDF-1.7\nnot really".getBytes());
-        refused(FileCategory.SUPPLIER_INVOICE, broken, "cannot be read");
+        refused(FileCategory.DOCUMENT, broken, "cannot be read");
     }
 
     /** An action dictionary of type {@code type}, as a hostile file writes it, without PDFBox's typed wrappers. */
@@ -206,7 +206,7 @@ class PdfContentPolicyTest {
     void anActionThatOpensSendsOrLoadsSomethingIsRefused() throws Exception {
         // Naming a file is refused whatever the action's type.
         for (String type : java.util.List.of("GoToE", "GoToR", "SubmitForm")) {
-            refused(FileCategory.SUPPLIER_INVOICE, pdf(type + ".pdf", document -> {
+            refused(FileCategory.DOCUMENT, pdf(type + ".pdf", document -> {
                 var action = action(type);
                 action.setString(org.apache.pdfbox.cos.COSName.F, "\\\\attacker\\share\\x.pdf");
                 onPageOpen(document, action);
@@ -214,17 +214,17 @@ class PdfContentPolicyTest {
         }
         // Without one, by type: everything that is not navigation.
         for (String type : java.util.List.of("GoToR", "SubmitForm", "ImportData", "Rendition")) {
-            refused(FileCategory.SUPPLIER_INVOICE, pdf(type + "-bare.pdf", document -> onPageOpen(document, action(type))),
+            refused(FileCategory.DOCUMENT, pdf(type + "-bare.pdf", document -> onPageOpen(document, action(type))),
                     "a " + type + " action");
         }
         // A name the file made up is refused, and not repeated back as it was written.
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("made-up.pdf", document -> onPageOpen(document, action("Made-Up<b>"))),
+        refused(FileCategory.DOCUMENT, pdf("made-up.pdf", document -> onPageOpen(document, action("Made-Up<b>"))),
                 "an unknown action");
     }
 
     @Test
     void aChainLongerThanAnyDocumentBuildsIsRefusedNotCutShort() throws Exception {
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("deep.pdf", document -> {
+        refused(FileCategory.DOCUMENT, pdf("deep.pdf", document -> {
             var head = action("GoTo");
             var tail = head;
             for (int i = 0; i < 70; i++) {
@@ -268,9 +268,9 @@ class PdfContentPolicyTest {
                 throw new RuntimeException(ex);
             }
         });
-        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", clicked))
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.DOCUMENT, "application/pdf", clicked))
                 .doesNotThrowAnyException();
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("open-uri.pdf", document -> {
+        refused(FileCategory.DOCUMENT, pdf("open-uri.pdf", document -> {
             var uri = new org.apache.pdfbox.pdmodel.interactive.action.PDActionURI();
             uri.setURI("https://tracker.example/opened");
             document.getDocumentCatalog().setOpenAction(uri);
@@ -279,19 +279,19 @@ class PdfContentPolicyTest {
 
     @Test
     void anAllowedActionThatNamesAFileOrAMenuItemIsRefused() throws Exception {
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("thread.pdf", document -> {
+        refused(FileCategory.DOCUMENT, pdf("thread.pdf", document -> {
             var thread = action("Thread");
             thread.setString(org.apache.pdfbox.cos.COSName.F, "\\\\attacker\\share\\x.pdf");
             thread.setInt(org.apache.pdfbox.cos.COSName.D, 0);
             document.getDocumentCatalog().getCOSObject().setItem(org.apache.pdfbox.cos.COSName.getPDFName("OpenAction"),
                     thread);
         }), "opens another file");
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("print.pdf", document -> {
+        refused(FileCategory.DOCUMENT, pdf("print.pdf", document -> {
             var print = action("Named");
             print.setName(org.apache.pdfbox.cos.COSName.N, "Print");
             onPageOpen(document, print);
         }), "Named action");
-        refused(FileCategory.SUPPLIER_INVOICE, pdf("file-link.pdf", document -> {
+        refused(FileCategory.DOCUMENT, pdf("file-link.pdf", document -> {
             var link = new PDAnnotationLink();
             link.setRectangle(new PDRectangle(10, 10, 50, 50));
             var uri = new org.apache.pdfbox.pdmodel.interactive.action.PDActionURI();
@@ -328,7 +328,7 @@ class PdfContentPolicyTest {
             document.getDocumentCatalog().getCOSObject().setItem(org.apache.pdfbox.cos.COSName.getPDFName("OpenAction"),
                     next);
         });
-        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", ordinary))
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.DOCUMENT, "application/pdf", ordinary))
                 .doesNotThrowAnyException();
     }
 
@@ -345,7 +345,7 @@ class PdfContentPolicyTest {
             annotations.add(annotation);
             document.getPage(0).getCOSObject().setItem(org.apache.pdfbox.cos.COSName.ANNOTS, annotations);
         });
-        assertThatCode(() -> PdfContentPolicy.check(FileCategory.SUPPLIER_INVOICE, "application/pdf", odd))
+        assertThatCode(() -> PdfContentPolicy.check(FileCategory.DOCUMENT, "application/pdf", odd))
                 .doesNotThrowAnyException();
     }
 

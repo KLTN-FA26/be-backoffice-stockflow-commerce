@@ -176,7 +176,7 @@ class EvidenceCopiesTest {
     void otherCategoriesGetNoCopies() throws Exception {
         setUp();
         byte[] photo = jpegWithMetadata(300, 200);
-        try (var prepared = transfers.prepare(FileCategory.SUPPLIER_INVOICE,
+        try (var prepared = transfers.prepare(FileCategory.DOCUMENT,
                 new FileUpload("hd.jpg", "image/jpeg", photo.length, new ByteArrayInputStream(photo)))) {
             assertThat(prepared.single().derivedKeys()).isEmpty();
         }
