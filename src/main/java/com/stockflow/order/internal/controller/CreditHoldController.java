@@ -59,9 +59,14 @@ class CreditHoldController {
         this.checks = checks;
     }
 
+    /**
+     * The signed-in customer's own terms and credit left. Guarded by {@code sales-orders:READ}, not CREATE as when it
+     * served checkout: the customer no longer holds CREATE (team plan 5-2, V20261113000100) and still reads its credit
+     * on the portal until 4B-10 replaces this with the contract's limits.
+     */
     @GetMapping("/payment-terms")
-    @Operation(summary = "The signed-in customer's payment terms and credit left, for the checkout")
-    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.CREATE, scope = DataScope.OWN)
+    @Operation(summary = "The signed-in customer's payment terms and credit left")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.OWN)
     public ApiResponse<CreditPositionResponse> myTerms(@AuthenticatedUser CurrentUser user) {
         UUID customerId = customers.findByUserId(user.userId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND))
