@@ -55,7 +55,9 @@ class SkuReservationLotMigrationUpgradeTest {
                             reference_type, reference_id, occurred_at)
                         VALUES (gen_random_uuid(), 'PICK', ?, ?, 1, 'ORDER', ?, NOW())""", SKU, BIN, order);
 
-                var result = flyway(pg, null).migrate();
+                // Up to these migrations, not the newest: later ones reshape the stock seeded here (V20261111000110 puts
+                // the loose layer into cartons and gives the hold one carton each), and this is about what these did.
+                var result = flyway(pg, "20261023000300").migrate();
                 assertThat(result.success).isTrue();
                 assertThat(result.migrations).extracting(m -> m.version)
                         .contains("20261023000100", "20261023000200", "20261023000300");

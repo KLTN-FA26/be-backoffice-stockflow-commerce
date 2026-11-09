@@ -80,6 +80,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>The demo SOFA stock is shared with the rest of the suite, so every unit a test takes off the books
  * is put back in {@link #cleanUp} (which also exercises the put-back as the system).</p>
+ *
+ * <p>Since V20261111000110 the demo sofas are cartons, whose lines take only their LPN; this class tests the scan of a
+ * loose line, so it brings loose sofas of its own ({@link #LOOSE_SOFAS}), received long before the demo cartons, which
+ * the allocator hands out first (FIFO). Picking by LPN alone is team plan 4C-4, which rewrites this class.</p>
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class, PickConfirmationIntegrationTest.DeductionListener.class})
@@ -148,8 +152,22 @@ class PickConfirmationIntegrationTest {
     private UUID customerUser;
     private final List<UUID> placed = new ArrayList<>();
 
+    /**
+     * The loose sofas this class picks, once per database, in two bins: the first the allocator hands out (see the class
+     * doc). Two, because a short pick freezes its bin until the recount it opens is decided, and the later tests still
+     * need a loose bin to pick from.
+     */
+    private static final UUID LOOSE_SOFAS = UUID.fromString("00000000-0000-4000-8000-00000000a4c1");
+    private static final UUID MORE_LOOSE_SOFAS = UUID.fromString("00000000-0000-4000-8000-00000000a4c2");
+
     @BeforeEach
     void setUp() {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at,
+                                                  received_at)
+                VALUES (?, ?, 'HCM-A01-2-B', 40, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '500 days'),
+                       (?, ?, 'HCM-A02-1-A', 40, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '500 days')
+                ON CONFLICT (id) DO NOTHING""", LOOSE_SOFAS, SOFA.code(), MORE_LOOSE_SOFAS, SOFA.code()));
         hn = Identifiers.newId();
         String prefix = "F" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT);
         hnBin = prefix + "-A01-1-A";
@@ -379,7 +397,10 @@ class PickConfirmationIntegrationTest {
                 .containsExactly(UUID.fromString(jdbc.queryForObject(
                         "SELECT reservation_id::text FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, newLine)));
 
-        confirm(task, newLine, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(newLocation, "SOFA-3S-GREY", 1))
+        // Whatever the allocator found next: a demo carton is confirmed by its LPN, loose units by the SKU.
+        String newScan = jdbc.queryForObject("SELECT COALESCE(lpn, sku) FROM fulfillment.pick_line WHERE id = ?::uuid",
+                String.class, newLine);
+        confirm(task, newLine, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(newLocation, newScan, 1))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PICKED"));
         assertThat(ledgerRows("PICK", newLine)).isEqualTo(1);

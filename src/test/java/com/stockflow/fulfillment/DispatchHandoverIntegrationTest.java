@@ -255,10 +255,11 @@ class DispatchHandoverIntegrationTest {
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         for (Map<String, Object> line : jdbc.queryForList(
-                "SELECT id, location_code, sku, allocated_qty FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
+                "SELECT id, location_code, COALESCE(lpn, sku) AS scan, allocated_qty "
+                        + "FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id")
                     + "/confirmation"), "{\"locationCode\":\"" + line.get("location_code") + "\",\"scannedCode\":\""
-                    + line.get("sku") + "\",\"quantity\":" + line.get("allocated_qty") + "}")).andExpect(status().isOk());
+                    + line.get("scan") + "\",\"quantity\":" + line.get("allocated_qty") + "}")).andExpect(status().isOk());
         }
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
         return task;

@@ -260,10 +260,11 @@ class PackingStationIntegrationTest {
                 .andExpect(status().isCreated())).path("taskId").asText());
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         for (Map<String, Object> line : jdbc.queryForList(
-                "SELECT id, location_code, sku, allocated_qty FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
+                "SELECT id, location_code, COALESCE(lpn, sku) AS scan, allocated_qty "
+                        + "FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
             as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id")
                     + "/confirmation").contentType("application/json").content("{\"locationCode\":\""
-                    + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("sku") + "\",\"quantity\":"
+                    + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("scan") + "\",\"quantity\":"
                     + line.get("allocated_qty") + "}")).andExpect(status().isOk());
         }
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-completion"))
@@ -420,10 +421,11 @@ class PackingStationIntegrationTest {
         // (the task is picked by the fixture below; a second task cannot exist for one order, so pick this one)
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         Map<String, Object> line = jdbc.queryForMap(
-                "SELECT id, location_code FROM fulfillment.pick_line WHERE pick_id = ?", task);
+                "SELECT id, location_code, COALESCE(lpn, sku) AS scan FROM fulfillment.pick_line "
+                        + "WHERE pick_id = ?", task);
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id")
                 + "/confirmation").contentType("application/json").content("{\"locationCode\":\""
-                + line.get("location_code") + "\",\"scannedCode\":\"SOFA-3S-GREY\",\"quantity\":1}"))
+                + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("scan") + "\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-completion"))
                 .andExpect(status().isOk());
@@ -647,10 +649,11 @@ class PackingStationIntegrationTest {
         packer(get(BASE + "/tasks/" + task)).andExpect(status().isNotFound());
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         Map<String, Object> line = jdbc.queryForMap(
-                "SELECT id, location_code FROM fulfillment.pick_line WHERE pick_id = ?", task);
+                "SELECT id, location_code, COALESCE(lpn, sku) AS scan FROM fulfillment.pick_line "
+                        + "WHERE pick_id = ?", task);
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id")
                 + "/confirmation").contentType("application/json").content("{\"locationCode\":\""
-                + line.get("location_code") + "\",\"scannedCode\":\"SOFA-3S-GREY\",\"quantity\":1}"))
+                + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("scan") + "\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-completion"))
                 .andExpect(status().isOk());
