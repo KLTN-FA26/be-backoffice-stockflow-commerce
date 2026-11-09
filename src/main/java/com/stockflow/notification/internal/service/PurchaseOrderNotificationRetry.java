@@ -6,27 +6,24 @@ import com.stockflow.notification.internal.repository.PoRetryCursorRepository;
 
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.core.EventSerializer;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.event.TransactionalApplicationListenerMethodAdapter;
 
 import java.time.Clock;
 import java.time.Duration;
-import java.util.ArrayList;
+import java.util.UUID;
 
-/** Bounded reads plus the existing proxied listener: no republishing or second queue. */
+/**
+ * Bounded reads plus the existing proxied listener: no republishing or second queue. The loop is
+ * {@link PublicationRedelivery}'s (QD-7); the purchase order keeps its durable cursor.
+ */
 @Component
 class PurchaseOrderNotificationRetry {
-    private static final Logger log = LoggerFactory.getLogger(PurchaseOrderNotificationRetry.class);
     private final PendingPublicationReader publications;
     private final Clock clock;
-    private final PoRetryCursorRepository cursor;
-    private final PurchaseOrderNotificationListener listener;
     private final EventSerializer serializer;
-    private final String listenerId;
+    private final PublicationRedelivery<PurchaseOrderSent> redelivery;
 
     PurchaseOrderNotificationRetry(
             PendingPublicationReader publications,
@@ -36,20 +33,19 @@ class PurchaseOrderNotificationRetry {
             EventSerializer serializer) {
         this.publications = publications;
         this.clock = clock;
-        this.cursor = cursor;
-        this.listener = listener;
         this.serializer = serializer;
-        try {
-            var method =
-                    PurchaseOrderNotificationListener.class.getMethod(
-                            "on", PurchaseOrderSent.class);
-            listenerId =
-                    new TransactionalApplicationListenerMethodAdapter(
-                                    null, PurchaseOrderNotificationListener.class, method)
-                            .getListenerId();
-        } catch (NoSuchMethodException invalidListener) {
-            throw new IllegalStateException("PO retry target is missing", invalidListener);
-        }
+        this.redelivery = new PublicationRedelivery<>(PurchaseOrderSent.class,
+                PurchaseOrderNotificationListener.class, "on", listener::on, new PublicationRedelivery.Cursor() {
+                    @Override
+                    public UUID load() {
+                        return cursor.load();
+                    }
+
+                    @Override
+                    public void save(UUID publicationId) {
+                        cursor.save(publicationId);
+                    }
+                });
     }
 
     @Scheduled(fixedDelayString = "${stockflow.notification.po-retry-interval:PT1M}")
@@ -58,38 +54,6 @@ class PurchaseOrderNotificationRetry {
             lockAtMostFor = "PT4M",
             lockAtLeastFor = "PT30S")
     public void retry() {
-        var cutoff = clock.instant().minus(Duration.ofMinutes(1));
-        var previous = cursor.load();
-        var selected =
-                new ArrayList<>(
-                        publications.page(
-                                PurchaseOrderSent.class.getName(),
-                                listenerId,
-                                cutoff,
-                                previous,
-                                50));
-        if (selected.isEmpty() && previous != null) {
-            selected.addAll(
-                    publications.page(
-                            PurchaseOrderSent.class.getName(), listenerId, cutoff, null, 50));
-        }
-        if (selected.isEmpty()) return;
-        cursor.save(selected.getLast().id());
-        for (var publication : selected) {
-            try {
-                // CompletionRegisteringAdvisor marks this original publication completed on
-                // success.
-                // The injected listener proxy retains async, transaction and delivery-lock
-                // semantics.
-                listener.on(
-                        serializer.deserialize(
-                                publication.serializedEvent(), PurchaseOrderSent.class));
-            } catch (RuntimeException failure) {
-                log.warn(
-                        "PO retry dispatch failed for publication {} ({})",
-                        publication.id(),
-                        failure.getClass().getSimpleName());
-            }
-        }
+        redelivery.redeliver(publications, serializer, clock.instant().minus(Duration.ofMinutes(1)), 50);
     }
 }
