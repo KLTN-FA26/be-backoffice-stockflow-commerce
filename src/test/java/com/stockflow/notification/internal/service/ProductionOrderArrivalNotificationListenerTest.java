@@ -1,6 +1,5 @@
 package com.stockflow.notification.internal.service;
 
-import com.stockflow.common.security.Role;
 import com.stockflow.contracts.ProductionOrderSent;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.Inbox;
@@ -53,7 +52,7 @@ class ProductionOrderArrivalNotificationListenerTest {
     void managersOfTheWarehouse() {
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
-        when(staff.activeStaff(Role.WAREHOUSE_MANAGER, WAREHOUSE)).thenReturn(List.of(
+        when(staff.activeHolders("procurement-goods-receipts:APPROVE", WAREHOUSE)).thenReturn(List.of(
                 new StaffContact(first, "a@stockflow.vn"), new StaffContact(second, null)));
         when(warehouses.findWarehouse(WAREHOUSE)).thenReturn(Optional.of(new WarehouseView(WAREHOUSE, "HCM",
                 "Kho Hồ Chí Minh", "1 Lê Lợi", true)));
@@ -84,7 +83,7 @@ class ProductionOrderArrivalNotificationListenerTest {
     @Test
     @DisplayName("nobody manages the warehouse: nothing is posted")
     void nobody() {
-        when(staff.activeStaff(Role.WAREHOUSE_MANAGER, WAREHOUSE)).thenReturn(List.of());
+        when(staff.activeHolders("procurement-goods-receipts:APPROVE", WAREHOUSE)).thenReturn(List.of());
 
         listener.on(sent(BigDecimal.ONE));
 
