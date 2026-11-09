@@ -11,6 +11,11 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
+-- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
+-- with 4C-3 - use the demo sofa rows as they were before it. The sofas' cartons stay beside them, so the books hold
+-- the demo sofas twice for the length of this script; no check here reads a SKU's total.
+UPDATE inventory.stock_item SET on_hand = 25 WHERE id = '11111111-1111-4111-8111-111111111111';
+UPDATE inventory.stock_item SET on_hand = 8 WHERE id = '22222222-2222-4222-8222-222222222222';
 
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN

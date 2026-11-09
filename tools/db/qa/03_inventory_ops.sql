@@ -4,6 +4,11 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
+-- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
+-- with 4C-3 - use the demo sofa rows as they were before it. The sofas' cartons stay beside them, so the books hold
+-- the demo sofas twice for the length of this script; no check here reads a SKU's total.
+UPDATE inventory.stock_item SET on_hand = 25 WHERE id = '11111111-1111-4111-8111-111111111111';
+UPDATE inventory.stock_item SET on_hand = 8 WHERE id = '22222222-2222-4222-8222-222222222222';
 
 -- Inserts a warehouse whether or not the pre-C2 column "code" still exists (C2 drops it).
 CREATE FUNCTION pg_temp.qa_warehouse(wid UUID, wprefix TEXT, wunit TEXT, w NUMERIC, h NUMERIC) RETURNS void
@@ -275,8 +280,7 @@ SELECT pg_temp.expect_fail('I53 an alert for a SKU that has no inventory item', 
     VALUES (md5('qa:alert:14')::uuid, 'REORDER', 'NO-SUCH-SKU', 1, 10, NOW(), NOW()) $q$);
 DELETE FROM inventory.stock_alert_dirty;
 SELECT pg_temp.expect_ok('I54 a stock row whose on_hand changes marks its SKU dirty', $q$
-    UPDATE inventory.stock_item SET on_hand = on_hand + 1
-     WHERE sku = 'SOFA-3S-GREY' AND location_code = 'HCM-A01-2-B';
+    UPDATE inventory.stock_item SET on_hand = on_hand + 1 WHERE id = '11111111-1111-4111-8111-111111111111';
     DO $d$ BEGIN
         IF (SELECT count(*) FROM inventory.stock_alert_dirty WHERE sku = 'SOFA-3S-GREY') <> 1 THEN
             RAISE EXCEPTION 'on_hand change did not mark the SKU dirty exactly once';
@@ -285,15 +289,14 @@ SELECT pg_temp.expect_ok('I54 a stock row whose on_hand changes marks its SKU di
 DELETE FROM inventory.stock_alert_dirty;
 SELECT pg_temp.expect_ok('I54 an UPDATE that does not change on_hand, status or expiry does not mark it', $q$
     UPDATE inventory.stock_item SET on_hand = on_hand, last_modified_by = 'qa'
-     WHERE sku = 'SOFA-3S-GREY' AND location_code = 'HCM-A01-2-B';
+     WHERE id = '11111111-1111-4111-8111-111111111111';
     DO $d$ BEGIN
         IF EXISTS (SELECT 1 FROM inventory.stock_alert_dirty) THEN
             RAISE EXCEPTION 'a write that changed nothing the thresholds read marked the SKU dirty';
         END IF;
     END $d$ $q$);
 SELECT pg_temp.expect_ok('I54 a status change and a new stock row mark the SKU dirty', $q$
-    UPDATE inventory.stock_item SET status = 'QUARANTINE'
-     WHERE sku = 'SOFA-3S-GREY' AND location_code = 'HCM-A01-2-B' AND status = 'AVAILABLE';
+    UPDATE inventory.stock_item SET status = 'QUARANTINE' WHERE id = '11111111-1111-4111-8111-111111111111';
     DO $d$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM inventory.stock_alert_dirty WHERE sku = 'SOFA-3S-GREY') THEN
             RAISE EXCEPTION 'a status change did not mark the SKU dirty';
