@@ -43,7 +43,8 @@ class SalesContractDocument {
 
     private static final float MARGIN = 50;
     private static final float LINE = 14;
-    private static final int WRAP = 95;
+    /** The width the text runs in, in points: the A4 page less its margins. */
+    private static final float WIDTH = PDRectangle.A4.getWidth() - 2 * MARGIN;
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
     private final LabelFonts fonts;
@@ -151,7 +152,7 @@ class SalesContractDocument {
                         case HEADING -> 11;
                         case BOLD, TEXT -> 10;
                     };
-                    List<String> parts = wrap(fonts.drawable(line.text()), line.style() == Style.TITLE ? 60 : WRAP);
+                    List<String> parts = wrap(font, size, fonts.drawable(line.text()));
                     float before = line.style() == Style.HEADING ? LINE / 2 : 0;
                     for (String part : parts) {
                         if (out == null || y - before < MARGIN) {
@@ -187,20 +188,37 @@ class SalesContractDocument {
         }
     }
 
-    /** {@code text} cut into lines of at most {@code width} characters, at spaces where it can. */
-    private static List<String> wrap(String text, int width) {
+    /**
+     * {@code text} cut into lines that fit the page's width as drawn in {@code font} at {@code size} - measured, not
+     * counted: a legal name in capitals is far wider than its letters suggest. Cut at spaces; a word wider than the page
+     * is cut where it no longer fits.
+     */
+    private static List<String> wrap(PDFont font, float size, String text) throws IOException {
         List<String> parts = new ArrayList<>();
-        String rest = text == null ? "" : text;
-        while (rest.length() > width) {
-            int cut = rest.lastIndexOf(' ', width);
+        String rest = text == null ? "" : text.strip();
+        while (!rest.isEmpty() && width(font, size, rest) > WIDTH) {
+            int cut = -1;
+            for (int space = rest.indexOf(' '); space > 0; space = rest.indexOf(' ', space + 1)) {
+                if (width(font, size, rest.substring(0, space)) > WIDTH) {
+                    break;
+                }
+                cut = space;
+            }
             if (cut <= 0) {
-                cut = width;
+                cut = 1;
+                while (cut < rest.length() && width(font, size, rest.substring(0, cut + 1)) <= WIDTH) {
+                    cut++;
+                }
             }
             parts.add(rest.substring(0, cut));
             rest = rest.substring(cut).strip();
         }
         parts.add(rest);
         return parts;
+    }
+
+    private static float width(PDFont font, float size, String text) throws IOException {
+        return font.getStringWidth(text) / 1000 * size;
     }
 
     /** Whole dong, grouped with dots as Vietnamese documents write it: 1.234.567 VND. */

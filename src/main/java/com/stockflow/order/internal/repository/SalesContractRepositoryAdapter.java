@@ -11,6 +11,7 @@ import com.stockflow.order.internal.domain.SalesContract;
 import com.stockflow.order.internal.domain.SalesContractRepository;
 import com.stockflow.order.internal.domain.SalesContractStatus;
 import com.stockflow.order.internal.entity.SalesContractJpaEntity;
+import jakarta.persistence.EntityManager;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -39,10 +40,12 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
 
     private final SalesContractJpaRepository jpa;
     private final NamedParameterJdbcTemplate named;
+    private final EntityManager entityManager;
 
-    SalesContractRepositoryAdapter(SalesContractJpaRepository jpa, JdbcTemplate jdbc) {
+    SalesContractRepositoryAdapter(SalesContractJpaRepository jpa, JdbcTemplate jdbc, EntityManager entityManager) {
         this.jpa = jpa;
         this.named = new NamedParameterJdbcTemplate(jdbc);
+        this.entityManager = entityManager;
     }
 
     @Override
@@ -63,7 +66,8 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
     @Override
     public SalesContract save(SalesContract contract) {
         SalesContractJpaEntity entity = jpa.findById(contract.id()).orElse(null);
-        if (entity == null) {
+        boolean created = entity == null;
+        if (created) {
             ContractParty seller = contract.seller();
             ContractParty buyer = contract.buyer();
             entity = new SalesContractJpaEntity(contract.id(), contract.contractNumber(), contract.orderId(),
@@ -81,6 +85,13 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
         SalesContractJpaEntity saved = jpa.saveAndFlush(entity);
         if (contract.status() == SalesContractStatus.DRAFT) {
             writeTerms(contract);
+            if (!created) {
+                // A draft whose schedule or plan alone changed leaves its row as it was, and Hibernate would write no
+                // new version: the next editor holding the old one would then overwrite this one unseen.
+                named.update("UPDATE ordering.sales_contract SET version = version + 1 WHERE id = :id",
+                        new MapSqlParameterSource("id", contract.id()));
+                entityManager.refresh(saved);
+            }
         }
         return restore(saved, contract.schedule(), contract.plan());
     }

@@ -24,11 +24,11 @@ public final class SalesContractRequests {
     public record Draft(
             Long version,
             @PositiveOrZero Integer freeSampleRounds,
-            @Valid @Size(max = 100) List<Batch> deliverySchedule,
-            @Valid @Size(max = 100) List<Installment> paymentPlan) { }
+            @Valid @Size(max = 20) List<Batch> deliverySchedule,
+            @Valid @Size(max = 20) List<Installment> paymentPlan) { }
 
     /** A delivery batch, in delivery order: its window (both days or neither) and its cartons. */
-    public record Batch(LocalDate windowStart, LocalDate windowEnd, @Valid @Size(max = 500) List<BatchLine> lines) { }
+    public record Batch(LocalDate windowStart, LocalDate windowEnd, @Valid @Size(max = 200) List<BatchLine> lines) { }
 
     public record BatchLine(@NotNull UUID orderLineId, @NotNull Integer cartons) { }
 

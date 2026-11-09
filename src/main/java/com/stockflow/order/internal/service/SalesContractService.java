@@ -139,14 +139,14 @@ class SalesContractService implements SalesContracts {
     @Override
     @Transactional(readOnly = true)
     public ContractView get(UUID orderId) {
-        Order order = inScope(orderId);
+        Order order = readOrder(orderId);
         return view(live(order), order, null);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<ContractView> history(UUID orderId) {
-        Order order = inScope(orderId);
+        Order order = readOrder(orderId);
         return contracts.findByOrderId(orderId).stream().map(contract -> view(contract, order, null)).toList();
     }
 
@@ -170,28 +170,48 @@ class SalesContractService implements SalesContracts {
         return view(contracts.save(contract), order, null);
     }
 
+    /**
+     * Not transactional itself: the PDF is drawn and kept with no lock held - storage is slow, and the order's row lock
+     * makes everyone else wait - from the version read; the contract is then sent in one short transaction if it is
+     * still that version, and the PDF goes if it is not.
+     */
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "sales-contract", resourceId = "#result?.id()",
             details = "{orderId: #orderId, to: 'SENT'}")
     public ContractView send(CurrentUser user, UUID orderId, long version) {
-        Order order = lockInScope(orderId);
-        SalesContract contract = live(order, version);
-        Instant now = clock.instant();
-        contract.requireSendable(order, now);
-        byte[] pdf = document.render(facts(contract, order));
-        StoredFile stored = files.store(FileCategory.DOCUMENT, new FileUpload(contract.contractNumber() + ".pdf",
-                "application/pdf", pdf.length, new ByteArrayInputStream(pdf), null));
-        contract.send(order, now, user.userId(), stored.key());
-        SalesContract saved = contracts.save(contract);
-        files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
-        log.info("Sales contract {} of order {} sent", saved.contractNumber(), order.orderNumber());
-        return view(saved, order, creditWarning(order, saved));
+        SalesContractDocument.Facts facts = tx.execute(status -> {
+            Order order = lockInScope(orderId);
+            SalesContract contract = live(order, version);
+            Instant now = clock.instant();
+            contract.requireSendable(order, now);
+            requireCreditFor(order, contract);
+            return new SalesContractDocument.Facts(view(contract, order, null), order, LocalDate.ofInstant(now,
+                    VIETNAM));
+        });
+        byte[] pdf = document.render(facts);
+        try (PreparedFiles prepared = IncomingFiles.sent(List.of(new FileUpload(facts.contract().contractNumber()
+                        + ".pdf", "application/pdf", pdf.length, new ByteArrayInputStream(pdf))))
+                .prepare(FileCategory.DOCUMENT, files, staged)) {
+            StoredFile stored = prepared.single().file();
+            return tx.execute(status -> {
+                Order order = lockInScope(orderId);
+                SalesContract contract = live(order, version);
+                requireCreditFor(order, contract);
+                contract.send(order, clock.instant(), user.userId(), stored.key());
+                SalesContract saved = contracts.save(contract);
+                prepared.adopt();
+                files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
+                log.info("Sales contract {} of order {} sent", saved.contractNumber(), order.orderNumber());
+                return view(saved, order, creditWarning(order, saved));
+            });
+        }
     }
 
     @Override
     @Transactional(readOnly = true)
     public UploadSlot beginSignedFileUpload(CurrentUser user, UUID orderId, UploadSlotRequest request) {
-        live(inScope(orderId)).requireSignable();
+        live(readOrder(orderId)).requireSignable();
         return staged.begin(FileCategory.DOCUMENT, user.userId(), request);
     }
 
@@ -213,7 +233,7 @@ class SalesContractService implements SalesContracts {
             // The key is the upload's own, so a contract naming it is the one this upload signed.
             Optional<String> key = staged.keyOf(FileCategory.DOCUMENT, user.userId(), uploaded.uploadIds().getFirst());
             Optional<ContractView> earlier = key.flatMap(k -> tx.execute(status -> {
-                Order order = inScope(orderId);
+                Order order = readOrder(orderId);
                 return contracts.findLiveByOrderId(orderId).filter(c -> k.equals(c.signedFileKey()))
                         .map(c -> view(c, order, null));
             }));
@@ -221,7 +241,8 @@ class SalesContractService implements SalesContracts {
                 return earlier.get();
             }
         }
-        tx.executeWithoutResult(status -> live(inScope(orderId), version).requireSignable());
+        tx.executeWithoutResult(status -> live(readOrder(orderId), version).requireSignable(signedOn,
+                clock.instant()));
         try (PreparedFiles prepared = signedFile.prepare(FileCategory.DOCUMENT, files, staged)) {
             StoredFile stored = prepared.single().file();
             return tx.execute(status -> {
@@ -253,14 +274,14 @@ class SalesContractService implements SalesContracts {
     @Override
     @Transactional(readOnly = true)
     public byte[] preview(UUID orderId) {
-        Order order = inScope(orderId);
+        Order order = readOrder(orderId);
         return document.render(facts(live(order), order));
     }
 
     @Override
     @Transactional(readOnly = true)
     public DownloadLink sentDocument(UUID orderId) {
-        SalesContract contract = live(inScope(orderId));
+        SalesContract contract = live(readOrder(orderId));
         if (contract.sentDocumentKey() == null) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s was not sent yet"
                     .formatted(contract.contractNumber()));
@@ -271,7 +292,7 @@ class SalesContractService implements SalesContracts {
     @Override
     @Transactional(readOnly = true)
     public DownloadLink signedFile(UUID orderId) {
-        SalesContract contract = live(inScope(orderId));
+        SalesContract contract = live(readOrder(orderId));
         if (contract.signedFileKey() == null) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is not signed"
                     .formatted(contract.contractNumber()));
@@ -283,7 +304,12 @@ class SalesContractService implements SalesContracts {
     @Transactional(readOnly = true)
     public ContractView customerContract(UUID customerId, UUID orderId) {
         Order order = customersOrder(customerId, orderId);
-        return view(sentContract(order), order, null);
+        ContractView full = view(sentContract(order), order, null);
+        // The customer's copy: who in the back office sent or signed it is not theirs to read.
+        return new ContractView(full.id(), full.contractNumber(), full.orderId(), full.orderNumber(), full.status(),
+                full.seller(), full.buyer(), full.freeSampleRounds(), full.totals(), full.deliverySchedule(),
+                full.paymentPlan(), full.sentAt(), null, full.signedOn(), full.signedFileName(), full.signedAt(), null,
+                null, null, null, full.completedAt(), full.version(), null);
     }
 
     @Override
@@ -297,8 +323,11 @@ class SalesContractService implements SalesContracts {
 
     // ---- loading ---------------------------------------------------------------------------------------------------
 
-    /** The order, read as the back office reads an order ({@code GET /orders/{id}}). */
-    private Order inScope(UUID orderId) {
+    /**
+     * The order, read unscoped as the back office reads an order ({@code GET /orders/{id}}) - for reading only: every
+     * change goes through {@link #lockInScope}.
+     */
+    private Order readOrder(UUID orderId) {
         return orders.findById(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
     }
@@ -405,6 +434,18 @@ class SalesContractService implements SalesContracts {
         return new ContractTerms.InstallmentEntry(installment.name(), installment.milestone(),
                 installment.percent() == null ? installment.amount().amount() : null, installment.percent(),
                 installment.dueDays(), installment.deliveryBatchSeq());
+    }
+
+    /**
+     * 15 BR-12: paying after delivery is credit, and only accounting grants it - checked again when the contract is sent,
+     * so the customer is offered no credit accounting took back since the plan was drafted.
+     */
+    private void requireCreditFor(Order order, SalesContract contract) {
+        if (contract.plan().stream().anyMatch(i -> i.milestone() == PaymentMilestone.AFTER_DELIVERY)
+                && !creditApproved(customers.creditTerms(order.customerId()))) {
+            throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("Contract %s pays after delivery, "
+                    + "and accounting approves no credit for this customer now").formatted(contract.contractNumber()));
+        }
     }
 
     /**

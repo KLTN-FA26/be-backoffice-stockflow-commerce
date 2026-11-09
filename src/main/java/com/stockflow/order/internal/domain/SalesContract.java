@@ -170,13 +170,7 @@ public final class SalesContract {
      * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID}; {@code VALIDATION_FAILED} for the day
      */
     public void sign(LocalDate on, String fileKey, String fileName, Instant at, UUID by) {
-        requireSignable();
-        Objects.requireNonNull(on, "on");
-        LocalDate today = LocalDate.ofInstant(at, VIETNAM);
-        if (on.isAfter(today) || on.isBefore(LocalDate.ofInstant(sentAt, VIETNAM))) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Contract %s: signed on %s - not before it was "
-                    + "sent (%s), not after today").formatted(contractNumber, on, LocalDate.ofInstant(sentAt, VIETNAM)));
-        }
+        requireSignable(on, at);
         this.status = SalesContractStatus.SIGNED;
         this.signedOn = on;
         this.signedFileKey = Objects.requireNonNull(fileKey, "fileKey");
@@ -208,6 +202,22 @@ public final class SalesContract {
     /** Whether it may be signed: a sent contract. @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} */
     public void requireSignable() {
         requireStatus(SalesContractStatus.SENT, "signed");
+    }
+
+    /**
+     * Whether it may be recorded signed on {@code on}, now: a sent contract, signed not before it was sent nor after
+     * today - checked before the signed file is, so a refusal costs no upload.
+     *
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID}; {@code VALIDATION_FAILED} for the day
+     */
+    public void requireSignable(LocalDate on, Instant at) {
+        requireSignable();
+        Objects.requireNonNull(on, "on");
+        LocalDate today = LocalDate.ofInstant(at, VIETNAM);
+        if (on.isAfter(today) || on.isBefore(LocalDate.ofInstant(sentAt, VIETNAM))) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Contract %s: signed on %s - not before it was "
+                    + "sent (%s), not after today").formatted(contractNumber, on, LocalDate.ofInstant(sentAt, VIETNAM)));
+        }
     }
 
     private void requireStatus(SalesContractStatus wanted, String verb) {

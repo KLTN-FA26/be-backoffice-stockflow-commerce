@@ -208,6 +208,20 @@ class SalesContractIntegrationTest {
                 new SalesContracts.Draft(1, null, null))))
                 .as("a stale version").extracting(SalesContractIntegrationTest::code)
                 .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+        // The schedule alone edited moves the version too: whoever still holds the one before is refused.
+        SalesContracts.ContractView rescheduled = asSales(() -> contracts.edit(sales, orderId, edited.version(),
+                new SalesContracts.Draft(null, List.of(
+                        new SalesContracts.Batch(asked, asked.plusDays(3), List.of(new SalesContracts.BatchLine(line, 8))),
+                        new SalesContracts.Batch(asked.plusDays(14), asked.plusDays(14),
+                                List.of(new SalesContracts.BatchLine(line, 12)))), null)));
+        assertThat(rescheduled.version()).isGreaterThan(edited.version());
+        assertThat(rescheduled.freeSampleRounds()).as("kept").isEqualTo(3);
+        assertThat(rescheduled.paymentPlan()).as("kept").hasSize(3);
+        assertThatThrownBy(() -> asSales(() -> contracts.edit(sales, orderId, edited.version(),
+                new SalesContracts.Draft(null, null, List.of(new SalesContracts.Installment("All", "ON_SIGNING", null,
+                        new BigDecimal("100"), null, null))))))
+                .as("a stale version, after a schedule-only edit").extracting(SalesContractIntegrationTest::code)
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
 
         byte[] preview = asSales(() -> contracts.preview(orderId));
         assertThat(new String(preview, 0, 5, StandardCharsets.US_ASCII)).isEqualTo("%PDF-");
@@ -216,7 +230,10 @@ class SalesContractIntegrationTest {
             assertThat(text).contains(edited.contractNumber(), "Cong ty Hop Dong", "Tran Van B", sku.sku());
         }
 
-        SalesContracts.ContractView sent = asSales(() -> contracts.send(sales, orderId, edited.version()));
+        assertThatThrownBy(() -> asSales(() -> contracts.send(sales, orderId, edited.version())))
+                .as("sent from a stale version: nothing drawn is kept").extracting(SalesContractIntegrationTest::code)
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+        SalesContracts.ContractView sent = asSales(() -> contracts.send(sales, orderId, rescheduled.version()));
         assertThat(sent.status()).isEqualTo("SENT");
         assertThat(sent.sentAt()).isNotNull();
         assertThat(sent.creditWarning()).as("nothing after delivery").isNull();
@@ -236,7 +253,10 @@ class SalesContractIntegrationTest {
                 .hasMessageContaining("do not change (14 BR-14)");
 
         // The customer reads the contract sent; another customer's order is not there.
-        assertThat(contracts.customerContract(customerId, orderId).contractNumber()).isEqualTo(sent.contractNumber());
+        SalesContracts.ContractView customersCopy = contracts.customerContract(customerId, orderId);
+        assertThat(customersCopy.contractNumber()).isEqualTo(sent.contractNumber());
+        assertThat(customersCopy.sentAt()).isNotNull();
+        assertThat(customersCopy.sentBy()).as("who in the back office sent it is not the customer's").isNull();
         assertThatThrownBy(() -> contracts.customerContract(Identifiers.newId(), orderId))
                 .extracting(SalesContractIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
 
@@ -296,6 +316,10 @@ class SalesContractIntegrationTest {
                         null))))))
                 .as("15 BR-12: paying after delivery needs approved credit")
                 .extracting(SalesContractIntegrationTest::code).isEqualTo(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT);
+        assertThatThrownBy(() -> asSales(() -> contracts.create(sales, orderId, new SalesContracts.Draft(null,
+                java.util.Arrays.asList((SalesContracts.Batch) null), null))))
+                .as("a null batch is a rule broken, not a crash")
+                .extracting(SalesContractIntegrationTest::code).isEqualTo(ErrorCode.DELIVERY_SCHEDULE_INVALID);
         assertThat(contracts.history(orderId)).as("nothing was kept").isEmpty();
     }
 }

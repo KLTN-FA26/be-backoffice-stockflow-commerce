@@ -43,8 +43,9 @@ import java.util.UUID;
 /**
  * The sales contract of an order (4B-4; kltn-docs 14 §4.3 steps 11-17, §5.2). Sales draws it up, edits and sends it
  * ({@code sales-contracts:CREATE / UPDATE}) and records it signed ({@code :APPROVE}); accounting and the Sales Manager
- * read it. The order's data scope applies: an order out of scope is 404. Handlers are public so the permission proxy
- * advises them.
+ * read it. A change locks the order as the caller's data scope sees it - out of scope is 404; reading follows
+ * {@code GET /orders/{id}}, which the back office reads whole. Handlers are public so the permission proxy advises
+ * them.
  */
 @RestController
 @RequestMapping("/api/v1/orders/{orderId}/contract")
@@ -200,16 +201,18 @@ class SalesContractController {
     }
 
     private static SalesContracts.Draft draft(SalesContractRequests.Draft request) {
+        // A null element is passed on as null: the service names it with the rule it breaks, by field.
         return new SalesContracts.Draft(request.freeSampleRounds(),
                 request.deliverySchedule() == null ? null : request.deliverySchedule().stream()
-                        .map(batch -> new SalesContracts.Batch(batch.windowStart(), batch.windowEnd(),
-                                batch.lines() == null ? List.of() : batch.lines().stream()
-                                        .map(line -> new SalesContracts.BatchLine(line.orderLineId(), line.cartons()))
+                        .map(batch -> batch == null ? null : new SalesContracts.Batch(batch.windowStart(),
+                                batch.windowEnd(), batch.lines() == null ? List.of() : batch.lines().stream()
+                                        .map(line -> line == null ? null
+                                                : new SalesContracts.BatchLine(line.orderLineId(), line.cartons()))
                                         .toList()))
                         .toList(),
                 request.paymentPlan() == null ? null : request.paymentPlan().stream()
-                        .map(i -> new SalesContracts.Installment(i.name(), i.milestone(), i.amount(), i.percent(),
-                                i.dueDays(), i.deliveryBatchSeq()))
+                        .map(i -> i == null ? null : new SalesContracts.Installment(i.name(), i.milestone(),
+                                i.amount(), i.percent(), i.dueDays(), i.deliveryBatchSeq()))
                         .toList());
     }
 }

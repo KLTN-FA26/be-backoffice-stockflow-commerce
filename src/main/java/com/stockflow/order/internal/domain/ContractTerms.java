@@ -28,6 +28,8 @@ import java.util.UUID;
 public final class ContractTerms {
 
     private static final BigDecimal HUNDRED = new BigDecimal("100");
+    /** Batches and installments a contract may have; the database states the same ({@code ck_*_seq}). */
+    public static final int MAX_ROWS = 20;
 
     /** A batch as Sales enters it, in delivery order: its window (both days or neither) and its cartons. */
     public record BatchEntry(LocalDate windowStart, LocalDate windowEnd, List<LineEntry> lines) {
@@ -75,8 +77,8 @@ public final class ContractTerms {
      */
     public static List<DeliveryBatch> schedule(Order order, List<BatchEntry> entries) {
         List<FieldError> errors = new ArrayList<>();
-        if (entries == null || entries.isEmpty()) {
-            throw invalidSchedule(List.of(new FieldError("deliverySchedule", "at least one delivery batch",
+        if (entries == null || entries.isEmpty() || entries.size() > MAX_ROWS) {
+            throw invalidSchedule(List.of(new FieldError("deliverySchedule", "1 to " + MAX_ROWS + " delivery batches",
                     "BR-23")));
         }
         Map<UUID, OrderLine> lines = new HashMap<>();
@@ -184,8 +186,8 @@ public final class ContractTerms {
     public static List<PlannedInstallment> plan(Order order, int batches, List<InstallmentEntry> entries,
                                                 boolean creditApproved, Integer creditTermDays) {
         Money total = order.total();
-        if (entries == null || entries.isEmpty()) {
-            throw invalidPlan(List.of(new FieldError("paymentPlan", "at least one installment", "BR-13")));
+        if (entries == null || entries.isEmpty() || entries.size() > MAX_ROWS) {
+            throw invalidPlan(List.of(new FieldError("paymentPlan", "1 to " + MAX_ROWS + " installments", "BR-13")));
         }
         List<FieldError> errors = new ArrayList<>();
         List<Money> amounts = new ArrayList<>();
