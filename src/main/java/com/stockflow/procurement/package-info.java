@@ -3,8 +3,10 @@
  *
  * <p>WBS 3.2 + 3.3 + 3.4 · database schema {@code procurement}</p>
  *
- * <p><b>May depend on:</b> product, inventory, warehouse. Plus {@code common} and {@code contracts}, which are
- * available to every module.</p>
+ * <p><b>May depend on:</b> product, inventory, warehouse, notification, identity, and order - receiving against a
+ * production order (4A-5) reads and moves it through {@code order :: api}'s {@code ProductionOrderReceiving}; order
+ * never depends on procurement, so there is no cycle. Plus {@code common} and {@code contracts}, which are available
+ * to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
@@ -15,5 +17,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api", "inventory :: api", "warehouse :: api", "notification :: api",
-        "identity :: api"})
+        "identity :: api", "order :: api"})
 package com.stockflow.procurement;

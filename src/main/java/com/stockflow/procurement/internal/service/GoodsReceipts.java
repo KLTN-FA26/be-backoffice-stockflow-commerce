@@ -2,6 +2,7 @@ package com.stockflow.procurement.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
+import com.stockflow.procurement.internal.domain.GoodsReceiptType;
 import com.stockflow.procurement.internal.domain.ReceiptApproval;
 
 import java.time.Instant;
@@ -12,6 +13,10 @@ import java.util.UUID;
 /**
  * Goods receipts against purchase orders (SCRUM-435, docs 03): count, confirm, then put away. There is no quality
  * check at the warehouse (kltn-docs 03 BR-07).
+ *
+ * <p>4A-5 (kltn-docs 03 §4.1): and against production orders - {@link #createForProductionOrder}, then the same
+ * {@link #replaceLines}, {@link #confirm} and {@link #cancel}, which follow the receipt's type: whole cartons of each
+ * production order line's standard count, the production order's code as the lot, nothing over what is ordered.</p>
  *
  * <p>Not on {@code procurement :: api}: nothing outside this module drives a receipt. Other modules
  * learn about receipts from the {@code GoodsReceiptConfirmed} and {@code ReceiptStockReadyForPutaway}
@@ -35,6 +40,10 @@ public interface GoodsReceipts {
     record CreateWithoutPo(UUID supplierId, UUID warehouseId, String reason, String deliveryNote, String note) {
     }
 
+    /** 4A-5: goods delivered by a producer against one production order (kltn-docs 03 §4.1 step 1). */
+    record CreateForProductionOrder(UUID productionOrderId, String deliveryNote, String note) {
+    }
+
     /**
      * One counted line: so many units of a PO line, from one lot, set down at a RECEIVING location (SCRUM-473 design
      * §3). {@code quantity} is the line's total in base units. {@code packages} are the labelled cartons holding part
@@ -43,12 +52,32 @@ public interface GoodsReceipts {
      *
      * <p>SCRUM-478: on a receipt without a PO there is no PO line; the line names the item by {@code sku}
      * ({@code purchaseOrderLineId} is then absent). On a receipt against a PO it is the reverse.</p>
+     *
+     * <p>4A-5: on a receipt against a production order the line names its {@code productionOrderLineId}, and lists
+     * its cartons in {@code packages} - at least one, each holding the line's standard count (a carton's quantity may
+     * be left out, 0; any other count is refused, BR-13). {@code quantity} may be left out too (0): it is the cartons
+     * times their count. There is no lot, expiry date or PO line to give: the lot is the production order's code
+     * (BR-03, BR-06). {@code unitOfMeasure}, when given, names the SKU's packing unit holding that count.</p>
      */
     record NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
-                   String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {
+                   String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku,
+                   UUID productionOrderLineId) {
 
         public NewLine {
             packages = packages == null ? List.of() : List.copyOf(packages);
+        }
+
+        /** A line of a purchase receipt. */
+        public NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
+                       String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {
+            this(purchaseOrderLineId, quantity, lotNumber, expiryDate, locationCode, note, unitOfMeasure, packages, sku,
+                    null);
+        }
+
+        /** 4A-5: a line of a production receipt - its production order line, where its cartons are, the cartons. */
+        public static NewLine ofProductionOrderLine(UUID productionOrderLineId, String locationCode,
+                                                    List<NewPackage> packages) {
+            return new NewLine(null, 0, null, null, locationCode, null, null, packages, null, productionOrderLineId);
         }
 
         /** A line of a receipt against a PO. */
@@ -65,7 +94,10 @@ public interface GoodsReceipts {
         }
     }
 
-    /** One carton of a line: {@code lpn} names one labelled before to recount it; null labels a new one. */
+    /**
+     * One carton of a line: {@code lpn} names one labelled before to recount it; null labels a new one. On a production
+     * receipt {@code quantity} 0 means the line's standard count (4A-5, BR-13).
+     */
     record NewPackage(String lpn, int quantity) {
     }
 
@@ -83,7 +115,19 @@ public interface GoodsReceipts {
                     boolean lotTracked, boolean expiryTracked, int quantityForPutaway,
                     List<String> warnings, String unitOfMeasure,
                     int looseQuantity, List<PackageView> packages, List<UnitView> units,
-                    String orderedUnitOfMeasure) {
+                    String orderedUnitOfMeasure, UUID productionOrderLineId, ProductionLineProgress production) {
+    }
+
+    /**
+     * 4A-5 (kltn-docs 03 §3 output, §4.1 step 3): a production receipt's line against its production order line, in
+     * cartons and in units. {@code ordered}: what the line orders. {@code received}: what receipts confirmed so far
+     * counted in - this one included once it is confirmed. {@code thisReceipt}: what this receipt counts.
+     * {@code remaining}: what stays open once this receipt is counted in (for a draft: ordered less received less this
+     * receipt; otherwise ordered less received). A short receipt leaves the rest open (BR-10).
+     */
+    record ProductionLineProgress(int unitsPerCarton, int orderedCartons, int receivedCartons, int thisReceiptCartons,
+                                  int remainingCartons, int orderedUnits, int receivedUnits, int thisReceiptUnits,
+                                  int remainingUnits) {
     }
 
     /**
@@ -129,14 +173,18 @@ public interface GoodsReceipts {
                        UUID receivedBy, String receivedByName, Instant confirmedAt, UUID confirmedBy,
                        String confirmedByName, Instant closedAt, List<LineView> lines, List<String> warnings,
                        Approval approval, boolean withoutPurchaseOrder, String blindReason,
-                       UUID referencedPurchaseOrderId, String referencedPurchaseOrderNumber) {
+                       UUID referencedPurchaseOrderId, String referencedPurchaseOrderNumber,
+                       GoodsReceiptType receiptType, UUID productionOrderId, String productionOrderCode,
+                       String productionOrderStatus, UUID producerId, String producerName) {
     }
 
+    /** {@code receiptType}, {@code productionOrder*}, {@code producerName}: 4A-5; null on a purchase receipt. */
     record Row(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
                String supplierName, UUID warehouseId, String warehouseCode, String warehouseName,
                GoodsReceiptStatus status, String deliveryNote, Instant receivedAt, UUID receivedBy,
                String receivedByName, Instant confirmedAt, UUID confirmedBy, String confirmedByName,
-               Instant closedAt, boolean withoutPurchaseOrder) {
+               Instant closedAt, boolean withoutPurchaseOrder, GoodsReceiptType receiptType, UUID productionOrderId,
+               String productionOrderCode, String producerName) {
     }
 
     /** A DRAFT receipt for a CONFIRMED or PARTIALLY_RECEIVED order (BR-01), into the order's warehouse. */
@@ -148,6 +196,17 @@ public interface GoodsReceipts {
      * {@link #approve approved}, and {@link #reject rejected} it is cancelled.
      */
     ReceiptView createWithoutPurchaseOrder(CreateWithoutPo command, UUID userId);
+
+    /**
+     * 4A-5 (kltn-docs 03 §4.1 step 1, BR-01, BR-15): a DRAFT receipt against one production order, at the warehouse it
+     * is received at, while goods can be received against it; the production order registers the draft and is neither
+     * cancelled nor closed while it is open. Its lines are its production order's lines, counted in whole cartons.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PRODUCTION_ORDER_NOT_FOUND};
+     *         {@code PRODUCTION_ORDER_NOT_RECEIVABLE}; 403 for a production order received at a warehouse the caller is
+     *         not assigned to
+     */
+    ReceiptView createForProductionOrder(CreateForProductionOrder command, UUID userId);
 
     /**
      * Owner decision NOPO-ATTACH ("gắn PO bổ sung"): the purchase order a receipt without one belongs to, as a
@@ -203,8 +262,19 @@ public interface GoodsReceipts {
 
     ReceiptView get(UUID receiptId);
 
-    /** {@code withoutPurchaseOrder}: true keeps the receipts without a PO (SCRUM-478), false those against one. */
+    /**
+     * {@code withoutPurchaseOrder}: true keeps the receipts without a PO (SCRUM-478), false those against one.
+     * {@code productionOrderId}, {@code receiptType}: the receipts of one production order, of one type (4A-5).
+     */
     PageResponse<Row> list(List<GoodsReceiptStatus> statuses, UUID purchaseOrderId, UUID warehouseId, String search,
-                           Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder, int page, int size,
-                           String sort);
+                           Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder,
+                           UUID productionOrderId, GoodsReceiptType receiptType, int page, int size, String sort);
+
+    /** The list without the production order filters. */
+    default PageResponse<Row> list(List<GoodsReceiptStatus> statuses, UUID purchaseOrderId, UUID warehouseId,
+                                   String search, Instant receivedFrom, Instant receivedTo,
+                                   Boolean withoutPurchaseOrder, int page, int size, String sort) {
+        return list(statuses, purchaseOrderId, warehouseId, search, receivedFrom, receivedTo, withoutPurchaseOrder, null,
+                null, page, size, sort);
+    }
 }
