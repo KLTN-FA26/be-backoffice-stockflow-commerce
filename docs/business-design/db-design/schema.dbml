@@ -1860,6 +1860,7 @@ Table inventory.stock_reservation [headercolor: #3E7C4A] {
   sku               varchar(64) [not null]
   allocated_from_id uuid
   order_number      varchar(32)
+  warehouse_code    varchar(64)
 }
 
 Table inventory.uom_conversions [headercolor: #3E7C4A] {
@@ -2773,6 +2774,9 @@ Table ordering.customer_order [headercolor: #C0392B] {
   tax_amount                    decimal(19,4) [not null, default: 0]
   net_amount                    decimal(19,4) [note: 'generated: (total_amount - tax_amount)']
   contract_signed_at            timestamptz
+  shipping_warehouse_id         uuid
+  shipping_warehouse_chosen_at  timestamptz
+  shipping_warehouse_chosen_by  uuid
 }
 
 Table ordering.delivery_batch [headercolor: #C0392B] {
@@ -5150,6 +5154,7 @@ Ref: inventory.stock_reservation.allocated_from_id > inventory.stock_reservation
 Ref: inventory.stock_reservation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_reservation.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_reservation.stock_item_id > inventory.stock_item.id [delete: cascade]
+Ref: inventory.stock_reservation.warehouse_code > warehouse.warehouse.prefix [delete: restrict]
 Ref: inventory.uom_conversions.inventory_item_id > inventory.inventory_items.id [delete: cascade]
 Ref: warehouse.area.location_id > warehouse.storage_location.id [delete: restrict]
 Ref: warehouse.area.warehouse_id > warehouse.warehouse.id
@@ -5260,6 +5265,8 @@ Ref: ordering.contract_payment_installment.delivery_batch_id > ordering.delivery
 Ref: ordering.customer_order.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.customer_order.released_by > identity.app_user.id
 Ref: ordering.customer_order.replaces_return_request_id > ordering.return_request.id [delete: restrict]
+Ref: ordering.customer_order.shipping_warehouse_chosen_by > identity.app_user.id
+Ref: ordering.customer_order.shipping_warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: ordering.customer_order.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: ordering.delivery_batch.contract_id > ordering.sales_contract.id [delete: cascade]
 Ref: ordering.delivery_batch_line.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
