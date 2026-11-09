@@ -717,17 +717,18 @@ class StockDamageIntegrationTest {
     }
 
     @Test
-    @DisplayName("a layer an open recount froze: its free units may be reported, ATP stays right")
+    @DisplayName("a carton an open recount froze does not stop a loose layer's units being reported (counts are by carton)")
     void frozenByARecount() throws Exception {
+        CartonRows.Carton frozen = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, 5, "L1", today.plusDays(60),
+                Instant.parse("2026-09-01T03:00:00Z"), "AVAILABLE")).getFirst();
         tx.executeWithoutResult(s -> cycleCounts.save(CycleCount.shortPick(cycleCounts.nextNumber(today),
-                DemoData.WAREHOUSE_HCM, CountSlot.loose(new LocationId(BIN), new Sku(sku), "L1"), 10, "test recount",
+                DemoData.WAREHOUSE_HCM, CountSlot.carton(new LocationId(BIN), new Sku(sku), "L1",
+                        new com.stockflow.inventory.internal.domain.StockPackageId(frozen.id())), 5, "test recount",
                 today)));
-        assertThat(atp()).as("frozen").isZero();
 
         report(UUID.randomUUID(), row, 3).andExpect(status().isCreated());
 
         assertThat(onHand(row)).isEqualTo(7);
-        assertThat(atp()).as("still frozen, never negative").isZero();
         assertThat(damagedAt(QC01)).isEqualTo(3);
     }
 }

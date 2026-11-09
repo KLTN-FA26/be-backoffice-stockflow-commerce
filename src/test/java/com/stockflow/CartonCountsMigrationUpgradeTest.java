@@ -441,7 +441,7 @@ class CartonCountsMigrationUpgradeTest {
     /** The statement is refused by the database as {@code state} (a CHECK, key or NOT NULL), naming {@code reason}. */
     private static void refusedBy(Connection db, String rule, String state, String reason, String sql, Object... values) {
         SQLException refusal = catchThrowableOfType(SQLException.class, () -> RawSql.update(db, sql, values));
-        assertThat(refusal).as("%s is refused, but the database accepted: %s", rule, sql).isNotNull();
+        assertThat((Throwable) refusal).as("%s is refused, but the database accepted: %s", rule, sql).isNotNull();
         assertThat(refusal.getSQLState()).as("%s: %s", rule, refusal.getMessage()).isEqualTo(state);
         assertThat(refusal.getMessage()).as(rule).contains(reason);
     }

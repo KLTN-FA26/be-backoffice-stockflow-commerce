@@ -180,7 +180,7 @@ class StockPackageSchemaMigrationTest {
             SQLException twice = catchThrowableOfType(SQLException.class, () -> update(db, second));
             assertThat(twice == null ? "accepted" : twice.getSQLState()).as("a second row of one carton")
                     .isEqualTo("23505");
-            assertThat(twice).hasMessageContaining("uk_stock_item_package");
+            assertThat((Throwable) twice).hasMessageContaining("uk_stock_item_package");
 
             // Moved whole, its row goes with it - in one transaction, for the commit-time check.
             transaction(db,
