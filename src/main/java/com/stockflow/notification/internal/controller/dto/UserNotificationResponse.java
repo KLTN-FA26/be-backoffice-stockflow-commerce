@@ -8,7 +8,7 @@ import java.util.UUID;
 /** One inbox message. {@code read} is {@code readAt != null}, for a client that only wants the flag. */
 public record UserNotificationResponse(
         UUID id,
-        @Schema(description = "A code of the module that posted it, e.g. INVENTORY_ALERT; group and pick icons by it")
+        @Schema(description = "A code of the module that posted it, e.g. ORDER_SHIPPING; group and pick icons by it")
         String category,
         @Schema(description = "INFO, WARN or CRITICAL")
         String severity,
@@ -16,7 +16,7 @@ public record UserNotificationResponse(
         String body,
         @Schema(description = "A route of the application to open, starting with '/'; null when there is none")
         String link,
-        @Schema(description = "What the message is about, e.g. STOCK_ALERT; null when there is none")
+        @Schema(description = "What the message is about, e.g. ORDER; null when there is none")
         String sourceType,
         String sourceId,
         Instant createdAt,

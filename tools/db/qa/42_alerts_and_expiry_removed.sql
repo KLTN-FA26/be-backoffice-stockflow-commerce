@@ -60,6 +60,9 @@ SELECT pg_temp.expect_true('AE6 no publication of an event only the alerts used 
     NOT EXISTS (SELECT 1 FROM event_publication
                  WHERE event_type IN ('com.stockflow.contracts.InventoryAlertsRaised',
                                       'com.stockflow.contracts.SkuInventoryControlChanged')));
+SELECT pg_temp.expect_true('AE6b no in-app message of a stock alert is left, linking to a page that is gone',
+    NOT EXISTS (SELECT 1 FROM notification.user_notification
+                 WHERE category = 'INVENTORY_ALERT' OR source_type = 'STOCK_ALERT' OR link LIKE '%/inventory/alerts%'));
 SELECT pg_temp.expect_true('AE7 the carton view still answers, without an expiry',
     (SELECT count(*) FROM inventory.stock_package_balance) >= 0);
 SELECT pg_temp.expect_fail('AE8 a threshold written to an item', $q$

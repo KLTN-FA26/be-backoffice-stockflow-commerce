@@ -20,7 +20,9 @@
 --      inventory.enforce_sku_policy, inventory.resolve_stock_item_lot, procurement.check_goods_receipt_line_frozen and
 --      the view inventory.stock_package_balance (which loses its expiry_date column);
 --   5. the permission inventory-alerts (every role that held it moves its version, ADR-0008);
---   6. event publications of the two events that only the alerts used (InventoryAlertsRaised,
+--   6. the in-app messages the alerts posted (category INVENTORY_ALERT, about a STOCK_ALERT): they link to the alert
+--      pages, which are gone. The category is a free code of its poster, not an enum: nothing in the code keeps it;
+--   7. event publications of the two events that only the alerts used (InventoryAlertsRaised,
 --      SkuInventoryControlChanged): their listeners are gone, so a publication left incomplete would be retried
 --      for ever against a class that no longer exists.
 --
@@ -81,6 +83,12 @@ SELECT 'procurement.goods_receipt_lines', g.id, jsonb_build_object('receipt_id',
   FROM procurement.goods_receipt_lines g
  WHERE g.expiry_date IS NOT NULL;
 
+-- The alerts' in-app messages: they link to pages that are gone.
+INSERT INTO platform.legacy_archive (source_table, row_id, row_data)
+SELECT 'notification.user_notification', n.id, to_jsonb(n)
+  FROM notification.user_notification n
+ WHERE n.category = 'INVENTORY_ALERT' OR n.source_type = 'STOCK_ALERT';
+
 -- Publications of the two events only the alerts used, still waiting for a listener that is gone.
 INSERT INTO platform.legacy_archive (source_table, row_id, row_data)
 SELECT 'public.event_publication', e.id, to_jsonb(e)
@@ -99,7 +107,8 @@ COMMENT ON TABLE platform.legacy_archive IS
         '(V20261108001000), the parcel carriers'' status before they were retired (V20261108001300), the stock '
         'rows, cartons, holds and open pick lines as they were before loose stock went into cartons '
         '(V20261111000110), and the stock alerts, their queue, the items'' thresholds and expiry settings, the expiry '
-        'dates of stock, lots and receipt lines and the alerts'' pending event publications (V20261111000300). '
+        'dates of stock, lots and receipt lines, the alerts'' in-app messages and pending event publications '
+        '(V20261111000300). '
         'Read-only history.';
 
 
@@ -112,6 +121,8 @@ DROP TRIGGER trg_stock_item_dirty_delete ON inventory.stock_item;
 DROP FUNCTION inventory.mark_stock_alert_dirty();
 DROP TABLE inventory.stock_alert;
 DROP TABLE inventory.stock_alert_dirty;
+
+DELETE FROM notification.user_notification WHERE category = 'INVENTORY_ALERT' OR source_type = 'STOCK_ALERT';
 
 DELETE FROM event_publication
  WHERE event_type IN ('com.stockflow.contracts.InventoryAlertsRaised',

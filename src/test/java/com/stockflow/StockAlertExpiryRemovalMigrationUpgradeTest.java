@@ -17,7 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * goes from every role, whose version moves; the pending publications of the two events only the alerts used are
  * archived and cleared, while other publications stay. Lots of one receipt told apart by expiry alone are merged into
  * the oldest, their stock rows and ledger lines repointed. Stock already past its expiry date, and held by nobody, is
- * marked EXPIRED with its ledger line, so it does not turn sellable once nothing sweeps it. Afterwards nothing becomes EXPIRED, stock or adjustment, while what was EXPIRED stays readable.
+ * marked EXPIRED with its ledger line, so it does not turn sellable once nothing sweeps it. The alerts' in-app
+ * messages, which link to pages that are gone, are archived and deleted. Afterwards nothing becomes EXPIRED, stock or adjustment, while what was EXPIRED stays readable.
  */
 class StockAlertExpiryRemovalMigrationUpgradeTest {
 
@@ -40,6 +41,8 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
     private static final String LINE_B = "00000000-0000-4000-8000-0000000e5701";
     private static final String PAST_DATE = "00000000-0000-4000-8000-0000000e5801";
     private static final String PAST_DATE_HELD = "00000000-0000-4000-8000-0000000e5802";
+    private static final String ALERT_MESSAGE = "00000000-0000-4000-8000-0000000e5901";
+    private static final String OTHER_MESSAGE = "00000000-0000-4000-8000-0000000e5902";
 
     @Test
     void alertsAndExpiryGoArchivedAndTheAlertPermissionWithThem() throws Exception {
@@ -129,6 +132,13 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
                 assertThat(RawSql.text(db, "SELECT status FROM inventory.stock_item WHERE id = ?::uuid", ROW))
                         .as("not yet past its date").isEqualTo("AVAILABLE");
 
+                // The alerts' in-app messages are archived and gone; another message stays.
+                assertThat(RawSql.texts(db, "SELECT id::text FROM notification.user_notification WHERE id IN (?::uuid, ?::uuid)",
+                        ALERT_MESSAGE, OTHER_MESSAGE)).containsExactly(OTHER_MESSAGE);
+                assertThat(RawSql.text(db, "SELECT row_data->>'link' FROM platform.legacy_archive"
+                        + " WHERE source_table = 'notification.user_notification' AND row_id = ?::uuid", ALERT_MESSAGE))
+                        .isEqualTo("/inventory/alerts");
+
                 // The permission, and every holder's version moved; a role that never held it keeps its version.
                 assertThat(RawSql.number(db,
                         "SELECT count(*) FROM identity.permission WHERE resource = 'inventory-alerts'")).isZero();
@@ -183,6 +193,14 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
                        (?::uuid, ?, 'HCM-A02-1-B', 'LOT-OLD', CURRENT_DATE - 1, 3, 3, 'AVAILABLE', NOW(),
                         NOW() - interval '400 days')""", PAST_DATE, SOFA, PAST_DATE_HELD, SOFA);
         RawSql.update(db, "UPDATE inventory.inventory_items SET policy_configured = TRUE WHERE sku = ?", SOFA);
+        // An in-app message of a stock alert, and one of something else.
+        RawSql.update(db, """
+                INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, link,
+                                                            source_type, source_id, dedupe_key)
+                VALUES (?::uuid, md5('demo:user:editor')::uuid, 'INVENTORY_ALERT', 'WARN', '1 SKU at its reorder point',
+                        '/inventory/alerts', 'STOCK_ALERT', 'a-1', 'REORDER:upgrade'),
+                       (?::uuid, md5('demo:user:editor')::uuid, 'QUOTE', 'INFO', 'A quote to answer', NULL, NULL, NULL,
+                        'QUOTE:upgrade')""", ALERT_MESSAGE, OTHER_MESSAGE);
         // A row the old expiry sweep left EXPIRED.
         RawSql.update(db, """
                 INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,
