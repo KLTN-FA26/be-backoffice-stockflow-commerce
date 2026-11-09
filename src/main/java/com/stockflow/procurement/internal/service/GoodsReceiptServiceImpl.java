@@ -720,7 +720,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         // Cartons labelled while counting held no stock and their labels are no longer valid (RECEIVING → VOID).
         inventory.voidStockPackagesOfReceiptLines(receipt.lines().stream().map(ReceiptLine::id).toList());
         GoodsReceipt saved = receipts.save(receipt);
-        receiving.dropReceipt(production.id(), saved.id());
+        receiving.dropReceipt(production.id(), saved.id(), users.current().map(CurrentUser::userId).orElse(null));
         log.info("Receipt {} against production order {} cancelled", saved.number(), production.code());
         return view(saved, null, production);
     }

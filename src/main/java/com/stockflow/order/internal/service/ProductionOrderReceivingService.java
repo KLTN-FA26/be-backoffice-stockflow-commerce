@@ -2,8 +2,10 @@ package com.stockflow.order.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.ProductionOrderReceiving;
 import com.stockflow.order.api.ReceivableProductionOrder;
+import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.Producer;
@@ -13,6 +15,7 @@ import com.stockflow.order.internal.domain.ProductionOrderReceiptRepository;
 import com.stockflow.order.internal.domain.ProductionOrderReceiptRepository.Registered;
 import com.stockflow.order.internal.domain.ProductionOrderReceiptRepository.Status;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
+import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -97,7 +100,7 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
     }
 
     @Override
-    public void dropReceipt(UUID productionOrderId, UUID receiptId) {
+    public void dropReceipt(UUID productionOrderId, UUID receiptId, UUID actorId) {
         ProductionOrder production = locked(productionOrderId).orElseThrow(() -> notFound(productionOrderId));
         Registered registered = registered(production, receiptId);
         if (registered.status() == Status.CANCELLED) {
@@ -107,8 +110,10 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
             throw new IllegalStateException("Receipt %s of production order %s was counted in: it is not cancelled"
                     .formatted(registered.receiptNumber(), production.code()));
         }
-        receipts.settle(productionOrderId, receiptId, Status.CANCELLED, clock.instant());
+        Instant at = clock.instant();
+        receipts.settle(productionOrderId, receiptId, Status.CANCELLED, at);
         log.info("Production order {}: draft receipt {} cancelled", production.code(), registered.receiptNumber());
+        stopIfItsOrderWasCancelled(production, actorId, at);
     }
 
     @Override
@@ -131,7 +136,43 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
         log.info("Production order {}: receipt {} counted in {} carton(s), now {}", saved.code(),
                 registered.receiptNumber(), cartonsByProductionOrderLine.values().stream().mapToInt(Integer::intValue)
                         .sum(), saved.status());
-        return view(saved, new HashMap<>());
+        return view(stopIfItsOrderWasCancelled(saved, actorId, at), new HashMap<>());
+    }
+
+    /**
+     * A sales order cancelled while a goods receipt against one of its production orders was a draft left that
+     * production order open: a draft blocks cancelling and closing it (03 edge cases), so
+     * {@code SalesOrderCancellationListener} passed it by. The last draft settled, it is stopped here, in the
+     * receipt's transaction and under the locks already taken (sales order, then production order): cancelled if mass
+     * printing had not started, closed otherwise - what was just received stays as the customer's surplus (17 BR-07,
+     * BR-09). Without someone to name, it is left to the coordinator, as the listener leaves it.
+     */
+    private ProductionOrder stopIfItsOrderWasCancelled(ProductionOrder production, UUID actorId, Instant at) {
+        if (!production.status().open() || !receipts.drafts(production.id()).isEmpty()) {
+            return production;
+        }
+        Order order = orders.findById(new OrderId(production.salesOrderId())).orElseThrow();
+        if (order.status() != OrderStatus.CANCELLED) {
+            return production;
+        }
+        if (actorId == null) {
+            log.warn("Production order {} of cancelled order {} has no draft receipt left but no one to stop it: left "
+                    + "to the coordinator", production.code(), order.orderNumber());
+            return production;
+        }
+        String reason = "Sales order %s was cancelled: %s".formatted(order.orderNumber(),
+                order.cancellationReasonCode());
+        if (production.status().cancellable()) {
+            production.cancel(reason, actorId, at);
+        } else if (production.status().canTransitionTo(ProductionOrderStatus.CLOSED)) {
+            production.close(reason, actorId, at);
+        } else {
+            return production;
+        }
+        ProductionOrder stopped = productionOrders.save(production);
+        log.info("Production order {} stopped with its cancelled order {}: its last draft receipt is settled",
+                stopped.code(), order.orderNumber());
+        return stopped;
     }
 
     /** The receipt's registration with the production order; a receipt never opened is a fault of the caller. */

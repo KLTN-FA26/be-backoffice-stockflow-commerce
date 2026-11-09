@@ -9,10 +9,11 @@ import com.stockflow.order.internal.domain.ProductionOrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.modulith.events.ApplicationModuleListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.UUID;
@@ -27,10 +28,17 @@ import java.util.UUID;
  * <p>After the order's commit, like every reaction to {@code OrderCancelled}. One transaction per production order,
  * each locking the sales order first and then the production order - the lock order of every write to a production
  * order - so one refused does not undo the others. A production order that refuses because goods are being received
- * against it (a draft goods receipt, {@code PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS} once receiving by production order is
- * in, 4A-5) is left to the coordinator with a warning: the receipt is confirmed or dropped first. Any other failure is
+ * against it (a draft goods receipt, {@code PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS}, 4A-5) is passed by here: it is
+ * stopped when its last draft is confirmed or cancelled ({@code ProductionOrderReceivingService}), in that receipt's
+ * transaction, so it is not left open whatever the event registry does next. Any other failure is
  * raised once the rest were tried, so the event stays incomplete and is delivered again; a redelivery skips what was
  * stopped already - a production order received, cancelled or closed is left as it is.</p>
+ *
+ * <p>{@code @Async @TransactionalEventListener}, not {@code @ApplicationModuleListener}: the latter wraps the whole
+ * method in a REQUIRES_NEW transaction, and its connection would sit idle while each production order borrows a
+ * second one. Many orders cancelled together (a contract's) would then hold every pooled connection waiting for
+ * another. Without the outer transaction each thread borrows one connection at a time; the event publication registry
+ * still records the delivery and leaves it incomplete when this method throws.</p>
  */
 @Component
 class SalesOrderCancellationListener {
@@ -54,7 +62,8 @@ class SalesOrderCancellationListener {
         this.eachProductionOrder.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    @ApplicationModuleListener
+    @Async
+    @TransactionalEventListener
     public void on(OrderCancelled event) {
         var open = productionOrders.ofSalesOrder(event.orderId()).stream()
                 .filter(production -> production.status().open()).toList();
@@ -75,8 +84,8 @@ class SalesOrderCancellationListener {
                 eachProductionOrder.executeWithoutResult(status -> stop(production.id(), event, reason));
             } catch (BusinessException e) {
                 if (DRAFT_RECEIPTS.equals(e.errorCode().name())) {
-                    log.warn("Order {} was cancelled; production order {} has a goods receipt in progress and is left "
-                            + "to the coordinator", event.orderNumber(), production.code());
+                    log.info("Order {} was cancelled; production order {} has a goods receipt in progress and is "
+                            + "stopped once it is settled", event.orderNumber(), production.code());
                 } else {
                     failure = keep(failure, e);
                 }

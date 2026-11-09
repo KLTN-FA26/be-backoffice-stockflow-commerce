@@ -32,7 +32,8 @@
 --   * No index, view or other function (inventory, payment, fulfillment) lists order statuses.
 --
 -- Nothing is back-filled: an order CONFIRMED with a production order already sent stays CONFIRMED, and is released
--- from there as before. No order is IN_PRODUCTION (V20261108000100).
+-- from there as before. Such an order cannot exist where this runs: production orders came with V20261108002700, which
+-- ships together with this one, and no seed draws one up. No order is IN_PRODUCTION (V20261108000100).
 -- =============================================================================
 
 ALTER TABLE ordering.customer_order DROP CONSTRAINT ck_order_status;

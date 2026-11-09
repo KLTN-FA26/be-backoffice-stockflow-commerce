@@ -46,8 +46,12 @@ public interface ProductionOrderReceiving {
      */
     void openReceipt(UUID productionOrderId, UUID receiptId, String receiptNumber);
 
-    /** The draft receipt was cancelled. Idempotent: a receipt already dropped changes nothing. */
-    void dropReceipt(UUID productionOrderId, UUID receiptId);
+    /**
+     * The draft receipt was cancelled, by {@code actorId}. Idempotent: a receipt already dropped changes nothing. When
+     * it was the last draft of a production order whose sales order was cancelled meanwhile, the production order is
+     * stopped now, as the cancellation would have done had no receipt been in progress (17 §4.8, BR-09).
+     */
+    void dropReceipt(UUID productionOrderId, UUID receiptId, UUID actorId);
 
     /**
      * The receipt was confirmed: {@code cartonsByProductionOrderLine} cartons of each line were counted in. The
