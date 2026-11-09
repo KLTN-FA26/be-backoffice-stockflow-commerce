@@ -46,6 +46,18 @@ class CartonFitTest {
     }
 
     @Test
+    @DisplayName("axes pair physically: a carton's length against the bin's length, its width against the bin's width")
+    void axesPairPhysically() {
+        Carton fixed = carton("50", "40", "30", false);
+        // 0.40 wide x 0.50 long: length 50 along the bin's length 0.50, width 40 across its width 0.40.
+        assertThat(CartonFit.fits(fixed, bin("0.40", "0.50", "0.30"))).isTrue();
+        // The literal reading of the docs (carton length against bin width) would accept this one; it is refused.
+        assertThat(CartonFit.fits(fixed, bin("0.50", "0.40", "0.30"))).isFalse();
+        // Turned on the horizontal, a rotatable carton takes either.
+        assertThat(CartonFit.fits(carton("50", "40", "30", true), bin("0.50", "0.40", "0.30"))).isTrue();
+    }
+
+    @Test
     @DisplayName("a level without a clear height (legacy) does not limit the height")
     void noClearHeight() {
         assertThat(CartonFit.fits(carton("50", "40", "300", false), bin("0.4", "0.5", null))).isTrue();

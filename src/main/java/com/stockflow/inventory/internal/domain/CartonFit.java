@@ -9,6 +9,14 @@ import java.math.RoundingMode;
  * {@code rotatable} may be turned on the horizontal - length for width - and fitting either way is enough; its height
  * is always compared with the clear height, since a carton is never laid on its side.
  *
+ * <p><b>Which side faces which.</b> The docs write "D × R × C of the carton ≤ width × length of the bin × clear
+ * height" (06 BR-01, length x width x height against width x length x height). Read literally that pairs the carton's
+ * length with the bin's width. This reads it physically instead: the carton's length against the bin's length, its
+ * width against the bin's width, and "turned on the horizontal" swaps the two. For a rotatable carton - the default -
+ * both readings give the same answer, since either orientation passes; only a carton that may not be turned can come
+ * out differently, and for it the physical pairing is the one a person loading the shelf would apply. The database
+ * trigger pairs the axes the same way. Recorded as an open question in the 5-4 PR.</p>
+ *
  * <p>The rule of every move of a carton into a bin: putaway (05 BR-04), put-back (07 BR-12) and a move by hand,
  * from {@code OVERFLOW} too (11 BR-10). The database states it again ({@code tg_stock_package_fits_bin}).</p>
  *
