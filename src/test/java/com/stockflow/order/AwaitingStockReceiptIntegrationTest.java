@@ -391,6 +391,13 @@ class AwaitingStockReceiptIntegrationTest {
     }
 
     /** The cancellation listener has handled the event: its publication is completed in the registry. */
+    /** {@code ProductionOrderStopped} published for the production order: what tells its producer (4A-3). */
+    private long stopsPublished(UUID productionOrderId) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE event_type = ? AND serialized_event LIKE ?""", Long.class,
+                com.stockflow.contracts.ProductionOrderStopped.class.getName(), "%" + productionOrderId + "%");
+    }
+
     private void awaitCancellationHandled(UUID orderId) {
         Await.until("SalesOrderCancellationListener to handle the cancellation", Duration.ofSeconds(30), () ->
                 jdbc.queryForObject("""
@@ -499,6 +506,8 @@ class AwaitingStockReceiptIntegrationTest {
         assertThat(stopped.status()).isEqualTo(ProductionOrderStatus.CANCELLED);
         assertThat(jdbc.queryForMap("SELECT cancelled_by, cancellation_reason FROM ordering.production_order WHERE id = ?",
                 w.production().id())).containsEntry("cancelled_by", clerk);
+        assertThat(stopsPublished(w.production().id())).as("its producer is told to stop (17 §4.3 step 13)")
+                .isPositive();
         assertThat(status(w.orderId())).isEqualTo(OrderStatus.CANCELLED);
     }
 
@@ -519,6 +528,8 @@ class AwaitingStockReceiptIntegrationTest {
         assertThat(closed.lines().getFirst().receivedCartons()).as("what arrived stays recorded").isEqualTo(3);
         assertThat(jdbc.queryForMap("SELECT closed_by FROM ordering.production_order WHERE id = ?",
                 w.production().id())).containsEntry("closed_by", clerk);
+        assertThat(stopsPublished(w.production().id())).as("its producer is told to deliver nothing more (step 12)")
+                .isPositive();
         assertThat(status(w.orderId())).isEqualTo(OrderStatus.CANCELLED);
         assertThat(printingStartedAt(w.orderId())).as("a cancelled order is left as it is").isNull();
     }
