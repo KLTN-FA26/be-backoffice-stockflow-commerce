@@ -9,12 +9,14 @@ import java.util.UUID;
  * A quote as the back office and the portal show it.
  *
  * @param status        as of now: a sent quote past its validity reads EXPIRED
+ * @param legacy        drafted before 4B-2 on blanks and designs: kept to read, not sent, accepted or converted (QD-16)
  * @param version       to send back with the next change
  * @param acceptedTotal VND, once accepted
  */
 public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
                             String paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                            java.time.LocalDate requestedDeliveryDate, List<Line> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
+                            java.time.LocalDate requestedDeliveryDate, boolean legacy, List<Line> lines, boolean priced,
+                            BigDecimal proposedTotal, BigDecimal acceptedTotal,
                             Instant sentAt,
                             UUID sentBy,
                             Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,
@@ -22,27 +24,23 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
                             String createdBy, long version) {
 
     /**
-     * @param moq    the minimum order quantity, where the lowest tier starts
-     * @param sample always {@link Sample#NOT_REQUIRED}; kept for clients that still read it
+     * A line: cartons of the customer's own SKU, priced per piece (kltn-docs 14 BR-08). Ordered by the carton, shown
+     * with its pieces: {@code units} = {@code cartons} x {@code unitsPerCarton}.
+     *
+     * @param measure          {@code CARTON}; {@code UNIT} on a legacy line, which names a blank ({@code sku}), its
+     *                         design and print specification, and counts units
+     * @param moq              where the lowest tier starts, in the line's measure
+     * @param proposedUnitPrice VND per piece at the proposed cartons
      */
-    public record Line(UUID id, int lineNo, String blankSku, UUID designSnapshotId, String printSpec, int quantity,
-                       boolean priced, Integer moq, List<Tier> tiers, BigDecimal proposedUnitPrice,
-                       BigDecimal proposedLineTotal,
-                       Integer acceptedQuantity, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
-                       Sample sample) {
+    public record Line(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
+                       int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq,
+                       List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
+                       Integer acceptedCartons, Integer acceptedUnits, BigDecimal acceptedUnitPrice,
+                       BigDecimal acceptedLineTotal) {
     }
 
+    /** From {@code minQuantity} cartons (units on a legacy line) up, {@code unitPrice} VND per piece. */
     public record Tier(int minQuantity, BigDecimal unitPrice) {
-    }
-
-    /**
-     * Acceptance no longer waits for an approved sample: print samples are approved on the Production Order, outside
-     * the quote (kltn-docs 17). Every line answers {@link #NOT_REQUIRED} until clients stop reading the field.
-     */
-    @io.swagger.v3.oas.annotations.media.Schema(deprecated = true)
-    public record Sample(boolean satisfied, UUID approvedSampleId, boolean reorder) {
-
-        public static final Sample NOT_REQUIRED = new Sample(true, null, false);
     }
 
     public record Order(UUID orderId, String orderNumber, String status, BigDecimal total) {

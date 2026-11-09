@@ -193,8 +193,22 @@ public record OrderResponse(
 
             @Schema(description = "SCRUM-502: the date the customer asked to receive this print line, from its quote. "
                     + "Null when none was asked or for a stock line")
-            java.time.LocalDate requestedDeliveryDate
+            java.time.LocalDate requestedDeliveryDate,
+
+            @Schema(description = "4B-2: cartons ordered; quantity is cartons x unitsPerCarton pieces. Null for a line "
+                    + "not ordered in cartons")
+            Integer cartons,
+
+            @Schema(description = "4B-2: pieces per carton fixed on the line when it was quoted")
+            Integer unitsPerCarton
     ) {
+
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
+                    Integer deliveredQuantity, Integer cancelledQuantity, java.time.LocalDate requestedDeliveryDate) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, requestedDeliveryDate, null, null);
+        }
 
         public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                     List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,

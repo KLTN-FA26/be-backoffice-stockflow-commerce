@@ -24,20 +24,18 @@ public final class QuoteRequests {
     private QuoteRequests() {
     }
 
-    @Schema(description = "A price break: from minQuantity units up, unitPrice VND per unit (whole dong)")
+    @Schema(description = "A price break: from minQuantity cartons up, unitPrice VND per piece (whole dong)")
     public record Tier(
             @Min(value = 1, message = "minQuantity must be at least 1") int minQuantity,
             @NotNull(message = "unitPrice is required") @DecimalMin(value = "1", message = "unitPrice must be positive")
             @Digits(integer = 15, fraction = 0, message = "unitPrice is whole VND") BigDecimal unitPrice) {
     }
 
-    @Schema(description = "A printed blank: the blank SKU, the customer's confirmed design, how it is printed")
+    @Schema(description = "Cartons of one of the customer's own SKUs (kltn-docs 14 BR-04, BR-08)")
     public record Line(
-            @Schema(example = "CUP-PP-500") @NotBlank(message = "blankSku is required") @ValidSku String blankSku,
-            @NotNull(message = "designSnapshotId is required") UUID designSnapshotId,
-            @Size(max = 2000, message = "printSpec is at most 2000 characters") String printSpec,
-            @Min(value = 1, message = "quantity must be at least 1") int quantity,
-            @Schema(description = "Omit to start from the customer's price list for the blank (SCRUM-428)")
+            @Schema(example = "LY12OZ-0312345678-01") @NotBlank(message = "sku is required") @ValidSku String sku,
+            @Min(value = 1, message = "cartons must be at least 1") int cartons,
+            @Schema(description = "Omit to start from the customer's own price for the SKU (13 BR-05)")
             @Size(max = 20, message = "at most 20 tiers")
             List<@Valid Tier> tiers) {
     }
@@ -78,10 +76,10 @@ public final class QuoteRequests {
     }
 
     public record AcceptedLine(@NotNull(message = "lineId is required") UUID lineId,
-                               @Min(value = 1, message = "quantity must be at least 1") int quantity) {
+                               @Min(value = 1, message = "cartons must be at least 1") int cartons) {
     }
 
-    @Schema(description = "Accept at the proposed quantities, or name another quantity (at or above the MOQ) per line")
+    @Schema(description = "Accept at the proposed cartons, or name other cartons (at or above the MOQ) per line")
     public record Acceptance(@NotNull(message = "version is required") Long version,
                              @Size(max = 50, message = "at most 50 lines") List<@Valid AcceptedLine> lines) {
     }

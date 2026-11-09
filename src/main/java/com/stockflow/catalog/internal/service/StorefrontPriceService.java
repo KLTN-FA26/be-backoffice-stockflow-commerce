@@ -51,7 +51,9 @@ public class StorefrontPriceService {
         for (String sku : skus) {
             if (listings.publishedProductForSku(sku).isEmpty()) continue;
             try {
-                schedules.add(resolver.schedule(customer, sku));
+                // 13 BR-10: a price of the customer's own on its own SKU is internal - Sales quotes from it, the
+                // customer never sees it - so the storefront reads what checkout reads.
+                schedules.add(resolver.checkoutSchedule(customer, sku));
             } catch (BusinessException noPrice) {
                 if (noPrice.errorCode() != ErrorCode.PRICE_NOT_AVAILABLE) throw noPrice;
             }

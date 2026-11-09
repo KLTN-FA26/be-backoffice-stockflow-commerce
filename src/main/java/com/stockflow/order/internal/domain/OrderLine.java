@@ -54,6 +54,15 @@ public final class OrderLine {
     /** Units closed out of the line - the rest of a partly fulfilled order (17 edge "short pick"): not delivered. */
     private int cancelledQuantity;
 
+    /**
+     * 4B-2 (kltn-docs 14 BR-08): a line placed from a quote line of the customer's own SKU keeps how it was ordered -
+     * the carton unit, the cartons and the pieces per carton fixed on the quote line; {@link #quantity()} stays in
+     * pieces, cartons x pieces per carton. Null on a line placed before, or bought at checkout.
+     */
+    private UUID uomConversionId;
+    private Integer cartons;
+    private Integer unitsPerCarton;
+
     public OrderLine(UUID id, Sku sku, int quantity, Money unitPrice,
                      UUID designSnapshotId, List<UUID> reservationIds, int cancelledQuantity) {
         this(id, sku, quantity, unitPrice, designSnapshotId, reservationIds);
@@ -157,12 +166,40 @@ public final class OrderLine {
      * built (placing the order, rehydration) - there is no way to change it on a placed order.
      */
     public OrderLine withRequestedDeliveryDate(LocalDate date) {
-        if (date != null && designSnapshotId == null) {
-            throw new IllegalArgumentException("Only a print line has a requested delivery date");
+        if (date != null && designSnapshotId == null && cartons == null) {
+            throw new IllegalArgumentException("Only a print line, or a line of the customer's own SKU in cartons, has a "
+                    + "requested delivery date");
         }
         this.requestedDeliveryDate = date;
         return this;
     }
+
+    /**
+     * How the line was ordered: {@code cartons} of {@code unitsPerCarton} pieces in the SKU's carton unit (4B-2). Set
+     * once, when the order is placed or read back; {@link #quantity()} must be their product.
+     */
+    public OrderLine withCartons(UUID uomConversionId, int cartons, int unitsPerCarton) {
+        java.util.Objects.requireNonNull(uomConversionId, "uomConversionId");
+        if (cartons < 1 || unitsPerCarton < 2 || (long) cartons * unitsPerCarton != quantity) {
+            throw new IllegalArgumentException("%d carton(s) of %d pieces is not the line's %d pieces".formatted(cartons,
+                    unitsPerCarton, quantity));
+        }
+        if (this.cartons != null && (!this.uomConversionId.equals(uomConversionId) || this.cartons != cartons
+                || this.unitsPerCarton != unitsPerCarton)) {
+            throw new IllegalStateException("An order line's cartons are fixed when it is placed");
+        }
+        this.uomConversionId = uomConversionId;
+        this.cartons = cartons;
+        this.unitsPerCarton = unitsPerCarton;
+        return this;
+    }
+
+    /** The SKU's carton unit the line was ordered in; null for a line not ordered in cartons. */
+    public UUID uomConversionId() { return uomConversionId; }
+    /** Cartons ordered; null for a line not ordered in cartons. */
+    public Integer cartons() { return cartons; }
+    /** Pieces per carton fixed on the line; null for a line not ordered in cartons. */
+    public Integer unitsPerCarton() { return unitsPerCarton; }
 
     public boolean isMadeToOrder() {
         return designSnapshotId != null;

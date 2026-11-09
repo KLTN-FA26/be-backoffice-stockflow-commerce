@@ -120,7 +120,7 @@ class QuoteController {
                                              @AuthenticatedUser CurrentUser user) {
         Map<UUID, Integer> quantities = new LinkedHashMap<>();
         if (request.lines() != null) {
-            request.lines().forEach(line -> quantities.merge(line.lineId(), line.quantity(), (a, b) -> b));
+            request.lines().forEach(line -> quantities.merge(line.lineId(), line.cartons(), (a, b) -> b));
         }
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.accept(user, quoteId,
                 new Quotes.Acceptance(request.version(), quantities))));

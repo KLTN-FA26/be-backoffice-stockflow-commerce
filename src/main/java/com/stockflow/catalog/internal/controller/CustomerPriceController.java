@@ -102,7 +102,7 @@ class CustomerPriceController {
     }
 
     private static CustomerPriceResponse toResponse(CustomerPriceService.PriceView price) {
-        return new CustomerPriceResponse(price.customerId(), price.sku(), price.moq(),
+        return new CustomerPriceResponse(price.customerId(), price.sku(), price.measure(), price.moq(),
                 price.tiers().stream().map(t -> new CustomerPriceResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),
                 price.note(), price.version());
     }

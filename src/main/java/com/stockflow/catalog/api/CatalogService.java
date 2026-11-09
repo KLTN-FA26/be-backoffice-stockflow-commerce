@@ -41,6 +41,15 @@ public interface CatalogService {
     PriceSchedule priceSchedule(java.util.UUID customerId, String sku);
 
     /**
+     * The customer's own price for one of its own SKUs (4B-2; kltn-docs 13 BR-05: tiers by cartons, a price per piece),
+     * if it has one: what a quote line starts from (14 step 2). Never a group or base price, and nothing is thrown when
+     * there is none - a caller in a transaction would otherwise find it marked rollback-only by the refusal.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND}
+     */
+    java.util.Optional<PriceSchedule> customerPrice(java.util.UUID customerId, String sku);
+
+    /**
      * Where the storefront shows each of these SKUs today, so a client can rebuild a basket from SKUs it only
      * remembers (reorder, SCRUM-190). A SKU that is not on sale now - unpublished, suspended, discontinued or
      * unknown - has no entry; its absence is the answer. Reads only; never a price or a stock figure.

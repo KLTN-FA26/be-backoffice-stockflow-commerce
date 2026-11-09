@@ -118,7 +118,7 @@ final class OrderWebMapper {
                                                         ? progress.get(line.lineId()).deliveredQuantity() : null,
                                                 progress.containsKey(line.lineId())
                                                         ? progress.get(line.lineId()).cancelledQuantity() : null,
-                                                line.requestedDeliveryDate()))
+                                                line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton()))
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),

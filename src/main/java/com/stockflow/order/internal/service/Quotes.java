@@ -22,14 +22,31 @@ import java.util.UUID;
  *
  * <p>Every change names the {@code version} the caller last read and is refused (409
  * {@code OPTIMISTIC_LOCK}) if the quote moved since, so nobody accepts or revises a quote they did not
- * see. Prices are set by Sales as tiers and resolved by the server; the customer only picks quantities.</p>
+ * see. Prices are set by Sales as tiers and resolved by the server; the customer only picks cartons.</p>
+ *
+ * <p>4B-2 (kltn-docs 14 BR-04, BR-07, BR-08): a line is cartons of one of the customer's own SKUs; a tier starts at a
+ * number of cartons and prices one piece. A quote drafted before on blanks and designs is kept to read
+ * ({@code legacy}, QD-16): its lines count units, and it is not sent, accepted or converted.</p>
  */
 public interface Quotes {
 
+    /**
+     * A price break.
+     *
+     * @param minQuantity where it starts: cartons (units on a legacy line)
+     * @param unitPrice   VND for one piece
+     */
     record Tier(int minQuantity, BigDecimal unitPrice) {
     }
 
-    record Line(String blankSku, UUID designSnapshotId, String printSpec, int quantity, List<Tier> tiers) {
+    /**
+     * A line as Sales writes it.
+     *
+     * @param sku     one of the customer's own SKUs
+     * @param cartons cartons proposed; the customer may accept another number at or above the MOQ
+     * @param tiers   empty to start from the customer's own price for the SKU (13 BR-05)
+     */
+    record Line(String sku, int cartons, List<Tier> tiers) {
     }
 
     /**
@@ -50,15 +67,24 @@ public interface Quotes {
     }
 
     /**
-     * @param priced            false for a reorder line the price list could not price (R1): no tiers, and
+     * @param measure           {@code CARTON}; {@code UNIT} on a line drafted before 4B-2 (a blank, a design, units)
+     * @param cartons           cartons proposed; null on a legacy line
+     * @param unitsPerCarton    pieces per carton fixed on the line; null on a legacy line
+     * @param units             pieces proposed (cartons x pieces per carton; the units of a legacy line)
+     * @param designSnapshotId  the design printed on the blank of a legacy line; null on a carton line
+     * @param printSpec         how the blank of a legacy line is printed; null on a carton line
+     * @param priced            false for a reorder line the customer's prices could not price (R1): no tiers, and
      *                          {@code moq}, {@code proposedUnitPrice}, {@code proposedLineTotal} are null
-     * @param proposedUnitPrice the tier price of the proposed {@code quantity}, computed on the server
-     * @param proposedLineTotal {@code quantity} x {@code proposedUnitPrice}
+     * @param moq               where the lowest tier starts, in the line's measure
+     * @param proposedUnitPrice the price of one piece at the proposed cartons, computed on the server
+     * @param proposedLineTotal {@code units} x {@code proposedUnitPrice}
+     * @param acceptedCartons   cartons accepted; null until accepted, and on a legacy line
+     * @param acceptedUnits     pieces accepted; null until accepted
      */
-    record LineView(UUID id, int lineNo, String blankSku, UUID designSnapshotId, String printSpec, int quantity,
-                    boolean priced, Integer moq, List<Tier> tiers, BigDecimal proposedUnitPrice,
-                    BigDecimal proposedLineTotal,
-                    Integer acceptedQuantity, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal) {
+    record LineView(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
+                    int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq, List<Tier> tiers,
+                    BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal, Integer acceptedCartons,
+                    Integer acceptedUnits, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal) {
     }
 
     record Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, Instant changedAt,
@@ -71,10 +97,12 @@ public interface Quotes {
     /**
      * @param status the status as of now: a sent quote past its validity reads EXPIRED even before the
      *               expiry sweep has written it
+     * @param legacy drafted before 4B-2 on blanks and designs: kept to read (QD-16)
      */
     record QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                      PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     java.time.LocalDate requestedDeliveryDate, List<LineView> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
+                     java.time.LocalDate requestedDeliveryDate, boolean legacy, List<LineView> lines, boolean priced,
+                     BigDecimal proposedTotal, BigDecimal acceptedTotal,
                      Instant sentAt, UUID sentBy, Instant respondedAt,
                      UUID respondedBy, String customerFeedback, String cancellationReason,
                      ConvertedOrder convertedOrder, Instant convertedAt, List<Transition> history,
@@ -89,8 +117,8 @@ public interface Quotes {
     record Criteria(UUID customerId, List<QuoteStatus> statuses, String search, int page, int size, String sort) {
     }
 
-    /** @param quantities per line id; a line not named is accepted at its proposed quantity */
-    record Acceptance(long version, Map<UUID, Integer> quantities) {
+    /** @param cartons per line id; a line not named is accepted at its proposed cartons */
+    record Acceptance(long version, Map<UUID, Integer> cartons) {
     }
 
     record Conversion(long version, UUID shippingAddressId, UUID billingAddressId) {
@@ -128,18 +156,19 @@ public interface Quotes {
     QuoteView convert(CurrentUser user, UUID quoteId, Conversion conversion);
 
     /**
-     * A new DRAFT quote for the same blanks, designs, print specifications and quantities as the order,
-     * priced from the customer's current price list - never at the old negotiated price (user decision
-     * 2026-10-12: a deal applies to its own quote and order only). A line the list cannot price - no list
-     * price, or the blank's total below the list's first tier - is left explicitly unpriced for Sales (user
-     * decision R1); the quote cannot be sent until Sales prices it. Nothing is payable until Sales sends it
+     * A new DRAFT quote for the same SKUs and cartons as the order - a legacy order's designs as the SKUs issued for
+     * them - priced from the customer's own prices now, never at the old negotiated price (user decision 2026-10-12: a
+     * deal applies to its own quote and order only). A line those prices cannot price - none for the SKU, or the
+     * cartons below its first tier - is left explicitly unpriced for Sales (user decision R1); the quote cannot be
+     * sent until Sales prices it. Nothing is payable until Sales sends it
      * and the customer accepts; the draft is Sales' to negotiate and the customer sees it once sent.
      * Idempotent on {@code requestId}. A portal customer reorders only their own orders (404 otherwise).
      * The payment term is the old one while the customer may still use it; otherwise the customer's current
      * default, never a restored credit (user decision R1b, 2026-10-13) - the history says so.
      *
      * @throws com.stockflow.common.error.BusinessException {@code ORDER_NOT_QUOTED} for an order bought at the
-     *         price list (place it again instead), {@code CUSTOMER_NOT_ACTIVE}
+     *         price list (place it again instead), {@code CUSTOMER_NOT_ACTIVE}; {@code CUSTOMER_SKU_REQUIRED} for a
+     *         legacy order whose design has no SKU of the customer
      */
     QuoteView reorder(CurrentUser user, Reorder command);
 

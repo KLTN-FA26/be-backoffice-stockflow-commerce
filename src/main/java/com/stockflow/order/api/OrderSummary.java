@@ -219,6 +219,8 @@ public record OrderSummary(
      *                       from — kept so cancellation knows what to release
      * @param requestedDeliveryDate the date the customer asked to receive a print line (SCRUM-502); null when
      *                       none was asked
+     * @param cartons        cartons ordered (4B-2, kltn-docs 14 BR-08): {@code quantity} is cartons x
+     *                       {@code unitsPerCarton} pieces; both null for a line not ordered in cartons
      */
     public record LineSummary(
             UUID lineId,
@@ -229,18 +231,29 @@ public record OrderSummary(
             List<UUID> reservationIds,
             UUID designSnapshotId,
             String designChecksum,
-            java.time.LocalDate requestedDeliveryDate
+            java.time.LocalDate requestedDeliveryDate,
+            Integer cartons,
+            Integer unitsPerCarton
     ) {
+
+        /** Not ordered in cartons. */
+        public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice, Money lineTotal,
+                           List<UUID> reservationIds, UUID designSnapshotId, String designChecksum,
+                           java.time.LocalDate requestedDeliveryDate) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    requestedDeliveryDate, null, null);
+        }
 
         public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice,
                            Money lineTotal, List<UUID> reservationIds) {
-            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, null, null, null);
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, null, null, null, null, null);
         }
 
         /** Without a requested delivery date (SCRUM-502). */
         public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice, Money lineTotal,
                            List<UUID> reservationIds, UUID designSnapshotId, String designChecksum) {
-            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum, null);
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum, null,
+                    null, null);
         }
 
         public LineSummary {

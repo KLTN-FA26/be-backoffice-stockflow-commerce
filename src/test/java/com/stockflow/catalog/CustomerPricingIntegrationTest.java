@@ -12,15 +12,14 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.security.SessionValidator;
-import com.stockflow.common.storage.FileStorage;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveAddressCommand;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.LoginCommand;
 import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.service.Quotes;
-import com.stockflow.product.api.ProductPublication;
 import com.stockflow.support.ConfirmedDesigns;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
@@ -68,9 +67,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * SCRUM-428 end to end with security ON on real PostgreSQL: a customer's own price by SKU and quantity
- * tier, managed by the e-commerce admin, shown on the portal, used at checkout and locked into the order,
- * and the starting price of a quote. The demo's published SOFA-3S-GREY has a base price of 12,500,000.
+ * SCRUM-428 end to end with security ON on real PostgreSQL, since 4B-2 (kltn-docs 13 BR-02, BR-05, BR-06, BR-10): a
+ * customer's own price is set for one of its own SKUs, by tiers of cartons and a price per piece, by the Sales Manager;
+ * Sales reads it and a quote starts from it; the customer never sees it, and checkout never charges it. Group and base
+ * prices stay the storefront's, on the demo's published SOFA-3S-GREY (base price 12,500,000).
  */
 @IntegrationTest
 @AutoConfigureMockMvc
@@ -91,7 +91,8 @@ class CustomerPricingIntegrationTest {
         }
     }
 
-    private static final String SKU = ConfirmedDesigns.BLANK;
+    /** A published stock variant: group and base prices, checkout. Not a SKU a customer's own price is set for. */
+    private static final String BLANK = ConfirmedDesigns.BLANK;
     private static final long BASE = 12_500_000;
     private static final String PASSWORD = "Pricing428Pass";
 
@@ -104,9 +105,7 @@ class CustomerPricingIntegrationTest {
     @Autowired CustomerService customers;
     @Autowired CustomerPriceService prices;
     @Autowired com.stockflow.catalog.internal.service.SegmentPriceService groupPrices;
-    @Autowired ProductPublication publication;
     @Autowired Quotes quotes;
-    @Autowired FileStorage storage;
     @Autowired EntityManager entityManager;
 
     private String admin;
@@ -124,25 +123,28 @@ class CustomerPricingIntegrationTest {
     }
 
     @Test
-    void onlyTheEcommerceAdminEditsAndInputIsChecked() throws Exception {
+    void onlyTheSalesManagerSetsAPriceOnTheCustomersOwnSkuAndInputIsChecked() throws Exception {
         Buyer buyer = buyer("ACTIVE");
-        String tiers = tiers(Map.of(1, 11_000_000L, 2, 10_000_000L));
-        mvc.perform(post(path(buyer.customerId())).contentType("application/json").content(tiers))
+        String sku = ownSku(buyer);
+        String tiers = tiers(Map.of(1, 11_000L, 2, 10_000L));
+        mvc.perform(post(path(buyer.customerId(), sku)).contentType("application/json").content(tiers))
                 .andExpect(status().isUnauthorized());
         for (String caller : List.of(sales, warehouse, buyer.token())) {
-            mvc.perform(post(path(buyer.customerId())).header("Authorization", "Bearer " + caller)
+            mvc.perform(post(path(buyer.customerId(), sku)).header("Authorization", "Bearer " + caller)
                     .contentType("application/json").content(tiers)).andExpect(status().isForbidden());
         }
-        mvc.perform(get(path(buyer.customerId())).header("Authorization", "Bearer " + warehouse))
+        mvc.perform(get(path(buyer.customerId(), sku)).header("Authorization", "Bearer " + warehouse))
                 .andExpect(status().isForbidden());
-        mvc.perform(get(path(buyer.customerId())).header("Authorization", "Bearer " + buyer.token()))
+        // 13 BR-10: never the customer's to read.
+        mvc.perform(get(path(buyer.customerId(), sku)).header("Authorization", "Bearer " + buyer.token()))
                 .andExpect(status().isForbidden());
 
-        createPrice(buyer.customerId(), tiers).andExpect(status().isCreated())
+        createPrice(buyer.customerId(), sku, tiers).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.measure").value("CARTON"))
                 .andExpect(jsonPath("$.data.moq").value(1)).andExpect(jsonPath("$.data.version").value(0));
-        mvc.perform(get(path(buyer.customerId())).header("Authorization", "Bearer " + sales))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.tiers[1].unitPrice").value(10_000_000));
-        createPrice(buyer.customerId(), tiers).andExpect(status().isConflict());
+        mvc.perform(get(path(buyer.customerId(), sku)).header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.tiers[1].unitPrice").value(10_000));
+        createPrice(buyer.customerId(), sku, tiers).andExpect(status().isConflict());
 
         for (String invalid : List.of(
                 "{\"tiers\":[]}",
@@ -150,17 +152,24 @@ class CustomerPricingIntegrationTest {
                 "{\"tiers\":[{\"minQuantity\":1,\"unitPrice\":10.5}]}",
                 "{\"tiers\":[{\"minQuantity\":1,\"unitPrice\":0}]}",
                 "{\"tiers\":[{\"minQuantity\":0,\"unitPrice\":10}]}")) {
-            createPrice(buyer(("ACTIVE")).customerId(), invalid).andExpect(status().isBadRequest());
+            Buyer fresh = buyer("ACTIVE");
+            createPrice(fresh.customerId(), ownSku(fresh), invalid).andExpect(status().isBadRequest());
         }
         mvc.perform(post("/api/v1/catalog/customer-prices/" + buyer.customerId() + "/NO-SUCH-SKU")
                         .header("Authorization", "Bearer " + admin).contentType("application/json").content(tiers))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("VARIANT_NOT_FOUND"));
-        mvc.perform(post(path(UUID.randomUUID())).header("Authorization", "Bearer " + admin)
+        mvc.perform(post(path(UUID.randomUUID(), sku)).header("Authorization", "Bearer " + admin)
                         .contentType("application/json").content(tiers))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("CUSTOMER_NOT_FOUND"));
+        // Not on a stock variant (13 BR-05: the customer's own SKUs), and another customer's SKU is not there at all.
+        createPrice(buyer.customerId(), BLANK, tiers).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_SKU_REQUIRED"));
+        Buyer other = buyer("ACTIVE");
+        createPrice(other.customerId(), sku, tiers).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("VARIANT_NOT_FOUND"));
 
-        mvc.perform(put(path(buyer.customerId())).header("Authorization", "Bearer " + admin)
-                        .contentType("application/json").content(withVersion(tiers(Map.of(1, 9_000_000L)), 7)))
+        mvc.perform(put(path(buyer.customerId(), sku)).header("Authorization", "Bearer " + admin)
+                        .contentType("application/json").content(withVersion(tiers(Map.of(1, 9_000L)), 7)))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("OPTIMISTIC_LOCK"));
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM platform.audit_log WHERE resource_type='customer-price' AND resource_id=?
@@ -168,14 +177,13 @@ class CustomerPricingIntegrationTest {
     }
 
     @Test
-    void thePortalShowsTheCustomersOwnThenGroupThenBasePrice() throws Exception {
+    void theStorefrontShowsGroupThenBasePriceAndNeverAnInternalOne() throws Exception {
         Buyer own = buyer("ACTIVE");
-        createPrice(own.customerId(), tiers(Map.of(2, 11_000_000L, 10, 10_000_000L))).andExpect(status().isCreated());
-        portalPrices(own.token()).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].source").value("CUSTOMER"))
-                .andExpect(jsonPath("$.data[0].moq").value(2))
-                .andExpect(jsonPath("$.data[0].tiers[1].minQuantity").value(10))
-                .andExpect(jsonPath("$.data[0].tiers[1].unitPrice").value(10_000_000));
+        String sku = ownSku(own);
+        createPrice(own.customerId(), sku, tiers(Map.of(2, 11_000L, 10, 10_000L))).andExpect(status().isCreated());
+        portalPrices(own.token(), sku).andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(0));
+        portalPrices(own.token(), BLANK).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].source").value("BASE"));
 
         Buyer grouped = buyer("ACTIVE");
         UUID segment = Identifiers.newId();
@@ -186,14 +194,14 @@ class CustomerPricingIntegrationTest {
             jdbc.update("""
                     INSERT INTO catalog.pricing_rule(id, name, sku, segment_id, price, currency, priority, active, version, created_at)
                     VALUES (?, ?, ?, ?, 11500000, 'VND', 0, true, 0, now())""",
-                    Identifiers.newId(), "SEGMENT:" + segment, SKU, segment);
+                    Identifiers.newId(), "SEGMENT:" + segment, BLANK, segment);
         });
-        portalPrices(grouped.token()).andExpect(status().isOk())
+        portalPrices(grouped.token(), BLANK).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].source").value("SEGMENT"))
                 .andExpect(jsonPath("$.data[0].tiers[0].unitPrice").value(11_500_000));
 
         Buyer plain = buyer("ACTIVE");
-        portalPrices(plain.token()).andExpect(status().isOk())
+        portalPrices(plain.token(), BLANK).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].source").value("BASE"))
                 .andExpect(jsonPath("$.data[0].moq").value(1))
                 .andExpect(jsonPath("$.data[0].tiers[0].unitPrice").value(BASE));
@@ -202,144 +210,95 @@ class CustomerPricingIntegrationTest {
         Buyer blocked = buyer("ACTIVE");
         tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.customer SET status='BLOCKED' WHERE id=?",
                 blocked.customerId()));
-        portalPrices(blocked.token()).andExpect(status().isForbidden());
-        portalPrices(sales).andExpect(status().isForbidden());
-        mvc.perform(get("/api/v1/catalog/products/prices").param("sku", SKU)).andExpect(status().isUnauthorized());
+        portalPrices(blocked.token(), BLANK).andExpect(status().isForbidden());
+        portalPrices(sales, BLANK).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/catalog/products/prices").param("sku", BLANK)).andExpect(status().isUnauthorized());
     }
 
     @Test
-    void checkoutChargesTheCustomersTierForTheSkusTotalAndLocksIt() throws Exception {
+    void checkoutNeverChargesAPriceOfTheCustomersOwn() throws Exception {
         Buyer buyer = buyer("ACTIVE");
-        createPrice(buyer.customerId(), tiers(Map.of(2, 11_000_000L, 3, 10_000_000L))).andExpect(status().isCreated());
+        String sku = ownSku(buyer);
+        createPrice(buyer.customerId(), sku, tiers(Map.of(1, 9_000L))).andExpect(status().isCreated());
 
-        order(buyer, List.of(line(1, 11_000_000L))).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_PRICE_BELOW_MOQ"));
-        order(buyer, List.of(line(2, BASE))).andExpect(status().isConflict())
+        // The customer's own SKU is quoted (14 BR-01, BR-08), not bought at checkout.
+        order(buyer, List.of(line(sku, 10, 9_000L))).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRODUCT_NOT_PURCHASABLE"));
+        // A stock variant is charged its base price, as the storefront shows it.
+        order(buyer, List.of(line(BLANK, 1, 9_000L))).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("CHECKOUT_PRICE_CHANGED"));
-        String placed = order(buyer, List.of(line(2, 10_000_000L), line(1, 10_000_000L)))
-                .andExpect(status().isCreated())
+        String placed = order(buyer, List.of(line(BLANK, 1, BASE))).andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         JsonNode order = mapper.readTree(placed).get("data");
-        assertThat(order.at("/lines/0/unitPrice").decimalValue()).isEqualByComparingTo("10000000");
-        assertThat(order.at("/lines/1/unitPrice").decimalValue()).isEqualByComparingTo("10000000");
-
-        // BR-03: a later price change does not move the order.
-        mvc.perform(put(path(buyer.customerId())).header("Authorization", "Bearer " + admin)
-                        .contentType("application/json").content(withVersion(tiers(Map.of(1, 9_000_000L)), 0)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.version").value(1));
-        assertThat(jdbc.queryForObject("SELECT DISTINCT unit_price FROM ordering.order_line WHERE order_id=?",
-                BigDecimal.class, UUID.fromString(order.get("orderId").asText()))).isEqualByComparingTo("10000000");
-
-        // Removing the own price sends the customer back to the base price.
-        mvc.perform(delete(path(buyer.customerId())).param("version", "1").header("Authorization", "Bearer " + admin))
-                .andExpect(status().isOk());
-        portalPrices(buyer.token()).andExpect(jsonPath("$.data[0].source").value("BASE"));
-        order(buyer, List.of(line(1, BASE))).andExpect(status().isCreated());
+        assertThat(order.at("/lines/0/unitPrice").decimalValue()).isEqualByComparingTo(String.valueOf(BASE));
     }
 
     @Test
-    void concurrentEditorsAndCheckoutAreSerialised() throws Exception {
+    void concurrentEditorsAreSerialised() throws Exception {
         Buyer buyer = buyer("ACTIVE");
+        String sku = ownSku(buyer);
         List<Object> creates = race(List.of(
-                () -> prices.create(buyer.customerId(), SKU, List.of(tier(1, 11_000_000L)), null),
-                () -> prices.create(buyer.customerId(), SKU, List.of(tier(1, 10_000_000L)), null)));
+                () -> prices.create(buyer.customerId(), sku, List.of(tier(1, 11_000L)), null),
+                () -> prices.create(buyer.customerId(), sku, List.of(tier(1, 10_000L)), null)));
         assertThat(creates.stream().filter(CustomerPriceService.PriceView.class::isInstance)).hasSize(1);
         assertThat(creates.stream().filter(BusinessException.class::isInstance)
                 .map(e -> ((BusinessException) e).errorCode())).containsExactly(ErrorCode.CONFLICT);
 
         List<Object> edits = race(List.of(
-                () -> prices.replace(buyer.customerId(), SKU, List.of(tier(1, 9_000_000L)), null, 0),
-                () -> prices.replace(buyer.customerId(), SKU, List.of(tier(1, 8_000_000L)), null, 0)));
+                () -> prices.replace(buyer.customerId(), sku, List.of(tier(1, 9_000L)), null, 0),
+                () -> prices.replace(buyer.customerId(), sku, List.of(tier(1, 8_000L)), null, 0)));
         assertThat(edits.stream().filter(CustomerPriceService.PriceView.class::isInstance)).hasSize(1);
         assertThat(edits.stream().filter(BusinessException.class::isInstance)
                 .map(e -> ((BusinessException) e).errorCode())).containsExactly(ErrorCode.OPTIMISTIC_LOCK);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM catalog.customer_price_tier t JOIN catalog.customer_price p ON p.id = t.customer_price_id
                 WHERE p.customer_id = ?""", Long.class, buyer.customerId())).isEqualTo(1);
-
-        // An edit waits for a checkout holding the product lock, so an order is priced wholly before or
-        // wholly after it (BR-03), never from a half-replaced list.
-        UUID product = jdbc.queryForObject("SELECT product_id FROM catalog.catalog_entry WHERE sku=? AND published",
-                UUID.class, SKU);
-        var pool = Executors.newFixedThreadPool(2);
-        try {
-            CountDownLatch locked = new CountDownLatch(1);
-            CountDownLatch release = new CountDownLatch(1);
-            Future<?> checkout = pool.submit(() -> tx.executeWithoutResult(s -> {
-                publication.lock(product);
-                locked.countDown();
-                try {
-                    release.await(10, TimeUnit.SECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }));
-            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
-            long version = prices.get(buyer.customerId(), SKU).version();
-            Future<CustomerPriceService.PriceView> edit = pool.submit(() ->
-                    prices.replace(buyer.customerId(), SKU, List.of(tier(1, 7_000_000L)), null, version));
-            Thread.sleep(1_000);
-            assertThat(edit.isDone()).as("the edit waits for the product lock").isFalse();
-            release.countDown();
-            checkout.get(10, TimeUnit.SECONDS);
-            assertThat(edit.get(10, TimeUnit.SECONDS).tiers().getFirst().unitPrice()).isEqualByComparingTo("7000000");
-        } finally {
-            pool.shutdownNow();
-        }
     }
 
     @Test
     void aQuoteStartsFromTheCustomersPriceAndKeepsIt() throws Exception {
         Buyer buyer = buyer("ACTIVE");
-        createPrice(buyer.customerId(), tiers(Map.of(2, 11_000_000L, 5, 10_000_000L))).andExpect(status().isCreated());
-        mvc.perform(get(path(buyer.customerId()) + "/schedule").header("Authorization", "Bearer " + sales))
+        String sku = ownSku(buyer);
+        createPrice(buyer.customerId(), sku, tiers(Map.of(2, 11_000L, 5, 10_000L))).andExpect(status().isCreated());
+        mvc.perform(get(path(buyer.customerId(), sku) + "/schedule").header("Authorization", "Bearer " + sales))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.source").value("CUSTOMER"))
                 .andExpect(jsonPath("$.data.moq").value(2));
 
-        ConfirmedDesigns.Design design = ConfirmedDesigns.confirmed(storage, jdbc, tx, entityManager, buyer.customerId());
-        CurrentUser salesUser = new CurrentUser(salesId, "sales", Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
-                Set.of(), Set.of());
+        CurrentUser salesUser = salesUser();
         Quotes.QuoteView quote = quotes.create(salesUser, new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
                 new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
-                        List.of(new Quotes.Line(SKU, design.snapshotId(), "Logo", 5, null)))));
-        assertThat(quote.lines().getFirst().moq()).isEqualTo(2);
+                        List.of(new Quotes.Line(sku, 5, null)))));
+        assertThat(quote.lines().getFirst().moq()).as("2 cartons").isEqualTo(2);
         assertThat(quote.lines().getFirst().tiers()).extracting(t -> t.minQuantity()).containsExactly(2, 5);
+        assertThat(quote.lines().getFirst().proposedUnitPrice()).isEqualByComparingTo("10000");
 
-        prices.replace(buyer.customerId(), SKU, List.of(tier(1, 5_000_000L)), null, 0);
+        prices.replace(buyer.customerId(), sku, List.of(tier(1, 5_000L)), null, 0);
         Quotes.QuoteView reread = quotes.get(salesUser, quote.id());
         assertThat(reread.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue())
-                .containsExactly(11_000_000L, 10_000_000L);
+                .containsExactly(11_000L, 10_000L);
 
-        // Tiers Sales types in win over the list.
+        // Tiers Sales types in win over the customer's price.
         Quotes.QuoteView typed = quotes.create(salesUser, new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
                 new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
-                        List.of(new Quotes.Line(SKU, design.snapshotId(), "Logo", 3,
-                                List.of(new Quotes.Tier(1, new BigDecimal("12000000"))))))));
-        assertThat(typed.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue()).containsExactly(12_000_000L);
+                        List.of(new Quotes.Line(sku, 3, List.of(new Quotes.Tier(1, new BigDecimal("12000"))))))));
+        assertThat(typed.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue()).containsExactly(12_000L);
     }
 
     @Test
-    void aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem() throws Exception {
+    void aQuoteLineWithoutTiersForASkuWithoutAPriceOfTheCustomersOwnAsksSalesToEnterThem() throws Exception {
         Buyer buyer = buyer("ACTIVE");
-        ConfirmedDesigns.Design design = ConfirmedDesigns.confirmed(storage, jdbc, tx, entityManager, buyer.customerId());
-        CurrentUser salesUser = new CurrentUser(salesId, "sales", Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
-                Set.of(), Set.of());
-        // No own price, no group, and - for this test only - no active base price either.
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE catalog.pricing_rule SET active=false WHERE name=?", "BASE:" + SKU));
-        try {
-            Quotes.Create create = new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
-                    new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
-                            List.of(new Quotes.Line(SKU, design.snapshotId(), "Logo", 5, null))));
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> quotes.create(salesUser, create))
-                    .isInstanceOfSatisfying(BusinessException.class, e -> {
-                        assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-                        assertThat(e.errorCode().httpStatus()).isEqualTo(400);
-                    });
-            assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.quote WHERE customer_id=?", Long.class,
-                    buyer.customerId())).isZero();
-        } finally {
-            tx.executeWithoutResult(s -> jdbc.update("UPDATE catalog.pricing_rule SET active=true WHERE name=?", "BASE:" + SKU));
-        }
+        String sku = ownSku(buyer);
+        Quotes.Create create = new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                        List.of(new Quotes.Line(sku, 5, null))));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> quotes.create(salesUser(), create))
+                .isInstanceOfSatisfying(BusinessException.class, e -> {
+                    assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                    assertThat(e.errorCode().httpStatus()).isEqualTo(400);
+                    assertThat(e.getMessage()).contains("enter the line's price tiers");
+                });
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.quote WHERE customer_id=?", Long.class,
+                buyer.customerId())).isZero();
     }
 
     /**
@@ -350,21 +309,20 @@ class CustomerPricingIntegrationTest {
     @Test
     void salesSendsANegotiatedPriceWithoutApprovalAndOnlyTheCustomerAccepts() throws Exception {
         Buyer buyer = buyer("ACTIVE");
-        createPrice(buyer.customerId(), tiers(Map.of(1, 10_000_000L))).andExpect(status().isCreated());
-        ConfirmedDesigns.Design design = ConfirmedDesigns.confirmed(storage, jdbc, tx, entityManager, buyer.customerId());
-        CurrentUser salesUser = new CurrentUser(salesId, "sales", Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
-                Set.of(), Set.of());
+        String sku = ownSku(buyer);
+        createPrice(buyer.customerId(), sku, tiers(Map.of(1, 10_000L))).andExpect(status().isCreated());
+        CurrentUser salesUser = salesUser();
 
         // Invalid prices are refused on the server, whoever negotiated them.
         for (String invalid : List.of("0", "10.5", "-5")) {
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> quotes.create(salesUser, quote(buyer, design, invalid)))
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> quotes.create(salesUser, quote(buyer, sku, invalid)))
                     .isInstanceOfSatisfying(BusinessException.class,
                             e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED));
         }
 
-        // 20% below the customer's list: created and sent at once, by Sales alone.
-        Quotes.QuoteView created = quotes.create(salesUser, quote(buyer, design, "8000000"));
-        assertThat(created.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue()).containsExactly(8_000_000L);
+        // 20% below the customer's price: created and sent at once, by Sales alone.
+        Quotes.QuoteView created = quotes.create(salesUser, quote(buyer, sku, "8000"));
+        assertThat(created.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue()).containsExactly(8_000L);
         mvc.perform(post("/api/v1/quotes/" + created.id() + "/sending").header("Authorization", "Bearer " + warehouse)
                         .contentType("application/json").content("{\"version\":" + created.version() + "}"))
                 .andExpect(status().isForbidden());
@@ -387,27 +345,28 @@ class CustomerPricingIntegrationTest {
                 .contentType("application/json").content(acceptance)).andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/quotes/" + created.id()).header("Authorization", "Bearer " + buyer.token()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SENT"))
-                .andExpect(jsonPath("$.data.lines[0].tiers[0].unitPrice").value(8_000_000));
+                .andExpect(jsonPath("$.data.lines[0].measure").value("CARTON"))
+                .andExpect(jsonPath("$.data.lines[0].unitsPerCarton").value(10))
+                .andExpect(jsonPath("$.data.lines[0].tiers[0].unitPrice").value(8_000));
 
-        // The quote keeps its negotiated price when the list changes (14 BR-03).
-        prices.replace(buyer.customerId(), SKU, List.of(tier(1, 9_000_000L)), null, 0);
+        // The quote keeps its negotiated price when the customer's price changes (14 BR-06).
+        prices.replace(buyer.customerId(), sku, List.of(tier(1, 9_000L)), null, 0);
         assertThat(quotes.get(salesUser, created.id()).lines().getFirst().tiers())
-                .extracting(t -> t.unitPrice().longValue()).containsExactly(8_000_000L);
+                .extracting(t -> t.unitPrice().longValue()).containsExactly(8_000L);
     }
 
-    private static Quotes.Create quote(Buyer buyer, ConfirmedDesigns.Design design, String unitPrice) {
+    private static Quotes.Create quote(Buyer buyer, String sku, String unitPrice) {
         return new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
                 new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
-                        List.of(new Quotes.Line(SKU, design.snapshotId(), "Logo", 1,
-                                List.of(new Quotes.Tier(1, new BigDecimal(unitPrice)))))));
+                        List.of(new Quotes.Line(sku, 1, List.of(new Quotes.Tier(1, new BigDecimal(unitPrice)))))));
     }
 
     /**
      * P7 (user decision 2026-10-12): Sales Manager and System Admin manage customer-group prices; Sales reads
-     * and negotiates per quote; resolution stays own tiers -> group price -> base price.
+     * and negotiates per quote; the storefront resolves group price -> base price.
      */
     @Test
-    void groupPricesAreTheAdminsAndResolveBetweenOwnAndBase() throws Exception {
+    void groupPricesAreTheAdminsAndResolveBeforeTheBase() throws Exception {
         UUID segment = Identifiers.newId();
         Buyer grouped = buyer("ACTIVE");
         tx.executeWithoutResult(s -> {
@@ -415,7 +374,7 @@ class CustomerPricingIntegrationTest {
                     segment, ("SEG-" + segment).toUpperCase());
             jdbc.update("UPDATE customer.customer SET segment_id=? WHERE id=?", segment, grouped.customerId());
         });
-        String path = "/api/v1/catalog/segment-prices/" + segment + "/" + SKU;
+        String path = "/api/v1/catalog/segment-prices/" + segment + "/" + BLANK;
         String systemAdmin = token(account("SYSTEM_ADMIN"));
 
         mvc.perform(post(path).contentType("application/json").content("{\"price\":11000000}"))
@@ -428,7 +387,7 @@ class CustomerPricingIntegrationTest {
             mvc.perform(post(path).header("Authorization", "Bearer " + admin).contentType("application/json")
                     .content(invalid)).andExpect(status().isBadRequest());
         }
-        mvc.perform(post("/api/v1/catalog/segment-prices/" + UUID.randomUUID() + "/" + SKU)
+        mvc.perform(post("/api/v1/catalog/segment-prices/" + UUID.randomUUID() + "/" + BLANK)
                         .header("Authorization", "Bearer " + admin).contentType("application/json")
                         .content("{\"price\":11000000}"))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("SEGMENT_NOT_FOUND"));
@@ -443,7 +402,7 @@ class CustomerPricingIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(0));
         mvc.perform(post(path).header("Authorization", "Bearer " + admin).contentType("application/json")
                 .content("{\"price\":10000000}")).andExpect(status().isConflict());
-        portalPrices(grouped.token()).andExpect(status().isOk())
+        portalPrices(grouped.token(), BLANK).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].source").value("SEGMENT"))
                 .andExpect(jsonPath("$.data[0].tiers[0].unitPrice").value(11000000));
 
@@ -468,43 +427,50 @@ class CustomerPricingIntegrationTest {
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("OPTIMISTIC_LOCK"));
         mvc.perform(put(path).header("Authorization", "Bearer " + admin).contentType("application/json")
                 .content("{\"price\":10400000}")).andExpect(status().isBadRequest());
-        portalPrices(grouped.token()).andExpect(jsonPath("$.data[0].tiers[0].unitPrice").value(10500000));
+        portalPrices(grouped.token(), BLANK).andExpect(jsonPath("$.data[0].tiers[0].unitPrice").value(10500000));
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM platform.audit_log WHERE resource_type='segment-price' AND resource_id=?
                    AND outcome='SUCCESS'""", Long.class, segment.toString())).isEqualTo(2);
 
-        // The customer's own price still wins over the group's; without it the group's applies again.
-        createPrice(grouped.customerId(), tiers(Map.of(1, 9_900_000L))).andExpect(status().isCreated());
-        portalPrices(grouped.token()).andExpect(jsonPath("$.data[0].source").value("CUSTOMER"));
-        prices.delete(grouped.customerId(), SKU, 0);
-        portalPrices(grouped.token()).andExpect(jsonPath("$.data[0].source").value("SEGMENT"));
+        // A price of the customer's own is not set on the stock variant: the group's keeps applying.
+        createPrice(grouped.customerId(), BLANK, tiers(Map.of(1, 9_900_000L))).andExpect(status().isConflict());
+        portalPrices(grouped.token(), BLANK).andExpect(jsonPath("$.data[0].source").value("SEGMENT"));
 
         // Removed: the group's customers fall back to the base price.
         mvc.perform(delete(path).param("version", "1").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk());
         mvc.perform(get(path).header("Authorization", "Bearer " + sales))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("SEGMENT_PRICE_NOT_FOUND"));
-        portalPrices(grouped.token()).andExpect(jsonPath("$.data[0].source").value("BASE"))
+        portalPrices(grouped.token(), BLANK).andExpect(jsonPath("$.data[0].source").value("BASE"))
                 .andExpect(jsonPath("$.data[0].tiers[0].unitPrice").value(BASE));
 
         // Two editors at once: one wins, the other is told.
         List<Object> creates = race(List.of(
-                () -> groupPrices.create(segment, SKU, new BigDecimal("11000000")),
-                () -> groupPrices.create(segment, SKU, new BigDecimal("10000000"))));
+                () -> groupPrices.create(segment, BLANK, new BigDecimal("11000000")),
+                () -> groupPrices.create(segment, BLANK, new BigDecimal("10000000"))));
         assertThat(creates.stream().filter(BusinessException.class::isInstance)
                 .map(e -> ((BusinessException) e).errorCode())).containsExactly(ErrorCode.CONFLICT);
         List<Object> edits = race(List.of(
-                () -> groupPrices.replace(segment, SKU, new BigDecimal("9000000"), 0),
-                () -> groupPrices.replace(segment, SKU, new BigDecimal("8000000"), 0)));
+                () -> groupPrices.replace(segment, BLANK, new BigDecimal("9000000"), 0),
+                () -> groupPrices.replace(segment, BLANK, new BigDecimal("8000000"), 0)));
         assertThat(edits.stream().filter(BusinessException.class::isInstance)
                 .map(e -> ((BusinessException) e).errorCode())).containsExactly(ErrorCode.OPTIMISTIC_LOCK);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM catalog.pricing_rule WHERE segment_id = ? AND sku = ?",
-                Long.class, segment, SKU)).isEqualTo(1);
+                Long.class, segment, BLANK)).isEqualTo(1);
     }
 
     // ---------------------------------------------------------------- fixtures
 
     private record Buyer(UUID customerId, String token) {
+    }
+
+    private CurrentUser salesUser() {
+        return new CurrentUser(salesId, "sales", Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL, Set.of(), Set.of());
+    }
+
+    /** One of the buyer's own SKUs, sold in cartons of 10 (4B-2). */
+    private String ownSku(Buyer buyer) {
+        return CustomerSkuRows.issue(jdbc, tx, entityManager, buyer.customerId(), 10).sku();
     }
 
     /** A customer with a portal account (password set), a default shipping address and this status. */
@@ -548,17 +514,17 @@ class CustomerPricingIntegrationTest {
         return identities.login(new LoginCommand(username, PASSWORD, null, "scrum428")).accessToken();
     }
 
-    private static String path(UUID customerId) {
-        return "/api/v1/catalog/customer-prices/" + customerId + "/" + SKU;
+    private static String path(UUID customerId, String sku) {
+        return "/api/v1/catalog/customer-prices/" + customerId + "/" + sku;
     }
 
-    private ResultActions createPrice(UUID customerId, String body) throws Exception {
-        return mvc.perform(post(path(customerId)).header("Authorization", "Bearer " + admin)
+    private ResultActions createPrice(UUID customerId, String sku, String body) throws Exception {
+        return mvc.perform(post(path(customerId, sku)).header("Authorization", "Bearer " + admin)
                 .contentType("application/json").content(body));
     }
 
-    private ResultActions portalPrices(String bearer) throws Exception {
-        return mvc.perform(get("/api/v1/catalog/products/prices").param("sku", SKU)
+    private ResultActions portalPrices(String bearer, String sku) throws Exception {
+        return mvc.perform(get("/api/v1/catalog/products/prices").param("sku", sku)
                 .header("Authorization", "Bearer " + bearer));
     }
 
@@ -568,8 +534,8 @@ class CustomerPricingIntegrationTest {
                         "requestId", UUID.randomUUID(), "customerId", buyer.customerId(), "lines", lines))));
     }
 
-    private static Map<String, Object> line(int quantity, long unitPrice) {
-        return Map.of("sku", SKU, "quantity", quantity, "unitPrice", unitPrice);
+    private static Map<String, Object> line(String sku, int quantity, long unitPrice) {
+        return Map.of("sku", sku, "quantity", quantity, "unitPrice", unitPrice);
     }
 
     private String tiers(Map<Integer, Long> tiers) throws Exception {

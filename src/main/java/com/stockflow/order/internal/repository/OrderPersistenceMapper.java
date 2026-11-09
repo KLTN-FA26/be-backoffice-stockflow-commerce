@@ -42,6 +42,9 @@ final class OrderPersistenceMapper {
                         List.copyOf(line.getReservationIds()),
                         line.getCancelledQuantity());
                     if (line.getDesignChecksum() != null) { mapped.recordDesignChecksum(line.getDesignChecksum()); }
+                    if (line.getCartons() != null) {
+                        mapped.withCartons(line.getUomConversionId(), line.getCartons(), line.getUnitsPerCarton());
+                    }
                     mapped.withRequestedDeliveryDate(line.getRequestedDeliveryDate());
                     return mapped;
                 })
@@ -213,6 +216,7 @@ final class OrderPersistenceMapper {
                     mapped.setDesignChecksum(line.designChecksum());
                     mapped.setCancelledQuantity(line.cancelledQuantity());
                     mapped.setRequestedDeliveryDate(line.requestedDeliveryDate());
+                    mapped.setCartons(line.uomConversionId(), line.cartons(), line.unitsPerCarton());
                     return mapped;
                 })
                 .toList();

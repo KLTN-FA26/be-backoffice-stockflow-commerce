@@ -18,7 +18,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
-import com.stockflow.design.api.DesignService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
@@ -34,6 +33,8 @@ import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.contracts.CustomerActedOnQuote;
 import org.springframework.context.ApplicationEventPublisher;
 import com.stockflow.catalog.api.PriceSchedule;
+import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.inventory.api.UomConversionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
@@ -73,6 +74,14 @@ import java.util.function.Consumer;
  * commits. An old quote is no exception. A line at fault is named; Sales puts an active SKU on it and sends
  * the quote again - nothing is substituted. A reorder draft is the one step that does not ask: it is a request
  * for Sales to look at, and its sending asks. Orders already placed carry on whatever happens to the product.</p>
+ *
+ * <p><b>The customer's own SKUs, by the carton</b> (4B-2; kltn-docs 14 BR-04, BR-07, BR-08, 13 BR-02): drafting,
+ * revising, sending, accepting and converting each ask again that every SKU on the quote is one of this customer's own
+ * - another customer's answers as if it did not exist, a stock variant or blank is refused - and a line is written in
+ * the SKU's one carton unit, its pieces per carton fixed on the line. A line starts from the customer's own price for
+ * the SKU, read at the quote's cartons of it; Sales enters the tiers when there is none. A quote drafted before on
+ * blanks and designs is kept to read (QD-16): it is not sent, accepted or converted, and an accepted one may be
+ * cancelled for that alone.</p>
  */
 @Service
 @Transactional
@@ -88,7 +97,7 @@ class QuoteService implements Quotes {
     private final QuoteRepository quotes;
     private final QuoteSearch search;
     private final CustomerService customers;
-    private final DesignService designs;
+    private final UomConversionService units;
     private final QuotedOrders quotedOrders;
     private final OrderService orders;
     private final ObjectMapper json;
@@ -99,8 +108,8 @@ class QuoteService implements Quotes {
     private final com.stockflow.product.api.CustomerSkus customerSkus;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, CustomerService customers,
-                 DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock,
-                 CatalogService catalog, ApplicationEventPublisher events, ProductService products,
+                 UomConversionService units, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json,
+                 Clock clock, CatalogService catalog, ApplicationEventPublisher events, ProductService products,
                  com.stockflow.product.api.CustomerSkus customerSkus) {
         this.customerSkus = customerSkus;
         this.events = events;
@@ -109,7 +118,7 @@ class QuoteService implements Quotes {
         this.quotes = quotes;
         this.search = search;
         this.customers = customers;
-        this.designs = designs;
+        this.units = units;
         this.quotedOrders = quotedOrders;
         this.orders = orders;
         this.json = json;
@@ -179,6 +188,7 @@ class QuoteService implements Quotes {
     public QuoteView send(CurrentUser user, UUID quoteId, long version) {
         ScopeGuards.requireBackOffice(user);
         Quote quote = lock(user, quoteId, version);
+        requireCustomerSkus(quote, "sent");
         requireNewWorkFor(quote.customerId());
         requireTermAllowed(quote.customerId(), quote.offer());
         requireActiveSkus(quote.quoteNumber(), quote.offer());
@@ -202,9 +212,10 @@ class QuoteService implements Quotes {
         if (quote.statusAt(now) == QuoteStatus.EXPIRED) {
             throw new BusinessException(ErrorCode.QUOTE_EXPIRED, "Quote " + quote.quoteNumber() + " has expired");
         }
+        requireCustomerSkus(quote, "accepted");
         requireActiveSkus(quote.quoteNumber(), quote.offer());
         QuoteStatus from = quote.status();
-        quote.accept(acceptance.quantities(), user.userId(), now);
+        quote.accept(acceptance.cartons(), user.userId(), now);
         quotes.save(quote);
         quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.ACCEPTED, null, null, now,
                 user.userId());
@@ -239,7 +250,8 @@ class QuoteService implements Quotes {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "quote", resourceId = "#quoteId")
     public QuoteView cancel(CurrentUser user, UUID quoteId, long version, String reason) {
         return backOffice(user, quoteId, version, quote -> {
-            if (quote.status() == QuoteStatus.ACCEPTED) {
+            // A legacy quote is never converted (QD-16): accepted, it is cancelled for that alone.
+            if (quote.status() == QuoteStatus.ACCEPTED && !quote.offer().legacy()) {
                 requireAStoppedSku(quote);
             }
             quote.cancel(reason);
@@ -254,9 +266,9 @@ class QuoteService implements Quotes {
      */
     private void requireAStoppedSku(Quote quote) {
         Map<String, Purchasability> verdicts = products.lockedPurchasability(
-                quote.offer().lines().stream().map(line -> line.blankSku().code()).toList());
+                quote.offer().lines().stream().map(line -> line.sku().code()).toList());
         boolean stopped = quote.offer().lines().stream().map(line -> verdicts.get(
-                line.blankSku().code().toUpperCase(java.util.Locale.ROOT))).anyMatch(v -> v != null && !v.isPurchasable());
+                line.sku().code().toUpperCase(java.util.Locale.ROOT))).anyMatch(v -> v != null && !v.isPurchasable());
         if (!stopped) {
             throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION,
                     "Quote %s is accepted and every SKU on it is active: convert it into its order".formatted(
@@ -279,11 +291,15 @@ class QuoteService implements Quotes {
                     "Quote %s is %s; only an accepted quote becomes an order".formatted(quote.quoteNumber(),
                             quote.status()));
         }
+        requireCustomerSkus(quote, "converted");
         requireActiveSkus(quote.quoteNumber(), quote.offer(), "cancel the quote with its reason and send a new one with "
                 + "an active SKU");
+        // The order lines are what was accepted: the pieces, the price of one, and the cartons they were ordered in
+        // (14 §4.2 step 7, BR-08). The SKU is the design (12 §4.5), so no design snapshot travels with the line.
         List<PlaceOrderCommand.Line> lines = quote.offer().lines().stream()
-                .map(line -> new PlaceOrderCommand.Line(line.blankSku(), line.acceptedQuantity(),
-                        line.acceptedUnitPrice(), line.designSnapshotId(), quote.offer().requestedDeliveryDate()))
+                .map(line -> new PlaceOrderCommand.Line(line.sku(), line.acceptedUnits(), line.acceptedUnitPrice(),
+                        null, quote.offer().requestedDeliveryDate(), new PlaceOrderCommand.Carton(
+                                line.uomConversionId(), line.acceptedQuantity(), line.unitsPerCarton())))
                 .toList();
         OrderSummary order = quotedOrders.placeQuotedOrder(new PlaceOrderCommand(conversionRequestId(quote.id()),
                 quote.customerId(), conversion.shippingAddressId(), conversion.billingAddressId(), true, lines,
@@ -320,14 +336,12 @@ class QuoteService implements Quotes {
         requireNewWorkFor(customerId);
         Quote.Offer old = source.offer();
         Instant now = clock.instant();
-        // The deal stays with its own quote and order: every line starts again from today's price list, and a
-        // line the list cannot price is left unpriced for Sales (R1) - never the old price, never a zero.
-        Map<String, Integer> blankUnits = new java.util.HashMap<>();
-        old.lines().forEach(line -> blankUnits.merge(line.blankSku().code(), reorderedUnits(line), Integer::sum));
-        List<Line> lines = old.lines().stream()
-                .map(line -> new Line(line.blankSku().code(), line.designSnapshotId(), line.printSpec(),
-                        reorderedUnits(line), listTiers(customerId, line.blankSku().code(),
-                        blankUnits.get(line.blankSku().code()))))
+        // The deal stays with its own quote and order: every line starts again from the customer's own prices today,
+        // and a line they cannot price is left unpriced for Sales (R1) - never the old price, never a zero.
+        Map<String, Integer> cartons = reorderedCartons(customerId, old);
+        List<Line> lines = cartons.entrySet().stream()
+                .map(entry -> new Line(entry.getKey(), entry.getValue(),
+                        listTiers(customerId, entry.getKey(), entry.getValue())))
                 .toList();
         // The source quote's validity window, counted from now; Sales sets the real one before sending.
         Instant validUntil = now.plus(java.time.Duration.between(source.sentAt(), old.validUntil()));
@@ -466,7 +480,7 @@ class QuoteService implements Quotes {
     /**
      * Every blank on the offer is still ACTIVE - product APPROVED or PUBLISHED, variant ACTIVE - and stays so
      * until this step commits ({@link ProductService#lockedPurchasability}). One refusal names every line at
-     * fault with why, on {@code lines[i].blankSku}, so the form can put it next to the SKU.
+     * fault with why, on {@code lines[i].sku}, so the form can put it next to the SKU.
      */
     private void requireActiveSkus(String quoteNumber, Quote.Offer offer) {
         requireActiveSkus(quoteNumber, offer, "change it to an active SKU and send the quote again");
@@ -476,15 +490,15 @@ class QuoteService implements Quotes {
     private void requireActiveSkus(String quoteNumber, Quote.Offer offer, String next) {
         List<QuoteLine> lines = offer.lines();
         Map<String, Purchasability> verdicts = products.lockedPurchasability(
-                lines.stream().map(line -> line.blankSku().code()).toList());
+                lines.stream().map(line -> line.sku().code()).toList());
         List<FieldError> errors = new ArrayList<>();
         List<String> named = new ArrayList<>();
         for (int i = 0; i < lines.size(); i++) {
             QuoteLine line = lines.get(i);
-            String sku = line.blankSku().code();
+            String sku = line.sku().code();
             Purchasability verdict = verdicts.get(sku.toUpperCase(java.util.Locale.ROOT));
             if (verdict != null && !verdict.isPurchasable()) {
-                errors.add(new FieldError("lines[" + i + "].blankSku",
+                errors.add(new FieldError("lines[" + i + "].sku",
                         "SKU %s on line %d is no longer active".formatted(sku, line.lineNo()), verdict.name()));
                 named.add("line %d (%s, %s)".formatted(line.lineNo(), sku, verdict));
             }
@@ -504,29 +518,52 @@ class QuoteService implements Quotes {
     }
 
     /**
-     * Builds and verifies the offer: every design must be a snapshot this customer confirmed, for the
-     * product the blank belongs to. An edit replaces the lines (new ids); nothing was accepted on a draft.
+     * The cartons a reorder asks of each SKU: what the source quote accepted (or proposed), a legacy quote's designs as
+     * the SKUs issued for them, its units rounded up to whole cartons. In the source's order, one line per SKU.
      */
-    private static int reorderedUnits(QuoteLine line) {
-        return line.acceptedQuantity() == null ? line.quantity() : line.acceptedQuantity();
+    private Map<String, Integer> reorderedCartons(UUID customerId, Quote.Offer old) {
+        Map<String, Integer> cartons = new LinkedHashMap<>();
+        if (!old.legacy()) {
+            old.lines().forEach(line -> cartons.merge(line.sku().code(), line.acceptedQuantity() == null
+                    ? line.quantity() : line.acceptedQuantity(), Math::addExact));
+            return cartons;
+        }
+        Map<UUID, com.stockflow.product.api.CustomerSku> issued = customerSkus.ofSnapshots(
+                old.lines().stream().map(QuoteLine::designSnapshotId).toList());
+        List<String> unissued = old.lines().stream().filter(line -> !issued.containsKey(line.designSnapshotId()))
+                .map(line -> "line " + line.lineNo()).toList();
+        if (!unissued.isEmpty()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_SKU_REQUIRED, ("The design on %s of the order has no SKU of "
+                    + "the customer yet: quote it once its design is approved").formatted(String.join(", ", unissued)));
+        }
+        Map<String, UomConversion> cartonUnits = cartonUnits(issued.values().stream()
+                .map(com.stockflow.product.api.CustomerSku::sku).distinct().toList());
+        for (QuoteLine line : old.lines()) {
+            String sku = issued.get(line.designSnapshotId()).sku();
+            int units = line.acceptedQuantity() == null ? line.quantity() : line.acceptedQuantity();
+            int factor = cartonUnits.get(sku).factor();
+            cartons.merge(sku, Math.ceilDiv(units, factor), Math::addExact);
+        }
+        return cartons;
     }
 
     /**
-     * Today's list tiers of a blank for a reorder of {@code units} (the blank's total, P5), or none when the
-     * list has no price for it or starts above it (R1): Sales prices that line.
+     * The customer's own tiers for a SKU on a reorder of {@code cartons}, or none when the customer has no price of its
+     * own for it or its first tier starts above (R1): Sales prices that line.
      */
-    private List<Tier> listTiers(UUID customerId, String blank, int units) {
-        PriceSchedule schedule;
-        try {
-            schedule = catalog.priceSchedule(customerId, blank);
-        } catch (BusinessException noPrice) {
-            if (noPrice.errorCode() != ErrorCode.PRICE_NOT_AVAILABLE) throw noPrice;
-            return List.of();
-        }
-        if (units < schedule.moq()) {
-            return List.of();
-        }
-        return schedule.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList();
+    private List<Tier> listTiers(UUID customerId, String sku, int cartons) {
+        return ownPrice(customerId, sku).filter(schedule -> cartons >= schedule.moq())
+                .map(schedule -> schedule.tiers().stream()
+                        .map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList())
+                .orElse(List.of());
+    }
+
+    /**
+     * The customer's own price for one of its SKUs (13 BR-05: tiers by cartons, a price per piece), if it has one. A
+     * group or base price is a stock variant's price by the unit (13 §3) and is not offered for a SKU of the customer.
+     */
+    private Optional<PriceSchedule> ownPrice(UUID customerId, String sku) {
+        return catalog.customerPrice(customerId, sku);
     }
 
     private Quote.Offer offer(UUID customerId, Draft draft) {
@@ -534,8 +571,11 @@ class QuoteService implements Quotes {
     }
 
     /**
+     * Builds and verifies the offer: every line is cartons of one of this customer's own SKUs, written in the SKU's
+     * carton unit at its factor now (14 BR-08). An edit replaces the lines (new ids); nothing was accepted on a draft.
+     *
      * @param asGiven take each line's tiers as they are, none meaning not priced yet (a reorder, R1), instead
-     *                of filling omitted tiers from the price list
+     *                of filling omitted tiers from the customer's own price
      */
     private Quote.Offer offer(UUID customerId, Draft draft, boolean asGiven) {
         Objects.requireNonNull(draft, "draft");
@@ -545,20 +585,21 @@ class QuoteService implements Quotes {
         if (draft.validUntil() == null || !draft.validUntil().isAfter(clock.instant())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote is valid until a moment still ahead");
         }
+        List<String> skus = draft.lines().stream().map(line -> new Sku(line.sku()).code()).toList();
+        requireOwnSkus(customerId, skus);
+        Map<String, UomConversion> cartonUnits = cartonUnits(skus);
+        Map<String, Integer> cartonsBySku = new java.util.HashMap<>();
+        draft.lines().forEach(line -> cartonsBySku.merge(new Sku(line.sku()).code(), line.cartons(), Integer::sum));
         List<QuoteLine> lines = new ArrayList<>();
-        Map<String, Integer> blankUnits = new java.util.HashMap<>();
-        draft.lines().forEach(line -> blankUnits.merge(new Sku(line.blankSku()).code(), line.quantity(), Integer::sum));
-        // Another customer's own SKU is not there for this customer (kltn-docs 13 BR-02).
-        customerSkus.requireVisibleTo(blankUnits.keySet(), customerId);
         int lineNo = 1;
         for (Line line : draft.lines()) {
-            Sku blank = new Sku(line.blankSku());
-            designs.verifySnapshotForSku(line.designSnapshotId(), customerId, blank.code());
+            Sku sku = new Sku(line.sku());
+            UomConversion carton = cartonUnits.get(sku.code());
             List<PriceTier> tiers = !asGiven && (line.tiers() == null || line.tiers().isEmpty())
-                    ? defaultTiers(customerId, blank, blankUnits.get(blank.code()))
+                    ? defaultTiers(customerId, sku, cartonsBySku.get(sku.code()))
                     : line.tiers().stream().map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
-            lines.add(new QuoteLine(Identifiers.newId(), lineNo++, blank, line.designSnapshotId(), line.printSpec(),
-                    line.quantity(), tiers, null, null));
+            lines.add(QuoteLine.carton(Identifiers.newId(), lineNo++, sku, carton.id(), carton.factor(), line.cartons(),
+                    tiers, null, null));
         }
         BigDecimal deposit = draft.depositPercent();
         if (draft.paymentTerm() == com.stockflow.order.api.PaymentTerm.DEPOSIT && deposit == null) {
@@ -577,30 +618,84 @@ class QuoteService implements Quotes {
     }
 
     /**
-     * kltn-docs 14 step 2: a quote's price starts from the customer's price list - its own tiers for the
-     * blank, else its group's or the base price (SCRUM-428). Copied into the quote, so a later price-list
-     * change does not move a quote while it is valid (14 BR-03). Sales may enter any valid tiers instead: no
-     * discount limit and no internal approval (user decision 2026-10-12, overriding 14 BR-10); the customer
-     * accepts.
-     *
-     * <p>{@code quantity} is the draft's total of the blank, every design together (P5). Below the list's first
-     * tier the list has no price for the quantity (user decision P4, 2026-10-12):
-     * Sales negotiates and enters the line's tiers - the first tier's price is never applied to a smaller
-     * quantity, and the refusal says so instead of reading as a quote MOQ the customer never saw.</p>
+     * kltn-docs 14 BR-04, 13 BR-02, at every step: each SKU is one of this customer's own. Another customer's answers
+     * {@code VARIANT_NOT_FOUND}, as if it did not exist; a stock variant, a blank or an unknown code is refused naming
+     * the lines, on {@code lines[i].sku}.
      */
-    private List<PriceTier> defaultTiers(UUID customerId, Sku blank, int quantity) {
-        PriceSchedule schedule;
-        try {
-            schedule = catalog.priceSchedule(customerId, blank.code());
-        } catch (BusinessException noPrice) {
-            if (noPrice.errorCode() != ErrorCode.PRICE_NOT_AVAILABLE) throw noPrice;
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "No price list price for " + blank.code() + "; enter the line's price tiers");
+    private void requireOwnSkus(UUID customerId, List<String> skus) {
+        customerSkus.requireVisibleTo(skus, customerId);
+        List<FieldError> errors = new ArrayList<>();
+        for (int i = 0; i < skus.size(); i++) {
+            if (!customerSkus.ownerOf(skus.get(i)).map(customerId::equals).orElse(false)) {
+                errors.add(new FieldError("lines[" + i + "].sku", "%s is not a SKU of this customer"
+                        .formatted(skus.get(i)), "CUSTOMER_SKU_REQUIRED"));
+            }
         }
-        if (quantity < schedule.moq()) {
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_SKU_REQUIRED, "A quote line is one of the customer's own "
+                    + "SKUs: " + String.join(", ", errors.stream().map(FieldError::message).toList()), errors);
+        }
+    }
+
+    /**
+     * A quote that is sent, accepted or converted holds cartons of the customer's own SKUs: not a legacy quote on blanks
+     * and designs (QD-16), and every SKU still the customer's (14 BR-04).
+     */
+    private void requireCustomerSkus(Quote quote, String verb) {
+        if (quote.offer().legacy()) {
+            throw new BusinessException(ErrorCode.QUOTE_LINES_LEGACY, ("Quote %s was drafted on blanks and designs, "
+                    + "before the customer's own SKUs: it is not %s. Revise a draft onto the customer's SKUs, or draft "
+                    + "a new quote").formatted(quote.quoteNumber(), verb));
+        }
+        requireOwnSkus(quote.customerId(), quote.offer().lines().stream().map(line -> line.sku().code()).toList());
+    }
+
+    /**
+     * The carton unit of each SKU (kltn-docs 01 BR-03, BR-11): its one active packing unit of more than one piece - the
+     * default shipping one should an older SKU have several. None, or several none of which is the default shipping
+     * unit, is refused: the SKU is sold by the carton and nothing is guessed.
+     */
+    private Map<String, UomConversion> cartonUnits(List<String> skus) {
+        Map<String, List<UomConversion>> declared = units.conversionsOf(skus.stream().distinct().map(Sku::new).toList());
+        Map<String, UomConversion> cartons = new java.util.HashMap<>();
+        List<String> missing = new ArrayList<>();
+        for (String sku : skus.stream().distinct().toList()) {
+            List<UomConversion> candidates = declared.getOrDefault(sku, List.of()).stream()
+                    .filter(unit -> unit.active() && !unit.base() && unit.factor() > 1).toList();
+            if (candidates.size() > 1) {
+                candidates = candidates.stream().filter(UomConversion::defaultShipping).toList();
+            }
+            if (candidates.size() == 1) {
+                cartons.put(sku, candidates.getFirst());
+            } else {
+                missing.add(sku);
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw new BusinessException(ErrorCode.CARTON_SPEC_MISSING, ("%s has no single carton unit (01 BR-03): set "
+                    + "its carton specification").formatted(String.join(", ", missing)));
+        }
+        return cartons;
+    }
+
+    /**
+     * kltn-docs 14 step 2: a line's price starts from the customer's own price for the SKU (13 BR-05), read at the
+     * draft's cartons of it. Copied into the quote, so a later price change does not move a quote while it is valid
+     * (14 BR-06). Sales may enter any valid tiers instead: no discount limit and no internal approval (user decision
+     * 2026-10-12, overriding 14 BR-10); the customer accepts.
+     *
+     * <p>No price of the customer's own, or the cartons below its first tier: Sales negotiates and enters the line's
+     * tiers - the first tier's price is never applied to fewer cartons, and the refusal says so instead of reading as a
+     * quote MOQ the customer never saw (user decision P4).</p>
+     */
+    private List<PriceTier> defaultTiers(UUID customerId, Sku sku, int cartons) {
+        PriceSchedule schedule = ownPrice(customerId, sku.code()).orElseThrow(() -> new BusinessException(
+                ErrorCode.VALIDATION_FAILED, "The customer has no price of its own for " + sku.code()
+                        + "; enter the line's price tiers"));
+        if (cartons < schedule.moq()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "%d units of %s is below the customer's price list minimum of %d; enter the negotiated price tiers"
-                            .formatted(quantity, blank.code(), schedule.moq()));
+                    "%d cartons of %s is below the customer's price minimum of %d cartons; enter the negotiated price "
+                            .formatted(cartons, sku.code(), schedule.moq()) + "tiers");
         }
         return schedule.tiers().stream()
                 .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice().amount())).toList();
@@ -637,10 +732,17 @@ class QuoteService implements Quotes {
         document.put("lines", offer.lines().stream().map(line -> {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("lineNo", line.lineNo());
-            row.put("blankSku", line.blankSku().code());
-            row.put("designSnapshotId", line.designSnapshotId().toString());
-            row.put("printSpec", line.printSpec());
-            row.put("quantity", line.quantity());
+            if (line.legacy()) {
+                row.put("blankSku", line.sku().code());
+                row.put("designSnapshotId", line.designSnapshotId().toString());
+                row.put("printSpec", line.printSpec());
+                row.put("quantity", line.quantity());
+            } else {
+                row.put("sku", line.sku().code());
+                row.put("uomConversionId", line.uomConversionId().toString());
+                row.put("cartons", line.quantity());
+                row.put("unitsPerCarton", line.unitsPerCarton());
+            }
             row.put("tiers", line.tiers().stream().map(t -> Map.of("minQuantity", t.minQuantity(),
                     "unitPrice", t.unitPrice().amount())).toList());
             return row;
@@ -686,30 +788,30 @@ class QuoteService implements Quotes {
         List<LineView> lines = new ArrayList<>();
         for (QuoteLine line : offer.lines()) {
             BigDecimal lineTotal = line.acceptedQuantity() == null ? null
-                    : line.acceptedUnitPrice().amount().multiply(BigDecimal.valueOf(line.acceptedQuantity()));
+                    : line.total(line.acceptedQuantity(), line.acceptedUnitPrice()).amount();
             if (lineTotal != null) {
                 acceptedTotal = acceptedTotal == null ? lineTotal : acceptedTotal.add(lineTotal);
             }
-            BigDecimal proposedPrice = !line.priced() ? null
-                    : line.priceFor(offer.proposedUnits(line.blankSku().code())).amount();
-            BigDecimal proposedLineTotal = proposedPrice == null ? null
-                    : proposedPrice.multiply(BigDecimal.valueOf(line.quantity()));
+            com.stockflow.common.domain.Money proposed = !line.priced() ? null
+                    : line.priceFor(offer.proposedQuantity(line.sku().code()));
+            BigDecimal proposedLineTotal = proposed == null ? null : line.total(line.quantity(), proposed).amount();
             if (priced) {
                 proposedTotal = proposedTotal.add(proposedLineTotal);
             }
-            lines.add(new LineView(line.id(), line.lineNo(), line.blankSku().code(), line.designSnapshotId(),
-                    line.printSpec(), line.quantity(), line.priced(), line.priced() ? line.moq() : null,
+            lines.add(new LineView(line.id(), line.lineNo(), line.measure().name(), line.sku().code(),
+                    line.legacy() ? null : line.quantity(), line.legacy() ? null : line.unitsPerCarton(), line.units(),
+                    line.designSnapshotId(), line.printSpec(), line.priced(), line.priced() ? line.moq() : null,
                     line.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList(),
-                    proposedPrice, proposedLineTotal,
-                    line.acceptedQuantity(), line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(),
-                    lineTotal));
+                    proposed == null ? null : proposed.amount(), proposedLineTotal,
+                    line.legacy() ? null : line.acceptedQuantity(), line.acceptedUnits(),
+                    line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(), lineTotal));
         }
         ConvertedOrder converted = quote.convertedOrderId() == null ? null : orders.findById(quote.convertedOrderId())
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))
                 .orElse(null);
         return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), revision,
                 offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(),
-                offer.requestedDeliveryDate(), lines, priced,
+                offer.requestedDeliveryDate(), offer.legacy(), lines, priced,
                 proposedTotal,
                 acceptedTotal,
                 quote.sentAt(), quote.sentBy(), quote.respondedAt(), quote.respondedBy(), quote.customerFeedback(),
@@ -730,10 +832,16 @@ class QuoteService implements Quotes {
                 for (JsonNode tier : line.path("tiers")) {
                     tiers.add(PriceTier.of(tier.path("minQuantity").asInt(), tier.path("unitPrice").decimalValue()));
                 }
-                lines.add(new QuoteLine(ids.getOrDefault(lineNo, UUID.nameUUIDFromBytes(("quote-line:" + quote.id()
-                        + ":" + lineNo).getBytes(StandardCharsets.UTF_8))), lineNo, new Sku(line.path("blankSku").asText()),
-                        UUID.fromString(line.path("designSnapshotId").asText()), textOrNull(line.path("printSpec")),
-                        line.path("quantity").asInt(), tiers, null, null));
+                UUID id = ids.getOrDefault(lineNo, UUID.nameUUIDFromBytes(("quote-line:" + quote.id() + ":" + lineNo)
+                        .getBytes(StandardCharsets.UTF_8)));
+                // A carton line names its SKU; a line sent before 4B-2 its blank and design (QD-16).
+                lines.add(line.path("sku").isTextual()
+                        ? QuoteLine.carton(id, lineNo, new Sku(line.path("sku").asText()),
+                                UUID.fromString(line.path("uomConversionId").asText()),
+                                line.path("unitsPerCarton").asInt(), line.path("cartons").asInt(), tiers, null, null)
+                        : QuoteLine.legacy(id, lineNo, new Sku(line.path("blankSku").asText()),
+                                UUID.fromString(line.path("designSnapshotId").asText()),
+                                textOrNull(line.path("printSpec")), line.path("quantity").asInt(), tiers, null, null));
             }
             JsonNode deposit = sent.path("depositPercent");
             return new Quote.Offer(com.stockflow.order.api.PaymentTerm.valueOf(sent.path("paymentTerm").asText()),

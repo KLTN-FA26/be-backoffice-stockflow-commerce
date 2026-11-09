@@ -6,7 +6,6 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.common.storage.FileStorage;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveAddressCommand;
 import com.stockflow.order.api.PaymentTerm;
@@ -16,10 +15,10 @@ import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.support.Await;
-import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,7 +70,6 @@ class InactiveSkuQuoteIntegrationTest {
     @Autowired CustomerService customers;
     @Autowired ProductService products;
     @Autowired ProductTaxonomyService taxonomy;
-    @Autowired FileStorage storage;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -83,7 +81,6 @@ class InactiveSkuQuoteIntegrationTest {
     private UUID customerId;
     private UUID productId;
     private String sku;
-    private ConfirmedDesigns.Design design;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -97,13 +94,11 @@ class InactiveSkuQuoteIntegrationTest {
         UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
         productId = ProductFixtures.approved(products, ProductFixtures.taxonomy(taxonomy, suffix), suffix, editor,
                 approver).productId();
-        sku = "FX-" + suffix;
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at,
-                    received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', 30, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku));
-        design = ConfirmedDesigns.confirmedFor(storage, jdbc, tx, entityManager, customerId, productId);
+        UUID variant = jdbc.queryForObject("SELECT id FROM product.variants WHERE sku = ?", UUID.class, "FX-" + suffix);
+        // 4B-2: what is quoted is the customer's own SKU, drawn on this product - suspending the product stops it too.
+        sku = CustomerSkuRows.issueOn(jdbc, tx, customerId, new ReferenceRows.ProductRow(productId, variant,
+                "FX-" + suffix), 10).sku();
+        CustomerSkuRows.stock(jdbc, tx, sku, 100);
     }
 
     // ------------------------------------------------------------------------------------- fixtures
@@ -127,8 +122,7 @@ class InactiveSkuQuoteIntegrationTest {
 
     private Quotes.Draft draft() {
         return new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), "Prices exclude VAT",
-                List.of(new Quotes.Line(sku, design.snapshotId(), "Logo front, 2 colours", 3,
-                        List.of(new Quotes.Tier(2, new BigDecimal("3000"))))));
+                List.of(new Quotes.Line(sku, 3, List.of(new Quotes.Tier(2, new BigDecimal("3000"))))));
     }
 
     private Quotes.QuoteView drafted() {
@@ -188,7 +182,7 @@ class InactiveSkuQuoteIntegrationTest {
         assertRefusedFor(send, "PRODUCT_INACTIVE");
         assertThat(((BusinessException) send).getMessage()).contains("line 1");
         assertThat(((BusinessException) send).fieldErrors()).extracting(f -> f.field())
-                .containsExactly("lines[0].blankSku");
+                .containsExactly("lines[0].sku");
         assertRefusedFor(catchThrowable(() -> quotes.edit(sales, created.id(), created.version(), draft())),
                 "PRODUCT_INACTIVE");
         assertRefusedFor(catchThrowable(this::drafted), "PRODUCT_INACTIVE");

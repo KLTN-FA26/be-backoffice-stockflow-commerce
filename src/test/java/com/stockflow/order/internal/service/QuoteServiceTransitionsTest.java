@@ -13,7 +13,6 @@ import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
-import com.stockflow.design.api.DesignService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.PriceTier;
@@ -63,13 +62,15 @@ class QuoteServiceTransitionsTest {
     private final CustomerService customers = mock(CustomerService.class);
     private final ProductService products = mock(ProductService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+    private final com.stockflow.product.api.CustomerSkus customerSkus =
+            mock(com.stockflow.product.api.CustomerSkus.class);
     private final QuoteService service = new QuoteService(quotes, search, customers,
-            mock(DesignService.class), mock(QuotedOrders.class), mock(OrderService.class), new ObjectMapper(),
-            Clock.fixed(NOW, ZoneOffset.UTC), mock(com.stockflow.catalog.api.CatalogService.class), events, products, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class));
+            mock(com.stockflow.inventory.api.UomConversionService.class), mock(QuotedOrders.class),
+            mock(OrderService.class), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
+            mock(com.stockflow.catalog.api.CatalogService.class), events, products, customerSkus);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
-    private final UUID design = UUID.randomUUID();
     private final UUID salesUser = UUID.randomUUID();
     private final CurrentUser sales = new CurrentUser(salesUser, "sales", Set.of(Role.SALES_STAFF), Set.of(),
             DataScope.ALL, Set.of(), Set.of());
@@ -89,13 +90,14 @@ class QuoteServiceTransitionsTest {
                 VERSION)));
         when(search.history(any())).thenReturn(List.of());
         when(products.lockedPurchasability(any())).thenReturn(Map.of());
+        when(customerSkus.ownerOf("LY12-ACME-01")).thenReturn(Optional.of(customer));
     }
 
     private Quote stored(QuoteStatus status, Instant validUntil) {
         boolean answered = status == QuoteStatus.ACCEPTED || status == QuoteStatus.CHANGES_REQUESTED;
-        QuoteLine line = new QuoteLine(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), design, null, 1000,
-                List.of(PriceTier.of(1000, new BigDecimal("2000")), PriceTier.of(5000, new BigDecimal("1800"))),
-                status == QuoteStatus.ACCEPTED ? 1000 : null, status == QuoteStatus.ACCEPTED ? Money.vnd(2000) : null);
+        QuoteLine line = QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), UUID.randomUUID(), 50, 20,
+                List.of(PriceTier.of(10, new BigDecimal("2000")), PriceTier.of(50, new BigDecimal("1800"))),
+                status == QuoteStatus.ACCEPTED ? 20 : null, status == QuoteStatus.ACCEPTED ? Money.vnd(2000) : null);
         Quote quote = Quote.restore(UUID.randomUUID(), "QT-1", UUID.randomUUID(), customer, status, 1,
                 new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("40"), validUntil, null, List.of(line)),
                 status == QuoteStatus.DRAFT ? null : NOW, status == QuoteStatus.DRAFT ? null : salesUser,
@@ -130,7 +132,7 @@ class QuoteServiceTransitionsTest {
         ArgumentCaptor<String> snapshot = ArgumentCaptor.forClass(String.class);
         verify(quotes).recordTransition(eq(quote.id()), eq(1), eq(QuoteStatus.DRAFT), eq(QuoteStatus.SENT), eq(null),
                 snapshot.capture(), eq(NOW), eq(salesUser));
-        assertThat(snapshot.getValue()).contains("CUP-PP-500");
+        assertThat(snapshot.getValue()).contains("LY12-ACME-01");
     }
 
     @Test
@@ -147,14 +149,14 @@ class QuoteServiceTransitionsTest {
     @DisplayName("a quote holding a SKU that is no longer active cannot be sent: SKU_NOT_SELLABLE names the line")
     void inactiveSkuBlocksSending() {
         Quote quote = stored(QuoteStatus.DRAFT);
-        when(products.lockedPurchasability(any())).thenReturn(Map.of("CUP-PP-500", Purchasability.PRODUCT_DISCONTINUED));
+        when(products.lockedPurchasability(any())).thenReturn(Map.of("LY12-ACME-01", Purchasability.PRODUCT_DISCONTINUED));
 
         BusinessException thrown = org.assertj.core.api.Assertions.catchThrowableOfType(BusinessException.class,
                 () -> service.send(sales, quote.id(), VERSION));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.SKU_NOT_SELLABLE);
         assertThat(thrown.fieldErrors()).singleElement()
-                .satisfies(error -> assertThat(error.field()).isEqualTo("lines[0].blankSku"));
+                .satisfies(error -> assertThat(error.field()).isEqualTo("lines[0].sku"));
         assertThat(quote.status()).isEqualTo(QuoteStatus.DRAFT);
     }
 
@@ -186,7 +188,7 @@ class QuoteServiceTransitionsTest {
 
         assertThat(quote.status()).isEqualTo(QuoteStatus.ACCEPTED);
         assertThat(quote.respondedBy()).isEqualTo(portalUser);
-        assertThat(quote.offer().lines().get(0).acceptedQuantity()).isEqualTo(1000);
+        assertThat(quote.offer().lines().get(0).acceptedQuantity()).as("20 cartons, as proposed").isEqualTo(20);
         verify(quotes).recordTransition(eq(quote.id()), eq(1), eq(QuoteStatus.SENT), eq(QuoteStatus.ACCEPTED), eq(null),
                 eq(null), eq(NOW), eq(portalUser));
         ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
@@ -301,7 +303,7 @@ class QuoteServiceTransitionsTest {
                 .isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
         assertThat(quote.status()).isEqualTo(QuoteStatus.ACCEPTED);
 
-        when(products.lockedPurchasability(any())).thenReturn(Map.of("CUP-PP-500", Purchasability.PRODUCT_INACTIVE));
+        when(products.lockedPurchasability(any())).thenReturn(Map.of("LY12-ACME-01", Purchasability.PRODUCT_INACTIVE));
         service.cancel(sales, quote.id(), VERSION, "SKU stopped");
 
         assertThat(quote.status()).isEqualTo(QuoteStatus.CANCELLED);

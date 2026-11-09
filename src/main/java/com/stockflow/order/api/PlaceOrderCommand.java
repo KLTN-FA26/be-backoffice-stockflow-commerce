@@ -61,15 +61,23 @@ public record PlaceOrderCommand(
      * @param designSnapshotId set only for print-on-demand items; identifies the frozen design the
      *                         customer approved, so a later edit to the design cannot change what
      *                         was ordered
-     * @param requestedDeliveryDate the date the customer asked to receive a print line (SCRUM-502, from its
-     *                         quote). Null when none was asked; never set on a stock line
+     * @param requestedDeliveryDate the date the customer asked to receive a print line or a line in cartons
+     *                         (SCRUM-502, from its quote). Null when none was asked; never set on a stock line
+     * @param carton           how a line of the customer's own SKU was ordered (4B-2): {@code quantity} is its pieces;
+     *                         null for any other line
      */
     public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId,
-                       java.time.LocalDate requestedDeliveryDate) {
+                       java.time.LocalDate requestedDeliveryDate, Carton carton) {
+
+        /** Not ordered in cartons. */
+        public Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId,
+                    java.time.LocalDate requestedDeliveryDate) {
+            this(sku, quantity, unitPrice, designSnapshotId, requestedDeliveryDate, null);
+        }
 
         /** Without a requested delivery date. */
         public Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId) {
-            this(sku, quantity, unitPrice, designSnapshotId, null);
+            this(sku, quantity, unitPrice, designSnapshotId, null, null);
         }
 
         public Line {
@@ -79,9 +87,27 @@ public record PlaceOrderCommand(
             if (unitPrice.isNegative()) {
                 throw new IllegalArgumentException("unitPrice must not be negative");
             }
-            if (requestedDeliveryDate != null && designSnapshotId == null) {
-                throw new IllegalArgumentException("only a print line has a requested delivery date");
+            if (requestedDeliveryDate != null && designSnapshotId == null && carton == null) {
+                throw new IllegalArgumentException("only a print line or a line in cartons has a requested delivery date");
             }
+            if (carton != null && (long) carton.cartons() * carton.unitsPerCarton() != quantity) {
+                throw new IllegalArgumentException("quantity must be cartons x unitsPerCarton");
+            }
+        }
+    }
+
+    /**
+     * Cartons of the customer's own SKU, as the accepted quote line fixed them (kltn-docs 14 BR-08).
+     *
+     * @param uomConversionId the SKU's carton unit
+     * @param unitsPerCarton  pieces per carton fixed on the quote line
+     */
+    public record Carton(UUID uomConversionId, int cartons, int unitsPerCarton) {
+
+        public Carton {
+            if (uomConversionId == null) throw new IllegalArgumentException("uomConversionId is required");
+            if (cartons < 1) throw new IllegalArgumentException("cartons must be at least 1");
+            if (unitsPerCarton < 2) throw new IllegalArgumentException("a carton holds more than one piece");
         }
     }
 }

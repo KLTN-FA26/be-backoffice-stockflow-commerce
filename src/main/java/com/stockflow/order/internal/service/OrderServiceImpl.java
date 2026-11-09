@@ -222,6 +222,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                     ? agreedPrice(
                                             line.sku().code(), line.unitPrice(), sellingPrices)
                                     : line.unitPrice(), line.designSnapshotId());
+            if (line.carton() != null) {
+                orderLine.withCartons(line.carton().uomConversionId(), line.carton().cartons(),
+                        line.carton().unitsPerCarton());
+            }
             orderLine.withRequestedDeliveryDate(line.requestedDeliveryDate());
             if (line.designSnapshotId() != null) {
                 orderLine.recordDesignChecksum(designs.verifySnapshotForSku(line.designSnapshotId(), command.customerId(), line.sku().code()).checksum());
@@ -1114,7 +1118,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                 line.unitPrice(),
                                 line.lineTotal(),
                                 line.reservationIds(), line.designSnapshotId(), line.designChecksum(),
-                                line.requestedDeliveryDate()))
+                                line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton()))
                         .toList(),
                 order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
                 order.contactName(), order.contactEmail(), order.contactPhone(),

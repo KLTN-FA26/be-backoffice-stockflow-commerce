@@ -14,16 +14,19 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * A B2B quote (SCRUM-448, 03-state-machines §18): what Sales offers a known customer — lines of printed
- * blanks with price breaks, a payment term, a validity — and the customer's answer.
+ * A B2B quote (SCRUM-448, 03-state-machines §18): what Sales offers a known customer — lines of cartons of the
+ * customer's own SKUs with price breaks (kltn-docs 14 BR-04, BR-07, BR-08; 4B-2), a payment term, a validity — and
+ * the customer's answer.
  *
  * <p>Rules carried over from PR #38's {@code DesignQuote}: the company issues (sends) and the customer
  * assents, separately; accepted terms are never revised; only a draft is edited. New here: several
  * lines, price tiers with a minimum order quantity, the payment term, EXPIRED, and conversion to exactly
  * one order.</p>
  *
- * <p>Whether every new design has a sample the customer approved (BR-ORD-008) is the service's to check
- * before {@link #accept}: it needs what production has announced, which the aggregate does not hold.</p>
+ * <p>A quote drafted before 4B-2 on blanks and designs ({@link QuoteLine#legacy()}) is kept as it was, to read
+ * (QD-16): it is not sent, accepted or converted ({@code QUOTE_LINES_LEGACY}). A draft of one is revised onto the
+ * customer's own SKUs, which replaces every line; anything else about it ends as its status allows (cancelled,
+ * expired).</p>
  *
  * <p>Every method checks before it changes anything, so a refused call leaves the quote as it was. The
  * CHECK constraints of {@code ordering.quote} mirror each invariant here.</p>
@@ -66,26 +69,39 @@ public final class Quote {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line");
             }
             var numbers = new HashSet<Integer>();
-            var printed = new HashSet<String>();
+            var quoted = new HashSet<String>();
+            boolean legacy = lines.getFirst().legacy();
             for (QuoteLine line : lines) {
                 if (!numbers.add(line.lineNo())) {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + line.lineNo() + " appears twice");
                 }
-                if (!printed.add(line.blankSku().code() + "|" + line.designSnapshotId())) {
-                    throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                            "The same design on blank " + line.blankSku().code() + " is quoted twice");
+                if (line.legacy() != legacy) {
+                    throw new IllegalArgumentException("A quote's lines are all cartons of the customer's SKUs, or all "
+                            + "lines drafted before them");
+                }
+                // A SKU once per quote (14 BR-22); on a legacy quote, one design once per blank.
+                String key = line.legacy() ? line.sku().code() + "|" + line.designSnapshotId() : line.sku().code();
+                if (!quoted.add(key)) {
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, line.legacy()
+                            ? "The same design on blank " + line.sku().code() + " is quoted twice"
+                            : "SKU " + line.sku().code() + " is quoted twice; one line per SKU");
                 }
             }
             lines = List.copyOf(lines);
-            Map<String, Integer> blanks = unitsByBlank(lines, line -> line.quantity());
+            Map<String, Integer> bySku = quantityBySku(lines, QuoteLine::quantity);
             for (QuoteLine line : lines) {
-                int units = blanks.get(line.blankSku().code());
-                if (line.priced() && units < line.moq()) {
+                int quantity = bySku.get(line.sku().code());
+                if (line.priced() && quantity < line.moq()) {
                     throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
-                            "Line %d: %d units of %s on this quote, below its MOQ of %d".formatted(line.lineNo(), units,
-                                    line.blankSku().code(), line.moq()));
+                            "Line %d: %d %s of %s on this quote, below its MOQ of %d".formatted(line.lineNo(), quantity,
+                                    line.noun(), line.sku().code(), line.moq()));
                 }
             }
+        }
+
+        /** Whether the lines were drafted before 4B-2, on blanks and designs: the quote is kept to read (QD-16). */
+        public boolean legacy() {
+            return lines.getFirst().legacy();
         }
 
         /** Whether every line has its price: what a quote needs before it is sent (R1). */
@@ -93,18 +109,21 @@ public final class Quote {
             return lines.stream().allMatch(QuoteLine::priced);
         }
 
-        /** The proposed units of this blank over every line (P5): what picks each line's price break. */
-        public int proposedUnits(String blankSku) {
-            return unitsByBlank(lines, QuoteLine::quantity).getOrDefault(blankSku, 0);
+        /**
+         * The proposed quantity of this SKU over every line (cartons; units of a blank on a legacy quote, every design
+         * on it together - P5): what picks each line's price break (14 BR-07).
+         */
+        public int proposedQuantity(String sku) {
+            return quantityBySku(lines, QuoteLine::quantity).getOrDefault(sku, 0);
         }
     }
 
-    /** Units per blank SKU, every design on it together; never across SKUs (P5). */
-    private static Map<String, Integer> unitsByBlank(List<QuoteLine> lines,
-                                                     java.util.function.ToIntFunction<QuoteLine> units) {
+    /** The quantity per SKU (per blank on a legacy quote, every design on it together); never across SKUs. */
+    private static Map<String, Integer> quantityBySku(List<QuoteLine> lines,
+                                                      java.util.function.ToIntFunction<QuoteLine> quantity) {
         Map<String, Integer> total = new HashMap<>();
         for (QuoteLine line : lines) {
-            total.merge(line.blankSku().code(), units.applyAsInt(line), Math::addExact);
+            total.merge(line.sku().code(), quantity.applyAsInt(line), Math::addExact);
         }
         return total;
     }
@@ -179,6 +198,7 @@ public final class Quote {
     public void send(UUID by, Instant now) {
         Objects.requireNonNull(by, "by");
         requireStatus(QuoteStatus.DRAFT, "send");
+        requireCartonLines("sent");
         for (QuoteLine line : offer.lines()) {
             if (!line.priced()) {
                 throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED,
@@ -195,16 +215,16 @@ public final class Quote {
     }
 
     /**
-     * SENT → ACCEPTED within the validity (BR-ORD-008). Each line is accepted at the quantity asked for —
-     * its proposed quantity when none is given — and at its own break for the accepted total of its blank
-     * (P5: every design on the same blank counted together, never across blanks).
+     * SENT → ACCEPTED within the validity (BR-ORD-008). Each line is accepted at the cartons asked for — its
+     * proposed cartons when none are given — and at its own break for the accepted total of its SKU (14 BR-07).
      *
-     * @param units per line id; a line not named is accepted at its proposed quantity
+     * @param cartons per line id; a line not named is accepted at its proposed cartons
      */
-    public void accept(Map<UUID, Integer> units, UUID by, Instant now) {
+    public void accept(Map<UUID, Integer> cartons, UUID by, Instant now) {
         Objects.requireNonNull(by, "by");
         requireAnswerable(now, QuoteStatus.ACCEPTED);
-        Map<UUID, Integer> asked = units == null ? Map.of() : units;
+        requireCartonLines("accepted");
+        Map<UUID, Integer> asked = cartons == null ? Map.of() : cartons;
         var known = new HashSet<UUID>();
         offer.lines().forEach(line -> known.add(line.id()));
         for (UUID lineId : asked.keySet()) {
@@ -216,15 +236,16 @@ public final class Quote {
         for (QuoteLine line : offer.lines()) {
             int quantity = asked.getOrDefault(line.id(), line.quantity());
             if (quantity < 1) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + line.lineNo() + " needs at least 1 unit");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "Line " + line.lineNo() + " needs at least 1 carton");
             }
             chosen.put(line.id(), quantity);
         }
-        Map<String, Integer> blanks = unitsByBlank(offer.lines(), line -> chosen.get(line.id()));
+        Map<String, Integer> bySku = quantityBySku(offer.lines(), line -> chosen.get(line.id()));
         for (QuoteLine line : offer.lines()) {
-            line.priceFor(blanks.get(line.blankSku().code()));   // refuses below the MOQ before anything changes
+            line.priceFor(bySku.get(line.sku().code()));   // refuses below the MOQ before anything changes
         }
-        offer.lines().forEach(line -> line.accept(chosen.get(line.id()), blanks.get(line.blankSku().code())));
+        offer.lines().forEach(line -> line.accept(chosen.get(line.id()), bySku.get(line.sku().code())));
         status = QuoteStatus.ACCEPTED;
         respondedAt = now;
         respondedBy = by;
@@ -286,9 +307,19 @@ public final class Quote {
     public void convert(UUID orderId, Instant now) {
         Objects.requireNonNull(orderId, "orderId");
         Objects.requireNonNull(now, "now");
+        requireCartonLines("converted");
         move(QuoteStatus.CONVERTED, "convert");
         convertedOrderId = orderId;
         convertedAt = now;
+    }
+
+    /** QD-16: a quote on blanks and designs, drafted before 4B-2, is kept to read. */
+    private void requireCartonLines(String verb) {
+        if (offer.legacy()) {
+            throw new BusinessException(ErrorCode.QUOTE_LINES_LEGACY, ("Quote %s was drafted on blanks and designs, "
+                    + "before the customer's own SKUs: it is not %s. Revise a draft onto the customer's SKUs, or draft "
+                    + "a new quote").formatted(quoteNumber, verb));
+        }
     }
 
     private void requireAnswerable(Instant now, QuoteStatus target) {

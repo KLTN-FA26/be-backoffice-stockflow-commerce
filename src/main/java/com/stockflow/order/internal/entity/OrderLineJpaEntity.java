@@ -77,6 +77,22 @@ public class OrderLineJpaEntity {
     public LocalDate getRequestedDeliveryDate() { return requestedDeliveryDate; }
     public void setRequestedDeliveryDate(LocalDate value) { requestedDeliveryDate = value; }
 
+    /** 4B-2: the carton unit, cartons and pieces per carton a line of the customer's own SKU was ordered in. */
+    @Column(name = "uom_conversion_id")
+    private UUID uomConversionId;
+    @Column(name = "cartons")
+    private Integer cartons;
+    @Column(name = "units_per_carton")
+    private Integer unitsPerCarton;
+    public UUID getUomConversionId() { return uomConversionId; }
+    public Integer getCartons() { return cartons; }
+    public Integer getUnitsPerCarton() { return unitsPerCarton; }
+    public void setCartons(UUID unit, Integer cartons, Integer unitsPerCarton) {
+        this.uomConversionId = unit;
+        this.cartons = cartons;
+        this.unitsPerCarton = unitsPerCarton;
+    }
+
     @ElementCollection(fetch = jakarta.persistence.FetchType.EAGER)
     @CollectionTable(
             name = "order_line_reservation",

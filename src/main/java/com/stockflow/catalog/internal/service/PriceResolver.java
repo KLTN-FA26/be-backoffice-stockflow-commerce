@@ -20,6 +20,10 @@ import java.util.UUID;
  * Which price a customer pays for a SKU at a quantity (kltn-docs 13 §3): the customer's own tier, or,
  * with no own price, its group's price, or the base price - the last two from one unit on. Joins the
  * caller's transaction; locking is the caller's ({@link CatalogServiceImpl} locks the products first).
+ *
+ * <p>Since 4B-2 a customer's own price for one of its own SKUs counts cartons (13 BR-05): what a quote starts from
+ * ({@link #schedule}). Checkout counts units, so it reads a customer's own price only on a stock variant
+ * ({@link #checkoutSchedule}); the customer's own SKU is quoted, not bought at checkout.</p>
  */
 @Component
 class PriceResolver {
@@ -27,8 +31,11 @@ class PriceResolver {
     private final CustomerPriceRepository prices;
     private final ListingRepository listings;
     private final CustomerService customers;
+    private final com.stockflow.product.api.CustomerSkus customerSkus;
 
-    PriceResolver(CustomerPriceRepository prices, ListingRepository listings, CustomerService customers) {
+    PriceResolver(CustomerPriceRepository prices, ListingRepository listings, CustomerService customers,
+                  com.stockflow.product.api.CustomerSkus customerSkus) {
+        this.customerSkus = customerSkus;
         this.prices = prices;
         this.listings = listings;
         this.customers = customers;
@@ -40,7 +47,27 @@ class PriceResolver {
     }
 
     PriceSchedule schedule(CustomerSummary customer, String sku) {
-        Optional<CustomerPrice> own = prices.find(customer.customerId(), sku);
+        return schedule(customer, sku, prices.find(customer.customerId(), sku));
+    }
+
+    /**
+     * As {@link #schedule}, counted in units for checkout: a customer's own price on one of its own SKUs counts cartons
+     * and is not read here (that SKU is quoted - 14 BR-01, BR-08 - so checkout finds no unit price for it).
+     */
+    PriceSchedule checkoutSchedule(CustomerSummary customer, String sku) {
+        Optional<CustomerPrice> own = prices.find(customer.customerId(), sku)
+                .filter(price -> customerSkus.ownerOf(sku).isEmpty());
+        return schedule(customer, sku, own);
+    }
+
+    /** The customer's own price for {@code sku} alone, if it has one. */
+    Optional<PriceSchedule> own(CustomerSummary customer, String sku) {
+        return prices.find(customer.customerId(), sku).map(price -> new PriceSchedule(sku,
+                PriceSchedule.PriceSource.CUSTOMER, price.moq(), price.tiers().stream()
+                        .map(tier -> new PriceSchedule.Tier(tier.minQuantity(), vnd(tier.unitPrice()))).toList()));
+    }
+
+    private PriceSchedule schedule(CustomerSummary customer, String sku, Optional<CustomerPrice> own) {
         if (own.isPresent()) {
             return new PriceSchedule(sku, PriceSchedule.PriceSource.CUSTOMER, own.get().moq(),
                     own.get().tiers().stream()

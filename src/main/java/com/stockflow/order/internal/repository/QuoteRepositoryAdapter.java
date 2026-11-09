@@ -110,12 +110,16 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 row = new QuoteLineJpaEntity(line.id());
                 entity.addLine(row);
             }
-            row.apply(line.lineNo(), line.blankSku().code(), line.designSnapshotId(), line.printSpec(),
-                    line.quantity(),
-                    line.tiers().stream().map(t -> new QuoteLineJpaEntity.Tier(t.minQuantity(), t.unitPrice().amount()))
-                            .toList(),
-                    line.acceptedQuantity(),
-                    line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount());
+            List<QuoteLineJpaEntity.Tier> tiers = line.tiers().stream()
+                    .map(t -> new QuoteLineJpaEntity.Tier(t.minQuantity(), t.unitPrice().amount())).toList();
+            java.math.BigDecimal price = line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount();
+            if (line.legacy()) {
+                row.applyLegacy(line.lineNo(), line.sku().code(), line.designSnapshotId(), line.printSpec(),
+                        line.quantity(), tiers, line.acceptedQuantity(), price);
+            } else {
+                row.applyCartons(line.lineNo(), line.sku().code(), line.uomConversionId(), line.unitsPerCarton(),
+                        line.quantity(), tiers, line.acceptedQuantity(), price);
+            }
         }
         return toDomain(jpa.saveAndFlush(entity));
     }
@@ -208,16 +212,23 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     }
 
     static Quote toDomain(QuoteJpaEntity e) {
-        List<QuoteLine> lines = e.getLines().stream().map(l -> new QuoteLine(l.getId(), l.getLineNo(),
-                new Sku(l.getBlankSku()), l.getDesignSnapshotId(), l.getPrintSpec(), l.getQuantity(),
-                l.getTiers().stream().map(t -> new PriceTier(t.getMinQuantity(), vnd(t.getUnitPrice()))).toList(),
-                l.getAcceptedQuantity(), l.getAcceptedUnitPrice() == null ? null : vnd(l.getAcceptedUnitPrice())))
-                .toList();
+        List<QuoteLine> lines = e.getLines().stream().map(QuoteRepositoryAdapter::toDomain).toList();
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
                 e.getRevision(), new Quote.Offer(e.getPaymentTerm(), e.getDepositPercent(), e.getValidUntil(),
                         e.getTerms(), e.getRequestedDeliveryDate(), lines),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
                 e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt());
+    }
+
+    private static QuoteLine toDomain(QuoteLineJpaEntity l) {
+        List<PriceTier> tiers = l.getTiers().stream()
+                .map(t -> new PriceTier(t.getMinQuantity(), vnd(t.getUnitPrice()))).toList();
+        Money price = l.getAcceptedUnitPrice() == null ? null : vnd(l.getAcceptedUnitPrice());
+        return l.getSku() == null
+                ? QuoteLine.legacy(l.getId(), l.getLineNo(), new Sku(l.getBlankSku()), l.getDesignSnapshotId(),
+                        l.getPrintSpec(), l.getQuantity(), tiers, l.getAcceptedQuantity(), price)
+                : QuoteLine.carton(l.getId(), l.getLineNo(), new Sku(l.getSku()), l.getUomConversionId(),
+                        l.getUnitsPerCarton(), l.getCartons(), tiers, l.getAcceptedCartons(), price);
     }
 
     /** Whole dong, as stored with four decimal places: compare and display without trailing zeros. */

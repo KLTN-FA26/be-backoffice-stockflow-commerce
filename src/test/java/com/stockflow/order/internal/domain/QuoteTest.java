@@ -19,18 +19,33 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** 03-state-machines §18, BR-ORD-007/008 on the aggregate; refusals leave the quote as it was. */
+/**
+ * 03-state-machines §18, BR-ORD-007/008 and kltn-docs 14 BR-04, BR-07, BR-08 (4B-2) on the aggregate: lines of cartons
+ * of the customer's own SKUs, priced per piece, each SKU's breaks read at its own cartons; a quote drafted before on
+ * blanks and designs is kept to read (QD-16). Refusals leave the quote as it was.
+ */
 class QuoteTest {
 
     private static final Instant NOW = Instant.parse("2026-10-14T03:00:00Z");
     private static final Instant VALID_UNTIL = NOW.plus(Duration.ofDays(14));
+    private static final UUID CARTON = UUID.randomUUID();
+    private static final List<PriceTier> TIERS = List.of(new PriceTier(50, Money.vnd(1800)),
+            new PriceTier(10, Money.vnd(2000)), new PriceTier(100, Money.vnd(1650)));
     private final UUID sales = UUID.randomUUID();
     private final UUID customerUser = UUID.randomUUID();
 
-    private static QuoteLine line(int lineNo, int quantity) {
-        return new QuoteLine(UUID.randomUUID(), lineNo, new Sku("CUP-PP-500"), UUID.randomUUID(), "2 colours, front",
-                quantity, List.of(new PriceTier(5000, Money.vnd(1800)), new PriceTier(1000, Money.vnd(2000)),
-                new PriceTier(10000, Money.vnd(1650))), null, null);
+    /** Cartons of 50 pieces of {@code sku}: 10+ cartons at 2,000 VND a piece, 50+ at 1,800, 100+ at 1,650. */
+    private static QuoteLine line(int lineNo, String sku, int cartons) {
+        return QuoteLine.carton(UUID.randomUUID(), lineNo, new Sku(sku), CARTON, 50, cartons, TIERS, null, null);
+    }
+
+    private static QuoteLine line(int lineNo, int cartons) {
+        return line(lineNo, "LY12-ACME-01", cartons);
+    }
+
+    private static QuoteLine legacyLine(int lineNo, String blank, int units) {
+        return QuoteLine.legacy(UUID.randomUUID(), lineNo, new Sku(blank), UUID.randomUUID(), "2 colours, front",
+                units, List.of(new PriceTier(1000, Money.vnd(2000)), new PriceTier(5000, Money.vnd(1800))), null, null);
     }
 
     private static Quote.Offer offer(QuoteLine... lines) {
@@ -42,27 +57,27 @@ class QuoteTest {
         java.time.LocalDate asked = java.time.LocalDate.of(2026, 12, 15);
         Quote quote = Quote.draft(UUID.randomUUID(), "QT-20261014-0002", UUID.randomUUID(), UUID.randomUUID(),
                 new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("30"), VALID_UNTIL, "Net of VAT", asked,
-                        List.of(line(1, 2000))));
+                        List.of(line(1, 20))));
         assertThat(quote.offer().requestedDeliveryDate()).isEqualTo(asked);
         // The old five-argument offer is one without a date.
-        assertThat(offer(line(1, 2000)).requestedDeliveryDate()).isNull();
+        assertThat(offer(line(1, 20)).requestedDeliveryDate()).isNull();
 
         quote.send(sales, NOW);
         assertThat(quote.offer().requestedDeliveryDate()).isEqualTo(asked);
-        assertThatThrownBy(() -> quote.revise(offer(line(1, 2000)))).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> quote.revise(offer(line(1, 20)))).isInstanceOf(BusinessException.class);
         assertThat(quote.offer().requestedDeliveryDate()).as("a sent quote keeps what was sent").isEqualTo(asked);
 
         // Changes requested, reopened: the next revision is a draft again, Sales may move the date.
         quote.requestChanges("Need it earlier", customerUser, NOW);
         quote.reopen();
         quote.revise(new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("30"), VALID_UNTIL, "Net of VAT",
-                asked.minusDays(7), List.of(line(1, 2000))));
+                asked.minusDays(7), List.of(line(1, 20))));
         assertThat(quote.offer().requestedDeliveryDate()).isEqualTo(asked.minusDays(7));
     }
 
     private Quote draft() {
         return Quote.draft(UUID.randomUUID(), "QT-20261014-0001", UUID.randomUUID(), UUID.randomUUID(),
-                offer(line(1, 2000)));
+                offer(line(1, 20)));
     }
 
     private Quote sent() {
@@ -94,16 +109,22 @@ class QuoteTest {
     }
 
     @Test
-    void tiersAreOrderedTheLowestIsTheMoqAndThePriceIsTheBreakReached() {
-        QuoteLine line = line(1, 2000);
-        assertThat(line.tiers()).extracting(PriceTier::minQuantity).containsExactly(1000, 5000, 10000);
-        assertThat(line.moq()).isEqualTo(1000);
-        assertThat(line.priceFor(1000)).isEqualTo(Money.vnd(2000));
-        assertThat(line.priceFor(4999)).isEqualTo(Money.vnd(2000));
-        assertThat(line.priceFor(5000)).isEqualTo(Money.vnd(1800));
-        assertThat(line.priceFor(25000)).isEqualTo(Money.vnd(1650));
-        assertThatThrownBy(() -> line.priceFor(999)).extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
-        assertThatThrownBy(() -> offer(line(1, 500))).as("a proposal below its own MOQ")
+    void orderedByTheCartonPricedByThePieceTheLowestTierIsTheMoqInCartons() {
+        QuoteLine line = line(1, 20);
+        assertThat(line.legacy()).isFalse();
+        assertThat(line.measure()).isEqualTo(QuoteLine.Measure.CARTON);
+        assertThat(line.unitsPerCarton()).isEqualTo(50);
+        assertThat(line.units()).as("20 cartons of 50").isEqualTo(1000);
+        assertThat(line.tiers()).extracting(PriceTier::minQuantity).containsExactly(10, 50, 100);
+        assertThat(line.moq()).isEqualTo(10);
+        assertThat(line.priceFor(10)).isEqualTo(Money.vnd(2000));
+        assertThat(line.priceFor(49)).isEqualTo(Money.vnd(2000));
+        assertThat(line.priceFor(50)).isEqualTo(Money.vnd(1800));
+        assertThat(line.priceFor(250)).isEqualTo(Money.vnd(1650));
+        // 14 BR-08: the line's total is cartons x pieces per carton x the price of a piece.
+        assertThat(line.total(20, line.priceFor(20))).isEqualTo(Money.vnd(2_000_000));
+        assertThatThrownBy(() -> line.priceFor(9)).extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
+        assertThatThrownBy(() -> offer(line(1, 5))).as("a proposal below its own MOQ")
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
     }
 
@@ -114,26 +135,29 @@ class QuoteTest {
                 .as("whole dong only, refused before Money would round it").isInstanceOf(BusinessException.class);
         assertThat(PriceTier.of(10, new BigDecimal("2500.0000")).unitPrice()).isEqualTo(Money.vnd(2500));
         assertThatThrownBy(() -> new PriceTier(10, Money.vnd(0))).isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> new QuoteLine(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), UUID.randomUUID(), null,
-                1000, List.of(new PriceTier(1000, Money.vnd(2000)), new PriceTier(1000, Money.vnd(1900))), null, null))
-                .as("two tiers at one quantity").isInstanceOf(BusinessException.class);
-        QuoteLine twin = line(2, 2000);
-        QuoteLine same = new QuoteLine(UUID.randomUUID(), 1, twin.blankSku(), twin.designSnapshotId(), null, 2000,
-                twin.tiers(), null, null);
-        assertThatThrownBy(() -> offer(same, twin)).as("the same design on the same blank twice")
-                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), CARTON, 50, 20,
+                List.of(new PriceTier(10, Money.vnd(2000)), new PriceTier(10, Money.vnd(1900))), null, null))
+                .as("two tiers at one number of cartons").isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), CARTON, 1, 20, TIERS,
+                null, null)).as("a carton of one piece is no carton").extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.CARTON_SPEC_MISSING);
+        assertThatThrownBy(() -> QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), CARTON, 1000, 10_001,
+                TIERS, null, null)).as("more pieces than an order line holds").extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> offer(line(1, 20), line(2, 30))).as("one line per SKU (14 BR-22)")
+                .extracting(QuoteTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThatThrownBy(() -> new Quote.Offer(PaymentTerm.PREPAID, new BigDecimal("30"), VALID_UNTIL, null,
-                List.of(line(1, 2000)))).as("a deposit share on a prepaid quote").isInstanceOf(BusinessException.class);
+                List.of(line(1, 20)))).as("a deposit share on a prepaid quote").isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("100"), VALID_UNTIL, null,
-                List.of(line(1, 2000)))).isInstanceOf(BusinessException.class);
+                List.of(line(1, 20)))).isInstanceOf(BusinessException.class);
     }
 
     @Test
     void anUnpricedLineIsExplicitAndCannotBeSent() {
-        QuoteLine unpriced = new QuoteLine(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), UUID.randomUUID(), null, 500,
-                List.of(), null, null);
+        QuoteLine unpriced = QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), CARTON, 50, 5, List.of(),
+                null, null);
         assertThat(unpriced.priced()).isFalse();
-        assertThatThrownBy(() -> unpriced.priceFor(500)).extracting(QuoteTest::code)
+        assertThatThrownBy(() -> unpriced.priceFor(5)).extracting(QuoteTest::code)
                 .isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
         assertThatThrownBy(unpriced::moq).extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
 
@@ -145,68 +169,57 @@ class QuoteTest {
                 .isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
         assertThat(quote.status()).isEqualTo(QuoteStatus.DRAFT);
 
-        quote.revise(offer(line(1, 2000)));
+        quote.revise(offer(line(1, 20)));
         quote.send(sales, NOW);
         assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
     }
 
     @Test
-    void sendThenAcceptFixesQuantitiesAndPricesFromTheTiers() {
-        QuoteLine first = line(1, 2000);
-        QuoteLine second = line(2, 1000);
+    void sendThenAcceptFixesCartonsAndPricesFromEachSkusOwnTiers() {
+        QuoteLine first = line(1, "LY12-ACME-01", 20);
+        QuoteLine second = line(2, "LY16-ACME-01", 10);
         Quote quote = Quote.draft(UUID.randomUUID(), "QT-1", UUID.randomUUID(), UUID.randomUUID(), offer(first, second));
+        assertThat(quote.offer().proposedQuantity("LY12-ACME-01")).isEqualTo(20);
         quote.send(sales, NOW);
         assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
         assertThat(quote.sentBy()).isEqualTo(sales);
 
-        quote.accept(Map.of(second.id(), 6000), customerUser, NOW.plusSeconds(60));
+        quote.accept(Map.of(second.id(), 60), customerUser, NOW.plusSeconds(60));
 
         assertThat(quote.status()).isEqualTo(QuoteStatus.ACCEPTED);
         assertThat(quote.respondedBy()).isEqualTo(customerUser);
-        // Two designs on one blank: 2,000 + 6,000 = 8,000 blanks pick the 5,000 break for both (P5).
-        assertThat(first.acceptedQuantity()).isEqualTo(2000);
-        assertThat(first.acceptedUnitPrice()).isEqualTo(Money.vnd(1800));
-        assertThat(second.acceptedQuantity()).as("the customer picked a higher tier").isEqualTo(6000);
-        assertThat(second.acceptedUnitPrice()).isEqualTo(Money.vnd(1800));
+        assertThat(first.acceptedQuantity()).isEqualTo(20);
+        assertThat(first.acceptedUnits()).isEqualTo(1000);
+        assertThat(first.acceptedUnitPrice()).as("its own 20 cartons: the first break").isEqualTo(Money.vnd(2000));
+        assertThat(second.acceptedQuantity()).as("the customer picked more cartons").isEqualTo(60);
+        assertThat(second.acceptedUnits()).isEqualTo(3000);
+        assertThat(second.acceptedUnitPrice()).as("60 cartons reach the 50 break").isEqualTo(Money.vnd(1800));
     }
 
     @Test
-    void designsOnTheSameBlankAreCountedTogetherOtherBlanksAreNot() {
-        // 600 with logo A + 400 with logo B = 1,000 blanks: at the MOQ, so the quote is valid.
-        QuoteLine logoA = line(1, 600);
-        QuoteLine logoB = line(2, 400);
-        Quote.Offer offer = offer(logoA, logoB);
-        assertThat(offer.proposedUnits("CUP-PP-500")).isEqualTo(1000);
-
-        Quote quote = Quote.draft(UUID.randomUUID(), "QT-2", UUID.randomUUID(), UUID.randomUUID(), offer);
-        quote.send(sales, NOW);
-        quote.accept(Map.of(logoA.id(), 3000, logoB.id(), 2000), customerUser, NOW.plusSeconds(60));
-        assertThat(logoA.acceptedUnitPrice()).as("5,000 blanks together").isEqualTo(Money.vnd(1800));
-        assertThat(logoB.acceptedUnitPrice()).isEqualTo(Money.vnd(1800));
-
-        // Another blank is not added in: 600 of one and 400 of another are each below 1,000.
-        QuoteLine otherBlank = new QuoteLine(UUID.randomUUID(), 2, new Sku("CUP-PP-700"), UUID.randomUUID(), null, 400,
-                logoA.tiers(), null, null);
-        assertThatThrownBy(() -> offer(line(1, 600), otherBlank)).extracting(QuoteTest::code)
-                .isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
-
-        // Accepting fewer than the MOQ in total is refused, whatever each line says.
-        Quote again = Quote.draft(UUID.randomUUID(), "QT-3", UUID.randomUUID(), UUID.randomUUID(),
-                offer(line(1, 600), line(2, 400)));
-        again.send(sales, NOW);
-        UUID first = again.offer().lines().getFirst().id();
-        assertThatThrownBy(() -> again.accept(Map.of(first, 500), customerUser, NOW.plusSeconds(60)))
+    void skusAreNotCountedTogether() {
+        // Two SKUs of 6 cartons each: each below its own MOQ of 10, whatever the two make together.
+        assertThatThrownBy(() -> offer(line(1, "LY12-ACME-01", 6), line(2, "LY16-ACME-01", 6)))
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
-        assertThat(again.status()).isEqualTo(QuoteStatus.SENT);
+
+        Quote quote = Quote.draft(UUID.randomUUID(), "QT-3", UUID.randomUUID(), UUID.randomUUID(),
+                offer(line(1, "LY12-ACME-01", 10), line(2, "LY16-ACME-01", 10)));
+        quote.send(sales, NOW);
+        UUID first = quote.offer().lines().getFirst().id();
+        assertThatThrownBy(() -> quote.accept(Map.of(first, 9), customerUser, NOW.plusSeconds(60)))
+                .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
+        assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
     }
 
     @Test
     void acceptanceBelowTheMoqOrOfAnotherQuotesLineChangesNothing() {
         Quote quote = sent();
         UUID lineId = quote.offer().lines().getFirst().id();
-        assertThatThrownBy(() -> quote.accept(Map.of(lineId, 999), customerUser, NOW))
+        assertThatThrownBy(() -> quote.accept(Map.of(lineId, 9), customerUser, NOW))
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
-        assertThatThrownBy(() -> quote.accept(Map.of(UUID.randomUUID(), 2000), customerUser, NOW))
+        assertThatThrownBy(() -> quote.accept(Map.of(lineId, 0), customerUser, NOW))
+                .extracting(QuoteTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> quote.accept(Map.of(UUID.randomUUID(), 20), customerUser, NOW))
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
         assertThat(quote.offer().lines().getFirst().acceptedQuantity()).isNull();
@@ -237,17 +250,17 @@ class QuoteTest {
         Quote quote = sent();
         assertThatThrownBy(() -> quote.requestChanges(" ", customerUser, NOW)).extracting(QuoteTest::code)
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        quote.requestChanges("  1,800 at 2,000 units  ", customerUser, NOW);
+        quote.requestChanges("  1,800 at 20 cartons  ", customerUser, NOW);
         assertThat(quote.status()).isEqualTo(QuoteStatus.CHANGES_REQUESTED);
-        assertThat(quote.customerFeedback()).isEqualTo("1,800 at 2,000 units");
+        assertThat(quote.customerFeedback()).isEqualTo("1,800 at 20 cartons");
 
-        assertThatThrownBy(() -> quote.revise(offer(line(1, 2000)))).as("only a draft is edited")
+        assertThatThrownBy(() -> quote.revise(offer(line(1, 20)))).as("only a draft is edited")
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
         quote.reopen();
         assertThat(quote.status()).isEqualTo(QuoteStatus.DRAFT);
         assertThat(quote.revision()).isEqualTo(2);
         assertThat(quote.customerFeedback()).isNull();
-        quote.revise(offer(line(1, 2000)));
+        quote.revise(offer(line(1, 20)));
         quote.send(sales, NOW.plusSeconds(10));
         assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
     }
@@ -272,6 +285,49 @@ class QuoteTest {
         assertThatThrownBy(() -> quote.convert(UUID.randomUUID(), NOW)).as("one order")
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
         assertThat(quote.convertedOrderId()).isEqualTo(order);
+    }
+
+    @Test
+    void aQuoteOnBlanksAndDesignsIsKeptToReadNotSentAcceptedOrConverted() {
+        // As its rows keep it: units of a blank, every design on the blank counted together (P5) - 600 + 400.
+        QuoteLine logoA = legacyLine(1, "CUP-PP-500", 600);
+        QuoteLine logoB = legacyLine(2, "CUP-PP-500", 400);
+        Quote.Offer old = offer(logoA, logoB);
+        assertThat(old.legacy()).isTrue();
+        assertThat(logoA.unitsPerCarton()).isEqualTo(1);
+        assertThat(logoA.units()).isEqualTo(600);
+        assertThat(old.proposedQuantity("CUP-PP-500")).isEqualTo(1000);
+        assertThat(logoA.total(600, logoA.priceFor(1000))).isEqualTo(Money.vnd(1_200_000));
+        QuoteLine twin = QuoteLine.legacy(UUID.randomUUID(), 3, logoA.sku(), logoA.designSnapshotId(), null, 1000,
+                logoA.tiers(), null, null);
+        assertThatThrownBy(() -> offer(logoA, twin)).as("the same design on the same blank twice")
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> offer(logoA, line(2, 20))).as("never a mix").isInstanceOf(IllegalArgumentException.class);
+
+        Quote draft = Quote.draft(UUID.randomUUID(), "QT-5", UUID.randomUUID(), UUID.randomUUID(), old);
+        assertThatThrownBy(() -> draft.send(sales, NOW)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_LINES_LEGACY);
+        assertThat(draft.status()).isEqualTo(QuoteStatus.DRAFT);
+        // Sales revises it onto the customer's own SKUs: every line replaced, then it goes.
+        draft.revise(offer(line(1, 20)));
+        draft.send(sales, NOW);
+        assertThat(draft.status()).isEqualTo(QuoteStatus.SENT);
+
+        Quote sentBefore = Quote.restore(UUID.randomUUID(), "QT-6", UUID.randomUUID(), UUID.randomUUID(),
+                QuoteStatus.SENT, 1, offer(legacyLine(1, "CUP-PP-500", 1000)), NOW, sales, null, null, null, null,
+                null, null);
+        assertThatThrownBy(() -> sentBefore.accept(Map.of(), customerUser, NOW)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_LINES_LEGACY);
+        assertThat(sentBefore.status()).isEqualTo(QuoteStatus.SENT);
+
+        QuoteLine accepted = QuoteLine.legacy(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), UUID.randomUUID(), null,
+                1000, logoA.tiers(), 1000, Money.vnd(2000));
+        Quote acceptedBefore = Quote.restore(UUID.randomUUID(), "QT-7", UUID.randomUUID(), UUID.randomUUID(),
+                QuoteStatus.ACCEPTED, 1, offer(accepted), NOW, sales, NOW, customerUser, null, null, null, null);
+        assertThatThrownBy(() -> acceptedBefore.convert(UUID.randomUUID(), NOW)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_LINES_LEGACY);
+        acceptedBefore.cancel("Drafted on blanks; quoted again on the customer's SKUs");
+        assertThat(acceptedBefore.status()).isEqualTo(QuoteStatus.CANCELLED);
     }
 
     @Test

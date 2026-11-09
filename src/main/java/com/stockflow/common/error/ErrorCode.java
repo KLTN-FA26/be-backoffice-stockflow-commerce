@@ -334,6 +334,15 @@ public enum ErrorCode {
     /** Reorder: only an order placed from a quote is re-quoted; a price-list order is simply placed again. */
     /** R1: a reorder line the price list cannot price waits for Sales; nothing is sent or accepted unpriced. */
     QUOTE_NOT_PRICED("A line of this quote has no price yet; Sales enters it before the quote is sent", 409),
+    /** 4B-2, QD-16: a quote drafted on blanks and designs before the customer's own SKUs is kept to read. */
+    QUOTE_LINES_LEGACY("This quote was drafted on blanks and designs; quote the customer's own SKUs instead", 409),
+    /**
+     * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
+     * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.
+     */
+    CUSTOMER_SKU_REQUIRED("Only the customer's own SKUs are quoted and priced for them", 409),
+    /** 4B-2 (kltn-docs 01 BR-03, BR-11): a SKU is sold in cartons, and this one has no single carton unit. */
+    CARTON_SPEC_MISSING("This SKU has no carton specification; it is sold in cartons", 409),
     ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
     /** A deposit order is released only once the deposit has arrived (kltn-docs 15 §4.2). */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),

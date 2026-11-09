@@ -9,6 +9,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.product.api.CustomerSkus;
 import com.stockflow.product.api.ProductPublication;
 import com.stockflow.product.api.ProductService;
 import org.springframework.dao.DuplicateKeyException;
@@ -28,6 +29,11 @@ import java.util.UUID;
  * <p>Every change locks the SKU's product first when it is published - the lock checkout takes before
  * it prices an order - so an order is priced either wholly before or wholly after the change, never
  * from a half-written list (14 BR-03).</p>
+ *
+ * <p>4B-2 (kltn-docs 13 BR-02, BR-05, BR-06): a price is set for one of the customer's own SKUs, its tiers starting at a
+ * number of cartons and pricing one piece. A price set before on a stock variant is kept, counted in units
+ * ({@link PriceView#measure()} {@code UNIT}), for checkout until it is removed (team plan 5-2): it can be read and
+ * deleted, not set again. {@code tg_customer_price_own_sku} holds the same rule for a new row.</p>
  */
 @Service
 @Transactional
@@ -38,9 +44,11 @@ public class CustomerPriceService {
     private final ListingRepository listings;
     private final ProductPublication publication;
     private final ProductService products;
+    private final CustomerSkus customerSkus;
 
     CustomerPriceService(CustomerPriceRepository prices, PriceResolver resolver, ListingRepository listings,
-                         ProductPublication publication, ProductService products) {
+                         ProductPublication publication, ProductService products, CustomerSkus customerSkus) {
+        this.customerSkus = customerSkus;
         this.prices = prices;
         this.resolver = resolver;
         this.listings = listings;
@@ -48,24 +56,30 @@ public class CustomerPriceService {
         this.products = products;
     }
 
-    /** A tier as entered: from {@code minQuantity} units on, {@code unitPrice} whole VND. */
+    /** A tier as entered: from {@code minQuantity} cartons on, {@code unitPrice} whole VND a piece. */
     public record TierInput(int minQuantity, BigDecimal unitPrice) {
     }
 
-    /** A customer's own price as stored; {@code moq} is its first tier. */
-    public record PriceView(UUID customerId, String sku, int moq, List<TierInput> tiers, String note, long version) {
+    /**
+     * A customer's own price as stored; {@code moq} is its first tier.
+     *
+     * @param measure what the tiers count: {@code CARTON} for the customer's own SKU; {@code UNIT} for a price set on
+     *                a stock variant before 4B-2, kept for checkout only
+     */
+    public record PriceView(UUID customerId, String sku, String measure, int moq, List<TierInput> tiers, String note,
+                            long version) {
     }
 
     @Transactional(readOnly = true)
     public List<PriceView> list(UUID customerId, Collection<String> skus) {
         resolver.customer(customerId);
         return prices.ofCustomer(customerId, skus.stream().map(CustomerPriceService::sku).toList()).stream()
-                .map(CustomerPriceService::view).toList();
+                .map(this::view).toList();
     }
 
     @Transactional(readOnly = true)
     public PriceView get(UUID customerId, String sku) {
-        return prices.find(customerId, sku(sku)).map(CustomerPriceService::view)
+        return prices.find(customerId, sku(sku)).map(this::view)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_PRICE_NOT_FOUND));
     }
 
@@ -78,27 +92,34 @@ public class CustomerPriceService {
     /**
      * Gives the customer its own price for a SKU.
      *
-     * @throws BusinessException {@code CUSTOMER_NOT_FOUND}, {@code VARIANT_NOT_FOUND}, {@code CONFLICT}
+     * @throws BusinessException {@code CUSTOMER_NOT_FOUND}, {@code VARIANT_NOT_FOUND} (another customer's SKU
+     *         included), {@code CUSTOMER_SKU_REQUIRED} for a SKU that is not the customer's own, {@code CONFLICT}
      *         when the customer already has one (replace it instead), {@code VALIDATION_FAILED}
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "customer-price", resourceId = "#customerId")
     public PriceView create(UUID customerId, String sku, List<TierInput> tiers, String note) {
         String code = prepare(customerId, sku);
+        requireOwnSku(customerId, code);
         if (prices.findForUpdate(customerId, code).isPresent()) {
             throw new BusinessException(ErrorCode.CONFLICT, "This customer already has a price for " + code);
         }
         try {
-            return view(prices.save(new CustomerPrice(Identifiers.newId(), customerId, code, domain(tiers), note, 0L)));
+            return view(prices.save(new CustomerPrice(Identifiers.newId(), customerId, code, domain(tiers), note,
+                    0L)));
         } catch (DuplicateKeyException raced) {
             throw new BusinessException(ErrorCode.CONFLICT, "This customer already has a price for " + code);
         }
     }
 
-    /** @throws BusinessException {@code CUSTOMER_PRICE_NOT_FOUND}, {@code OPTIMISTIC_LOCK}, {@code VALIDATION_FAILED} */
+    /**
+     * @throws BusinessException {@code CUSTOMER_PRICE_NOT_FOUND}, {@code CUSTOMER_SKU_REQUIRED} for a price on a stock
+     *         variant (kept for checkout, not set again), {@code OPTIMISTIC_LOCK}, {@code VALIDATION_FAILED}
+     */
     @Auditable(action = AuditAction.UPDATE, resourceType = "customer-price", resourceId = "#customerId")
     public PriceView replace(UUID customerId, String sku, List<TierInput> tiers, String note,
                              long expectedVersion) {
         String code = prepare(customerId, sku);
+        requireOwnSku(customerId, code);
         CustomerPrice price = prices.findForUpdate(customerId, code)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_PRICE_NOT_FOUND));
         price.replace(domain(tiers), note, expectedVersion);
@@ -122,8 +143,19 @@ public class CustomerPriceService {
         return tiers == null ? null : tiers.stream().map(t -> new CustomerPrice.Tier(t.minQuantity(), t.unitPrice())).toList();
     }
 
-    private static PriceView view(CustomerPrice price) {
-        return new PriceView(price.customerId(), price.sku(), price.moq(),
+    /** 13 BR-02, BR-05: a price is set for one of the customer's own SKUs; another customer's is not there at all. */
+    private void requireOwnSku(UUID customerId, String code) {
+        customerSkus.requireVisibleTo(List.of(code), customerId);
+        if (!customerSkus.ownerOf(code).map(customerId::equals).orElse(false)) {
+            throw new BusinessException(ErrorCode.CUSTOMER_SKU_REQUIRED, ("%s is not a SKU of customer %s: a customer's "
+                    + "price is set for its own SKUs, by the carton").formatted(code, customerId));
+        }
+    }
+
+    private PriceView view(CustomerPrice price) {
+        String measure = customerSkus.ownerOf(price.sku()).map(price.customerId()::equals).orElse(false)
+                ? "CARTON" : "UNIT";
+        return new PriceView(price.customerId(), price.sku(), measure, price.moq(),
                 price.tiers().stream().map(t -> new TierInput(t.minQuantity(), t.unitPrice())).toList(),
                 price.note(), price.version());
     }

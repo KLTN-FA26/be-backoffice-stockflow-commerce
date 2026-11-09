@@ -1,0 +1,82 @@
+package com.stockflow.support;
+
+import com.stockflow.common.id.Identifiers;
+import jakarta.persistence.EntityManager;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.util.UUID;
+
+/**
+ * A customer's own SKU as the design approval leaves it (kltn-docs 12 §4.5, 01 §4.8, BR-03; 2F-7): an approved
+ * customizable product, a design snapshot of the customer's, the SKU drawn on the product's default variant and owned by
+ * the customer, and its carton unit - what quotes and orders name since 4B-2 (14 BR-04, BR-08). Written as rows, the way
+ * {@link ReferenceRows} writes another module's: issuing through {@code CustomerSkus.issue} is
+ * {@code CustomerSkuIntegrationTest}'s subject, and a test about quotes needs only what it leaves behind.
+ */
+public final class CustomerSkuRows {
+
+    /**
+     * @param uomConversionId its carton unit
+     * @param unitsPerCarton  the carton unit's factor
+     */
+    public record Issued(String sku, UUID variantId, UUID productId, UUID snapshotId, UUID uomConversionId,
+                         int unitsPerCarton) {
+    }
+
+    private CustomerSkuRows() {
+    }
+
+    /** A SKU of {@code customerId} sold in cartons of {@code unitsPerCarton}, on a product of its own. */
+    public static Issued issue(JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em, UUID customerId,
+                               int unitsPerCarton) {
+        ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(em));
+        return issueOn(jdbc, tx, customerId, product, unitsPerCarton);
+    }
+
+    /**
+     * A SKU of {@code customerId} drawn on {@code product}'s default variant, the product made customizable: a test
+     * that changes the product's status (suspends it, discontinues it) sees the SKU follow.
+     */
+    public static Issued issueOn(JdbcTemplate jdbc, TransactionTemplate tx, UUID customerId,
+                                 ReferenceRows.ProductRow product, int unitsPerCarton) {
+        return tx.execute(s -> {
+            jdbc.update("UPDATE product.products SET kind = 'CUSTOMIZABLE' WHERE id = ?", product.productId());
+            UUID draft = Identifiers.newId();
+            UUID snapshot = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customerId, product.productId());
+            jdbc.update("""
+                    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
+                        artifact_manifest)
+                    VALUES (?, ?, ?, 'https://example.com/print.pdf', NOW(), NOW(), '[]'::jsonb)""",
+                    snapshot, draft, "c".repeat(64));
+            UUID variant = Identifiers.newId();
+            String sku = product.sku() + "-C" + variant.toString().substring(24, 28).toUpperCase();
+            jdbc.update("""
+                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
+                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
+                    VALUES (?, ?, ?, 'Ly in logo khach', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
+                    variant, product.productId(), sku, "OWNED-SKU:" + sku, customerId, snapshot, product.variantId());
+            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
+            UUID carton = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
+                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
+                        default_shipping)
+                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
+                    carton, item, unitsPerCarton);
+            return new Issued(sku, variant, product.productId(), snapshot, carton, unitsPerCarton);
+        });
+    }
+
+    /** {@code units} pieces of {@code sku} free in HCM, received a while ago. */
+    public static void stock(JdbcTemplate jdbc, TransactionTemplate tx, String sku, int units) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                    created_at, received_at)
+                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
+                Identifiers.newId(), sku, units));
+    }
+}

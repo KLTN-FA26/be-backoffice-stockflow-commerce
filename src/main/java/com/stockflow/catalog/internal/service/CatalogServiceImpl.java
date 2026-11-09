@@ -60,7 +60,7 @@ class CatalogServiceImpl implements CatalogService {
         Map<String, Money> prices = new HashMap<>();
         for (var entry : quantities.entrySet()) {
             prices.put(entry.getKey(),
-                    PriceResolver.unitPrice(resolver.schedule(customer, entry.getKey()), entry.getValue()));
+                    PriceResolver.unitPrice(resolver.checkoutSchedule(customer, entry.getKey()), entry.getValue()));
         }
         return Map.copyOf(prices);
     }
@@ -69,6 +69,12 @@ class CatalogServiceImpl implements CatalogService {
     @Transactional(readOnly = true)
     public PriceSchedule priceSchedule(UUID customerId, String sku) {
         return resolver.schedule(customerId, sku);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<PriceSchedule> customerPrice(UUID customerId, String sku) {
+        return resolver.own(resolver.customer(customerId), sku);
     }
 
     @Override

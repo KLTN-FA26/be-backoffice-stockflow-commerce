@@ -14,8 +14,7 @@ final class QuoteWebMapper {
     }
 
     static List<Quotes.Line> lines(List<QuoteRequests.Line> lines) {
-        return lines.stream().map(line -> new Quotes.Line(line.blankSku(), line.designSnapshotId(), line.printSpec(),
-                line.quantity(), line.tiers() == null ? null
+        return lines.stream().map(line -> new Quotes.Line(line.sku(), line.cartons(), line.tiers() == null ? null
                         : line.tiers().stream().map(t -> new Quotes.Tier(t.minQuantity(), t.unitPrice())).toList()))
                 .toList();
     }
@@ -23,11 +22,12 @@ final class QuoteWebMapper {
     static QuoteResponse toResponse(Quotes.QuoteView q) {
         return new QuoteResponse(q.id(), q.quoteNumber(), q.customerId(), q.status().name(), q.revision(),
                 q.paymentTerm().name(), q.depositPercent(), q.validUntil(), q.terms(), q.requestedDeliveryDate(),
-                q.lines().stream().map(l -> new QuoteResponse.Line(l.id(), l.lineNo(), l.blankSku(), l.designSnapshotId(),
-                        l.printSpec(), l.quantity(), l.priced(), l.moq(),
+                q.legacy(),
+                q.lines().stream().map(l -> new QuoteResponse.Line(l.id(), l.lineNo(), l.measure(), l.sku(), l.cartons(),
+                        l.unitsPerCarton(), l.units(), l.designSnapshotId(), l.printSpec(), l.priced(), l.moq(),
                         l.tiers().stream().map(t -> new QuoteResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),
-                        l.proposedUnitPrice(), l.proposedLineTotal(), l.acceptedQuantity(), l.acceptedUnitPrice(), l.acceptedLineTotal(),
-                        QuoteResponse.Sample.NOT_REQUIRED)).toList(),
+                        l.proposedUnitPrice(), l.proposedLineTotal(), l.acceptedCartons(), l.acceptedUnits(),
+                        l.acceptedUnitPrice(), l.acceptedLineTotal())).toList(),
                 q.priced(), q.proposedTotal(), q.acceptedTotal(), q.sentAt(), q.sentBy(), q.respondedAt(), q.respondedBy(), q.customerFeedback(),
                 q.cancellationReason(),
                 q.convertedOrder() == null ? null : new QuoteResponse.Order(q.convertedOrder().orderId(),
