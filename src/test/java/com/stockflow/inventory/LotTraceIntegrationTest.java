@@ -59,6 +59,7 @@ class LotTraceIntegrationTest {
     private static final String BIN = "HCM-B01-1-A";
     private static final String RECEIVING = "HCM-RCV01";
 
+    @Autowired ProductionReceivables receivables;
     @Autowired InventoryService inventory;
     @Autowired PickConsumption consumption;
     @Autowired LotTraces traces;
