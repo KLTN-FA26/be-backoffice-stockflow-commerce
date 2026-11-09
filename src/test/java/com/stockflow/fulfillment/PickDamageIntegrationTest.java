@@ -2,18 +2,13 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.DataScope;
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceOrderCommand;
-import com.stockflow.support.Await;
+import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -28,7 +23,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
@@ -41,10 +36,8 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -84,18 +77,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.catalog.projection-retry-ms=3600000"})
 class PickDamageIntegrationTest {
 
-    private static final Duration ASYNC = Duration.ofSeconds(10);
     private static final byte[] JPEG = {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 16, 'J', 'F', 'I', 'F',
             0, 1, 1, 0, 0, 1, 0, 1, 0, 0};
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
-    @Autowired com.stockflow.order.internal.service.OrderReleases releases;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired ApplicationEventPublisher publisher;
+    @Autowired ApplicationContext context;
     @Autowired ObjectMapper json;
 
     private String sku;
@@ -106,9 +97,11 @@ class PickDamageIntegrationTest {
     private UUID otherPicker;
     private UUID pickerElsewhere;
     private final List<UUID> placed = new ArrayList<>();
+    private ConfirmedOrders confirmedOrders;
 
     @BeforeEach
     void setUp() {
+        confirmedOrders = new ConfirmedOrders(context);
         today = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
         sku = "PKD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         tx.executeWithoutResult(s -> {
@@ -183,21 +176,15 @@ class PickDamageIntegrationTest {
         return "Bearer " + value;
     }
 
-    /** A paid order of {@code quantity} units, released to HCM: allocated FEFO on this test's stock. */
+    /**
+     * A confirmed order of {@code quantity} units (one carton of them), its contract paid on signing, released to HCM:
+     * allocated FEFO on this test's stock.
+     */
     private OrderSummary releasedOrder(int quantity) {
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
-                List.of(new PlaceOrderCommand.Line(new Sku(sku), quantity, Money.vnd(100_000), null))));
-        placed.add(order.orderId());
-        BigDecimal total = order.total().amount();
-        UUID payment = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
-                VALUES (?, ?, ?, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", payment, order.orderId(), total));
-        tx.executeWithoutResult(s -> publisher.publishEvent(new PaymentCaptured(order.orderId(), payment, total, "VND",
-                PaymentMethod.BANK_TRANSFER)));
-        Await.until("order confirmed", ASYNC,
-                () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        return releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, coordinator);
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.units(sku, quantity, 100_000)).orderId();
+        placed.add(order);
+        return confirmedOrders.release(order, DemoData.WAREHOUSE_HCM, coordinator);
     }
 
     private JsonNode body(MvcResult result) throws Exception {
