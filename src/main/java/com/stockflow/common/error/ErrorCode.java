@@ -359,6 +359,10 @@ public enum ErrorCode {
     CUSTOMER_LEGAL_PROFILE_MISSING("The customer's registered address and legal representative are recorded before a contract is drawn up", 409),
     /** 4B-4 (18 §3): the legal profile read before it was recorded. */
     LEGAL_PROFILE_NOT_FOUND("The customer's legal profile is not recorded yet", 404),
+    /** 4A-1: no producer with that id. */
+    PRODUCER_NOT_FOUND("Producer not found", 404),
+    /** 4A-1: a producer's code identifies it for good. */
+    PRODUCER_CODE_TAKEN("A producer has this code already", 409),
     /** 4B-7 (17 §4.2 step 2): only a CONFIRMED order of a contract gets a shipping warehouse. */
     ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED("The shipping warehouse is chosen for a confirmed order of a contract", 409),
     /** 4B-7 (17 BR-22): the shipping warehouse changes only while nothing is held for the order. */

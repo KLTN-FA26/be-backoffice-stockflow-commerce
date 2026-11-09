@@ -47,6 +47,13 @@ public final class OrderResources {
     public static final String SHIPPING_WAREHOUSES = "sales-order-shipping-warehouses";
 
     /**
+     * 4A-1 (kltn-docs 17 §4.3): the producer catalogue - kept by the Production Coordinator (00 §2.1, 2026-11-07), read
+     * by the Sales Manager, Sales and the warehouse manager. A new code: the old {@code production-*} codes went with
+     * in-house production (V20261108000100).
+     */
+    public static final String PRODUCERS = "sales-producers";
+
+    /**
      * Return requests (SCRUM-243, seeded by V20260903000100, UPDATE added by V20261101020000): CREATE opens one and adds
      * photos (the customer on their own orders, Sales on any), UPDATE withdraws one, READ lists them, APPROVE is Sales'
      * review (approve, reject).

@@ -18,6 +18,8 @@ public final class Roles {
     /** Was ECOMMERCE_ADMIN until V20261107000100 renamed it (kltn-docs 00 §2, 2026-11-05). Same id, same grants. */
     public static final String SALES_MANAGER       = "SALES_MANAGER";
     public static final String PROCUREMENT_STAFF   = "PROCUREMENT_STAFF";
+    /** Added by V20261108002600 (kltn-docs 00 §2.1, decision 2026-11-07). */
+    public static final String PRODUCTION_COORDINATOR = "PRODUCTION_COORDINATOR";
     public static final String ACCOUNTANT          = "ACCOUNTANT";
     public static final String SYSTEM_ADMIN        = "SYSTEM_ADMIN";
 
