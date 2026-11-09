@@ -605,6 +605,19 @@ Enum ordering.producer_status {
   INACTIVE
 }
 
+Enum ordering.production_order_status {
+  DRAFT
+  PENDING_APPROVAL
+  SENT
+  ACCEPTED
+  SAMPLE_PENDING
+  IN_PRODUCTION
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+  CLOSED
+}
+
 Enum ordering.quote_payment_term {
   PREPAID
   DEPOSIT
@@ -3001,6 +3014,77 @@ Table ordering.producer [headercolor: #C0392B] {
   last_modified_by   varchar(100)
 }
 
+Table ordering.production_order [headercolor: #C0392B] {
+  id                         uuid [pk]
+  code                       varchar(32) [not null, unique]
+  sales_order_id             uuid [not null]
+  delivery_batch_id          uuid [not null]
+  customer_id                uuid [not null]
+  producer_id                uuid [not null]
+  receiving_warehouse_id     uuid [not null]
+  need_by_date               date [not null]
+  status                     ordering.production_order_status [not null]
+  sample_approval_required   boolean [not null]
+  sample_required_by_default boolean [not null]
+  sample_waiver_reason       varchar(500)
+  unit_price                 decimal(19,4)
+  currency                   varchar(3) [not null, default: 'VND']
+  note                       varchar(500)
+  drawn_up_by                uuid [not null]
+  submitted_at               timestamptz
+  approved_by                uuid
+  approved_at                timestamptz
+  returned_reason            varchar(500)
+  sent_at                    timestamptz
+  production_started_at      timestamptz
+  cancelled_by               uuid
+  cancelled_at               timestamptz
+  cancellation_reason        varchar(500)
+  closed_by                  uuid
+  closed_at                  timestamptz
+  closing_reason             varchar(500)
+  version                    bigint [not null, default: 0]
+  created_at                 timestamptz [not null, default: `now()`]
+  created_by                 varchar(100)
+  last_modified_at           timestamptz
+  last_modified_by           varchar(100)
+}
+
+Table ordering.production_order_line [headercolor: #C0392B] {
+  id                   uuid [pk]
+  production_order_id  uuid [not null]
+  order_line_id        uuid [not null]
+  sku                  varchar(64) [not null]
+  cartons              int [not null]
+  units_per_carton     int [not null]
+  total_units          int [note: 'generated: (cartons * units_per_carton)']
+  design_snapshot_id   uuid [not null]
+  print_file_checksum  varchar(128) [not null]
+  packing_requirements varchar(500)
+  received_cartons     int [not null, default: 0]
+  indexes {
+    (production_order_id, order_line_id) [unique]
+  }
+}
+
+Table ordering.production_order_status_history [headercolor: #C0392B] {
+  id                  uuid [pk]
+  production_order_id uuid [not null]
+  from_status         varchar(24)
+  to_status           varchar(24) [not null]
+  reason              varchar(500)
+  changed_by          uuid
+  changed_at          timestamptz [not null]
+}
+
+Table ordering.production_order_status_transition [headercolor: #C0392B] {
+  from_status varchar(24) [not null]
+  to_status   varchar(24) [not null]
+  indexes {
+    (from_status, to_status) [pk]
+  }
+}
+
 Table ordering.quote [headercolor: #C0392B] {
   id                      uuid [pk]
   quote_number            varchar(30) [not null, unique]
@@ -5326,6 +5410,20 @@ Ref: ordering.order_shipment_line.order_line_id > ordering.order_line.id [delete
 Ref: ordering.order_shipment_line.shipment_id > ordering.order_shipment.id [delete: cascade]
 Ref: ordering.order_status_history.actor_id > identity.app_user.id
 Ref: ordering.order_status_history.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.production_order.approved_by > identity.app_user.id
+Ref: ordering.production_order.cancelled_by > identity.app_user.id
+Ref: ordering.production_order.closed_by > identity.app_user.id
+Ref: ordering.production_order.customer_id > customer.customer.id
+Ref: ordering.production_order.delivery_batch_id > ordering.delivery_batch.id
+Ref: ordering.production_order.drawn_up_by > identity.app_user.id
+Ref: ordering.production_order.producer_id > ordering.producer.id
+Ref: ordering.production_order.receiving_warehouse_id > warehouse.warehouse.id
+Ref: ordering.production_order.sales_order_id > ordering.customer_order.id
+Ref: ordering.production_order_line.design_snapshot_id > design.design_snapshot.id
+Ref: ordering.production_order_line.order_line_id > ordering.order_line.id
+Ref: ordering.production_order_line.production_order_id > ordering.production_order.id [delete: cascade]
+Ref: ordering.production_order_status_history.changed_by > identity.app_user.id
+Ref: ordering.production_order_status_history.production_order_id > ordering.production_order.id
 Ref: ordering.quote.converted_order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.quote.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.quote.responded_by > identity.app_user.id
@@ -5683,6 +5781,10 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.order_status_history
   ordering.order_status_transition
   ordering.producer
+  ordering.production_order
+  ordering.production_order_line
+  ordering.production_order_status_history
+  ordering.production_order_status_transition
   ordering.quote
   ordering.quote_fee_line
   ordering.quote_line
