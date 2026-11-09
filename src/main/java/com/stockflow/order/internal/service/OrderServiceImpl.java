@@ -546,18 +546,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return repository.findByIdForUpdate(new OrderId(orderId)).map(Order::status);
     }
 
-    /**
-     * Decision 2026-10-17: a cancellation the system would make on its own is not made once printing started; the
-     * order stays as it is and Sales and the coordinators are told (OrderCancellationReferred), to settle the fee, the
-     * blanks and the printed goods by hand. Once per order and reason: a redelivered event tells nobody twice.
-     */
-    private void referToStaff(Order order, CancellationReasonCode wouldHaveBeen) {
-        order.referCancellationToStaff(wouldHaveBeen, clock.instant());
-        events.publishEventsOf(order);
-        log.warn("Order {}: {} after printing started; not cancelled, referred to staff", order.orderNumber(),
-                wouldHaveBeen);
-    }
-
     private Order lockOrder(UUID orderId) {
         return repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
@@ -836,26 +824,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         }
         repository.save(order);
         events.publishEventsOf(order);
-    }
-
-    /**
-     * A hold of the order expired before it was paid: the order is cancelled and its other holds
-     * released (kltn-docs 14 BR-07, 15 step 4). Called by {@code InventoryEventListener} for every
-     * expired hold — the first one cancels, the rest find the order already cancelled. An order that
-     * is no longer waiting for payment is left alone: its holds are pinned and cannot expire, so the
-     * event can only be a late redelivery.
-     */
-    public void cancelAfterHoldExpired(UUID orderId) {
-        Optional<Order> found = repository.findByIdForUpdate(new OrderId(orderId));
-        if (found.isEmpty() || found.get().status() != OrderStatus.PENDING_PAYMENT) {
-            return;
-        }
-        if (found.get().printingStartedAt() != null) {
-            referToStaff(found.get(), CancellationReasonCode.PAYMENT_NOT_RECEIVED);
-            return;
-        }
-        cancelLoaded(found.get(), new CancelOrderCommand(CancellationReasonCode.PAYMENT_NOT_RECEIVED,
-                "not paid before the stock hold ran out", null, null));
     }
 
     @Override
