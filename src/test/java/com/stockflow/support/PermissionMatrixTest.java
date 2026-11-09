@@ -307,6 +307,13 @@ class PermissionMatrixTest {
             Map.entry("customer-payment-schedules:UPDATE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("customer-payment-schedules:APPROVE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // 4B-4, kltn-docs 14 §4.3: Sales draws up, sends and records the contract signed; accounting and the Sales
+            // Manager read it.
+            Map.entry("sales-contracts:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("sales-contracts:CREATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-contracts:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-contracts:APPROVE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
