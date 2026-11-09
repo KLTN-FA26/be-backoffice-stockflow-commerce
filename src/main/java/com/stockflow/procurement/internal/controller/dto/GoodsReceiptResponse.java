@@ -10,62 +10,39 @@ import java.util.UUID;
  * (there is no quality check at the warehouse, kltn-docs 03 BR-07).
  *
  * <p>{@code warnings}: non-blocking business warnings, on the receipt and on the line they come from.
- * {@code EXPIRY_NEAR} (docs 03 BR-06): the lot expires within {@code stockflow.inventory.expiry-warning-days}
- * (30) of the receiving date; the manager decides whether to accept it. {@code OVER_TOLERANCE} (BR-RCP-001): the
- * count, not yet posted, goes beyond the PO line's over-receipt tolerance; confirming it sends the receipt to the
- * warehouse manager ({@code status = PENDING_APPROVAL}). Empty when there is none.</p>
+ * {@code EXPIRY_NEAR} (docs 03 BR-06): a historical line's lot expires within
+ * {@code stockflow.inventory.expiry-warning-days} (30) of the receiving date. Empty when there is none.</p>
  *
- * <p>SCRUM-478 (BR-RCP-002): {@code withoutPurchaseOrder} receipts have no {@code purchaseOrderId} /
- * {@code purchaseOrderNumber}; their {@code supplierId} is their own, {@code blindReason} says why there is no PO, and
- * their lines are told apart by {@code sku} ({@code purchaseOrderLineId} is null). They are always sent to the manager
- * on confirmation ({@code status = PENDING_APPROVAL}); {@code approval.decision} is {@code REJECTED} when refused (the
- * receipt is then {@code CANCELLED}). {@code referencedPurchaseOrder*}: the PO attached afterwards, a reference only.</p>
- *
- * <p>4A-5: {@code receiptType} is {@code PURCHASE} or {@code PRODUCTION}. A production receipt names its production
- * order ({@code productionOrderId}, {@code productionOrderCode} - also the lot of every line - its
- * {@code productionOrderStatus}, {@code producerId}, {@code producerName}) and has no PO or supplier; each line names
- * its {@code productionOrderLineId} and carries {@code production}, the line against what it orders.</p>
+ * <p>4A-5: {@code receiptType} is {@code PRODUCTION} - the receipt names its production order
+ * ({@code productionOrderId}, {@code productionOrderCode} - also the lot of every line - its
+ * {@code productionOrderStatus}, {@code producerId}, {@code producerName}), and each line names its
+ * {@code productionOrderLineId} and carries {@code production}, the line against what it orders - or {@code PURCHASE}
+ * on a historical receipt of the purchasing there was, whose purchase order, supplier and approval are not shown any
+ * more (4A-8).</p>
  */
-public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber,
-                                   UUID supplierId, String supplierName, UUID warehouseId, String warehouseCode,
+public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, String warehouseCode,
                                    String warehouseName, String status, String deliveryNote, String note,
                                    Instant receivedAt, UUID receivedBy, String receivedByName, Instant confirmedAt,
                                    UUID confirmedBy, String confirmedByName, Instant closedAt, List<Line> lines,
-                                   List<String> warnings, Approval approval, boolean withoutPurchaseOrder,
-                                   String blindReason, UUID referencedPurchaseOrderId,
-                                   String referencedPurchaseOrderNumber, String receiptType, UUID productionOrderId,
+                                   List<String> warnings, String receiptType, UUID productionOrderId,
                                    String productionOrderCode, String productionOrderStatus, UUID producerId,
                                    String producerName) {
 
     /**
-     * The warehouse manager's exception approval (SCRUM-477, BR-RCP-001): null for a receipt that never went beyond
-     * a PO line's over-receipt tolerance. {@code requestedAt}/{@code requestedBy}: the count was sent to the manager.
-     * {@code decision}: {@code APPROVED} (the whole count was posted) or {@code EXCESS_REJECTED} (cut back to the
-     * tolerance, the rest posted); null while the receipt waits ({@code status = PENDING_APPROVAL}); then
-     * {@code decidedAt}, {@code decidedBy} and {@code reason} are null too.
+     * {@code lotTracked} / {@code expiryTracked}: the item's flags (BR-03). {@code unitOfMeasure}: the packing unit of
+     * the line's cartons, null for a historical line counted loose. {@code looseQuantity}: the part counted into no
+     * carton (the line less the cartons' {@code receivedQty}). {@code packages}: the line's cartons by LPN, voided ones
+     * left out (SCRUM-473). {@code units}: every unit of the line's item, for the counting screen's unit picker.
      */
-    public record Approval(Instant requestedAt, UUID requestedBy, String requestedByName, String decision,
-                           Instant decidedAt, UUID decidedBy, String decidedByName, String reason) {
-    }
-
-    /**
-     * {@code lotTracked} / {@code expiryTracked}: whether the line needs a lot / an expiry date (BR-03).
-     * {@code unitOfMeasure}: the packing unit of the line's cartons, null for a loose line. {@code looseQuantity}:
-     * the part counted into no carton (the line less the cartons' {@code receivedQty}). {@code packages}: the line's cartons by LPN, voided ones left out (SCRUM-473).
-     * {@code units}: every unit of the line's item, for the counting screen's unit picker.
-     */
-    public record Line(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
-                       int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
-                       boolean lotTracked, boolean expiryTracked, int quantityForPutaway,
-                       List<String> warnings, String unitOfMeasure,
-                       int looseQuantity, List<Package> packages, List<Unit> units,
-                       @io.swagger.v3.oas.annotations.media.Schema(description = "SCRUM-473: the unit the PO line was"
-                               + " ordered in, to pre-select; null for base units") String orderedUnitOfMeasure,
+    public record Line(UUID id, UUID inventoryItemId, String sku, int quantity, String lotNumber, LocalDate expiryDate,
+                       String locationCode, String note, boolean lotTracked, boolean expiryTracked,
+                       int quantityForPutaway, List<String> warnings, String unitOfMeasure, int looseQuantity,
+                       List<Package> packages, List<Unit> units,
                        @io.swagger.v3.oas.annotations.media.Schema(description = "4A-5: the production order line a"
-                               + " production receipt's line counts; null on a purchase receipt")
+                               + " production receipt's line counts; null on a historical purchase receipt")
                        UUID productionOrderLineId,
                        @io.swagger.v3.oas.annotations.media.Schema(description = "4A-5: the line against its"
-                               + " production order line; null on a purchase receipt", nullable = true)
+                               + " production order line; null on a historical purchase receipt", nullable = true)
                        ProductionLineProgress production) {
     }
 
@@ -82,8 +59,8 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
 
     /**
      * A unit the line's item can be counted in, the base unit first, then by code. Cartons take an {@code active}
-     * unit that is not {@code base}; {@code factor} is what one carton of it holds; {@code defaultPurchase} marks
-     * the unit the item is bought in.
+     * unit that is not {@code base}; {@code factor} is what one carton of it holds; {@code defaultPurchase} is the
+     * unit's flag as the unit catalogue keeps it.
      */
     public record Unit(String unitOfMeasure, int factor, boolean base, boolean active, boolean defaultPurchase) {
     }

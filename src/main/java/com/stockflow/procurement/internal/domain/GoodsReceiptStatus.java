@@ -4,10 +4,9 @@ package com.stockflow.procurement.internal.domain;
  * Lifecycle of a goods receipt (docs 03 §5.1, {@code ck_goods_receipts_status}). Mapped
  * {@code EnumType.STRING}.
  *
- * <p>{@code PENDING_APPROVAL} (SCRUM-477, BR-RCP-001): a count beyond a PO line's over-receipt tolerance, sent to the
- * warehouse manager. Nothing is counted in while it waits; it leaves for {@code IN_PUTAWAY} (approved, or the excess
- * rejected and the rest posted), or for {@code CANCELLED}. A receipt in it is not a posted receipt: no stock, no
- * purchase order progress.</p>
+ * <p>{@code PENDING_APPROVAL}: legacy (SCRUM-477, BR-RCP-001). A purchase receipt counted beyond a PO line's
+ * over-receipt tolerance waited in it for the warehouse manager, counted in nowhere. Purchasing is gone (4A-8): no
+ * receipt enters it any more, and one left in it is only cancelled. Kept because the table names it.</p>
  *
  * <p>{@code CONFIRMED} is the moment the count is final; the receipt leaves it for {@code IN_PUTAWAY} in the same
  * transaction, so no row stays in it. It is kept because the table names it. There is no QC status: receiving QC was
