@@ -11,10 +11,13 @@
 --     warehouse, the order's shipping warehouse), which may still be chosen or changed while a PO_NEEDED is open.
 --   * production-schedule (VIEW_PAGE, READ) - the schedule screen; delay-alerts (READ) - the delay flags of an order.
 
+-- The column and its CHECK are also added, word for word, by 4A-4's V20261108003100 (print sample rounds), which records
+-- the day; whichever branch merges second meets them already there, so both are written to be run either way.
 ALTER TABLE ordering.production_order
-    ADD COLUMN expected_completion_date DATE;
+    ADD COLUMN IF NOT EXISTS expected_completion_date DATE;
 
 -- 17 §4.3 step 8: the producer gives the day when it accepts the order - never before it was sent.
+ALTER TABLE ordering.production_order DROP CONSTRAINT IF EXISTS ck_production_order_expected_completion;
 ALTER TABLE ordering.production_order
     ADD CONSTRAINT ck_production_order_expected_completion CHECK (expected_completion_date IS NULL
         OR status NOT IN ('DRAFT', 'PENDING_APPROVAL', 'SENT'));
