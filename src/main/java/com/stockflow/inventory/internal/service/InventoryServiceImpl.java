@@ -309,19 +309,17 @@ class InventoryServiceImpl implements InventoryService {
                 .collect(Collectors.toSet());
         if (normalized.isEmpty()) return Map.of();
         LocalDate today = BusinessCalendar.date(clock.instant());
-        Map<String, Long> unheld = new java.util.HashMap<>(repository.availableQuantities(normalized, today));
-        frozenBySku(normalized, today).forEach((sku, frozen) -> unheld.merge(sku, -frozen, Long::sum));
-        return netOfSkuReservations(unheld, normalized);
+        return netOfSkuReservations(allocatableBySku(normalized, today), normalized);
     }
 
     /**
-     * Free units in doubt per SKU code (X-SHORT step 03): a picker came up short in their bin and the recount is
-     * open, so they are not promised. Every figure of available to promise subtracts them, the planner skips them.
+     * Units a release could allocate, per SKU code (team plan 4C-2; kltn-docs 07 BR-03, 20 §5.6): whole sealed cartons
+     * nothing holds, unexpired, on pickable bins (module 06 BR-12), none a recount has frozen (X-SHORT step 03). The
+     * same stock {@link PickableStock} offers the planner, across every warehouse: a reservation is promised against
+     * the whole system. Loose units and an opened carton are on hand but never allocated, so they are not promised.
      */
-    private Map<String, Long> frozenBySku(Collection<String> skus, LocalDate today) {
-        return cycleCounts.frozen(skus, today).stream().collect(Collectors.groupingBy(
-                com.stockflow.inventory.internal.domain.CycleCountRepository.Frozen::sku,
-                Collectors.summingLong(com.stockflow.inventory.internal.domain.CycleCountRepository.Frozen::free)));
+    private Map<String, Long> allocatableBySku(Collection<String> skus, LocalDate today) {
+        return new PickableStock(repository, locations, cycleCounts).allocatableBySku(skus, today);
     }
 
     private Set<StockItemId> frozenLayers(Sku sku, LocalDate today) {
@@ -334,13 +332,13 @@ class InventoryServiceImpl implements InventoryService {
     public Map<Sku, Integer> availableToPromise(Collection<Sku> skus) {
         Set<Sku> wanted = new LinkedHashSet<>(skus);
         LocalDate today = BusinessCalendar.date(clock.instant());
-        Map<Sku, Integer> found = repository.sumAvailableBySkus(wanted, today);
-        Map<String, Long> reserved = skuReservations.heldBySku(wanted.stream().map(Sku::code).toList());
-        Map<String, Long> frozen = frozenBySku(wanted.stream().map(Sku::code).toList(), today);
+        List<String> codes = wanted.stream().map(Sku::code).toList();
+        Map<String, Long> found = allocatableBySku(codes, today);
+        Map<String, Long> reserved = skuReservations.heldBySku(codes);
         Map<Sku, Integer> result = new LinkedHashMap<>();
         // Every SKU asked for gets an answer: no stock is an answer (0), not a missing key.
-        wanted.forEach(sku -> result.put(sku, (int) Math.max(0, found.getOrDefault(sku, 0)
-                - reserved.getOrDefault(sku.code(), 0L) - frozen.getOrDefault(sku.code(), 0L))));
+        wanted.forEach(sku -> result.put(sku, (int) Math.max(0, found.getOrDefault(sku.code(), 0L)
+                - reserved.getOrDefault(sku.code(), 0L))));
         return result;
     }
 
@@ -475,6 +473,7 @@ class InventoryServiceImpl implements InventoryService {
         }
 
         policies.lock(command.sku().code());   // re-entrant: checkout took it in prepareReservation already
+        requireWholeCartons(command.sku(), command.quantity());
         int available = availableToPromise(command.sku());
         SkuReservation reservation = SkuReservation.open(command.sku(), command.orderId(), command.requestId(),
                 Quantity.of(command.quantity()), available, now, reservationTtl);
@@ -485,6 +484,21 @@ class InventoryServiceImpl implements InventoryService {
                 command.quantity(), command.sku(), command.orderId(), reservation.id());
         return new ReserveStockResult(command.orderId(), List.of(toApiReservation(reservation)), command.quantity(),
                 available - command.quantity(), now);
+    }
+
+    /**
+     * A reservation counts cartons (kltn-docs 07 BR-03, 20 §5.6): the units asked for are a whole number of the SKU's
+     * cartons, since a release hands out whole cartons only and a remainder could never be allocated. A SKU with no
+     * carton unit has no stock in cartons, so nothing would be promised to it anyway.
+     */
+    private void requireWholeCartons(Sku sku, int quantity) {
+        java.util.OptionalInt factor = stockPackages.cartonFactorOf(sku.code());
+        if (factor.isPresent() && quantity % factor.getAsInt() != 0) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS,
+                    "%d unit(s) of %s are not whole cartons of %d; a reservation counts cartons".formatted(quantity,
+                            sku.code(), factor.getAsInt()), List.of(),
+                    Map.of("sku", sku.code(), "cartonQuantity", factor.getAsInt()));
+        }
     }
 
     private ReserveStockResult resultOf(UUID orderId, Sku sku, List<SkuReservation> reservations) {

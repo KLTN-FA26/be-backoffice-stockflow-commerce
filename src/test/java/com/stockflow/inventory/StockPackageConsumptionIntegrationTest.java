@@ -128,7 +128,8 @@ class StockPackageConsumptionIntegrationTest {
         UUID order = confirmedOrder();
 
         assertThat(((BusinessException) catchThrowable(() -> hold(order, 3))).errorCode())
-                .as("3 of a carton of 5: no whole carton fits").isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+                .as("3 of a carton of 5: a reservation counts cartons")
+                .isEqualTo(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS);
         assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", true)
                 .containsEntry("held", 5L);
 

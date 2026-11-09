@@ -154,10 +154,11 @@ class CartonAllocationIntegrationTest {
     void shortCartonsRefuseTheRelease() {
         carton(2);
         carton(3);
-        // The third carton is sellable - checkout promised it - but not on a pickable bin: the release cannot take it.
-        tx.executeWithoutResult(s -> CartonRows.stock(jdbc, sku, "HCM-RCV01", 1, FACTOR, null,
-                Instant.parse("2026-01-01T00:00:00Z")));
+        String third = carton(4);
         UUID order = reserved(30);
+        // Promised at checkout, the third carton is taken off the pick face before the release: two whole cartons are
+        // left on pickable bins for a line of three.
+        moveByHand(List.of(third), "HCM-RCV01");
 
         BusinessException refused = catchThrowableOfType(BusinessException.class, () -> release(order));
 
@@ -170,16 +171,35 @@ class CartonAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a line that is no sum of whole cartons is short too: no carton is broken for the remainder")
-    void noCartonIsBrokenForARemainder() {
+    @DisplayName("a reservation counts cartons (20 §5.6): units that are no whole number of cartons are refused at"
+            + " checkout, so no carton is ever broken for a remainder")
+    void reservationCountsCartons() {
         carton(2);
         carton(3);
-        UUID order = reserved(15);
 
-        BusinessException refused = catchThrowableOfType(BusinessException.class, () -> release(order));
+        BusinessException refused = catchThrowableOfType(BusinessException.class, () -> reserved(15));
 
-        assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(heldUnits()).isZero();
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS);
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_reservation where sku = ?",
+                Integer.class, sku)).isZero();
+    }
+
+    @Test
+    @DisplayName("available to promise counts only cartons a release could allocate: not a carton off a pickable"
+            + " bin, nor loose units on one")
+    void onlyAllocatableStockIsPromised() {
+        carton(2);
+        tx.executeWithoutResult(s -> {
+            CartonRows.stock(jdbc, sku, "HCM-RCV01", 1, FACTOR, null, Instant.parse("2026-01-03T00:00:00Z"));
+            jdbc.update("""
+                    insert into inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                        created_at, received_at) values (?, ?, ?, 7, 0, 'AVAILABLE', 0, now(), now())""",
+                    Identifiers.newId(), sku, SHELF);
+        });
+
+        assertThat(inventory.availableToPromise(new Sku(sku))).isEqualTo(10);
+        assertThat(catchThrowableOfType(BusinessException.class, () -> reserved(20)).errorCode())
+                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
     }
 
     @Test

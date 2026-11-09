@@ -57,10 +57,10 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  *   HCM-A01-1-B  bin   5  expires today+10   received 2026-02-01   (earliest expiry)
  *   HCM-A01-2-A  bin   5  no expiry          received 2025-12-01
  *   HCM-A02-2-A  bin   2  no expiry          received 2025-11-01   (oldest receipt)
- *   HCM-RCV01    area  5  expires today+1    not pickable: never allocated, though sellable
+ *   HCM-RCV01    area  5  expires today+1    not pickable: never allocated, so never promised either
  *   HCM-A02-1-A  bin   4  expired yesterday  never promised, never allocated
  * </pre>
- * Available to promise is therefore 22.
+ * Available to promise is therefore 17: only what a release could allocate is promised (review of 4C-2).
  */
 @IntegrationTest
 @Import({PostgresContainer.class, com.stockflow.support.RecordedEvents.class})
@@ -174,7 +174,7 @@ class SkuReservationAllocationIntegrationTest {
     @Test
     @DisplayName("checkout holds the SKU on no location: ATP falls, no stock row is held, a replay is the same hold")
     void checkoutReservesTheSkuOnly() {
-        assertThat(atp()).isEqualTo(22);
+        assertThat(atp()).isEqualTo(17);
         UUID order = order();
         UUID request = UUID.randomUUID();
         StockReservation held = reserve(order, request, 7);
@@ -182,7 +182,7 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(held.stockItemId()).isNull();
         assertThat(held.locationCode()).isNull();
         assertThat(held.quantity()).isEqualTo(7);
-        assertThat(atp()).isEqualTo(15);
+        assertThat(atp()).isEqualTo(10);
         assertThat(reservedEverywhere()).isZero();
         assertThat(jdbc.queryForMap("""
                 SELECT stock_item_id, sku, status, expires_at IS NOT NULL AS deadline FROM inventory.stock_reservation
@@ -191,7 +191,7 @@ class SkuReservationAllocationIntegrationTest {
                 .containsEntry("deadline", true);
 
         assertThat(reserve(order, request, 7).reservationId()).isEqualTo(held.reservationId());
-        assertThat(atp()).isEqualTo(15);
+        assertThat(atp()).isEqualTo(10);
         assertThat(inventory.holdsOf(order)).singleElement()
                 .satisfies(hold -> assertThat(hold.locationCode()).isNull());
         assertThat(inventory.holds(List.of(held.reservationId()))).singleElement()
@@ -245,14 +245,16 @@ class SkuReservationAllocationIntegrationTest {
     @DisplayName("a warehouse that cannot cover the order allocates nothing and leaves the reservation held")
     void allocationIsAllOrNothing() {
         UUID order = order();
-        StockReservation soft = reserve(order, 13);   // 17 pickable in HCM: enough; but not 18
-        UUID tooMuch = order();
-        StockReservation big = reserve(tooMuch, 9);   // ATP 22 - 13 = 9; together 22 > 17 pickable
+        StockReservation soft = reserve(order, 13);   // 17 pickable in HCM: enough
+        UUID other = order();
+        StockReservation rest = reserve(other, 4);    // ATP 17 - 13 = 4: the area's cartons are not promised
+        assertThat(code(catchThrowable(() -> reserve(order(), 1)))).as("nothing left to promise")
+                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
 
         assertThat(allocate(order, "HCM").allocations()).hasSize(1);
-        assertThat(code(catchThrowable(() -> allocate(tooMuch, "HCM")))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(status(big.reservationId())).isEqualTo("HELD");
-        assertThat(code(catchThrowable(() -> allocate(tooMuch, "ZZZ")))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(code(catchThrowable(() -> allocate(other, "ZZZ")))).as("a warehouse that has none of it")
+                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(status(rest.reservationId())).isEqualTo("HELD");
         assertThat(reservedEverywhere()).isEqualTo(13);
         assertThat(status(soft.reservationId())).isEqualTo("ALLOCATED");
     }
@@ -306,14 +308,14 @@ class SkuReservationAllocationIntegrationTest {
             for (Future<Boolean> result : results) {
                 succeeded += result.get() ? 1 : 0;
             }
-            assertThat(succeeded).isEqualTo(5);   // 5 x 4 = 20 <= 22 < 24
+            assertThat(succeeded).isEqualTo(4);   // 4 x 4 = 16 <= 17 < 20
         } finally {
             pool.shutdownNow();
         }
-        assertThat(atp()).isEqualTo(2);
+        assertThat(atp()).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
                 SELECT sum(quantity) FROM inventory.stock_reservation
-                 WHERE sku = ? AND stock_item_id IS NULL AND status = 'HELD'""", Integer.class, sku)).isEqualTo(20);
+                 WHERE sku = ? AND stock_item_id IS NULL AND status = 'HELD'""", Integer.class, sku)).isEqualTo(16);
     }
 
     @Test
@@ -349,7 +351,7 @@ class SkuReservationAllocationIntegrationTest {
         StockReservation soft = reserve(early, 3);
         tx.executeWithoutResult(s -> inventory.release(soft.reservationId(), "ORDER_CANCELLED"));
         assertThat(status(soft.reservationId())).isEqualTo("RELEASED");
-        assertThat(atp()).isEqualTo(22);
+        assertThat(atp()).isEqualTo(17);
 
         UUID late = order();
         StockReservation released = reserve(late, 6);
@@ -359,7 +361,7 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(status(released.reservationId())).as("the reservation it came from stays ALLOCATED").isEqualTo("ALLOCATED");
         tx.executeWithoutResult(s -> inventory.release(released.reservationId(), "ORDER_CANCELLED"));   // a no-op
         assertThat(reservedEverywhere()).isZero();
-        assertThat(atp()).isEqualTo(22);
+        assertThat(atp()).isEqualTo(17);
     }
 
     @Test
@@ -459,7 +461,7 @@ class SkuReservationAllocationIntegrationTest {
         // The recount doubts the short carton only, and the order holds it whole: nothing free is in doubt, and the
         // bin's other carton stays sellable.
         assertThat(allocation.locationCode()).isEqualTo("HCM-A01-1-B");
-        assertThat(atp()).as("22 - 4 reserved; the doubted carton has no free unit").isEqualTo(18);
+        assertThat(atp()).as("17 - 4 reserved; the doubted carton has no free unit").isEqualTo(13);
         UUID next = order();
         reserve(next, 1);
         StockReservation nextHold = allocate(next, "HCM").allocations().get(0).holds().get(0);
@@ -469,7 +471,7 @@ class SkuReservationAllocationIntegrationTest {
         var cancelled = tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "Bin checked by hand", "manager"));
         assertThat(cancelled.status()).isEqualTo("CANCELLED");
         assertThat(cancelled.note()).endsWith("Cancelled: Bin checked by hand");
-        assertThat(atp()).as("sellable again: 22 - 4 - 1 reserved by the next order").isEqualTo(17);
+        assertThat(atp()).as("sellable again: 17 - 4 - 1 reserved by the next order").isEqualTo(12);
         assertThat(tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "again", "manager")).status())
                 .as("a no-op").isEqualTo("CANCELLED");
         tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.cycle_count SET status = 'COMPLETED',"
@@ -526,7 +528,7 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(jdbc.queryForList("""
                 SELECT quantity_delta FROM inventory.stock_adjustment WHERE sku = ? AND status = 'PENDING_APPROVAL'
                    AND reason_code = 'COUNT_VARIANCE'""", Integer.class, sku)).containsExactly(-1, -1);
-        assertThat(atp()).as("22 - 4 reserved - the free carton a pending shortage doubts").isEqualTo(17);
+        assertThat(atp()).as("17 - 4 reserved - the free carton a pending shortage doubts").isEqualTo(12);
 
         var recount = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 3));
 
@@ -534,7 +536,7 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(recount.cycleCountId()).isEqualTo(manual.id());
         assertThat(recount.countNumber()).isEqualTo(manual.number());
         assertThat(countsOf("SHORT_PICK")).as("no second count of the same stock").isZero();
-        assertThat(atp()).as("still frozen").isEqualTo(17);
+        assertThat(atp()).as("still frozen").isEqualTo(12);
         // A carton a row: the bin's held cartons are listed with nothing available, and its free one not at all.
         assertThat(inventory.availabilityOf(new Sku(sku))).filteredOn(a -> "HCM-A01-1-B".equals(a.locationCode()))
                 .as("its one free carton is frozen").extracting(StockAvailability::available).containsOnly(0);
@@ -557,6 +559,6 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(recount.created()).isFalse();
         assertThat(recount.cycleCountId()).isEqualTo(manual.id());
         assertThat(countsOf("SHORT_PICK")).isZero();
-        assertThat(atp()).as("a MANUAL count freezes nothing while open: 22 - 4 reserved").isEqualTo(18);
+        assertThat(atp()).as("a MANUAL count freezes nothing while open: 17 - 4 reserved").isEqualTo(13);
     }
 }

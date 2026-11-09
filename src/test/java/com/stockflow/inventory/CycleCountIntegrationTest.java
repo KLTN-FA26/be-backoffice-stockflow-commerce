@@ -676,28 +676,31 @@ class CycleCountIntegrationTest {
     @Test
     @DisplayName("a short pick's freeze holds after submission while the variance waits, and lifts once it is approved")
     void shortPickFreezeLastsUntilTheVarianceIsDecided() {
+        // Loose units are never promised since team plan 4C-2 (available to promise counts whole sealed cartons), so
+        // the freeze is read from the frozen layers themselves.
         loose(BIN, 5);
-        assertThat(atp()).isEqualTo(5);
         CycleCount recount = shortPick(looseSlot(BIN), 5);
-        assertThat(atp()).as("the bin's free units are in doubt").isZero();
+        assertThat(frozen()).as("the bin's free units are in doubt").singleElement()
+                .satisfies(f -> assertThat(f.free()).isEqualTo(5));
 
         cycleCounts.count(recount.id(), recount.lines().get(0).id(), 3, null, counter, false);
         cycleCounts.submit(recount.id(), counter, false);
 
-        assertThat(atp()).as("still in doubt while the variance waits for approval").isZero();
-        assertThat(frozen()).isNotEmpty();
+        assertThat(frozen()).as("still in doubt while the variance waits for approval").isNotEmpty();
 
         operations.approve((UUID) adjustments().get(0).get("id"), manager);
 
         assertThat(frozen()).isEmpty();
-        assertThat(atp()).isEqualTo(3);
     }
 
     @Test
-    @DisplayName("a short pick on a carton row freezes that carton, not the loose units of the same bin, SKU and lot")
+    @DisplayName("a short pick on a carton row freezes that carton, not the other cartons or loose units of the same"
+            + " bin, SKU and lot")
     void shortPickOnACartonFreezesOnlyThatCarton() {
         loose(BIN, 5);
         UUID box = carton(BIN, "F", 10, true);
+        carton(BIN, "G", 10, true);
+        assertThat(atp()).as("the two whole cartons; loose units are not promised (team plan 4C-2)").isEqualTo(20);
         UUID boxRow = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
                 box);
 
@@ -707,7 +710,7 @@ class CycleCountIntegrationTest {
             assertThat(f.stockItemId()).isEqualTo(boxRow);
             assertThat(f.free()).isEqualTo(10);
         });
-        assertThat(atp()).as("the loose units stay sellable").isEqualTo(5);
+        assertThat(atp()).as("the bin's other carton stays sellable").isEqualTo(10);
     }
 
     // ------------------------------------------------------------------ recount
