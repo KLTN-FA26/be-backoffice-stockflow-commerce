@@ -690,6 +690,40 @@ class ProductionScheduleIntegrationTest {
     }
 
     @Test
+    @DisplayName("an order on hold is followed only when held after confirmation; a credit hold at signing is not")
+    void heldOrders() {
+        UUID orderId = confirmedOrder(oneBatchIn(10), a);
+        UUID batch = batchId(orderId, 1);
+        awaitListeners(orderId);
+        alerts.recompute(orderId);
+        UUID opened = openAlert(DelayAlertType.PO_NEEDED, batch);
+        assertThat(opened).isNotNull();
+
+        hold(orderId, "PAYMENT", "CONFIRMED");
+        assertThat(alerts.recompute(orderId)).as("held for payment after confirmation: still owes its batch")
+                .isEqualTo(new DelayAlertService.Recomputed(0, 0));
+        assertThat(openAlert(DelayAlertType.PO_NEEDED, batch)).isEqualTo(opened);
+        assertThat(shortOf(scheduleOf(null, a.id(), null, null, false), orderId)).hasSize(1);
+        assertThat(alerts.sweepCandidates()).contains(orderId);
+
+        hold(orderId, "CREDIT", null);
+        assertThat(alerts.recompute(orderId).closed()).as("a credit hold at signing: not confirmed, not followed")
+                .isEqualTo(1);
+        assertThat(openAlert(DelayAlertType.PO_NEEDED, batch)).isNull();
+        assertThat(shortOf(scheduleOf(null, a.id(), null, null, false), orderId)).isEmpty();
+        assertThat(alerts.sweepCandidates()).doesNotContain(orderId);
+    }
+
+    /** The order put on hold for {@code reason}, from {@code before} (null: a credit hold placed at signing) - by SQL. */
+    private void hold(UUID orderId, String reason, String before) {
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = ?, status_before_hold = ? "
+                    + "WHERE id = ?", reason, before, orderId);
+        });
+    }
+
+    @Test
     @DisplayName("17 §4.2 step 5: an order released for its first batch is still followed - a later batch short and "
             + "uncovered keeps its PO_NEEDED, stays on the schedule, and may be drawn up")
     void followedPastRelease() {

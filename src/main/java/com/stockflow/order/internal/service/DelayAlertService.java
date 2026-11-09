@@ -77,19 +77,33 @@ public class DelayAlertService {
 
     /**
      * 17 §4.2 step 5, §4.3 step 6: the orders whose shortage becomes production orders - confirmed, and on past release
-     * while later batches are short; on hold too, so the shortage stays in sight while the hold is resolved.
+     * while later batches are short. An order on hold is followed by {@link #followed} when it was held from one of
+     * these.
      */
     static final Set<OrderStatus> SHORTAGE_FOLLOWED = Collections.unmodifiableSet(EnumSet.of(OrderStatus.CONFIRMED,
-            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED,
-            OrderStatus.ON_HOLD)); // 4A-6: + AWAITING_STOCK
+            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED,
+            OrderStatus.PARTIALLY_FULFILLED)); // 4A-6: + AWAITING_STOCK
 
     /**
-     * Confirmed and not yet all handed over (17 §4.5): an order on hold still owes its batches. Before confirmation the
-     * seller is not yet bound to deliver; from SHIPPED on everything has left.
+     * Confirmed and not yet all handed over (17 §4.5). Before confirmation the seller is not yet bound to deliver; from
+     * SHIPPED on everything has left. An order on hold: as for {@link #SHORTAGE_FOLLOWED}.
      */
     static final Set<OrderStatus> DELIVERY_FOLLOWED = Collections.unmodifiableSet(EnumSet.of(OrderStatus.CONFIRMED,
-            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED,
-            OrderStatus.ON_HOLD)); // 4A-6: + AWAITING_STOCK
+            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED,
+            OrderStatus.PARTIALLY_FULFILLED)); // 4A-6: + AWAITING_STOCK
+
+    /**
+     * Whether an order in {@code status} is followed by {@code stages}. An order ON_HOLD is followed only when the
+     * status it was held from is: a hold after confirmation (payment, address, customer) still owes its batches, but a
+     * credit hold placed when the contract was signed (no status before it) is not confirmed yet - nothing is to be made
+     * or delivered for it until the accountant approves.
+     */
+    static boolean followed(Set<OrderStatus> stages, OrderStatus status, OrderStatus statusBeforeHold) {
+        if (status == OrderStatus.ON_HOLD) {
+            return statusBeforeHold != null && stages.contains(statusBeforeHold);
+        }
+        return stages.contains(status);
+    }
 
     /** What one recompute changed. */
     public record Recomputed(int opened, int closed) {
@@ -154,8 +168,10 @@ public class DelayAlertService {
         List<DeliveryBatch> schedule = order.paidByContract()
                 ? contracts.findLiveByOrderId(salesOrderId).map(SalesContract::schedule).orElse(List.of())
                 : List.of();
-        boolean shortageFollowed = SHORTAGE_FOLLOWED.contains(order.status()) && !schedule.isEmpty();
-        boolean deliveryFollowed = DELIVERY_FOLLOWED.contains(order.status()) && !schedule.isEmpty();
+        boolean shortageFollowed = followed(SHORTAGE_FOLLOWED, order.status(), order.statusBeforeHold())
+                && !schedule.isEmpty();
+        boolean deliveryFollowed = followed(DELIVERY_FOLLOWED, order.status(), order.statusBeforeHold())
+                && !schedule.isEmpty();
         Map<UUID, Map<UUID, Integer>> lacking = shortageFollowed ? productionOrderService.lackingByBatch(salesOrderId)
                 : Map.of();
         Set<UUID> handedOver = DelayAlertEvaluator.handedOver(schedule, settledCartons(order));

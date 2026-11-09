@@ -34,6 +34,13 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
     private static final String OPEN_STATUSES = "('DRAFT', 'PENDING_APPROVAL', 'SENT', 'ACCEPTED', 'SAMPLE_PENDING', "
             + "'IN_PRODUCTION', 'PARTIALLY_RECEIVED')";
 
+    /**
+     * An order in one of {@code :statuses}, or on hold from one of them (DelayAlertService.followed: a credit hold placed
+     * at signing has no status before it and is not followed).
+     */
+    private static final String FOLLOWED = "(o.status IN (:statuses) OR (o.status = 'ON_HOLD' "
+            + "AND o.status_before_hold IN (:statuses)))";
+
     private static final String ALERT_COLUMNS = """
             a.id, a.type, a.production_order_id, a.delivery_batch_id, a.sales_order_id, a.opened_at, a.closed_at""";
 
@@ -90,7 +97,8 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
     public List<UUID> salesOrdersToSweep(Collection<String> statuses) {
         return named.queryForList("""
                         SELECT o.id FROM ordering.customer_order o
-                         WHERE o.status IN (:statuses) AND o.contract_signed_at IS NOT NULL
+                         WHERE """ + FOLLOWED + """
+                           AND o.contract_signed_at IS NOT NULL
                         UNION
                         SELECT p.sales_order_id FROM ordering.production_order p WHERE p.status IN """ + OPEN_STATUSES
                         + """
@@ -193,7 +201,8 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
                   FROM ordering.customer_order o
                   JOIN ordering.sales_contract c ON c.order_id = o.id
                   JOIN ordering.delivery_batch b ON b.contract_id = c.id
-                 WHERE o.status IN (:statuses) AND o.contract_signed_at IS NOT NULL
+                 WHERE """ + FOLLOWED + """
+                           AND o.contract_signed_at IS NOT NULL
                    AND (CAST(:warehouse AS uuid) IS NULL OR o.shipping_warehouse_id = :warehouse)
                    AND (b.window_start IS NOT NULL OR NOT :ranged)
                    AND (CAST(:from AS date) IS NULL OR b.window_start >= :from)
