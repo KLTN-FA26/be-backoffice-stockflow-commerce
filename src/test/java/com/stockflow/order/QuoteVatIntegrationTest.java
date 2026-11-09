@@ -11,6 +11,7 @@ import com.stockflow.customer.api.SaveAddressCommand;
 import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.service.Quotes;
@@ -57,6 +58,7 @@ class QuoteVatIntegrationTest {
     private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired Quotes quotes;
+    @Autowired com.stockflow.order.internal.service.SalesContracts contracts;
     @Autowired com.stockflow.order.internal.service.CustomerOrders customerOrders;
     @Autowired OrderService orders;
     @Autowired CustomerService customers;
@@ -90,6 +92,41 @@ class QuoteVatIntegrationTest {
     private Quotes.Draft draft(String sku, List<Quotes.Fee> fees) {
         return new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
                 List.of(new Quotes.Line(sku, 3, List.of(new Quotes.Tier(2, new BigDecimal("3000"))))), null, fees);
+    }
+
+    /**
+     * The order's contract drawn up from its defaults - one batch in a window three weeks out, everything on signing
+     * (the customer has no default schedule) - sent and signed today with a one-page scan.
+     */
+    private void signContract(UUID orderId) {
+        tx.executeWithoutResult(s -> jdbc.update("INSERT INTO customer.customer_legal_profile (id, customer_id, "
+                + "registered_address, representative_name, representative_title, version, created_at) VALUES (?, ?, "
+                + "'1 Le Loi', 'Tran Van A', 'Director', 0, NOW())", Identifiers.newId(), customerId));
+        java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
+        UUID line = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class, orderId);
+        Integer cartons = jdbc.queryForObject("SELECT cartons FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId);
+        var drafted = com.stockflow.support.WithCurrentUser.call(sales, DataScope.ALL, () -> contracts.create(sales,
+                orderId, new com.stockflow.order.internal.service.SalesContracts.Draft(null, List.of(
+                        new com.stockflow.order.internal.service.SalesContracts.Batch(today.plusDays(21),
+                                today.plusDays(21), List.of(new com.stockflow.order.internal.service.SalesContracts
+                                .BatchLine(line, cartons)))), null)));
+        var sent = com.stockflow.support.WithCurrentUser.call(sales, DataScope.ALL,
+                () -> contracts.send(sales, orderId, drafted.version()));
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PENDING_CONTRACT);
+        byte[] scan;
+        try (var document = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            var bytes = new java.io.ByteArrayOutputStream();
+            document.save(bytes);
+            scan = bytes.toByteArray();
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        com.stockflow.support.WithCurrentUser.call(sales, DataScope.ALL, () -> contracts.sign(sales, orderId,
+                sent.version(), com.stockflow.common.storage.IncomingFiles.sent(List.of(
+                        new com.stockflow.common.storage.FileUpload("signed.pdf", "application/pdf", scan.length,
+                                new java.io.ByteArrayInputStream(scan)))), today));
     }
 
     private static ErrorCode code(Throwable e) {
@@ -149,6 +186,13 @@ class QuoteVatIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT net_amount || '/' || tax_amount || '/' || total_amount FROM "
                 + "ordering.customer_order WHERE id = ?", String.class, orderId))
                 .isEqualTo("890000.0000/89000.0000/979000.0000");
+        // 4B-5: a DRAFT order until its contract is signed - not the customer's to see, not a sale yet.
+        assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
+        assertThatThrownBy(() -> customerOrders.myOrder(customerId, orderId))
+                .extracting(QuoteVatIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
+        signContract(orderId);
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("everything on signing: it waits for that")
+                .isEqualTo(OrderStatus.PENDING_PAYMENT);
         // The portal shows the same three totals, each line's VAT and the fee lines: the lines and fees add up.
         var mine = customerOrders.myOrder(customerId, orderId);
         assertThat(mine.total()).isEqualByComparingTo("979000");

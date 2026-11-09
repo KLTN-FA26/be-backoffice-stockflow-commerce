@@ -113,20 +113,25 @@ class OrderCancellationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a customer cancels a confirmed order at once: holds released, the paid money asked back")
-    void customerCancelsDirectly() {
+    @DisplayName("a customer asks to cancel a confirmed order; approved, holds are released, the paid money asked back")
+    void customerAsksBeforeRelease() {
         int before = inventory.availableToPromise(SOFA);
+        UUID sales = tx.execute(s -> ReferenceRows.user(entityManager));
         OrderSummary placed = place(2);
         UUID orderId = placed.orderId();
         UUID payment = capturedPaymentRow(orderId, new BigDecimal("24000000"));
         captured(orderId, payment, new BigDecimal("24000000"));
         Await.until("order confirmed", ASYNC, () -> order(orderId).status() == OrderStatus.CONFIRMED);
 
+        // 4B-5 (17 §4.8): never at once - the customer asks, before release too, and Sales decides.
         CancellationOutcome outcome = orders.cancelOwn(orderId, DemoData.CUSTOMER_ID,
                 CancellationReasonCode.CUSTOMER_REQUEST, "ordered twice", null);
+        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.REQUESTED);
+        assertThat(order(orderId).status()).isEqualTo(OrderStatus.CONFIRMED);
 
-        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.CANCELLED);
-        assertThat(outcome.order().cancellation().reasonCode()).isEqualTo(CancellationReasonCode.CUSTOMER_REQUEST);
+        OrderSummary cancelled = requests.approve(orderId, outcome.requestId(), null, "agreed", sales);
+        assertThat(cancelled.status()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(cancelled.cancellation().reasonCode()).isEqualTo(CancellationReasonCode.CUSTOMER_REQUEST);
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
         Await.until("refund asked", ASYNC, () -> jdbc.queryForObject("""
                 SELECT count(*) FROM payment.refund

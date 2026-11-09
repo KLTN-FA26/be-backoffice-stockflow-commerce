@@ -218,7 +218,8 @@ class QuoteIntegrationTest {
         assertThat(converted.convertedOrder()).isNotNull();
         OrderSummary order = orders.findById(converted.convertedOrder().orderId()).orElseThrow();
         assertThat(order.customerId()).isEqualTo(customerId);
-        assertThat(order.status()).as("prepaid: waits for the transfer").isEqualTo(OrderStatus.PENDING_PAYMENT);
+        // 4B-5 (14 §4.2 step 7): a DRAFT order - its contract takes it on; no terms of its own (PREPAID is neutral).
+        assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
         assertThat(order.paymentTerm()).isEqualTo(PaymentTerm.PREPAID);
         assertThat(order.total().amount()).isEqualByComparingTo("125000");
         assertThat(order.lines()).singleElement().satisfies(line -> {
@@ -228,7 +229,7 @@ class QuoteIntegrationTest {
             assertThat(line.unitsPerCarton()).isEqualTo(PER_CARTON);
             assertThat(line.unitPrice().amount()).as("the quote's price, not the catalogue's").isEqualByComparingTo("2500");
             assertThat(line.designSnapshotId()).as("the SKU is the design").isNull();
-            assertThat(line.reservationIds()).as("the goods are held").isNotEmpty();
+            assertThat(line.reservationIds()).as("nothing held before the contract is signed (4B-5)").isEmpty();
         });
         assertThat(jdbc.queryForObject("SELECT cartons || 'x' || units_per_carton FROM ordering.order_line "
                 + "WHERE order_id = ?", String.class, order.orderId())).isEqualTo("5x10");
@@ -407,10 +408,10 @@ class QuoteIntegrationTest {
         });
         assertThat(order.total().amount()).isEqualByComparingTo("88000");
 
-        // Prepaid and not paid: it is not released.
-        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        // A DRAFT order - its contract not even drawn up: it is not released.
+        assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
         assertThatThrownBy(() -> releases.release(orderId, hcm, sales.userId())).isInstanceOf(RuntimeException.class);
-        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.DRAFT);
     }
 
     @Test
@@ -543,7 +544,7 @@ class QuoteIntegrationTest {
     }
 
     @Test
-    @DisplayName("R1b: a reorder whose payment term was withdrawn reaches Sales on a term allowed today; a change while a quote is out is caught at acceptance and at conversion")
+    @DisplayName("R1b: a reorder whose payment term was withdrawn reaches Sales on a term allowed today; a change while a quote is out is caught at acceptance")
     void aWithdrawnPaymentTermIsNeverRestoredAndIsCheckedAgainAtEachStep() throws Exception {
         terms(true, true, PaymentTerm.DEPOSIT);
         Quotes.QuoteView created = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
@@ -553,7 +554,8 @@ class QuoteIntegrationTest {
                 quotes.get(portal, sent.id()).version(), Map.of()));
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
                 .convertedOrder().orderId();
-        assertThat(orders.findById(orderId).orElseThrow().paymentTerm()).isEqualTo(PaymentTerm.DEPOSIT);
+        // 4B-5: the order carries no term of its own - its contract's plan says how it is paid.
+        assertThat(orders.findById(orderId).orElseThrow().paymentTerm()).isEqualTo(PaymentTerm.PREPAID);
 
         // The approver withdraws deposits; the customer reorders: a request for Sales on today's term.
         terms(true, false, PaymentTerm.PREPAID);
@@ -565,8 +567,8 @@ class QuoteIntegrationTest {
         assertThat(request.history()).singleElement().satisfies(t ->
                 assertThat(t.reason()).contains("DEPOSIT is no longer allowed, drafted as PREPAID"));
         assertThat(ordersOf(customerId)).as("nothing payable before acceptance").isEqualTo(ordersBefore);
-        assertThat(orders.findById(orderId).orElseThrow().paymentTerm()).as("the old order keeps its terms")
-                .isEqualTo(PaymentTerm.DEPOSIT);
+        assertThat(orders.findById(orderId).orElseThrow().paymentTerm()).as("the old order is left as it was")
+                .isEqualTo(PaymentTerm.PREPAID);
 
         // Terms change while the quote is out: acceptance checks them again.
         Quotes.QuoteView priced = quotes.edit(sales, request.id(), request.version(), twoUnits(PaymentTerm.PREPAID));
@@ -577,15 +579,17 @@ class QuoteIntegrationTest {
                 .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.PAYMENT_TERM_NOT_ALLOWED);
         assertThat(quotes.get(sales, resent.id()).status()).isEqualTo(QuoteStatus.SENT);
 
-        // Allowed again and accepted, then withdrawn before conversion: conversion checks them again too.
+        // Allowed again and accepted, then withdrawn before conversion: the conversion drafts the order all the same
+        // (4B-5) - a DRAFT order commits to no term; its contract's plan is what the customer pays by, and paying after
+        // delivery is checked against approved credit when that plan is drawn up and sent.
         terms(true, true, PaymentTerm.PREPAID);
         Quotes.QuoteView reaccepted = quotes.accept(portal, resent.id(), new Quotes.Acceptance(
                 quotes.get(portal, resent.id()).version(), Map.of()));
         terms(false, true, PaymentTerm.DEPOSIT);
-        assertThatThrownBy(() -> quotes.convert(sales, reaccepted.id(), new Quotes.Conversion(reaccepted.version(),
-                null, null))).extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.PAYMENT_TERM_NOT_ALLOWED);
-        assertThat(quotes.get(sales, reaccepted.id()).status()).isEqualTo(QuoteStatus.ACCEPTED);
-        assertThat(ordersOf(customerId)).isEqualTo(ordersBefore);
+        UUID drafted = quotes.convert(sales, reaccepted.id(), new Quotes.Conversion(reaccepted.version(), null, null))
+                .convertedOrder().orderId();
+        assertThat(orders.findById(drafted).orElseThrow().status()).isEqualTo(OrderStatus.DRAFT);
+        assertThat(ordersOf(customerId)).isEqualTo(ordersBefore + 1);
     }
 
     @Test
@@ -617,21 +621,22 @@ class QuoteIntegrationTest {
     }
 
     @Test
-    @DisplayName("a conversion the stock cannot cover places nothing and leaves the quote ACCEPTED")
-    void conversionRollsBack() throws Exception {
+    @DisplayName("4B-5: a conversion holds no stock - more than is in stock is drafted; production covers the rest")
+    void conversionHoldsNoStock() throws Exception {
         Quotes.QuoteView sent = sentQuote();
         Quotes.QuoteView seen = quotes.get(portal, sent.id());
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(seen.version(),
                 Map.of(seen.lines().getFirst().id(), 100_000)));
         int before = ordersOf(customerId);
 
-        assertThatThrownBy(() -> quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null,
-                null))).isInstanceOf(RuntimeException.class);
-
-        assertThat(quotes.get(sales, accepted.id()).status()).isEqualTo(QuoteStatus.ACCEPTED);
-        assertThat(ordersOf(customerId)).isEqualTo(before);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.quote_status_history WHERE quote_id = ? "
-                + "AND to_status = 'CONVERTED'", Integer.class, accepted.id())).isZero();
+        // 14 §4.2 step 8: a shortage does not stop the order; stock is held at the shipping warehouse once it is
+        // confirmed (4B-7), and a production order covers what is missing (4A).
+        Quotes.QuoteView converted = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(),
+                null, null));
+        assertThat(converted.status()).isEqualTo(QuoteStatus.CONVERTED);
+        assertThat(ordersOf(customerId)).isEqualTo(before + 1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_reservation WHERE order_id = ?",
+                Integer.class, converted.convertedOrder().orderId())).isZero();
     }
 
     @Test

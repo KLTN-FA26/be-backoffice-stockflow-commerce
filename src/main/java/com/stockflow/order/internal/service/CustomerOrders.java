@@ -33,6 +33,8 @@ public interface CustomerOrders {
      * step to the customer.
      */
     enum StatusGroup {
+        /** 4B-5 (17 §5.2 "Chờ ký hợp đồng"): the contract was sent and waits to be signed. */
+        AWAITING_CONTRACT,
         AWAITING_PAYMENT, UNDER_REVIEW, CONFIRMED, IN_PRODUCTION, PREPARING, SHIPPING, DELIVERED, CANCELLED,
         RETURNED
     }

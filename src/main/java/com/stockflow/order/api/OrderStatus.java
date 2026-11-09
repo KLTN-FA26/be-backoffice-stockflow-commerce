@@ -15,8 +15,11 @@ import java.util.stream.Collectors;
  * {@code OrderLifecycleMigrationUpgradeTest} check the two are equal.</p>
  *
  * <pre>
- *   DRAFT ─▶ PENDING_PAYMENT ─paid / deposit in─▶ CONFIRMED ─release─▶ READY_TO_FULFILL
- *     │  └─▶ CONFIRMED / ON_HOLD (credit, within / over the limit)
+ *   DRAFT ─contract sent─▶ PENDING_CONTRACT ─signed─▶ PENDING_PAYMENT (an installment on signing) / CONFIRMED /
+ *     ▲                       │                       ON_HOLD (credit, over the limit or overdue)
+ *     └──contract cancelled───┘
+ *   PENDING_PAYMENT ─paid─▶ CONFIRMED ─release─▶ READY_TO_FULFILL
+ *   DRAFT ─▶ PENDING_PAYMENT / CONFIRMED / ON_HOLD: checkout, until it is removed (4B-10)
  *
  *   READY_TO_FULFILL ─▶ PICKING ─▶ PACKED ─handover─▶ SHIPPED ─▶ DELIVERED ─▶ COMPLETED ─▶ CLOSED
  *                                                                   └─▶ DELIVERY_FAILED ─▶ DELIVERED / RETURNED
@@ -46,8 +49,17 @@ import java.util.stream.Collectors;
  */
 public enum OrderStatus {
 
-    /** Cart contents, not yet an order. No stock is held. */
+    /**
+     * Not yet an order the customer is bound by: made from an accepted quote (kltn-docs 14 §4.2), its contract being
+     * drawn up. No stock held, no terms, no credit checked; the customer does not see it (17 §5.2).
+     */
     DRAFT,
+
+    /**
+     * 4B-5 (14 §4.3 step 13, §5.3): its contract was sent and waits to be signed. Still no stock held; the customer
+     * sees it and may ask to cancel it (17 §4.8).
+     */
+    PENDING_CONTRACT,
 
     /** Submitted, stock reserved, waiting for the prepayment or the deposit. */
     PENDING_PAYMENT,
@@ -115,9 +127,9 @@ public enum OrderStatus {
     public boolean isTerminal() {
         return switch (this) {
             case CANCELLED, CLOSED -> true;
-            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED,
-                 PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED,
-                 PARTIALLY_REFUNDED, COMPLETED -> false;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
+                 PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED,
+                 REFUNDED, PARTIALLY_REFUNDED, COMPLETED -> false;
         };
     }
 
@@ -126,18 +138,18 @@ public enum OrderStatus {
         return switch (this) {
             case PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED,
                  ON_HOLD -> true;
-            case DRAFT, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED,
-                 COMPLETED, CANCELLED, CLOSED -> false;
+            case DRAFT, PENDING_CONTRACT, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED,
+                 PARTIALLY_REFUNDED, COMPLETED, CANCELLED, CLOSED -> false;
         };
     }
 
     /**
-     * Whether a customer may cancel on their own (SCRUM-460, 03 §9): before anything has been
-     * released to the warehouse or production. Later, cancelling stops work in progress and may
-     * cost a fee, so the customer asks and Sales or the coordinator decides (kltn-docs 17 §2, §4.4).
+     * Whether a customer may cancel on their own: never (kltn-docs 17 §4.8, 4B-5). Every order is bound by a contract
+     * once the customer sees it, so the customer sends a cancellation request and Sales decides - cancelling costs what
+     * the contract says. Kept as a method so that the callers which once let the customer cancel read as such.
      */
     public boolean customerMayCancelDirectly() {
-        return this == DRAFT || this == PENDING_PAYMENT || this == CONFIRMED;
+        return false;
     }
 
     /**
@@ -156,8 +168,8 @@ public enum OrderStatus {
         return switch (this) {
             case CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED,
                  DELIVERY_FAILED -> true;
-            case DRAFT, PENDING_PAYMENT, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED,
-                 COMPLETED, CANCELLED, CLOSED -> false;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED,
+                 PARTIALLY_REFUNDED, COMPLETED, CANCELLED, CLOSED -> false;
         };
     }
 
@@ -165,8 +177,8 @@ public enum OrderStatus {
     public boolean mayBePutOnHold() {
         return switch (this) {
             case CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> true;
-            case DRAFT, PENDING_PAYMENT, ON_HOLD, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED,
-                 REFUNDED, PARTIALLY_REFUNDED, COMPLETED, CANCELLED, CLOSED -> false;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, ON_HOLD, SHIPPED, DELIVERY_FAILED, DELIVERED,
+                 RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED, COMPLETED, CANCELLED, CLOSED -> false;
         };
     }
 
@@ -179,8 +191,14 @@ public enum OrderStatus {
      */
     public boolean canTransitionTo(OrderStatus target) {
         return switch (this) {
-            // CONFIRMED / ON_HOLD: a credit order, within or over its limit (SCRUM-427).
-            case DRAFT -> target == PENDING_PAYMENT || target == CONFIRMED || target == ON_HOLD || target == CANCELLED;
+            // PENDING_CONTRACT: its contract sent (4B-5). PENDING_PAYMENT / CONFIRMED / ON_HOLD: checkout's - a credit
+            // order within or over its limit (SCRUM-427) - until checkout is removed (4B-10).
+            case DRAFT -> target == PENDING_CONTRACT || target == PENDING_PAYMENT || target == CONFIRMED
+                    || target == ON_HOLD || target == CANCELLED;
+            // 14 §5.3: signed - waiting for an installment on signing, confirmed, or held for credit (15 BR-11); back to
+            // DRAFT when the contract is cancelled to be drawn up again.
+            case PENDING_CONTRACT -> target == DRAFT || target == PENDING_PAYMENT || target == CONFIRMED
+                    || target == ON_HOLD || target == CANCELLED;
             // kltn-docs 15 BR-02: nothing leaves PENDING_PAYMENT for production or the warehouse directly. No
             // PAYMENT_FAILED (G3-Q2): a bank transfer that never comes is a cancellation once the hold runs out.
             case PENDING_PAYMENT -> target == CONFIRMED || target == CANCELLED;

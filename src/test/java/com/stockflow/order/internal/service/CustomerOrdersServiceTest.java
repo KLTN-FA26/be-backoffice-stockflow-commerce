@@ -196,15 +196,16 @@ class CustomerOrdersServiceTest {
         }
 
         @Test
-        @DisplayName("before release a customer may cancel at once and cannot ask; a quote-born order can be reordered")
+        @DisplayName("before release a customer asks to cancel too, never at once (4B-5); a quote-born order can be reordered")
         void actionsBeforeRelease() {
             Order order = order(OrderFixtures.confirmedPrepaid());
             when(quotes.findByConvertedOrderId(order.id().value())).thenReturn(Optional.of(mock(Quote.class)));
 
             CustomerOrders.AllowedActions actions = service.myOrder(order.customerId(), order.id().value()).allowedActions();
 
-            assertThat(actions.cancel()).isTrue();
-            assertThat(actions.requestCancellation()).isFalse();
+            // 4B-5 (17 §4.8): the customer asks, before release too; Sales decides.
+            assertThat(actions.cancel()).isFalse();
+            assertThat(actions.requestCancellation()).isTrue();
             assertThat(actions.reorder()).isTrue();
         }
 

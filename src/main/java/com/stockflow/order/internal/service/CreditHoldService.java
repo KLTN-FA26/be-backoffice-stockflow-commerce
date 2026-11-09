@@ -61,12 +61,15 @@ public class CreditHoldService {
     private final com.stockflow.inventory.api.InventoryService inventory;
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final Clock clock;
+    private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
 
     CreditHoldService(OrderRepository repository, OrderServiceImpl orders, OrderService orderService,
                       OrderEventPublisher events, CreditChecks creditChecks, OrderHoldJpaRepository holds,
                       CustomerService customers, com.stockflow.order.internal.repository.CreditHoldSearch search,
                       com.stockflow.inventory.api.InventoryService inventory,
-                      com.stockflow.payment.api.PaymentService paymentService, Clock clock) {
+                      com.stockflow.payment.api.PaymentService paymentService, Clock clock,
+                      com.stockflow.order.internal.domain.SalesContractRepository contracts) {
+        this.contracts = contracts;
         this.repository = repository;
         this.orders = orders;
         this.orderService = orderService;
@@ -102,7 +105,9 @@ public class CreditHoldService {
     public OrderSummary approve(UUID orderId, String note, UUID by) {
         requireNote(note);
         Order order = lockHeld(orderId);
-        order.approveCredit(by, clock.instant());
+        // 14 §5.3: an order held when its contract was signed still waits for the installment on signing, if any.
+        order.approveCredit(by, clock.instant(), signedContract(order)
+                .map(SalesContractService::paysOnSigning).orElse(false));
         decide(order, CreditChecks.Outcome.APPROVED, note, by);
         repository.save(order);
         events.publishEventsOf(order);
@@ -118,6 +123,11 @@ public class CreditHoldService {
             decide(order, CreditChecks.Outcome.REJECTED, note, by);
             orders.cancelLoaded(order, new CancelOrderCommand(CancellationReasonCode.CREDIT_REJECTED, note, null, by));
         } else {
+            if (signedContract(order).isPresent()) {
+                // 15 BR-11: an order of a signed contract pays as its contract says; refused credit cancels it.
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Order %s pays as its signed contract says: "
+                        + "refusing its credit cancels it").formatted(order.orderNumber()));
+            }
             CreditTerms terms = customers.creditTerms(order.customerId());
             PaymentTerm term = action == RefusalAction.SWITCH_TO_PREPAID ? PaymentTerm.PREPAID : PaymentTerm.DEPOSIT;
             if (!terms.allows(CommercialTerm.valueOf(term.name()))) {
@@ -138,6 +148,12 @@ public class CreditHoldService {
         }
         log.info("Credit refused for order {} by {}: {}", order.orderNumber(), by, action);
         return orderService.findById(orderId).orElseThrow();
+    }
+
+    /** The order's signed contract (4B-5): an order held at signing is decided against it. */
+    private java.util.Optional<com.stockflow.order.internal.domain.SalesContract> signedContract(Order order) {
+        return contracts.findLiveByOrderId(order.id().value())
+                .filter(c -> c.status() == com.stockflow.order.internal.domain.SalesContractStatus.SIGNED);
     }
 
     private Order lockHeld(UUID orderId) {

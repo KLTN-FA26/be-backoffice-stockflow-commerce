@@ -97,7 +97,9 @@ class OrderLifecycleMigrationUpgradeTest {
                                 .filter(edge -> !java.util.Set.of("IN_PRODUCTION>PARTIALLY_FULFILLED",
                                         "READY_TO_FULFILL>PARTIALLY_FULFILLED", "COMPLETED>RETURN_REQUESTED",
                                         "REFUNDED>RETURN_REQUESTED", "PARTIALLY_REFUNDED>RETURN_REQUESTED",
-                                        "DELIVERED>DELIVERY_FAILED")
+                                        "DELIVERED>DELIVERY_FAILED", "DRAFT>PENDING_CONTRACT", "PENDING_CONTRACT>DRAFT",
+                                        "PENDING_CONTRACT>PENDING_PAYMENT", "PENDING_CONTRACT>CONFIRMED",
+                                        "PENDING_CONTRACT>ON_HOLD", "PENDING_CONTRACT>CANCELLED")
                                         .contains(edge))
                                 .toList());
 

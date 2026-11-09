@@ -24,7 +24,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class OrderStatusTest {
 
     private static final Map<OrderStatus, Set<OrderStatus>> ALLOWED = Map.ofEntries(
-            Map.entry(DRAFT, EnumSet.of(PENDING_PAYMENT, CONFIRMED, ON_HOLD, CANCELLED)),
+            Map.entry(DRAFT, EnumSet.of(PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, ON_HOLD, CANCELLED)),
+            // 4B-5 (14 §5.3): signed - waiting for the installment on signing, confirmed, held for credit; back to
+            // DRAFT when its contract is cancelled.
+            Map.entry(PENDING_CONTRACT, EnumSet.of(DRAFT, PENDING_PAYMENT, CONFIRMED, ON_HOLD, CANCELLED)),
             Map.entry(PENDING_PAYMENT, EnumSet.of(CONFIRMED, CANCELLED)),
             Map.entry(CONFIRMED, EnumSet.of(IN_PRODUCTION, READY_TO_FULFILL, ON_HOLD, CANCELLED)),
             // Legacy edges (IN_PRODUCTION is entered no more, V20261108000100); PARTIALLY_FULFILLED was PACK-EARLY.
@@ -78,16 +81,17 @@ class OrderStatusTest {
     @DisplayName("nothing is cancelled from PACKED on (decision 2026-10-17) nor after SHIPPED (BR-031)")
     void cancellationStopsAtTheFirstPackage() {
         assertThat(EnumSet.allOf(OrderStatus.class).stream().filter(s -> s.canTransitionTo(CANCELLED)))
-                .containsExactlyInAnyOrder(DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
-                        ON_HOLD);
+                .containsExactlyInAnyOrder(DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION,
+                        READY_TO_FULFILL, PICKING, ON_HOLD);
     }
 
     @Test
     @DisplayName("a hold is entered from up to PACKED and the partly shipped state, and left back to each of them")
     void holdGoesBackWhereItCameFrom() {
         for (OrderStatus status : values()) {
+            // DRAFT (checkout) and PENDING_CONTRACT go ON_HOLD only for credit, which a credit decision leaves.
             assertThat(status.mayBePutOnHold()).as(status.name()).isEqualTo(status.canTransitionTo(ON_HOLD)
-                    && status != DRAFT);
+                    && status != DRAFT && status != PENDING_CONTRACT);
             if (status.mayBePutOnHold()) {
                 assertThat(ON_HOLD.canTransitionTo(status)).as("ON_HOLD -> " + status).isTrue();
             }

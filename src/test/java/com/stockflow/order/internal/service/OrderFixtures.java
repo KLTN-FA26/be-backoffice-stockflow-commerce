@@ -99,7 +99,7 @@ final class OrderFixtures {
                 org.mockito.Mockito.mock(com.stockflow.order.internal.domain.OrderPayments.class),
                 org.mockito.Mockito.mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
                 org.mockito.Mockito.mock(com.stockflow.order.internal.domain.CreditChecks.class),
-                org.mockito.Mockito.mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class));
+                org.mockito.Mockito.mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
         return service.findById(order.id().value()).orElseThrow();
     }
 

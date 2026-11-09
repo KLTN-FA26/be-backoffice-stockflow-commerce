@@ -80,12 +80,17 @@ class SalesContractService implements SalesContracts {
     private final ContractProperties defaults;
     private final TransactionTemplate tx;
     private final Clock clock;
+    private final OrderEventPublisher events;
+    private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
                          PaymentService payments, CreditChecks creditChecks, FileTransfers files, StagedUploads staged,
                          SalesContractDocument document, SellerProperties seller, ContractProperties defaults,
-                         TransactionTemplate tx, Clock clock) {
+                         TransactionTemplate tx, Clock clock, OrderEventPublisher events,
+                         com.stockflow.order.internal.repository.OrderHoldJpaRepository holds) {
+        this.events = events;
+        this.holds = holds;
         this.orders = orders;
         this.contracts = contracts;
         this.customers = customers;
@@ -198,8 +203,12 @@ class SalesContractService implements SalesContracts {
                 Order order = lockInScope(orderId);
                 SalesContract contract = live(order, version);
                 requireCreditFor(order, contract);
-                contract.send(order, clock.instant(), user.userId(), stored.key());
+                Instant now = clock.instant();
+                contract.send(order, now, user.userId(), stored.key());
                 SalesContract saved = contracts.save(contract);
+                // 14 §4.3 step 13: the order now waits for the signature (4B-5).
+                order.sendContract(user.userId(), now);
+                orders.save(order);
                 prepared.adopt();
                 files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
                 log.info("Sales contract {} of order {} sent", saved.contractNumber(), order.orderNumber());
@@ -248,12 +257,14 @@ class SalesContractService implements SalesContracts {
             return tx.execute(status -> {
                 Order order = lockInScope(orderId);
                 SalesContract contract = live(order, version);
-                contract.sign(signedOn, stored.key(), stored.originalName(), clock.instant(), user.userId());
+                Instant now = clock.instant();
+                contract.sign(signedOn, stored.key(), stored.originalName(), now, user.userId());
                 SalesContract saved = contracts.save(contract);
+                placeSigned(order, saved, user.userId(), now);
                 prepared.adopt();
                 files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
-                log.info("Sales contract {} of order {} signed on {}", saved.contractNumber(), order.orderNumber(),
-                        signedOn);
+                log.info("Sales contract {} of order {} signed on {}; the order is {}", saved.contractNumber(),
+                        order.orderNumber(), signedOn, order.status());
                 return view(saved, order, null);
             });
         }
@@ -265,8 +276,12 @@ class SalesContractService implements SalesContracts {
     public ContractView cancel(CurrentUser user, UUID orderId, long version, String reason) {
         Order order = lockInScope(orderId);
         SalesContract contract = live(order, version);
-        contract.cancel(reason, clock.instant(), user.userId());
+        Instant now = clock.instant();
+        contract.cancel(reason, now, user.userId());
         SalesContract saved = contracts.save(contract);
+        // 14 §4.3 step 16: cancelled to be drawn up again - the order goes back to DRAFT (4B-5).
+        order.withdrawContract(user.userId(), now);
+        orders.save(order);
         log.info("Sales contract {} of order {} cancelled", saved.contractNumber(), order.orderNumber());
         return view(saved, order, null);
     }
@@ -453,6 +468,22 @@ class SalesContractService implements SalesContracts {
      * the customer has something overdue, or the exposure with it would pass the limit.
      */
     private CreditWarning creditWarning(Order order, SalesContract contract) {
+        CreditCheck check = creditCheck(order, contract);
+        return check == null || check.outcome() == CreditChecks.Outcome.WITHIN_LIMIT ? null
+                : new CreditWarning(check.outcome().name(), check.limit(), check.exposure(), check.afterDelivery());
+    }
+
+    /** What a contract's plan asks of the customer's credit, against what they owe and may owe. */
+    private record CreditCheck(CreditChecks.Outcome outcome, BigDecimal limit, BigDecimal exposure,
+                               BigDecimal afterDelivery) { }
+
+    /**
+     * 15 BR-10, BR-11: the credit a contract asks for is what its plan pays after delivery; what the customer owes and
+     * may owe besides is the credit side of their other orders - receivables, credit orders not delivered (the money
+     * ledger's, until 4B-10) - and what their other signed contracts pay after delivery, until those installments exist
+     * (4B-6). Overdue, or past the limit with this one: the check fails. Null when the plan asks for no credit.
+     */
+    private CreditCheck creditCheck(Order order, SalesContract contract) {
         BigDecimal afterDelivery = contract.plan().stream()
                 .filter(i -> i.milestone() == PaymentMilestone.AFTER_DELIVERY).map(i -> i.amount().amount())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -461,12 +492,42 @@ class SalesContractService implements SalesContracts {
         }
         CreditPosition position = payments.creditPosition(order.customerId());
         BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
-                .add(position.outstandingReceivables());
+                .add(position.outstandingReceivables())
+                .add(contracts.afterDeliveryCommitted(order.customerId(), order.id().value()));
         CreditTerms credit = customers.creditTerms(order.customerId());
         BigDecimal limit = credit == null || credit.creditLimit() == null ? BigDecimal.ZERO : credit.creditLimit();
-        String outcome = position.hasOverdue() ? "OVERDUE"
-                : exposure.add(afterDelivery).compareTo(limit) > 0 ? "OVER_LIMIT" : null;
-        return outcome == null ? null : new CreditWarning(outcome, limit, exposure, afterDelivery);
+        CreditChecks.Outcome outcome = position.hasOverdue() ? CreditChecks.Outcome.OVERDUE
+                : exposure.add(afterDelivery).compareTo(limit) > 0 ? CreditChecks.Outcome.OVER_LIMIT
+                : CreditChecks.Outcome.WITHIN_LIMIT;
+        return new CreditCheck(outcome, limit, exposure, afterDelivery);
+    }
+
+    /**
+     * The order placed by its signed contract (14 §4.3 step 15; 15 BR-07, BR-11): a plan paying after delivery is
+     * checked against the customer's credit - recorded either way, and a failed check holds the order for accounting,
+     * as a credit order over its limit at checkout is held (the same hold row, decided at {@code /credit-approval});
+     * otherwise the order waits for the installment on signing, or is confirmed. Then {@code OrderPlaced}.
+     */
+    private void placeSigned(Order order, SalesContract contract, UUID by, Instant now) {
+        CreditCheck check = creditCheck(order, contract);
+        boolean hold = check != null && check.outcome() != CreditChecks.Outcome.WITHIN_LIMIT;
+        boolean paysOnSigning = paysOnSigning(contract);
+        order.contractSigned(hold, paysOnSigning, by, now);
+        orders.save(order);
+        if (check != null) {
+            creditChecks.record(new CreditChecks.Check(order.id().value(), now, check.limit(), check.exposure(),
+                    check.afterDelivery(), check.outcome(), null, null, "Sales contract " + contract.contractNumber()));
+        }
+        if (hold) {
+            holds.save(new com.stockflow.order.internal.entity.OrderHoldJpaEntity(Identifiers.newId(),
+                    order.id().value(), OrderServiceImpl.CREDIT_HOLD, now));
+        }
+        events.publishEventsOf(order);
+    }
+
+    /** Whether the contract has an installment due on signing (14 §4.3 step 12): the order waits for it. */
+    static boolean paysOnSigning(SalesContract contract) {
+        return contract.plan().stream().anyMatch(i -> i.milestone() == PaymentMilestone.ON_SIGNING);
     }
 
     private ContractView view(SalesContract contract, Order order, CreditWarning warning) {

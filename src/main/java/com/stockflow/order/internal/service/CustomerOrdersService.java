@@ -76,7 +76,13 @@ class CustomerOrdersService implements CustomerOrders {
         if (query.placedFrom() != null && query.placedTo() != null && query.placedTo().isBefore(query.placedFrom())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "placedTo is before placedFrom");
         }
-        var criteria = new OrderSearchRepository.Criteria(query.search(), query.statuses(), customerId,
+        List<OrderStatus> shown = visible(query.statuses());
+        if (shown.isEmpty()) {
+            // Only DRAFT asked for: nothing the customer may see - and an empty filter would read as "every status".
+            return Pages.toResponse(org.springframework.data.domain.Page.<Card>empty(
+                    Pages.of(query.page(), query.size())));
+        }
+        var criteria = new OrderSearchRepository.Criteria(query.search(), shown, customerId,
                 query.placedFrom() == null ? null : query.placedFrom().atStartOfDay(BUSINESS_ZONE).toInstant(),
                 query.placedTo() == null ? null : query.placedTo().plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant());
         var page = search.search(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort())));
@@ -94,6 +100,8 @@ class CustomerOrdersService implements CustomerOrders {
     public Detail myOrder(UUID customerId, UUID orderId) {
         OrderSummary summary = orders.findById(orderId)
                 .filter(order -> customerId.equals(order.customerId()))
+                // 17 §5.2: a DRAFT order - its contract still being drawn up - is not the customer's to see.
+                .filter(order -> order.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
         // Where each stock SKU is on sale today, for a portal that puts the order back in a basket (SCRUM-190).
         // Design lines are not reordered this way (a new quote asks for them), so they are not looked up.
@@ -177,10 +185,21 @@ class CustomerOrdersService implements CustomerOrders {
         return statusGroup(status, null);
     }
 
+    /**
+     * The statuses a customer's list may show (17 §5.2): those asked for, or every one, but never DRAFT - an order whose
+     * contract is still being drawn up is Sales' work, not yet the customer's.
+     */
+    private static List<OrderStatus> visible(List<OrderStatus> asked) {
+        List<OrderStatus> from = asked == null || asked.isEmpty() ? List.of(OrderStatus.values()) : asked;
+        return from.stream().filter(status -> status != OrderStatus.DRAFT).distinct().toList();
+    }
+
     /** {@code lifecycle} tells a CLOSED order that was refunded from one that was completed; null reads as completed. */
     static StatusGroup statusGroup(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
         return switch (status) {
+            // A DRAFT order is not the customer's to see (17 §5.2): the reads leave it out; were one read, it waits.
             case DRAFT, PENDING_PAYMENT -> StatusGroup.AWAITING_PAYMENT;
+            case PENDING_CONTRACT -> StatusGroup.AWAITING_CONTRACT;
             case ON_HOLD -> StatusGroup.UNDER_REVIEW;
             case CONFIRMED -> StatusGroup.CONFIRMED;
             case IN_PRODUCTION -> StatusGroup.IN_PRODUCTION;
@@ -234,8 +253,8 @@ class CustomerOrdersService implements CustomerOrders {
             case CLOSED -> statusGroup(status, lifecycle) == StatusGroup.RETURNED ? DeliveryState.RETURNED
                     : DeliveryState.DELIVERED;
             case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> DeliveryState.RETURNED;
-            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, CANCELLED ->
-                    DeliveryState.NOT_SHIPPED;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
+                 CANCELLED -> DeliveryState.NOT_SHIPPED;
         };
     }
 

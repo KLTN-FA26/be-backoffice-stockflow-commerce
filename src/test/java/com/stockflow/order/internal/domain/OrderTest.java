@@ -358,13 +358,11 @@ class OrderTest {
     }
 
     @Test
-    @DisplayName("a customer cancels on their own only until the order is released")
-    void customerCancelsDirectlyOnlyBeforeRelease() {
-        assertThat(OrderStatus.PENDING_PAYMENT.customerMayCancelDirectly()).isTrue();
-        assertThat(OrderStatus.CONFIRMED.customerMayCancelDirectly()).isTrue();
-        for (OrderStatus later : List.of(OrderStatus.IN_PRODUCTION, OrderStatus.READY_TO_FULFILL,
-                OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.ON_HOLD, OrderStatus.SHIPPED)) {
-            assertThat(later.customerMayCancelDirectly()).as(later.name()).isFalse();
+    @DisplayName("a customer never cancels on their own: they ask, and Sales decides (4B-5, 17 §4.8)")
+    void customerNeverCancelsDirectly() {
+        // 4B-5 (17 §4.8): an order the customer sees is bound by its contract - they ask, Sales decides.
+        for (OrderStatus any : OrderStatus.values()) {
+            assertThat(any.customerMayCancelDirectly()).as(any.name()).isFalse();
         }
     }
 

@@ -34,7 +34,8 @@ class TaxRateRepositoryAdapter implements TaxRates, SkuProductionHistory {
     }
 
     /**
-     * A SKU on a line of an order confirmed and not cancelled: DRAFT and PENDING_PAYMENT orders were never produced, and
+     * A SKU on a line of an order confirmed and not cancelled: DRAFT, PENDING_CONTRACT and PENDING_PAYMENT orders were
+     * never produced, and
      * neither was an order held for credit, which waits for accounting before it is confirmed at all.
      */
     @Override
@@ -46,7 +47,7 @@ class TaxRateRepositoryAdapter implements TaxRates, SkuProductionHistory {
         jdbc.query("""
                 SELECT DISTINCT l.sku FROM ordering.order_line l
                   JOIN ordering.customer_order o ON o.id = l.order_id
-                 WHERE l.sku = ANY (?) AND o.status NOT IN ('DRAFT', 'PENDING_PAYMENT', 'CANCELLED')
+                 WHERE l.sku = ANY (?) AND o.status NOT IN ('DRAFT', 'PENDING_CONTRACT', 'PENDING_PAYMENT', 'CANCELLED')
                    AND NOT (o.status = 'ON_HOLD' AND o.hold_reason IS NOT DISTINCT FROM 'CREDIT')""",
                 ps -> ps.setArray(1, ps.getConnection().createArrayOf("varchar", skus.toArray())),
                 row -> { produced.add(row.getString(1)); });

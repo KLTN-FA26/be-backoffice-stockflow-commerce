@@ -50,7 +50,7 @@ class CancelOwnOrderTest {
             mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
             mock(com.stockflow.catalog.api.CatalogService.class), mock(OrderPayments.class), requests,
             mock(com.stockflow.order.internal.domain.CreditChecks.class),
-                mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class));
+                mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
     private Order orderOf(UUID customerId) {
         var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),
@@ -61,17 +61,17 @@ class CancelOwnOrderTest {
     }
 
     @Test
-    void theOwnerCancelsTheirOrder() {
+    void theOwnerAsksEvenBeforeRelease() {
+        // 4B-5 (17 §4.8): the customer never cancels on their own - not even before release; Sales decides.
         UUID customer = UUID.randomUUID();
         var order = orderOf(customer);
+        when(requests.save(any())).thenAnswer(call -> call.getArgument(0));
 
         var outcome = service.cancelOwn(order.id().value(), customer, null, null, UUID.randomUUID());
 
-        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.CANCELLED);
-        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
-        assertThat(order.cancellationReasonCode()).isEqualTo(CancellationReasonCode.CUSTOMER_REQUEST);
-        verify(repository).save(order);
-        verify(requests, never()).save(any());
+        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.REQUESTED);
+        assertThat(order.status()).as("unchanged until Sales decides").isNotEqualTo(OrderStatus.CANCELLED);
+        verify(repository, never()).save(any());
     }
 
     @Test

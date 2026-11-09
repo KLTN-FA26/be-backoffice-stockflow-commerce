@@ -62,7 +62,7 @@ class CreditHoldServiceTest {
     private final OrderSummary summary = mock(OrderSummary.class);
     private final CreditHoldService service = new CreditHoldService(repository, orders, orderService, events,
             creditChecks, holds, customers, mock(CreditHoldSearch.class), inventory, paymentService,
-            Clock.fixed(NOW, ZoneOffset.UTC));
+            Clock.fixed(NOW, ZoneOffset.UTC), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
     private static CreditTerms terms(UUID customer, boolean prepaid, boolean deposit, boolean credit,
                                      String limit, DepositBalancePolicy balance) {

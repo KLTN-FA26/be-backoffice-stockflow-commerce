@@ -98,6 +98,8 @@ public final class Order extends AggregateRoot {
      * (lead's #150 rule: cancel-with-fee only while nothing left), only its remainder closed or returned.
      */
     private Instant goodsLeftAt;
+    /** 4B-5: when its sales contract was signed; null for an order placed at checkout. */
+    private Instant contractSignedAt;
     private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
     private java.math.BigDecimal depositRequired;
     private Instant depositReceivedAt;
@@ -637,15 +639,73 @@ public final class Order extends AggregateRoot {
         registerPlaced();
     }
 
+    /**
+     * Its contract sent to the customer (kltn-docs 14 §4.3 step 13): DRAFT → PENDING_CONTRACT. Sent again after
+     * nothing changed, nothing changes.
+     */
+    public void sendContract(UUID by, Instant at) {
+        if (status == OrderStatus.PENDING_CONTRACT) {
+            return;
+        }
+        if (status != OrderStatus.DRAFT) {
+            throw new InvalidOrderTransitionException(orderNumber, status, "send its contract");
+        }
+        transitionTo(OrderStatus.PENDING_CONTRACT, by, "CONTRACT_SENT", at);
+    }
+
+    /**
+     * Its contract cancelled before it was signed, to be drawn up again (14 §4.3 step 16): PENDING_CONTRACT → DRAFT. A
+     * contract cancelled while still a draft leaves the order as it was.
+     */
+    public void withdrawContract(UUID by, Instant at) {
+        if (status == OrderStatus.PENDING_CONTRACT) {
+            transitionTo(OrderStatus.DRAFT, by, "CONTRACT_CANCELLED", at);
+        }
+    }
+
+    /**
+     * Its contract signed (14 §4.3 step 15, BR-15; 15 BR-07, BR-11): held for credit when what it pays after delivery
+     * does not fit - the customer is overdue or over the limit, which only accounting may then decide; waiting for an
+     * installment on signing when there is one; confirmed otherwise. From here it is placed: {@code OrderPlaced}, which
+     * the dashboard and the customer's e-mail count from.
+     *
+     * @param creditHold    whether the credit check at signing failed (OVERDUE or OVER_LIMIT)
+     * @param paysOnSigning whether the contract has an installment due on signing
+     */
+    public void contractSigned(boolean creditHold, boolean paysOnSigning, UUID by, Instant at) {
+        if (status != OrderStatus.PENDING_CONTRACT) {
+            throw new InvalidOrderTransitionException(orderNumber, status, "record its contract signed");
+        }
+        this.contractSignedAt = java.util.Objects.requireNonNull(at, "at");
+        if (creditHold) {
+            transitionTo(OrderStatus.ON_HOLD, by, HoldReason.CREDIT.name(), at);
+            // A credit hold goes nowhere back: accounting's approval decides it, a refusal cancels it.
+            this.holdReason = HoldReason.CREDIT;
+            this.statusBeforeHold = null;
+        } else {
+            transitionTo(paysOnSigning ? OrderStatus.PENDING_PAYMENT : OrderStatus.CONFIRMED, by, "CONTRACT_SIGNED",
+                    at);
+        }
+        registerPlaced();
+    }
+
     /** Over the limit, approved by whoever approves credit (15 BR-03): ON_HOLD → CONFIRMED. */
     public void approveCredit() {
         approveCredit(null, null);
     }
 
     public void approveCredit(UUID by, Instant at) {
+        approveCredit(by, at, false);
+    }
+
+    /**
+     * Approved by accounting (15 BR-11): ON_HOLD → PENDING_PAYMENT when its contract has an installment due on signing
+     * (14 §5.3: approved, it still waits for that), CONFIRMED otherwise.
+     */
+    public void approveCredit(UUID by, Instant at, boolean paysOnSigning) {
         requireCreditHold();
         clearHold();
-        transitionTo(OrderStatus.CONFIRMED, by, "CREDIT_APPROVED", at);
+        transitionTo(paysOnSigning ? OrderStatus.PENDING_PAYMENT : OrderStatus.CONFIRMED, by, "CREDIT_APPROVED", at);
     }
 
     /**
@@ -668,8 +728,13 @@ public final class Order extends AggregateRoot {
         transitionTo(OrderStatus.PENDING_PAYMENT, null, "CREDIT_REJECTED", null);
     }
 
+    /**
+     * Waiting for a credit decision: on hold for credit - a credit order placed over its limit at checkout, or an order
+     * whose contract pays after delivery and was signed by a customer overdue or over the limit (4B-5), whatever the
+     * order's own payment term.
+     */
     private void requireCreditHold() {
-        if (status != OrderStatus.ON_HOLD || paymentTerm != PaymentTerm.CREDIT) {
+        if (status != OrderStatus.ON_HOLD || holdReason != HoldReason.CREDIT) {
             throw new BusinessException(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD,
                     "Order %s is %s on %s terms, not waiting for a credit decision"
                             .formatted(orderNumber, status, paymentTerm));
@@ -907,8 +972,8 @@ public final class Order extends AggregateRoot {
      */
     public boolean decidePartialShipment(boolean allowed) {
         boolean open = switch (status) {
-            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED,
-                 PACKED, ON_HOLD -> true;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
+                 PARTIALLY_FULFILLED, PACKED, ON_HOLD -> true;
             case SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED,
                  COMPLETED, CANCELLED, CLOSED -> false;
         };
@@ -2089,6 +2154,13 @@ public final class Order extends AggregateRoot {
     }
 
     public Instant goodsLeftAt() { return goodsLeftAt; }
+
+    public void restoreContractSigned(Instant at) {
+        this.contractSignedAt = at;
+    }
+
+    /** 4B-5: when its sales contract was signed - what confirms it, not a payment its own terms ask for. */
+    public Instant contractSignedAt() { return contractSignedAt; }
 
     /**
      * Goods of the order leave on a load plan's vehicle (SCRUM-392, LP-3) - part of a shipment that is handed over only

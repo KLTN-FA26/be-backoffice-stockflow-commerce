@@ -76,6 +76,7 @@ final class OrderPersistenceMapper {
                 entity.getCancellationFeeDetail());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         order.restoreGoodsLeft(entity.getGoodsLeftAt());
+        order.restoreContractSigned(entity.getContractSignedAt());
         order.restoreReplacement(entity.getReplacesReturnRequestId());
         order.restoreBalance(entity.getBalancePolicy());
         order.restorePartialShipment(entity.isAllowPartialShipment());
@@ -133,6 +134,7 @@ final class OrderPersistenceMapper {
                 order.cancellationFeeDetail());
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyGoodsLeft(order.goodsLeftAt());
+        entity.applyContractSigned(order.contractSignedAt());
         entity.applyBalance(order.balancePolicy());
         entity.applyPartialShipment(order.allowPartialShipment());
         entity.applyRemainderFee(order.remainderFeeAmount(), order.remainderFeeRetainedAmount(),

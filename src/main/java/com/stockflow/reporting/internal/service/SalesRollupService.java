@@ -123,12 +123,13 @@ class SalesRollupService {
     }
 
     /**
-     * What an order adds to the rollups: empty for a DRAFT (never counted: a draft is not a sale), for a free
+     * What an order adds to the rollups: empty for a DRAFT or PENDING_CONTRACT order (never counted: an order is a sale
+     * once its contract is signed, when {@code OrderPlaced} is published - 4B-5), for a free
      * replacement order (its goods were sold - and counted - on the original order) and for an order in another
      * currency than {@link #CURRENCY}.
      */
     static Optional<OrderContribution> contributionOf(OrderSummary order) {
-        if (order.status() == OrderStatus.DRAFT) {
+        if (order.status() == OrderStatus.DRAFT || order.status() == OrderStatus.PENDING_CONTRACT) {
             return Optional.empty();
         }
         if (order.lifecycle() != null && order.lifecycle().replacesReturnRequestId() != null) {

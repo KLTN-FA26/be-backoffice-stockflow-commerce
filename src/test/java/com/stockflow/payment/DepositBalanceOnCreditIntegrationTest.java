@@ -264,16 +264,17 @@ class DepositBalanceOnCreditIntegrationTest {
     }
 
     @Test
-    @DisplayName("SCRUM-193: converting an accepted quote has no balance policy to choose, so the customer's default "
-            + "ON_CREDIT over the limit still gives way to BEFORE_DELIVERY there (and only there)")
-    void convertedQuoteStillFallsBack() {
+    @DisplayName("4B-5: an accepted quote is drafted - no balance policy, no credit check, whatever the customer's "
+            + "default; its contract's plan is checked when it is sent and signed")
+    void convertedQuoteIsDraftedUnchecked() {
         OrderSummary order = quotedOrders.placeQuotedOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null,
                 false, List.of(new PlaceOrderCommand.Line(SOFA, 6, Money.vnd(PRICE), null)), PaymentTerm.DEPOSIT, null,
                 null));
-        placed.add(order.orderId());
-        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
-        assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
+        assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
+        assertThat(order.payment().balancePolicy()).isNull();
         assertThat(order.payment().creditTermDays()).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_credit_check WHERE order_id = ?",
+                Integer.class, order.orderId())).isZero();
     }
 
     @Test

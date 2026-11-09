@@ -124,6 +124,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final CreditChecks creditChecks;
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final com.stockflow.product.api.CustomerSkus customerSkus;
+    private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -133,7 +134,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             CatalogService catalog, OrderPayments payments,
                      CancellationRequestRepository cancellationRequests, CreditChecks creditChecks,
                      com.stockflow.payment.api.PaymentService paymentService,
-                     com.stockflow.product.api.CustomerSkus customerSkus) {
+                     com.stockflow.product.api.CustomerSkus customerSkus,
+                     com.stockflow.order.internal.domain.SalesContractRepository contracts) {
+        this.contracts = contracts;
         this.customerSkus = customerSkus;
         this.repository = repository;
         this.search = search;
@@ -252,6 +255,17 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // 4B-3: the quote's fee lines, before the terms - a deposit is a share of the total with them (14 BR-09).
         order.attachFees(command.fees().stream().map(fee -> OrderFee.of(deterministicFeeId(command.requestId(),
                 fee.kind(), fee.sku()), fee.kind(), fee.sku(), fee.amount(), fee.taxRate())).toList());
+        if (quotePriced) {
+            // 4B-5 (kltn-docs 14 §4.2 step 7): an accepted quote becomes a DRAFT order - no stock held, no terms, no
+            // credit checked. Its sales contract takes it on: sent, signed, then held for credit, waiting for the
+            // installment on signing, or confirmed (SalesContracts). The payment term is the contract's plan's; the
+            // order carries PREPAID only as the column's neutral value for the money ledger, which goes in 4B-10.
+            order.applyTerms(PaymentTerm.PREPAID, null, null, null);
+            Order saved = repository.save(order);
+            log.info("Order {} drafted for customer {} from an accepted quote, {} line(s), total {}",
+                    saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total());
+            return toSummary(saved);
+        }
         // Before any stock is held: terms that cannot be accepted refuse the order cheaply. The
         // customer row is locked here, before reserving, so two credit orders of one customer are
         // checked against the limit one after the other (kltn-docs 15 BR-03) and every checkout takes
@@ -266,27 +280,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 term == PaymentTerm.CREDIT || balanceOnCredit ? terms.creditTermDays() : null,
                 policy);
         // BALCREDIT: the balance goes on credit only within the limit - checked here, before any stock is held.
-        BalanceCredit balanceCredit = null;
-        if (balanceOnCredit) {
-            try {
-                balanceCredit = requireBalanceWithinLimit(order, terms);
-            } catch (BusinessException refused) {
-                boolean creditRefusal = refused.errorCode() == ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED
-                        || refused.errorCode() == ErrorCode.CUSTOMER_CREDIT_OVERDUE;
-                // SCRUM-193 (CREDIT-PORTAL, owner decision): a balance that does not fit on credit is refused with the
-                // credit left in the error, whether Sales asked for ON_CREDIT or it is the customer's default - never
-                // quietly paid before delivery instead, which the customer could not see or undo. The customer picks
-                // BEFORE_DELIVERY (or pays the deposit and waits for Sales) knowing why. The one exception is an
-                // accepted quote being converted: the quote carries no balance policy to choose, and refusing would
-                // leave Sales unable to convert it, so the default gives way there as it did before (review of #150).
-                if (!creditRefusal || !quotePriced || command.balancePolicy() != null) {
-                    throw refused;
-                }
-                order.applyTerms(term, depositPercent, null, com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY);
-                log.info("Order {}: the balance of customer {} does not fit on credit ({}); paid before delivery instead",
-                        orderNumber, command.customerId(), refused.errorCode());
-            }
-        }
+        // SCRUM-193 (CREDIT-PORTAL, owner decision): a balance that does not fit on credit is refused with the credit
+        // left in the error, whether Sales asked for ON_CREDIT or it is the customer's default - never quietly paid
+        // before delivery instead, which the customer could not see or undo. (An accepted quote no longer comes this
+        // way: it becomes a DRAFT order above.)
+        BalanceCredit balanceCredit = balanceOnCredit ? requireBalanceWithinLimit(order, terms) : null;
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -620,6 +618,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.agreedFee(),
                 command.cancelledBy(),
                 clock.instant());
+        // 17 §4.8 step 27: an order cancelled before its contract is signed takes the contract with it. A signed
+        // contract stays SIGNED: it is settled outside the system (14 §5.2, decided 2026-11-05).
+        contracts.findLiveByOrderId(order.id().value())
+                .filter(contract -> contract.status().canTransitionTo(
+                        com.stockflow.order.internal.domain.SalesContractStatus.CANCELLED))
+                .ifPresent(contract -> {
+                    contract.cancel("Order cancelled: " + command.reasonCode(), clock.instant(),
+                            command.cancelledBy() == null ? contract.sentBy() : command.cancelledBy());
+                    contracts.save(contract);
+                });
 
         if (wasHoldingStock) {
             releaseHolds(order.lines());

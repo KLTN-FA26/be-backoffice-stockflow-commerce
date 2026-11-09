@@ -212,6 +212,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "goods_left_at")
     private Instant goodsLeftAt;
 
+    /** V20261108002300 (4B-5): when the order's sales contract was signed - the basis of its confirmation. */
+    @Column(name = "contract_signed_at")
+    private Instant contractSignedAt;
+
     /** V20261101020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
     @Column(name = "replaces_return_request_id", updatable = false)
     private UUID replacesReturnRequestId;
@@ -447,6 +451,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.goodsLeftAt = at;
     }
 
+    public void applyContractSigned(Instant at) {
+        this.contractSignedAt = at;
+    }
+
     /** Written on insert only (the column is not updatable): an order replaces a return from the day it is placed. */
     public void applyReplacement(UUID returnRequestId) {
         this.replacesReturnRequestId = returnRequestId;
@@ -455,6 +463,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public UUID getReplacesReturnRequestId() { return replacesReturnRequestId; }
 
     public Instant getGoodsLeftAt() { return goodsLeftAt; }
+    public Instant getContractSignedAt() { return contractSignedAt; }
 
     public void applyCancellationFee(java.math.BigDecimal amount, String reason, String detail) {
         this.cancellationFeeAmount = amount;

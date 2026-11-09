@@ -97,7 +97,10 @@ class CustomerOrderPortalIntegrationTest {
                 new PlaceOrderCommand.Line(TABLE, 2, Money.vnd(9_000_000), null));
         oneLine = place(customerA, new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null));
         cancelled = place(customerA, new PlaceOrderCommand.Line(TABLE, 1, Money.vnd(9_000_000), null));
-        orders.cancelOwn(cancelled.orderId(), customerA, CancellationReasonCode.CUSTOMER_REQUEST, PRIVATE_NOTE, null);
+        // Cancelled for the customer who asked (4B-5, 17 §4.8: a customer never cancels at once - Sales does).
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(cancelled.orderId(),
+                new com.stockflow.order.api.CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, PRIVATE_NOTE,
+                        null, staffUser)));
         ofB = place(customerB, new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null));
     }
 
