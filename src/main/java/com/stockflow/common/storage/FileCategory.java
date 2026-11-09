@@ -7,7 +7,8 @@ import java.util.Set;
  * be.
  *
  * <p>A closed set rather than a free-text folder name, so the limits are decided once per kind of
- * file rather than at each upload site. It also makes "what is in the bucket" answerable: the
+ * file rather than at each upload site. Supplier invoice scans ({@code supplier-invoices/}) went with purchasing
+ * (4A-8, kltn-docs 09-removal row 22): the category is gone and nothing writes or sweeps that prefix. It also makes "what is in the bucket" answerable: the
  * category is the first segment of every key.</p>
  */
 public enum FileCategory {
@@ -57,22 +58,17 @@ public enum FileCategory {
             Set.of("application/pdf", "image/png")),
 
     /**
-     * Documents kept with a business record: a purchase order's quotations, contracts, confirmations and delivery notes;
-     * a load's waybill from its carrier (kltn-docs 09 §4.4, BR-28). A photo of a paper document too: a delivery note is
-     * signed on paper.
+     * Documents kept with a business record: a production order's slip (4A-3), a load's waybill from its carrier
+     * (kltn-docs 09 §4.4, BR-28). A photo of a paper document too: a delivery note is signed on paper. A purchase
+     * order's attachments were kept here until purchasing went (4A-8): no record claims them any more, so the
+     * orphaned-file sweep finds them orphaned - reported, and deleted where it is told to delete - as kltn-docs
+     * 09-removal row 22 drops them.
      */
     DOCUMENT("documents", 25 * 1024 * 1024,
             Set.of("application/pdf",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     "image/jpeg", "image/png")),
-
-    /**
-     * A supplier's invoice as received (SCRUM-308): the PDF it came as, or a photo or scan of the paper. A financial
-     * record - a replaced scan is kept in storage, not deleted.
-     */
-    SUPPLIER_INVOICE("supplier-invoices", 15 * 1024 * 1024,
-            Set.of("application/pdf", "image/jpeg", "image/png")),
 
     /**
      * Photographs taken during goods receipt (receiving QC's from before it was removed among them) and of damaged

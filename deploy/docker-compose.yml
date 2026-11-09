@@ -23,8 +23,8 @@
 #     COMPOSE_PROFILES=scan and UPLOAD_INSPECTION_ENABLED=true in .env (README, "Upload scanning").
 #   - No Elasticsearch: no Java code uses it.
 #   - Mailpit instead of a real SMTP server: every email the application sends is caught and shown
-#     at mail.<domain>, and nothing can reach a real inbox. Supplier PO and cancellation
-#     notifications use SMTP; other notification templates currently write to the application log.
+#     at mail.<domain>, and nothing can reach a real inbox. A producer's production order messages and
+#     staff notices use SMTP; other notification templates currently write to the application log.
 #   - The application runs a pre-built image from GHCR; this file never builds.
 # =============================================================================
 
@@ -161,16 +161,10 @@ services:
       # Changing the key breaks every link already mailed (staff re-send them from the production order).
       STOCKFLOW_PUBLIC_BASE_URL: ${STOCKFLOW_PUBLIC_BASE_URL-https://api.${DOMAIN}}
       STOCKFLOW_LINKS_KEY: ${STOCKFLOW_LINKS_KEY:-}
-      # Off until the customer mail phase of the business documents: no customer order mail, staff and supplier
+      # Off until the customer mail phase of the business documents: no customer order mail, staff and producer
       # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
       CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}
       TRACE_SAMPLING: ${TRACE_SAMPLING:-1.0}
-      PO_BUYER_COMPANY_NAME: ${PO_BUYER_COMPANY_NAME:?PO_BUYER_COMPANY_NAME is required}
-      PO_BUYER_COMPANY_ADDRESS: ${PO_BUYER_COMPANY_ADDRESS:?PO_BUYER_COMPANY_ADDRESS is required}
-      PO_BUYER_CONTACT_NAME: ${PO_BUYER_CONTACT_NAME:?PO_BUYER_CONTACT_NAME is required}
-      PO_BUYER_PHONE: ${PO_BUYER_PHONE:?PO_BUYER_PHONE is required}
-      PO_BUYER_EMAIL: ${PO_BUYER_EMAIL:?PO_BUYER_EMAIL is required}
-      PO_RECEIVING_ADDRESS: ${PO_RECEIVING_ADDRESS:?PO_RECEIVING_ADDRESS is required}
       # B2B onboarding (SCRUM-429): the portal page an invitation links to. Without it Sales cannot create a customer
       # (503 PORTAL_INVITATION_UNAVAILABLE) and, with self-registration gone, nobody can. Required, never guessed.
       PORTAL_ACTIVATION_URL: ${PORTAL_ACTIVATION_URL:?PORTAL_ACTIVATION_URL is required}
@@ -179,7 +173,6 @@ services:
       COMPANY_BANK_NAME: ${COMPANY_BANK_NAME:-}
       COMPANY_BANK_ACCOUNT_NUMBER: ${COMPANY_BANK_ACCOUNT_NUMBER:-}
       COMPANY_BANK_ACCOUNT_NAME: ${COMPANY_BANK_ACCOUNT_NAME:-}
-      SUPPLIER_API_ALLOWED_HOSTS: ${SUPPLIER_API_ALLOWED_HOSTS:-}
       CACHE_VERSION: ${CACHE_VERSION:-v1}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       AUDIT_ROUTINE_RETENTION: ${AUDIT_ROUTINE_RETENTION:-P180D}
