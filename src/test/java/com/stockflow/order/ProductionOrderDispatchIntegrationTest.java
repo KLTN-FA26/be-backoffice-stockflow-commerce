@@ -9,14 +9,17 @@ import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.service.ProductionOrderDispatch;
+import com.stockflow.order.internal.service.ProductionSampleService;
 import com.stockflow.support.Await;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.PrintSamples;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 
@@ -39,12 +42,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * warehouse chosen, a customer SKU on a design the customer really confirmed - with the same property source and mocks,
  * so both share one context. E-mail goes to the test profile's recording transport; each test's producer has an address
  * of its own, so what it was sent is exact whatever the other tests sent.</p>
+ *
+ * <p>A production order goes into mass production the way production takes it ({@link PrintSamples#massPrinting}):
+ * the database refuses a status written around the producer's acceptance and the print sample rounds (4A-4).</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
 @TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false",
         "stockflow.notification.email.customer.enabled=false"})
 class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixtures {
+
+    @Autowired ProductionSampleService samples;
 
     // ---- scenarios --------------------------------------------------------------------------------------------------
 
@@ -211,13 +219,8 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         ProductionOrder sent = approved(producer);
         awaitMail(sent.code());
         awaitRecorded(sent.id());
-        tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE ordering.production_order SET status = 'ACCEPTED', version = version + 1 WHERE id = ?",
-                    sent.id());
-            jdbc.update("""
-                    UPDATE ordering.production_order SET status = 'IN_PRODUCTION', production_started_at = NOW(),
-                           version = version + 1 WHERE id = ?""", sent.id());
-        });
+        PrintSamples.massPrinting(productionOrders, samples, reread(sent.id()), coordinator,
+                PrintSamples.portalUser(jdbc, tx, entityManager, customerId));
 
         productionOrders.close(sent.id(), reread(sent.id()).version(), "Xưởng dừng hẳn", coordinator);
 
@@ -226,7 +229,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     }
 
     @Test
-    @DisplayName("B31: the customer approved the sample - the producer is told to mass print, with fresh links")
+    @DisplayName("B31: the customer approved the sample - the producer is told once to mass print, with fresh links")
     void sampleApproved() {
         ProductionOrder sent = approved(producer);
         awaitMail(sent.code());
@@ -235,19 +238,16 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
                 Instant.now()))).as("not in production yet")
                 .extracting(ProductionOrderDispatchIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
-        tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE ordering.production_order SET status = 'ACCEPTED', version = version + 1 WHERE id = ?",
-                    sent.id());
-            jdbc.update("UPDATE ordering.production_order SET status = 'SAMPLE_PENDING', version = version + 1 "
-                    + "WHERE id = ?", sent.id());
-            jdbc.update("""
-                    UPDATE ordering.production_order SET status = 'IN_PRODUCTION', production_started_at = NOW(),
-                           version = version + 1 WHERE id = ?""", sent.id());
-        });
 
-        tx.executeWithoutResult(s -> dispatch.sampleApproved(reread(sent.id()), Instant.now()));
+        // The customer's approval of round 1 is what tells the producer (4A-4 calling the dispatch, 4A-3).
+        ProductionOrder printing = PrintSamples.massPrinting(productionOrders, samples, reread(sent.id()), coordinator,
+                PrintSamples.portalUser(jdbc, tx, entityManager, customerId));
+        assertThat(printing.status()).isEqualTo(ProductionOrderStatus.IN_PRODUCTION);
 
         Email go = awaitMail("mẫu in đã duyệt");
+        Await.until("the deliveries complete", ASYNC, () -> pendingPublications(sent.id()) == 0);
+        assertThat(mailTo(producerEmail)).filteredOn(email -> email.subject().contains("mẫu in đã duyệt"))
+                .as("one approval, one message to the producer").hasSize(1);
         assertThat(go.text()).contains("bắt đầu in hàng loạt", "/print-files/" + sku.snapshotId() + "?expires=");
         Link print = link(go.text(), "/print-files/" + sku.snapshotId());
         handedOut(() -> dispatch.openPrintFile(sent.id(), sku.snapshotId(), print.expires(), print.signature()));
