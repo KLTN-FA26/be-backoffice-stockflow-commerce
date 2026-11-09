@@ -112,27 +112,6 @@ Enum inventory.stock_adjustment_status {
   WITHDRAWN
 }
 
-Enum inventory.stock_alert_kind {
-  REORDER
-  SAFETY
-  EXPIRING
-  EXPIRED
-}
-
-Enum inventory.stock_alert_resolution {
-  RECOVERED
-  UNCONFIGURED
-  NOT_PURCHASABLE
-  STOCK_GONE
-  EXPIRED_OUT
-}
-
-Enum inventory.stock_alert_status {
-  OPEN
-  ACKNOWLEDGED
-  RESOLVED
-}
-
 Enum inventory.stock_damage_disposition_disposition_type {
   WRITE_OFF
   RETURN_TO_SUPPLIER
@@ -1603,10 +1582,7 @@ Table inventory.inventory_items [headercolor: #3E7C4A] {
   pack_size                   int [not null, default: 1]
   storage_class               inventory.inventory_items_storage_class [not null, default: 'NORMAL']
   lot_tracked                 boolean [not null, default: false]
-  expiry_tracked              boolean [not null, default: false]
   serial_tracked              boolean [not null, default: false]
-  max_qty                     int
-  reorder_point               int
   default_supplier_id         uuid
   requires_adult_signature    boolean [not null, default: false]
   shipping_restriction_note   varchar(500)
@@ -1615,9 +1591,7 @@ Table inventory.inventory_items [headercolor: #3E7C4A] {
   created_by                  varchar(100)
   last_modified_at            timestamptz
   last_modified_by            varchar(100)
-  safety_stock                int
   removal_strategy            inventory.inventory_items_removal_strategy [not null, default: 'FEFO']
-  max_shelf_life_days         int
   policy_configured           boolean [not null, default: false]
   rotatable                   boolean [not null, default: true]
   reference_purchase_price    decimal(18,2)
@@ -1651,33 +1625,6 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   received_at         timestamptz
   reservation_id      uuid
   stock_package_id    uuid
-}
-
-Table inventory.stock_alert [headercolor: #3E7C4A] {
-  id                   uuid [pk]
-  kind                 inventory.stock_alert_kind [not null]
-  sku                  varchar(64) [not null]
-  warehouse_id         uuid
-  lot_number           varchar(64)
-  expiry_date          date
-  observed_qty         int [not null]
-  threshold_qty        int
-  reservation_impaired boolean [not null, default: false]
-  status               inventory.stock_alert_status [not null, default: 'OPEN']
-  opened_at            timestamptz [not null]
-  last_observed_at     timestamptz [not null]
-  acknowledged_by      uuid
-  acknowledged_at      timestamptz
-  ack_note             varchar(500)
-  resolved_at          timestamptz
-  resolution           inventory.stock_alert_resolution
-  version              bigint [not null, default: 0]
-}
-
-Table inventory.stock_alert_dirty [headercolor: #3E7C4A] {
-  id        bigint [pk]
-  sku       varchar(64) [not null]
-  marked_at timestamptz [not null, default: `now()`]
 }
 
 Table inventory.stock_damage_disposition [headercolor: #3E7C4A] {
@@ -1764,7 +1711,6 @@ Table inventory.stock_item [headercolor: #3E7C4A] {
   sku              varchar(64) [not null]
   location_code    varchar(64) [not null]
   lot_number       varchar(64)
-  expiry_date      date
   on_hand          int [not null, default: 0]
   reserved         int [not null, default: 0]
   status           inventory.stock_item_status [not null]
@@ -1783,7 +1729,6 @@ Table inventory.stock_lot [headercolor: #3E7C4A] {
   id                    uuid [pk]
   sku                   varchar(64) [not null]
   lot_number            varchar(64)
-  expiry_date           date
   received_at           timestamptz
   origin_type           inventory.stock_lot_origin_type [not null]
   goods_receipt_id      uuid
@@ -2146,7 +2091,6 @@ Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
   location_id       uuid [not null]
   received_qty      decimal(18,3) [not null]
   lot_number        varchar(64)
-  expiry_date       date
   note              varchar(255)
   version           bigint [not null, default: 0]
   created_at        timestamptz [not null, default: `now()`]
@@ -5100,9 +5044,6 @@ Ref: inventory.stock_adjustment.requested_by > identity.app_user.id
 Ref: inventory.stock_adjustment.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: inventory.stock_adjustment.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_adjustment.stock_package_id > inventory.stock_package.id [delete: restrict]
-Ref: inventory.stock_alert.acknowledged_by > identity.app_user.id
-Ref: inventory.stock_alert.sku > inventory.inventory_items.sku [delete: cascade]
-Ref: inventory.stock_alert.warehouse_id > warehouse.warehouse.id
 Ref: inventory.stock_damage_disposition.damage_report_id > inventory.stock_damage_report.id [delete: restrict]
 Ref: inventory.stock_damage_disposition.decided_by > identity.app_user.id
 Ref: inventory.stock_damage_disposition.restore_location_code > warehouse.storage_location.location_code [delete: restrict]
@@ -5572,8 +5513,6 @@ TableGroup inventory_group [color: #3E7C4A] {
   inventory.cycle_count_line
   inventory.inventory_items
   inventory.stock_adjustment
-  inventory.stock_alert
-  inventory.stock_alert_dirty
   inventory.stock_damage_disposition
   inventory.stock_damage_photo
   inventory.stock_damage_report
