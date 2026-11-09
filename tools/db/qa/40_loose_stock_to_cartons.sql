@@ -105,10 +105,11 @@ SELECT pg_temp.expect_ok('LC11 a MOVE in place into the carton it names', $q$
            p.id, p.id, NOW()
       FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
      WHERE i.sku = 'SOFA-3S-GREY' AND p.location_code = 'HCM-A01-2-B' LIMIT 1 $q$);
+-- A loose one names a return line: a person's move names its carton since V20261111000200 (QA 41).
 SELECT pg_temp.expect_ok('LC12 a MOVE from one place to another is what it was', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
                                           reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'MOVE_TASK',
+    VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'RETURN_REQUEST_LINE',
             gen_random_uuid(), NOW()) $q$);
 SELECT pg_temp.expect_fail('LC13 a STATUS_CHANGE that changes no status', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,

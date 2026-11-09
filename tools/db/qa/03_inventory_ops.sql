@@ -54,10 +54,11 @@ INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, 
 VALUES (gen_random_uuid(), md5('qa:wh:HN')::uuid, md5('qa:loc:HN-RCV')::uuid, 'RCV01', 'RECEIVING', 'x', 1, 1, 5, 5, 0, FALSE, 'ACTIVE');
 
 \echo '--- stock movement ledger (docs 11 BR-06)'
+-- Loose, so a return's decision: a person's move names its carton since V20261111000200 (QA 41).
 SELECT pg_temp.expect_ok('I1 a MOVE between two bins', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
         reference_type, reference_id, actor_id, occurred_at)
-    VALUES (md5('qa:mv:1')::uuid, 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-A01-1-A', 2, 'MOVE_TASK', gen_random_uuid(),
+    VALUES (md5('qa:mv:1')::uuid, 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-A01-1-A', 2, 'RETURN_REQUEST_LINE', gen_random_uuid(),
         md5('demo:user:editor')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_fail('I2 a MOVE to the same location', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
