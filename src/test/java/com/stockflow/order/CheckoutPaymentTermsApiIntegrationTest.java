@@ -157,6 +157,17 @@ class CheckoutPaymentTermsApiIntegrationTest {
         http().anonymous(get(TERMS)).andExpect(status().isUnauthorized());
     }
 
+    /** A receivable of {@code amount}, {@code paid} of it settled, on a fresh order of the customer. */
+    private void receivable(String status, String collector, long amount, long paid, int dueInDays) throws Exception {
+        UUID order = anOrderOfTheCustomer();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO payment.receivable (id, order_id, customer_id, amount, paid_amount, currency, issued_at,
+                    due_date, status, collector, kind)
+                VALUES (gen_random_uuid(), ?, ?, ?, ?, 'VND', NOW() - INTERVAL '40 days', CURRENT_DATE + ?, ?, ?, ?)""",
+                order, customer, amount, paid, dueInDays, status, collector,
+                "CARRIER".equals(collector) ? "DEPOSIT_BALANCE" : "CREDIT_ORDER"));
+    }
+
     @Test
     @DisplayName("SCRUM-193: a customer with nothing overdue sees overdueAmount 0 and no oldestOverdueDueDate")
     void nothingOverdue() throws Exception {
