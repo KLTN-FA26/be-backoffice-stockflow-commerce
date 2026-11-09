@@ -67,9 +67,9 @@ public interface ProductService {
      * (kltn-docs 01 §5.2) and every variant not yet obsolete becomes {@code OBSOLETE} with it, the
      * default one included.
      *
-     * <p><b>BR-PRD-005 warns, it does not block</b> (kltn-docs 01 step 12, 02 edge cases): purchase order
-     * lines and order lines still open are listed in the result, and carry on. What changes is that no
-     * <i>new</i> purchase order line takes the SKU ({@link #purchasability}).</p>
+     * <p><b>BR-PRD-005 warns, it does not block</b> (kltn-docs 01 step 12, BR-14): production order lines
+     * and order lines still open are listed in the result, and carry on. What changes is that no <i>new</i>
+     * quote or order line takes the SKU ({@link #lockedPurchasability}).</p>
      *
      * @throws com.stockflow.common.error.BusinessException {@code PRODUCT_NOT_FOUND}, {@code OPTIMISTIC_LOCK},
      *         {@code INVALID_PRODUCT_STATUS_TRANSITION}, {@code VALIDATION_FAILED} (reason)
@@ -77,7 +77,7 @@ public interface ProductService {
     ProductDiscontinuation discontinue(UUID productId, String reason, long version);
 
     /**
-     * APPROVED or PUBLISHED → INACTIVE (kltn-docs 01 §5.1): not shown, no new purchase order lines;
+     * APPROVED or PUBLISHED → INACTIVE (kltn-docs 01 §5.1): not shown, no new quote or order lines;
      * running orders and receipts continue. The catalog hides it.
      */
     ProductSummary suspend(UUID productId, String reason, long version);
@@ -90,7 +90,7 @@ public interface ProductService {
      * created (kltn-docs 01 BR-02); the stored image files go after the commit.
      *
      * @throws com.stockflow.common.error.BusinessException {@code PRODUCT_NOT_FOUND}, {@code OPTIMISTIC_LOCK},
-     *         {@code PRODUCT_NOT_DELETABLE} (not a draft), {@code PRODUCT_IN_USE} (stock, a purchase order,
+     *         {@code PRODUCT_NOT_DELETABLE} (not a draft), {@code PRODUCT_IN_USE} (stock, a production order,
      *         an order, a design or a storefront listing already points at it)
      */
     void deleteDraft(UUID productId, long version);
@@ -99,7 +99,7 @@ public interface ProductService {
     OpenReferences openReferences(UUID productId);
 
     /**
-     * Whether each SKU may go on a new purchase order line (kltn-docs 01 BR-04, 02 BR-01). Every SKU
+     * Whether each SKU may go on a new quote or order line (kltn-docs 01 BR-04). Every SKU
      * asked for is a key, upper-cased; one no variant carries is {@code VARIANT_NOT_ACTIVE}.
      */
     Map<String, Purchasability> purchasability(Collection<String> skus);

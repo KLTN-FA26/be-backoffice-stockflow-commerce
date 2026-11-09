@@ -81,7 +81,7 @@ order by pc.is_primary desc, pc.id limit 1
     }
 
     /**
-     * Whether each SKU may go on a new purchase order line, in one query (kltn-docs 01 BR-04, 02 BR-01).
+     * Whether each SKU may go on a new quote or order line, in one query (kltn-docs 01 BR-04).
      * Every SKU asked for is a key; one no variant carries is {@code VARIANT_NOT_ACTIVE}. The product's
      * status decides first, then the variant's.
      *
