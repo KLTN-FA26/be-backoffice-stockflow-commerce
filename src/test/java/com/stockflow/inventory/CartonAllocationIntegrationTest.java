@@ -238,6 +238,16 @@ class CartonAllocationIntegrationTest {
     }
 
     @Test
+    @DisplayName("an LPN scanned in lower case, with spaces, names its carton, as at picking (11 BR-10)")
+    void moveLpnIsCaseInsensitive() {
+        String a = carton(2);
+
+        assertThat(moveByHand(Identifiers.newId(), List.of(" " + a.toLowerCase(Locale.ROOT) + " "), OTHER_BIN))
+                .containsExactly(a);
+        assertThat(locationOf(a)).isEqualTo(OTHER_BIN);
+    }
+
+    @Test
     @DisplayName("a hand move is all or nothing: one held carton in the list keeps every carton where it is")
     void moveListIsAllOrNothing() {
         String held = carton(2);
