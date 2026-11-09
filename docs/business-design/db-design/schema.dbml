@@ -631,6 +631,11 @@ Enum ordering.production_order_receipt_status {
   CANCELLED
 }
 
+Enum ordering.production_order_sample_round_result {
+  APPROVED
+  REPRINT_REQUESTED
+}
+
 Enum ordering.quote_payment_term {
   PREPAID
   DEPOSIT
@@ -3069,6 +3074,7 @@ Table ordering.production_order [headercolor: #C0392B] {
   created_by                 varchar(100)
   last_modified_at           timestamptz
   last_modified_by           varchar(100)
+  expected_completion_date   date
 }
 
 Table ordering.production_order_line [headercolor: #C0392B] {
@@ -3097,6 +3103,35 @@ Table ordering.production_order_receipt [headercolor: #C0392B] {
   settled_at          timestamptz
   indexes {
     (production_order_id, goods_receipt_id) [pk]
+  }
+}
+
+Table ordering.production_order_sample_media [headercolor: #C0392B] {
+  id              uuid [pk]
+  sample_round_id uuid [not null]
+  storage_key     varchar(512) [not null, unique]
+  file_name       varchar(255) [not null]
+  content_type    varchar(100) [not null]
+  size_bytes      bigint [not null]
+  uploaded_by     uuid [not null]
+  uploaded_at     timestamptz [not null]
+}
+
+Table ordering.production_order_sample_round [headercolor: #C0392B] {
+  id                      uuid [pk]
+  production_order_id     uuid [not null]
+  round_no                int [not null]
+  reprint_reason          varchar(16)
+  physical_sample_sent_on date
+  opened_by               uuid [not null]
+  opened_at               timestamptz [not null]
+  result                  ordering.production_order_sample_round_result
+  customer_note           varchar(500)
+  answered_by             uuid
+  answered_at             timestamptz
+  created_at              timestamptz [not null, default: `now()`]
+  indexes {
+    (production_order_id, round_no) [unique]
   }
 }
 
@@ -5460,6 +5495,11 @@ Ref: ordering.production_order_line.order_line_id > ordering.order_line.id
 Ref: ordering.production_order_line.production_order_id > ordering.production_order.id [delete: cascade]
 Ref: ordering.production_order_receipt.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: ordering.production_order_receipt.production_order_id > ordering.production_order.id [delete: restrict]
+Ref: ordering.production_order_sample_media.sample_round_id > ordering.production_order_sample_round.id
+Ref: ordering.production_order_sample_media.uploaded_by > identity.app_user.id
+Ref: ordering.production_order_sample_round.answered_by > identity.app_user.id
+Ref: ordering.production_order_sample_round.opened_by > identity.app_user.id
+Ref: ordering.production_order_sample_round.production_order_id > ordering.production_order.id
 Ref: ordering.production_order_status_history.changed_by > identity.app_user.id
 Ref: ordering.production_order_status_history.production_order_id > ordering.production_order.id
 Ref: ordering.quote.converted_order_id > ordering.customer_order.id [delete: restrict]
@@ -5822,6 +5862,8 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.production_order
   ordering.production_order_line
   ordering.production_order_receipt
+  ordering.production_order_sample_media
+  ordering.production_order_sample_round
   ordering.production_order_status_history
   ordering.production_order_status_transition
   ordering.quote
