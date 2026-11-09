@@ -20,7 +20,7 @@ import java.util.UUID;
 /**
  * The links a producer is e-mailed with its production order (4A-3, kltn-docs 17 §4.3 step 7: the slip, and the print
  * files "with a checksum checked on download"). A producer holds no account: the link itself - signed, time-limited
- * ({@code SignedLinks}) - is the credential, so these routes are open to anyone (permitAll, GET only) and everything is
+ * ({@code SignedLinks}) - is the credential, so these routes are open to anyone (permitAll, GET and HEAD) and everything is
  * checked by the service on each use: the signature, the production order still open, the file still the one approved.
  * Then the answer is a redirect to a presigned URL of minutes, so the bytes never pass through the application.
  *
