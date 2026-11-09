@@ -118,6 +118,12 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/carrier-webhooks/{carrierCode}",
                     "public: carriers' webhooks; the carrier's configured header or HMAC signature is the authorisation (permitAll for POST, 3-5)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
+            Map.entry("GET /api/v1/production-order-files/{id}/slip",
+                    "public: a producer's link to its production order slip; the HMAC-signed, time-limited link is the "
+                            + "authorisation, checked again on use with the order still open (permitAll for GET, 4A-3)"),
+            Map.entry("GET /api/v1/production-order-files/{id}/print-files/{designSnapshotId}",
+                    "public: a producer's link to a print file of its production order; the signed link is the "
+                            + "authorisation, the file's recorded digest checked before it is handed out (permitAll for GET, 4A-3)"),
             Map.entry("GET /api/v1/catalog/categories",
                     "any signed-in user: the storefront category navigation, visible categories only (SCRUM-171)"),
             Map.entry("GET /api/v1/catalog/products", "any signed-in user: published storefront catalog, no private data"),

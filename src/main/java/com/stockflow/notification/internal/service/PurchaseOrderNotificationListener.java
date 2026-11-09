@@ -1,11 +1,7 @@
 package com.stockflow.notification.internal.service;
 
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.PurchaseOrderSent;
-import com.stockflow.notification.internal.domain.DeliveryStatus;
-import com.stockflow.notification.internal.domain.EmailDeliveryException;
 import com.stockflow.notification.internal.domain.NotificationChannel;
-import com.stockflow.notification.internal.entity.DeliveryLogJpaEntity;
 import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
 import com.stockflow.notification.internal.repository.PoDeliveryControlRepository;
 
@@ -25,14 +21,17 @@ import java.time.Clock;
  * it stood, so an earlier one still retrying would otherwise reach the supplier after the later revision or the
  * cancellation and undo it in their eyes. Decided under the order's delivery lock, which every notice of the order
  * holds while it is sent: a later notice not attempted yet goes out after this one, which keeps the order right.</p>
+ *
+ * <p>Locking, the attempt log and the retry decision are {@link RecordedDelivery}'s, shared with production orders
+ * (QD-7); what stays here is what only a purchase order has: the delivery control and its generations, and the
+ * staleness of amendment notices.</p>
  */
 @Component
 class PurchaseOrderNotificationListener {
     private final NotificationSender sender;
     private final DeliveryLogJpaRepository logs;
-    private final Clock clock;
-    private final DeliveryAttemptRecorder attempts;
     private final PoDeliveryControlRepository controls;
+    private final RecordedDelivery deliveries;
 
     PurchaseOrderNotificationListener(
             NotificationSender sender,
@@ -42,9 +41,8 @@ class PurchaseOrderNotificationListener {
             PoDeliveryControlRepository controls) {
         this.sender = sender;
         this.logs = logs;
-        this.clock = clock;
-        this.attempts = attempts;
         this.controls = controls;
+        this.deliveries = new RecordedDelivery(logs, clock, attempts);
     }
 
     @ApplicationModuleListener
@@ -55,72 +53,21 @@ class PurchaseOrderNotificationListener {
                 && (control.suppressed() || control.generation() != event.deliveryGeneration()))
             return;
         String reference = event.operationReference();
-        if (!logs.tryLockDelivery(reference)) {
-            throw new IllegalStateException("Purchase order delivery is already in progress");
-        }
-        if (logs.existsByExternalReference(reference)) return;
-        if (logs.existsByOperationReferenceAndDeliveryGenerationAndTerminalTrue(
-                reference, event.deliveryGeneration())) return;
-        NotificationChannel channel = NotificationChannel.valueOf(event.channel());
+        if (!deliveries.pending(reference, event.deliveryGeneration())) return;
+        var delivery = new RecordedDelivery.Delivery(reference, event.deliveryGeneration(), event.templateCode(),
+                NotificationChannel.valueOf(event.channel()), event.recipient());
         if (event.amendment()
                 && (control.cancellationRequested()
                         || logs.existsLaterAmendmentNotice(
                                 event.purchaseOrderId().toString(), event.amendmentRevisionNo()))) {
-            logs.saveAndFlush(
-                    DeliveryAttemptRecorder.superseded(
-                            reference,
-                            event.templateCode(),
-                            channel,
-                            event.recipient(),
-                            control.cancellationRequested()
-                                    ? NotificationServiceImpl.SUPERSEDED_BY_CANCELLATION
-                                    : NotificationServiceImpl.SUPERSEDED_BY_AMENDMENT,
-                            event.deliveryGeneration(),
-                            Math.toIntExact(
-                                    logs.countByOperationReferenceAndDeliveryGeneration(
-                                                    reference, event.deliveryGeneration())
-                                            + 1)));
+            deliveries.close(delivery, control.cancellationRequested()
+                    ? NotificationServiceImpl.SUPERSEDED_BY_CANCELLATION
+                    : NotificationServiceImpl.SUPERSEDED_BY_AMENDMENT);
             return;
         }
-        try {
+        deliveries.send(delivery, () -> {
             sender.sendPurchaseOrder(event);
-            var success =
-                    new DeliveryLogJpaEntity(
-                            Identifiers.newId(),
-                            event.templateCode(),
-                            channel,
-                            event.recipient(),
-                            DeliveryStatus.SENT,
-                            null,
-                            clock.instant(),
-                            reference);
-            success.recordGeneration(event.deliveryGeneration());
-            success.recordAttempt(
-                    Math.toIntExact(
-                            logs.countByOperationReferenceAndDeliveryGeneration(
-                                            reference, event.deliveryGeneration())
-                                    + 1));
-            logs.saveAndFlush(success);
-        } catch (RuntimeException failure) {
-            // A transport that says the message will never be accepted (an invalid address, a revoked key) is not
-            // retried four more times: the delivery is terminal now and waits for an operator's recovery generation.
-            boolean terminal =
-                    failure instanceof IllegalArgumentException
-                            || failure instanceof EmailDeliveryException refused && !refused.retryable()
-                            || logs.countByOperationReferenceAndDeliveryGenerationAndStatus(
-                                            reference,
-                                            event.deliveryGeneration(),
-                                            DeliveryStatus.FAILED)
-                                    >= 4;
-            attempts.failed(
-                    event.recipient(),
-                    channel,
-                    failure,
-                    reference,
-                    event.templateCode(),
-                    terminal,
-                    event.deliveryGeneration());
-            if (!terminal) throw failure;
-        }
+            return null;
+        });
     }
 }

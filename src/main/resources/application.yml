@@ -371,6 +371,8 @@ stockflow:
     # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
     supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
     po-retry-interval: PT1M
+    # How often messages to producers about their production orders that failed are tried again (4A-3).
+    production-order-retry-interval: PT1M
     # -------------------------------------------------------------------------
     # E-mail (SCRUM-352). Every message - supplier POs, staff notices, the portal invitation, customer order mail -
     # goes through one transport. resend: Resend's HTTP API (the dev and prod profiles' default); smtp: spring.mail
@@ -543,6 +545,11 @@ stockflow:
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
       free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}
+    production-order:
+      # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
+      # is checked again (the production order still open, the file still the approved one) and gets a presigned URL
+      # of minutes, so this may cover a production run; a later message (the approved sample) carries fresh links.
+      file-links-valid-for: ${PRODUCTION_ORDER_FILE_LINKS_VALID_FOR:P30D}
 
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
@@ -596,6 +603,14 @@ stockflow:
       # cannot be read or parsed stops the application at startup.
       key-path: ${JWT_PRIVATE_KEY_PATH:}
       private-key: ${JWT_PRIVATE_KEY:}
+    links:
+      # Links a partner opens without signing in, for a limited time (SignedLinks; 4A-3: a producer's links to its
+      # production order slip and print files). key: the HMAC key, base64 of at least 32 bytes (openssl rand -base64 32);
+      # required once base-url is set (the application refuses to start without it, unless process-key-allowed, which
+      # only the local profile sets). base-url: where the application is reached from outside, every link starts with
+      # it; blank makes no link and the mail says the coordinator sends the files.
+      key: ${STOCKFLOW_LINKS_KEY:}
+      base-url: ${STOCKFLOW_PUBLIC_BASE_URL:}
     secrets:
       # The AES-256 key stored secrets are sealed with (SecretCipher): a carrier's API key, webhook secret and webhook
       # header credential (kltn-docs 09 §4.1). Base64 of exactly 32 bytes: openssl rand -base64 32. Blank: the

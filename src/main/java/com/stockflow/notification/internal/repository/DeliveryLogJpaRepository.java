@@ -135,6 +135,16 @@ select exists (select 1 from notification.delivery_log
     @Query("select max(l.nextAttemptAt) from DeliveryLogJpaEntity l where l.operationReference = :reference")
     Instant nextAttemptAt(@Param("reference") String reference);
 
+    /** {@link #nextAttemptAt(String)} of one generation: an earlier generation's waits do not hold up a later one. */
+    @Query("""
+            select max(l.nextAttemptAt) from DeliveryLogJpaEntity l
+            where l.operationReference = :reference and l.deliveryGeneration = :generation""")
+    Instant nextAttemptAt(@Param("reference") String reference, @Param("generation") int generation);
+
+    /** The newest generation of a message, null when it was never attempted. */
+    @Query("select max(l.deliveryGeneration) from DeliveryLogJpaEntity l where l.operationReference = :reference")
+    Integer latestGeneration(@Param("reference") String reference);
+
     /**
      * Pushes the retryable failures of a message to {@code until} at least ({@code CustomerEmailLog.lease}); only
      * those rows may wait ({@code ck_delivery_log_next_attempt}).

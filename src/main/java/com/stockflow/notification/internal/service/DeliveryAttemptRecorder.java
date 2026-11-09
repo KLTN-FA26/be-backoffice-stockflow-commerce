@@ -32,6 +32,23 @@ class DeliveryAttemptRecorder {
             String templateCode,
             boolean terminal,
             int generation) {
+        failed(recipient, channel, failure, reference, templateCode, terminal, generation, null);
+    }
+
+    /**
+     * {@link #failed(String, NotificationChannel, RuntimeException, String, String, boolean, int)} for a failure worth
+     * retrying that waits: the next attempt is not before {@code notBefore} (null: no wait; ignored when terminal).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void failed(
+            String recipient,
+            NotificationChannel channel,
+            RuntimeException failure,
+            String reference,
+            String templateCode,
+            boolean terminal,
+            int generation,
+            java.time.Instant notBefore) {
         String message = failureCode(channel, failure);
         var attempt =
                 new DeliveryLogJpaEntity(
@@ -49,6 +66,7 @@ class DeliveryAttemptRecorder {
                         logs.countByOperationReferenceAndDeliveryGeneration(reference, generation)
                                 + 1));
         if (terminal) attempt.stopRetrying();
+        else if (notBefore != null) attempt.retryNotBefore(notBefore);
         logs.saveAndFlush(attempt);
         LoggerFactory.getLogger(DeliveryAttemptRecorder.class)
                 .error("Supplier notification failed: {} ({})", reference, message, failure);
