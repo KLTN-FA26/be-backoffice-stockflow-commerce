@@ -3,15 +3,14 @@ package com.stockflow.warehouse;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand.PackageCount;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.DemoData;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ProductionReceiptTest;
+import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.warehouse.api.NewPutawayTask;
 import com.stockflow.warehouse.api.PutawayTaskView;
@@ -21,7 +20,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -38,15 +36,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * (the task's foreign key) and, for a carton, a real counted carton of the same SKU (the task's trigger). The receipt
  * counts a line of 2000 as one carton of 1000 and one of 980.
  */
-@IntegrationTest
-@Import(PostgresContainer.class)
+@ProductionReceiptTest
 class PutawayTasksIntegrationTest {
 
     private static final String RECEIVING = "HCM-RCV01";
 
     @Autowired PutawayTasks putaway;
     @Autowired InventoryService inventory;
-    @Autowired GoodsReceipts receipts;
+    @Autowired ProductionReceivables receivables;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -60,46 +57,13 @@ class PutawayTasksIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        sku = "PUT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         UUID clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        UUID poLine = Identifiers.newId();
-        UUID cartonUnit = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Putaway fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Putaway fixture");
-            UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
-            jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6"
-                    + " where id = ?", item);
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 1000)", cartonUnit, item);
-
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at, confirmed_by,
-                        active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, w.id, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s, warehouse.warehouse w WHERE s.code = 'GOVIET' AND w.prefix = 'HCM'""",
-                    po, "PO-PUT-" + po.toString().substring(24), submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
-                        ordered_qty, unit_price, version, created_at) VALUES (?, ?, ?, 1, ?, 2000, 1000, 0, NOW())""",
-                    poLine, po, revision, item);
-        });
-        GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-PUT", null), clerk);
+        ProductionReceivables.Receivable goods = receivables.sent(DemoData.WAREHOUSE_HCM, 2, 1000);
+        sku = goods.sku();
+        UUID cartonUnit = goods.cartonUnitId();
+        GoodsReceipts.ReceiptView draft = receivables.draftReceipt(goods, clerk);
         receipt = draft.id();
-        line = receipts.replaceLines(receipt, List.of(new GoodsReceipts.NewLine(poLine, 2000, null, null,
-                RECEIVING, null))).lines().getFirst().id();
+        line = receivables.uncountedLine(goods, draft, RECEIVING, 2);
         List<StockPackageView> counted = inventory.countReceivingPackages(new CountReceivingPackagesCommand(line,
                 new Sku(sku), cartonUnit, RECEIVING, List.of(new PackageCount(null, 1000)), clerk));
         carton = counted.getFirst().id();

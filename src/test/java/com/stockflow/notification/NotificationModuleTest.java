@@ -42,7 +42,7 @@ class NotificationModuleTest {
     @Test
     @DisplayName("notification starts and answers through its api with the other modules absent")
     void bootsInIsolation() {
-        assertThat(notification.purchaseOrderDeliveryStatuses(Set.of(UUID.randomUUID()))).isEmpty();
+        assertThat(notification.productionOrderDeliveries(UUID.randomUUID(), 0, 10).items()).isEmpty();
     }
 
     /** The negative half: a module notification has no business with is genuinely not in this context. */

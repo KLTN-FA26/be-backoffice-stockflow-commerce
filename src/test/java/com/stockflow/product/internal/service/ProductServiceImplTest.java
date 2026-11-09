@@ -126,7 +126,7 @@ class ProductServiceImplTest {
     }
 
     private static SkuReference po(int n) {
-        return new SkuReference(SkuReference.Kind.PURCHASE_ORDER_LINE, "PO-" + n, UUID.randomUUID(), "CUP-12OZ");
+        return new SkuReference(SkuReference.Kind.PRODUCTION_ORDER_LINE, "PRD-" + n, UUID.randomUUID(), "CUP-12OZ");
     }
 
     private static SkuReference order(int n) {
@@ -158,7 +158,7 @@ class ProductServiceImplTest {
         order.verify(history).record(product.id().value(), ProductChangeType.DISCONTINUED, null, "PUBLISHED", "DISCONTINUED",
                 "Hết dòng", List.of());
         assertThat(result.product().status()).isEqualTo(ProductStatus.DISCONTINUED);
-        assertThat(result.warnings()).containsExactly(ProductDiscontinuation.OPEN_PURCHASE_ORDER_LINES);
+        assertThat(result.warnings()).containsExactly(ProductDiscontinuation.OPEN_PRODUCTION_ORDER_LINES);
         assertThat(result.references().references()).extracting(SkuReference::documentNumber).containsExactly("PO-1");
     }
 
@@ -171,7 +171,7 @@ class ProductServiceImplTest {
 
         ProductDiscontinuation result = service.discontinue(product.id().value(), "end", 1);
 
-        assertThat(result.warnings()).containsExactly("OPEN_PURCHASE_ORDER_LINES", "UNSHIPPED_ORDER_LINES");
+        assertThat(result.warnings()).containsExactly("OPEN_PRODUCTION_ORDER_LINES", "UNSHIPPED_ORDER_LINES");
         assertThat(result.references().references()).hasSize(3);
         assertThat(result.references().truncated()).isFalse();
         assertThat(product.status()).isEqualTo(ProductStatus.DISCONTINUED);
@@ -236,10 +236,10 @@ class ProductServiceImplTest {
         assertThat(result.references().truncated()).isTrue();
         // The order lines are not crowded out by the purchase order lines: both kinds are listed and warned about.
         assertThat(shown).filteredOn(r -> r.kind() == SkuReference.Kind.SALES_ORDER_LINE).hasSize(2);
-        assertThat(shown).filteredOn(r -> r.kind() == SkuReference.Kind.PURCHASE_ORDER_LINE).hasSize(18);
+        assertThat(shown).filteredOn(r -> r.kind() == SkuReference.Kind.PRODUCTION_ORDER_LINE).hasSize(18);
         assertThat(shown.get(0).documentNumber()).isEqualTo("PO-1");
         assertThat(shown.get(1).documentNumber()).isEqualTo("SO-1");
-        assertThat(result.warnings()).containsExactly("OPEN_PURCHASE_ORDER_LINES", "UNSHIPPED_ORDER_LINES");
+        assertThat(result.warnings()).containsExactly("OPEN_PRODUCTION_ORDER_LINES", "UNSHIPPED_ORDER_LINES");
     }
 
     @Test

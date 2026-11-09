@@ -13,10 +13,9 @@ import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.PutawayService.TaskView;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.procurement.internal.service.GoodsReceipts.NewPackage;
 import com.stockflow.support.Await;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ProductionReceiptTest;
+import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.warehouse.api.PutawayTaskView;
@@ -47,13 +46,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 10 and 10, 20 loose - is received into a warehouse of its own whose bins the tests shape, so the hard rules for a
  * bin the clerk chose can each be broken in turn without touching the shared demo stock.
  */
-@IntegrationTest
-@Import({PostgresContainer.class, RecordedEvents.class})
+@ProductionReceiptTest
+@Import(RecordedEvents.class)
 class PutawayConfirmationIntegrationTest {
 
     @Autowired PutawayService putaway;
     @Autowired PutawayTasks putawayTasks;
-    @Autowired GoodsReceipts receipts;
+    @Autowired ProductionReceivables receivables;
     @Autowired InventoryService inventory;
     @Autowired RecordedEvents.Recorder recorded;
     @Autowired JdbcTemplate jdbc;
@@ -74,53 +73,21 @@ class PutawayConfirmationIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        sku = "PCF-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         prefix = "P" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT);
         receiving = prefix + "-RCV01";
         warehouse = Identifiers.newId();
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        UUID poLine = Identifiers.newId();
         tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Putaway confirmation fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Putaway confirmation fixture");
-            UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
-            // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
-            jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8,"
-                    + " height_cm = 6 where id = ?", item);
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 100)", Identifiers.newId(), item);
             warehouse(warehouse, prefix);
             area(warehouse, "RCV01", receiving, "RECEIVING", 1);
-
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);   // four eyes (ck_purchase_orders_four_eyes)
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at, confirmed_by,
-                        active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, ?, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s WHERE s.code = 'GOVIET'""",
-                    po, "PO-PC-" + po.toString().substring(24), warehouse, submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
-                        ordered_qty, unit_price, version, created_at) VALUES (?, ?, ?, 1, ?, 500, 1000, 0, NOW())""",
-                    poLine, po, revision, item);
         });
-        receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PC", null), clerk).id();
-        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 40, null, null, receiving, null,
-                "CARTON", List.of(new NewPackage(null, 10), new NewPackage(null, 10)))));
-        GoodsReceipts.LineView line = receipts.confirm(receiptId, clerk).lines().getFirst();
-        lpn1 = line.packages().get(0).lpn();
-        lpn2 = line.packages().get(1).lpn();
+        // 4 cartons' worth of 10 on the production order, two of them labelled: 20 units stay loose.
+        ProductionReceivables.Receivable goods = receivables.sent(warehouse, 4, 10);
+        sku = goods.sku();
+        ProductionReceivables.Dock dock = receivables.onTheDock(goods, receiving, 4, List.of(10, 10), clerk);
+        receiptId = dock.receiptId();
+        lpn1 = dock.lpns().get(0);
+        lpn2 = dock.lpns().get(1);
         Await.until("three putaway tasks", Duration.ofSeconds(20), () -> tasks().size() >= 3);
         cartonTask = taskOf(lpn1);
         looseTask = tasks().stream().filter(t -> t.stockPackageId() == null).findFirst().orElseThrow().id();
@@ -375,6 +342,8 @@ class PutawayConfirmationIntegrationTest {
     @Test
     @DisplayName("a bin the weight does not fit in: LOCATION_CAPACITY_EXCEEDED")
     void weightRefused() {
+        tx.executeWithoutResult(t -> jdbc.update("update inventory.inventory_items set weight_kg = 0.5 where sku = ?",
+                sku));
         String bin = bin(warehouse, "A01", "NORMAL", 500, 4, "ACTIVE");   // 10 units of 0.5 kg weigh 5
 
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, bin)).errorCode())

@@ -410,9 +410,6 @@ class ProductionReceiptIntegrationTest {
         assertThat(receipt.producerId()).isEqualTo(producer.id());
         assertThat(receipt.producerName()).isEqualTo("Receiving test workshop");
         assertThat(receipt.warehouseId()).as("BR-01: at the warehouse it is received at").isEqualTo(a.id());
-        assertThat(receipt.purchaseOrderId()).isNull();
-        assertThat(receipt.supplierId()).isNull();
-        assertThat(receipt.withoutPurchaseOrder()).as("not a blind receipt").isFalse();
         assertThat(receipt.number()).matches("GR-\\d{8}-\\d{4,}");
         assertThat(receipt.lines()).isEmpty();
         assertThat(registration(receipt.id())).as("the production order knows of the draft").isEqualTo("DRAFT");
@@ -423,21 +420,17 @@ class ProductionReceiptIntegrationTest {
         assertThat(reread(production.id()).status()).as("nothing moves before a receipt is confirmed")
                 .isEqualTo(ProductionOrderStatus.SENT);
 
-        assertThat(receipts.list(null, null, null, null, null, null, null, production.id(), null, 0, 20, null)
+        assertThat(receipts.list(null, null, null, null, null, production.id(), null, 0, 20, null)
                 .items()).singleElement().satisfies(row -> {
                     assertThat(row.id()).isEqualTo(receipt.id());
                     assertThat(row.receiptType()).isEqualTo(GoodsReceiptType.PRODUCTION);
                     assertThat(row.productionOrderCode()).isEqualTo(production.code());
                     assertThat(row.producerName()).isEqualTo("Receiving test workshop");
-                    assertThat(row.withoutPurchaseOrder()).isFalse();
                 });
-        assertThat(receipts.list(null, null, a.id(), null, null, null, null, null, GoodsReceiptType.PRODUCTION, 0,
+        assertThat(receipts.list(null, a.id(), null, null, null, null, GoodsReceiptType.PRODUCTION, 0,
                 100, null).items()).extracting(GoodsReceipts.Row::id).contains(receipt.id());
-        assertThat(receipts.list(null, null, a.id(), null, null, null, null, null, GoodsReceiptType.PURCHASE, 0, 100,
+        assertThat(receipts.list(null, a.id(), null, null, null, null, GoodsReceiptType.PURCHASE, 0, 100,
                 null).items()).extracting(GoodsReceipts.Row::id).doesNotContain(receipt.id());
-        assertThat(receipts.list(null, null, a.id(), null, null, null, true, null, null, 0, 100, null).items())
-                .as("withoutPo keeps blind purchase receipts").extracting(GoodsReceipts.Row::id)
-                .doesNotContain(receipt.id());
         assertThat(receipts.get(receipt.id()).productionOrderCode()).isEqualTo(production.code());
     }
 
@@ -530,21 +523,18 @@ class ProductionReceiptIntegrationTest {
         // Every refusal of the request at once, each on its field.
         UUID unknown = Identifiers.newId();
         Throwable refused = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
-                new NewLine(null, 0, null, null, a.receiving(), null, null,
-                        List.of(new NewPackage(null, 0), new NewPackage(null, 48)), null, lineId(production)),
-                new NewLine(Identifiers.newId(), 0, "LOT-A", today.plusYears(1), a.bin(), null, null, List.of(), null,
-                        unknown))));
+                new NewLine(lineId(production), 0, null, null, a.receiving(), null, null,
+                        List.of(new NewPackage(null, 0), new NewPackage(null, 48)), null),
+                new NewLine(unknown, 0, "LOT-A", today.plusYears(1), a.bin(), null, null, List.of(), null))));
         assertThat(code(refused)).isEqualTo(ErrorCode.RECEIPT_CARTON_NOT_STANDARD);
         assertThat(fields(refused)).containsExactlyInAnyOrder(
                 "lines[0].packages[1].quantity:RECEIPT_CARTON_NOT_STANDARD",
-                "lines[1].purchaseOrderLineId:VALIDATION_FAILED",
                 "lines[1].lotNumber:LOT_NOT_ALLOWED",
                 "lines[1].expiryDate:EXPIRY_NOT_ALLOWED",
                 "lines[1].productionOrderLineId:RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER");
         assertThat(ErrorCode.RECEIPT_CARTON_NOT_STANDARD.httpStatus()).isEqualTo(422);
         Throwable noCarton = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
-                new NewLine(null, 100, null, null, a.bin(), null, "BOX", List.of(), "SOMETHING-ELSE",
-                        lineId(production)))));
+                new NewLine(lineId(production), 100, null, null, a.bin(), null, "BOX", List.of(), "SOMETHING-ELSE"))));
         assertThat(fields(noCarton)).containsExactlyInAnyOrder("lines[0].packages:VALIDATION_FAILED",
                 "lines[0].sku:RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER", "lines[0].locationCode:LOCATION_AREA_MISMATCH",
                 "lines[0].unitOfMeasure:UOM_CONVERSION_NOT_FOUND", "lines[0].quantity:VALIDATION_FAILED");

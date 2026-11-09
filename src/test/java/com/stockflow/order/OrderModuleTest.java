@@ -48,7 +48,7 @@ class OrderModuleTest {
     @Test
     @DisplayName("a module outside order's declared dependencies is not in this context")
     void unrelatedModulesAreAbsent() {
-        assertThatThrownBy(() -> context.getBean(com.stockflow.procurement.api.ProcurementService.class))
+        assertThatThrownBy(() -> context.getBean(com.stockflow.fulfillment.api.FulfillmentService.class))
                 .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
     }
 }
