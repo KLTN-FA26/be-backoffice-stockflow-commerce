@@ -5,20 +5,18 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import org.flywaydb.core.Flyway;
-import org.flywaydb.core.api.FlywayException;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
  * V20261111000300 on the real upgrade path (team plan 5-1; kltn-docs 20 BR-13, 03 BR-06, 01 BR-17): stock alerts,
  * their queue and the triggers that fed it go; the thresholds and expiry settings of an item, and the expiry dates of
  * stock, lots and receipt lines, go - each archived first in {@code platform.legacy_archive}; the alert permission
  * goes from every role, whose version moves; the pending publications of the two events only the alerts used are
- * archived and cleared, while other publications stay. It stops, naming them, on lots of one receipt told apart by
- * expiry alone. Afterwards nothing becomes EXPIRED, stock or adjustment, while what was EXPIRED stays readable.
+ * archived and cleared, while other publications stay. Lots of one receipt told apart by expiry alone are merged into
+ * the oldest, their stock rows and ledger lines repointed. Afterwards nothing becomes EXPIRED, stock or adjustment, while what was EXPIRED stays readable.
  */
 class StockAlertExpiryRemovalMigrationUpgradeTest {
 
@@ -37,6 +35,8 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
     private static final String PUB_CONTROL = "00000000-0000-4000-8000-0000000e5502";
     private static final String PUB_OTHER = "00000000-0000-4000-8000-0000000e5503";
     private static final String OLD_EXPIRED = "00000000-0000-4000-8000-0000000e5601";
+    private static final String ROW_B = "00000000-0000-4000-8000-0000000e5202";
+    private static final String LINE_B = "00000000-0000-4000-8000-0000000e5701";
 
     @Test
     void alertsAndExpiryGoArchivedAndTheAlertPermissionWithThem() throws Exception {
@@ -50,15 +50,6 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
                         "SELECT version FROM identity.app_role WHERE code = 'WAREHOUSE_MANAGER'");
                 long accountantVersion = RawSql.number(db,
                         "SELECT version FROM identity.app_role WHERE code = 'ACCOUNTANT'");
-
-                // Two lots of one receipt, SKU and number, told apart by expiry alone: it stops, naming the receipt.
-                FlywayException failure = catchThrowableOfType(FlywayException.class,
-                        () -> flyway(postgres, MIGRATION).migrate());
-                assertThat(failure).isNotNull();
-                assertThat(failure.getMessage()).contains("told apart only by expiry").contains(RECEIPT);
-                assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_alert")).as("nothing changed")
-                        .isOne();
-                RawSql.update(db, "DELETE FROM inventory.stock_lot WHERE id = ?::uuid", LOT_B);
 
                 assertThat(flyway(postgres, MIGRATION).migrate().migrations).extracting(m -> m.version)
                         .containsExactly(MIGRATION);
@@ -95,7 +86,22 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
                 assertThat(RawSql.text(db, "SELECT row_data->>'expiry_date' FROM platform.legacy_archive"
                         + " WHERE source_table = 'inventory.stock_item' AND row_id = ?::uuid", ROW)).isNotNull();
                 assertThat(RawSql.text(db, "SELECT row_data->>'expiry_date' FROM platform.legacy_archive"
-                        + " WHERE source_table = 'inventory.stock_lot' AND row_id = ?::uuid", LOT_A)).isEqualTo("2030-01-01");
+                        + " WHERE source_table = 'inventory.stock_lot' AND row_id = ?::uuid", LOT_A)).isEqualTo("2027-03-01");
+
+                // Two lots of one receipt, SKU and number, told apart by expiry alone: one now, the oldest; what
+                // pointed at the other points at it, and the other is archived whole.
+                assertThat(RawSql.texts(db, "SELECT id::text FROM inventory.stock_lot WHERE goods_receipt_id = ?::uuid",
+                        RECEIPT)).containsExactly(LOT_A);
+                assertThat(RawSql.text(db, "SELECT lot_id::text FROM inventory.stock_item WHERE id = ?::uuid", ROW_B))
+                        .isEqualTo(LOT_A);
+                assertThat(RawSql.text(db, "SELECT lot_id::text FROM inventory.stock_movement WHERE id = ?::uuid",
+                        LINE_B)).isEqualTo(LOT_A);
+                assertThat(RawSql.text(db, "SELECT row_data->>'expiry_date' FROM platform.legacy_archive"
+                        + " WHERE source_table = 'inventory.stock_lot' AND row_id = ?::uuid AND row_data->>'origin_type' IS NOT NULL",
+                        LOT_B)).isEqualTo("2027-06-01");
+                assertThat(RawSql.text(db, "SELECT row_data->>'merged_into' FROM platform.legacy_archive"
+                        + " WHERE source_table = 'inventory.stock_movement' AND row_id = ?::uuid", LINE_B))
+                        .isEqualTo(LOT_A);
                 assertThat(RawSql.text(db, "SELECT row_data->>'expiry_date' FROM platform.legacy_archive"
                         + " WHERE source_table = 'procurement.goods_receipt_lines' AND row_id = ?::uuid", RECEIPT_LINE))
                         .isEqualTo("2030-01-01");
@@ -171,9 +177,21 @@ class StockAlertExpiryRemovalMigrationUpgradeTest {
         RawSql.update(db, """
                 INSERT INTO inventory.stock_lot (id, sku, lot_number, expiry_date, received_at, origin_type,
                                                  goods_receipt_id)
-                VALUES (?::uuid, ?, 'LOT-UPG', DATE '2030-01-01', NOW(), 'GOODS_RECEIPT', ?::uuid),
-                       (?::uuid, ?, 'LOT-UPG', DATE '2031-01-01', NOW(), 'GOODS_RECEIPT', ?::uuid)""",
+                VALUES (?::uuid, ?, 'LOT-UPG', DATE '2027-03-01', NOW() - interval '1 hour', 'GOODS_RECEIPT', ?::uuid),
+                       (?::uuid, ?, 'LOT-UPG', DATE '2027-06-01', NOW(), 'GOODS_RECEIPT', ?::uuid)""",
                 LOT_A, TABLE, RECEIPT, LOT_B, TABLE, RECEIPT);
+        // Stock of the second lot, and a ledger line naming it: both must follow the merge.
+        RawSql.update(db, """
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, lot_id, on_hand,
+                                                  reserved, status, created_at, received_at)
+                VALUES (?::uuid, ?, 'HCM-A01-1-B', 'LOT-UPG', DATE '2027-06-01', ?::uuid, 2, 0, 'AVAILABLE', NOW(),
+                        NOW() - interval '1 day')""", ROW_B, TABLE, LOT_B);
+        RawSql.update(db, """
+                INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity,
+                                                      reference_type, reference_id, occurred_at, version, created_at,
+                                                      lot_id)
+                VALUES (?::uuid, 'ADJUSTMENT', ?, 'LOT-UPG', 'HCM-A01-1-B', 2, 'STOCK_ADJUSTMENT', gen_random_uuid(),
+                        NOW(), 0, NOW(), ?::uuid)""", LINE_B, TABLE, LOT_B);
         // Publications: one pending of the alerts' event, one done of the control-change event, one of something else.
         RawSql.update(db, """
                 INSERT INTO event_publication (id, listener_id, event_type, serialized_event, publication_date,

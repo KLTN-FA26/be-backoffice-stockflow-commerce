@@ -12,8 +12,10 @@
 --      max_shelf_life_days, with their CHECKs;
 --   3. expiry dates: inventory.stock_item.expiry_date, inventory.stock_lot.expiry_date and
 --      procurement.goods_receipt_lines.expiry_date. A lot of a receipt is now one per (receipt, SKU, lot number):
---      uk_stock_lot_receipt loses the expiry, and a receipt that opened two lots of one number told apart by expiry
---      alone stops this migration, named (none is known; the receiving code never wrote one);
+--      uk_stock_lot_receipt loses the expiry. A receipt that opened two lots of one number told apart by expiry alone
+--      (two PO lines of one SKU and lot with different expiries: openForReceipt matched lot and expiry) has them
+--      merged into its oldest one - stock rows, ledger lines and damage reports repointed, the others archived and
+--      deleted, each merge listed in a NOTICE;
 --   4. the functions and the view that read those columns are rewritten without them: inventory.check_receivable_item,
 --      inventory.enforce_sku_policy, inventory.resolve_stock_item_lot, procurement.check_goods_receipt_line_frozen and
 --      the view inventory.stock_package_balance (which loses its expiry_date column);
@@ -33,27 +35,6 @@
 -- Every value dropped is archived in platform.legacy_archive first: the alert rows whole, the queue rows whole, and for
 -- the columns the row id with the values it loses.
 -- =============================================================================
-
-
--- ---------------------------------------------------------------------------------------------
--- 0. Refuse what cannot be carried over
--- ---------------------------------------------------------------------------------------------
-DO $$
-DECLARE
-    clash text;
-BEGIN
-    SELECT string_agg(format('%s / %s / %s', l.goods_receipt_id, l.sku, l.lot), ', ')
-      INTO clash
-      FROM (SELECT goods_receipt_id, sku, coalesce(lot_number, '') AS lot
-              FROM inventory.stock_lot
-             WHERE goods_receipt_id IS NOT NULL
-             GROUP BY goods_receipt_id, sku, coalesce(lot_number, '')
-            HAVING count(*) > 1) l;
-    IF clash IS NOT NULL THEN
-        RAISE EXCEPTION 'V20261111000300: these receipts opened two lots of one SKU and lot number told apart only by expiry; merge them by hand first: %', clash;
-    END IF;
-END
-$$;
 
 
 -- ---------------------------------------------------------------------------------------------
@@ -294,6 +275,59 @@ SELECT p.id                                                                     
 
 COMMENT ON VIEW inventory.stock_package_balance IS
     'One row per carton: its label, unit, place and status, and what its stock rows hold. Read-only.';
+
+
+-- ---------------------------------------------------------------------------------------------
+-- 3b. Lots of one receipt told apart by expiry alone become one
+-- ---------------------------------------------------------------------------------------------
+-- After the functions above: the old resolve_stock_item_lot compared the expiry and would refuse the repointing. The
+-- keeper is the receipt's oldest lot of that SKU and number. The ledger is append-only and a damage report immutable:
+-- their guards are off for this one statement each, and the old lot of every line changed is archived.
+CREATE TEMP TABLE lot_merge ON COMMIT DROP AS
+SELECT l.id AS duplicate_id, k.keeper_id
+  FROM inventory.stock_lot l
+  JOIN (SELECT DISTINCT ON (goods_receipt_id, sku, coalesce(lot_number, ''))
+               goods_receipt_id, sku, coalesce(lot_number, '') AS lot, id AS keeper_id
+          FROM inventory.stock_lot
+         WHERE goods_receipt_id IS NOT NULL
+         ORDER BY goods_receipt_id, sku, coalesce(lot_number, ''), created_at, id) k
+    ON k.goods_receipt_id = l.goods_receipt_id AND k.sku = l.sku AND k.lot = coalesce(l.lot_number, '')
+ WHERE l.id <> k.keeper_id;
+
+DO $$
+DECLARE
+    merged text;
+BEGIN
+    SELECT string_agg(format('%s -> %s', duplicate_id, keeper_id), ', ') INTO merged FROM lot_merge;
+    IF merged IS NOT NULL THEN
+        RAISE NOTICE 'V20261111000300: lots of one receipt, SKU and lot number merged into the oldest: %', merged;
+    END IF;
+END
+$$;
+
+INSERT INTO platform.legacy_archive (source_table, row_id, row_data)
+SELECT 'inventory.stock_lot', l.id, to_jsonb(l) FROM inventory.stock_lot l WHERE l.id IN (SELECT duplicate_id FROM lot_merge)
+UNION ALL
+SELECT 'inventory.stock_item', s.id, jsonb_build_object('lot_id', s.lot_id, 'merged_into', m.keeper_id)
+  FROM inventory.stock_item s JOIN lot_merge m ON m.duplicate_id = s.lot_id
+UNION ALL
+SELECT 'inventory.stock_movement', g.id, jsonb_build_object('lot_id', g.lot_id, 'merged_into', m.keeper_id)
+  FROM inventory.stock_movement g JOIN lot_merge m ON m.duplicate_id = g.lot_id
+UNION ALL
+SELECT 'inventory.stock_damage_report', d.id, jsonb_build_object('lot_id', d.lot_id, 'merged_into', m.keeper_id)
+  FROM inventory.stock_damage_report d JOIN lot_merge m ON m.duplicate_id = d.lot_id;
+
+UPDATE inventory.stock_item s SET lot_id = m.keeper_id FROM lot_merge m WHERE s.lot_id = m.duplicate_id;
+
+ALTER TABLE inventory.stock_movement DISABLE TRIGGER tg_stock_movement_append_only;
+UPDATE inventory.stock_movement g SET lot_id = m.keeper_id FROM lot_merge m WHERE g.lot_id = m.duplicate_id;
+ALTER TABLE inventory.stock_movement ENABLE TRIGGER tg_stock_movement_append_only;
+
+ALTER TABLE inventory.stock_damage_report DISABLE TRIGGER tg_stock_damage_report_immutable;
+UPDATE inventory.stock_damage_report d SET lot_id = m.keeper_id FROM lot_merge m WHERE d.lot_id = m.duplicate_id;
+ALTER TABLE inventory.stock_damage_report ENABLE TRIGGER tg_stock_damage_report_immutable;
+
+DELETE FROM inventory.stock_lot WHERE id IN (SELECT duplicate_id FROM lot_merge);
 
 
 -- ---------------------------------------------------------------------------------------------
