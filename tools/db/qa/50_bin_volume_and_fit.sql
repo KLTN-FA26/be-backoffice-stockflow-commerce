@@ -124,6 +124,47 @@ SELECT pg_temp.expect_ok('BV16 a carton already standing in a bin is not judged 
     UPDATE inventory.uom_conversions SET height_cm = 46 WHERE id = md5('qa50:unit:sofa')::uuid;
     UPDATE inventory.stock_package SET last_modified_by = 'qa50' WHERE id = md5('qa50:pk:sofa')::uuid;
     UPDATE inventory.uom_conversions SET height_cm = 40 WHERE id = md5('qa50:unit:sofa')::uuid $q$);
+\echo '--- boundaries: exactly equal fits, a millimetre over does not'
+SELECT pg_temp.expect_ok('BV21 a carton exactly the bin''s width, length and clear height fits (table, not turnable)', $q$
+    INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
+    VALUES (md5('qa50:level:E')::uuid, md5('demo:shelf:HCM-B01')::uuid, 7, 5, 0.40, 500);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
+                                            is_putaway_target, status)
+    VALUES (md5('qa50:loc:E')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-B01-7-E', NULL, TRUE, TRUE, 'ACTIVE');
+    INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
+    VALUES (md5('qa50:bin:E')::uuid, md5('qa50:level:E')::uuid, md5('qa50:loc:E')::uuid, 'E', 0, 0, 0.5, 0.6, 0,
+            'STANDARD');
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
+    VALUES (gen_random_uuid(), 'QA50-EQ', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa50:unit:table')::uuid, 1,
+            'HCM-B01-7-E') $q$);
+SELECT pg_temp.expect_fail('BV22 a millimetre longer than the bin does not fit', $q$
+    UPDATE inventory.uom_conversions SET length_cm = 60.1 WHERE id = md5('qa50:unit:table')::uuid;
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
+    VALUES (gen_random_uuid(), 'QA50-L1', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa50:unit:table')::uuid, 1,
+            'HCM-B01-7-E') $q$);
+SELECT pg_temp.expect_fail('BV23 a millimetre wider than the bin does not fit', $q$
+    UPDATE inventory.uom_conversions SET width_cm = 50.1 WHERE id = md5('qa50:unit:table')::uuid;
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
+    VALUES (gen_random_uuid(), 'QA50-W1', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa50:unit:table')::uuid, 1,
+            'HCM-B01-7-E') $q$);
+SELECT pg_temp.expect_fail('BV24 a millimetre taller than the clear height does not fit', $q$
+    UPDATE inventory.uom_conversions SET height_cm = 40.1 WHERE id = md5('qa50:unit:table')::uuid;
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
+    VALUES (gen_random_uuid(), 'QA50-H1', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa50:unit:table')::uuid, 1,
+            'HCM-B01-7-E') $q$);
+
+\echo '--- a legacy level without a clear height (written before V20261112000100)'
+SELECT pg_temp.expect_ok('BV25 fixture: a legacy level without a clear height, written while the check was off', $q$
+    ALTER TABLE warehouse.shelf_level DROP CONSTRAINT ck_shelf_level_usable_height_required;
+    INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
+    VALUES (md5('qa50:level:legacy')::uuid, md5('demo:shelf:HCM-B01')::uuid, 8, 6, NULL, 500);
+    ALTER TABLE warehouse.shelf_level ADD CONSTRAINT ck_shelf_level_usable_height_required
+        CHECK (usable_height IS NOT NULL) NOT VALID $q$);
+SELECT pg_temp.expect_fail('BV26 any edit of the legacy level that leaves it without a clear height is refused', $q$
+    UPDATE warehouse.shelf_level SET max_weight = 400 WHERE id = md5('qa50:level:legacy')::uuid $q$);
+SELECT pg_temp.expect_ok('BV27 the same edit with a clear height is accepted', $q$
+    UPDATE warehouse.shelf_level SET max_weight = 400, usable_height = 1.2 WHERE id = md5('qa50:level:legacy')::uuid $q$);
+
 SELECT pg_temp.expect_ok('BV17 a level without a clear height does not limit the height (legacy data)', $q$
     ALTER TABLE warehouse.shelf_level DROP CONSTRAINT ck_shelf_level_usable_height_required;
     UPDATE warehouse.shelf_level SET usable_height = NULL WHERE id = md5('qa50:level')::uuid;
