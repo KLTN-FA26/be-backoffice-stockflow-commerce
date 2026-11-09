@@ -524,6 +524,7 @@ Enum ordering.customer_order_payment_term {
 
 Enum ordering.customer_order_status {
   DRAFT
+  PENDING_CONTRACT
   PENDING_PAYMENT
   CONFIRMED
   IN_PRODUCTION
@@ -2751,6 +2752,7 @@ Table ordering.customer_order [headercolor: #C0392B] {
   closed_amount                 decimal(19,4) [not null, default: 0]
   tax_amount                    decimal(19,4) [not null, default: 0]
   net_amount                    decimal(19,4) [note: 'generated: (total_amount - tax_amount)']
+  contract_signed_at            timestamptz
 }
 
 Table ordering.delivery_batch [headercolor: #C0392B] {

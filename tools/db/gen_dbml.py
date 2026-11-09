@@ -83,7 +83,9 @@ for c in cons:
         m = re.match(r"^CHECK \(\(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)$", c["def"])
         if not m:
             m = re.match(r"^CHECK \(\(\((\w+) IS NULL\) OR \(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)\)$", c["def"])
-            if m:
+            # "col IS NULL OR col IN (...)" only: "other IS NULL OR col IN (...)" is a rule about some rows, not the
+            # column's values - read as an enum, it would replace the real list with a subset of it.
+            if m and m.group(1) == m.group(2):
                 col, vals = m.group(2), m.group(3)
             else:
                 continue
@@ -91,7 +93,10 @@ for c in cons:
             col, vals = m.group(1), m.group(2)
         values = re.findall(r"'([^']*)'::character varying", vals)
         if values and all(re.match(r"^[A-Z][A-Z0-9_]*$", v) for v in values):
-            enums_by_col[(c["s"], c["t"], col)] = values
+            # Two lists for one column: keep the longer, whatever order the catalogue returned them in.
+            known = enums_by_col.get((c["s"], c["t"], col))
+            if known is None or len(values) > len(known):
+                enums_by_col[(c["s"], c["t"], col)] = values
 
 for i in idx:
     key = (i["s"], i["t"])
