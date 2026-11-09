@@ -25,7 +25,6 @@ import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
-import com.stockflow.product.api.CustomerSku;
 import com.stockflow.product.api.CustomerSkus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

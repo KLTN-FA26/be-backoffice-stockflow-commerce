@@ -1,6 +1,5 @@
 package com.stockflow.catalog;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.stockflow.catalog.internal.service.CustomerPriceService;
