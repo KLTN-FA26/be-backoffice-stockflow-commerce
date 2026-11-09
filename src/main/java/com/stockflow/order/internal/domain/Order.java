@@ -950,9 +950,10 @@ public final class Order extends AggregateRoot {
         if (status != OrderStatus.CONFIRMED) {
             throw new InvalidOrderTransitionException(orderNumber, status, "only a confirmed order can be released");
         }
-        if (lines.stream().anyMatch(line -> !line.isReserved())) {
+        if (paidByContract() && lines.stream().anyMatch(line -> !line.isReserved())) {
             // An order confirmed by its contract holds nothing until its shipping warehouse is chosen and its stock held
-            // there (17 §4.2, 4B-7): released now, it would go to the warehouse with nothing to pick.
+            // there (17 §4.2, 4B-7): released now, it would go to the warehouse with nothing to pick. (A checkout order
+            // reserved its stock when it was placed.)
             throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("Order %s holds no stock for some of its "
                     + "lines: choose its shipping warehouse and hold its stock first").formatted(orderNumber));
         }
