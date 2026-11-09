@@ -660,6 +660,19 @@ class ProductionScheduleIntegrationTest {
     }
 
     @Test
+    @DisplayName("step 48: the order's own writes are triggers - signed and its warehouse chosen, PO_NEEDED opens with "
+            + "no recompute asked for")
+    void theOrdersWritesAreTriggers() {
+        UUID salesUser = staff("SALES_STAFF", null);
+        UUID orderId = confirmedOrder(oneBatchIn(10), a);
+        UUID batch = batchId(orderId, 1);
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(openAlert(DelayAlertType.PO_NEEDED, batch)).isNotNull());
+        UUID opened = openAlert(DelayAlertType.PO_NEEDED, batch);
+        await().atMost(WAIT).untilAsserted(() -> assertThat(told(salesUser, opened)).isTrue());
+    }
+
+    @Test
     @DisplayName("a recompute joins its caller's transaction: nothing of it is seen outside, and it rolls back with it")
     void recomputeJoinsTheCallersTransaction() {
         UUID orderId = confirmedOrder(oneBatchIn(15), a);

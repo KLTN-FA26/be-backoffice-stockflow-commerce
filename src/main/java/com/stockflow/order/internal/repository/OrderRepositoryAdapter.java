@@ -15,6 +15,8 @@ import com.stockflow.order.internal.entity.OrderShipmentJpaEntity;
 import com.stockflow.order.internal.entity.OrderStatusHistoryJpaEntity;
 import com.stockflow.order.internal.domain.OrderShipment;
 import com.stockflow.order.internal.domain.OrderTransition;
+import com.stockflow.order.internal.domain.ContractOrderSaved;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -40,9 +42,13 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     private final java.time.Clock clock;
     private final jakarta.persistence.EntityManager entityManager;
 
+    private final ApplicationEventPublisher events;
+
     OrderRepositoryAdapter(OrderJpaRepository jpa, OrderNumberSequence sequence,
                            OrderStatusHistoryJpaRepository history, OrderShipmentJpaRepository shipments,
-                           java.time.Clock clock, jakarta.persistence.EntityManager entityManager) {
+                           java.time.Clock clock, jakarta.persistence.EntityManager entityManager,
+                           ApplicationEventPublisher events) {
+        this.events = events;
         this.entityManager = entityManager;
         this.shipments = shipments;
         this.jpa = jpa;
@@ -167,13 +173,25 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
             // shipments are read, so the replaced lines are written first.
             OrderJpaEntity saved = jpa.saveAndFlush(managed);
             saveShipments(order);
+            announce(order);
             return toDomain(saved);
         }
         OrderJpaEntity inserted = jpa.save(OrderPersistenceMapper.toNewEntity(order));
         // A new order is inserted in the status it was placed in: one history row, from nothing.
         recordTransition(order, new OrderTransition(null, order.status(), null, null, null));
         saveShipments(order);
+        announce(order);
         return toDomain(inserted);
+    }
+
+    /**
+     * 4A-7: an order of a contract saved is announced here, where every path writing one passes, so its delay alerts
+     * are recomputed after the commit whichever operation changed it. Other orders have no delivery batches to be late.
+     */
+    private void announce(Order order) {
+        if (order.paidByContract()) {
+            events.publishEvent(new ContractOrderSaved(order.id().value()));
+        }
     }
 
     /** The order's shipments: a new one is inserted with its units, a known one takes its status and outcome. */

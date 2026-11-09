@@ -1,9 +1,7 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.contracts.OrderCancelled;
-import com.stockflow.contracts.OrderReleased;
-import com.stockflow.contracts.OrderRemainderClosed;
-import com.stockflow.contracts.VehicleHandedOver;
+import com.stockflow.contracts.StockReservationReleased;
+import com.stockflow.order.internal.domain.ContractOrderSaved;
 import com.stockflow.order.internal.domain.ProductionOrderSaved;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
@@ -17,11 +15,14 @@ import java.util.UUID;
  * <ul>
  *   <li>a production order written - drawn up, edited, submitted, sent, accepted with its expected day, received
  *       against, cancelled, closed ({@link ProductionOrderSaved}, published on every save);</li>
- *   <li>goods of the order handed over ({@link VehicleHandedOver}), the order released (its shortage is no longer
- *       followed), cancelled, or its remainder closed.</li>
+ *   <li>an order of a contract written ({@link ContractOrderSaved}, published on every save): confirmed by its
+ *       signing, its installment on signing or its credit approval; its shipping warehouse chosen and stock held there;
+ *       stock arrived and topped up for it (a putaway tops up the waiting orders, which saves them); released, handed
+ *       over, put on hold, cancelled, its remainder closed;</li>
+ *   <li>a hold of the order released ({@link StockReservationReleased}): inventory frees it without writing the order,
+ *       and what it no longer holds may be short again.</li>
  * </ul>
- * Moving a batch's window (BR-28) is not built yet; when it is, its event belongs here. Stock arriving and being held
- * (a putaway, a hold released) is left to the nightly sweep: it says nothing about which order it serves.
+ * Moving a batch's window (BR-28) is not built yet; when it is, its event belongs here.
  *
  * <p>After the commit and asynchronous ({@code @ApplicationModuleListener}): an alert never holds up, and never fails,
  * the operation that changed it. A recompute that fails is thrown, so its publication stays incomplete in the event
@@ -42,23 +43,15 @@ class DelayAlertListener {
     }
 
     @ApplicationModuleListener
-    public void on(VehicleHandedOver event) {
-        recompute(event.orderId());
+    public void on(ContractOrderSaved event) {
+        recompute(event.salesOrderId());
     }
 
     @ApplicationModuleListener
-    public void on(OrderReleased event) {
-        recompute(event.orderId());
-    }
-
-    @ApplicationModuleListener
-    public void on(OrderCancelled event) {
-        recompute(event.orderId());
-    }
-
-    @ApplicationModuleListener
-    public void on(OrderRemainderClosed event) {
-        recompute(event.orderId());
+    public void on(StockReservationReleased event) {
+        if (event.orderId() != null) {
+            recompute(event.orderId());
+        }
     }
 
     /**
