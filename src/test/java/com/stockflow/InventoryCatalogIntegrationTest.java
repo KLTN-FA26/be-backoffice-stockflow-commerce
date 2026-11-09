@@ -2,7 +2,6 @@ package com.stockflow;
 
 import static org.assertj.core.api.Assertions.*;
 
-import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
@@ -58,7 +57,7 @@ class InventoryCatalogIntegrationTest {
     @Autowired TransactionTemplate transactions;
     @Autowired MockMvc mvc;
     @Autowired OrderService orders;
-    @Autowired CatalogService checkoutCatalog;
+    @Autowired com.stockflow.product.api.ProductService productService;
 
     @Test
     void missingPriceRollsBackTheWholeBackfillAndRetryDiscoversItLater() {
@@ -330,12 +329,13 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     }
 
     /**
-     * The server price and the replayed snapshot, through account checkout. This test used guest
-     * checkout until SCRUM-450 retired it (B2B only, decision 2026-10-06); the pricing guarantees it
-     * pins belong to the checkout that remains, and the retired one must not reserve anything.
+     * The order's own agreed price and its replay, through the test fixture {@code placeOrder}. Nothing prices an
+     * order at checkout any more (the customer does not place orders, team plan 5-2): each line is placed at the price
+     * on the command, and a retry of the same request converges on the same order whatever the listing costs by then.
+     * Guest checkout stays retired (B2B only, decision 2026-10-06) and must not reserve anything.
      */
     @Test
-    void accountCheckoutUsesServerPriceAndReplayKeepsTheAgreedSnapshot() {
+    void placedOrderKeepsTheCommandPriceAndReplayKeepsTheAgreedSnapshot() {
         var f = fixture("APPROVED");
         gallery(f);
         stock(f, 10, null, null, null);
@@ -349,15 +349,6 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         catalog.publish(f.product());
         projection.project(f.product());
         UUID buyer = activeCustomerWithShippingAddress();
-        var tampered =
-                new PlaceOrderCommand(
-                        UUID.randomUUID(), buyer, null, null, true,
-                        List.of(new PlaceOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(1), null)));
-        assertThatThrownBy(() -> orders.placeOrder(tampered))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CHECKOUT_PRICE_CHANGED));
-        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(10);
 
         var address =
                 new PlaceGuestOrderCommand.Address(
@@ -385,13 +376,6 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         assertThat(orders.placeOrder(accepted).orderId()).isEqualTo(order.orderId());
         assertThat(orders.placeOrder(accepted).total()).isEqualTo(Money.vnd(100));
         assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(9);
-        catalog.unpublish(f.product());
-        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
     }
 
     /** An ACTIVE customer of its own with a default shipping address, so account checkout can run. */
@@ -1061,12 +1045,8 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
         catalog.publish(f.product());
         projection.project(f.product());
         write("update product.variants set status='BLOCKED' where id=?", f.skuId());
-        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+        assertThat(productService.purchasability(Set.of(f.sku())))
+                .containsEntry(f.sku().toUpperCase(), com.stockflow.product.api.Purchasability.VARIANT_NOT_ACTIVE);
     }
 
     @Test

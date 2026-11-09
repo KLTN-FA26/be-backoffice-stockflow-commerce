@@ -2,12 +2,10 @@ package com.stockflow.product;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.product.api.ProductService;
+import com.stockflow.product.api.Purchasability;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.procurement.api.CreatePOLineCommand;
@@ -87,7 +85,6 @@ class ProductLifecycleIntegrationTest {
     @Autowired ProductTaxonomyService taxonomy;
     @Autowired ProcurementService procurement;
     @Autowired SupplierItemService supplierCatalog;
-    @Autowired CatalogService catalog;
     @Autowired CatalogProjectionService projection;
 
     private UUID editorUser;
@@ -471,7 +468,7 @@ class ProductLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("a discontinued PUBLISHED product leaves the storefront and checkout, and its catalog rows are hidden")
+    @DisplayName("a discontinued PUBLISHED product leaves the storefront and new purchases, and its catalog rows are hidden")
     void discontinuedProductIsHiddenFromTheCatalog() throws Exception {
         Published product = publishedProduct("DISC");
         String shopper = token(UUID.randomUUID(), "SALES_STAFF");
@@ -484,15 +481,15 @@ class ProductLifecycleIntegrationTest {
         assertRefused(send("GET", shopper, "/api/v1/catalog/products/" + product.slug(), null), 404, "NOT_FOUND");
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + product.slug() + "')]").isEmpty());
-        assertThatThrownBy(() -> catalog.checkoutPrices(Set.of(product.sku()))).isInstanceOfSatisfying(BusinessException.class,
-                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+        assertThat(products.purchasability(Set.of(product.sku())).get(product.sku().toUpperCase()))
+                .isEqualTo(Purchasability.PRODUCT_DISCONTINUED);
         awaitCatalogHides(product);
         // Terminal: it cannot come back through the catalog either.
         assertRefused(send("POST", editor(), "/api/v1/products/" + product.id() + "/publication", null), 409, "PRODUCT_NOT_APPROVED");
     }
 
     @Test
-    @DisplayName("a suspended PUBLISHED product leaves the storefront and checkout; resuming gives APPROVED, publishing shows it again")
+    @DisplayName("a suspended PUBLISHED product leaves the storefront and new purchases; resuming gives APPROVED, publishing shows it again")
     void suspendedProductIsHiddenFromTheCatalog() throws Exception {
         Published product = publishedProduct("SUSP");
         UUID id = product.id();
@@ -502,7 +499,7 @@ class ProductLifecycleIntegrationTest {
         send("GET", shopper, "/api/v1/catalog/products/" + slug, null).andExpect(status().isOk());
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + slug + "')]").isNotEmpty());
-        assertThat(catalog.checkoutPrices(Set.of(sku))).containsKey(sku);
+        assertThat(products.purchasability(Set.of(sku)).get(sku.toUpperCase())).isEqualTo(Purchasability.PURCHASABLE);
 
         long version = versionOf(id);
         send("POST", approver(), "/api/v1/products/" + id + "/suspension", reasonAndVersion("recall", version))
@@ -513,8 +510,7 @@ class ProductLifecycleIntegrationTest {
         assertRefused(send("GET", shopper, "/api/v1/catalog/products/" + slug, null), 404, "NOT_FOUND");
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + slug + "')]").isEmpty());
-        assertThatThrownBy(() -> catalog.checkoutPrices(Set.of(sku))).isInstanceOfSatisfying(BusinessException.class,
-                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+        assertThat(products.purchasability(Set.of(sku)).get(sku.toUpperCase())).isEqualTo(Purchasability.PRODUCT_INACTIVE);
         // And the catalog's own rows follow, once it has been told (CatalogListingChanged).
         awaitCatalogHides(product);
 
