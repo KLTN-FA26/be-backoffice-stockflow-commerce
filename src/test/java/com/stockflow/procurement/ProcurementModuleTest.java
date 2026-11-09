@@ -31,6 +31,8 @@ class ProcurementModuleTest {
     /** Notification (booted here) asks customer for addresses through this; customer is not booted (SCRUM-352). */
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.CustomerDirectory customerDirectory;
+    /** Notification (booted here) reads a production order's text through this; order implements it and is not booted (4A-3). */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
 
     @Test
     @DisplayName("procurement starts and answers through its api with the other modules absent")

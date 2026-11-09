@@ -32,6 +32,8 @@ class CustomerModuleTest {
     @Autowired ApplicationContext context;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    /** Notification (booted here) reads a production order's text through this; order implements it and is not booted (4A-3). */
+    @MockitoBean com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
 
     @Test
     @DisplayName("customer starts and answers through its api with the other modules absent")
