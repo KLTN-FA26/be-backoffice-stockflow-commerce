@@ -45,8 +45,8 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
                                      placed_at, version, created_at)
 SELECT md5('qa15:other')::uuid, 'SO-QA-15B', c.id, gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at, received_at)
-VALUES (md5('qa15:layer')::uuid, 'SOFA-3S-GREY', 'HCM-B01-2-B', 6, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '3 days');
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at, received_at)
+VALUES (md5('qa15:layer')::uuid, 'SOFA-3S-GREY', 'HCM-B01-2-B', 'UNTRACED', 6, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '3 days');
 
 \echo '--- SKU reservations (V20261023000100)'
 SELECT pg_temp.expect_ok('SR1 a checkout reservation of a SKU, on no stock row', $q$
@@ -110,9 +110,9 @@ SELECT pg_temp.expect_fail('LT4 a ledger line naming a lot of another SKU', $q$
     VALUES (gen_random_uuid(), 'PICK', 'SOFA-3S-GREY', 'HCM-B01-2-B', 1, 'ORDER', md5('qa15:order')::uuid, NOW(),
             (SELECT id FROM inventory.stock_lot WHERE sku <> 'SOFA-3S-GREY' LIMIT 1)) $q$);
 SELECT pg_temp.expect_ok('LT5 a pick from the layer takes its lot and its order number', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type,
-        reference_id, occurred_at, order_id)
-    VALUES (md5('qa15:pick')::uuid, 'PICK', 'SOFA-3S-GREY', 'HCM-B01-2-B', 1, 'ORDER', md5('qa15:order')::uuid, NOW(),
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
+        reference_type, reference_id, occurred_at, order_id)
+    VALUES (md5('qa15:pick')::uuid, 'PICK', 'SOFA-3S-GREY', 'UNTRACED', 'HCM-B01-2-B', 1, 'ORDER', md5('qa15:order')::uuid, NOW(),
             md5('qa15:order')::uuid) $q$);
 SELECT pg_temp.expect_true('LT6 ... with the layer''s lot and the order''s number',
     (SELECT m.lot_id = s.lot_id AND m.order_number = 'SO-QA-15'

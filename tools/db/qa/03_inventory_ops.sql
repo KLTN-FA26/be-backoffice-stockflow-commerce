@@ -81,41 +81,69 @@ SELECT pg_temp.expect_fail('I7 movement of an unknown sku', $q$
 SELECT pg_temp.expect_fail('I8 ledger row edited', $q$ UPDATE inventory.stock_movement SET quantity = 3 WHERE id = md5('qa:mv:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I9 ledger row deleted', $q$ DELETE FROM inventory.stock_movement WHERE id = md5('qa:mv:1')::uuid $q$);
 
-\echo '--- cycle count and stock adjustment'
+\echo '--- cycle count and stock adjustment (by carton since V20261113000300, team plan 4C-3)'
+-- Two whole cartons of 4 sofas on HCM-A01-2-B and HCM-A02-1-A: what a count line and an adjustment name.
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa03:unit')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA03_CTN', 4);
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+                                     location_code, status)
+VALUES (md5('qa03:pk1')::uuid, 'QA03-LPN-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa03:unit')::uuid, 4, 4,
+        'HCM-A01-2-B', 'IN_STOCK'),
+       (md5('qa03:pk2')::uuid, 'QA03-LPN-2', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa03:unit')::uuid, 4, 4,
+        'HCM-A02-1-A', 'IN_STOCK');
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
+                                  received_at, stock_package_id)
+VALUES (md5('qa03:pk1:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 'UNTRACED', 4, 0, 'AVAILABLE', NOW(),
+        NOW() - interval '1 day', md5('qa03:pk1')::uuid),
+       (md5('qa03:pk2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A02-1-A', 'UNTRACED', 4, 0, 'AVAILABLE', NOW(),
+        NOW() - interval '1 day', md5('qa03:pk2')::uuid);
 INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type, status, started_at, assigned_user_id)
 VALUES (md5('qa:cc:1')::uuid, 'CC-QA-1', md5('demo:wh:HCM')::uuid, 'SHORT_PICK', 'IN_PROGRESS', NOW(), md5('demo:user:editor')::uuid);
 SELECT pg_temp.expect_fail('I10 counting a location of another warehouse', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HN-RCV01', 'SOFA-3S-GREY', 0, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail('I10b a loose count line: a count states cartons', $q$
     INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HN-RCV01', 'SOFA-3S-GREY', 0) $q$);
-SELECT pg_temp.expect_ok('I11 a count line, counted 23 of 25 expected', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, counted_by, counted_at)
-    VALUES (md5('qa:ccl:1')::uuid, md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 25, 23, md5('demo:user:editor')::uuid, NOW()) $q$);
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 0) $q$);
+SELECT pg_temp.expect_ok('I11 a count line: the carton booked, not found', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, counted_by, counted_at, stock_package_id)
+    VALUES (md5('qa:ccl:1')::uuid, md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 4, 0, md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail('I11b a count line, counted 3 of 4 booked: a carton is counted whole', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, counted_by, counted_at, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'SOFA-3S-GREY', 4, 3, md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk2')::uuid) $q$);
 SELECT pg_temp.expect_fail('I12 counted quantity without who/when', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'SOFA-3S-GREY', 8, 8) $q$);
-SELECT pg_temp.expect_fail('I13 the same slot twice in one count', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 25) $q$);
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'SOFA-3S-GREY', 4, 4, md5('qa03:pk2')::uuid) $q$);
+SELECT pg_temp.expect_fail('I13 the same carton twice in one count', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 4, md5('qa03:pk1')::uuid) $q$);
 SELECT pg_temp.expect_fail('I14 COMPLETED count without completed_at', $q$
     UPDATE inventory.cycle_count SET status = 'COMPLETED' WHERE id = md5('qa:cc:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I15 count variance adjustment without its count line', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-    VALUES (gen_random_uuid(), 'ADJ-QA-X', 'HCM-A01-2-B', 'SOFA-3S-GREY', -2, 'COUNT_VARIANCE', md5('demo:user:editor')::uuid) $q$);
-SELECT pg_temp.expect_ok('I16 variance adjustment requested', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-X', 'HCM-A01-2-B', 'SOFA-3S-GREY', -4, 'COUNT_VARIANCE', md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail('I15b count variance adjustment of no carton', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by)
-    VALUES (md5('qa:adj:1')::uuid, 'ADJ-QA-1', 'HCM-A01-2-B', 'SOFA-3S-GREY', -2, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid) $q$);
+    VALUES (gen_random_uuid(), 'ADJ-QA-Y', 'HCM-A01-2-B', 'SOFA-3S-GREY', -2, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('I15c count variance of part of a carton', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-Z', 'HCM-A01-2-B', 'SOFA-3S-GREY', -2, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_ok('I16 variance adjustment requested: the whole carton', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by, stock_package_id)
+    VALUES (md5('qa:adj:1')::uuid, 'ADJ-QA-1', 'HCM-A01-2-B', 'SOFA-3S-GREY', -4, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
 SELECT pg_temp.expect_fail('I17 adjustment approved by its requester', $q$
     UPDATE inventory.stock_adjustment SET status = 'APPROVED', decided_by = requested_by, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I18 rejection without a reason', $q$
     UPDATE inventory.stock_adjustment SET status = 'REJECTED', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I19 zero adjustment', $q$
     UPDATE inventory.stock_adjustment SET quantity_delta = 0 WHERE id = md5('qa:adj:1')::uuid $q$);
-SELECT pg_temp.expect_ok('I20 approved by someone else, posted, with its ledger row', $q$
+SELECT pg_temp.expect_ok('I20 approved by someone else, posted: the carton written off whole and LOST, with its ledger row', $q$
     UPDATE inventory.stock_adjustment SET status = 'APPROVED', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
     UPDATE inventory.stock_adjustment SET status = 'POSTED', posted_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
-    UPDATE inventory.stock_item SET on_hand = on_hand - 2 WHERE id = '11111111-1111-4111-8111-111111111111';
+    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa03:pk1:row')::uuid;
+    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa03:pk1')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type, reference_id, actor_id, occurred_at)
-    VALUES (gen_random_uuid(), 'COUNT_CORRECTION', 'SOFA-3S-GREY', 'HCM-A01-2-B', 2, 'STOCK_ADJUSTMENT', md5('qa:adj:1')::uuid, md5('demo:user:approver')::uuid, NOW()) $q$);
+    VALUES (gen_random_uuid(), 'COUNT_CORRECTION', 'SOFA-3S-GREY', 'HCM-A01-2-B', 4, 'STOCK_ADJUSTMENT', md5('qa:adj:1')::uuid, md5('demo:user:approver')::uuid, NOW()) $q$);
 
 \echo '--- inter-warehouse transfer (removed, V20261108000300)'
 SELECT pg_temp.expect_fail('I21 transfer orders are gone: stock never changes warehouse', $q$

@@ -297,8 +297,8 @@ INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, s
                                    allocated_qty, picked_qty, status, picked_by, picked_at, consumed_at)
 VALUES (md5('qa:pl:f46')::uuid, md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f46')::uuid,
         'SOFA-3S-GREY', 'HCM-A01-2-B', 2, 2, 2, 'PICKED', md5('demo:user:editor')::uuid, NOW(), NOW());
-INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, received_at, version, created_at)
-SELECT md5('qa:si:f46')::uuid, sku, 'HCM-QC01', 1, 0, 'DAMAGED', received_at, 0, NOW()
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, received_at, version, created_at)
+SELECT md5('qa:si:f46')::uuid, sku, 'HCM-QC01', lot_number, 1, 0, 'DAMAGED', received_at, 0, NOW()
   FROM inventory.stock_item WHERE id = '11111111-1111-4111-8111-111111111111';
 
 SELECT pg_temp.expect_fail('F46 more units found damaged at packing than the line picked', $q$
