@@ -93,17 +93,27 @@ final class RecordedDelivery {
             }
             logs.saveAndFlush(success);
         } catch (RuntimeException failure) {
-            // A transport that says the message will never be accepted (an invalid address, a revoked key) is not
-            // retried four more times: the delivery is final now and waits for a deliberate new generation.
-            boolean terminal = failure instanceof IllegalArgumentException
-                    || failure instanceof EmailDeliveryException refused && !refused.retryable()
-                    || logs.countByOperationReferenceAndDeliveryGenerationAndStatus(delivery.reference(),
-                    delivery.generation(), DeliveryStatus.FAILED) >= RETRIED_FAILURES;
-            attempts.failed(delivery.recipient(), delivery.channel(), failure, delivery.reference(),
-                    delivery.templateCode(), terminal, delivery.generation());
-            if (!terminal) {
-                throw failure;
-            }
+            failed(delivery, failure);
+        }
+    }
+
+    /**
+     * Records a failed attempt at the message - the transport's, or anything before it that kept the message from being
+     * written - so the attempt limit applies to it: final when it can never succeed or this was the fifth failure,
+     * otherwise rethrown for the retry. The attempt is written in a transaction of its own, so it stands even when the
+     * failure rolls the caller's back.
+     */
+    void failed(Delivery delivery, RuntimeException failure) {
+        // A transport that says the message will never be accepted (an invalid address, a revoked key) is not
+        // retried four more times: the delivery is final now and waits for a deliberate new generation.
+        boolean terminal = failure instanceof IllegalArgumentException
+                || failure instanceof EmailDeliveryException refused && !refused.retryable()
+                || logs.countByOperationReferenceAndDeliveryGenerationAndStatus(delivery.reference(),
+                delivery.generation(), DeliveryStatus.FAILED) >= RETRIED_FAILURES;
+        attempts.failed(delivery.recipient(), delivery.channel(), failure, delivery.reference(),
+                delivery.templateCode(), terminal, delivery.generation());
+        if (!terminal) {
+            throw failure;
         }
     }
 

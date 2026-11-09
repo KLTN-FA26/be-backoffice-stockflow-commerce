@@ -371,6 +371,8 @@ stockflow:
     # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
     supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
     po-retry-interval: PT1M
+    # How often messages to producers about their production orders that failed are tried again (4A-3).
+    production-order-retry-interval: PT1M
     # -------------------------------------------------------------------------
     # E-mail (SCRUM-352). Every message - supplier POs, staff notices, the portal invitation, customer order mail -
     # goes through one transport. resend: Resend's HTTP API (the dev and prod profiles' default); smtp: spring.mail

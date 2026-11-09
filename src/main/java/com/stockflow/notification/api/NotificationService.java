@@ -57,6 +57,14 @@ public interface NotificationService {
             UUID purchaseOrderId, int page, int size);
 
     /**
+     * Every attempt to tell a production order's producer something (4A-3): that it was sent, that its sample was
+     * approved, that it stopped - newest first, each named by its template code ({@code production_order_sent},
+     * {@code production_order_sample_approved}, {@code production_order_stopped}). Empty until the first message was
+     * attempted; a producer handed the slip by the coordinator has each message recorded as SKIPPED.
+     */
+    PageResponse<DeliveryAttemptSummary> productionOrderDeliveries(UUID productionOrderId, int page, int size);
+
+    /**
      * Sends a customer portal invitation now, outside any transaction. Call it after the invitation
      * has committed. Unlike the purchase-order mail this is not an event: the e-mail carries the only
      * copy of the secret, and an event payload is persisted until it is processed. A failure is
