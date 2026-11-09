@@ -491,7 +491,7 @@ class PurchasingRemovalMigrationUpgradeTest {
     /** The database refuses the statement as an integrity violation whose message names {@code fragment}. */
     private static void refusedWith(Connection db, String fragment, String sql) {
         SQLException refusal = catchThrowableOfType(SQLException.class, () -> RawSql.update(db, sql));
-        assertThat(refusal).as("%s is refused, but the database accepted: %s", fragment, sql).isNotNull();
+        assertThat((Object) refusal).as("%s is refused, but the database accepted: %s", fragment, sql).isNotNull();
         assertThat(refusal.getSQLState()).as(refusal.getMessage()).startsWith("23");
         assertThat(refusal.getMessage()).contains(fragment);
     }
