@@ -43,6 +43,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -129,7 +130,7 @@ public class ProductionOrderService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "Order %s has no delivery batch %d"
                         .formatted(order.orderNumber(), batchSeq)));
         Producer producer = activeProducer(producerId);
-        Map<UUID, Integer> lacking = lacking(order, batch, null);
+        Map<UUID, Integer> lacking = lacking(order, contract.schedule(), batch, null);
         if (lacking.values().stream().noneMatch(cartons -> cartons > 0)) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOTHING_SHORT, ("Delivery batch %d of order %s lacks "
                     + "nothing: its stock is held, or on its way").formatted(batchSeq, order.orderNumber()));
@@ -165,7 +166,9 @@ public class ProductionOrderService {
     }
 
     /**
-     * The coordinator's changes to a draft read at {@code version} (B33).
+     * The coordinator's changes to a draft read at {@code version} (B33). The sales order is locked first, as drawing up
+     * locks it: two drafts of one batch edited or drawn up together would otherwise each see the other's old cartons and
+     * together make more than the batch lacks.
      *
      * @throws BusinessException {@code PRODUCTION_ORDER_NOT_FOUND}; {@code OPTIMISTIC_LOCK};
      *         {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code PRODUCER_INACTIVE};
@@ -173,31 +176,39 @@ public class ProductionOrderService {
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "production-order", resourceId = "#id")
     public ProductionOrder edit(UUID id, long version, ProductionOrder.Draft draft) {
-        ProductionOrder production = locked(id, version);
+        Locked locked = lockedWithOrder(id, version);
         activeProducer(draft.producerId());
-        Order order = orders.findById(new OrderId(production.salesOrderId())).orElseThrow();
-        DeliveryBatch batch = batchOf(production);
-        production.edit(draft, lacking(order, batch, production.id()));
-        return productionOrders.save(production);
+        locked.production().edit(draft, lacking(locked));
+        return productionOrders.save(locked.production());
     }
 
-    /** DRAFT → PENDING_APPROVAL. */
+    /**
+     * DRAFT → PENDING_APPROVAL, while the batch still lacks what it makes: stock that arrived since it was drawn up (a
+     * top-up, goods returned, another shipping warehouse) may have covered part of it.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}; {@code PRODUCTION_ORDER_STATUS_INVALID};
+     *         {@code PRODUCER_INACTIVE}; {@code OPTIMISTIC_LOCK}
+     */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
     public ProductionOrder submit(UUID id, long version, UUID by) {
-        ProductionOrder production = locked(id, version);
+        Locked locked = lockedWithOrder(id, version);
+        ProductionOrder production = locked.production();
         activeProducer(production.producerId());
+        production.requireWithin(lacking(locked));
         production.submit(by, clock.instant());
         log.info("Production order {} submitted for approval", production.code());
         return productionOrders.save(production);
     }
 
     /**
-     * Approved by the Sales Manager - never the one who drew it up - so sent (BR-23). The print files of every line are
-     * re-read and re-hashed first, outside any transaction (a full download of each bundle): a production order is not
-     * sent to print a file that changed.
+     * Approved by the Sales Manager - never the one who drew it up - so sent (BR-23), while the batch still lacks what it
+     * makes (as on submission). The print files of every line are re-read and re-hashed first, before any row is locked
+     * (a full download of each bundle, each in its own read-only transaction): a production order is not sent to print
+     * a file that changed.
      *
      * @throws BusinessException {@code PRODUCTION_ORDER_SELF_APPROVAL}; {@code PRINT_FILE_MISMATCH};
-     *         {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code OPTIMISTIC_LOCK}
+     *         {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}; {@code PRODUCTION_ORDER_STATUS_INVALID};
+     *         {@code OPTIMISTIC_LOCK}
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @Auditable(action = AuditAction.APPROVE, resourceType = "production-order", resourceId = "#id")
@@ -222,7 +233,9 @@ public class ProductionOrderService {
             }
         }
         return tx.execute(status -> {
-            ProductionOrder production = locked(id, version);
+            Locked locked = lockedWithOrder(id, version);
+            ProductionOrder production = locked.production();
+            production.requireWithin(lacking(locked));
             production.approve(by, clock.instant());
             ProductionOrder saved = productionOrders.save(production);
             log.info("Production order {} approved and sent", saved.code());
@@ -280,39 +293,68 @@ public class ProductionOrderService {
         ProductionOrder production = productionOrders.findById(productionOrderId).orElseThrow(() ->
                 notFound(productionOrderId));
         Order order = orders.findById(new OrderId(production.salesOrderId())).orElseThrow();
-        return lacking(order, batchOf(production), production.id());
+        List<DeliveryBatch> schedule = scheduleOf(production);
+        return lacking(order, schedule, batchOf(production, schedule), production.id());
     }
 
     // ---- the batch's shortage -----------------------------------------------------------------------------------------
 
     /**
-     * Per order line of the batch, the cartons it lacks (BR-05): its cartons in the batch, less what is held for it at
-     * the shipping warehouse (the earliest batch first, 17 §4.2 step 3), less what open production orders of the batch
-     * still bring - {@code excluding} one of them (a draft being edited may keep its own cartons).
+     * Per order line of {@code batch}, the cartons it lacks (BR-05). What is held at the shipping warehouse counts for
+     * the earliest batch first (17 §4.2 step 3, the coverage). So do the cartons open production orders still bring:
+     * walking the batches in order, a production order's cartons cover its own batch, and what is left of them once that
+     * batch is covered goes on to the next - goods arriving fill the earliest batch still short, so a surplus is never
+     * produced twice. {@code excluding} leaves one production order out (a draft being edited or checked counts against
+     * what remains without it).
      */
-    private Map<UUID, Integer> lacking(Order order, DeliveryBatch batch, UUID excluding) {
-        ShippingWarehouseService.Coverage coverage = shippingWarehouses.coverage(order.id().value());
-        Map<UUID, Integer> lacking = new LinkedHashMap<>();
-        coverage.batches().stream().filter(b -> b.seq() == batch.seq()).findFirst()
-                .ifPresent(b -> b.lines().forEach(line -> lacking.merge(line.lineId(), line.shortCartons(),
-                        Integer::sum)));
+    private Map<UUID, Integer> lacking(Order order, List<DeliveryBatch> schedule, DeliveryBatch batch, UUID excluding) {
+        Map<UUID, Integer> seqOf = new HashMap<>();
+        schedule.forEach(b -> seqOf.put(b.id(), b.seq()));
+        Map<Integer, Map<UUID, Integer>> coming = new HashMap<>();
         for (ProductionOrder other : productionOrders.ofSalesOrder(order.id().value())) {
-            if (other.id().equals(excluding) || !other.deliveryBatchId().equals(batch.id())) {
+            Integer seq = seqOf.get(other.deliveryBatchId());
+            if (other.id().equals(excluding) || seq == null) {
                 continue;
             }
-            lacking.replaceAll((lineId, cartons) -> cartons - other.outstandingCartons(lineId));
+            Map<UUID, Integer> bySeq = coming.computeIfAbsent(seq, key -> new HashMap<>());
+            other.lines().forEach(line -> bySeq.merge(line.orderLineId(), other.outstandingCartons(line.orderLineId()),
+                    Integer::sum));
         }
-        lacking.replaceAll((lineId, cartons) -> Math.max(0, cartons));
+        ShippingWarehouseService.Coverage coverage = shippingWarehouses.coverage(order.id().value());
+        Map<UUID, Integer> carried = new HashMap<>();
+        Map<UUID, Integer> lacking = new LinkedHashMap<>();
+        for (ShippingWarehouseService.BatchCoverage covered : coverage.batches().stream()
+                .sorted(Comparator.comparingInt(ShippingWarehouseService.BatchCoverage::seq)).toList()) {
+            if (covered.seq() > batch.seq()) {
+                break;
+            }
+            Map<UUID, Integer> here = coming.getOrDefault(covered.seq(), Map.of());
+            for (ShippingWarehouseService.LineCoverage line : covered.lines()) {
+                int arriving = carried.getOrDefault(line.lineId(), 0) + here.getOrDefault(line.lineId(), 0);
+                carried.put(line.lineId(), Math.max(0, arriving - line.shortCartons()));
+                if (covered.seq() == batch.seq()) {
+                    lacking.merge(line.lineId(), Math.max(0, line.shortCartons() - arriving), Integer::sum);
+                }
+            }
+        }
         return lacking;
     }
 
-    private DeliveryBatch batchOf(ProductionOrder production) {
-        return contracts.findLiveByOrderId(production.salesOrderId()).stream()
-                .flatMap(contract -> contract.schedule().stream())
-                .filter(batch -> batch.id().equals(production.deliveryBatchId()))
-                .findFirst()
+    private Map<UUID, Integer> lacking(Locked locked) {
+        return lacking(locked.order(), locked.schedule(), batchOf(locked.production(), locked.schedule()),
+                locked.production().id());
+    }
+
+    private List<DeliveryBatch> scheduleOf(ProductionOrder production) {
+        return contracts.findLiveByOrderId(production.salesOrderId()).map(SalesContract::schedule)
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Production order %s: "
-                        + "its order's contract and delivery batch are gone").formatted(production.code())));
+                        + "its order's contract is gone").formatted(production.code())));
+    }
+
+    private static DeliveryBatch batchOf(ProductionOrder production, List<DeliveryBatch> schedule) {
+        return schedule.stream().filter(batch -> batch.id().equals(production.deliveryBatchId())).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Production order %s: "
+                        + "its delivery batch is gone").formatted(production.code())));
     }
 
     private static void requireProducible(Order order) {
@@ -335,6 +377,18 @@ public class ProductionOrderService {
                     .formatted(producer.code()));
         }
         return producer;
+    }
+
+    /** A production order locked with its sales order, the sales order first - the order {@code drawUp} locks in. */
+    private record Locked(Order order, ProductionOrder production, List<DeliveryBatch> schedule) {
+    }
+
+    private Locked lockedWithOrder(UUID id, long version) {
+        UUID salesOrderId = productionOrders.findById(id).filter(this::visible).orElseThrow(() -> notFound(id))
+                .salesOrderId();
+        Order order = orders.findByIdForUpdate(new OrderId(salesOrderId)).orElseThrow();
+        ProductionOrder production = locked(id, version);
+        return new Locked(order, production, scheduleOf(production));
     }
 
     private ProductionOrder locked(UUID id, long version) {

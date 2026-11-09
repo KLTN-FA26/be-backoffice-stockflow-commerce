@@ -6,7 +6,8 @@ import java.util.Set;
 
 /**
  * A production order's life (4A-2, kltn-docs 17 §5.3). The edges are also rows of
- * {@code ordering.production_order_status_transition}; a test holds the two to each other.
+ * {@code ordering.production_order_status_transition}; {@code ProductionOrderIntegrationTest} holds the two to each
+ * other.
  */
 public enum ProductionOrderStatus {
     DRAFT,

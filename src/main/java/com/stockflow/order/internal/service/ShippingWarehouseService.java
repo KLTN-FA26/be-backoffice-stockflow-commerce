@@ -49,7 +49,8 @@ import java.util.UUID;
  *   <li><b>Choose</b>: Sales picks one; the order then holds there, by SKU, as many whole cartons of each line as are
  *       available - all, or some (k &lt; N) - with no deadline. What is missing is not refused: it is shown per delivery
  *       batch, the earliest batch served first, and topped up when stock arrives. The warehouse changes only while
- *       nothing is held (BR-22).</li>
+ *       nothing is held and no production order of the order has been sent to a producer (BR-22); the production
+ *       orders not yet sent move with it.</li>
  *   <li><b>Top up</b>: when goods are put away, every confirmed order waiting for stock at a warehouse holds what it
  *       can, the earliest signed first.</li>
  *   <li><b>Release</b> needs every carton held at the shipping warehouse (until 4B-8 releases batch by batch).</li>
@@ -151,7 +152,9 @@ public class ShippingWarehouseService {
 
     /**
      * Sales chooses the warehouse the order ships from (17 §4.2 steps 2-3): the order holds there as many whole
-     * cartons of each line as are available, now.
+     * cartons of each line as are available, now. Another warehouse is refused while stock is held, or once a
+     * production order of the order was sent (it delivers to the warehouse it names); production orders not yet sent are
+     * received at the new one.
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code WAREHOUSE_NOT_FOUND} for no active warehouse of that id;
      *         {@code ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED}; {@code ORDER_SHIPPING_WAREHOUSE_LOCKED} (BR-22)

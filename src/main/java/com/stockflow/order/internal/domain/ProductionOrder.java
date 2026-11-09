@@ -171,7 +171,8 @@ public final class ProductionOrder {
     /**
      * The coordinator's changes to a draft (B33): producer, need-by date, price, note, the sample flag - turned off when
      * it is on by default, with a reason (BR-24) - and the lines' cartons and packing requirements. {@code maxCartons}
-     * says, per order line, how many cartons the line may make at most (what the batch lacks).
+     * says, per order line, how many cartons the line may make at most (what the batch lacks); a line it does not name
+     * may make none - a slip in building the map refuses an edit rather than lifting the cap.
      *
      * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} when not a draft;
      *         {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}; {@code VALIDATION_FAILED}
@@ -193,14 +194,10 @@ public final class ProductionOrder {
                 edited.add(line);
                 continue;
             }
-            Integer max = maxCartons.get(line.orderLineId());
             if (change.cartons() < 1) {
                 throw invalid("A line makes at least one carton");
             }
-            if (max != null && change.cartons() > max) {
-                throw new BusinessException(ErrorCode.PRODUCTION_ORDER_EXCEEDS_SHORTAGE, ("%s: the batch lacks %d "
-                        + "carton(s), not %d").formatted(line.sku(), max, change.cartons()));
-            }
+            requireWithin(line.sku(), change.cartons(), maxCartons.getOrDefault(line.orderLineId(), 0));
             edited.add(line.withCartons(change.cartons(), text(change.packingRequirements())));
         }
         if (draft.lines() != null && draft.lines().keySet().stream()
@@ -214,6 +211,24 @@ public final class ProductionOrder {
         this.sampleApprovalRequired = draft.sampleApprovalRequired();
         this.sampleWaiverReason = draft.sampleApprovalRequired() ? null : waiver;
         this.lines = edited;
+    }
+
+    /**
+     * Every line makes no more cartons than {@code maxCartons} allows for its order line (what the batch lacks, BR-05);
+     * a line it does not name may make none.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}
+     */
+    public void requireWithin(Map<UUID, Integer> maxCartons) {
+        lines.forEach(line -> requireWithin(line.sku(), line.cartons(),
+                maxCartons.getOrDefault(line.orderLineId(), 0)));
+    }
+
+    private static void requireWithin(String sku, int cartons, int max) {
+        if (cartons > max) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_EXCEEDS_SHORTAGE, ("%s: the batch lacks %d "
+                    + "carton(s), not %d").formatted(sku, max, cartons));
+        }
     }
 
     /** DRAFT → PENDING_APPROVAL (17 §4.3 step 7). */

@@ -112,7 +112,15 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                 order.submittedAt(), order.approvedBy(), order.approvedAt(), order.returnedReason(), order.sentAt(),
                 order.productionStartedAt(), order.cancelledBy(), order.cancelledAt(), order.cancellationReason(),
                 order.closedBy(), order.closedAt(), order.closingReason());
+        long readAt = entity.getVersion();
         ProductionOrderJpaEntity saved = jpa.saveAndFlush(entity);
+        if (!created && saved.getVersion() == readAt) {
+            // Only the lines changed (an edit of cartons or packing, or a receipt): they are written by native SQL
+            // below, which Hibernate never sees, so the header row would keep its version and an edit made at the
+            // old one would silently overwrite this one. The increment is immediate, so the version returned is
+            // the one a client edits at next.
+            entityManager.lock(saved, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
+        }
         writeLines(order, created);
         for (ProductionOrder.Change change : order.pullChanges()) {
             entityManager.createNativeQuery("""
