@@ -1763,7 +1763,7 @@ Table inventory.stock_item [headercolor: #3E7C4A] {
   id               uuid [pk]
   sku              varchar(64) [not null]
   location_code    varchar(64) [not null]
-  lot_number       varchar(64)
+  lot_number       varchar(64) [not null]
   expiry_date      date
   on_hand          int [not null, default: 0]
   reserved         int [not null, default: 0]
@@ -1776,7 +1776,7 @@ Table inventory.stock_item [headercolor: #3E7C4A] {
   received_at      timestamptz
   serial_number    varchar(100)
   stock_package_id uuid
-  lot_id           uuid
+  lot_id           uuid [not null]
 }
 
 Table inventory.stock_lot [headercolor: #3E7C4A] {
@@ -1836,7 +1836,6 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
   received_qty          int
   location_code         varchar(64) [not null]
   status                inventory.stock_package_status [not null, default: 'RECEIVING']
-  unopened              boolean [not null, default: true]
   goods_receipt_line_id uuid
   closed_at             timestamptz
   version               bigint [not null, default: 0]
