@@ -58,7 +58,7 @@ class OrderServiceImplLifecycleTest {
     private final PaymentService paymentService = mock(PaymentService.class);
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class), holds,
-            mock(CustomerService.class), mock(com.stockflow.catalog.api.CatalogService.class),
+            mock(CustomerService.class),
             mock(OrderPayments.class), requests, mock(CreditChecks.class), paymentService, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
     private Order loaded(Order order) {

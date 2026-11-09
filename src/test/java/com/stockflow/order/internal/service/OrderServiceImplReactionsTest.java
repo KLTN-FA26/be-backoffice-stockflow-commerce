@@ -54,7 +54,7 @@ class OrderServiceImplReactionsTest {
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class),
             mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
-            mock(com.stockflow.catalog.api.CatalogService.class), payments, requests, mock(CreditChecks.class),
+            payments, requests, mock(CreditChecks.class),
             mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
     private Order found(Order order) {

@@ -13,8 +13,6 @@ import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.CancellationRequestStatus;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.Order;
-import com.stockflow.order.internal.domain.Quote;
-import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -49,10 +47,8 @@ class CustomerOrdersServiceTest {
     private final OrderService orders = mock(OrderService.class);
     private final CreditChecks creditChecks = mock(CreditChecks.class);
     private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
-    private final QuoteRepository quotes = mock(QuoteRepository.class);
     private final CustomerOrdersService service =
-            new CustomerOrdersService(search, orders, creditChecks, requests, quotes,
-                    mock(com.stockflow.catalog.api.CatalogService.class));
+            new CustomerOrdersService(search, orders, creditChecks, requests);
 
     private CustomerOrders.Query query(LocalDate from, LocalDate to) {
         return new CustomerOrders.Query(0, 20, List.of(OrderStatus.CONFIRMED), "SO-1", from, to, null);
@@ -152,7 +148,6 @@ class CustomerOrdersServiceTest {
             when(orders.findById(order.id().value())).thenReturn(Optional.of(summary));
             when(orders.history(order.id().value())).thenReturn(List.of());
             when(requests.latestOf(order.id().value())).thenReturn(Optional.empty());
-            when(quotes.findByConvertedOrderId(order.id().value())).thenReturn(Optional.empty());
             return order;
         }
 
@@ -196,17 +191,15 @@ class CustomerOrdersServiceTest {
         }
 
         @Test
-        @DisplayName("before release a customer asks to cancel too, never at once (4B-5); a quote-born order can be reordered")
+        @DisplayName("before release a customer asks to cancel too, never at once (4B-5)")
         void actionsBeforeRelease() {
             Order order = order(OrderFixtures.confirmedPrepaid());
-            when(quotes.findByConvertedOrderId(order.id().value())).thenReturn(Optional.of(mock(Quote.class)));
 
             CustomerOrders.AllowedActions actions = service.myOrder(order.customerId(), order.id().value()).allowedActions();
 
             // 4B-5 (17 §4.8): the customer asks, before release too; Sales decides.
             assertThat(actions.cancel()).isFalse();
             assertThat(actions.requestCancellation()).isTrue();
-            assertThat(actions.reorder()).isTrue();
         }
 
         @Test

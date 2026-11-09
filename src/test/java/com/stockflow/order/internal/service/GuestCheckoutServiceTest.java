@@ -42,7 +42,7 @@ class GuestCheckoutServiceTest {
         var service = new OrderServiceImpl(orders,
                 mock(com.stockflow.order.internal.repository.OrderSearchRepository.class),
                 inventory, mock(OrderEventPublisher.class), Clock.systemUTC(), mock(DesignService.class),
-                mock(OrderHoldJpaRepository.class), mock(CustomerService.class), catalog(),
+                mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
                 mock(com.stockflow.order.internal.domain.OrderPayments.class),
                 mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
                 mock(com.stockflow.order.internal.domain.CreditChecks.class),
@@ -55,14 +55,6 @@ class GuestCheckoutServiceTest {
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.DESIGN_QUOTE_REQUIRED));
         verify(orders, org.mockito.Mockito.never()).save(any());
         verify(inventory, org.mockito.Mockito.never()).reserve(any());
-    }
-
-    private static com.stockflow.catalog.api.CatalogService catalog() {
-        var catalog = mock(com.stockflow.catalog.api.CatalogService.class);
-        when(catalog.checkoutPrices(any())).thenReturn(java.util.Map.of("TABLE-OAK", Money.vnd(100)));
-        when(catalog.checkoutPrices(any(UUID.class), org.mockito.ArgumentMatchers.anyMap()))
-                .thenReturn(java.util.Map.of("TABLE-OAK", Money.vnd(100)));
-        return catalog;
     }
 
     @Test
@@ -91,7 +83,7 @@ class GuestCheckoutServiceTest {
                         "0901234567", address, address));
         var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
                 Clock.fixed(now, ZoneOffset.UTC), mock(DesignService.class),
-                mock(OrderHoldJpaRepository.class), customers, catalog(),
+                mock(OrderHoldJpaRepository.class), customers,
                 mock(com.stockflow.order.internal.domain.OrderPayments.class),
                 mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
                 mock(com.stockflow.order.internal.domain.CreditChecks.class),
@@ -117,7 +109,7 @@ class GuestCheckoutServiceTest {
         CustomerService customers = mock(CustomerService.class);
         var service = new OrderServiceImpl(orders,
                 mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
-                Clock.systemUTC(), mock(DesignService.class), mock(OrderHoldJpaRepository.class), customers, catalog(),
+                Clock.systemUTC(), mock(DesignService.class), mock(OrderHoldJpaRepository.class), customers,
                 mock(com.stockflow.order.internal.domain.OrderPayments.class),
                 mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
                 mock(com.stockflow.order.internal.domain.CreditChecks.class),
