@@ -21,6 +21,57 @@ final class PaymentWebMapper {
     private PaymentWebMapper() {
     }
 
+    // ---- 4B-6: installments and receipts ----------------------------------------------------------------------------
+
+    static com.stockflow.payment.internal.controller.dto.InstallmentResponse toResponse(
+            com.stockflow.payment.internal.domain.Installment i,
+            List<com.stockflow.payment.internal.domain.InstallmentBook.ReceiptOfInstallment> receipts) {
+        return new com.stockflow.payment.internal.controller.dto.InstallmentResponse(i.id(), i.contractId(),
+                i.contractNumber(), i.orderId(), i.orderNumber(), i.customerId(), i.seq(), i.name(),
+                i.milestone().name(), i.deliveryBatchSeq(), i.amount(), i.paidAmount(), i.outstanding(), i.currency(),
+                i.dueDays(), i.reachedAt(), i.dueDate(), i.status().name(), i.paidAt(), i.cancelledAt(),
+                i.transferReference(), receipts == null ? null : receipts.stream()
+                        .map(r -> new com.stockflow.payment.internal.controller.dto.InstallmentResponse.Receipt(
+                                r.receiptId(), r.reference(), r.receivedOn(), r.amount(), r.status().name(),
+                                r.recordedAt())).toList());
+    }
+
+    static com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse toResponse(
+            com.stockflow.payment.internal.service.InstallmentService.OrderInstallments o) {
+        var standing = o.standing();
+        var first = o.installments().getFirst();
+        return new com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse(standing.orderId(),
+                first.orderNumber(), first.contractNumber(),
+                standing.paymentStatus() == null ? null : standing.paymentStatus().name(), standing.total(),
+                standing.paid(), standing.total().subtract(standing.paid()), standing.onSigningPaid(),
+                standing.beforeDeliveryUnpaid(), standing.dueBeforeHandover(), first.currency(),
+                o.installments().stream().map(i -> toResponse(i, null)).toList());
+    }
+
+    static com.stockflow.payment.internal.controller.dto.InstallmentTransferResponse toResponse(
+            com.stockflow.payment.internal.service.InstallmentService.TransferInstructions t) {
+        var i = t.installment();
+        return new com.stockflow.payment.internal.controller.dto.InstallmentTransferResponse(i.id(),
+                i.contractNumber(), i.orderNumber(), i.seq(), i.name(), t.account().bankName(),
+                t.account().accountNumber(), t.account().accountName(), t.amountDue(), i.currency(), t.reference(),
+                i.dueDate());
+    }
+
+    static com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse toResponse(
+            com.stockflow.payment.internal.domain.PaymentReceipt r,
+            java.util.Map<java.util.UUID, com.stockflow.payment.internal.domain.Installment> installments) {
+        return new com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse(r.id(), r.customerId(),
+                r.reference(), r.receivedOn(), r.amount(), r.currency(), r.note(), r.status().name(), r.recordedBy(),
+                r.recordedAt(), r.voidedBy(), r.voidedAt(), r.voidReason(), r.lines().stream().map(line -> {
+                    var i = installments == null ? null : installments.get(line.installmentId());
+                    return new com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse.Line(
+                            line.installmentId(), line.amount(), i == null ? null : i.contractNumber(),
+                            i == null ? null : i.orderId(), i == null ? null : i.orderNumber(),
+                            i == null ? null : i.seq(), i == null ? null : i.name(),
+                            i == null ? null : i.milestone().name());
+                }).toList());
+    }
+
     static CustomerTransferResponse toResponse(CustomerTransfer t, List<ReceivableBook.Allocation> allocations) {
         return new CustomerTransferResponse(t.id(), t.customerId(), t.reference(), t.amount(), t.unallocatedAmount(),
                 t.refundedAmount(), t.currency(), t.receivedOn(), t.recordedBy(), t.recordedAt(), t.note(),

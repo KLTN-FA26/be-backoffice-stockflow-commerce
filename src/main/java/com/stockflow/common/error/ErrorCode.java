@@ -486,6 +486,25 @@ public enum ErrorCode {
     PAYMENT_REVERSAL_NEEDS_HOLD("Taking this money back leaves a confirmed order unpaid: confirm putting it on hold", 409),
     /** G2-3: money already refunded, or the order settled, closed or cancelled: the reversal would rewrite history. */
     PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
+    /** 4B-6: no installment with that id (for a customer: none of theirs). */
+    INSTALLMENT_NOT_FOUND("Installment not found", 404),
+    /** 4B-6, 15 BR-05: a paid or cancelled installment takes no more money. */
+    INSTALLMENT_NOT_PAYABLE("This installment is paid or cancelled; it takes no more money", 409),
+    /** 4B-6, 15 BR-05: a receipt pays installments of its own customer only. */
+    INSTALLMENT_CUSTOMER_MISMATCH("This installment belongs to another customer", 409),
+    /** 4B-6: no payment receipt with that id. */
+    PAYMENT_RECEIPT_NOT_FOUND("Payment receipt not found", 404),
+    /** 4B-6, 15 BR-03: one bank statement line, one live receipt. */
+    PAYMENT_RECEIPT_REFERENCE_IN_USE("This bank statement line is already recorded", 409),
+    /** 4B-6, 15 BR-05: a line pays no more than its installment still owes; nothing is left over. */
+    PAYMENT_RECEIPT_EXCEEDS_OUTSTANDING("A line pays more than its installment still owes", 409),
+    /** 4B-6, 15 BR-04: a receipt is voided once. */
+    PAYMENT_RECEIPT_ALREADY_VOIDED("This payment receipt is already voided", 409),
+    /** 4B-6, 15 §4.4 step 13: the order is cancelled, completed, closed, being returned or refunded. */
+    PAYMENT_RECEIPT_VOID_NOT_ALLOWED("This payment receipt can no longer be voided", 409),
+    /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
+    PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
+            409),
     /**
      * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
      * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and

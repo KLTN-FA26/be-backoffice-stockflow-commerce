@@ -29,10 +29,11 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
      * so a new status cannot leak an order out of it - what the order has still to bill: its total, less the units
      * closed out of it ({@code closed_amount}, their share of their lines with tax as the order computed it - not their
      * price alone, which would leave their VAT counted), less what its deliveries billed (the receivables count that),
-     * less money paid ahead outside receivables. And what the customer's signed contracts pay after delivery while their
-     * orders are not settled (4B-5, 15 BR-10) - until those installments exist themselves (4B-6) - so that checkout,
-     * a contract's signature and accounting's decision all read one exposure. A split order is counted once: its delivered shipments as receivables, the rest here. An order on
-     * a credit hold is not credit given yet.
+     * less money paid ahead outside receivables. A split order is counted once: its delivered shipments as receivables,
+     * the rest here. An order on a credit hold is not credit given yet. An order of a signed contract is not counted
+     * here: what its installments paid after delivery still owe is payment's to count (4B-6, 15 BR-10,
+     * {@code PaymentService.creditPosition}), so that checkout, a contract's signature and accounting's decision all
+     * read one exposure.
      *
      * <p>BALCREDIT: a deposit order whose balance goes on credit counts the same way, from the moment it is placed
      * (PENDING_PAYMENT too: its balance was checked against the limit then), with its deposit counted as paid ahead
@@ -53,15 +54,7 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
                                 AND o.status IN (:balanceStatuses))
                            AND o.id <> :excluding
                            AND o.hold_reason IS DISTINCT FROM 'CREDIT'
-                           AND o.contract_signed_at IS NULL)
-                     + (SELECT COALESCE(SUM(i.amount), 0)
-                          FROM ordering.contract_payment_installment i
-                          JOIN ordering.sales_contract c ON c.id = i.contract_id
-                          JOIN ordering.customer_order o ON o.id = c.order_id
-                         WHERE o.customer_id = :customer AND o.id <> :excluding
-                           AND c.status = 'SIGNED' AND i.milestone = 'AFTER_DELIVERY'
-                           AND o.status NOT IN ('CANCELLED', 'COMPLETED', 'CLOSED', 'REFUNDED', 'PARTIALLY_REFUNDED')
-                           AND o.hold_reason IS DISTINCT FROM 'CREDIT')""")
+                           AND o.contract_signed_at IS NULL)""")
                 .setParameter("customer", customerId)
                 .setParameter("statuses", OrderStatus.creditExposureStatuses().stream().map(Enum::name).toList())
                 .setParameter("balanceStatuses", java.util.stream.Stream.concat(

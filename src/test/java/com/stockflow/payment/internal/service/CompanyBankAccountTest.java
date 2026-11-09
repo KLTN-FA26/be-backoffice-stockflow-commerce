@@ -12,7 +12,8 @@ import static org.mockito.Mockito.mock;
 class CompanyBankAccountTest {
 
     private static PaymentServiceImpl service(String bank, String number, String holder) {
-        return new PaymentServiceImpl(mock(ReceivableBook.class), new CompanyBankProperties(bank, number, holder));
+        return new PaymentServiceImpl(mock(ReceivableBook.class), new CompanyBankProperties(bank, number, holder),
+                mock(com.stockflow.payment.internal.domain.InstallmentBook.class), mock(InstallmentService.class));
     }
 
     @Test

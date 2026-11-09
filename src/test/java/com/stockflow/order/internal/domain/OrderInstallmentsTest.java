@@ -1,0 +1,97 @@
+package com.stockflow.order.internal.domain;
+
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.domain.Money;
+import com.stockflow.common.domain.Sku;
+import com.stockflow.order.api.HoldReason;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.PaymentTerm;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * 4B-6: an order of a signed contract is paid by its installments (kltn-docs 15 BR-07, BR-08, BR-13) - confirmed when
+ * those on signing are paid, its goods held until those before delivery are, and its own (placeholder) terms never
+ * asked.
+ */
+class OrderInstallmentsTest {
+
+    private static final Instant NOW = Instant.parse("2026-11-09T03:00:00Z");
+    private static final UUID SALES = UUID.randomUUID();
+
+    /** A quote's order, its contract sent and signed with an installment on signing: PENDING_PAYMENT. */
+    private static Order signedWaitingOnSigning() {
+        Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 7), UUID.randomUUID(), UUID.randomUUID(),
+                List.of(Order.line(new Sku("CUP-12OZ-ACME"), 1_000, Money.vnd(2_000), null)), NOW);
+        order.applyTerms(PaymentTerm.PREPAID, null);
+        order.sendContract(SALES, NOW);
+        order.contractSigned(false, true, SALES, NOW);
+        return order;
+    }
+
+    private static ErrorCode code(Throwable thrown) {
+        return ((BusinessException) thrown).errorCode();
+    }
+
+    @Test
+    @DisplayName("its installments on signing paid: PENDING_PAYMENT -> CONFIRMED, once")
+    void confirmedByInstallments() {
+        Order order = signedWaitingOnSigning();
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(order.confirmByInstallments(NOW)).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(order.confirmByInstallments(NOW)).as("a redelivered event changes nothing").isFalse();
+    }
+
+    @Test
+    @DisplayName("an order that is not a contract's is never confirmed by installments")
+    void checkoutOrderIsNotConfirmedByInstallments() {
+        Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 8), UUID.randomUUID(), UUID.randomUUID(),
+                List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(1_000_000), null)), NOW);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        order.submit();
+        assertThat(order.confirmByInstallments(NOW)).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+    }
+
+    @Test
+    @DisplayName("its goods wait for the installments paid before delivery, not for its placeholder terms (BR-08)")
+    void handoverWaitsForInstallmentsBeforeDelivery() {
+        Order order = signedWaitingOnSigning();
+        order.confirmByInstallments(NOW);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        order.release(UUID.randomUUID(), "WH-HCM", SALES, NOW);
+        order.startPicking(SALES, NOW);
+
+        assertThatThrownBy(() -> order.requireHandoverAllowed(new Order.LedgerMoney(BigDecimal.ZERO, BigDecimal.ZERO,
+                new BigDecimal("600000")))).extracting(OrderInstallmentsTest::code)
+                .isEqualTo(ErrorCode.ORDER_BALANCE_NOT_PAID);
+        // Nothing of the money ledger is asked: PREPAID is the column's neutral value for an order of a contract.
+        order.requireHandoverAllowed(new Order.LedgerMoney(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO));
+        assertThat(order.amountDueBeforeHandover()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("a payment hold of a contract order is resolved on its installments, which the service checks")
+    void paymentHoldOfAContractOrder() {
+        Order order = signedWaitingOnSigning();
+        order.confirmByInstallments(NOW);
+        order.putOnHold(HoldReason.PAYMENT, "Payment receipt FT1 voided", SALES, NOW);
+        assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
+
+        order.resolveHold("Receipt FT2 recorded", SALES, NOW);
+
+        assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(order.holdReason()).isNull();
+    }
+}

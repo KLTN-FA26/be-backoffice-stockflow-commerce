@@ -551,8 +551,11 @@ class ReceivableServiceTest {
         @DisplayName("the nightly job runs the sweep")
         void jobRunsTheSweep() {
             ReceivableService sweep = mock(ReceivableService.class);
-            new ReceivableOverdueJob(sweep).markOverdueReceivables();
+            InstallmentService installments = mock(InstallmentService.class);
+            new ReceivableOverdueJob(sweep, installments).markOverdueReceivables();
             verify(sweep).markOverdue();
+            // 4B-6 (15 §4.1 step 4): the installments in the same nightly run.
+            verify(installments).markOverdue();
         }
     }
 

@@ -42,6 +42,19 @@ class OrderPayablesAdapter implements OrderPayables {
         return orders.findById(new OrderId(orderId)).map(OrderPayablesAdapter::toPayable);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<java.time.Instant> deliveredInFullAt(UUID orderId) {
+        return orders.findById(new OrderId(orderId))
+                .filter(order -> DELIVERED_IN_FULL.contains(order.status()))
+                .map(Order::deliveredAt);
+    }
+
+    /** The statuses an order reaches only once all its goods were delivered (or the rest closed after the last). */
+    private static final java.util.Set<OrderStatus> DELIVERED_IN_FULL = java.util.EnumSet.of(OrderStatus.DELIVERED,
+            OrderStatus.RETURN_REQUESTED, OrderStatus.RETURNED, OrderStatus.REFUNDED, OrderStatus.PARTIALLY_REFUNDED,
+            OrderStatus.COMPLETED, OrderStatus.CLOSED);
+
     private static PayableOrder toPayable(Order order) {
         boolean holdable = order.status().mayBePutOnHold();
         return new PayableOrder(order.id().value(), order.orderNumber().value(), order.customerId(),

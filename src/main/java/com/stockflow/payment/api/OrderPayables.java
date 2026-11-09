@@ -26,4 +26,11 @@ public interface OrderPayables {
 
     /** The same without a lock, for reading. */
     Optional<PayableOrder> find(UUID orderId);
+
+    /**
+     * 4B-6 (15 BR-09, D23): when the order was delivered in full - its last delivery, or the rest closed after it -
+     * once it is; empty while goods are still to be delivered (or for no such order). The day a contract's
+     * installments paid after delivery count from.
+     */
+    Optional<java.time.Instant> deliveredInFullAt(UUID orderId);
 }

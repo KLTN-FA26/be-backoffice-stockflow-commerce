@@ -74,9 +74,12 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
     @Override
     public boolean referenceRecorded(String reference) {
         String trimmed = reference.trim();
-        // 15 BR-07 across the ledger and the payments recorded before it: one statement line, recorded once.
-        return transfers.existsByReference(trimmed) || !entityManager.createNativeQuery(
-                        "SELECT 1 FROM payment.payment WHERE provider_ref = :ref")
+        // 15 BR-07 across the ledger, the payments recorded before it and (4B-6) the live payment receipts of the
+        // contracts' installments: one statement line, recorded once.
+        return transfers.existsByReference(trimmed) || !entityManager.createNativeQuery("""
+                        SELECT 1 FROM payment.payment WHERE provider_ref = :ref
+                        UNION ALL
+                        SELECT 1 FROM payment.payment_receipt WHERE reference = :ref AND status = 'RECORDED'""")
                 .setParameter("ref", trimmed).setMaxResults(1).getResultList().isEmpty();
     }
 

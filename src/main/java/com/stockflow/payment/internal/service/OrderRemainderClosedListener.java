@@ -24,12 +24,14 @@ class OrderRemainderClosedListener {
     private final CancelledOrderSettlement settlement;
     private final com.stockflow.payment.api.OrderPayables orders;
     private final ReceivableService receivables;
+    private final InstallmentService installments;
 
     OrderRemainderClosedListener(CancelledOrderSettlement settlement, com.stockflow.payment.api.OrderPayables orders,
-                                 ReceivableService receivables) {
+                                 ReceivableService receivables, InstallmentService installments) {
         this.settlement = settlement;
         this.orders = orders;
         this.receivables = receivables;
+        this.installments = installments;
     }
 
     @ApplicationModuleListener
@@ -37,18 +39,22 @@ class OrderRemainderClosedListener {
         // Review of #150: a fee for print lines closed after printing that the money received did not cover is owed.
         receivables.remainderFeeOwed(event);
         BigDecimal refundable = event.refundableAmount() == null ? BigDecimal.ZERO : event.refundableAmount();
-        if (refundable.signum() <= 0) {
-            return;
+        if (refundable.signum() > 0) {
+            // G2-3: the order's lock, as a reversal takes it (see OrderCancelledListener).
+            orders.lockForPayment(event.orderId());
+            BigDecimal unplaced = settlement.requestRemainderRefunds(event.orderId(),
+                    event.closureId() == null ? event.orderId() : event.closureId(), refundable, event.currency(),
+                    "Order %s: rest closed (%s)".formatted(event.orderNumber(), event.reasonCode()));
+            if (unplaced.signum() > 0) {
+                log.warn("Order {}: rest closed with {} {} to refund, but no captured payment carries {} of it; the "
+                        + "accountant must settle it by hand", event.orderNumber(), refundable, event.currency(),
+                        unplaced);
+            }
+            log.info("Order {}: rest closed, {} {} to refund", event.orderNumber(), refundable, event.currency());
         }
-        // G2-3: the order's lock, as a reversal takes it (see OrderCancelledListener).
-        orders.lockForPayment(event.orderId());
-        BigDecimal unplaced = settlement.requestRemainderRefunds(event.orderId(),
-                event.closureId() == null ? event.orderId() : event.closureId(), refundable, event.currency(),
-                "Order %s: rest closed (%s)".formatted(event.orderNumber(), event.reasonCode()));
-        if (unplaced.signum() > 0) {
-            log.warn("Order {}: rest closed with {} {} to refund, but no captured payment carries {} of it; the "
-                    + "accountant must settle it by hand", event.orderNumber(), refundable, event.currency(), unplaced);
-        }
-        log.info("Order {}: rest closed, {} {} to refund", event.orderNumber(), refundable, event.currency());
+        // 4B-6 (15 D23): the rest closed after the last delivery, a contract order's installments paid after delivery are
+        // due from the day it was delivered in full. After the order's lock, if any: orders, then installments. (Lowering
+        // what they owe by what was closed is 4B-9's, 15 §4.6 step 19.)
+        installments.delivered(event.orderId(), event.closedAt(), false);
     }
 }

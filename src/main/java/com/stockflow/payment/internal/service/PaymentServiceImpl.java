@@ -18,17 +18,46 @@ class PaymentServiceImpl implements PaymentService {
 
     private final ReceivableBook book;
     private final CompanyBankProperties bank;
+    private final com.stockflow.payment.internal.domain.InstallmentBook installmentBook;
+    private final InstallmentService installments;
 
-    PaymentServiceImpl(ReceivableBook book, CompanyBankProperties bank) {
+    PaymentServiceImpl(ReceivableBook book, CompanyBankProperties bank,
+                       com.stockflow.payment.internal.domain.InstallmentBook installmentBook,
+                       InstallmentService installments) {
         this.book = book;
         this.bank = bank;
+        this.installmentBook = installmentBook;
+        this.installments = installments;
     }
 
+    /**
+     * The money ledger's receivables, and since 4B-6 the installments of the customer's signed contracts: what those paid
+     * after delivery still owe, not yet due included (15 BR-10), and whatever installment is overdue (§4.3 step 9: an
+     * overdue installment on signing counts as much as a receivable).
+     */
     @Override
     @Transactional(readOnly = true)
     public CreditPosition creditPosition(UUID customerId) {
         var overdue = book.overdue(customerId);
-        return new CreditPosition(book.outstanding(customerId), book.hasOverdue(customerId), overdue.amount(), overdue.oldestDueDate());
+        var overdueInstallments = installmentBook.overdue(customerId);
+        java.time.LocalDate oldest = overdue.oldestDueDate() == null ? overdueInstallments.oldestDueDate()
+                : overdueInstallments.oldestDueDate() == null || overdue.oldestDueDate()
+                        .isBefore(overdueInstallments.oldestDueDate()) ? overdue.oldestDueDate()
+                : overdueInstallments.oldestDueDate();
+        java.math.BigDecimal overdueAmount = overdue.amount().add(overdueInstallments.amount());
+        return new CreditPosition(book.outstanding(customerId).add(installmentBook.afterDeliveryUnpaid(customerId)),
+                book.hasOverdue(customerId) || overdueInstallments.amount().signum() > 0, overdueAmount, oldest);
+    }
+
+    @Override
+    public void openInstallments(com.stockflow.payment.api.ContractInstallments contract) {
+        installments.open(contract);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.stockflow.payment.api.InstallmentStanding installmentStanding(UUID orderId) {
+        return installments.standing(orderId);
     }
 
     @Override

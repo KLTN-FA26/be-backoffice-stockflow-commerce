@@ -490,9 +490,10 @@ class SalesContractService implements SalesContracts {
 
     /**
      * 15 BR-10, BR-11: the credit a contract asks for is what its plan pays after delivery; what the customer owes and
-     * may owe besides is the credit side of their other orders - receivables, credit orders not delivered (the money
-     * ledger's, until 4B-10) - and what their other signed contracts pay after delivery, until those installments exist
-     * (4B-6). Overdue, or past the limit with this one: the check fails. Null when the plan asks for no credit.
+     * may owe besides is the credit side of their other orders - receivables and credit orders not delivered (the money
+     * ledger's, until 4B-10) - and what the installments of their signed contracts paid after delivery still owe, not
+     * yet due included (4B-6, in {@code creditPosition}). Overdue - a receivable or an installment - or past the limit
+     * with this one: the check fails. Null when the plan asks for no credit.
      */
     private CreditCheck creditCheck(Order order, SalesContract contract) {
         BigDecimal afterDelivery = contract.plan().stream()
@@ -502,8 +503,8 @@ class SalesContractService implements SalesContracts {
             return null;
         }
         CreditPosition position = payments.creditPosition(order.customerId());
-        // The exposure counts the other signed contracts' after-delivery parts too (CreditChecks), as every credit
-        // check does.
+        // The exposure counts the other signed contracts' installments paid after delivery too (4B-6: in the payment
+        // position, 15 BR-10), as every credit check does; this contract's are not open yet - they open after.
         BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
                 .add(position.outstandingReceivables());
         CreditTerms credit = customers.creditTerms(order.customerId());
@@ -537,7 +538,23 @@ class SalesContractService implements SalesContracts {
             holds.save(new com.stockflow.order.internal.entity.OrderHoldJpaEntity(Identifiers.newId(),
                     order.id().value(), OrderServiceImpl.CREDIT_HOLD, now));
         }
+        // 15 §4.1 step 1 (4B-6): the installments, in this transaction - after the credit check, which counts the plan's
+        // after-delivery part itself; held for credit or not, a signed contract is owed what it says.
+        payments.openInstallments(installmentsOf(order, contract));
         events.publishEventsOf(order);
+    }
+
+    /** The signed plan as payment opens it: each row, and the delivery batch it is tied to. */
+    private static com.stockflow.payment.api.ContractInstallments installmentsOf(Order order, SalesContract contract) {
+        Map<Integer, UUID> batches = new HashMap<>();
+        contract.schedule().forEach(batch -> batches.put(batch.seq(), batch.id()));
+        return new com.stockflow.payment.api.ContractInstallments(contract.id(), contract.contractNumber(),
+                order.id().value(), order.orderNumber().value(), order.customerId(),
+                order.total().currency().getCurrencyCode(), contract.signedOn(), contract.signedAt(),
+                contract.plan().stream().map(i -> new com.stockflow.payment.api.ContractInstallments.Planned(i.id(),
+                        i.seq(), i.name(), i.milestone().name(), i.amount().amount(), i.dueDays(),
+                        i.deliveryBatchSeq() == null ? null : batches.get(i.deliveryBatchSeq()),
+                        i.deliveryBatchSeq())).toList());
     }
 
     /** Whether the contract has an installment due on signing (14 §4.3 step 12): the order waits for it. */

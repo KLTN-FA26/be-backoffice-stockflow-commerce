@@ -32,6 +32,7 @@ class PaymentListenersTest {
     private final CancelledOrderSettlement settlement = mock(CancelledOrderSettlement.class);
     private final OrderPayables orders = mock(OrderPayables.class);
     private final ReceivableService receivables = mock(ReceivableService.class);
+    private final InstallmentService installments = mock(InstallmentService.class);
     private final UUID orderId = UUID.randomUUID();
 
     private OrderCancelled cancelled(BigDecimal refundable) {
@@ -49,7 +50,7 @@ class PaymentListenersTest {
     @DisplayName("cancelled order: lock the order first, cancel the awaited payments, ask the refundable money back as "
             + "PENDING refunds, then record any fee owed (15 §4.4)")
     void cancelledOrder() {
-        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables);
+        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables, installments);
         OrderCancelled event = cancelled(new BigDecimal("700"));
         when(settlement.requestRefunds(any(), any(), anyString(), anyString())).thenReturn(BigDecimal.ZERO);
 
@@ -66,7 +67,7 @@ class PaymentListenersTest {
     @Test
     @DisplayName("cancelled order with nothing to refund (or a null amount): no refund is asked, the fee is still recorded")
     void cancelledOrderNothingToRefund() {
-        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables);
+        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables, installments);
         OrderCancelled zero = cancelled(BigDecimal.ZERO);
         listener.on(zero);
         OrderCancelled none = cancelled(null);
@@ -81,7 +82,7 @@ class PaymentListenersTest {
     @DisplayName("cancelled order whose refund cannot be placed on a captured payment is left for the accountant: "
             + "no exception, the event is still handled")
     void cancelledOrderUnplacedRefund() {
-        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables);
+        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables, installments);
         when(settlement.requestRefunds(any(), any(), anyString(), anyString())).thenReturn(new BigDecimal("50"));
         OrderCancelled event = cancelled(new BigDecimal("700"));
         listener.on(event);
@@ -93,15 +94,17 @@ class PaymentListenersTest {
     void deliveredOrder() {
         OrderDelivered event = new OrderDelivered(orderId, "SO-5", UUID.randomUUID(), "CREDIT", BigDecimal.TEN,
                 BigDecimal.ZERO, "VND", 30, AT);
-        new OrderDeliveredListener(receivables).on(event);
+        new OrderDeliveredListener(receivables, installments).on(event);
         verify(receivables).orderDelivered(event);
+        // 4B-6: the whole order delivered at once (no shipment of its own) - installments paid after it fall due.
+        verify(installments).delivered(orderId, AT, true);
     }
 
     @Test
     @DisplayName("rest of an order closed: the fee owed is recorded first, then the refundable money asked back "
             + "under the order's lock, keyed by the closure")
     void remainderClosed() {
-        OrderRemainderClosedListener listener = new OrderRemainderClosedListener(settlement, orders, receivables);
+        OrderRemainderClosedListener listener = new OrderRemainderClosedListener(settlement, orders, receivables, installments);
         UUID closure = UUID.randomUUID();
         OrderRemainderClosed event = closed(closure, new BigDecimal("1500000"));
         when(settlement.requestRemainderRefunds(any(), any(), any(), anyString(), anyString()))
@@ -119,7 +122,7 @@ class PaymentListenersTest {
     @Test
     @DisplayName("rest closed without a closure id: the order id keys the refund")
     void remainderClosedWithoutClosureId() {
-        OrderRemainderClosedListener listener = new OrderRemainderClosedListener(settlement, orders, receivables);
+        OrderRemainderClosedListener listener = new OrderRemainderClosedListener(settlement, orders, receivables, installments);
         when(settlement.requestRemainderRefunds(any(), any(), any(), anyString(), anyString()))
                 .thenReturn(BigDecimal.ZERO);
         listener.on(closed(null, BigDecimal.TEN));
@@ -129,7 +132,7 @@ class PaymentListenersTest {
     @Test
     @DisplayName("rest closed with no refundable money: only the fee is looked at; the order is not even locked")
     void remainderClosedNothingToRefund() {
-        OrderRemainderClosedListener listener = new OrderRemainderClosedListener(settlement, orders, receivables);
+        OrderRemainderClosedListener listener = new OrderRemainderClosedListener(settlement, orders, receivables, installments);
         OrderRemainderClosed event = closed(UUID.randomUUID(), BigDecimal.ZERO);
         listener.on(event);
         verify(receivables).remainderFeeOwed(event);

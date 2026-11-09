@@ -63,6 +63,30 @@ class PaymentEventListener {
     }
 
     /**
+     * 4B-6 (15 BR-07): a receipt paid installments - each order it paid is confirmed once its installments on signing
+     * are paid.
+     */
+    @ApplicationModuleListener
+    public void on(com.stockflow.contracts.PaymentReceiptRecorded event) {
+        event.lines().stream().map(com.stockflow.contracts.PaymentReceiptRecorded.Line::orderId).distinct().sorted()
+                .forEach(orderId -> orders.installmentsPaid(orderId, event.recordedAt()));
+    }
+
+    /**
+     * 4B-6 (15 BR-13): a receipt voided; when the accountant agreed, a confirmed order it left short of its installment
+     * on signing is put on hold for payment.
+     */
+    @ApplicationModuleListener
+    public void on(com.stockflow.contracts.PaymentReceiptVoided event) {
+        if (!event.holdOrders()) {
+            return;
+        }
+        event.lines().stream().map(com.stockflow.contracts.PaymentReceiptVoided.Line::orderId).distinct().sorted()
+                .forEach(orderId -> orders.installmentsShort(orderId, event.reference(), event.voidedBy(),
+                        event.voidedAt()));
+    }
+
+    /**
      * Money taken back by the accountant (G2-3, 15 BR-06): counted once per reversal; a confirmed order left short of
      * its terms goes ON_HOLD (reason PAYMENT) rather than silently back to unpaid.
      */

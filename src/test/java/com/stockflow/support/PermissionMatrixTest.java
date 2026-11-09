@@ -93,6 +93,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/orders/payment-terms", "payment terms offered to the caller's own customer profile"),
             Map.entry("GET /api/v1/receivables/me", "the caller's own receivables, selected by the customer profile of the token"),
+            Map.entry("GET /api/v1/installments/me", "the caller's own installments, selected by the customer profile of the "
+                    + "token (4B-6)"),
             Map.entry("GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject"),
             Map.entry("GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)"),
             Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
@@ -314,6 +316,12 @@ class PermissionMatrixTest {
             Map.entry("sales-contracts:CREATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-contracts:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-contracts:APPROVE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // 4B-6, kltn-docs 15 §2: the accountant records and voids receipts; Sales, the coordinator and the customer
+            // (scope OWN) read the installments.
+            Map.entry("payment-installments:READ", Set.of(Role.ACCOUNTANT, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.ORDER_COORDINATOR, Role.CUSTOMER, Role.SYSTEM_ADMIN)),
+            Map.entry("payment-receipts:CREATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("payment-receipts:UPDATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),

@@ -46,9 +46,10 @@ class TransferInstructionsService implements TransferInstructions {
                 .filter(o -> o.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
         if (contracts.findLiveByOrderId(orderId).isPresent()) {
-            // 4B-5: paid by the contract's installments - their transfer instructions come with them (4B-6).
+            // 4B-5: paid by the contract's installments, each with its own transfer instructions (4B-6:
+            // GET /api/v1/installments/me/{installmentId}/transfer-instructions).
             throw new BusinessException(ErrorCode.ORDER_PAID_BY_CONTRACT, ("Order %s is paid by its sales contract's "
-                    + "installments").formatted(order.orderNumber()));
+                    + "installments: see /api/v1/installments/me/orders/%s").formatted(order.orderNumber(), orderId));
         }
         var bank = payments.companyBankAccount()
                 .orElseThrow(() -> new BusinessException(ErrorCode.TRANSFER_INSTRUCTIONS_UNAVAILABLE,

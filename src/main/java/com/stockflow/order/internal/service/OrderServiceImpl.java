@@ -753,6 +753,54 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
+     * 4B-6 (15 BR-07, §4.2 step 7): a receipt paid installments of the order. Once every installment its contract wants
+     * on signing is paid - read now, not from the event: a receipt voided since is counted - an order waiting for that
+     * money is confirmed. Called by {@code PaymentEventListener}; a redelivered event finds it confirmed already.
+     */
+    public void installmentsPaid(UUID orderId, java.time.Instant at) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
+        if (!order.paidByContract() || order.status() != OrderStatus.PENDING_PAYMENT
+                || !paymentService.installmentStanding(orderId).onSigningPaid()) {
+            return;
+        }
+        order.confirmByInstallments(at == null ? clock.instant() : at);
+        repository.save(order);
+        events.publishEventsOf(order);
+        log.info("Order {} confirmed: its installments on signing are paid", order.orderNumber());
+    }
+
+    /**
+     * 4B-6 (15 §4.4 step 14, BR-13): a receipt voided with the accountant's agreement to hold what it leaves short. A
+     * confirmed order of a contract whose installment on signing is no longer paid - read now - goes ON_HOLD for
+     * payment, never silently back to unpaid; Sales resolves it once the money is in again. Called by
+     * {@code PaymentEventListener}; a redelivered event finds it on hold already.
+     */
+    public void installmentsShort(UUID orderId, String reference, UUID by, java.time.Instant at) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
+        if (!order.paidByContract() || paymentService.installmentStanding(orderId).onSigningPaid()) {
+            return;
+        }
+        if (!order.status().mayBePutOnHold()) {
+            // Already on hold, or past the handover - which waited for this money (ledgerOf), so goods left only
+            // before the void. Accounting and Sales settle it with the customer.
+            log.warn("Order {} is {} and short of its installment on signing after payment receipt {} was voided; not "
+                    + "put on hold", order.orderNumber(), order.status(), reference);
+            return;
+        }
+        java.time.Instant when = at == null ? clock.instant() : at;
+        String note = "Payment receipt %s voided: the installment on signing is short".formatted(reference);
+        order.putOnHold(com.stockflow.order.api.HoldReason.PAYMENT, note, by, when);
+        holds.save(new OrderHoldJpaEntity(Identifiers.newId(), orderId,
+                com.stockflow.order.api.HoldReason.PAYMENT.name(), when, note, by));
+        repository.save(order);
+        events.publishEventsOf(order);
+        log.warn("Order {} put on hold: payment receipt {} was voided and its installment on signing is short",
+                order.orderNumber(), reference);
+    }
+
+    /**
      * The accountant took back money an allocation had brought (G2-3, {@code PaymentReversed}): counted once per
      * reversal ({@code ordering.order_payment}, a negative row). A confirmed order left short of its terms goes ON_HOLD
      * with reason PAYMENT ({@link Order#reversePayment}); never silently un-confirmed. Called by
@@ -951,6 +999,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      * allocation takes that lock first, so one committed just before the handover is counted by the gate.
      */
     private Order.LedgerMoney ledgerOf(Order order) {
+        if (order.paidByContract()) {
+            // 4B-6 (15 BR-07, BR-08): its installments before delivery and on signing, read under the order's lock - a
+            // receipt's void locks the order first, so one voided a moment ago is seen here, before the hold it calls
+            // for has arrived.
+            return new Order.LedgerMoney(java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO,
+                    paymentService.installmentStanding(order.id().value()).dueBeforeHandover());
+        }
         com.stockflow.payment.api.OrderLedger ledger = paymentService.ledgerOf(order.id().value());
         return new Order.LedgerMoney(ledger.collected(), ledger.paidAhead());
     }
@@ -1034,6 +1089,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             resourceType = "order", resourceId = "#orderId")
     public OrderSummary resolveHold(UUID orderId, String note, UUID by) {
         Order order = lockOrder(orderId);
+        // A credit hold is accounting's to decide (ORDER_CREDIT_HOLD_USE_APPROVAL from the order itself).
+        if (order.paidByContract() && order.status() == OrderStatus.ON_HOLD
+                && order.holdReason() != com.stockflow.order.api.HoldReason.CREDIT
+                && !paymentService.installmentStanding(orderId).onSigningPaid()) {
+            // 4B-6 (15 §4.4 step 14, BR-13): an order of a contract goes back to work only with its installment on
+            // signing paid - whatever it was held for, it was confirmed by that money and a voided receipt took it.
+            throw new BusinessException(ErrorCode.ORDER_BALANCE_NOT_PAID, ("Order %s is short of its installment on "
+                    + "signing; record the receipt before resolving the hold").formatted(order.orderNumber()));
+        }
         order.resolveHold(note, by, clock.instant());
         holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId).ifPresent(hold -> {
             hold.resolve(by, note.trim(), clock.instant());

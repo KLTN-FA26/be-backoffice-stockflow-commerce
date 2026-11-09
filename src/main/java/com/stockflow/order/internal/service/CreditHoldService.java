@@ -83,7 +83,11 @@ public class CreditHoldService {
         this.clock = clock;
     }
 
-    /** The customer's terms, what they owe on credit and what is left of the limit (null without credit). */
+    /**
+     * The customer's terms, what they owe on credit and what is left of the limit (null without credit). The exposure
+     * counts every signed contract's installments paid after delivery (15 BR-10, 4B-6) - one held for credit too: it is
+     * signed, and what it would add is what accounting decides on.
+     */
     @Transactional(readOnly = true)
     public CreditPosition position(UUID customerId) {
         CreditTerms terms = customers.creditTerms(customerId);
@@ -105,9 +109,10 @@ public class CreditHoldService {
     public OrderSummary approve(UUID orderId, String note, UUID by) {
         requireNote(note);
         Order order = lockHeld(orderId);
-        // 14 §5.3: an order held when its contract was signed still waits for the installment on signing, if any.
-        order.approveCredit(by, clock.instant(), signedContract(order)
-                .map(SalesContractService::paysOnSigning).orElse(false));
+        // 14 §5.3: an order held when its contract was signed still waits for the installment on signing - unless the
+        // customer paid it while the order was held (4B-6: the installments say).
+        order.approveCredit(by, clock.instant(), signedContract(order).isPresent()
+                && !paymentService.installmentStanding(orderId).onSigningPaid());
         decide(order, CreditChecks.Outcome.APPROVED, note, by);
         repository.save(order);
         events.publishEventsOf(order);

@@ -692,6 +692,20 @@ public final class Order extends AggregateRoot {
         registerPlaced();
     }
 
+    /**
+     * Every installment its contract wants on signing is paid (4B-6, 15 BR-07, §4.2 step 7): an order waiting for it is
+     * confirmed. Anything else - not an order of a contract, not waiting for that money - is left as it is.
+     *
+     * @return whether it was confirmed now
+     */
+    public boolean confirmByInstallments(Instant at) {
+        if (!paidByContract() || status != OrderStatus.PENDING_PAYMENT) {
+            return false;
+        }
+        transitionTo(OrderStatus.CONFIRMED, null, "INSTALLMENT_PAID", at);
+        return true;
+    }
+
     /** Over the limit, approved by whoever approves credit (15 BR-03): ON_HOLD → CONFIRMED. */
     public void approveCredit() {
         approveCredit(null, null);
@@ -1116,8 +1130,9 @@ public final class Order extends AggregateRoot {
         }
         OrderStatus back = statusBeforeHold;
         HoldReason was = holdReason;
-        // G2-3: a hold the payment reversal raised is resolved by money, not by a note.
-        if (was == HoldReason.PAYMENT && !termsMet()) {
+        // G2-3: a hold the payment reversal raised is resolved by money, not by a note. An order of a contract is paid by
+        // its installments, which the caller checks (4B-6): its own terms are a placeholder.
+        if (was == HoldReason.PAYMENT && !paidByContract() && !termsMet()) {
             throw new BusinessException(ErrorCode.ORDER_BALANCE_NOT_PAID,
                     "Order %s is short of what its %s terms want; record the payment before resolving the hold"
                             .formatted(orderNumber, paymentTerm));
@@ -1746,9 +1761,10 @@ public final class Order extends AggregateRoot {
 
     private BigDecimal amountDueBeforeHandover(LedgerMoney ledger) {
         if (paidByContract()) {
-            // Its contract's installments say what is paid before the goods leave (15 BR-08), not its own terms - the
-            // installments gate the handover from 4B-6 on.
-            return BigDecimal.ZERO;
+            // Its contract's installments say what is paid before the goods leave (15 BR-07, BR-08), not its own terms:
+            // what the installments before delivery and on signing still owe, as payment read it under the order's lock
+            // (4B-6). Every such installment, tied to a delivery batch or not, until the handover goes by batch (4B-8).
+            return ledger == null || ledger.installmentsDue() == null ? BigDecimal.ZERO : ledger.installmentsDue();
         }
         BigDecimal paid = paid(ledger);
         BigDecimal due = billable().subtract(paid).max(BigDecimal.ZERO);
@@ -1764,10 +1780,16 @@ public final class Order extends AggregateRoot {
     /**
      * The money payment's ledger holds for the order (G2-3), read synchronously by the caller under the order's lock.
      *
-     * @param collected net allocations and earlier payments, less refunds asked for
-     * @param paidAhead the part of it not paid against a receivable
+     * @param collected       net allocations and earlier payments, less refunds asked for
+     * @param paidAhead       the part of it not paid against a receivable
+     * @param installmentsDue 4B-6: for an order of a contract, what its installments before delivery and on signing
+     *                        still owe (15 BR-07, BR-08); zero otherwise
      */
-    public record LedgerMoney(BigDecimal collected, BigDecimal paidAhead) {
+    public record LedgerMoney(BigDecimal collected, BigDecimal paidAhead, BigDecimal installmentsDue) {
+
+        public LedgerMoney(BigDecimal collected, BigDecimal paidAhead) {
+            this(collected, paidAhead, BigDecimal.ZERO);
+        }
     }
 
     /**
