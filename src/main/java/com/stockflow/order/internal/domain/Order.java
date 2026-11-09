@@ -271,7 +271,6 @@ public final class Order extends AggregateRoot {
         return OrderLine.of(UUID.randomUUID(), sku, quantity, unitPrice, designSnapshotId);
     }
 
-    /** Sum of the lines. Derived on every call rather than stored, so it cannot go stale. */
     /**
      * What the customer pays: the total with tax (kltn-docs 14 BR-09) - the lines and the fee lines, each with its VAT.
      * An order placed without VAT (before 4B-3, or at checkout) adds none.
@@ -388,7 +387,9 @@ public final class Order extends AggregateRoot {
                                 line.unitPrice().amount(), line.designSnapshotId()))
                         .toList(),
                 total().amount(),
-                total().currency().getCurrencyCode())));
+                total().currency().getCurrencyCode(),
+                netTotal().amount(),
+                taxTotal().amount())));
     }
 
     /** {@link #applyTerms(PaymentTerm, BigDecimal, Integer)} for prepaid and deposit orders. */
@@ -1205,7 +1206,8 @@ public final class Order extends AggregateRoot {
 
     /**
      * Fulfillment handed a shipment of the order to the carrier (kltn-docs 09 §4.1 step 3; G4-2a calls this in its
-     * handover transaction, A1). The order records which units went, at its prices, then moves: PACKED / PICKING /
+     * handover transaction, A1). The order records which units went and what they are worth with their VAT (and the fee
+     * lines, with the first shipment out), then moves: PACKED / PICKING /
      * PARTIALLY_FULFILLED → PARTIALLY_FULFILLED while some units are still to go, → SHIPPED once every unit is
      * shipped or closed (09 BR-03, unless split - here split is allowed). The same shipment again changes nothing.
      *
@@ -1252,7 +1254,6 @@ public final class Order extends AggregateRoot {
             return false;
         }
         requireHandoverAllowed(ledger);
-        Money value = Money.zero(total().currency());
         for (Map.Entry<UUID, Integer> entry : quantities.entrySet()) {
             OrderLine line = findLine(entry.getKey()).orElseThrow(() -> new BusinessException(
                     ErrorCode.VALIDATION_FAILED, "Line %s is not on order %s".formatted(entry.getKey(), orderNumber)));
@@ -1264,14 +1265,8 @@ public final class Order extends AggregateRoot {
                         "Line %s of order %s has %d unit(s) left to ship, not %d".formatted(line.sku().code(),
                                 orderNumber, left, entry.getValue()));
             }
-            // With its VAT (4B-3): the units' share of the line's total with tax, so the shipments of a line add up to it.
-            int before = shippedUnits(line.id(), false);
-            value = value.plus(line.grossBetween(before, before + entry.getValue()));
         }
-        if (shipments.isEmpty()) {
-            // The fee lines are billed with the first shipment that leaves, once (14 BR-09): they carry no units.
-            value = value.plus(feesGross());
-        }
+        Money value = worthWith(quantities);
         int leaving = quantities.values().stream().mapToInt(Integer::intValue).sum();
         boolean everythingGoes = outstandingUnits() == leaving;
         if (status == OrderStatus.PICKING && everythingGoes) {
@@ -1292,6 +1287,24 @@ public final class Order extends AggregateRoot {
         recordPacked(handover.handedOverAt());
         followShipments(ShipmentChange.HANDED_OVER, handover.handedOverAt(), handover.handedOverBy());
         return true;
+    }
+
+    /**
+     * What a shipment leaving with {@code quantities} is worth (4B-3): what the shipments still out - with the carrier
+     * or delivered - are worth once it has left, less what they carry already. Out, they are worth each line's units
+     * out as a share of the line with tax (14 BR-21), and the fee lines, once (14 BR-09): the fee lines carry no units
+     * and go with the first shipment. A shipment that came back took its value with it, so the next one carries it
+     * again - the fee lines too - and the rounded shares of a line still add up to the line, whatever order the
+     * shipments went and came back in. On an order without VAT or fee lines this is the units at their price.
+     */
+    private Money worthWith(Map<UUID, Integer> quantities) {
+        Money worth = feesGross();
+        for (OrderLine line : lines) {
+            worth = worth.plus(line.grossOf(shippedUnits(line.id(), false) + quantities.getOrDefault(line.id(), 0)));
+        }
+        BigDecimal carried = shipments.stream().filter(s -> !s.isReturned()).map(OrderShipment::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return worth.minus(new Money(carried, worth.currency()));
     }
 
     private static Map<UUID, Integer> quantitiesOf(List<ShipmentHandover.Line> lines) {

@@ -2,7 +2,10 @@ package com.stockflow.order.internal.domain;
 
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.order.api.DeliveryFailureReason;
 import com.stockflow.order.api.FeeKind;
+import com.stockflow.order.api.PaymentTerm;
+import com.stockflow.order.api.ShipmentHandover;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -79,6 +82,74 @@ class OrderVatTest {
         // 900 cups with tax (1,980,000) + the fees with tax (880,000).
         assertThat(order.billable()).isEqualByComparingTo("2860000");
         assertThat(order.closedAmount()).isEqualByComparingTo("220000");
+    }
+
+    private static final Instant NOW = Instant.parse("2026-11-09T03:00:00Z");
+    private static final UUID STAFF = UUID.randomUUID();
+
+    /** Placed on credit, split shipments allowed, released and packed: ready to hand over a few units at a time. */
+    private static Order packed(Order order) {
+        order.applyTerms(PaymentTerm.CREDIT, null, 30, null);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        order.decidePartialShipment(true);
+        order.submitOnCredit(true);
+        order.release(UUID.randomUUID(), "HCM", STAFF, NOW);
+        order.startPicking(STAFF, NOW);
+        order.markPacked(NOW, STAFF);
+        return order;
+    }
+
+    private static ShipmentHandover handover(UUID shipment, UUID line, int units) {
+        return new ShipmentHandover(shipment, List.of(new ShipmentHandover.Line(line, units)), NOW, STAFF);
+    }
+
+    private static BigDecimal valueOf(Order order, UUID shipment) {
+        return order.shipments().stream().filter(s -> s.id().equals(shipment)).findFirst().orElseThrow().amount();
+    }
+
+    @Test
+    @DisplayName("the fee lines go with the first shipment out; when it comes back, the next one carries them again")
+    void feesFollowTheShipmentsStillOut() {
+        Order order = packed(order());
+        UUID cups = order.lines().getFirst().id();
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        UUID again = UUID.randomUUID();
+        order.recordHandover(handover(first, cups, 400));
+        // 400 cups with tax (880,000) and the fee lines with tax (880,000).
+        assertThat(valueOf(order, first)).isEqualByComparingTo("1760000");
+        order.recordHandover(handover(second, cups, 600));
+        assertThat(valueOf(order, second)).as("the rest of the cups, no fee lines").isEqualByComparingTo("1320000");
+
+        order.recordShipmentDeliveryFailed(first, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
+        order.recordShipmentReturned(first, NOW, STAFF);
+        order.recordHandover(handover(again, cups, 400));
+        assertThat(valueOf(order, again)).as("the cups again, and the fee lines that came back with them")
+                .isEqualByComparingTo("1760000");
+        order.recordShipmentDelivered(second, NOW, STAFF);
+        order.recordShipmentDelivered(again, NOW, STAFF);
+        assertThat(order.billedAmount()).as("everything delivered is billed, the fee lines once")
+                .isEqualByComparingTo(order.total().amount());
+    }
+
+    @Test
+    @DisplayName("a line's rounded shares add up whatever order its shipments go and come back in")
+    void sharesAddUpAfterAReturn() {
+        // 2 units at 1,005 with 5% VAT: 2,010 + 101 = 2,111; one unit is worth 1,055.5, rounded.
+        OrderLine odd = Order.line(UUID.randomUUID(), new Sku("A"), 2, Money.vnd(1_005), null)
+                .withTax(new BigDecimal("5"));
+        Order order = packed(Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 3), UUID.randomUUID(),
+                UUID.randomUUID(), List.of(odd), NOW));
+        UUID line = order.lines().getFirst().id();
+        UUID a = UUID.randomUUID();
+        UUID b = UUID.randomUUID();
+        UUID c = UUID.randomUUID();
+        order.recordHandover(handover(a, line, 1));
+        order.recordHandover(handover(b, line, 1));
+        order.recordShipmentDeliveryFailed(a, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
+        order.recordShipmentReturned(a, NOW, STAFF);
+        order.recordHandover(handover(c, line, 1));
+        assertThat(valueOf(order, b).add(valueOf(order, c))).isEqualByComparingTo("2111");
     }
 
     @Test
