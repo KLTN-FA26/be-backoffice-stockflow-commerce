@@ -1,6 +1,5 @@
 package com.stockflow.notification.internal.service;
 
-import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.StockDamageReported;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.StaffContact;
@@ -40,7 +39,7 @@ class StockDamageNotificationListenerTest {
     private final IdentityService identity = mock(IdentityService.class);
     private final Inbox inbox = mock(Inbox.class);
     private final StockDamageNotificationListener listener = new StockDamageNotificationListener(
-            new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "noreply@stockflow.local", ""),
+            new NotificationSender(new SmtpEmailTransport(mail), "noreply@stockflow.local"),
             new StaffDirectory(identity), new StaffNotices(inbox));
 
     private final UUID manager = UUID.randomUUID();

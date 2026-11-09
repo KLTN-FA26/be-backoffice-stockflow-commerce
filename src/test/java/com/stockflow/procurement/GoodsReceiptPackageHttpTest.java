@@ -48,7 +48,7 @@ class GoodsReceiptPackageHttpTest {
 
     private SecuredMvc mvc;
     private UUID clerk;
-    private ProductionReceivables.Goods goods;
+    private ProductionReceivables.Receivable goods;
     private UUID receiptId;
 
     @BeforeEach

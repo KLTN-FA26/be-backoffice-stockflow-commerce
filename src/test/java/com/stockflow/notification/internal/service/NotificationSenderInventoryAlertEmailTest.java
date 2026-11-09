@@ -4,7 +4,6 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
-import com.stockflow.common.http.RestClientFactory;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
@@ -23,7 +22,7 @@ import static org.mockito.Mockito.verify;
 class NotificationSenderInventoryAlertEmailTest {
 
     private final JavaMailSender mail = mock(JavaMailSender.class);
-    private final NotificationSender sender = new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "noreply@example.com", "");
+    private final NotificationSender sender = new NotificationSender(new SmtpEmailTransport(mail), "noreply@example.com");
 
     @Test
     void sendsOneMessageFromTheConfiguredSenderToTheRecipient() {
