@@ -197,11 +197,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     List.of(new FieldError("productionOrderId", "The production order is required",
                             ErrorCode.VALIDATION_FAILED.name())));
         }
+        // The caller's warehouse first, read without a lock: one scoped to another warehouse learns nothing of the
+        // production order and holds no lock on it or on its sales order.
+        ReceivableProductionOrder read = receiving.find(command.productionOrderId()).orElseThrow(() ->
+                notFoundProduction(command.productionOrderId()));
+        com.stockflow.common.security.WarehouseScope.requireWarehouse(read.receivingWarehouseId());
         ReceivableProductionOrder production = receiving.lock(command.productionOrderId()).orElseThrow(() ->
-                new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_FOUND,
-                        "No production order " + command.productionOrderId()));
+                notFoundProduction(command.productionOrderId()));
         requireReceivable(production);
-        com.stockflow.common.security.WarehouseScope.requireWarehouse(production.receivingWarehouseId());
         Instant now = clock.instant();
         GoodsReceipt saved = receipts.save(GoodsReceipt.productionDraft(Identifiers.newId(),
                 receipts.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), production.id(),
@@ -1433,6 +1436,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         }
         // A draft's cartons are not counted in yet: what remains on the production order line leaves them out.
         boolean pending = receipt.status() == GoodsReceiptStatus.DRAFT;
+        // A draft's room on each line is what every other receipt not cancelled leaves - other drafts too, as BR-02
+        // counts them - not only what was confirmed: a figure the hard stop would refuse is no figure to count to.
+        Map<UUID, Integer> elsewhere = production == null || !pending ? Map.of()
+                : receipts.unitsOnOtherProductionReceipts(receipt.lines().stream()
+                        .map(ReceiptLine::productionOrderLineId).filter(java.util.Objects::nonNull).toList(),
+                        receipt.id());
         List<LineView> lines = receipt.lines().stream().map(line -> {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
             List<String> lineWarnings = new ArrayList<>();
@@ -1466,7 +1475,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                             .map(ReceivingPurchaseOrder.Line::uomConversionId).map(unitCodes::get).orElse(null),
                     line.productionOrderLineId(), production == null || line.productionOrderLineId() == null ? null
                             : production.line(line.productionOrderLineId())
-                            .map(ordered -> progress(ordered, line, pending)).orElse(null));
+                            .map(ordered -> progress(ordered, line, pending,
+                                    elsewhere.getOrDefault(ordered.id(), 0))).orElse(null));
         }).toList();
         List<String> warnings = new ArrayList<>();
         if (lines.stream().anyMatch(l -> l.warnings().contains(ExpiryWarning.EXPIRY_NEAR))) {
@@ -1506,12 +1516,17 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 production == null ? null : production.producerName());
     }
 
-    /** A production line against what its production order line orders, in cartons and units (4A-5). */
+    /**
+     * A production line against what its production order line orders, in cartons and units (4A-5). A draft's remaining
+     * cartons leave out {@code unitsElsewhere}, what other receipts not cancelled hold of the line (confirmed or draft);
+     * a confirmed receipt's are what the production order still awaits.
+     */
     private static ProductionLineProgress progress(ReceivableProductionOrder.Line ordered, ReceiptLine line,
-                                                   boolean pending) {
+                                                   boolean pending, int unitsElsewhere) {
         int per = ordered.unitsPerCarton();
         int here = line.receivedQuantity() / per;
-        int remaining = Math.max(ordered.cartons() - ordered.receivedCartons() - (pending ? here : 0), 0);
+        int remaining = Math.max(pending ? ordered.cartons() - unitsElsewhere / per - here
+                : ordered.cartons() - ordered.receivedCartons(), 0);
         return new ProductionLineProgress(per, ordered.cartons(), ordered.receivedCartons(), here, remaining,
                 ordered.cartons() * per, ordered.receivedCartons() * per, here * per, remaining * per);
     }
@@ -1522,5 +1537,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private static BusinessException notFoundProduction(UUID id) {
+        return new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_FOUND, "No production order " + id);
     }
 }
