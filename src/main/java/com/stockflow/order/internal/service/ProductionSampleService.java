@@ -15,7 +15,6 @@ import com.stockflow.common.storage.StagedUploads;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.common.storage.UploadSlot;
 import com.stockflow.common.storage.UploadSlotRequest;
-import com.stockflow.contracts.ProductionOrderSampleApproved;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrder;
@@ -29,7 +28,6 @@ import com.stockflow.order.internal.domain.SampleRoundRepository;
 import com.stockflow.order.internal.domain.SampleRounds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -89,12 +87,12 @@ public class ProductionSampleService {
     private final FileTransfers transfers;
     private final StagedUploads staged;
     private final TransactionOperations tx;
-    private final ApplicationEventPublisher events;
+    private final ProductionOrderDispatch dispatch;
     private final Clock clock;
 
     ProductionSampleService(ProductionOrderRepository productionOrders, SampleRoundRepository sampleRounds,
                             OrderRepository orders, SalesContractRepository contracts, FileTransfers transfers,
-                            StagedUploads staged, TransactionOperations tx, ApplicationEventPublisher events,
+                            StagedUploads staged, TransactionOperations tx, ProductionOrderDispatch dispatch,
                             Clock clock) {
         this.productionOrders = productionOrders;
         this.sampleRounds = sampleRounds;
@@ -103,7 +101,7 @@ public class ProductionSampleService {
         this.transfers = transfers;
         this.staged = staged;
         this.tx = tx;
-        this.events = events;
+        this.dispatch = dispatch;
         this.clock = clock;
     }
 
@@ -295,22 +293,12 @@ public class ProductionSampleService {
         ProductionOrder saved = production;
         if (answer == SampleRound.Result.APPROVED) {
             saved = productionOrders.save(production);
-            tellProducerSampleApproved(saved, now);
+            // B31: the producer is told to print the batch, once per approval - after commit, by notification.
+            dispatch.sampleApproved(saved, now);
         }
         log.info("Production order {}: print sample round {} {} by its customer", saved.code(), answered.roundNo(),
                 answer == SampleRound.Result.APPROVED ? "approved" : "sent back to be printed again");
         return new RoundsView(saved, rounds, allowance(saved, rounds));
-    }
-
-    /**
-     * B31: the producer is told the sample is approved, to print the batch - after commit, through the notification
-     * module, which listens for {@link ProductionOrderSampleApproved} (4A-3). When 4A-3's
-     * {@code ProductionOrderDispatch.sampleApproved} is on this branch, this is a call to it: it publishes the same
-     * event with the same facts, and checks the production order is IN_PRODUCTION with a sample required first.
-     */
-    private void tellProducerSampleApproved(ProductionOrder production, Instant at) {
-        events.publishEvent(new ProductionOrderSampleApproved(Identifiers.newId(), production.id(), production.code(),
-                at));
     }
 
     // ---- shared -----------------------------------------------------------------------------------------------------
