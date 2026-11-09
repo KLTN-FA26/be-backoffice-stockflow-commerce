@@ -99,7 +99,7 @@ class StockPackageLabelHttpTest {
         UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-CL", null), clerk).id();
         String body = """
                 {"lines":[{"purchaseOrderLineId":"%s","quantity":2000,"locationCode":"%s","unitOfMeasure":"CARTON",
-                           "packages":[{"quantity":1000},{"quantity":980}]}]}""".formatted(poLine, RECEIVING);
+                           "packages":[{"quantity":1000},{"quantity":1000}]}]}""".formatted(poLine, RECEIVING);
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put("/api/v1/goods-receipts/" + receiptId + "/lines")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());

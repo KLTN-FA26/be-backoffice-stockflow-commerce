@@ -34,8 +34,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * SCRUM-473 / SCRUM-164: a carton stays true to its rows. Taking units from a carton opens it, or closes it CONSUMED
- * when nothing is left; an approved adjustment writes the carton up or down as a whole.
+ * SCRUM-473 / SCRUM-164: a carton stays true to its rows. Taking a carton's units closes it CONSUMED; taking part of
+ * one is refused, as nothing opens a carton since team plan 4C-2; an approved adjustment writes the carton up or down
+ * as a whole.
  */
 class StockPackageContentsTest {
 
@@ -81,8 +82,8 @@ class StockPackageContentsTest {
         }
 
         @Test
-        @DisplayName("a carton taken from but not emptied is opened")
-        void partiallyTakenIsOpened() {
+        @DisplayName("a carton taken from in part is refused (STOCK_PACKAGE_TAKEN_WHOLE): it is neither opened nor saved")
+        void partiallyTakenIsRefused() {
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             StockPackage carton = carton(id, true, 24);
             StockItem row = row(id, 24);
@@ -91,11 +92,11 @@ class StockPackageContentsTest {
 
             StockPackageContents.LockedCartons locked = contents.lockFor(List.of(row));
             locked.tookFrom(row);
-            contents.settle(locked, NOW);
 
-            assertThat(carton.unopened()).isFalse();
+            assertThat(codeOf(() -> contents.settle(locked, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(carton.unopened()).isTrue();
             assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            verify(stockPackages).save(carton);
+            verify(stockPackages, never()).save(org.mockito.ArgumentMatchers.any());
         }
 
         @Test
@@ -146,7 +147,7 @@ class StockPackageContentsTest {
             StockItem a = row(id, 10);
             StockItem b = row(id, 14);
             when(stockPackages.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(carton));
-            when(stockItems.onHandInStockPackage(id)).thenReturn(5);
+            when(stockItems.onHandInStockPackage(id)).thenReturn(0);
 
             StockPackageContents.LockedCartons locked = contents.lockFor(List.of(a, b));
             locked.tookFrom(a);
@@ -195,22 +196,20 @@ class StockPackageContentsTest {
         }
 
         @Test
-        @DisplayName("written down: units come from its rows in id order; the carton is opened, and one change per row")
-        void writeDown() {
+        @DisplayName("written down in part: refused before any row changes (STOCK_PACKAGE_TAKEN_WHOLE) - a carton is not "
+                + "opened; a count states it present or missing (team plan 4C-3)")
+        void writeDownInPartIsRefused() {
             StockPackage carton = carton(id, true, 24);
             StockItem a = row(id, 10);
             StockItem b = row(id, 14);
             rowsOf(carton, a, b);
 
-            List<StockPackageContents.RowChange> changes = contents.adjust(id, -12, false, NOW);
-
-            int taken = changes.stream().mapToInt(StockPackageContents.RowChange::delta).sum();
-            assertThat(taken).isEqualTo(-12);
-            assertThat(a.onHand().value() + b.onHand().value()).isEqualTo(12);
-            assertThat(carton.unopened()).isFalse();
-            assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            verify(stockPackages).save(carton);
-            verify(stockItems, org.mockito.Mockito.atLeastOnce()).save(org.mockito.ArgumentMatchers.any());
+            assertThat(codeOf(() -> contents.adjust(id, -12, false, NOW)))
+                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(a.onHand().value() + b.onHand().value()).isEqualTo(24);
+            assertThat(carton.unopened()).isTrue();
+            verify(stockPackages, never()).save(org.mockito.ArgumentMatchers.any());
+            verify(stockItems, never()).save(org.mockito.ArgumentMatchers.any());
         }
 
         @Test

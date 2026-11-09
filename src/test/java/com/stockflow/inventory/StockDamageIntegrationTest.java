@@ -14,6 +14,7 @@ import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CycleCount;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationId;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -533,11 +534,14 @@ class StockDamageIntegrationTest {
     }
 
     @Test
-    @DisplayName("more than on hand, more than free while the rest is held: refused; only AVAILABLE unexpired stock")
+    @DisplayName("more than on hand, or any of a carton held for an order: refused; only AVAILABLE unexpired stock")
     void quantitiesAndStatuses() throws Exception {
         report(UUID.randomUUID(), row, 11).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DAMAGE_EXCEEDS_FREE_STOCK"));
-        // 6 of the 10 allocated to an order released to HCM: only 4 are free.
+        // A sealed carton of 6 on the same bin, allocated whole to an order released to HCM (whole cartons only, team
+        // plan 4C-2): none of its units is free, so a shelf report may take none of them.
+        UUID held = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, 6, "L1", today.plusDays(60),
+                Instant.parse("2026-10-01T03:00:00Z"), "AVAILABLE")).getFirst().stockItemId();
         UUID order = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
@@ -550,11 +554,14 @@ class StockDamageIntegrationTest {
             inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 6, order));
         });
         tx.executeWithoutResult(s -> inventory.allocate(new AllocateStockCommand(order, "HCM")));
-        report(UUID.randomUUID(), row, 5).andExpect(status().isConflict())
+        assertThat(jdbc.queryForMap("SELECT on_hand, reserved FROM inventory.stock_item WHERE id = ?", held))
+                .as("the carton is allocated whole").containsEntry("on_hand", 6).containsEntry("reserved", 6);
+        report(UUID.randomUUID(), held, 1).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DAMAGE_EXCEEDS_FREE_STOCK"));
         report(UUID.randomUUID(), row, 4).andExpect(status().isCreated());
-        assertThat(jdbc.queryForMap("SELECT on_hand, reserved FROM inventory.stock_item WHERE id = ?", row))
+        assertThat(jdbc.queryForMap("SELECT on_hand, reserved FROM inventory.stock_item WHERE id = ?", held))
                 .as("the allocation is untouched").containsEntry("on_hand", 6).containsEntry("reserved", 6);
+        assertThat(onHand(row)).isEqualTo(6);
 
         // IN_PRODUCTION: blanks in the print shop are production's to scrap, never a damage report's.
         for (String status : List.of("DAMAGED", "QUARANTINE", "EXPIRED", "INBOUND", "IN_PRODUCTION")) {
@@ -663,50 +670,51 @@ class StockDamageIntegrationTest {
     }
 
     @Test
-    @DisplayName("units out of a carton: it opens, the last unit closes it CONSUMED; damaged units arrive loose, merged")
+    @DisplayName("a carton is reported whole: part of it is refused, all of it consumes it; the units arrive loose, merged")
     void cartonRows() throws Exception {
         // A FIFO SKU with its policy configured: the second report merges into the DAMAGED row of the same receipt
-        // layer, which the policy trigger accepts only as a same-receipt merge.
-        UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
-        UUID unit = Identifiers.newId();
-        UUID carton = Identifiers.newId();
-        UUID contents = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE inventory.inventory_items SET removal_strategy = 'FIFO', policy_configured = true"
-                    + " WHERE sku = ?", sku);
-            jdbc.update("INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " VALUES (?, ?, 'CARTON', 5)", unit, item);
-            jdbc.update("""
-                    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) VALUES (?, ?, ?, ?, 5, 5, 'HCM-A01-2-B', 'IN_STOCK')""",
-                    carton, "LPN-" + sku, item, unit);
-            jdbc.update("""
-                    INSERT INTO inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
-                        version, created_at, stock_package_id) VALUES (?, ?, 'HCM-A01-2-B', ?, 5, 0, 'AVAILABLE', 0,
-                        NOW(), ?)""", contents, sku, Timestamp.from(Instant.parse("2026-09-01T03:00:00Z")), carton);
-        });
+        // layer, which the policy trigger accepts only as a same-receipt merge. Two sealed cartons of 5 received
+        // together are that one layer.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET removal_strategy = 'FIFO',"
+                + " policy_configured = true WHERE sku = ?", sku));
+        List<CartonRows.Carton> made = tx.execute(s -> CartonRows.stock(jdbc, sku, "HCM-A01-2-B", 2, 5, null, null,
+                Instant.parse("2026-09-01T03:00:00Z"), "AVAILABLE"));
+        UUID carton = made.get(0).id();
+        UUID contents = made.get(0).stockItemId();
+        UUID secondCarton = made.get(1).id();
+        UUID secondContents = made.get(1).stockItemId();
         String cartonState = "SELECT status, unopened FROM inventory.stock_package WHERE id = ?";
 
-        String first = body(report(UUID.randomUUID(), contents, 2).andExpect(status().isCreated())
+        // Part of a carton: the carton would be opened, which no carton is any more (team plan 4C-2).
+        report(UUID.randomUUID(), contents, 2).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+        assertThat(jdbc.queryForMap(cartonState, carton)).containsEntry("status", "IN_STOCK")
+                .containsEntry("unopened", true);
+        assertThat(onHand(contents)).isEqualTo(5);
+        assertThat(reports()).isZero();
+
+        String first = body(report(UUID.randomUUID(), contents, 5).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.sourceStockPackageId").value(carton.toString()))
                 .andReturn()).path("id").asText();
 
-        assertThat(jdbc.queryForMap(cartonState, carton)).containsEntry("status", "IN_STOCK")
-                .containsEntry("unopened", false);
-        assertThat(onHand(contents)).isEqualTo(3);
+        assertThat(jdbc.queryForMap(cartonState, carton)).containsEntry("status", "CONSUMED");
+        assertThat(onHand(contents)).isZero();
         assertThat(jdbc.queryForMap("""
                 SELECT on_hand, stock_package_id FROM inventory.stock_item WHERE sku = ? AND status = 'DAMAGED'""", sku))
-                .as("the damaged units are loose in quarantine").containsEntry("on_hand", 2)
+                .as("the damaged units are loose in quarantine").containsEntry("on_hand", 5)
                 .containsEntry("stock_package_id", null);
         assertThat(jdbc.queryForObject("""
                 SELECT from_stock_package_id FROM inventory.stock_movement WHERE reference_id = ?::uuid""", UUID.class,
                 first)).isEqualTo(carton);
 
-        report(UUID.randomUUID(), contents, 3).andExpect(status().isCreated());
+        report(UUID.randomUUID(), secondContents, 5).andExpect(status().isCreated());
 
-        assertThat(jdbc.queryForMap(cartonState, carton)).containsEntry("status", "CONSUMED");
-        assertThat(onHand(contents)).isZero();
-        assertThat(damagedAt(QC01)).isEqualTo(5);
+        assertThat(jdbc.queryForMap(cartonState, secondCarton)).containsEntry("status", "CONSUMED");
+        assertThat(onHand(secondContents)).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.stock_item WHERE sku = ? AND status = 'DAMAGED'""", Integer.class, sku))
+                .as("merged into the one DAMAGED row of the layer").isEqualTo(1);
+        assertThat(damagedAt(QC01)).isEqualTo(10);
     }
 
     @Test

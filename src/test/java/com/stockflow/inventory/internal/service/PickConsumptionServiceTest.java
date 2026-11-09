@@ -65,6 +65,12 @@ class PickConsumptionServiceTest {
         }
 
         @Override
+        public List<com.stockflow.inventory.internal.domain.StockPackageId> cartonsMovedBy(
+                StockMovement.ReferenceType referenceType, UUID referenceId) {
+            return List.of();
+        }
+
+        @Override
         public Optional<StockMovement> findByReference(StockMovement.MovementType type,
                                                        StockMovement.ReferenceType referenceType, UUID referenceId) {
             return ledgerRows.stream().filter(row -> row.type() == type && row.referenceType() == referenceType

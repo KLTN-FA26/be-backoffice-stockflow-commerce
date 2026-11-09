@@ -9,6 +9,13 @@ public interface StockMovementLog {
     void append(StockMovement movement);
 
     /**
+     * The cartons a document moved whole: the carton named on the arriving side of its MOVE lines, each once, in no
+     * particular order; empty when it moved none. How a person's repeated carton move is recognised (kltn-docs 11
+     * BR-07): the request id is the reference.
+     */
+    java.util.List<StockPackageId> cartonsMovedBy(StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    /**
      * The line a document already caused, if any — how a retried move is recognised as one that
      * already happened instead of moving the goods twice. When the document caused several (a receipt line
      * received into cartons writes one per carton, SCRUM-473), the first written: ids are UUIDv7, so the

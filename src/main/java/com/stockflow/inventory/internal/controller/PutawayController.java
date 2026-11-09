@@ -74,16 +74,15 @@ class PutawayController {
 
     @PostMapping("/{taskId}/confirmations")
     @Operation(summary = "Put a task's goods into a bin, by scan",
-            description = "A carton task takes {locationCode, lpn}, a loose one {locationCode, quantity}; the other "
-                    + "field is 400. A loose task may be confirmed in several parts. Answers the task as it now "
-                    + "stands. Refused: DONE task 409, other carton 409, more than left 422, a bin that is not a bin "
-                    + "422, another warehouse's, unusable, of the wrong class or full 409.")
+            description = "Takes {locationCode, lpn}: the task's carton goes into the bin whole. Answers the task as "
+                    + "it now stands. Refused: DONE task 409, other carton 409, a bin that is not a bin 422, another "
+                    + "warehouse's, unusable, of the wrong class or full 409.")
     @RequiresPermission(resource = InventoryResources.PUTAWAY_TASKS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
     public ApiResponse<PutawayTaskResponse> confirm(@PathVariable UUID taskId,
                                                     @Valid @RequestBody PutawayConfirmationRequest request,
                                                     @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(toResponse(putaway.confirm(taskId, request.locationCode(), request.lpn(),
-                request.quantity(), actor.userId())));
+                actor.userId())));
     }
 
     private static PutawayTaskResponse toResponse(TaskView task) {

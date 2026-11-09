@@ -88,10 +88,11 @@ public interface InventoryService {
 
     /**
      * HELD → ALLOCATED (docs 03 §6, 04c F-FUL step 02): the order was released to a warehouse; each live SKU
-     * reservation of the order becomes allocations on pickable bins of that warehouse, chosen by BR-STK-006 —
-     * earliest expiry first, and where there is none the earliest real receipt time (FIFO) — and never on expired,
-     * blocked or non-pickable stock. Allocations are pinned (X-RESV: they do not expire). All or nothing: when the
-     * warehouse cannot cover every line, nothing is allocated. Idempotent: an order with no SKU reservation left
+     * reservation of the order becomes allocations of whole LPN cartons on pickable bins of that warehouse, one
+     * allocation per carton, in the SKU's removal order - the earliest receipt first (FIFO, kltn-docs 07 BR-03) - and
+     * never on loose units, on a carton another order holds part of, or on expired, blocked or non-pickable stock.
+     * Allocations are pinned (X-RESV: they do not expire). All or nothing: when the warehouse has too few whole
+     * cartons for every line, nothing is allocated (k &lt; N waits for {@code AWAITING_STOCK}, team plan 4A-6). Idempotent: an order with no SKU reservation left
      * gets an empty result. Joins the caller's transaction; locks the SKUs, then the reservations, then the stock
      * rows in id order.
      *
@@ -102,7 +103,8 @@ public interface InventoryService {
 
     /**
      * X-SHORT reallocation: the allocation came up short at its bin. It is released, and the same quantity is
-     * allocated again in the same warehouse, FEFO, from any pickable bin but that one. Joins the caller's
+     * allocated again in the same warehouse, as whole cartons in the SKU's removal order, from any pickable bin but
+     * that one (07 BR-03: reallocation too gives whole cartons). Joins the caller's
      * transaction. Idempotent on the command's request id.
      *
      * @return the new allocations, in pick order
@@ -147,29 +149,19 @@ public interface InventoryService {
     List<HoldView> holds(java.util.Collection<UUID> reservationIds);
 
     /**
-     * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
-     * caller's transaction, like {@link #reserve}. Locks the source and destination rows in id
-     * order, as {@code reserve} does, so two moves crossing the same pair cannot deadlock.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code STOCK_ITEM_NOT_FOUND},
-     *         {@code LOCATION_NOT_FOUND}, {@code INSUFFICIENT_STOCK} (fewer unreserved units than
-     *         asked), {@code STOCK_STATUS_MISMATCH} (the destination holds the lot in another status)
-     */
-    StockMove move(MoveStockCommand command);
-
-    /**
      * Count received goods in at a receiving location as INBOUND stock (SCRUM-435, docs 03 step 6). Joins the
      * caller's transaction: the receipt and the stock it creates commit or roll back together. Always a new stock
      * layer, never merged into an older receipt's.
      *
-     * <p>SCRUM-473: the goods go into the line's labelled cartons first ({@link #countReceivingPackages}) - one
-     * INBOUND row per carton, holding what was counted into it, the carton IN_STOCK and still unopened, one RECEIPT
-     * ledger line per carton naming it. Only the remainder goes loose, as one more row and ledger line, and none
-     * when the cartons hold everything. The move returned is the loose line, or the first carton's when nothing is
-     * loose; a retried receipt returns it again and writes nothing.</p>
+     * <p>Every unit arrives in one of the line's labelled cartons ({@link #countReceivingPackages}; kltn-docs 03
+     * BR-12): one INBOUND row per carton, holding the SKU's standard count, the carton IN_STOCK and sealed, one
+     * RECEIPT ledger line per carton naming it. Nothing goes loose (team plan 4C-2): a line whose cartons do not hold
+     * exactly {@code quantity} is refused. The move returned is the first carton's; a retried receipt returns it again
+     * and writes nothing.</p>
      *
      * @throws com.stockflow.common.error.BusinessException {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE},
      *         {@code RECEIPT_PACKAGES_EXCEED_LINE} (the cartons hold more than {@code quantity}),
+     *         {@code RECEIPT_LINE_NOT_IN_CARTONS} (they hold less: units outside a carton are not received),
      *         {@code STOCK_PACKAGE_WRONG_LOCATION} (a carton was counted at another receiving area)
      */
     StockMove receive(ReceiveStockCommand command);
@@ -177,7 +169,9 @@ public interface InventoryService {
     /**
      * Label, recount and void the cartons of a goods-receipt line while its receipt is a draft (SCRUM-473): the
      * whole list each time ({@link CountReceivingPackagesCommand}). Joins the caller's transaction, under the SKU's
-     * lock and then the line's cartons'. A new carton gets the next LPN of the day, {@code LPN-yyyyMMdd-nnnnnn}.
+     * lock and then the line's cartons'. A new carton gets the next LPN of the day, {@code LPN-yyyyMMdd-nnnnnn}. Every
+     * carton holds the packing unit's factor, the SKU's standard count: the system assigns it, nobody types another
+     * (kltn-docs 03 BR-13 - a carton of another count is not received at all).
      *
      * @return the line's live cartons after the call, by LPN
      * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} (a carton of no unit or under 1
@@ -211,16 +205,18 @@ public interface InventoryService {
     StockMove receiveReturn(ReceiveReturnCommand command);
 
     /**
-     * Move labelled cartons whole (SCRUM-473): each carton and its rows change location together, keeping their
-     * ids, holds and unopened state; one MOVE ledger line per row names the carton on both sides. Only an IN_STOCK
-     * carton moves, and all or none of them do. Locks, once for the whole list: the SKUs in code order, then the
-     * cartons, then their rows, each in id order.
+     * Move labelled cartons whole (SCRUM-473; kltn-docs 11 BR-04): each carton and its rows change location together,
+     * keeping their ids, holds and sealed state; one MOVE ledger line per row names the carton on both sides. Only an
+     * IN_STOCK carton moves, and all or none of them do (11 BR-07). A move a person asks for ({@link
+     * MoveReference#MOVE_TASK}) never takes a carton held for an order (11 BR-05: the picker would find its bin empty)
+     * nor one a cycle count holds, and is answered again, not repeated, for the same reference id. Locks, once for the
+     * whole list: the SKUs in code order, then the cartons, then their rows, each in id order.
      *
      * @return the cartons after the move, by LPN
      * @throws com.stockflow.common.error.BusinessException {@code STOCK_PACKAGE_NOT_FOUND},
      *         {@code VALIDATION_FAILED} (already there), {@code MOVE_ACROSS_WAREHOUSES},
      *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code INVALID_STOCK_PACKAGE_TRANSITION}
-     *         (a carton is not IN_STOCK)
+     *         (a carton is not IN_STOCK), {@code STOCK_PACKAGE_HELD}, {@code STOCK_SLOT_UNDER_COUNT}
      */
     List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command);
 

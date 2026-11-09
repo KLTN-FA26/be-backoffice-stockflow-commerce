@@ -55,6 +55,7 @@ class PutawayTasksIntegrationTest {
     private UUID receipt;
     private UUID line;
     private UUID carton;
+    private UUID carton2;
     private UUID bin;
     private UUID bin2;
 
@@ -101,14 +102,19 @@ class PutawayTasksIntegrationTest {
         line = receipts.replaceLines(receipt, List.of(new GoodsReceipts.NewLine(poLine, 2000, null, null,
                 RECEIVING, null))).lines().getFirst().id();
         List<StockPackageView> counted = inventory.countReceivingPackages(new CountReceivingPackagesCommand(line,
-                new Sku(sku), cartonUnit, RECEIVING, List.of(new PackageCount(null, 1000)), clerk));
-        carton = counted.getFirst().id();
+                new Sku(sku), cartonUnit, RECEIVING, List.of(PackageCount.fresh(), PackageCount.fresh()), clerk));
+        carton = counted.get(0).id();
+        carton2 = counted.get(1).id();
         bin = DemoData.location("HCM-A01-1-A");
         bin2 = DemoData.location("HCM-A01-1-B");
     }
 
     private NewPutawayTask loose(int quantity) {
         return new NewPutawayTask(receipt, line, sku, quantity, null);
+    }
+
+    private NewPutawayTask ofCarton(UUID stockPackageId) {
+        return new NewPutawayTask(receipt, line, sku, 1000, stockPackageId);
     }
 
     @Test
@@ -126,33 +132,22 @@ class PutawayTasksIntegrationTest {
     }
 
     @Test
-    @DisplayName("opening twice for one loose line returns the one task, even once it is DONE")
-    void openTwiceForOneLooseLineReturnsOneTask() {
-        PutawayTaskView first = putaway.open(loose(2000));
-        putaway.recordPutaway(first.id(), 2000, 2000, bin);
-
-        PutawayTaskView second = putaway.open(loose(2000));
-
-        assertThat(second.id()).isEqualTo(first.id());
-        assertThat(second.status()).isEqualTo("DONE");
-        assertThat(putaway.tasksOfReceipt(receipt)).hasSize(1);
+    @DisplayName("a receipt line's task is one carton (05 BR-08, team plan 4C-2): a loose one is refused, nothing opens")
+    void aLooseTaskIsRefused() {
+        assertThatThrownBy(() -> putaway.open(loose(2000)))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(putaway.tasksOfReceipt(receipt)).isEmpty();
     }
 
     @Test
-    @DisplayName("recording a putaway stores the status and the target; the last part finishes the task")
+    @DisplayName("recording a putaway stores the status and the target: the carton put away whole finishes the task")
     void recordPutawayPersistsStatusAndTarget() {
-        PutawayTaskView task = putaway.open(loose(100));
-
-        PutawayTaskView part = putaway.recordPutaway(task.id(), 40, 100, bin);
-
-        assertThat(part.status()).isEqualTo("IN_PROGRESS");
-        assertThat(part.targetLocationId()).isEqualTo(bin);
-        assertThat(putaway.find(task.id())).get().extracting(PutawayTaskView::status).isEqualTo("IN_PROGRESS");
+        PutawayTaskView task = putaway.open(ofCarton(carton));
         assertThat(putaway.openTasks()).extracting(PutawayTaskView::id).contains(task.id());
 
-        PutawayTaskView last = putaway.recordPutaway(task.id(), 60, 60, bin2);
+        PutawayTaskView done = putaway.recordPutaway(task.id(), 1000, 1000, bin2);
 
-        assertThat(last.status()).isEqualTo("DONE");
+        assertThat(done.status()).isEqualTo("DONE");
         assertThat(putaway.find(task.id())).get().extracting(PutawayTaskView::targetLocationId).isEqualTo(bin2);
         assertThat(putaway.openTasks()).extracting(PutawayTaskView::id).doesNotContain(task.id());
         assertThatThrownBy(() -> putaway.recordPutaway(task.id(), 1, 0, bin))
@@ -168,16 +163,15 @@ class PutawayTasksIntegrationTest {
     }
 
     @Test
-    @DisplayName("only DONE tasks count towards a receipt line: a DONE task of 40 and an IN_PROGRESS one give {line: 40}")
+    @DisplayName("only DONE tasks count towards a receipt line: a DONE carton of 1000 and an open one give {line: 1000}")
     void doneQuantityByReceiptLineCountsDoneTasksOnly() {
-        // the unique index allows one loose task per line, so the second task is a carton task of the same line
-        PutawayTaskView looseTask = putaway.open(loose(40));
-        putaway.recordPutaway(looseTask.id(), 40, 40, bin);
-        PutawayTaskView cartonTask = putaway.open(new NewPutawayTask(receipt, line, sku, 1000, carton));
-        assertThatThrownBy(() -> putaway.recordPutaway(cartonTask.id(), 500, 1000, bin2))
+        PutawayTaskView done = putaway.open(ofCarton(carton));
+        putaway.recordPutaway(done.id(), 1000, 1000, bin);
+        PutawayTaskView open = putaway.open(ofCarton(carton2));
+        assertThatThrownBy(() -> putaway.recordPutaway(open.id(), 1001, 1000, bin2))
                 .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.PUTAWAY_QUANTITY_EXCEEDED);
 
-        assertThat(putaway.doneQuantityByReceiptLine(receipt)).isEqualTo(Map.of(line, 40));
-        assertThat(putaway.openTasks()).extracting(PutawayTaskView::id).contains(cartonTask.id());
+        assertThat(putaway.doneQuantityByReceiptLine(receipt)).isEqualTo(Map.of(line, 1000));
+        assertThat(putaway.openTasks()).extracting(PutawayTaskView::id).contains(open.id());
     }
 }

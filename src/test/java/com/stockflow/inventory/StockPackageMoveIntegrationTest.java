@@ -37,8 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * SCRUM-473: a carton received into stock moves and is reclassified whole, keeping its LPN, its stock row and its
  * unopened state. Commits like production: the carton's rows are checked against it at commit (V20261020000200).
- * Each test counts a line of 2000 as one carton of 1000 and one of 980 and receives it (20 loose), then works on
- * the first carton.
+ * Each test counts a line of 2000 as two cartons of the standard 1000 and receives it, then works on the first
+ * carton.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -114,7 +114,7 @@ class StockPackageMoveIntegrationTest {
 
     /** Counts the two cartons and receives the line: the first carton is IN_STOCK, unopened, with one INBOUND row. */
     private void receiveCartons() {
-        lpn = count(new PackageCount(null, 1000), new PackageCount(null, 980)).getFirst().lpn();
+        lpn = count(PackageCount.fresh(), PackageCount.fresh()).getFirst().lpn();
         inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
         cartonId = jdbc.queryForObject("select id from inventory.stock_package where lpn = ?", UUID.class, lpn);
     }
@@ -163,7 +163,7 @@ class StockPackageMoveIntegrationTest {
     }
 
     @Test
-    @DisplayName("another warehouse is refused as the loose move is: MOVE_ACROSS_WAREHOUSES")
+    @DisplayName("another warehouse is refused: MOVE_ACROSS_WAREHOUSES (stock never changes warehouse)")
     void moveRefusesAnotherWarehouse() {
         receiveCartons();
 
@@ -184,7 +184,7 @@ class StockPackageMoveIntegrationTest {
     @Test
     @DisplayName("a closed (VOID) carton does not move: INVALID_STOCK_PACKAGE_TRANSITION")
     void moveRefusesAClosedCarton() {
-        lpn = count(new PackageCount(null, 1000)).getFirst().lpn();
+        lpn = count(PackageCount.fresh()).getFirst().lpn();
         count();   // the empty list voids it
 
         assertThatThrownBy(() -> inventory.moveStockPackages(move(BIN)))
@@ -234,26 +234,10 @@ class StockPackageMoveIntegrationTest {
 
         assertThat(moved).extracting(StockPackageView::lpn).containsExactlyElementsOf(both);
         assertThat(moved).extracting(StockPackageView::locationCode).containsOnly(BIN);
-        assertThat(moved).extracting(StockPackageView::quantity).containsExactly(1000, 980);
+        assertThat(moved).extracting(StockPackageView::quantity).containsExactly(1000, 1000);
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_movement
                  where movement_type = 'MOVE' and sku = ? and from_stock_package_id = to_stock_package_id""",
                 Integer.class, sku)).isEqualTo(2);
-    }
-
-    @Test
-    @DisplayName("a loose move under the reference a carton moved with is not taken for a replay: the loose units move")
-    void looseMoveAfterCartonUnderOneReference() {
-        receiveCartons();
-        UUID reference = Identifiers.newId();
-        inventory.moveStockPackages(new MoveStockPackagesCommand(lpn, BIN, MoveReference.MOVE_TASK, reference, clerk));
-
-        inventory.move(new com.stockflow.inventory.api.MoveStockCommand(Identifiers.newId(), new Sku(sku), null,
-                RECEIVING, BIN, 20, MoveReference.MOVE_TASK, reference, clerk, RECEIVED));
-
-        assertThat(jdbc.queryForObject("""
-                select coalesce(sum(on_hand), 0) from inventory.stock_item
-                 where sku = ? and location_code = ? and stock_package_id is null""",
-                Integer.class, sku, BIN)).isEqualTo(20);
     }
 }

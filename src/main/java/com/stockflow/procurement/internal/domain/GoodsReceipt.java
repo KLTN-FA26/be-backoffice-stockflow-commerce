@@ -138,9 +138,18 @@ public final class GoodsReceipt extends AggregateRoot {
 
     // ------------------------------------------------------------------ counting
 
+    /**
+     * Refuses a count of a receipt that is no longer a draft. Asked by the service before it reads or checks the lines
+     * it was sent: a posted receipt's cartons would otherwise refuse the count for what it does to them, not for the
+     * receipt's state.
+     */
+    public void requireCountable() {
+        requireStatus(GoodsReceiptStatus.DRAFT, "change the lines of");
+    }
+
     /** The whole count, replaced: a draft is a worksheet, edited until it is confirmed. */
     public void replaceLines(List<ReceiptLine> counted) {
-        requireStatus(GoodsReceiptStatus.DRAFT, "change the lines of");
+        requireCountable();
         requireDistinctLines(counted);
         lines.clear();
         lines.addAll(counted);
@@ -280,8 +289,12 @@ public final class GoodsReceipt extends AggregateRoot {
         }
     }
 
-    /** Waiting for a decision, a reason given, and a decider who is neither the receiver nor the one who asked. */
-    private void requireDecidable(UUID approverId, String reason) {
+    /**
+     * Waiting for a decision, a reason given, and a decider who is neither the receiver nor the one who asked. Public
+     * so the service asks it before it cuts the lines back: who may decide is answered before what the cut does to
+     * the cartons.
+     */
+    public void requireDecidable(UUID approverId, String reason) {
         requireStatus(GoodsReceiptStatus.PENDING_APPROVAL, "decide");
         if (reason == null || reason.isBlank()) {
             throw new BusinessException(ErrorCode.RECEIPT_APPROVAL_REASON_REQUIRED,

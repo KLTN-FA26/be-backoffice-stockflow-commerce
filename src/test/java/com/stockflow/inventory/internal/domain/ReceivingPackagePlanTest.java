@@ -35,12 +35,12 @@ class ReceivingPackagePlanTest {
     }
 
     @Test
-    @DisplayName("entries without an LPN are new cartons, in order")
-    void newEntriesAreCounts() {
+    @DisplayName("entries without an LPN are new cartons to label; no quantity, every carton holds the standard count")
+    void newEntriesAreNewCartons() {
         ReceivingPackagePlan plan = ReceivingPackagePlan.of(List.of(),
-                List.of(new Wanted(null, 1000), new Wanted(null, 980)));
+                List.of(new Wanted(null), new Wanted(null)));
 
-        assertThat(plan.newCounts()).containsExactly(1000, 980);
+        assertThat(plan.newCartons()).isEqualTo(2);
         assertThat(plan.recounts()).isEmpty();
         assertThat(plan.voided()).isEmpty();
     }
@@ -50,11 +50,10 @@ class ReceivingPackagePlanTest {
     void knownLpnIsRecounted() {
         StockPackage a = carton("LPN-0001");
 
-        ReceivingPackagePlan plan = ReceivingPackagePlan.of(List.of(a), List.of(new Wanted("LPN-0001", 970)));
+        ReceivingPackagePlan plan = ReceivingPackagePlan.of(List.of(a), List.of(new Wanted("LPN-0001")));
 
-        assertThat(plan.recounts()).hasSize(1);
-        assertThat(plan.recounts().get(0).carton()).isSameAs(a);
-        assertThat(plan.recounts().get(0).quantity()).isEqualTo(970);
+        assertThat(plan.recounts()).containsExactly(a);
+        assertThat(plan.newCartons()).isZero();
         assertThat(plan.voided()).isEmpty();
     }
 
@@ -65,7 +64,7 @@ class ReceivingPackagePlanTest {
         StockPackage dropped = carton("LPN-0002");
 
         ReceivingPackagePlan plan = ReceivingPackagePlan.of(List.of(kept, dropped),
-                List.of(new Wanted("LPN-0001", 1000)));
+                List.of(new Wanted("LPN-0001")));
 
         assertThat(plan.voided()).containsExactly(dropped);
     }
@@ -77,7 +76,7 @@ class ReceivingPackagePlanTest {
         StockPackage history = voidCarton("LPN-0002");
 
         ReceivingPackagePlan plan = ReceivingPackagePlan.of(List.of(kept, history),
-                List.of(new Wanted("LPN-0001", 1000)));
+                List.of(new Wanted("LPN-0001")));
 
         assertThat(plan.voided()).isEmpty();
     }
@@ -86,26 +85,20 @@ class ReceivingPackagePlanTest {
     @DisplayName("an LPN of another line is refused")
     void foreignLpnIsRefused() {
         refusedWith(ErrorCode.STOCK_PACKAGE_NOT_FOUND, () -> ReceivingPackagePlan.of(
-                List.of(carton("LPN-0001")), List.of(new Wanted("LPN-9999", 10))));
+                List.of(carton("LPN-0001")), List.of(new Wanted("LPN-9999"))));
     }
 
     @Test
     @DisplayName("a VOID carton cannot be recounted")
     void voidCartonCannotBeRecounted() {
         refusedWith(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, () -> ReceivingPackagePlan.of(
-                List.of(voidCarton("LPN-0001")), List.of(new Wanted("LPN-0001", 10))));
+                List.of(voidCarton("LPN-0001")), List.of(new Wanted("LPN-0001"))));
     }
 
     @Test
     @DisplayName("one LPN listed twice is refused")
     void duplicateLpnIsRefused() {
         refusedWith(ErrorCode.VALIDATION_FAILED, () -> ReceivingPackagePlan.of(
-                List.of(carton("LPN-0001")), List.of(new Wanted("LPN-0001", 10), new Wanted("LPN-0001", 20))));
-    }
-
-    @Test
-    @DisplayName("a carton of no units is refused")
-    void zeroQuantityIsRefused() {
-        refusedWith(ErrorCode.VALIDATION_FAILED, () -> ReceivingPackagePlan.of(List.of(), List.of(new Wanted(null, 0))));
+                List.of(carton("LPN-0001")), List.of(new Wanted("LPN-0001"), new Wanted("LPN-0001"))));
     }
 }

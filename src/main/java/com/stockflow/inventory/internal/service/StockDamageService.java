@@ -63,6 +63,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
@@ -277,6 +278,14 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         }
         Instant now = clock.instant();
         Quantity quantity = Quantity.of(command.quantity());
+        // A carton is taken whole (team plan 4C-2; kltn-docs 07 BR-03): the damaged units of a carton line are the
+        // whole carton. Said here, before anything is planned, rather than by the carton check at the end or the
+        // database's tg_stock_reservation_whole_carton, which would refuse the shrunk hold only as a bare conflict.
+        if (view.stockPackageId() != null && !quantity.equals(view.onHand())) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,
+                    "%s damaged of a carton holding %s: a carton is reported damaged whole, never in part".formatted(
+                            quantity, view.onHand()), List.of(), Map.of("reservationId", command.reservationId()));
+        }
         UUID warehouseId = warehouseOf(view.location());
         Destination destination = destination(view, warehouseId, command.damageLocationCode());
         List<StockAllocator.AllocationLine> replacement = planReplacement(view, quantity, now);
@@ -450,16 +459,23 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     }
 
     /**
-     * The order's replacement for damaged units, FEFO over pickable stock of the warehouse, read before any lock (the
-     * SKU lock keeps it valid: every path that changes availability takes it first). Empty when the warehouse cannot
-     * cover all of them: the order then keeps an impaired share, never half a replacement.
+     * The order's replacement for damaged units, whole cartons of pickable stock of the warehouse in the SKU's removal
+     * order, read before any lock (the SKU lock keeps it valid: every path that changes availability takes it first).
+     * Empty when whole cartons cannot cover all of them: the order then keeps an impaired share, never half a
+     * replacement.
      */
     private List<StockAllocator.AllocationLine> planReplacement(StockItem source, Quantity quantity, Instant now) {
         List<StockAllocator.Candidate> pool = pickable.candidates(source.sku(), source.location().warehouseCode(),
                 null, now);
         try {
-            return StockAllocator.plan(source.sku().code(), pool, quantity,
+            StockAllocator.Plan plan = StockAllocator.plan(source.sku().code(), pool, quantity,
                     controls.policy(source.sku()).removalStrategy(), BusinessCalendar.date(now));
+            if (plan.isShort()) {
+                log.info("No replacement for {} damaged x {} in {}: whole cartons cover {}", quantity, source.sku(),
+                        source.location().warehouseCode(), plan.planned());
+                return List.of();
+            }
+            return plan.lines();
         } catch (BusinessException noReplacement) {
             log.info("No replacement for {} damaged x {} in {}: {}", quantity, source.sku(),
                     source.location().warehouseCode(), noReplacement.getMessage());

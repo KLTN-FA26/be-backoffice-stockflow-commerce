@@ -6,7 +6,6 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.LowStockItem;
 import com.stockflow.inventory.internal.domain.StockThresholds;
-import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.OrderHold;
@@ -25,7 +24,6 @@ import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.AllocateStockResult;
 import com.stockflow.inventory.api.ReallocateStockCommand;
-import com.stockflow.inventory.internal.domain.InsufficientStockException;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.SkuReservation;
 import com.stockflow.inventory.internal.domain.SkuReservationRepository;
@@ -174,12 +172,7 @@ class InventoryServiceImpl implements InventoryService {
         skus.stream().map(Sku::code).distinct().sorted().forEach(policies::lock);
     }
 
-    /** Delegated: moves and adjustments write the ledger, which {@link StockOperations} owns. */
-    @Override
-    public StockMove move(MoveStockCommand command) {
-        return operations.move(command);
-    }
-
+    /** Delegated: receipts, moves and adjustments write the ledger, which {@link StockOperations} owns. */
     @Override
     public StockMove receive(ReceiveStockCommand command) {
         return operations.receive(command);
@@ -686,32 +679,30 @@ class InventoryServiceImpl implements InventoryService {
         }
     }
 
-    /** BR-STK-006 through {@link StockAllocator}, with the SKU's own removal strategy; names the warehouse when short. */
+    /**
+     * Whole cartons through {@link StockAllocator}, in the SKU's own removal order; names the warehouse when short.
+     * All or nothing for now: a warehouse with only k &lt; N cartons refuses (07 BR-03.4 holds the k and sends N − k to
+     * a Production Order, but until the order can wait for them - {@code AWAITING_STOCK}, team plan 4A-6 - an order
+     * released short would go to the floor with nothing tracking what it lacks).
+     */
     private List<StockAllocator.AllocationLine> plan(Sku sku, List<StockAllocator.Candidate> pool, Quantity quantity,
                                                      String warehouse, LocalDate today) {
-        try {
-            return StockAllocator.plan(sku.code(), pool, quantity, controls.policy(sku).removalStrategy(), today);
-        } catch (InsufficientStockException shortage) {
+        StockAllocator.Plan plan = StockAllocator.plan(sku.code(), pool, quantity,
+                controls.policy(sku).removalStrategy(), today);
+        if (plan.isShort()) {
             throw new BusinessException(ErrorCode.INSUFFICIENT_STOCK,
-                    "Warehouse %s has %d pickable unit(s) of %s; %d are needed".formatted(warehouse,
-                            shortage.available(), sku.code(), quantity.value()));
+                    "Warehouse %s has whole cartons for %d pickable unit(s) of %s in %d carton(s); %d are needed"
+                            .formatted(warehouse, plan.planned(), sku.code(), plan.lines().size(), quantity.value()));
         }
+        return plan.lines();
     }
 
-    /**
-     * The pool after {@code taken}: what a second line of the same SKU may still draw on. A row keeps its carton, so the
-     * next line is planned in carton order too; a carton a line has drawn on is no longer whole for the next.
-     */
+    /** The pool after {@code taken}: what a second line of the same SKU may still draw on. A carton goes whole. */
     private static List<StockAllocator.Candidate> without(List<StockAllocator.Candidate> pool,
                                                           List<StockAllocator.AllocationLine> taken) {
-        Map<StockItemId, Integer> used = new java.util.HashMap<>();
-        taken.forEach(line -> used.merge(line.stockItemId(), line.quantity().value(), Integer::sum));
-        return pool.stream().map(c -> {
-            int drawn = used.getOrDefault(c.stockItemId(), 0);
-            return new StockAllocator.Candidate(c.stockItemId(), c.location(), c.lotNumber(), c.expiryDate(),
-                    c.status(), Quantity.of(Math.max(c.available().value() - drawn, 0)), c.receivedAt(),
-                    c.stockPackageId(), c.wholeCarton() && drawn == 0);
-        }).toList();
+        Set<StockItemId> used = taken.stream().map(StockAllocator.AllocationLine::stockItemId)
+                .collect(Collectors.toSet());
+        return pool.stream().filter(c -> !used.contains(c.stockItemId())).toList();
     }
 
     /** Same reservation and stock item, same key: allocating again after a retry finds the first allocation. */

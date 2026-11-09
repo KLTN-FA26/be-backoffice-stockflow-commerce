@@ -32,7 +32,10 @@ import java.util.stream.Collectors;
  * advisory lock, then the cartons ({@code FOR UPDATE}, in id order), then their stock rows by id.</b> A caller
  * therefore {@link #lockFor locks} the cartons of the rows it is about to lock - after the SKU lock, before the
  * rows - marks each row it {@link LockedCartons#tookFrom took units from}, and {@link #settle settles} once its
- * rows are saved: each carton taken from is opened, and closed CONSUMED when nothing is left in it.</p>
+ * rows are saved: each carton taken from is closed CONSUMED, and must be empty - a carton leaves stock whole (team
+ * plan 4C-2; kltn-docs 07 BR-03, 11 BR-04), so taking part of one is refused ({@code STOCK_PACKAGE_TAKEN_WHOLE}) and
+ * the caller's transaction rolls back. The database says the same: {@code tg_stock_package_transition} refuses to
+ * open a carton in stock.</p>
  *
  * <p>Taking from a carton that was not locked first is refused at once ({@link IllegalStateException}): it is the
  * lock order broken, and the commit-time check would otherwise surface the miss as a 500 - or not at all.</p>
@@ -63,13 +66,26 @@ class StockPackageContents {
                 .collect(Collectors.toMap(StockPackage::id, Function.identity())));
     }
 
-    /** After the rows are saved: every carton taken from is opened, or CONSUMED once empty. */
+    /**
+     * After the rows are saved: every carton taken from is CONSUMED. One with units left in it was taken from in
+     * part - a pick of part of a hold, damage reported on some of its units - which no carton allows any more.
+     */
     public void settle(LockedCartons cartons, Instant now) {
         for (StockPackageId id : cartons.taken) {
             StockPackage carton = cartons.locked.get(id);
-            carton.contentsTaken(stockItems.onHandInStockPackage(id), now);
+            int left = stockItems.onHandInStockPackage(id);
+            if (left > 0) {
+                throw takenInPart(carton, left);
+            }
+            carton.consume(now);
             stockPackages.save(carton);
         }
+    }
+
+    private static BusinessException takenInPart(StockPackage carton, int left) {
+        return new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,
+                "%s would keep %d unit(s); a carton is taken whole, never in part".formatted(carton.lpn(), left),
+                java.util.List.of(), Map.of("lpn", carton.lpn()));
     }
 
     /**
@@ -85,7 +101,9 @@ class StockPackageContents {
      *       shortfall that would cut into a hold is refused whole ({@link InsufficientStockException}), as for loose
      *       stock: a customer's hold is never cancelled by a correction; the holds are reallocated first.</li>
      *   <li>Then, by what is left: nothing, and {@code missingWhenEmpty} (a count that found nothing found the carton
-     *       missing) - LOST; nothing otherwise - CONSUMED; something after a write-down - opened.</li>
+     *       missing) - LOST; nothing otherwise - CONSUMED. Something left after a write-down would open the carton,
+     *       which no carton allows any more (team plan 4C-2): refused, {@code STOCK_PACKAGE_TAKEN_WHOLE}. A count
+     *       states a carton present or missing, never part of one (team plan 4C-3).</li>
      * </ul>
      *
      * <p>The rows and the carton are saved here, so the commit-time check finds them consistent in every branch.</p>
@@ -162,6 +180,9 @@ class StockPackageContents {
         if (free < units) {
             throw new InsufficientStockException(rows.getFirst().sku().code(), units, free);
         }
+        if (units < held(rows)) {
+            throw takenInPart(carton, held(rows) - units);
+        }
         List<RowChange> changes = new ArrayList<>();
         int remaining = units;
         for (StockItem row : rows) {
@@ -181,8 +202,8 @@ class StockPackageContents {
             } else {
                 carton.consume(now);
             }
-        } else if (carton.unopened()) {
-            carton.open();
+        } else {
+            throw takenInPart(carton, held(rows));
         }
         return changes;
     }

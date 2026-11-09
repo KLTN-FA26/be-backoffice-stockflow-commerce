@@ -209,7 +209,8 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                     command.reservationId(), consumed.quantity().value() - left, quantity));
         }
         if (destination == null) {
-            stockItems.save(StockItem.arrivedAs(source, target, quantity, StockStatus.AVAILABLE));
+            // A carton's row may be on the very bin they come back to: a new loose row beside it (StockItem#putBackBeside).
+            stockItems.save(StockItem.putBackBeside(source, target, quantity));
         } else {
             // Units rejoining their own receipt layer, not replenishment: a FIFO SKU's policy trigger refuses
             // the raised on_hand unless the row is named as a same-receipt merge (V20261017000450).

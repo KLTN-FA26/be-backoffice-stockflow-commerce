@@ -28,6 +28,15 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
             @org.springframework.data.repository.query.Param("referenceIds") java.util.Collection<UUID> referenceIds);
 
     @org.springframework.data.jpa.repository.Query("""
+            select distinct m.toStockPackageId from StockMovementJpaEntity m
+            where m.movementType = com.stockflow.inventory.internal.domain.StockMovement.MovementType.MOVE
+              and m.referenceType = :referenceType and m.referenceId = :referenceId and m.toStockPackageId is not null
+            """)
+    java.util.List<UUID> cartonsMovedBy(
+            @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,
+            @org.springframework.data.repository.query.Param("referenceId") UUID referenceId);
+
+    @org.springframework.data.jpa.repository.Query("""
             select coalesce(sum(m.quantity), 0) from StockMovementJpaEntity m
             where m.movementType in :types and m.referenceType = :referenceType and m.referenceId = :referenceId
             """)

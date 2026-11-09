@@ -92,25 +92,27 @@ class SkuReservationTest {
     }
 
     @Test
-    @DisplayName("FEFO at allocation: earliest expiry first; without one, the earliest real receipt time")
+    @DisplayName("FEFO at allocation: earliest expiry first; without one, the earliest real receipt time; whole cartons")
     void fefoThenFifo() {
         LocationId bin = new LocationId("HCM-A01-1-A");
-        var late = new StockAllocator.Candidate(StockItemId.newId(), bin, "L", java.time.LocalDate.of(2027, 1, 1),
-                StockStatus.AVAILABLE, Quantity.of(5), Instant.parse("2026-01-01T00:00:00Z"));
-        var early = new StockAllocator.Candidate(StockItemId.newId(), bin, "L", java.time.LocalDate.of(2026, 12, 1),
-                StockStatus.AVAILABLE, Quantity.of(5), Instant.parse("2026-06-01T00:00:00Z"));
-        var oldReceipt = new StockAllocator.Candidate(StockItemId.newId(), bin, null, null, StockStatus.AVAILABLE,
-                Quantity.of(5), Instant.parse("2025-01-01T00:00:00Z"));
-        var newReceipt = new StockAllocator.Candidate(StockItemId.newId(), bin, null, null, StockStatus.AVAILABLE,
-                Quantity.of(5), Instant.parse("2025-06-01T00:00:00Z"));
-        var expired = new StockAllocator.Candidate(StockItemId.newId(), bin, "L", java.time.LocalDate.of(2026, 10, 1),
-                StockStatus.AVAILABLE, Quantity.of(50), Instant.parse("2024-01-01T00:00:00Z"));
+        var late = carton(bin, "L", java.time.LocalDate.of(2027, 1, 1), "2026-01-01T00:00:00Z");
+        var early = carton(bin, "L", java.time.LocalDate.of(2026, 12, 1), "2026-06-01T00:00:00Z");
+        var oldReceipt = carton(bin, null, null, "2025-01-01T00:00:00Z");
+        var newReceipt = carton(bin, null, null, "2025-06-01T00:00:00Z");
+        var expired = carton(bin, "L", java.time.LocalDate.of(2026, 10, 1), "2024-01-01T00:00:00Z");
 
         var plan = StockAllocator.plan("SOFA", java.util.List.of(newReceipt, late, oldReceipt, expired, early),
-                Quantity.of(17), com.stockflow.inventory.api.RemovalStrategy.FEFO, java.time.LocalDate.of(2026, 10, 17));
+                Quantity.of(20), com.stockflow.inventory.api.RemovalStrategy.FEFO, java.time.LocalDate.of(2026, 10, 17));
 
-        assertThat(plan).extracting(StockAllocator.AllocationLine::stockItemId).containsExactly(
+        assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId).containsExactly(
                 early.stockItemId(), late.stockItemId(), oldReceipt.stockItemId(), newReceipt.stockItemId());
-        assertThat(plan.get(3).quantity()).isEqualTo(Quantity.of(2));
+        assertThat(plan.isShort()).isFalse();
+    }
+
+    /** A sealed carton of 5. */
+    private static StockAllocator.Candidate carton(LocationId bin, String lot, java.time.LocalDate expiry,
+                                                   String received) {
+        return new StockAllocator.Candidate(StockItemId.newId(), bin, lot, expiry, StockStatus.AVAILABLE,
+                Quantity.of(5), Instant.parse(received), java.util.UUID.randomUUID(), true);
     }
 }

@@ -276,6 +276,10 @@ public enum ErrorCode {
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
+    /** Kltn-docs 03 BR-12: every unit received is in a carton; units outside one are not received. */
+    RECEIPT_LINE_NOT_IN_CARTONS("Every unit of a receipt line must be in a carton", 422),
+    /** Kltn-docs 03 BR-13: a carton holds the SKU's standard count; one of another count is not received. */
+    RECEIPT_PACKAGE_NOT_STANDARD("A carton must hold the SKU's standard count", 422),
     /** SCRUM-92: no putaway task with this id. */
     PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
     /** SCRUM-92: the task has been put away completely; nothing is left to move. */
@@ -571,6 +575,10 @@ public enum ErrorCode {
     STOCK_PACKAGE_WRONG_LOCATION("The carton is not at this location", 422),
     /** A carton counted above its received quantity. */
     STOCK_PACKAGE_OVERFILLED("A carton cannot hold more than it was received with", 422),
+    /** Kltn-docs 11 BR-05: a carton held or allocated for an order is not moved by hand; its picker would find it gone. */
+    STOCK_PACKAGE_HELD("The carton is held for an order and cannot be moved by hand", 409),
+    /** Team plan 4C-2 (07 BR-03, 11 BR-04): stock leaves a carton whole; nothing takes part of one. */
+    STOCK_PACKAGE_TAKEN_WHOLE("A carton is taken whole; part of it cannot be taken", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
