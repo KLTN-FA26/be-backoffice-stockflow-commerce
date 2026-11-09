@@ -8,7 +8,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Review of 4A-7: an order on hold is followed by the delay alerts only when the status it was held from is followed - a
- * credit hold placed when the contract was signed has none, and its order is not confirmed.
+ * credit hold placed when the contract was signed has none, and its order is not confirmed. An order waiting for stock
+ * (4A-6) is followed.
  */
 class DelayAlertFollowedTest {
 
@@ -25,5 +26,16 @@ class DelayAlertFollowedTest {
             assertThat(DelayAlertService.followed(stages, OrderStatus.SHIPPED, null)).isFalse();
             assertThat(stages).doesNotContain(OrderStatus.ON_HOLD);
         }
+    }
+
+    @Test
+    @DisplayName("4A-6 with 4A-7: an order waiting for stock is followed and may get more production orders")
+    void awaitingStock() {
+        for (var stages : java.util.List.of(DelayAlertService.SHORTAGE_FOLLOWED, DelayAlertService.DELIVERY_FOLLOWED)) {
+            assertThat(DelayAlertService.followed(stages, OrderStatus.AWAITING_STOCK, null)).isTrue();
+            assertThat(DelayAlertService.followed(stages, OrderStatus.ON_HOLD, OrderStatus.AWAITING_STOCK)).isTrue();
+        }
+        assertThat(ProductionOrderService.PRODUCIBLE).contains(OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK)
+                .doesNotContain(OrderStatus.ON_HOLD);
     }
 }

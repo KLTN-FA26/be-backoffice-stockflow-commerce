@@ -67,7 +67,8 @@ import java.util.stream.Collectors;
  * batches is released once its first is covered while later ones are still short (17 §4.2 step 5), and PO_NEEDED is
  * what reminds the coordinator to draw them up batch by batch. The shortage counts held stock and what was already
  * picked for the order, earliest batch first, so a batch released or handed over is covered and only later batches can
- * lack anything. 4A-6 adds {@code AWAITING_STOCK} to both: one constant each.</p>
+ * lack anything. An order AWAITING_STOCK (4A-6) is followed by both: its next batch is short and a production order
+ * was sent for it, which is exactly what AT_RISK, PRODUCTION_LATE and DELIVERY_LATE watch.</p>
  */
 @Service
 public class DelayAlertService {
@@ -76,21 +77,21 @@ public class DelayAlertService {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
     /**
-     * 17 §4.2 step 5, §4.3 step 6: the orders whose shortage becomes production orders - confirmed, and on past release
-     * while later batches are short. An order on hold is followed by {@link #followed} when it was held from one of
+     * 17 §4.2 step 5, §4.3 step 6: the orders whose shortage becomes production orders - confirmed, waiting for stock
+     * (4A-6), and on past release while later batches are short. An order on hold is followed by {@link #followed} when it was held from one of
      * these.
      */
     static final Set<OrderStatus> SHORTAGE_FOLLOWED = Collections.unmodifiableSet(EnumSet.of(OrderStatus.CONFIRMED,
-            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED,
-            OrderStatus.PARTIALLY_FULFILLED)); // 4A-6: + AWAITING_STOCK
+            OrderStatus.AWAITING_STOCK, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED,
+            OrderStatus.PARTIALLY_FULFILLED));
 
     /**
      * Confirmed and not yet all handed over (17 §4.5). Before confirmation the seller is not yet bound to deliver; from
      * SHIPPED on everything has left. An order on hold: as for {@link #SHORTAGE_FOLLOWED}.
      */
     static final Set<OrderStatus> DELIVERY_FOLLOWED = Collections.unmodifiableSet(EnumSet.of(OrderStatus.CONFIRMED,
-            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED,
-            OrderStatus.PARTIALLY_FULFILLED)); // 4A-6: + AWAITING_STOCK
+            OrderStatus.AWAITING_STOCK, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED,
+            OrderStatus.PARTIALLY_FULFILLED));
 
     /**
      * Whether an order in {@code status} is followed by {@code stages}. An order ON_HOLD is followed only when the
