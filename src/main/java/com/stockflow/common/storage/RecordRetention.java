@@ -11,5 +11,8 @@ public enum RecordRetention {
     CONFIRMED_DESIGN,
 
     /** A supplier's invoice as received: an accounting record. */
-    SUPPLIER_INVOICE
+    SUPPLIER_INVOICE,
+
+    /** A sales contract as sent to the customer, and as signed (4B-4, kltn-docs 14 BR-14): what binds both parties. */
+    SALES_CONTRACT
 }

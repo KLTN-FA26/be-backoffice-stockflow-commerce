@@ -25,7 +25,8 @@ public record ObjectLockProperties(
         @DefaultValue("false") boolean enabled,
         @DefaultValue("GOVERNANCE") Mode mode,
         @DefaultValue("P1095D") Duration confirmedDesign,
-        @DefaultValue("P3650D") Duration supplierInvoice
+        @DefaultValue("P3650D") Duration supplierInvoice,
+        @DefaultValue("P3650D") Duration salesContract
 ) {
 
     public enum Mode { GOVERNANCE, COMPLIANCE }
@@ -33,6 +34,7 @@ public record ObjectLockProperties(
     public ObjectLockProperties {
         requirePositive(confirmedDesign, "confirmed-design");
         requirePositive(supplierInvoice, "supplier-invoice");
+        requirePositive(salesContract, "sales-contract");
         if (mode == null) {
             throw new IllegalArgumentException("stockflow.storage.object-lock.mode must be set");
         }
@@ -40,13 +42,15 @@ public record ObjectLockProperties(
 
     /** Off, GOVERNANCE, the default periods: what an unconfigured application binds to. */
     public static ObjectLockProperties disabled() {
-        return new ObjectLockProperties(false, Mode.GOVERNANCE, Duration.ofDays(1095), Duration.ofDays(3650));
+        return new ObjectLockProperties(false, Mode.GOVERNANCE, Duration.ofDays(1095), Duration.ofDays(3650),
+                Duration.ofDays(3650));
     }
 
     public Duration periodOf(RecordRetention record) {
         return switch (record) {
             case CONFIRMED_DESIGN -> confirmedDesign;
             case SUPPLIER_INVOICE -> supplierInvoice;
+            case SALES_CONTRACT -> salesContract;
         };
     }
 

@@ -448,6 +448,7 @@ stockflow:
       mode: GOVERNANCE
       confirmed-design: P1095D
       supplier-invoice: P3650D
+      sales-contract: P3650D    # a sales contract as sent and as signed (4B-4)
     # Browser uploads straight to the object store (StagedUploads, docs/direct-uploads-fe-contract.md).
     staged-upload:
       url-ttl: PT15M            # the signed PUT; S3 checks it when the upload starts, not when it ends
@@ -528,6 +529,20 @@ stockflow:
       bank-name: ${COMPANY_BANK_NAME:}
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
+
+  order:
+    # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11). Blank here on purpose and in prod: drawing up
+    # a contract answers 503 SELLER_PROFILE_UNAVAILABLE until every field is set per deployment, so no contract ever
+    # names a made-up company. local, dev and test carry a demo one.
+    seller:
+      name: ${SELLER_NAME:}
+      tax-code: ${SELLER_TAX_CODE:}
+      address: ${SELLER_ADDRESS:}
+      representative: ${SELLER_REPRESENTATIVE:}
+      representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
+    contract:
+      # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
+      free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}
 
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is

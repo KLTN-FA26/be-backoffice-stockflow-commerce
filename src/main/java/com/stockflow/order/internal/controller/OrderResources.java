@@ -27,6 +27,12 @@ public final class OrderResources {
     public static final String QUOTE_CONVERSIONS = "sales-quote-conversions";
 
     /**
+     * 4B-4 (kltn-docs 14 §4.3): the sales contract of an order - Sales draws it up, edits, sends and records it signed
+     * (APPROVE); accounting and the Sales Manager read it. Seeded by V20261108002200.
+     */
+    public static final String SALES_CONTRACTS = "sales-contracts";
+
+    /**
      * PACK-PARTIAL (lead's decision 2026-10-21): Sales decides whether an order may ship in parts. Its own resource,
      * not {@code sales-orders:UPDATE}, which the portal customer holds for their own orders. Seeded by V20261022000400
      * for SALES_STAFF (and SYSTEM_ADMIN, who holds everything).
