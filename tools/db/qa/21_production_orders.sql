@@ -186,7 +186,29 @@ SELECT pg_temp.expect_fail('PO15 closed while not yet in production', $q$
            closing_reason = 'stopped' WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO16 in production with no start time', $q$
     UPDATE ordering.production_order SET status = 'IN_PRODUCTION' WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_ok('PO17 in production, then closed with a reason', $q$
+SELECT pg_temp.expect_fail('PO16a in production straight from SENT with a print sample to approve (BR-24, 4A-4)', $q$
+    UPDATE ordering.production_order SET status = 'IN_PRODUCTION', production_started_at = NOW()
+     WHERE id = md5('qa21:po1')::uuid $q$);
+-- 4A-4 (V20261108003100): with a sample to approve, mass printing starts once the customer's account approves round 1.
+INSERT INTO identity.app_user (id, username, email, password_hash, status, version, created_at)
+VALUES (md5('qa21:portal')::uuid, 'qa21-portal', 'qa21-portal@example.com', '!qa', 'ACTIVE', 0, NOW());
+UPDATE customer.customer c SET user_id = COALESCE(c.user_id, md5('qa21:portal')::uuid)
+  FROM ordering.customer_order o WHERE o.id = md5('qa21:order')::uuid AND c.id = o.customer_id;
+SELECT pg_temp.expect_ok('PO17 accepted, its sample approved, in production, then closed with a reason', $q$
+    UPDATE ordering.production_order SET status = 'ACCEPTED', expected_completion_date = CURRENT_DATE + 40
+     WHERE id = md5('qa21:po1')::uuid;
+    INSERT INTO ordering.production_order_sample_round (id, production_order_id, round_no, opened_by, opened_at)
+    VALUES (md5('qa21:r1')::uuid, md5('qa21:po1')::uuid, 1, md5('demo:user:editor')::uuid, NOW());
+    INSERT INTO ordering.production_order_sample_media (id, sample_round_id, storage_key, file_name, content_type,
+                                                        size_bytes, uploaded_by, uploaded_at)
+    VALUES (gen_random_uuid(), md5('qa21:r1')::uuid, 'print-samples/2026/11/09/qa21.jpg', 'sample.jpg', 'image/jpeg',
+            1000, md5('demo:user:editor')::uuid, NOW());
+    UPDATE ordering.production_order SET status = 'SAMPLE_PENDING' WHERE id = md5('qa21:po1')::uuid;
+    UPDATE ordering.production_order_sample_round r SET result = 'APPROVED', answered_at = NOW(),
+           answered_by = (SELECT c.user_id FROM customer.customer c JOIN ordering.customer_order o
+                                                                        ON o.customer_id = c.id
+                           WHERE o.id = md5('qa21:order')::uuid)
+     WHERE r.id = md5('qa21:r1')::uuid;
     UPDATE ordering.production_order SET status = 'IN_PRODUCTION', production_started_at = NOW()
      WHERE id = md5('qa21:po1')::uuid;
     UPDATE ordering.production_order SET status = 'CLOSED', closed_at = NOW(), closed_by = md5('demo:user:editor')::uuid,
