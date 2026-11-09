@@ -469,6 +469,9 @@ class ProductionReceiptIntegrationTest {
                 DataScope.WAREHOUSE, Set.of(b.code()), Set.of(b.id()));
         assertThatThrownBy(() -> WithCurrentUser.call(staffOfB, DataScope.WAREHOUSE, () -> start(receivable)))
                 .extracting(ProductionReceiptIntegrationTest::code).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        assertThatThrownBy(() -> WithCurrentUser.call(staffOfB, DataScope.WAREHOUSE, () -> start(sample)))
+                .as("another warehouse's staff learn nothing of why it cannot be received")
+                .extracting(ProductionReceiptIntegrationTest::code).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
         CurrentUser staffOfA = new CurrentUser(clerk, "clerk-" + clerk, Set.of(Role.WAREHOUSE_STAFF), Set.of(),
                 DataScope.WAREHOUSE, Set.of(a.code()), Set.of(a.id()));
         assertThat(WithCurrentUser.call(staffOfA, DataScope.WAREHOUSE, () -> start(receivable)).warehouseId())
@@ -572,7 +575,13 @@ class ProductionReceiptIntegrationTest {
                 .asString().contains("orders 12 carton(s) and 8", "4 more at most, not 5");
         assertThat(receipts.get(second.id()).lines()).as("nothing was counted").isEmpty();
 
-        assertThat(count(second, lineId(production), cartons(4)).lines().getFirst().quantity()).isEqualTo(200);
+        assertThat(count(second, lineId(production), cartons(4)).lines().getFirst()).satisfies(line -> {
+            assertThat(line.quantity()).isEqualTo(200);
+            assertThat(line.production().receivedCartons()).as("nothing confirmed yet").isZero();
+            assertThat(line.production().remainingCartons()).as("12 - 8 on the other draft - 4 here").isZero();
+        });
+        assertThat(receipts.get(first.id()).lines().getFirst().production().remainingCartons())
+                .as("the other draft sees this one's cartons too").isZero();
         assertThat(catchThrowable(() -> count(second, lineId(production), cartons(5))))
                 .as("a recount of the same receipt counts its own cartons once")
                 .extracting(ProductionReceiptIntegrationTest::code)

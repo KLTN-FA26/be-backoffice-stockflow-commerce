@@ -53,7 +53,7 @@ class ProductionOrderReceiptRepositoryAdapter implements ProductionOrderReceiptR
         if (status == Status.DRAFT) {
             throw new IllegalArgumentException("A registered receipt is settled confirmed or cancelled");
         }
-        entityManager.createNativeQuery("""
+        int settled = entityManager.createNativeQuery("""
                         UPDATE ordering.production_order_receipt SET status = :status, settled_at = :at
                          WHERE production_order_id = :order AND goods_receipt_id = :receipt AND status = 'DRAFT'""")
                 .setParameter("status", status.name())
@@ -61,6 +61,11 @@ class ProductionOrderReceiptRepositoryAdapter implements ProductionOrderReceiptR
                 .setParameter("order", productionOrderId)
                 .setParameter("receipt", receiptId)
                 .executeUpdate();
+        if (settled != 1) {
+            // Callers settle only a registered draft; anything else is a fault here, not at commit in a trigger.
+            throw new IllegalStateException("Receipt %s of production order %s is not a registered draft"
+                    .formatted(receiptId, productionOrderId));
+        }
     }
 
     @Override
