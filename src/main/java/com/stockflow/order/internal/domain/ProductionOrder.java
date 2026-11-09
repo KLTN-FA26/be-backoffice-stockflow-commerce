@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -19,7 +20,8 @@ import java.util.UUID;
  * BR-05, BR-06, BR-23, BR-24, BR-26). The Production Coordinator draws it up for what the batch lacks at the order's
  * shipping warehouse - the receiving warehouse - and submits it; the Sales Manager, never the one who drew it up,
  * approves it, which sends it, or returns it with a reason. It is cancelled before mass printing, and closed - short,
- * or before anything came - after it started.
+ * or before anything came - after it started. Goods are received against it while it is {@link #receivable} (4A-5,
+ * kltn-docs 03 BR-01, BR-15), and each confirmed receipt moves it on ({@link #receive}).
  *
  * <p>Every change of status is kept with who, when and why ({@link #pullChanges}). The database holds the same rules
  * ({@code ordering.check_production_order}, the CHECKs of {@code production_order}).</p>
@@ -57,6 +59,17 @@ public final class ProductionOrder {
         Line withCartons(int newCartons, String packing) {
             return new Line(id, orderLineId, sku, newCartons, unitsPerCarton, designSnapshotId, printFileChecksum,
                     packing, receivedCartons);
+        }
+
+        /** The same line with {@code more} cartons received. */
+        Line receiving(int more) {
+            return new Line(id, orderLineId, sku, cartons, unitsPerCarton, designSnapshotId, printFileChecksum,
+                    packingRequirements, receivedCartons + more);
+        }
+
+        /** Every carton it orders has been received. */
+        public boolean fullyReceived() {
+            return receivedCartons == cartons;
         }
     }
 
@@ -317,6 +330,87 @@ public final class ProductionOrder {
     public boolean sentAndOpen() {
         return status.open() && status != ProductionOrderStatus.DRAFT
                 && status != ProductionOrderStatus.PENDING_APPROVAL;
+    }
+
+    /**
+     * Whether goods can be received against it now (kltn-docs 03 BR-01, BR-15; 17 §4.3 step 11): mass printing
+     * started - IN_PRODUCTION, PARTIALLY_RECEIVED - or it is SENT / ACCEPTED with no print sample to approve, the goods
+     * having arrived before the coordinator recorded the start. A sample still to be approved by the customer keeps
+     * receipts out: goods printed in bulk to a sample nobody approved are not taken in.
+     */
+    public boolean receivable() {
+        return whyNotReceivable().isEmpty();
+    }
+
+    /** Why goods cannot be received against it now, in words for the receiver; empty when they can. */
+    public Optional<String> whyNotReceivable() {
+        return switch (status) {
+            case IN_PRODUCTION, PARTIALLY_RECEIVED -> Optional.empty();
+            case SENT, ACCEPTED -> sampleApprovalRequired
+                    ? Optional.of(("Production order %s waits for the customer to approve its print sample: nothing is "
+                    + "received against it before (03 BR-15)").formatted(code))
+                    : Optional.empty();
+            case SAMPLE_PENDING -> Optional.of(("Production order %s waits for the customer to approve its print sample: "
+                    + "nothing is received against it before (03 BR-15)").formatted(code));
+            case DRAFT, PENDING_APPROVAL -> Optional.of(("Production order %s is %s: it has not been sent to its "
+                    + "producer (03 BR-01)").formatted(code, status));
+            case RECEIVED -> Optional.of("Production order %s is received in full (03 BR-01)".formatted(code));
+            case CANCELLED, CLOSED -> Optional.of("Production order %s is %s (03 BR-01)".formatted(code, status));
+        };
+    }
+
+    /**
+     * A receipt counted {@code cartonsByLine} cartons of its lines in (17 §4.3 step 11, 03 §4.1 step 6), each carton of
+     * its line's standard count. A production order still SENT or ACCEPTED - goods came before anyone recorded that mass
+     * printing started - goes to IN_PRODUCTION first, with the reason (03 BR-15). Then it is RECEIVED once every line is
+     * received in full, and PARTIALLY_RECEIVED otherwise: a short receipt never closes it, the rest stays open for the
+     * next receipt or for the coordinator to close (03 BR-10). A move to the status it already has records nothing.
+     *
+     * @param receipt the receipt's number, for the history's reasons
+     * @throws BusinessException {@code PRODUCTION_ORDER_NOT_RECEIVABLE}; {@code RECEIPT_EXCEEDS_PRODUCTION_ORDER} when
+     *         a line would be received beyond what it orders (03 BR-02), every such line named, nothing changed;
+     *         {@code VALIDATION_FAILED} for no carton, a line that is not this production order's, or a count under 1
+     */
+    public void receive(Map<UUID, Integer> cartonsByLine, String receipt, UUID by, Instant at) {
+        Optional<String> refused = whyNotReceivable();
+        if (refused.isPresent()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE, refused.get());
+        }
+        Objects.requireNonNull(cartonsByLine, "cartonsByLine");
+        if (cartonsByLine.isEmpty()) {
+            throw invalid("A receipt counts in at least one carton");
+        }
+        List<String> over = new ArrayList<>();
+        for (Map.Entry<UUID, Integer> counted : cartonsByLine.entrySet()) {
+            Line line = lines.stream().filter(l -> l.id().equals(counted.getKey())).findFirst().orElseThrow(() ->
+                    invalid("%s is not a line of production order %s".formatted(counted.getKey(), code)));
+            if (counted.getValue() == null || counted.getValue() < 1) {
+                throw invalid("A line is received in whole cartons, at least one");
+            }
+            if (line.receivedCartons() + counted.getValue() > line.cartons()) {
+                over.add("%s: %d carton(s) received and %d more, %d ordered".formatted(line.sku(),
+                        line.receivedCartons(), counted.getValue(), line.cartons()));
+            }
+        }
+        if (!over.isEmpty()) {
+            throw new BusinessException(ErrorCode.RECEIPT_EXCEEDS_PRODUCTION_ORDER, ("Production order %s receives "
+                    + "no more cartons than it orders (03 BR-02): %s").formatted(code, String.join("; ", over)));
+        }
+        if (status == ProductionOrderStatus.SENT || status == ProductionOrderStatus.ACCEPTED) {
+            move(ProductionOrderStatus.IN_PRODUCTION, ("Goods arrived on receipt %s before mass printing was recorded "
+                    + "(03 BR-15)").formatted(receipt), by, at, "put in production");
+            this.productionStartedAt = at;
+        }
+        List<Line> received = new ArrayList<>();
+        lines.forEach(line -> received.add(line.receiving(cartonsByLine.getOrDefault(line.id(), 0))));
+        this.lines = received;
+        if (lines.stream().allMatch(Line::fullyReceived)) {
+            move(ProductionOrderStatus.RECEIVED, "Received in full on receipt %s".formatted(receipt), by, at,
+                    "received");
+        } else if (status != ProductionOrderStatus.PARTIALLY_RECEIVED) {
+            move(ProductionOrderStatus.PARTIALLY_RECEIVED, ("Received in part on receipt %s; the rest stays open "
+                    + "(03 BR-10)").formatted(receipt), by, at, "received");
+        }
     }
 
     /** The changes of status since it was read, to be kept; each is handed over once. */

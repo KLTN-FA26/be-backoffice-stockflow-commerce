@@ -371,6 +371,19 @@ public enum ErrorCode {
     PRODUCTION_ORDER_NOTHING_SHORT("The delivery batch lacks nothing to produce", 409),
     /** 4A-2: a line makes no more than its delivery batch lacks. */
     PRODUCTION_ORDER_EXCEEDS_SHORTAGE("A line makes more cartons than the delivery batch lacks", 409),
+    /**
+     * 4A-5 (kltn-docs 03 BR-01, BR-15): goods are received against a production order IN_PRODUCTION or
+     * PARTIALLY_RECEIVED - or SENT / ACCEPTED when no print sample is to be approved first - and nothing else.
+     */
+    PRODUCTION_ORDER_NOT_RECEIVABLE("Goods cannot be received against this production order now", 409),
+    /** 4A-5 (03 BR-02): the cartons on the receipts not cancelled, drafts included, never exceed what the line orders. */
+    RECEIPT_EXCEEDS_PRODUCTION_ORDER("More cartons than the production order line orders", 409),
+    /** 4A-5 (03 edge cases): a production order with a draft receipt is neither cancelled nor closed. */
+    PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS("A receipt against this production order is still a draft; confirm or cancel it first", 409),
+    /** 4A-5 (03 §4.1 step 2): a receipt line counts a line of the receipt's production order. */
+    RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER("This line is not a line of the receipt's production order", 409),
+    /** 4A-5 (03 BR-12, BR-13): every carton received holds exactly the SKU's standard count. */
+    RECEIPT_CARTON_NOT_STANDARD("A carton received holds exactly the standard count of its SKU", 422),
     /** 4A-2: an INACTIVE producer takes no new production order. */
     PRODUCER_INACTIVE("This producer takes no new production order", 409),
     /** 4A-2 (17 BR-05): the print files changed since the design was approved. */
