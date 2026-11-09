@@ -311,27 +311,20 @@ class CustomerOrderPortalIntegrationTest {
     }
 
     @Test
-    @DisplayName("SCRUM-190: each stock line says where its SKU is on sale today (slug, title, image), or nothing when "
-            + "it is not on sale - what the portal needs to put the order back in a basket")
-    void theDetailCarriesWhereEachSkuIsOnSale() throws Exception {
+    @DisplayName("team plan 5-2: the detail no longer helps rebuild a basket - no catalogue slug, title or image on a "
+            + "line, no reorder among the allowed actions; 'order again' is a chat with Sales")
+    void theDetailOffersNoWayToOrderAgain() throws Exception {
         var body = mvc.perform(get("/api/v1/orders/me/" + twoLines.orderId()).header("Authorization", customerA()))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-        var lines = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body).at("/data/lines");
-        assertThat(lines.size()).isEqualTo(2);
-        for (var line : lines) {
-            String sku = line.get("sku").asText();
-            var onSale = jdbc.queryForList("""
-                    SELECT l.slug, l.published_title FROM catalog.catalog_entry e
-                    JOIN catalog.product_listing l ON l.product_id = e.product_id
-                    WHERE e.sku = ? AND e.published AND l.enabled AND l.published_title IS NOT NULL""", sku);
-            if (onSale.isEmpty()) {
-                assertThat(line.path("productSlug").isNull()).as(sku + " is not on sale").isTrue();
-                assertThat(line.path("productTitle").isNull()).isTrue();
-            } else {
-                assertThat(line.path("productSlug").asText()).as(sku).isEqualTo(onSale.get(0).get("slug"));
-                assertThat(line.path("productTitle").asText()).isEqualTo(onSale.get(0).get("published_title"));
-            }
+        var data = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body).at("/data");
+        assertThat(data.at("/lines").size()).isEqualTo(2);
+        for (var line : data.at("/lines")) {
+            assertThat(line.has("productSlug")).as("productSlug").isFalse();
+            assertThat(line.has("productTitle")).as("productTitle").isFalse();
+            assertThat(line.has("productImageUrl")).as("productImageUrl").isFalse();
         }
+        assertThat(data.at("/allowedActions").has("reorder")).as("allowedActions.reorder").isFalse();
+        assertThat(data.at("/allowedActions").has("requestCancellation")).isTrue();
     }
 
     @Test
