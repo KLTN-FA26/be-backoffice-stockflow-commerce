@@ -471,8 +471,8 @@ stockflow:
 
   catalog:
     availability:
-      # At or under this many units the catalog shows "low stock" (docs 13 §4.2, an assumption
-      # the docs leave open). 0 never warns.
+      # At or under this many cartons a customer's own SKU shows "low stock" (kltn-docs 13 §4.4 step 4,
+      # open-questions D28: 5 cartons). 0 never warns.
       low-stock-threshold: ${CATALOG_LOW_STOCK_THRESHOLD:5}
       # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
       max-skus-per-request: 50

@@ -3,8 +3,6 @@ package com.stockflow.catalog.internal.service;
 import com.stockflow.catalog.api.PriceSchedule;
 import com.stockflow.catalog.internal.domain.CustomerPrice;
 import com.stockflow.catalog.internal.domain.CustomerPriceRepository;
-import com.stockflow.catalog.internal.domain.SellingPrice;
-import com.stockflow.catalog.internal.repository.ListingRepository;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -12,75 +10,51 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Which price a customer pays for a SKU at a quantity (kltn-docs 13 §3): the customer's own tier, or,
- * with no own price, its group's price, or the base price - the last two from one unit on. Joins the
- * caller's transaction; locking is the caller's ({@link CatalogServiceImpl} locks the products first).
+ * Which price a customer pays for a SKU at a quantity: its own tier, the one source of a price (kltn-docs 13 BR-04,
+ * D14). There is no base or group price behind it since 5-3: a SKU without the customer's own price has no price.
+ * Joins the caller's transaction; locking is the caller's ({@link CatalogServiceImpl} locks the products first).
  *
  * <p>Since 4B-2 a customer's own price for one of its own SKUs counts cartons (13 BR-05): what a quote starts from
- * ({@link #schedule}). Checkout counts units, so it reads a customer's own price only on a stock variant
- * ({@link #checkoutSchedule}); the customer's own SKU is quoted, not bought at checkout.</p>
+ * ({@link #own}). Checkout counts units, so it reads a customer's own price only on a stock variant
+ * ({@link #checkoutSchedule}) - a row set before 4B-2 and kept until checkout goes (team plan 5-2); the customer's own
+ * SKU is quoted, not bought at checkout.</p>
  */
 @Component
 class PriceResolver {
 
     private final CustomerPriceRepository prices;
-    private final ListingRepository listings;
     private final CustomerService customers;
     private final com.stockflow.product.api.CustomerSkus customerSkus;
 
-    PriceResolver(CustomerPriceRepository prices, ListingRepository listings, CustomerService customers,
+    PriceResolver(CustomerPriceRepository prices, CustomerService customers,
                   com.stockflow.product.api.CustomerSkus customerSkus) {
         this.customerSkus = customerSkus;
         this.prices = prices;
-        this.listings = listings;
         this.customers = customers;
     }
 
-    /** @throws BusinessException {@code CUSTOMER_NOT_FOUND}, {@code PRICE_NOT_AVAILABLE} */
-    PriceSchedule schedule(UUID customerId, String sku) {
-        return schedule(customer(customerId), sku);
-    }
-
-    PriceSchedule schedule(CustomerSummary customer, String sku) {
-        return schedule(customer, sku, prices.find(customer.customerId(), sku));
-    }
-
     /**
-     * As {@link #schedule}, counted in units for checkout and the storefront: a customer's own price on one of its own
-     * SKUs counts cartons and is never read here. Their callers refuse or skip such a SKU first (it is quoted - 14 BR-01,
+     * The customer's own price on a stock variant, counted in units, for checkout. A customer's own price on one of its
+     * own SKUs counts cartons and is never read here: the caller refuses such a SKU first (it is quoted - 14 BR-01,
      * BR-08); this keeps a carton price from being read as a unit price should one reach here anyway.
+     *
+     * @throws BusinessException {@code PRICE_NOT_AVAILABLE} without one
      */
     PriceSchedule checkoutSchedule(CustomerSummary customer, String sku) {
-        Optional<CustomerPrice> own = prices.find(customer.customerId(), sku)
-                .filter(price -> customerSkus.ownerOf(sku).isEmpty());
-        return schedule(customer, sku, own);
+        return prices.find(customer.customerId(), sku)
+                .filter(price -> customerSkus.ownerOf(sku).isEmpty())
+                .map(price -> schedule(sku, price))
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE, ("%s has no price of this "
+                        + "customer's own: there is no base or group price (kltn-docs 13 BR-04)").formatted(sku)));
     }
 
-    /** The customer's own price for {@code sku} alone, if it has one. */
+    /** The customer's own price for {@code sku}, if it has one. */
     Optional<PriceSchedule> own(CustomerSummary customer, String sku) {
-        return prices.find(customer.customerId(), sku).map(price -> new PriceSchedule(sku,
-                PriceSchedule.PriceSource.CUSTOMER, price.moq(), price.tiers().stream()
-                        .map(tier -> new PriceSchedule.Tier(tier.minQuantity(), vnd(tier.unitPrice()))).toList()));
-    }
-
-    private PriceSchedule schedule(CustomerSummary customer, String sku, Optional<CustomerPrice> own) {
-        if (own.isPresent()) {
-            return new PriceSchedule(sku, PriceSchedule.PriceSource.CUSTOMER, own.get().moq(),
-                    own.get().tiers().stream()
-                            .map(tier -> new PriceSchedule.Tier(tier.minQuantity(), vnd(tier.unitPrice())))
-                            .toList());
-        }
-        Optional<SellingPrice> segment = customer.segmentId() == null
-                ? Optional.empty() : listings.segmentPrice(customer.segmentId(), sku);
-        if (segment.isPresent()) return fromOneUnit(sku, PriceSchedule.PriceSource.SEGMENT, segment.get());
-        return listings.price(sku)
-                .map(base -> fromOneUnit(sku, PriceSchedule.PriceSource.BASE, base))
-                .orElseThrow(() -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
+        return prices.find(customer.customerId(), sku).map(price -> schedule(sku, price));
     }
 
     /**
@@ -107,11 +81,9 @@ class PriceResolver {
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
     }
 
-    private static PriceSchedule fromOneUnit(String sku, PriceSchedule.PriceSource source, SellingPrice price) {
-        return new PriceSchedule(sku, source, 1, List.of(new PriceSchedule.Tier(1, vnd(price.amount()))));
-    }
-
-    private static Money vnd(java.math.BigDecimal amount) {
-        return new Money(amount, Money.VND);
+    private static PriceSchedule schedule(String sku, CustomerPrice price) {
+        return new PriceSchedule(sku, price.moq(), price.tiers().stream()
+                .map(tier -> new PriceSchedule.Tier(tier.minQuantity(), new Money(tier.unitPrice(), Money.VND)))
+                .toList());
     }
 }

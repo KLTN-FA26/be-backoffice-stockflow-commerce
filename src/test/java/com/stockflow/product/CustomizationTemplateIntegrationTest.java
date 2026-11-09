@@ -304,10 +304,7 @@ class CustomizationTemplateIntegrationTest {
                     INSERT INTO product.media (id, variant_id, url, is_published, published_at, published_by, created_by)
                     SELECT ?, v.id, 'https://example.test/cup.jpg', TRUE, NOW(), md5('demo:user:approver')::uuid,
                            md5('demo:user:editor')::uuid::text
-                    FROM product.variants v WHERE v.sku = ?""", UUID.randomUUID(), variantSku);
-            jdbc.update("""
-                    INSERT INTO catalog.pricing_rule (id, name, sku, price, currency, active, created_at)
-                    VALUES (?, ?, ?, 2500, 'VND', TRUE, NOW())""", UUID.randomUUID(), "BASE:" + variantSku, variantSku);
+                    FROM product.variants v WHERE v.sku = ?""", UUID.randomUUID(), variantSku);
             jdbc.update("""
                     UPDATE product.products SET status = 'PUBLISHED', submitted_by = md5('demo:user:editor')::uuid,
                            submitted_at = NOW(), approved_by = md5('demo:user:approver')::uuid, approved_at = NOW(),

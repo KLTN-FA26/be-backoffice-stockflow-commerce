@@ -5,12 +5,11 @@ import com.stockflow.common.domain.Money;
 import java.util.List;
 
 /**
- * The prices a customer gets for one SKU: its own tiers, or - with no own price - its group's or the
- * base price from one unit on (kltn-docs 13 §3). {@code moq} is the first tier's quantity.
+ * A customer's own price for one SKU, as tiers (kltn-docs 13 §4.2): from {@code minQuantity} on - cartons of the
+ * customer's own SKU, units of a price kept on a stock variant - each piece costs {@code unitPrice}. {@code moq} is the
+ * first tier's quantity. The only kind of price there is (13 BR-04): no base or group price stands behind it.
  */
-public record PriceSchedule(String sku, PriceSource source, int moq, List<Tier> tiers) {
-
-    public enum PriceSource { CUSTOMER, SEGMENT, BASE }
+public record PriceSchedule(String sku, int moq, List<Tier> tiers) {
 
     public record Tier(int minQuantity, Money unitPrice) {
     }

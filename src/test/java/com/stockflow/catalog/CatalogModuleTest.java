@@ -41,9 +41,10 @@ class CatalogModuleTest {
     @Test
     @DisplayName("catalog starts and answers through its api with the other modules absent")
     void bootsInIsolation() {
-        // Reads the pricing tables: a SKU nobody sells is refused, not priced at zero.
-        assertThatThrownBy(() -> catalog.checkoutPrices(Set.of("NO-SUCH-SKU"))).isInstanceOf(BusinessException.class);
-        assertThat(catalog.checkoutPrices(Set.of())).isEmpty();
+        // Reads the price tables: a customer that does not exist is refused, not priced at zero.
+        assertThatThrownBy(() -> catalog.checkoutPrices(java.util.UUID.randomUUID(), java.util.Map.of("NO-SUCH-SKU", 1)))
+                .isInstanceOf(BusinessException.class);
+        assertThat(catalog.listings(Set.of())).isEmpty();
     }
 
     /** The negative half: a module catalog has no business with is genuinely not in this context. */

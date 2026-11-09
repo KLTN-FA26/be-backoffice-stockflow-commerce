@@ -11,8 +11,8 @@ import java.util.UUID;
 /**
  * JPA mapping of a customer segment row (table {@code customer.segment}). Not the domain model.
  *
- * <p>A customer group (P7): managed from the back office through {@code CustomerSegmentService}; its prices are
- * catalog's {@code pricing_rule} rows keyed by the group.</p>
+ * <p>A customer group (P7): managed from the back office through {@code CustomerSegmentService}. It classifies
+ * customers and prices nothing (kltn-docs 13 BR-04: no group price, team plan 5-3).</p>
  */
 @Entity
 @Table(name = "segment", schema = "customer",

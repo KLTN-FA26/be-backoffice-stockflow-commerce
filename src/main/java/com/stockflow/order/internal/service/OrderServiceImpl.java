@@ -197,8 +197,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
             throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
         }
-        // SCRUM-428: the customer's own tier for the order's total of each SKU, else its group's or the
-        // base price (kltn-docs 13 §3); the client's price is only what it expects to pay (agreedPrice).
+        // SCRUM-428: the customer's own tier for the order's total of each SKU - the one source of a price since 5-3,
+        // no group or base price (kltn-docs 13 BR-04); the client's price is only what it expects to pay (agreedPrice).
         var sellingPrices =
                 command.snapshotCustomer() && !quotePriced
                         ? catalog.checkoutPrices(command.customerId(),

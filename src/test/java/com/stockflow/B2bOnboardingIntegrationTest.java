@@ -13,6 +13,7 @@ import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.LoginCommand;
 import com.stockflow.support.Await;
 import com.stockflow.support.IntegrationTest;
+import com.stockflow.support.KeptCheckoutPrices;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
 import org.junit.jupiter.api.AfterAll;
@@ -713,8 +714,9 @@ class B2bOnboardingIntegrationTest {
                                 """))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         assertThat(address).contains("SHIPPING");
-        long price = jdbc.queryForObject(
-                "SELECT price FROM catalog.pricing_rule WHERE name='BASE:SOFA-3S-GREY' AND active", Long.class);
+        // The only price checkout still reads (5-3: no base price): one of the customer's own, kept from before 4B-2.
+        long price = 12_500_000;
+        KeptCheckoutPrices.give(jdbc, new TransactionTemplate(transactions), customerId, "SOFA-3S-GREY", price);
         mvc.perform(post("/api/v1/orders").header("Authorization", "Bearer " + shop)
                         .contentType("application/json").content(json(Map.of(
                                 "requestId", UUID.randomUUID(), "customerId", customerId,

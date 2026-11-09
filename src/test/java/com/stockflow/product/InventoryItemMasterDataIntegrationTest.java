@@ -273,35 +273,33 @@ class InventoryItemMasterDataIntegrationTest {
     // ---- sales units -----------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("a variant sells in its base unit by default; other units come from its own item, each with a price")
+    @DisplayName("a variant sells in its base unit by default; other units come from its own item, with no price")
     void salesUnits() {
         var implicit = units.salesUnits(productId, variantId, 0, 20);
         assertThat(implicit.items()).singleElement().satisfies(u -> {
             assertThat(u.implicitDefault()).isTrue();
             assertThat(u.id()).isNull();
             assertThat(u.base()).isTrue();
-            assertThat(u.price()).isNull();
         });
         UUID baseId = implicit.items().getFirst().uomConversionId();
         UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, false, true));
 
-        assertField(() -> units.addSalesUnit(productId, variantId, baseId, new BigDecimal("2000")), "price");
-        assertField(() -> units.addSalesUnit(productId, variantId, carton.id(), null), "price");
-        assertField(() -> units.addSalesUnit(productId, variantId, carton.id(), new BigDecimal("10.50")), "price");
+        // 5-3 (kltn-docs 13 BR-04, 01 BR-11): a unit names how the variant is sold, never a price.
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM information_schema.columns WHERE table_schema = 'product'
+                  AND table_name = 'variant_sales_units' AND column_name = 'price'""", Long.class)).isZero();
 
-        var cartonUnit = units.addSalesUnit(productId, variantId, carton.id(), new BigDecimal("450000"));
+        var cartonUnit = units.addSalesUnit(productId, variantId, carton.id());
         assertThat(cartonUnit.factor()).isEqualTo(1000);
         assertThat(units.salesUnits(productId, variantId, 0, 20).items())
                 .singleElement().satisfies(u -> assertThat(u.implicitDefault()).isFalse());
-        assertCode(() -> units.addSalesUnit(productId, variantId, carton.id(), new BigDecimal("1")),
-                ErrorCode.SALES_UNIT_DUPLICATE);
+        assertCode(() -> units.addSalesUnit(productId, variantId, carton.id()), ErrorCode.SALES_UNIT_DUPLICATE);
 
         // BR-11: only a unit of the variant's own inventory item.
         UUID otherItemsBase = jdbc.queryForObject("""
                 SELECT c.id FROM inventory.uom_conversions c JOIN inventory.inventory_items i ON i.id = c.inventory_item_id
                 WHERE i.sku = 'SOFA-3S-GREY' AND c.is_base""", UUID.class);
-        assertCode(() -> units.addSalesUnit(productId, variantId, otherItemsBase, null),
-                ErrorCode.UOM_CONVERSION_NOT_FOUND);
+        assertCode(() -> units.addSalesUnit(productId, variantId, otherItemsBase), ErrorCode.UOM_CONVERSION_NOT_FOUND);
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO product.variant_sales_units (id, variant_id, uom_conversion_id) VALUES (?, ?, ?)""",
                 Identifiers.newId(), variantId, otherItemsBase))).isInstanceOf(DataIntegrityViolationException.class);
@@ -312,15 +310,11 @@ class InventoryItemMasterDataIntegrationTest {
         assertCode(() -> units.removeConversion(productId, variantId, carton.id(), carton.version()),
                 ErrorCode.UOM_CONVERSION_IN_USE);
 
-        var repriced = units.changeSalesUnit(productId, variantId, cartonUnit.id(), cartonUnit.version(),
-                new BigDecimal("480000"));
-        assertThat(repriced.price()).isEqualByComparingTo("480000");
-        assertCode(() -> units.changeSalesUnit(productId, variantId, cartonUnit.id(), cartonUnit.version(),
-                new BigDecimal("1")), ErrorCode.OPTIMISTIC_LOCK);
-
-        var each = units.addSalesUnit(productId, variantId, baseId, null);
+        var each = units.addSalesUnit(productId, variantId, baseId);
         assertThat(units.salesUnits(productId, variantId, 0, 20).totalElements()).isEqualTo(2);
-        units.removeSalesUnit(productId, variantId, repriced.id(), repriced.version());
+        assertCode(() -> units.removeSalesUnit(productId, variantId, cartonUnit.id(), cartonUnit.version() + 1),
+                ErrorCode.OPTIMISTIC_LOCK);
+        units.removeSalesUnit(productId, variantId, cartonUnit.id(), cartonUnit.version());
         units.removeSalesUnit(productId, variantId, each.id(), each.version());
         assertThat(units.salesUnits(productId, variantId, 0, 20).items())
                 .singleElement().satisfies(u -> assertThat(u.implicitDefault()).isTrue());
@@ -330,8 +324,7 @@ class InventoryItemMasterDataIntegrationTest {
         // A retired unit is not offered for sale.
         var cartonNow = units.conversion(productId, variantId, carton.id());
         units.changeConversion(productId, variantId, carton.id(), cartonNow.version(), packing("CARTON", 1000, false, false));
-        assertField(() -> units.addSalesUnit(productId, variantId, carton.id(), new BigDecimal("450000")),
-                "uomConversionId");
+        assertField(() -> units.addSalesUnit(productId, variantId, carton.id()), "uomConversionId");
         assertThat(history()).contains("SALES_UNIT");
     }
 

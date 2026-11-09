@@ -97,11 +97,6 @@ values (?,?,'Table',?,'DRAFT')
                     values (?,?,'https://example.test/backfill.jpg',true,now(),
                         md5('demo:user:approver')::uuid,md5('demo:user:editor')::uuid::text)
                     """, UUID.randomUUID(), variant);
-            // Explicit test selling price, not a new demo seed or an inferred purchase cost.
-            jdbc.update("""
-                    insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)
-                    values (?,?,?,12500000,'VND',true,now())
-                    """, UUID.randomUUID(), "BASE:" + sku, sku);
             jdbc.update("""
                     update product.products set status='PUBLISHED',submitted_by=md5('demo:user:editor')::uuid,
                     submitted_at=now(),approved_by=md5('demo:user:approver')::uuid,approved_at=now(),
@@ -118,7 +113,7 @@ values (?,?,'Table',?,'DRAFT')
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.slug").value("sec-" + id))
                 .andExpect(jsonPath("$.data.seoTitle").value("Canonical SEO"))
-                .andExpect(jsonPath("$.data.variants[0].price").value(12500000));
+                .andExpect(jsonPath("$.data.variants[0].price").doesNotExist());
         mvc.perform(get("/api/v1/catalog/products").param("size", "100")
                         .header("Authorization", authorization))
                 .andExpect(status().isOk())

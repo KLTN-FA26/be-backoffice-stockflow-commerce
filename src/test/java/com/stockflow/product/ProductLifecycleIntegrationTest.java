@@ -21,6 +21,7 @@ import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
 import com.stockflow.support.RedisContainer;
+import com.stockflow.support.KeptCheckoutPrices;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SupplierItemFixtures;
 import jakarta.persistence.EntityManager;
@@ -44,7 +45,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -433,8 +434,12 @@ class ProductLifecycleIntegrationTest {
                 reasonAndVersion("recall", draft.version())), 409, "INVALID_PRODUCT_STATUS_TRANSITION");
     }
 
-    /** A PUBLISHED product with a price and a published image, made by SQL the way the catalog tests make one. */
-    private record Published(UUID id, String sku, String slug) {
+    /**
+     * A PUBLISHED product with a published image, made by SQL the way the catalog tests make one, and a customer
+     * ({@code buyer}) with a price of its own on the product's variant, kept from before 4B-2: the one price checkout
+     * still reads since 5-3 (no base price, kltn-docs 13 BR-04).
+     */
+    private record Published(UUID id, String sku, String slug, UUID buyer) {
     }
 
     private Published publishedProduct(String tag) {
@@ -456,11 +461,11 @@ class ProductLifecycleIntegrationTest {
                     INSERT INTO product.media (id, variant_id, url, is_published, published_at, published_by, created_by)
                     VALUES (?, ?, 'https://example.test/pub.jpg', true, NOW(), md5('demo:user:approver')::uuid,
                             md5('demo:user:editor')::uuid::text)""", Identifiers.newId(), variant);
-            jdbc.update("INSERT INTO catalog.pricing_rule (id, name, sku, price, currency, active, created_at) "
-                    + "VALUES (?, ?, ?, 12500000, 'VND', true, NOW())", Identifiers.newId(), "BASE:" + sku, sku);
         });
+        UUID buyer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        KeptCheckoutPrices.give(jdbc, tx, buyer, sku, 12_500_000);
         projection.project(id);
-        return new Published(id, sku, slug);
+        return new Published(id, sku, slug, buyer);
     }
 
     private void awaitCatalogHides(Published product) {
@@ -484,7 +489,8 @@ class ProductLifecycleIntegrationTest {
         assertRefused(send("GET", shopper, "/api/v1/catalog/products/" + product.slug(), null), 404, "NOT_FOUND");
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + product.slug() + "')]").isEmpty());
-        assertThatThrownBy(() -> catalog.checkoutPrices(Set.of(product.sku()))).isInstanceOfSatisfying(BusinessException.class,
+        assertThatThrownBy(() -> catalog.checkoutPrices(product.buyer(), Map.of(product.sku(), 1)))
+                .isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
         awaitCatalogHides(product);
         // Terminal: it cannot come back through the catalog either.
@@ -502,7 +508,7 @@ class ProductLifecycleIntegrationTest {
         send("GET", shopper, "/api/v1/catalog/products/" + slug, null).andExpect(status().isOk());
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + slug + "')]").isNotEmpty());
-        assertThat(catalog.checkoutPrices(Set.of(sku))).containsKey(sku);
+        assertThat(catalog.checkoutPrices(product.buyer(), Map.of(sku, 1))).containsKey(sku);
 
         long version = versionOf(id);
         send("POST", approver(), "/api/v1/products/" + id + "/suspension", reasonAndVersion("recall", version))
@@ -513,7 +519,8 @@ class ProductLifecycleIntegrationTest {
         assertRefused(send("GET", shopper, "/api/v1/catalog/products/" + slug, null), 404, "NOT_FOUND");
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + slug + "')]").isEmpty());
-        assertThatThrownBy(() -> catalog.checkoutPrices(Set.of(sku))).isInstanceOfSatisfying(BusinessException.class,
+        assertThatThrownBy(() -> catalog.checkoutPrices(product.buyer(), Map.of(sku, 1)))
+                .isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
         // And the catalog's own rows follow, once it has been told (CatalogListingChanged).
         awaitCatalogHides(product);

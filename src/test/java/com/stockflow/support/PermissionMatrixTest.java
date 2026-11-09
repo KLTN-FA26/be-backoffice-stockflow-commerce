@@ -100,9 +100,8 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
             Map.entry("GET /api/v1/quotes", "portal list: the caller's own customer's quotes, sent ones only (SCRUM-448)"),
             Map.entry("GET /api/v1/catalog/products/availability",
-                    "stock indicator for the caller's own ACTIVE customer, the customer taken from the token (SCRUM-429)"),
-            Map.entry("GET /api/v1/catalog/products/prices",
-                    "the caller's own ACTIVE customer's prices, the customer taken from the token (StorefrontPriceService)"));
+                    "stock indicator of the caller's own ACTIVE customer's own SKUs, the customer taken from the token "
+                            + "(SCRUM-429, 5-3)"));
 
     /**
      * Handlers with neither {@code @RequiresPermission} nor {@code @PreAuthorize}. They are open to anyone signed in
@@ -137,11 +136,10 @@ class PermissionMatrixTest {
      * Deprecated routes kept for existing clients, and the canonical route each one stands for. The old one must carry
      * exactly the guard of the new one: a deprecated alias is the classic place for a permission to drift. (A
      * variant's logistics and inventory-control routes, old and new, are gone: both are edited on the inventory item,
-     * {@code /api/v1/inventory/items/{id}}.)
+     * {@code /api/v1/inventory/items/{id}}. The base-price routes went with the base price, 5-3, leaving none for now;
+     * the rule stays for the next alias.)
      */
-    private static final Map<String, String> DEPRECATED_ALIASES = Map.of(
-            "GET /api/v1/products/{productId}/skus/{sku}/base-price", "GET /api/v1/products/{productId}/variants/{variantId}/base-price",
-            "PUT /api/v1/products/{productId}/skus/{sku}/base-price", "PUT /api/v1/products/{productId}/variants/{variantId}/base-price");
+    private static final Map<String, String> DEPRECATED_ALIASES = Map.of();
 
     /**
      * The endpoints that were guarded by a role list (a {@code @PreAuthorize} or a role check in the code) until the
@@ -250,7 +248,6 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome", "fulfillment-delivery-outcomes:UPDATE"),
             Map.entry("POST /api/v1/customers/{customerId}/status", "customer-status:APPROVE"),
             Map.entry("GET /api/v1/catalog/products/availability", "catalog-storefront:READ"),
-            Map.entry("GET /api/v1/catalog/products/prices", "catalog-storefront:READ"),
             // Was sales-orders:READ + back office; its own code so ACCREAD does not open the queue.
             Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"));
 

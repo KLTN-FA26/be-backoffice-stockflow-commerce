@@ -8,8 +8,8 @@ import java.util.UUID;
 
 /**
  * One row of the storefront catalogue list. {@code primaryImageUrl} and {@code skus} are optional
- * additions that spare a card its detail and gallery calls; the row carries no price and no stock (those
- * are the CUSTOMER-only {@code /prices} and {@code /availability} endpoints).
+ * additions that spare a card its detail and gallery calls; the row carries no price - the storefront shows none
+ * (kltn-docs 13 BR-04) - and no stock (a customer's own SKUs have the CUSTOMER-only {@code /availability} indicator).
  */
 public record CatalogCardResponse(
         UUID productId,

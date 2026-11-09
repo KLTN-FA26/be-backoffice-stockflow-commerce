@@ -233,8 +233,13 @@ class ProductVariantOptionsIntegrationTest {
     @Test
     void aRenameOfAReferencedSkuIsARefusedTransition() {
         UUID product = productWithAxes();
-        jdbc.update("insert into catalog.pricing_rule(id, name, sku, price, currency, active, version, created_at) "
-                + "values (?, 'rule', ?, 1, 'VND', true, 0, now())", UUID.randomUUID(), newCode);
+        // A price of a customer's own on the SKU, kept from before 4B-2 - since 5-3 the only kind of price there is (no
+        // base price). tg_customer_price_own_sku refuses a new one, so it is written as old data is, triggers off.
+        UUID customer = ReferenceRows.customer(entityManager);
+        jdbc.execute("SET LOCAL session_replication_role = replica");
+        jdbc.update("insert into catalog.customer_price(id, customer_id, sku, currency, version, created_at) "
+                + "values (?, ?, ?, 'VND', 0, now())", UUID.randomUUID(), customer, newCode);
+        jdbc.execute("SET LOCAL session_replication_role = origin");
 
         assertThat(errorOf(() -> variants.add(product, new NewVariant("CUP-RENAMED", null, List.of(cap12, clear), null))))
                 .isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);

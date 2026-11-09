@@ -7,6 +7,7 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
+import com.stockflow.support.KeptCheckoutPrices;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -88,6 +89,9 @@ class DuplicateOrderIntegrationTest {
         customers.addAddress(id, null, true, new com.stockflow.customer.api.SaveAddressCommand("SHIPPING",
                 "Nguyen Van A", "0901234567", "1 Le Loi", null, "26734", "Ben Nghe", "79", "Ho Chi Minh", "VN", null,
                 true, null));
+        // Checkout charges only a price of the customer's own kept on the stock variant from before 4B-2 - there is no
+        // base price since 5-3 (kltn-docs 13 BR-04) - so the customer gets the price the sofa was always sold at.
+        KeptCheckoutPrices.give(jdbc, tx, id, "SOFA-3S-GREY", 12_500_000);
         return id;
     }
 

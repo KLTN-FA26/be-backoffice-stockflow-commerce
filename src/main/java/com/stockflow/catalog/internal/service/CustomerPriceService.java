@@ -1,6 +1,5 @@
 package com.stockflow.catalog.internal.service;
 
-import com.stockflow.catalog.api.PriceSchedule;
 import com.stockflow.catalog.internal.domain.CustomerPrice;
 import com.stockflow.catalog.internal.domain.CustomerPriceRepository;
 import com.stockflow.catalog.internal.repository.ListingRepository;
@@ -89,12 +88,6 @@ public class CustomerPriceService {
         return view(price, price.customerId().equals(owners.get(price.sku())));
     }
 
-    /** What the customer pays for the SKU now: own tiers, else group or base price. */
-    @Transactional(readOnly = true)
-    public PriceSchedule schedule(UUID customerId, String sku) {
-        return resolver.schedule(customerId, sku(sku));
-    }
-
     /**
      * Gives the customer its own price for a SKU.
      *
@@ -132,7 +125,10 @@ public class CustomerPriceService {
         return view(prices.save(price));
     }
 
-    /** The customer goes back to its group's or the base price. */
+    /**
+     * The SKU no longer has a price of this customer's own - and there is no other (kltn-docs 13 BR-04): Sales enters
+     * the tiers on the next quote by hand (13 §4.2 step 5); quotes already sent keep theirs.
+     */
     @Auditable(action = AuditAction.DELETE, resourceType = "customer-price", resourceId = "#customerId")
     public void delete(UUID customerId, String sku, long expectedVersion) {
         String code = prepare(customerId, sku);

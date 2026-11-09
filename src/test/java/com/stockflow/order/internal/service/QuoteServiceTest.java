@@ -227,10 +227,10 @@ class QuoteServiceTest {
         // No price of the customer's own (a group or base price is never asked for): Sales enters the tiers.
         assertThatThrownBy(() -> service.create(sales, create(SKU, 20, null))).as("nothing to start from")
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        verify(catalog, never()).priceSchedule(any(), any());
+        verify(catalog, never()).checkoutPrices(any(), any());
 
         when(catalog.customerPrice(customer, SKU)).thenReturn(Optional.of(new PriceSchedule(SKU,
-                PriceSchedule.PriceSource.CUSTOMER, 10, List.of(new PriceSchedule.Tier(10, Money.vnd(2100)),
+                10, List.of(new PriceSchedule.Tier(10, Money.vnd(2100)),
                         new PriceSchedule.Tier(30, Money.vnd(1900))))));
         assertThatThrownBy(() -> service.create(sales, create(SKU, 5, null))).as("below its first tier, in cartons")
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);

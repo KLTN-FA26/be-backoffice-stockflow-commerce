@@ -85,10 +85,6 @@ class CatalogSearchIntegrationTest {
                         md5('demo:user:approver')::uuid,md5('demo:user:editor')::uuid::text)
                     """, UUID.randomUUID(), variant);
             jdbc.update("""
-                    insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)
-                    values (?,?,?,12500000,'VND',true,now())
-                    """, UUID.randomUUID(), "BASE:" + sku, sku);
-            jdbc.update("""
                     update product.products set status='PUBLISHED',submitted_by=md5('demo:user:editor')::uuid,
                     submitted_at=now(),approved_by=md5('demo:user:approver')::uuid,approved_at=now(),
                     published_at=now(),seo_title='SEO',seo_description='SEO description'
@@ -120,7 +116,6 @@ class CatalogSearchIntegrationTest {
             for (UUID id : created) {
                 jdbc.update("delete from catalog.catalog_entry where product_id=?", id);
                 jdbc.update("delete from catalog.product_listing where product_id=?", id);
-                jdbc.update("delete from catalog.pricing_rule where sku in (select sku from product.variants where product_id=?)", id);
                 jdbc.update("delete from product.media where variant_id in (select id from product.variants where product_id=?)", id);
                 jdbc.update("delete from inventory.inventory_items where sku in (select sku from product.variants where product_id=?)", id);
                 jdbc.update("delete from product.variants where product_id=?", id);
@@ -599,8 +594,6 @@ class CatalogSearchIntegrationTest {
                     insert into product.media(id,variant_id,url,is_published,published_at,published_by,created_by,is_primary,sort_order)
                     values (?,?,?,true,now(),md5('demo:user:approver')::uuid,md5('demo:user:editor')::uuid::text,?,?)
                     """, UUID.randomUUID(), variant, url, primary, sort);
-            jdbc.update("insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)"
-                    + " values (?,?,?,100,'VND',true,now())", UUID.randomUUID(), "BASE:" + sku, sku);
         });
     }
 

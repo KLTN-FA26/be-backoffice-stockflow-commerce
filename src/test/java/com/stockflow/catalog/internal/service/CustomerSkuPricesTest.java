@@ -3,8 +3,8 @@ package com.stockflow.catalog.internal.service;
 import com.stockflow.catalog.api.PriceSchedule;
 import com.stockflow.catalog.internal.domain.CustomerPrice;
 import com.stockflow.catalog.internal.domain.CustomerPriceRepository;
-import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.repository.ListingRepository;
+import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.customer.api.CustomerService;
@@ -30,20 +30,22 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 4B-2 (kltn-docs 13 BR-05, BR-10; 14 BR-01, BR-08): a price of the customer's own on one of its own SKUs counts cartons
- * and is internal. Checkout refuses such a SKU outright - it is quoted, never priced by a group or base rule that happens
- * to match - the storefront shows it no price, and the resolver never reads a carton price as a unit price.
+ * 4B-2 and 5-3 (kltn-docs 13 BR-04, BR-05, BR-10; 14 BR-01, BR-08): a price of the customer's own on one of its own SKUs
+ * counts cartons and is internal; it is the only price there is - no base, no group price. Checkout refuses the
+ * customer's own SKU outright, never reads a carton price as a unit price, and finds no price at all for a stock variant
+ * the customer has none of its own on.
  */
 class CustomerSkuPricesTest {
 
     private static final String OWN = "LY12-ACME-01";
     private static final String STOCK = "SOFA-3S-GREY";
+    private static final String UNPRICED = "TABLE-OAK-160";
 
     private final CustomerPriceRepository prices = mock(CustomerPriceRepository.class);
     private final ListingRepository listings = mock(ListingRepository.class);
     private final CustomerService customers = mock(CustomerService.class);
     private final CustomerSkus customerSkus = mock(CustomerSkus.class);
-    private final PriceResolver resolver = new PriceResolver(prices, listings, customers, customerSkus);
+    private final PriceResolver resolver = new PriceResolver(prices, customers, customerSkus);
     private final UUID customer = UUID.randomUUID();
     private final UUID user = UUID.randomUUID();
     private final CustomerSummary summary = new CustomerSummary(customer, user, "A", "a@x.vn", null, null, null,
@@ -52,17 +54,17 @@ class CustomerSkuPricesTest {
     @BeforeEach
     void stubs() {
         when(customers.findById(customer)).thenReturn(Optional.of(summary));
-        when(customers.findByUserId(user)).thenReturn(Optional.of(summary));
         when(customerSkus.ownerOf(OWN)).thenReturn(Optional.of(customer));
         when(customerSkus.ownerOf(STOCK)).thenReturn(Optional.empty());
+        when(customerSkus.ownerOf(UNPRICED)).thenReturn(Optional.empty());
         when(customerSkus.ownersOf(anyCollection())).thenAnswer(call -> ((java.util.Collection<?>) call.getArgument(0))
                 .contains(OWN) ? Map.of(OWN, customer) : Map.of());
         when(prices.find(customer, OWN)).thenReturn(Optional.of(new CustomerPrice(UUID.randomUUID(), customer, OWN,
                 List.of(new CustomerPrice.Tier(10, new BigDecimal("1800"))), null, 0)));
         when(prices.find(customer, STOCK)).thenReturn(Optional.of(new CustomerPrice(UUID.randomUUID(), customer, STOCK,
-                List.of(new CustomerPrice.Tier(1, new BigDecimal("11000000"))), null, 0)));
-        when(listings.price(OWN)).thenReturn(Optional.of(new SellingPrice(new BigDecimal("2500"), "VND")));
-        when(listings.publishedProductForSku(OWN)).thenReturn(Optional.of(UUID.randomUUID()));
+                List.of(new CustomerPrice.Tier(1, new BigDecimal("11000000")),
+                        new CustomerPrice.Tier(5, new BigDecimal("10500000"))), null, 0)));
+        when(prices.find(customer, UNPRICED)).thenReturn(Optional.empty());
     }
 
     @Test
@@ -81,27 +83,41 @@ class CustomerSkuPricesTest {
     }
 
     @Test
-    @DisplayName("the storefront shows the customer's own SKU no price, even with a published listing and a base rule")
-    void theStorefrontShowsNoInternalPrice() {
-        StorefrontPriceService storefront = new StorefrontPriceService(customers, resolver, listings, customerSkus);
+    @DisplayName("checkout never reads a carton price as a unit price: the customer's own SKU has no unit price at all")
+    void aCartonPriceIsNeverAUnitPrice() {
+        BusinessException none = catchThrowableOfType(BusinessException.class,
+                () -> resolver.checkoutSchedule(summary, OWN));
 
-        assertThat(storefront.pricesOf(user, List.of(OWN))).isEmpty();
+        assertThat(none).isNotNull();
+        assertThat(none.errorCode()).isEqualTo(ErrorCode.PRICE_NOT_AVAILABLE);
     }
 
     @Test
-    @DisplayName("the unit resolver never reads a carton price as a unit price; a price kept on a stock variant counts "
-            + "units and is still read; a quote reads the carton price")
-    void unitPricesNeverComeFromACartonPrice() {
-        PriceSchedule own = resolver.checkoutSchedule(summary, OWN);
-        assertThat(own.source()).as("the carton price skipped").isEqualTo(PriceSchedule.PriceSource.BASE);
-        assertThat(own.tiers().getFirst().unitPrice().amount()).isEqualByComparingTo("2500");
+    @DisplayName("a stock variant without a price of the customer's own has none: no base or group price behind it")
+    void noBaseOrGroupPriceBehindTheCustomersOwn() {
+        BusinessException none = catchThrowableOfType(BusinessException.class,
+                () -> resolver.checkoutSchedule(summary, UNPRICED));
 
+        assertThat(none).isNotNull();
+        assertThat(none.errorCode()).isEqualTo(ErrorCode.PRICE_NOT_AVAILABLE);
+        assertThat(none.getMessage()).contains(UNPRICED);
+        assertThat(resolver.own(summary, UNPRICED)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a price kept on a stock variant counts units and is read tier by tier; a quote reads the carton price")
+    void aKeptUnitPriceIsReadByTierAndAQuoteReadsCartons() {
         PriceSchedule stock = resolver.checkoutSchedule(summary, STOCK);
-        assertThat(stock.source()).isEqualTo(PriceSchedule.PriceSource.CUSTOMER);
+        assertThat(stock.moq()).isEqualTo(1);
+        assertThat(PriceResolver.unitPrice(stock, 4)).isEqualTo(Money.vnd(11_000_000));
+        assertThat(PriceResolver.unitPrice(stock, 5)).isEqualTo(Money.vnd(10_500_000));
 
         assertThat(resolver.own(summary, OWN)).hasValueSatisfying(schedule -> {
             assertThat(schedule.moq()).as("10 cartons").isEqualTo(10);
             assertThat(schedule.tiers().getFirst().unitPrice().amount()).isEqualByComparingTo("1800");
         });
+        BusinessException below = catchThrowableOfType(BusinessException.class,
+                () -> PriceResolver.unitPrice(resolver.own(summary, OWN).orElseThrow(), 9));
+        assertThat(below.errorCode()).isEqualTo(ErrorCode.CUSTOMER_PRICE_BELOW_MOQ);
     }
 }
