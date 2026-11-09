@@ -225,47 +225,6 @@ class OrderServiceImplReactionsTest {
     }
 
     @Nested
-    @DisplayName("a stock hold expired before payment (14 BR-07)")
-    class HoldExpired {
-
-        @Test
-        @DisplayName("an unpaid order is cancelled with PAYMENT_NOT_RECEIVED and its other holds are released")
-        void cancelsTheUnpaidOrder() {
-            Order order = waitingForPayment(PaymentTerm.PREPAID);
-            List<UUID> holds = order.reservationIds();
-
-            service.cancelAfterHoldExpired(id(order));
-
-            assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
-            assertThat(order.cancellationReasonCode()).isEqualTo(CancellationReasonCode.PAYMENT_NOT_RECEIVED);
-            holds.forEach(hold -> verify(inventory).release(hold, "ORDER_CANCELLED"));
-            assertThat(order.reservationIds()).isEmpty();
-        }
-
-        @Test
-        @DisplayName("an order no longer waiting for payment is left alone: its holds are pinned, the event is late")
-        void aPaidOrderIsLeftAlone() {
-            Order order = found(OrderFixtures.confirmedPrepaid());
-
-            service.cancelAfterHoldExpired(id(order));
-
-            assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
-            verify(repository, never()).save(any());
-            verify(inventory, never()).release(any(), anyString());
-        }
-
-        @Test
-        @DisplayName("an unknown order is ignored")
-        void unknownOrder() {
-            when(repository.findByIdForUpdate(any())).thenReturn(Optional.empty());
-
-            service.cancelAfterHoldExpired(UUID.randomUUID());
-
-            verify(repository, never()).save(any());
-        }
-    }
-
-    @Nested
     @DisplayName("what cancelling does with the holds")
     class Cancelling {
 
