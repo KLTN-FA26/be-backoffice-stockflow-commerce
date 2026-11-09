@@ -318,6 +318,16 @@ public class ProductionOrderService {
      * what remains without it).
      */
     private Map<UUID, Integer> lacking(Order order, List<DeliveryBatch> schedule, DeliveryBatch batch, UUID excluding) {
+        return lackingPerBatch(order, schedule, excluding).getOrDefault(batch.seq(), new LinkedHashMap<>());
+    }
+
+    /**
+     * {@link #lacking(Order, List, DeliveryBatch, UUID)} for every batch at once, by batch number: one read of the
+     * production orders and one of the coverage for the whole order, where asking batch by batch read both again for
+     * each batch.
+     */
+    private Map<Integer, Map<UUID, Integer>> lackingPerBatch(Order order, List<DeliveryBatch> schedule,
+                                                             UUID excluding) {
         Map<UUID, Integer> seqOf = new HashMap<>();
         schedule.forEach(b -> seqOf.put(b.id(), b.seq()));
         Map<Integer, Map<UUID, Integer>> coming = new HashMap<>();
@@ -332,19 +342,15 @@ public class ProductionOrderService {
         }
         ShippingWarehouseService.Coverage coverage = shippingWarehouses.coverage(order.id().value());
         Map<UUID, Integer> carried = new HashMap<>();
-        Map<UUID, Integer> lacking = new LinkedHashMap<>();
+        Map<Integer, Map<UUID, Integer>> lacking = new LinkedHashMap<>();
         for (ShippingWarehouseService.BatchCoverage covered : coverage.batches().stream()
                 .sorted(Comparator.comparingInt(ShippingWarehouseService.BatchCoverage::seq)).toList()) {
-            if (covered.seq() > batch.seq()) {
-                break;
-            }
             Map<UUID, Integer> here = coming.getOrDefault(covered.seq(), Map.of());
+            Map<UUID, Integer> lines = lacking.computeIfAbsent(covered.seq(), seq -> new LinkedHashMap<>());
             for (ShippingWarehouseService.LineCoverage line : covered.lines()) {
                 int arriving = carried.getOrDefault(line.lineId(), 0) + here.getOrDefault(line.lineId(), 0);
                 carried.put(line.lineId(), Math.max(0, arriving - line.shortCartons()));
-                if (covered.seq() == batch.seq()) {
-                    lacking.merge(line.lineId(), Math.max(0, line.shortCartons() - arriving), Integer::sum);
-                }
+                lines.merge(line.lineId(), Math.max(0, line.shortCartons() - arriving), Integer::sum);
             }
         }
         return lacking;
@@ -437,16 +443,31 @@ public class ProductionOrderService {
      */
     @Transactional(readOnly = true)
     public Map<UUID, Map<UUID, Integer>> lackingByBatch(UUID salesOrderId) {
+        Shortage shortage = shortage(salesOrderId);
+        return shortage == null ? new LinkedHashMap<>() : shortage.lackingByBatch();
+    }
+
+    /** An order of a contract, its live schedule, and per batch (by id) the cartons each line still lacks. */
+    public record Shortage(Order order, List<DeliveryBatch> schedule, Map<UUID, Map<UUID, Integer>> lackingByBatch) {
+    }
+
+    /**
+     * {@link #lackingByBatch} with the order and schedule it was counted from, so a caller listing many orders (the
+     * production schedule) reads each once. Null for an order that is gone or has no live contract.
+     */
+    @Transactional(readOnly = true)
+    public Shortage shortage(UUID salesOrderId) {
         Order order = orders.findById(new OrderId(salesOrderId)).orElse(null);
         SalesContract contract = contracts.findLiveByOrderId(salesOrderId).orElse(null);
-        Map<UUID, Map<UUID, Integer>> lacking = new LinkedHashMap<>();
         if (order == null || contract == null || !order.paidByContract()) {
-            return lacking;
+            return null;
         }
+        Map<Integer, Map<UUID, Integer>> perSeq = lackingPerBatch(order, contract.schedule(), null);
+        Map<UUID, Map<UUID, Integer>> lacking = new LinkedHashMap<>();
         for (DeliveryBatch batch : contract.schedule().stream().sorted(Comparator.comparingInt(DeliveryBatch::seq))
                 .toList()) {
-            lacking.put(batch.id(), lacking(order, contract.schedule(), batch, null));
+            lacking.put(batch.id(), perSeq.getOrDefault(batch.seq(), new LinkedHashMap<>()));
         }
-        return lacking;
+        return new Shortage(order, contract.schedule(), lacking);
     }
 }

@@ -116,7 +116,8 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
 
     @Override
     public List<ScheduledProduction> openProductionOrders(UUID producerId, UUID warehouseId, LocalDate from,
-                                                          LocalDate to, Collection<UUID> warehouses) {
+                                                          LocalDate to, Collection<UUID> warehouses,
+                                                          boolean alertsOnly, int limit) {
         if (warehouses != null && warehouses.isEmpty()) {
             return List.of();
         }
@@ -124,7 +125,7 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
                 .addValue("producer", producerId).addValue("warehouse", warehouseId)
                 .addValue("from", from == null ? null : Date.valueOf(from))
                 .addValue("to", to == null ? null : Date.valueOf(to))
-                .addValue("warehouses", warehouses);
+                .addValue("warehouses", warehouses).addValue("limit", limit);
         String sql = """
                 SELECT p.id, p.code, p.status, p.producer_id, pr.code AS producer_code, pr.name AS producer_name,
                        p.sales_order_id, o.order_number, p.customer_id, p.delivery_batch_id, b.seq, b.window_start,
@@ -143,8 +144,14 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
                    AND (CAST(:warehouse AS uuid) IS NULL OR p.receiving_warehouse_id = :warehouse)
                    AND (CAST(:from AS date) IS NULL OR p.need_by_date >= :from)
                    AND (CAST(:to AS date) IS NULL OR p.need_by_date <= :to)
-                """ + (warehouses == null ? "" : "   AND p.receiving_warehouse_id IN (:warehouses)\n") + """
-                 ORDER BY p.need_by_date, p.code""";
+                """ + (warehouses == null ? "" : "   AND p.receiving_warehouse_id IN (:warehouses)\n")
+                + (!alertsOnly ? "" : """
+                   AND EXISTS (SELECT 1 FROM ordering.delay_alert a
+                                WHERE a.closed_at IS NULL AND (a.production_order_id = p.id
+                                   OR (a.delivery_batch_id = p.delivery_batch_id AND a.type = 'DELIVERY_LATE')))
+                """) + """
+                 ORDER BY p.need_by_date, p.code
+                 LIMIT :limit""";
         return named.query(sql, params, (rs, row) -> new ScheduledProduction(rs.getObject("id", UUID.class),
                 rs.getString("code"), ProductionOrderStatus.valueOf(rs.getString("status")),
                 rs.getObject("producer_id", UUID.class), rs.getString("producer_code"), rs.getString("producer_name"),
@@ -169,19 +176,36 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
     }
 
     @Override
-    public List<FollowedOrder> ordersIn(Collection<String> statuses, UUID warehouseId, Collection<UUID> warehouses) {
+    public List<FollowedOrder> ordersIn(Collection<String> statuses, UUID warehouseId, Collection<UUID> warehouses,
+                                        LocalDate from, LocalDate to, boolean alertsOnly, int limit) {
         if (statuses.isEmpty() || warehouses != null && warehouses.isEmpty()) {
             return List.of();
         }
         MapSqlParameterSource params = new MapSqlParameterSource("statuses", statuses)
-                .addValue("warehouse", warehouseId).addValue("warehouses", warehouses);
+                .addValue("warehouse", warehouseId).addValue("warehouses", warehouses)
+                .addValue("from", from == null ? null : Date.valueOf(from))
+                .addValue("to", to == null ? null : Date.valueOf(to))
+                .addValue("ranged", from != null || to != null).addValue("limit", limit);
+        // The batches that may show: in the range (one with no window only when no range is asked), and with an open
+        // alert when only those are asked for. Orders go by the earliest of them, so a limit keeps the most urgent.
         String sql = """
                 SELECT o.id, o.order_number, o.customer_id, o.shipping_warehouse_id, o.status
                   FROM ordering.customer_order o
+                  JOIN ordering.sales_contract c ON c.order_id = o.id
+                  JOIN ordering.delivery_batch b ON b.contract_id = c.id
                  WHERE o.status IN (:statuses) AND o.contract_signed_at IS NOT NULL
                    AND (CAST(:warehouse AS uuid) IS NULL OR o.shipping_warehouse_id = :warehouse)
-                """ + (warehouses == null ? "" : "   AND o.shipping_warehouse_id IN (:warehouses)\n") + """
-                 ORDER BY o.contract_signed_at, o.id""";
+                   AND (b.window_start IS NOT NULL OR NOT :ranged)
+                   AND (CAST(:from AS date) IS NULL OR b.window_start >= :from)
+                   AND (CAST(:to AS date) IS NULL OR b.window_start <= :to)
+                """ + (warehouses == null ? "" : "   AND o.shipping_warehouse_id IN (:warehouses)\n")
+                + (!alertsOnly ? "" : """
+                   AND EXISTS (SELECT 1 FROM ordering.delay_alert a
+                                WHERE a.delivery_batch_id = b.id AND a.closed_at IS NULL)
+                """) + """
+                 GROUP BY o.id, o.order_number, o.customer_id, o.shipping_warehouse_id, o.status, o.contract_signed_at
+                 ORDER BY MIN(b.window_start) NULLS LAST, o.contract_signed_at, o.id
+                 LIMIT :limit""";
         return named.query(sql, params, (rs, row) -> new FollowedOrder(rs.getObject("id", UUID.class),
                 rs.getString("order_number"), rs.getObject("customer_id", UUID.class),
                 rs.getObject("shipping_warehouse_id", UUID.class), rs.getString("status")));

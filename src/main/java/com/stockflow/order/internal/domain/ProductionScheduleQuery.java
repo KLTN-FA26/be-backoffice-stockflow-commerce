@@ -33,22 +33,27 @@ public interface ProductionScheduleQuery {
     }
 
     /**
-     * The production orders still open (DRAFT to PARTIALLY_RECEIVED), by need-by day then code. Every filter null means
-     * "any"; {@code from} / {@code to} bound the need-by day, both included; {@code warehouses} not null: only those
-     * received at one of them (a warehouse-bound caller's).
+     * The production orders still open (DRAFT to PARTIALLY_RECEIVED), by need-by day then code, at most {@code limit}.
+     * Every filter null means "any"; {@code from} / {@code to} bound the need-by day, both included; {@code warehouses}
+     * not null: only those received at one of them (a warehouse-bound caller's); {@code alertsOnly}: only those with an
+     * open alert of their own or a DELIVERY_LATE on their batch.
      */
     List<ScheduledProduction> openProductionOrders(UUID producerId, UUID warehouseId, LocalDate from, LocalDate to,
-                                                   Collection<UUID> warehouses);
+                                                   Collection<UUID> warehouses, boolean alertsOnly, int limit);
 
     /** The expected completion day of each production order of the sales order that has one (17 §4.3 step 8). */
     Map<UUID, LocalDate> expectedCompletionDates(UUID salesOrderId);
 
     /**
-     * The orders in one of {@code statuses} with a signed contract, oldest signed first. {@code warehouseId} and
-     * {@code warehouses} as for {@link #openProductionOrders}, on the order's shipping warehouse (an order with none
-     * passes neither).
+     * The orders in one of {@code statuses} with a signed contract that may have a batch to show, by their earliest such
+     * batch's window, at most {@code limit}: a batch whose window starts within {@code from} / {@code to} (both
+     * included, null for open-ended; a batch with no window passes only when neither is given) and, with
+     * {@code alertsOnly}, that carries an open alert. {@code warehouseId} and {@code warehouses} as for
+     * {@link #openProductionOrders}, on the order's shipping warehouse (an order with none passes neither). A candidate
+     * set - whether a batch is short is counted afterwards - narrowed in SQL so that count runs for few orders.
      */
-    List<FollowedOrder> ordersIn(Collection<String> statuses, UUID warehouseId, Collection<UUID> warehouses);
+    List<FollowedOrder> ordersIn(Collection<String> statuses, UUID warehouseId, Collection<UUID> warehouses,
+                                 LocalDate from, LocalDate to, boolean alertsOnly, int limit);
 
     /** One page of alerts and how many there are in all. */
     record AlertPage(List<AlertView> items, long total) {

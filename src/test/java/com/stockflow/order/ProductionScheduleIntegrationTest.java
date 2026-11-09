@@ -660,6 +660,36 @@ class ProductionScheduleIntegrationTest {
     }
 
     @Test
+    @DisplayName("each list is cut at the limit, the most urgent kept, and says so; a limit out of range is refused")
+    void boundedByTheLimit() {
+        Warehouse own = warehouse();
+        UUID sooner = confirmedOrder(oneBatchIn(20), own);
+        UUID later = confirmedOrder(oneBatchIn(30), own);
+        ProductionOrder madeSooner = drawUp(confirmedOrder(oneBatchIn(25), own), 1);
+        drawUp(confirmedOrder(oneBatchIn(35), own), 1);
+
+        ProductionScheduleService.Schedule all = asSales(() -> schedule.schedule(null, own.id(), null, null, false, 10));
+        assertThat(all.truncated()).isFalse();
+        assertThat(all.shortBatches()).extracting(ShortBatch::salesOrderId).containsExactly(sooner, later);
+        assertThat(all.productionOrders()).hasSize(2);
+
+        ProductionScheduleService.Schedule cut = asSales(() -> schedule.schedule(null, own.id(), null, null, false, 1));
+        assertThat(cut.truncated()).isTrue();
+        assertThat(cut.shortBatches()).extracting(ShortBatch::salesOrderId).as("the earliest window kept")
+                .containsExactly(sooner);
+        assertThat(productionIds(cut)).as("the earliest need-by day kept").containsExactly(madeSooner.id());
+
+        assertThat(asSales(() -> schedule.schedule(null, own.id(), today.plusDays(26), null, false, 1)).shortBatches())
+                .as("candidates narrowed by the range before the limit").extracting(ShortBatch::salesOrderId)
+                .containsExactly(later);
+        assertThatThrownBy(() -> asSales(() -> schedule.schedule(null, own.id(), null, null, false, 0)))
+                .extracting(ProductionScheduleIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> asSales(() -> schedule.schedule(null, own.id(), null, null, false,
+                ProductionScheduleService.MAX_LIMIT + 1))).extracting(ProductionScheduleIntegrationTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
     @DisplayName("17 §4.2 step 5: an order released for its first batch is still followed - a later batch short and "
             + "uncovered keeps its PO_NEEDED, stays on the schedule, and may be drawn up")
     void followedPastRelease() {

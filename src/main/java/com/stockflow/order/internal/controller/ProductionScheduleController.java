@@ -90,7 +90,9 @@ class ProductionScheduleController {
     }
 
     @Schema(name = "ProductionSchedule")
-    record ScheduleResponse(List<EntryResponse> productionOrders, List<ShortBatchResponse> shortBatches) {
+    record ScheduleResponse(List<EntryResponse> productionOrders, List<ShortBatchResponse> shortBatches,
+                            @Schema(description = "a list was cut at the limit: narrow the filters to see the rest")
+                            boolean truncated) {
     }
 
     private final ProductionScheduleService schedule;
@@ -102,7 +104,8 @@ class ProductionScheduleController {
     @GetMapping
     @Operation(summary = "Open production orders by need-by day, and delivery batches still short with no production "
             + "order covering them; filters: producer, warehouse, a range of days (need-by day / window start), only "
-            + "what carries an open delay alert")
+            + "what carries an open delay alert; each list holds at most limit rows (default 100, at most 200), truncated "
+            + "says one was cut")
     @RequiresPermission(resource = OrderResources.PRODUCTION_SCHEDULE, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<ScheduleResponse> schedule(
             @RequestParam(required = false) UUID producerId,
@@ -110,10 +113,12 @@ class ProductionScheduleController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
             @RequestParam(defaultValue = "false") boolean alertsOnly,
+            @RequestParam(required = false) Integer limit,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        ProductionScheduleService.Schedule found = schedule.schedule(producerId, warehouseId, from, to, alertsOnly);
+        ProductionScheduleService.Schedule found = schedule.schedule(producerId, warehouseId, from, to, alertsOnly,
+                limit == null ? ProductionScheduleService.DEFAULT_LIMIT : limit);
         return ApiResponse.ok(new ScheduleResponse(found.productionOrders().stream().map(EntryResponse::of).toList(),
-                found.shortBatches().stream().map(ShortBatchResponse::of).toList()));
+                found.shortBatches().stream().map(ShortBatchResponse::of).toList(), found.truncated()));
     }
 }
