@@ -87,6 +87,17 @@ public class ProductionOrderService {
     private static final SortWhitelist SORT = SortWhitelist.of("createdAt", "needByDate", "code", "status")
             .withDefault("createdAt", Sort.Direction.DESC);
 
+    /**
+     * The orders a production order may be drawn up for (17 §4.3 step 6, §4.2 step 5): confirmed, and - for an order of
+     * several batches - on after it was released for its first batch, while later batches are still short ("lập dần
+     * theo từng đợt"), and AWAITING_STOCK (4A-6): an order waiting for stock has one production order sent and may need
+     * more - another batch, or what a production order closed short no longer brings (17 §4.4 step 16). Not an order
+     * on hold: what it is made for waits until the hold is resolved.
+     */
+    static final Set<OrderStatus> PRODUCIBLE = java.util.Collections.unmodifiableSet(java.util.EnumSet.of(
+            OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
+            OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED));
+
     /** A production order and its history of status, for display. */
     public record Detail(ProductionOrder order, List<ProductionOrderRepository.HistoryEntry> history) {
     }
@@ -430,6 +441,16 @@ public class ProductionOrderService {
      * what remains without it).
      */
     private Map<UUID, Integer> lacking(Order order, List<DeliveryBatch> schedule, DeliveryBatch batch, UUID excluding) {
+        return lackingPerBatch(order, schedule, excluding).getOrDefault(batch.seq(), new LinkedHashMap<>());
+    }
+
+    /**
+     * {@link #lacking(Order, List, DeliveryBatch, UUID)} for every batch at once, by batch number: one read of the
+     * production orders and one of the coverage for the whole order, where asking batch by batch read both again for
+     * each batch.
+     */
+    private Map<Integer, Map<UUID, Integer>> lackingPerBatch(Order order, List<DeliveryBatch> schedule,
+                                                             UUID excluding) {
         Map<UUID, Integer> seqOf = new HashMap<>();
         schedule.forEach(b -> seqOf.put(b.id(), b.seq()));
         Map<Integer, Map<UUID, Integer>> coming = new HashMap<>();
@@ -444,19 +465,15 @@ public class ProductionOrderService {
         }
         ShippingWarehouseService.Coverage coverage = shippingWarehouses.coverage(order.id().value());
         Map<UUID, Integer> carried = new HashMap<>();
-        Map<UUID, Integer> lacking = new LinkedHashMap<>();
+        Map<Integer, Map<UUID, Integer>> lacking = new LinkedHashMap<>();
         for (ShippingWarehouseService.BatchCoverage covered : coverage.batches().stream()
                 .sorted(Comparator.comparingInt(ShippingWarehouseService.BatchCoverage::seq)).toList()) {
-            if (covered.seq() > batch.seq()) {
-                break;
-            }
             Map<UUID, Integer> here = coming.getOrDefault(covered.seq(), Map.of());
+            Map<UUID, Integer> lines = lacking.computeIfAbsent(covered.seq(), seq -> new LinkedHashMap<>());
             for (ShippingWarehouseService.LineCoverage line : covered.lines()) {
                 int arriving = carried.getOrDefault(line.lineId(), 0) + here.getOrDefault(line.lineId(), 0);
                 carried.put(line.lineId(), Math.max(0, arriving - line.shortCartons()));
-                if (covered.seq() == batch.seq()) {
-                    lacking.merge(line.lineId(), Math.max(0, line.shortCartons() - arriving), Integer::sum);
-                }
+                lines.merge(line.lineId(), Math.max(0, line.shortCartons() - arriving), Integer::sum);
             }
         }
         return lacking;
@@ -479,15 +496,12 @@ public class ProductionOrderService {
                         + "its delivery batch is gone").formatted(production.code())));
     }
 
-    /**
-     * CONFIRMED, or AWAITING_STOCK (4A-6): an order waiting for stock has one production order sent and may need more -
-     * another batch, or what a production order closed short no longer brings (17 §4.4 step 16).
-     */
+    /** {@link #PRODUCIBLE}, of a contract, with its shipping warehouse chosen. */
     private static void requireProducible(Order order) {
-        if (!order.paidByContract()
-                || order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.AWAITING_STOCK) {
+        if (!order.paidByContract() || !PRODUCIBLE.contains(order.status())) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s is %s: production orders are "
-                    + "drawn up for a confirmed order of a contract").formatted(order.orderNumber(), order.status()));
+                    + "drawn up for a confirmed order of a contract still owing batches").formatted(order.orderNumber(),
+                    order.status()));
         }
         if (order.shippingWarehouseId() == null) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s has no shipping warehouse: "
@@ -558,5 +572,41 @@ public class ProductionOrderService {
     public List<ProductionOrder> ofSalesOrder(UUID salesOrderId) {
         return productionOrders.ofSalesOrder(salesOrderId).stream().filter(this::visible)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Per delivery batch of the order's contract (by batch id), the cartons each line still lacks once held stock and
+     * every open production order are counted - what a production order would be drawn up for (4A-7: the batches the
+     * production schedule lists as short, and PO_NEEDED). Empty for an order with no contract. Not scoped: the caller
+     * decides who sees which order.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, Map<UUID, Integer>> lackingByBatch(UUID salesOrderId) {
+        Shortage shortage = shortage(salesOrderId);
+        return shortage == null ? new LinkedHashMap<>() : shortage.lackingByBatch();
+    }
+
+    /** An order of a contract, its live schedule, and per batch (by id) the cartons each line still lacks. */
+    public record Shortage(Order order, List<DeliveryBatch> schedule, Map<UUID, Map<UUID, Integer>> lackingByBatch) {
+    }
+
+    /**
+     * {@link #lackingByBatch} with the order and schedule it was counted from, so a caller listing many orders (the
+     * production schedule) reads each once. Null for an order that is gone or has no live contract.
+     */
+    @Transactional(readOnly = true)
+    public Shortage shortage(UUID salesOrderId) {
+        Order order = orders.findById(new OrderId(salesOrderId)).orElse(null);
+        SalesContract contract = contracts.findLiveByOrderId(salesOrderId).orElse(null);
+        if (order == null || contract == null || !order.paidByContract()) {
+            return null;
+        }
+        Map<Integer, Map<UUID, Integer>> perSeq = lackingPerBatch(order, contract.schedule(), null);
+        Map<UUID, Map<UUID, Integer>> lacking = new LinkedHashMap<>();
+        for (DeliveryBatch batch : contract.schedule().stream().sorted(Comparator.comparingInt(DeliveryBatch::seq))
+                .toList()) {
+            lacking.put(batch.id(), perSeq.getOrDefault(batch.seq(), new LinkedHashMap<>()));
+        }
+        return new Shortage(order, contract.schedule(), lacking);
     }
 }

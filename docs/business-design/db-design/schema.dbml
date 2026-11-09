@@ -545,6 +545,13 @@ Enum ordering.customer_order_status {
   CLOSED
 }
 
+Enum ordering.delay_alert_type {
+  AT_RISK
+  PRODUCTION_LATE
+  PO_NEEDED
+  DELIVERY_LATE
+}
+
 Enum ordering.order_cancellation_request_reason_code {
   CUSTOMER_REQUEST
   PAYMENT_NOT_RECEIVED
@@ -2802,6 +2809,17 @@ Table ordering.customer_order [headercolor: #C0392B] {
   shipping_warehouse_chosen_by  uuid
 }
 
+Table ordering.delay_alert [headercolor: #C0392B] {
+  id                  uuid [pk]
+  type                ordering.delay_alert_type [not null]
+  production_order_id uuid
+  delivery_batch_id   uuid
+  subject_id          uuid [note: 'generated: COALESCE(production_order_id, delivery_batch_id)']
+  sales_order_id      uuid [not null]
+  opened_at           timestamptz [not null]
+  closed_at           timestamptz
+}
+
 Table ordering.delivery_batch [headercolor: #C0392B] {
   id           uuid [pk]
   contract_id  uuid [not null]
@@ -3048,6 +3066,7 @@ Table ordering.production_order [headercolor: #C0392B] {
   created_by                 varchar(100)
   last_modified_at           timestamptz
   last_modified_by           varchar(100)
+  expected_completion_date   date
 }
 
 Table ordering.production_order_line [headercolor: #C0392B] {
@@ -5388,6 +5407,9 @@ Ref: ordering.customer_order.replaces_return_request_id > ordering.return_reques
 Ref: ordering.customer_order.shipping_warehouse_chosen_by > identity.app_user.id
 Ref: ordering.customer_order.shipping_warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: ordering.customer_order.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.delay_alert.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
+Ref: ordering.delay_alert.production_order_id > ordering.production_order.id
+Ref: ordering.delay_alert.sales_order_id > ordering.customer_order.id
 Ref: ordering.delivery_batch.contract_id > ordering.sales_contract.id [delete: cascade]
 Ref: ordering.delivery_batch_line.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
 Ref: ordering.delivery_batch_line.order_line_id > ordering.order_line.id
@@ -5774,6 +5796,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.cart_line
   ordering.contract_payment_installment
   ordering.customer_order
+  ordering.delay_alert
   ordering.delivery_batch
   ordering.delivery_batch_line
   ordering.order_cancellation_request

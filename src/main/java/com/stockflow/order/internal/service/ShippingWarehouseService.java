@@ -31,6 +31,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -357,7 +358,7 @@ public class ShippingWarehouseService {
     }
 
     private Coverage coverageOf(Order order, String warehouseCode) {
-        Map<UUID, Integer> held = heldUnitsByLine(order);
+        Map<UUID, Integer> held = securedUnitsByLine(order);
         List<OrderLine> lines = cartonLines(order);
         Map<UUID, Integer> heldCartons = new HashMap<>();
         List<LineCoverage> perLine = new ArrayList<>();
@@ -393,18 +394,31 @@ public class ShippingWarehouseService {
 
     /** Units held for each line: its reservation ids still HELD (holds at the warehouse, or allocations after release). */
     private Map<UUID, Integer> heldUnitsByLine(Order order) {
+        return unitsByLine(order, EnumSet.of(HoldView.Status.HELD));
+    }
+
+    /**
+     * Units each line no longer lacks: held, or already picked for it (CONSUMED). The coverage counts both - goods picked
+     * for batch 1 of an order released batch by batch are no longer held, but batch 1 does not lack them, and counting
+     * them as short would ask for production of what is already on its way to the customer (4A-7 review).
+     */
+    private Map<UUID, Integer> securedUnitsByLine(Order order) {
+        return unitsByLine(order, EnumSet.of(HoldView.Status.HELD, HoldView.Status.CONSUMED));
+    }
+
+    private Map<UUID, Integer> unitsByLine(Order order, Set<HoldView.Status> counted) {
         Map<UUID, UUID> lineOf = new HashMap<>();
         order.lines().forEach(line -> line.reservationIds().forEach(id -> lineOf.put(id, line.id())));
-        Map<UUID, Integer> held = new HashMap<>();
+        Map<UUID, Integer> units = new HashMap<>();
         if (lineOf.isEmpty()) {
-            return held;
+            return units;
         }
         for (HoldView hold : inventory.holds(lineOf.keySet())) {
-            if (hold.status() == HoldView.Status.HELD) {
-                held.merge(lineOf.get(hold.reservationId()), hold.quantity(), Integer::sum);
+            if (counted.contains(hold.status())) {
+                units.merge(lineOf.get(hold.reservationId()), hold.quantity(), Integer::sum);
             }
         }
-        return held;
+        return units;
     }
 
     /** The order's lines counted in cartons - every line of an order made from a quote (4B-2). */
