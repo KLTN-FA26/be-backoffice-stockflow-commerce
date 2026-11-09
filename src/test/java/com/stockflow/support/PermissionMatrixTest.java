@@ -333,6 +333,14 @@ class PermissionMatrixTest {
             Map.entry("production-orders:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("production-orders:READ", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER,
                     Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // 4A-7, kltn-docs 17 §4.12, BR-30: the schedule is read by those who follow production and the warehouse
+            // manager (their warehouses); the order's delay flags by those who deliver, not the coordinator.
+            Map.entry("production-schedule:READ", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER,
+                    Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("production-schedule:VIEW_PAGE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER,
+                    Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("delay-alerts:READ", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             // 4A-1, kltn-docs 17 §4.3 and 00 §2.1 (2026-11-07): the Production Coordinator keeps the producers.
             Map.entry("sales-producers:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-producers:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),

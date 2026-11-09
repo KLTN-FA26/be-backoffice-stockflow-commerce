@@ -6,10 +6,12 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
+import com.stockflow.order.internal.domain.ProductionOrderSaved;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.entity.ProductionOrderJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -32,16 +34,22 @@ import java.util.stream.Collectors;
  * {@link ProductionOrderRepository} and {@link ProductionOrderSearch} over {@code ordering.production_order}, its lines
  * and its history. A lock refreshes what it locked: a production order already in the persistence context would
  * otherwise come back as read before the lock (CLAUDE.md §4).
+ *
+ * <p>Every save publishes a {@link ProductionOrderSaved} (4A-7): here, where every path writing a production order
+ * passes, so its sales order's delay alerts are recomputed whichever operation changed it.</p>
  */
 @Repository
 class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, ProductionOrderSearch {
 
     private final ProductionOrderJpaRepository jpa;
     private final EntityManager entityManager;
+    private final ApplicationEventPublisher events;
 
-    ProductionOrderRepositoryAdapter(ProductionOrderJpaRepository jpa, EntityManager entityManager) {
+    ProductionOrderRepositoryAdapter(ProductionOrderJpaRepository jpa, EntityManager entityManager,
+                                     ApplicationEventPublisher events) {
         this.jpa = jpa;
         this.entityManager = entityManager;
+        this.events = events;
     }
 
     @Override
@@ -137,6 +145,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                     .setParameter("at", change.at())
                     .executeUpdate();
         }
+        events.publishEvent(new ProductionOrderSaved(order.id(), order.salesOrderId()));
         return toDomain(saved, linesOf(List.of(order.id())).getOrDefault(order.id(), List.of()));
     }
 

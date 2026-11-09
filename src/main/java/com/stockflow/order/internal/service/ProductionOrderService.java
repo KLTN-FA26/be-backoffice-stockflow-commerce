@@ -417,4 +417,25 @@ public class ProductionOrderService {
         return productionOrders.ofSalesOrder(salesOrderId).stream().filter(this::visible)
                 .collect(Collectors.toList());
     }
+
+    /**
+     * Per delivery batch of the order's contract (by batch id), the cartons each line still lacks once held stock and
+     * every open production order are counted - what a production order would be drawn up for (4A-7: the batches the
+     * production schedule lists as short, and PO_NEEDED). Empty for an order with no contract. Not scoped: the caller
+     * decides who sees which order.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, Map<UUID, Integer>> lackingByBatch(UUID salesOrderId) {
+        Order order = orders.findById(new OrderId(salesOrderId)).orElse(null);
+        SalesContract contract = contracts.findLiveByOrderId(salesOrderId).orElse(null);
+        Map<UUID, Map<UUID, Integer>> lacking = new LinkedHashMap<>();
+        if (order == null || contract == null || !order.paidByContract()) {
+            return lacking;
+        }
+        for (DeliveryBatch batch : contract.schedule().stream().sorted(Comparator.comparingInt(DeliveryBatch::seq))
+                .toList()) {
+            lacking.put(batch.id(), lacking(order, contract.schedule(), batch, null));
+        }
+        return lacking;
+    }
 }
