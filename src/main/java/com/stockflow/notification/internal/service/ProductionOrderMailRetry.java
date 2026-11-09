@@ -24,6 +24,10 @@ import java.util.List;
  * page at a time ({@link PublicationRedelivery}, the purchase-order retry's loop, QD-7). A message is tried at most five
  * times ({@link RecordedDelivery#RETRIED_FAILURES}); the fifth failure is final and the publication completes.
  *
+ * <p>The warehouse managers' notice of the same {@code ProductionOrderSent}
+ * ({@link ProductionOrderArrivalNotificationListener}) is retried here too: it has no delivery log, and its inbox
+ * dedupe key makes a second delivery tell nobody twice.</p>
+ *
  * <p>The position in each backlog is kept in memory: it is fairness, not state, and a restart starts from the oldest
  * again. One instance runs it at a time ({@code @SchedulerLock}).</p>
  */
@@ -33,8 +37,9 @@ class ProductionOrderMailRetry {
     private static final Logger log = LoggerFactory.getLogger(ProductionOrderMailRetry.class);
 
     /**
-     * Publications per kind and run. Each is handed to the listener's own thread and holds a connection while it sends,
-     * so a run asks for at most three times this many at once, well inside the connection pool.
+     * Publications per route and run. Each is handed to the listener's async executor and holds a connection while it
+     * runs; a run queues at most four times this many (four routes), and the executor's core pool (8 threads,
+     * {@code spring.task.execution}) bounds how many hold a connection at once.
      */
     static final int PAGE = 5;
 
@@ -47,7 +52,7 @@ class ProductionOrderMailRetry {
     private final List<PublicationRedelivery<?>> routes;
 
     ProductionOrderMailRetry(PendingPublicationReader publications, EventSerializer serializer, Clock clock,
-                             ProductionOrderMailListener listener) {
+                             ProductionOrderMailListener listener, ProductionOrderArrivalNotificationListener arrivals) {
         this.publications = publications;
         this.serializer = serializer;
         this.clock = clock;
@@ -59,7 +64,10 @@ class ProductionOrderMailRetry {
                         (ProductionOrderSampleApproved event) -> listener.on(event),
                         PublicationRedelivery.Cursor.inMemory()),
                 new PublicationRedelivery<>(ProductionOrderStopped.class, type, "on",
-                        (ProductionOrderStopped event) -> listener.on(event), PublicationRedelivery.Cursor.inMemory()));
+                        (ProductionOrderStopped event) -> listener.on(event), PublicationRedelivery.Cursor.inMemory()),
+                new PublicationRedelivery<>(ProductionOrderSent.class, ProductionOrderArrivalNotificationListener.class,
+                        "on", (ProductionOrderSent event) -> arrivals.on(event),
+                        PublicationRedelivery.Cursor.inMemory()));
     }
 
     @Scheduled(fixedDelayString = "${stockflow.notification.production-order-retry-interval:PT1M}",

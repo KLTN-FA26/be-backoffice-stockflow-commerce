@@ -28,12 +28,16 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * The retry of messages to producers (4A-3): each incomplete publication of the three handlers is handed back to its
- * handler, through the shared loop of the purchase-order retry (QD-7); one instance at a time.
+ * The retry of messages to producers (4A-3): each incomplete publication of the three handlers - and of the warehouse
+ * managers' notice - is handed back to its handler, through the shared loop of the purchase-order retry (QD-7); one
+ * instance at a time.
  */
 class ProductionOrderMailRetryTest {
 
     private static final Instant NOW = Instant.parse("2026-11-10T03:00:00Z");
+
+    private final ProductionOrderArrivalNotificationListener arrivals =
+            mock(ProductionOrderArrivalNotificationListener.class);
 
     @Test
     @DisplayName("every pending message, of every kind, goes back to its handler")
@@ -55,13 +59,14 @@ class ProductionOrderMailRetryTest {
         when(serializer.deserialize("sample", ProductionOrderSampleApproved.class)).thenReturn(sample);
         when(serializer.deserialize("stopped", ProductionOrderStopped.class)).thenReturn(stopped);
 
-        new ProductionOrderMailRetry(reader, serializer, Clock.fixed(NOW, ZoneOffset.UTC), listener).retry();
+        new ProductionOrderMailRetry(reader, serializer, Clock.fixed(NOW, ZoneOffset.UTC), listener, arrivals).retry();
 
         verify(listener).on(sent);
         verify(listener).on(sample);
         verify(listener).on(stopped);
-        verify(reader).page(eq(ProductionOrderSent.class.getName()), anyString(), eq(NOW.minusSeconds(60)),
-                nullable(UUID.class), eq(ProductionOrderMailRetry.PAGE));
+        verify(arrivals).on(sent);
+        verify(reader, org.mockito.Mockito.times(2)).page(eq(ProductionOrderSent.class.getName()), anyString(),
+                eq(NOW.minusSeconds(60)), nullable(UUID.class), eq(ProductionOrderMailRetry.PAGE));
     }
 
     @Test
@@ -71,7 +76,7 @@ class ProductionOrderMailRetryTest {
         var listener = mock(ProductionOrderMailListener.class);
         when(reader.page(anyString(), anyString(), any(), nullable(UUID.class), eq(ProductionOrderMailRetry.PAGE))).thenReturn(List.of());
 
-        new ProductionOrderMailRetry(reader, mock(EventSerializer.class), Clock.systemUTC(), listener).retry();
+        new ProductionOrderMailRetry(reader, mock(EventSerializer.class), Clock.systemUTC(), listener, arrivals).retry();
 
         verifyNoInteractions(listener);
     }
