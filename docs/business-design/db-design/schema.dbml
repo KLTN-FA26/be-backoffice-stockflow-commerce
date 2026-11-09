@@ -336,17 +336,6 @@ Enum warehouse.warehouse_status {
   INACTIVE
 }
 
-Enum procurement.goods_receipt_photos_stage {
-  RECEIPT
-  QC
-}
-
-Enum procurement.goods_receipts_approval_decision {
-  APPROVED
-  EXCESS_REJECTED
-  REJECTED
-}
-
 Enum procurement.goods_receipts_receipt_type {
   PURCHASE
   PRODUCTION
@@ -354,146 +343,10 @@ Enum procurement.goods_receipts_receipt_type {
 
 Enum procurement.goods_receipts_status {
   DRAFT
-  PENDING_APPROVAL
   CONFIRMED
   IN_PUTAWAY
   CLOSED
   CANCELLED
-}
-
-Enum procurement.po_delivery_decision_channel {
-  EMAIL
-  API
-}
-
-Enum procurement.purchase_order_approvals_decision {
-  APPROVED
-  AUTO_APPROVED
-  REJECTED
-  WITHDRAWN
-}
-
-Enum procurement.purchase_order_attachments_category {
-  QUOTATION
-  CONTRACT
-  SUPPLIER_CONFIRMATION
-  DELIVERY_NOTE
-  OTHER
-}
-
-Enum procurement.purchase_order_events_action {
-  CREATED
-  SUBMITTED
-  APPROVED
-  AUTO_APPROVED
-  REJECTED
-  WITHDRAWN
-  CONFIRMED
-  REVISED
-  PARTIALLY_RECEIVED
-  RECEIVED
-  CLOSED
-  SHORT_CLOSED
-  FORCE_CLOSED
-  CANCELLED
-}
-
-Enum procurement.purchase_order_lines_status {
-  OPEN
-  PARTIALLY_RECEIVED
-  RECEIVED
-  CLOSED
-  CANCELLED
-  WITHDRAWN
-}
-
-Enum procurement.purchase_order_revisions_kind {
-  INITIAL
-  AMENDMENT
-}
-
-Enum procurement.purchase_orders_close_kind {
-  NORMAL
-  SHORT_CLOSE
-  FORCE_CLOSE
-}
-
-Enum procurement.purchase_orders_po_type {
-  STANDARD
-  SUBCONTRACT
-}
-
-Enum procurement.purchase_orders_status {
-  DRAFT
-  PENDING_APPROVAL
-  APPROVED
-  CONFIRMED
-  PARTIALLY_RECEIVED
-  RECEIVED
-  CLOSED
-  CANCELLED
-}
-
-Enum procurement.purchase_orders_supplier_confirmation_status {
-  NOT_SENT
-  PENDING
-  CONFIRMED
-  REJECTED
-}
-
-Enum procurement.replenishment_proposals_origin {
-  MRP
-  MANUAL
-}
-
-Enum procurement.replenishment_proposals_status {
-  DRAFT_PROPOSAL
-  REVIEWED
-  CONVERTED
-  REJECTED
-}
-
-Enum procurement.subcontract_settlement_status {
-  AWAITING_APPROVAL
-  FINAL
-}
-
-Enum procurement.supplier_addresses_type {
-  OFFICE
-  WAREHOUSE
-  BILLING
-  RETURN
-}
-
-Enum procurement.supplier_invoice_variances_kind {
-  OVER_INVOICED
-  OVER_INVOICED_RECEIPT
-  AWAITING_QC
-  SETTLEMENT_PENDING
-  PRICE
-  TAX_RATE
-  ABOVE_SETTLEMENT
-}
-
-Enum procurement.supplier_invoices_status {
-  DRAFT
-  MATCHED
-  EXCEPTION
-  DISPUTED
-  APPROVED_FOR_PAYMENT
-  PAID
-  CANCELLED
-}
-
-Enum procurement.suppliers_communication_channel {
-  EMAIL
-  API
-}
-
-Enum procurement.suppliers_status {
-  ACTIVE
-  INACTIVE
-  BLACKLISTED
 }
 
 Enum ordering.cart_status {
@@ -1622,43 +1475,38 @@ Table inventory.cycle_count_line [headercolor: #3E7C4A] {
 }
 
 Table inventory.inventory_items [headercolor: #3E7C4A] {
-  id                          uuid [pk]
-  sku                         varchar(64) [not null, unique]
-  unit_of_measure             varchar(16) [not null, default: 'EACH']
-  barcode                     varchar(64)
-  weight_kg                   decimal(10,3)
-  length_cm                   decimal(10,2)
-  width_cm                    decimal(10,2)
-  height_cm                   decimal(10,2)
-  package_weight_kg           decimal(10,3)
-  package_length_cm           decimal(10,2)
-  package_width_cm            decimal(10,2)
-  package_height_cm           decimal(10,2)
-  package_count               int [not null, default: 1]
-  pack_size                   int [not null, default: 1]
-  storage_class               inventory.inventory_items_storage_class [not null, default: 'NORMAL']
-  lot_tracked                 boolean [not null, default: false]
-  expiry_tracked              boolean [not null, default: false]
-  serial_tracked              boolean [not null, default: false]
-  max_qty                     int
-  reorder_point               int
-  default_supplier_id         uuid
-  requires_adult_signature    boolean [not null, default: false]
-  shipping_restriction_note   varchar(500)
-  version                     bigint [not null, default: 0]
-  created_at                  timestamptz [not null, default: `now()`]
-  created_by                  varchar(100)
-  last_modified_at            timestamptz
-  last_modified_by            varchar(100)
-  safety_stock                int
-  removal_strategy            inventory.inventory_items_removal_strategy [not null, default: 'FEFO']
-  max_shelf_life_days         int
-  policy_configured           boolean [not null, default: false]
-  rotatable                   boolean [not null, default: true]
-  reference_purchase_price    decimal(18,2)
-  reference_purchase_currency varchar(3)
-  lead_time_days              int
-  moq                         int
+  id                        uuid [pk]
+  sku                       varchar(64) [not null, unique]
+  unit_of_measure           varchar(16) [not null, default: 'EACH']
+  barcode                   varchar(64)
+  weight_kg                 decimal(10,3)
+  length_cm                 decimal(10,2)
+  width_cm                  decimal(10,2)
+  height_cm                 decimal(10,2)
+  package_weight_kg         decimal(10,3)
+  package_length_cm         decimal(10,2)
+  package_width_cm          decimal(10,2)
+  package_height_cm         decimal(10,2)
+  package_count             int [not null, default: 1]
+  pack_size                 int [not null, default: 1]
+  storage_class             inventory.inventory_items_storage_class [not null, default: 'NORMAL']
+  lot_tracked               boolean [not null, default: false]
+  expiry_tracked            boolean [not null, default: false]
+  serial_tracked            boolean [not null, default: false]
+  max_qty                   int
+  reorder_point             int
+  requires_adult_signature  boolean [not null, default: false]
+  shipping_restriction_note varchar(500)
+  version                   bigint [not null, default: 0]
+  created_at                timestamptz [not null, default: `now()`]
+  created_by                varchar(100)
+  last_modified_at          timestamptz
+  last_modified_by          varchar(100)
+  safety_stock              int
+  removal_strategy          inventory.inventory_items_removal_strategy [not null, default: 'FEFO']
+  max_shelf_life_days       int
+  policy_configured         boolean [not null, default: false]
+  rotatable                 boolean [not null, default: true]
 }
 
 Table inventory.stock_adjustment [headercolor: #3E7C4A] {
@@ -2114,18 +1962,6 @@ Table warehouse.storage_location [headercolor: #8E6C3A] {
   last_modified_by  varchar(100)
 }
 
-Table warehouse.subcontractor_site [headercolor: #8E6C3A] {
-  id           uuid [pk]
-  warehouse_id uuid [not null]
-  supplier_id  uuid [not null]
-  location_id  uuid [not null, unique]
-  created_at   timestamptz [not null, default: `now()`]
-  created_by   varchar(100)
-  indexes {
-    (warehouse_id, supplier_id) [unique]
-  }
-}
-
 Table warehouse.warehouse [headercolor: #8E6C3A] {
   id               uuid [pk]
   name             varchar(200) [not null]
@@ -2162,28 +1998,13 @@ Table warehouse.zone [headercolor: #8E6C3A] {
 // SCHEMA: procurement
 // =============================================================================
 
-Table procurement.approval_limits [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  role_id          uuid [not null]
-  currency         varchar(3) [not null, default: 'VND']
-  max_po_amount    decimal(18,2) [not null]
-  effective_from   date [not null]
-  effective_to     date
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
 Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
   id                       uuid [pk]
   receipt_id               uuid [not null]
-  po_line_id               uuid
   inventory_item_id        uuid [not null]
   location_id              uuid [not null]
   received_qty             decimal(18,3) [not null]
-  lot_number               varchar(64)
+  lot_number               varchar(64) [not null]
   expiry_date              date
   note                     varchar(255)
   version                  bigint [not null, default: 0]
@@ -2191,7 +2012,7 @@ Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
   created_by               varchar(100)
   last_modified_at         timestamptz
   last_modified_by         varchar(100)
-  uom_conversion_id        uuid
+  uom_conversion_id        uuid [not null]
   production_order_line_id uuid
   indexes {
     (receipt_id, production_order_line_id) [unique]
@@ -2202,7 +2023,7 @@ Table procurement.goods_receipt_photos [headercolor: #7D5BA6] {
   id               uuid [pk]
   receipt_id       uuid [not null]
   receipt_line_id  uuid
-  stage            procurement.goods_receipt_photos_stage [not null]
+  stage            varchar(16) [not null]
   storage_key      varchar(512) [not null, unique]
   original_name    varchar(255) [not null]
   content_type     varchar(32) [not null]
@@ -2217,475 +2038,24 @@ Table procurement.goods_receipt_photos [headercolor: #7D5BA6] {
 }
 
 Table procurement.goods_receipts [headercolor: #7D5BA6] {
-  id                    uuid [pk]
-  receipt_number        varchar(30) [not null, unique]
-  po_id                 uuid
-  po_revision_id        uuid
-  warehouse_id          uuid [not null]
-  status                procurement.goods_receipts_status [not null, default: 'DRAFT']
-  received_at           timestamptz [not null]
-  received_by           uuid [not null]
-  confirmed_at          timestamptz
-  confirmed_by          uuid
-  delivery_note         varchar(100)
-  note                  text
-  version               bigint [not null, default: 0]
-  created_at            timestamptz [not null, default: `now()`]
-  created_by            varchar(100)
-  last_modified_at      timestamptz
-  last_modified_by      varchar(100)
-  closed_at             timestamptz
-  approval_requested_at timestamptz
-  approval_requested_by uuid
-  approval_decision     procurement.goods_receipts_approval_decision
-  approval_decided_at   timestamptz
-  approval_decided_by   uuid
-  approval_reason       varchar(500)
-  supplier_id           uuid
-  blind_reason          varchar(500)
-  referenced_po_id      uuid
-  receipt_type          procurement.goods_receipts_receipt_type [not null, default: 'PURCHASE']
-  production_order_id   uuid
-}
-
-Table procurement.po_delivery_decision [headercolor: #7D5BA6] {
-  id                   uuid [pk]
-  purchase_order_id    uuid [not null]
-  generation           int [not null]
-  previous_expected_at date
-  expected_at          date
-  reason               varchar(1000)
-  reconciled           boolean [not null]
-  acknowledge_past_due boolean [not null]
-  channel              procurement.po_delivery_decision_channel [not null]
-  recipient            varchar(500) [not null]
-  payload_snapshot     text
-  actor                varchar(255) [not null]
-  requested_at         timestamptz [not null]
-  indexes {
-    (purchase_order_id, generation) [unique]
-  }
-}
-
-Table procurement.po_number_sequence [headercolor: #7D5BA6] {
-  sequence_date date [pk]
-  last_value    bigint [not null, default: 0]
-}
-
-Table procurement.purchase_order_approvals [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  po_revision_id   uuid [not null]
-  step_no          int [not null, default: 1]
-  approver_id      uuid [not null]
-  decision         procurement.purchase_order_approvals_decision [not null]
-  decision_at      timestamptz [not null, default: `now()`]
-  reason           varchar(500)
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  limit_id         uuid
-  limit_amount     decimal(18,2)
-  limit_role_id    uuid
-  limit_holder_id  uuid
-  indexes {
-    (po_revision_id, step_no) [unique]
-  }
-}
-
-Table procurement.purchase_order_attachments [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  po_id            uuid [not null]
-  file_name        varchar(255) [not null]
-  file_url         text [not null]
-  file_type        varchar(20)
-  category         procurement.purchase_order_attachments_category [not null, default: 'OTHER']
-  file_size        int
-  uploaded_by      uuid [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table procurement.purchase_order_events [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  po_id            uuid [not null]
-  po_revision_id   uuid
-  action           procurement.purchase_order_events_action [not null]
-  actor_id         uuid
-  from_status      varchar(20)
-  to_status        varchar(20)
-  reason           varchar(500)
-  payload          jsonb
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table procurement.purchase_order_line_revisions [headercolor: #7D5BA6] {
-  id                   uuid [pk]
-  po_line_id           uuid [not null]
-  po_revision_id       uuid [not null]
-  inventory_item_id    uuid [not null]
-  uom                  varchar(20) [not null]
-  ordered_qty          decimal(18,3) [not null]
-  unit_price           decimal(18,2) [not null]
-  tax_rate             decimal(5,2) [not null]
-  discount_rate        decimal(5,2) [not null]
-  line_subtotal        decimal(18,2) [not null, default: 0]
-  line_discount_amount decimal(18,2) [not null, default: 0]
-  line_net             decimal(18,2) [not null, default: 0]
-  line_tax             decimal(18,2) [not null, default: 0]
-  line_total           decimal(18,2) [not null, default: 0]
-  note                 varchar(255)
-  version              bigint [not null, default: 0]
-  created_at           timestamptz [not null, default: `now()`]
-  created_by           varchar(100)
-  last_modified_at     timestamptz
-  last_modified_by     varchar(100)
-  uom_conversion_id    uuid
-  unit_qty             int
-  indexes {
-    (po_line_id, po_revision_id) [unique]
-  }
-}
-
-Table procurement.purchase_order_lines [headercolor: #7D5BA6] {
-  id                   uuid [pk]
-  po_id                uuid [not null]
-  po_revision_id       uuid
-  line_no              int [not null]
-  inventory_item_id    uuid [not null]
-  uom                  varchar(20) [not null, default: 'EACH']
-  ordered_qty          decimal(18,3) [not null]
-  unit_price           decimal(18,2) [not null]
-  tax_rate             decimal(5,2) [not null, default: 0]
-  discount_rate        decimal(5,2) [not null, default: 0]
-  line_subtotal        decimal(18,2) [not null, default: 0]
-  line_discount_amount decimal(18,2) [not null, default: 0]
-  line_net             decimal(18,2) [not null, default: 0]
-  line_tax             decimal(18,2) [not null, default: 0]
-  line_total           decimal(18,2) [not null, default: 0]
-  status               procurement.purchase_order_lines_status [not null, default: 'OPEN']
-  note                 varchar(255)
-  version              bigint [not null, default: 0]
-  created_at           timestamptz [not null, default: `now()`]
-  created_by           varchar(100)
-  last_modified_at     timestamptz
-  last_modified_by     varchar(100)
-  uom_conversion_id    uuid
-  unit_qty             int
-  indexes {
-    (po_id, line_no) [unique]
-  }
-}
-
-Table procurement.purchase_order_revisions [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  po_id            uuid [not null]
-  revision_no      bigint [not null]
-  kind             procurement.purchase_order_revisions_kind [not null, default: 'INITIAL']
-  snapshot_header  jsonb [not null]
-  change_summary   varchar(500)
-  changed_at       timestamptz [not null, default: `now()`]
-  changed_by       uuid [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  indexes {
-    (po_id, revision_no) [unique]
-  }
-}
-
-Table procurement.purchase_orders [headercolor: #7D5BA6] {
-  id                           uuid [pk]
-  po_number                    varchar(30) [not null, unique]
-  revision_no                  bigint [not null, default: 0]
-  status                       procurement.purchase_orders_status [not null, default: 'DRAFT']
-  supplier_id                  uuid [not null]
-  warehouse_id                 uuid [not null]
-  currency                     varchar(3) [not null]
-  order_date                   date [not null]
-  expected_date                date
-  payment_terms                varchar(50)
-  incoterms                    varchar(10)
-  subtotal                     decimal(18,2) [not null, default: 0]
-  discount_total               decimal(18,2) [not null, default: 0]
-  tax_total                    decimal(18,2) [not null, default: 0]
-  shipping_fee                 decimal(18,2) [not null, default: 0]
-  total_amount                 decimal(18,2) [not null, default: 0]
-  active_revision_id           uuid
-  pending_revision_id          uuid
-  source_proposal_id           uuid
-  note                         text
-  close_kind                   procurement.purchase_orders_close_kind
-  close_reason                 varchar(255)
-  cancel_reason                varchar(255)
-  submitted_at                 timestamptz
-  submitted_by                 uuid
-  approved_at                  timestamptz
-  approved_by                  uuid
-  confirmed_at                 timestamptz
-  confirmed_by                 uuid
-  closed_at                    timestamptz
-  closed_by                    uuid
-  version                      bigint [not null, default: 0]
-  created_at                   timestamptz [not null, default: `now()`]
-  created_by                   varchar(100)
-  last_modified_at             timestamptz
-  last_modified_by             varchar(100)
-  po_type                      procurement.purchase_orders_po_type [not null, default: 'STANDARD']
-  production_order_id          uuid
-  payment_term_days            int [not null, default: 30]
-  lead_time_days               int [not null, default: 7]
-  supplier_confirmation_status procurement.purchase_orders_supplier_confirmation_status [not null, default: 'NOT_SENT']
-  supplier_responded_at        timestamptz
-  supplier_reference           varchar(100)
-  supplier_response_note       varchar(1000)
-  auto_approved                boolean [not null, default: false]
-}
-
-Table procurement.replenishment_proposal_lines [headercolor: #7D5BA6] {
-  id                    uuid [pk]
-  proposal_id           uuid [not null]
-  inventory_item_id     uuid [not null]
-  on_hand_qty           decimal(18,3) [not null, default: 0]
-  on_order_qty          decimal(18,3) [not null, default: 0]
-  reserved_qty          decimal(18,3) [not null, default: 0]
-  reorder_point         decimal(18,3) [not null]
-  suggested_qty         decimal(18,3) [not null]
-  suggested_supplier_id uuid
-  converted             boolean [not null, default: false]
-  converted_po_id       uuid
-  converted_po_line_id  uuid
-  version               bigint [not null, default: 0]
-  created_at            timestamptz [not null, default: `now()`]
-  created_by            varchar(100)
-  last_modified_at      timestamptz
-  last_modified_by      varchar(100)
-  indexes {
-    (proposal_id, inventory_item_id) [unique]
-  }
-}
-
-Table procurement.replenishment_proposals [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  code             varchar(30) [not null, unique]
-  warehouse_id     uuid [not null]
-  status           procurement.replenishment_proposals_status [not null, default: 'DRAFT_PROPOSAL']
-  origin           procurement.replenishment_proposals_origin [not null, default: 'MRP']
-  run_date         date [not null]
-  reviewed_by      uuid
-  reviewed_at      timestamptz
-  converted_by     uuid
-  converted_at     timestamptz
-  note             text
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table procurement.subcontract_settlement [headercolor: #7D5BA6] {
-  po_id                   uuid [pk]
-  production_order_id     uuid [not null, unique]
-  status                  procurement.subcontract_settlement_status [not null]
-  currency                varchar(3) [not null]
-  unit_price              decimal(18,2) [not null]
-  received_quantity       int [not null]
-  passed_quantity         int [not null]
-  failed_quantity         int [not null]
-  payable_amount          decimal(18,2) [not null]
-  blanks_sent             int [not null]
-  blanks_used             int [not null]
-  blanks_returned         int [not null]
-  blanks_lost             int [not null]
-  tolerance_percent       decimal(5,2) [not null]
-  tolerance_blanks        int [not null]
-  excess_loss             int [not null]
-  deduction_per_blank     decimal(18,2)
-  deduction_amount        decimal(18,2) [not null, default: 0]
-  cancellation_fee        decimal(18,2) [not null, default: 0]
-  cancellation_fee_reason varchar(1000)
-  net_payable             decimal(18,2) [not null]
-  settled_at              timestamptz [not null]
-  settled_by              uuid
-  approved_at             timestamptz
-  approved_by             uuid
-  approval_note           varchar(1000)
-  version                 bigint [not null, default: 0]
-}
-
-Table procurement.supplier_addresses [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  supplier_id      uuid [not null]
-  type             procurement.supplier_addresses_type [not null]
-  line1            varchar(200) [not null]
-  line2            varchar(200)
-  ward             varchar(120)
-  ward_code        varchar(20)
-  province         varchar(120)
-  province_code    varchar(20)
-  country          varchar(2) [not null, default: 'VN']
-  is_default       boolean [not null, default: false]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table procurement.supplier_contacts [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  supplier_id      uuid [not null]
-  full_name        varchar(150) [not null]
-  phone            varchar(30)
-  email            varchar(150)
-  position         varchar(100)
-  is_primary       boolean [not null, default: false]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table procurement.supplier_invoice_lines [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  invoice_id       uuid [not null]
-  po_line_id       uuid [not null]
-  receipt_line_id  uuid
-  invoiced_qty     decimal(18,3) [not null]
-  unit_price       decimal(18,2) [not null]
-  tax_rate         decimal(5,2) [not null, default: 0]
-  line_total       decimal(18,2) [not null, default: 0]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table procurement.supplier_invoice_variances [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  invoice_id       uuid [not null]
-  invoice_line_id  uuid
-  po_id            uuid
-  kind             procurement.supplier_invoice_variances_kind [not null]
-  expected_value   decimal(18,3) [not null]
-  invoiced_value   decimal(18,3) [not null]
-  variance_amount  decimal(18,2) [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table procurement.supplier_invoices [headercolor: #7D5BA6] {
-  id                      uuid [pk]
-  invoice_number          varchar(64) [not null]
-  supplier_id             uuid [not null]
-  po_id                   uuid
-  status                  procurement.supplier_invoices_status [not null, default: 'DRAFT']
-  currency                varchar(3) [not null, default: 'VND']
-  invoice_date            date [not null]
-  due_date                date
-  subtotal                decimal(18,2) [not null, default: 0]
-  tax_total               decimal(18,2) [not null, default: 0]
-  total_amount            decimal(18,2) [not null, default: 0]
-  file_url                text
-  version                 bigint [not null, default: 0]
-  created_at              timestamptz [not null, default: `now()`]
-  created_by              varchar(100)
-  last_modified_at        timestamptz
-  last_modified_by        varchar(100)
-  received_by             uuid
-  note                    varchar(500)
-  file_name               varchar(255)
-  file_content_type       varchar(100)
-  matched_at              timestamptz
-  matched_by              uuid
-  price_tolerance_percent decimal(5,2)
-  voided_at               timestamptz
-  voided_by               uuid
-  void_reason             varchar(500)
-  indexes {
-    (supplier_id, invoice_number) [unique]
-  }
-}
-
-Table procurement.supplier_item_prices [headercolor: #7D5BA6] {
-  id               uuid [pk]
-  supplier_item_id uuid [not null]
-  unit_price       decimal(18,2) [not null]
-  currency         varchar(3) [not null, default: 'VND']
-  effective_from   timestamptz [not null, default: `now()`]
-  effective_to     timestamptz
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  indexes {
-    (supplier_item_id, effective_from) [unique]
-  }
-}
-
-Table procurement.supplier_items [headercolor: #7D5BA6] {
-  id                uuid [pk]
-  supplier_id       uuid [not null]
-  inventory_item_id uuid [not null]
-  supplier_sku_code varchar(50)
-  current_price     decimal(18,2) [not null]
-  currency          varchar(3) [not null, default: 'VND']
-  moq               int [not null, default: 1]
-  pack_size         int [not null, default: 1]
-  lead_time_days    int [default: 7]
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  indexes {
-    (supplier_id, inventory_item_id) [unique]
-  }
-}
-
-Table procurement.suppliers [headercolor: #7D5BA6] {
-  id                     uuid [pk]
-  code                   varchar(30) [not null, unique]
-  name                   varchar(200) [not null]
-  legal_name             varchar(200)
-  tax_id                 varchar(30)
-  status                 procurement.suppliers_status [not null, default: 'ACTIVE']
-  currency               varchar(3) [not null, default: 'VND']
-  payment_terms          varchar(50)
-  incoterms              varchar(10)
-  over_receipt_tolerance decimal(5,2)
-  lead_time_days         int [default: 7]
-  bank_account_name      varchar(200)
-  bank_account_number    varchar(50)
-  bank_name              varchar(150)
-  note                   text
-  version                bigint [not null, default: 0]
-  created_at             timestamptz [not null, default: `now()`]
-  created_by             varchar(100)
-  last_modified_at       timestamptz
-  last_modified_by       varchar(100)
-  is_print_subcontractor boolean [not null, default: false]
-  loss_tolerance_percent decimal(5,2) [not null, default: 2]
-  payment_term_days      int [not null, default: 30]
-  communication_channel  procurement.suppliers_communication_channel [not null, default: 'EMAIL']
-  api_endpoint           varchar(500)
+  id                  uuid [pk]
+  receipt_number      varchar(30) [not null, unique]
+  warehouse_id        uuid [not null]
+  status              procurement.goods_receipts_status [not null, default: 'DRAFT']
+  received_at         timestamptz [not null]
+  received_by         uuid [not null]
+  confirmed_at        timestamptz
+  confirmed_by        uuid
+  delivery_note       varchar(100)
+  note                text
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  closed_at           timestamptz
+  receipt_type        procurement.goods_receipts_receipt_type [not null]
+  production_order_id uuid
 }
 
 // =============================================================================
@@ -4855,18 +4225,6 @@ Table notification.delivery_log [headercolor: #A6763F] {
   provider_status_at  timestamptz
 }
 
-Table notification.po_delivery_control [headercolor: #A6763F] {
-  purchase_order_id      uuid [pk]
-  generation             int [not null, default: 0]
-  suppressed             boolean [not null, default: false]
-  cancellation_requested boolean [not null, default: false]
-}
-
-Table notification.po_retry_cursor [headercolor: #A6763F] {
-  id                  smallint [pk]
-  last_publication_id uuid
-}
-
 Table notification.preference [headercolor: #A6763F] {
   id               uuid [pk]
   user_id          uuid [not null]
@@ -5247,7 +4605,6 @@ Ref: inventory.cycle_count_line.cycle_count_id > inventory.cycle_count.id [delet
 Ref: inventory.cycle_count_line.location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.cycle_count_line.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.cycle_count_line.stock_package_id > inventory.stock_package.id [delete: restrict]
-Ref: inventory.inventory_items.default_supplier_id > procurement.suppliers.id [delete: set null]
 Ref: inventory.inventory_items.sku > product.variants.sku [delete: restrict]
 Ref: inventory.stock_adjustment.cycle_count_line_id > inventory.cycle_count_line.id [delete: restrict]
 Ref: inventory.stock_adjustment.decided_by > identity.app_user.id
@@ -5264,7 +4621,6 @@ Ref: inventory.stock_damage_disposition.decided_by > identity.app_user.id
 Ref: inventory.stock_damage_disposition.restore_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_damage_disposition.restored_stock_item_id > inventory.stock_item.id [delete: restrict]
 Ref: inventory.stock_damage_disposition.stock_adjustment_id > inventory.stock_adjustment.id [delete: restrict]
-Ref: inventory.stock_damage_disposition.supplier_id > procurement.suppliers.id [delete: restrict]
 Ref: inventory.stock_damage_photo.damage_report_id > inventory.stock_damage_report.id [delete: restrict]
 Ref: inventory.stock_damage_report.damage_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_damage_report.damaged_stock_item_id > inventory.stock_item.id [delete: restrict]
@@ -5288,9 +4644,7 @@ Ref: inventory.stock_item.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_item.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_lot.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: inventory.stock_lot.production_order_id > ordering.production_order.id [delete: restrict]
-Ref: inventory.stock_lot.purchase_order_id > procurement.purchase_orders.id [delete: restrict]
 Ref: inventory.stock_lot.sku > inventory.inventory_items.sku [delete: restrict]
-Ref: inventory.stock_lot.supplier_id > procurement.suppliers.id [delete: restrict]
 Ref: inventory.stock_lot.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: inventory.stock_movement.actor_id > identity.app_user.id
 Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.location_code [delete: restrict]
@@ -5332,84 +4686,19 @@ Ref: warehouse.shelf.zone_id > warehouse.zone.id
 Ref: warehouse.shelf_level.shelf_id > warehouse.shelf.id
 Ref: warehouse.slotting_rule.warehouse_id > warehouse.warehouse.id
 Ref: warehouse.storage_location.warehouse_id > warehouse.warehouse.id [delete: restrict]
-Ref: warehouse.subcontractor_site.location_id > warehouse.storage_location.id [delete: restrict]
-Ref: warehouse.subcontractor_site.supplier_id > procurement.suppliers.id [delete: restrict]
-Ref: warehouse.subcontractor_site.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: warehouse.zone.warehouse_id > warehouse.warehouse.id
-Ref: procurement.approval_limits.role_id > identity.app_role.id [delete: cascade]
 Ref: procurement.goods_receipt_lines.inventory_item_id > inventory.inventory_items.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.location_id > warehouse.storage_location.id [delete: restrict]
-Ref: procurement.goods_receipt_lines.po_line_id > procurement.purchase_order_lines.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.production_order_line_id > ordering.production_order_line.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.receipt_id > procurement.goods_receipts.id [delete: cascade]
 Ref: procurement.goods_receipt_lines.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: procurement.goods_receipt_photos.receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: procurement.goods_receipt_photos.receipt_line_id > procurement.goods_receipt_lines.id [delete: set null]
 Ref: procurement.goods_receipt_photos.taken_by > identity.app_user.id
-Ref: procurement.goods_receipts.approval_decided_by > identity.app_user.id
-Ref: procurement.goods_receipts.approval_requested_by > identity.app_user.id
 Ref: procurement.goods_receipts.confirmed_by > identity.app_user.id
-Ref: procurement.goods_receipts.po_id > procurement.purchase_orders.id [delete: restrict]
-Ref: procurement.goods_receipts.po_revision_id > procurement.purchase_order_revisions.id [delete: restrict]
 Ref: procurement.goods_receipts.production_order_id > ordering.production_order.id [delete: restrict]
 Ref: procurement.goods_receipts.received_by > identity.app_user.id
-Ref: procurement.goods_receipts.referenced_po_id > procurement.purchase_orders.id [delete: restrict]
-Ref: procurement.goods_receipts.supplier_id > procurement.suppliers.id [delete: restrict]
 Ref: procurement.goods_receipts.warehouse_id > warehouse.warehouse.id [delete: restrict]
-Ref: procurement.po_delivery_decision.purchase_order_id > procurement.purchase_orders.id [delete: cascade]
-Ref: procurement.purchase_order_approvals.approver_id > identity.app_user.id
-Ref: procurement.purchase_order_approvals.po_revision_id > procurement.purchase_order_revisions.id [delete: cascade]
-Ref: procurement.purchase_order_attachments.po_id > procurement.purchase_orders.id [delete: cascade]
-Ref: procurement.purchase_order_attachments.uploaded_by > identity.app_user.id
-Ref: procurement.purchase_order_events.actor_id > identity.app_user.id
-Ref: procurement.purchase_order_events.po_id > procurement.purchase_orders.id [delete: cascade]
-Ref: procurement.purchase_order_events.po_revision_id > procurement.purchase_order_revisions.id [delete: cascade]
-Ref: procurement.purchase_order_line_revisions.inventory_item_id > inventory.inventory_items.id [delete: restrict]
-Ref: procurement.purchase_order_line_revisions.po_line_id > procurement.purchase_order_lines.id [delete: cascade]
-Ref: procurement.purchase_order_line_revisions.po_revision_id > procurement.purchase_order_revisions.id [delete: cascade]
-Ref: procurement.purchase_order_line_revisions.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
-Ref: procurement.purchase_order_lines.inventory_item_id > inventory.inventory_items.id [delete: restrict]
-Ref: procurement.purchase_order_lines.po_id > procurement.purchase_orders.id [delete: cascade]
-Ref: procurement.purchase_order_lines.po_revision_id > procurement.purchase_order_revisions.id [delete: restrict]
-Ref: procurement.purchase_order_lines.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
-Ref: procurement.purchase_order_revisions.changed_by > identity.app_user.id
-Ref: procurement.purchase_order_revisions.po_id > procurement.purchase_orders.id [delete: cascade]
-Ref: procurement.purchase_orders.active_revision_id > procurement.purchase_order_revisions.id [delete: restrict]
-Ref: procurement.purchase_orders.approved_by > identity.app_user.id
-Ref: procurement.purchase_orders.closed_by > identity.app_user.id
-Ref: procurement.purchase_orders.confirmed_by > identity.app_user.id
-Ref: procurement.purchase_orders.pending_revision_id > procurement.purchase_order_revisions.id [delete: restrict]
-Ref: procurement.purchase_orders.source_proposal_id > procurement.replenishment_proposals.id [delete: set null]
-Ref: procurement.purchase_orders.submitted_by > identity.app_user.id
-Ref: procurement.purchase_orders.supplier_id > procurement.suppliers.id [delete: restrict]
-Ref: procurement.purchase_orders.warehouse_id > warehouse.warehouse.id [delete: restrict]
-Ref: procurement.replenishment_proposal_lines.converted_po_id > procurement.purchase_orders.id [delete: restrict]
-Ref: procurement.replenishment_proposal_lines.converted_po_line_id > procurement.purchase_order_lines.id [delete: restrict]
-Ref: procurement.replenishment_proposal_lines.inventory_item_id > inventory.inventory_items.id [delete: restrict]
-Ref: procurement.replenishment_proposal_lines.proposal_id > procurement.replenishment_proposals.id [delete: cascade]
-Ref: procurement.replenishment_proposal_lines.suggested_supplier_id > procurement.suppliers.id [delete: set null]
-Ref: procurement.replenishment_proposals.converted_by > identity.app_user.id
-Ref: procurement.replenishment_proposals.reviewed_by > identity.app_user.id
-Ref: procurement.replenishment_proposals.warehouse_id > warehouse.warehouse.id [delete: restrict]
-Ref: procurement.subcontract_settlement.approved_by > identity.app_user.id
-Ref: procurement.subcontract_settlement.po_id > procurement.purchase_orders.id
-Ref: procurement.subcontract_settlement.settled_by > identity.app_user.id
-Ref: procurement.supplier_addresses.supplier_id > procurement.suppliers.id [delete: cascade]
-Ref: procurement.supplier_contacts.supplier_id > procurement.suppliers.id [delete: cascade]
-Ref: procurement.supplier_invoice_lines.invoice_id > procurement.supplier_invoices.id [delete: cascade]
-Ref: procurement.supplier_invoice_lines.po_line_id > procurement.purchase_order_lines.id [delete: restrict]
-Ref: procurement.supplier_invoice_lines.receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
-Ref: procurement.supplier_invoice_variances.invoice_id > procurement.supplier_invoices.id [delete: cascade]
-Ref: procurement.supplier_invoice_variances.invoice_line_id > procurement.supplier_invoice_lines.id [delete: cascade]
-Ref: procurement.supplier_invoice_variances.po_id > procurement.purchase_orders.id [delete: restrict]
-Ref: procurement.supplier_invoices.matched_by > identity.app_user.id
-Ref: procurement.supplier_invoices.po_id > procurement.purchase_orders.id [delete: restrict]
-Ref: procurement.supplier_invoices.received_by > identity.app_user.id
-Ref: procurement.supplier_invoices.supplier_id > procurement.suppliers.id [delete: restrict]
-Ref: procurement.supplier_invoices.voided_by > identity.app_user.id
-Ref: procurement.supplier_item_prices.supplier_item_id > procurement.supplier_items.id [delete: cascade]
-Ref: procurement.supplier_items.inventory_item_id > inventory.inventory_items.id [delete: restrict]
-Ref: procurement.supplier_items.supplier_id > procurement.suppliers.id [delete: cascade]
 Ref: ordering.cart.converted_order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.cart.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.cart.merged_into_cart_id > ordering.cart.id [delete: restrict]
@@ -5710,7 +4999,6 @@ Ref: chat.conversation.assigned_agent_id > identity.app_user.id
 Ref: chat.conversation.customer_id > customer.customer.id [delete: restrict]
 Ref: chat.conversation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: chat.message.conversation_id > chat.conversation.id [delete: cascade]
-Ref: notification.po_delivery_control.purchase_order_id > procurement.purchase_orders.id [delete: cascade]
 Ref: notification.preference.user_id > identity.app_user.id [delete: cascade]
 Ref: notification.user_notification.recipient_id > identity.app_user.id [delete: cascade]
 Ref: reporting.product_sales_summary.sku > product.variants.sku [delete: restrict]
@@ -5775,36 +5063,14 @@ TableGroup warehouse_group [color: #8E6C3A] {
   warehouse.shelf_level
   warehouse.slotting_rule
   warehouse.storage_location
-  warehouse.subcontractor_site
   warehouse.warehouse
   warehouse.zone
 }
 
 TableGroup procurement_group [color: #7D5BA6] {
-  procurement.approval_limits
   procurement.goods_receipt_lines
   procurement.goods_receipt_photos
   procurement.goods_receipts
-  procurement.po_delivery_decision
-  procurement.po_number_sequence
-  procurement.purchase_order_approvals
-  procurement.purchase_order_attachments
-  procurement.purchase_order_events
-  procurement.purchase_order_line_revisions
-  procurement.purchase_order_lines
-  procurement.purchase_order_revisions
-  procurement.purchase_orders
-  procurement.replenishment_proposal_lines
-  procurement.replenishment_proposals
-  procurement.subcontract_settlement
-  procurement.supplier_addresses
-  procurement.supplier_contacts
-  procurement.supplier_invoice_lines
-  procurement.supplier_invoice_variances
-  procurement.supplier_invoices
-  procurement.supplier_item_prices
-  procurement.supplier_items
-  procurement.suppliers
 }
 
 TableGroup ordering_group [color: #C0392B] {
@@ -5943,8 +5209,6 @@ TableGroup chat_group [color: #4C93A8] {
 
 TableGroup notification_group [color: #A6763F] {
   notification.delivery_log
-  notification.po_delivery_control
-  notification.po_retry_cursor
   notification.preference
   notification.template
   notification.user_notification
