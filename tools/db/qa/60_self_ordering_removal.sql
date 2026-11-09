@@ -79,9 +79,9 @@ SELECT pg_temp.expect_ok('the archive accepts a cart row',
     $q$INSERT INTO platform.legacy_archive (source_table, row_id, row_data)
        VALUES ('ordering.cart', gen_random_uuid(), '{"qa":60}'::jsonb)$q$);
 
--- A checkout-side order of a customer is still a plain order: nothing in the orders table needed the cart.
-SELECT pg_temp.expect_true('customer_order has no cart column',
+-- An order is a plain order: nothing in the orders table needed the cart (cartons are a unit of stock, not a basket).
+SELECT pg_temp.expect_true('no ordering column is a cart reference',
     NOT EXISTS (SELECT 1 FROM information_schema.columns
-                WHERE table_schema = 'ordering' AND column_name ILIKE '%cart%'));
+                WHERE table_schema = 'ordering' AND column_name ~* '(^|_)cart(_|$)'));
 
 ROLLBACK;
