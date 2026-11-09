@@ -30,7 +30,12 @@ class InventoryCatalogMigrationUpgradeTest {
             for (String line : new String(manifest.readAllBytes(), StandardCharsets.UTF_8).lines().toList()) {
                 if (line.startsWith("#") || line.isBlank()) continue;
                 String[] entry = line.split(" ");
-                try (var resource = loader.getResourceAsStream(entry[0])) {
+                // A repeatable migration may change after it is published - Flyway applies it again - and 5-3 emptied
+                // the demo price seed (V20261110000100 dropped its table). The body #38 published is kept frozen next
+                // to the manifest, so the baseline is still exactly what #38 shipped.
+                String frozen = "db/upgrade/pr38-9572c7a/" + Path.of(entry[0]).getFileName();
+                try (var resource = loader.getResource(frozen) != null
+                        ? loader.getResourceAsStream(frozen) : loader.getResourceAsStream(entry[0])) {
                     byte[] sql = new String(resource.readAllBytes(), StandardCharsets.UTF_8)
                             .replace("\r\n", "\n").getBytes(StandardCharsets.UTF_8);
                     assertThat(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(sql)))
@@ -55,10 +60,12 @@ class InventoryCatalogMigrationUpgradeTest {
                 var recovery = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
                         .locations("classpath:db/migration", "classpath:db/demo")
                         .outOfOrder(true).target("20261008000200").load();
-                assertThat(recovery.info().pending()).extracting(m -> m.getVersion().toString())
-                        .containsExactly("20260929000250");
-                assertThat(recovery.migrate().migrations).extracting(m -> m.version)
-                        .containsExactly("20260929000250");
+                // Versioned migrations only: the demo price seed #38 published is a repeatable that 5-3 emptied, so
+                // whichever migrate runs first applies it again (its new body does nothing) - not what is recovered here.
+                assertThat(recovery.info().pending()).filteredOn(m -> m.getVersion() != null)
+                        .extracting(m -> m.getVersion().toString()).containsExactly("20260929000250");
+                assertThat(recovery.migrate().migrations).filteredOn(m -> m.version != null && !m.version.isEmpty())
+                        .extracting(m -> m.version).containsExactly("20260929000250");
                 // After the recovery, a normal migrate applies only what develop added after #38 (e.g. the
                 // product bridge of issue #68), never anything at or before the recovery target.
                 assertThat(normal.migrate().migrations).allSatisfy(m -> assertThat(
@@ -76,9 +83,13 @@ class InventoryCatalogMigrationUpgradeTest {
                     assertThat(row.getString(2)).isEqualTo("sofa-3-cho");
                     assertThat(row.getString(3)).isEqualTo("PUBLISHED");
                 }
-                try (var row = sql.executeQuery("select price from catalog.pricing_rule where name='BASE:SOFA-3S-GREY'")) {
+                // The base price #38 seeded is gone with the base price (5-3, V20261110000100), kept in the archive.
+                try (var row = sql.executeQuery("select to_regclass('catalog.pricing_rule') is null, (select "
+                        + "(row_data ->> 'price')::numeric from platform.legacy_archive where source_table = "
+                        + "'catalog.pricing_rule' and row_data ->> 'name' = 'BASE:SOFA-3S-GREY')")) {
                     assertThat(row.next()).isTrue();
-                    assertThat(row.getBigDecimal(1)).isEqualByComparingTo("12500000");
+                    assertThat(row.getBoolean(1)).isTrue();
+                    assertThat(row.getBigDecimal(2)).isEqualByComparingTo("12500000");
                 }
             }
         }

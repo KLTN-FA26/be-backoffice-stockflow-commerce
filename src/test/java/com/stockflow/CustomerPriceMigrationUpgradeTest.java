@@ -32,6 +32,9 @@ class CustomerPriceMigrationUpgradeTest {
                 UUID customer = UUID.randomUUID();
                 update(sql, "insert into customer.customer(id,full_name,email,status,version,created_at)"
                         + " values (?,'Co',?,'ACTIVE',0,now())", customer, customer + "@example.test");
+                // The demo seed carried this base price until 5-3 emptied it: the old state is written here.
+                update(sql, "insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)"
+                        + " values (gen_random_uuid(),'BASE:SOFA-3S-GREY','SOFA-3S-GREY',12500000,'VND',true,now())");
                 long rules = number(sql, "select count(*) from catalog.pricing_rule");
                 String base = text(sql, "select price::text from catalog.pricing_rule where name='BASE:SOFA-3S-GREY'");
                 long admin = version(sql, "ECOMMERCE_ADMIN");
