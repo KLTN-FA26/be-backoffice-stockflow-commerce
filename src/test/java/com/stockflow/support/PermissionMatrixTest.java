@@ -95,6 +95,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/receivables/me", "the caller's own receivables, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/installments/me", "the caller's own installments, selected by the customer profile of the "
                     + "token (4B-6)"),
+            Map.entry("GET /api/v1/customer/production-samples", "the caller's own print samples waiting for them, "
+                    + "selected by the customer profile of the token (4A-4)"),
             Map.entry("GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject"),
             Map.entry("GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)"),
             Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
@@ -337,6 +339,9 @@ class PermissionMatrixTest {
             Map.entry("production-orders:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("production-orders:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("production-orders:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // 4A-4, kltn-docs 13 BR-13: the customer sees and answers their own print samples on the storefront.
+            Map.entry("production-samples:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
+            Map.entry("production-samples:APPROVE", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("production-orders:READ", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER,
                     Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 4A-1, kltn-docs 17 §4.3 and 00 §2.1 (2026-11-07): the Production Coordinator keeps the producers.
@@ -411,7 +416,10 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/designs/{designId}/assets/uploads", uploadSlot),
                 Map.entry("POST /api/v1/designs/{designId}/assets", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
                 Map.entry("POST /api/v1/returns/{returnId}/evidence/uploads", uploadSlot),
-                Map.entry("POST /api/v1/returns/{returnId}/evidence", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"));
+                Map.entry("POST /api/v1/returns/{returnId}/evidence", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
+                // 4A-4: a well-formed reprint request, so only the owner check can refuse another customer's round.
+                Map.entry("POST /api/v1/customer/production-samples/{roundId}/reprint-request",
+                        "{\"note\":\"stolen\"}"));
     }
 
 

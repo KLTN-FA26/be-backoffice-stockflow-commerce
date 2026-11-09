@@ -384,6 +384,22 @@ public enum ErrorCode {
     RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER("This line is not a line of the receipt's production order", 409),
     /** 4A-5 (03 BR-12, BR-13): every carton received holds exactly the SKU's standard count. */
     RECEIPT_CARTON_NOT_STANDARD("A carton received holds exactly the standard count of its SKU", 422),
+    /**
+     * 4A-4 (17 BR-24): with a print sample to approve, mass printing starts when the customer approves it - not when the
+     * coordinator records it.
+     */
+    PRODUCTION_ORDER_SAMPLE_REQUIRED("The customer approves this production order's print sample before mass printing", 409),
+    /** 4A-4 (17 BR-24): a production order without a print sample to approve has no sample rounds. */
+    PRODUCTION_ORDER_SAMPLE_NOT_REQUIRED("This production order has no print sample to approve", 409),
+    /**
+     * 4A-4 (17 §4.3 step 9): a new round follows the customer's reprint request of the round before; one round waits
+     * for the customer at a time.
+     */
+    SAMPLE_ROUND_NOT_OPENABLE("A new print sample round follows the customer's request to print it again", 409),
+    /** 4A-4 (13 BR-13): no such round - or, for a customer, none of their own production orders'. */
+    SAMPLE_ROUND_NOT_FOUND("Print sample round not found", 404),
+    /** 4A-4 (13 BR-13): a round takes one answer, on the storefront or through the chat card, and keeps it. */
+    SAMPLE_ROUND_ANSWERED("This print sample round has been answered already", 409),
     /** 4A-2: an INACTIVE producer takes no new production order. */
     PRODUCER_INACTIVE("This producer takes no new production order", 409),
     /** 4A-2 (17 BR-05): the print files changed since the design was approved. */

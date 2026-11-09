@@ -48,6 +48,25 @@ class StoragePolicyTest {
     }
 
     @Test
+    @DisplayName("4A-4: print sample videos are checked by their signature too, and keep their extension")
+    void printSampleVideos() {
+        byte[] mp4 = {0, 0, 0, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'};
+        byte[] webm = {0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, 0, 0, 0, 0, 0, 0, 0, 0};
+        ContentTypePolicy.check(FileCategory.PRINT_SAMPLE, "video/mp4", 80L * 1024 * 1024, mp4);
+        ContentTypePolicy.check(FileCategory.PRINT_SAMPLE, "video/quicktime", 1_000, mp4);
+        ContentTypePolicy.check(FileCategory.PRINT_SAMPLE, "video/webm", 1_000, webm);
+        assertThatThrownBy(() -> ContentTypePolicy.check(FileCategory.PRINT_SAMPLE, "video/mp4", 1_000, PNG))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("do not match");
+        assertThatThrownBy(() -> ContentTypePolicy.check(FileCategory.PRINT_SAMPLE, "video/webm", 1_000, mp4))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("do not match");
+        assertThatThrownBy(() -> ContentTypePolicy.check(FileCategory.RETURN_EVIDENCE, "video/mp4", 1_000, mp4))
+                .as("videos only where a category takes them").isInstanceOf(BusinessException.class);
+        assertThat(StorageKeys.extensionFor("video/mp4")).isEqualTo(".mp4");
+        assertThat(StorageKeys.extensionFor("video/quicktime")).isEqualTo(".mov");
+        assertThat(StorageKeys.extensionFor("video/webm")).isEqualTo(".webm");
+    }
+
+    @Test
     @DisplayName("oversize is 413 and empty is 400")
     void enforcesSize() {
         assertThatThrownBy(() -> ContentTypePolicy.check(
