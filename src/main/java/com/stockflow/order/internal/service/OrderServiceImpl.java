@@ -50,7 +50,6 @@ import java.util.List;
 import java.util.Optional;
 
 import java.util.UUID;
-import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.design.api.DesignService;
@@ -118,7 +117,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final DesignService designs;
     private final OrderHoldJpaRepository holds;
     private final CustomerService customers;
-    private final CatalogService catalog;
     private final OrderPayments payments;
     private final CancellationRequestRepository cancellationRequests;
     private final CreditChecks creditChecks;
@@ -131,7 +129,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             DesignService designs,
             OrderHoldJpaRepository holds,
                      CustomerService customers,
-            CatalogService catalog, OrderPayments payments,
+            OrderPayments payments,
                      CancellationRequestRepository cancellationRequests, CreditChecks creditChecks,
                      com.stockflow.payment.api.PaymentService paymentService,
                      com.stockflow.product.api.CustomerSkus customerSkus,
@@ -146,7 +144,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         this.designs = designs;
         this.holds = holds;
         this.customers = customers;
-        this.catalog = catalog;
         this.payments = payments;
         this.cancellationRequests = cancellationRequests;
         this.creditChecks = creditChecks;
@@ -159,6 +156,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      * <p><b>One transaction covers everything below.</b> The order rows, every stock reservation,
      * and the {@code event_publication} row for {@code OrderPlaced} all commit together or none of
      * them do. There is no window in which an order exists without its stock.</p>
+     *
+     * <p>No production code calls this since team plan 5-2: the customer does not place orders (kltn-docs 14 BR-01,
+     * BR-02), so checkout ({@code POST /api/v1/orders}) is gone and nothing is priced for one. It stays as the tests'
+     * way to an order holding stock until 4B-10 replaces it with an order drawn up through a contract; every line is
+     * placed at the price on the command, which the test chose.</p>
      */
     @Override
     public OrderSummary placeOrder(PlaceOrderCommand command) {
@@ -168,10 +170,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * {@inheritDoc}
      *
-     * <p>The same transaction and steps as {@link #placeOrder}; only the price source differs. Every line
-     * — design lines included — is placed at the price on the command, which the quote service computed
-     * from the accepted quote. This is why the method is on an internal interface and not on
-     * {@code OrderService}: a client-supplied price never reaches it.</p>
+     * <p>Every line - design lines included - is placed at the price on the command, which the quote service computed
+     * from the accepted quote, and the order is a DRAFT for its contract: no stock is held and no terms are applied
+     * here. On an internal interface, not on {@code OrderService}: only the quote service converts.</p>
      */
     @Override
     public OrderSummary placeQuotedOrder(PlaceOrderCommand command) {
@@ -191,22 +192,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             return toSummary(alreadyPlaced.get());
         }
 
-        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price. A
-        // design line is priced by an accepted quote (SCRUM-448), which arrives through placeQuotedOrder.
+        // SCRUM-298 is a separate integration: a design line is priced by an accepted quote (SCRUM-448), which arrives
+        // through placeQuotedOrder.
         if (!quotePriced && command.snapshotCustomer()
                 && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
             throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
         }
-        // SCRUM-428: the customer's own tier for the order's total of each SKU, else its group's or the
-        // base price (kltn-docs 13 §3); the client's price is only what it expects to pay (agreedPrice).
-        var sellingPrices =
-                command.snapshotCustomer() && !quotePriced
-                        ? catalog.checkoutPrices(command.customerId(),
-                                command.lines().stream()
-                                        .filter(line -> line.designSnapshotId() == null)
-                                        .collect(Collectors.toMap(line -> line.sku().code(),
-                                                PlaceOrderCommand.Line::quantity, Integer::sum)))
-                        : Map.<String, Money>of();
         // Another customer's own SKU is not there for this customer (kltn-docs 13 BR-02), whoever places the order.
         customerSkus.requireVisibleTo(command.lines().stream().map(line -> line.sku().code()).toList(),
                 command.customerId());
@@ -221,11 +212,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceOrderCommand.Line line = command.lines().get(index);
             var orderLine = Order.line(deterministicLineId(command.requestId(), index),
-                    line.sku(), line.quantity(),
-                            command.snapshotCustomer() && !quotePriced
-                                    ? agreedPrice(
-                                            line.sku().code(), line.unitPrice(), sellingPrices)
-                                    : line.unitPrice(), line.designSnapshotId());
+                    line.sku(), line.quantity(), line.unitPrice(), line.designSnapshotId());
             if (line.carton() != null) {
                 orderLine.withCartons(line.carton().uomConversionId(), line.carton().cartons(),
                         line.carton().unitsPerCarton());
@@ -478,14 +465,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
         // Guard the module API as well as HTTP: no caller may reserve stock for a guest.
         throw new BusinessException(ErrorCode.GUEST_CHECKOUT_DISABLED);
-    }
-
-    /** The server price is authoritative; the client's amount is only what it expects to pay. */
-    private static Money agreedPrice(String sku, Money expected, Map<String, Money> prices) {
-        var actual = prices.get(sku);
-        if (actual == null) throw new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE);
-        if (!actual.equals(expected)) throw new BusinessException(ErrorCode.CHECKOUT_PRICE_CHANGED);
-        return actual;
     }
 
     @Override

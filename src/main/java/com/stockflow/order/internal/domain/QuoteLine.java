@@ -81,8 +81,9 @@ public final class QuoteLine {
                     .formatted(lineNo, quantity, noun(), MAX_UNITS));
         }
         this.quantity = quantity;
-        // No tiers = not priced yet: only a reorder the customer's prices cannot price makes one (user decision R1),
-        // and the quote refuses to be sent - so accepted or converted - until Sales has priced every line.
+        // No tiers = not priced yet. Only a customer's reorder made one (user decision R1), and the reorder went with team
+        // plan 5-2; drafts it left are still read back, and the quote refuses to be sent - so accepted or converted -
+        // until Sales has priced every line.
         tiers = tiers == null ? List.of() : tiers;
         var seen = new HashSet<Integer>();
         for (PriceTier tier : tiers) {
@@ -151,7 +152,7 @@ public final class QuoteLine {
         return measure == Measure.UNIT;
     }
 
-    /** Whether Sales has priced the line; a reorder the customer's prices could not price starts without (R1). */
+    /** Whether Sales has priced the line; a reorder drafted before team plan 5-2 may have started without (R1). */
     public boolean priced() {
         return !tiers.isEmpty();
     }

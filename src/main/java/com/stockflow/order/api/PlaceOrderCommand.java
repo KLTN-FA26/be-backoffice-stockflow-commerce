@@ -7,7 +7,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Intent: turn a cart into an order.
+ * Intent: place an order - an accepted quote's (the quote service converts it), or a test's fixture until 4B-10. There
+ * is no cart and no checkout any more (team plan 5-2).
  *
  * <p>Records with compact-constructor validation, so an instance that exists is structurally
  * valid. The caller cannot hand the service a command with zero lines and discover the problem
@@ -26,7 +27,7 @@ public record PlaceOrderCommand(
         List<Fee> fees
 ) {
 
-    /** Without fee lines (before 4B-3, and every checkout). */
+    /** Without fee lines (before 4B-3, and a test's fixture order). */
     public PlaceOrderCommand(UUID requestId, UUID customerId, UUID shippingAddressId, UUID billingAddressId,
                              boolean snapshotCustomer, List<Line> lines, PaymentTerm paymentTerm,
                              java.math.BigDecimal depositPercent, BalancePolicy balancePolicy) {

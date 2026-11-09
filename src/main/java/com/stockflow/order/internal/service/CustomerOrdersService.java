@@ -56,16 +56,10 @@ class CustomerOrdersService implements CustomerOrders {
     private final OrderService orders;
     private final CreditChecks creditChecks;
     private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
-    private final com.stockflow.order.internal.domain.QuoteRepository quotes;
-    private final com.stockflow.catalog.api.CatalogService catalog;
 
     CustomerOrdersService(OrderSearchRepository search, OrderService orders, CreditChecks creditChecks,
-                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
-                          com.stockflow.order.internal.domain.QuoteRepository quotes,
-                          com.stockflow.catalog.api.CatalogService catalog) {
-        this.catalog = catalog;
+                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests) {
         this.cancellationRequests = cancellationRequests;
-        this.quotes = quotes;
         this.search = search;
         this.orders = orders;
         this.creditChecks = creditChecks;
@@ -103,20 +97,11 @@ class CustomerOrdersService implements CustomerOrders {
                 // 17 §5.2: a DRAFT order - its contract still being drawn up - is not the customer's to see.
                 .filter(order -> order.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        // Where each stock SKU is on sale today, for a portal that puts the order back in a basket (SCRUM-190).
-        // Design lines are not reordered this way (a new quote asks for them), so they are not looked up.
-        var listings = catalog.listings(summary.lines().stream().filter(line -> line.designSnapshotId() == null)
-                .map(line -> line.sku()).collect(java.util.stream.Collectors.toSet()));
         List<Line> lines = summary.lines().stream()
-                .map(line -> {
-                    var listing = listings.get(line.sku());
-                    return new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
-                            line.lineTotal().amount(), line.designSnapshotId(),
-                            production(line, summary.status()),
-                            listing == null ? null : listing.slug(), listing == null ? null : listing.title(),
-                            listing == null ? null : listing.imageUrl(), line.cartons(), line.unitsPerCarton(),
-                            line.taxRate(), line.taxAmount() == null ? null : line.taxAmount().amount());
-                })
+                .map(line -> new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
+                        line.lineTotal().amount(), line.designSnapshotId(), production(line, summary.status()),
+                        line.cartons(), line.unitsPerCarton(), line.taxRate(),
+                        line.taxAmount() == null ? null : line.taxAmount().amount()))
                 .toList();
         Optional<CreditChecks.Check> latestCheck = summary.status() == OrderStatus.ON_HOLD
                 ? creditChecks.latest(orderId)
@@ -169,7 +154,7 @@ class CustomerOrdersService implements CustomerOrders {
     /**
      * G3-2: what the portal may offer, from the same rules the order applies - so the portal stops keeping its own
      * list of cancellable statuses. A customer cancels at once until the order is released; after that, up to the
-     * first completed package, asks (one request at a time); reorders an order that came from a quote.
+     * first completed package, asks (one request at a time).
      */
     private AllowedActions allowedActions(OrderSummary summary) {
         OrderStatus status = summary.status();
@@ -178,7 +163,7 @@ class CustomerOrdersService implements CustomerOrders {
         boolean packed = lifecycle != null && lifecycle.packedAt() != null;
         boolean request = !cancel && !packed && status.canTransitionTo(OrderStatus.CANCELLED)
                 && !cancellationRequests.hasPending(summary.orderId());
-        return new AllowedActions(cancel, request, quotes.findByConvertedOrderId(summary.orderId()).isPresent());
+        return new AllowedActions(cancel, request);
     }
 
     static StatusGroup statusGroup(OrderStatus status) {

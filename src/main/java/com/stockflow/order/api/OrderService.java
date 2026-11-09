@@ -20,6 +20,10 @@ public interface OrderService {
      *
      * <p>All of it in one transaction. See {@code OrderServiceImpl} for why that sentence is the
      * entire justification for this architecture.</p>
+     *
+     * <p>No production caller since team plan 5-2 - the customer does not place orders (kltn-docs 14 BR-01, BR-02) -
+     * and nothing prices the lines: each is placed at the price on the command. Kept as the tests' fixture for an order
+     * holding stock until 4B-10 replaces it.</p>
      */
     OrderSummary placeOrder(PlaceOrderCommand command);
 

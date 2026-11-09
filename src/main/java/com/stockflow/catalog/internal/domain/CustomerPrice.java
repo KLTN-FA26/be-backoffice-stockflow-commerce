@@ -15,7 +15,7 @@ import java.util.UUID;
 /**
  * One customer's own price for one SKU, by quantity tier (SCRUM-428; kltn-docs 13 §3, D14): since 4B-2 one of the
  * customer's own SKUs, its tiers counted in cartons and priced per piece (13 BR-05, BR-06); a price set before on a stock
- * variant counts units and serves checkout only.
+ * variant counts units and is kept to read and delete: no order is priced from it since checkout went (team plan 5-2).
  *
  * <p>A tier applies from its {@code minQuantity} on, until the next tier starts. The first tier is
  * this customer's minimum order quantity for the SKU (BR-05): below it there is no price, rather than

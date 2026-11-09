@@ -111,8 +111,9 @@ public interface Quotes {
      * @param units             pieces proposed (cartons x pieces per carton; the units of a legacy line)
      * @param designSnapshotId  the design printed on the blank of a legacy line; null on a carton line
      * @param printSpec         how the blank of a legacy line is printed; null on a carton line
-     * @param priced            false for a reorder line the customer's prices could not price (R1): no tiers, and
-     *                          {@code moq}, {@code proposedUnitPrice}, {@code proposedLineTotal} are null
+     * @param priced            false for a line drafted without a price - only a reorder drafted before team plan 5-2
+     *                          has one (R1): no tiers, and {@code moq}, {@code proposedUnitPrice},
+     *                          {@code proposedLineTotal} are null
      * @param moq               where the lowest tier starts, in the line's measure
      * @param proposedUnitPrice the price of one piece at the proposed cartons, computed on the server
      * @param proposedLineTotal {@code units} x {@code proposedUnitPrice}
@@ -171,10 +172,6 @@ public interface Quotes {
     record Conversion(long version, UUID shippingAddressId, UUID billingAddressId) {
     }
 
-    /** Ordering again what {@code orderId} - an order converted from a quote - bought. */
-    record Reorder(UUID requestId, UUID orderId) {
-    }
-
     /** Idempotent on {@code requestId}: a retry returns the quote the first call created. */
     QuoteView create(CurrentUser user, Create command);
 
@@ -201,23 +198,6 @@ public interface Quotes {
      * the quote ACCEPTED and creates nothing.
      */
     QuoteView convert(CurrentUser user, UUID quoteId, Conversion conversion);
-
-    /**
-     * A new DRAFT quote for the same SKUs and cartons as the order - a legacy order's designs as the SKUs issued for
-     * them - priced from the customer's own prices now, never at the old negotiated price (user decision 2026-10-12: a
-     * deal applies to its own quote and order only). A line those prices cannot price - none for the SKU, or the
-     * cartons below its first tier - is left explicitly unpriced for Sales (user decision R1); the quote cannot be
-     * sent until Sales prices it. Nothing is payable until Sales sends it
-     * and the customer accepts; the draft is Sales' to negotiate and the customer sees it once sent.
-     * Idempotent on {@code requestId}. A portal customer reorders only their own orders (404 otherwise).
-     * The payment term is the old one while the customer may still use it; otherwise the customer's current
-     * default, never a restored credit (user decision R1b, 2026-10-13) - the history says so.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code ORDER_NOT_QUOTED} for an order bought at the
-     *         price list (place it again instead), {@code CUSTOMER_NOT_ACTIVE}; {@code CUSTOMER_SKU_REQUIRED} for a
-     *         legacy order whose design has no SKU of the customer
-     */
-    QuoteView reorder(CurrentUser user, Reorder command);
 
     /** Writes EXPIRED on sent quotes past their validity, at most {@code limit}; returns how many. */
     int expireDue(int limit);

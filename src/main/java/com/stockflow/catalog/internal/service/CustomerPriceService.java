@@ -33,8 +33,8 @@ import java.util.UUID;
  *
  * <p>4B-2 (kltn-docs 13 BR-02, BR-05, BR-06): a price is set for one of the customer's own SKUs, its tiers starting at a
  * number of cartons and pricing one piece. A price set before on a stock variant is kept, counted in units
- * ({@link PriceView#measure()} {@code UNIT}), for checkout until it is removed (team plan 5-2): it can be read and
- * deleted, not set again. {@code tg_customer_price_own_sku} holds the same rule for a new row.</p>
+ * ({@link PriceView#measure()} {@code UNIT}); no order is priced from it since checkout went (team plan 5-2): it can be
+ * read and deleted, not set again. {@code tg_customer_price_own_sku} holds the same rule for a new row.</p>
  */
 @Service
 @Transactional
@@ -65,7 +65,7 @@ public class CustomerPriceService {
      * A customer's own price as stored; {@code moq} is its first tier.
      *
      * @param measure what the tiers count: {@code CARTON} for the customer's own SKU; {@code UNIT} for a price set on
-     *                a stock variant before 4B-2, kept for checkout only
+     *                a stock variant before 4B-2, kept to read and delete
      */
     public record PriceView(UUID customerId, String sku, String measure, int moq, List<TierInput> tiers, String note,
                             long version) {
@@ -119,7 +119,7 @@ public class CustomerPriceService {
 
     /**
      * @throws BusinessException {@code CUSTOMER_PRICE_NOT_FOUND}, {@code CUSTOMER_SKU_REQUIRED} for a price on a stock
-     *         variant (kept for checkout, not set again), {@code OPTIMISTIC_LOCK}, {@code VALIDATION_FAILED}
+     *         variant (kept to read and delete, not set again), {@code OPTIMISTIC_LOCK}, {@code VALIDATION_FAILED}
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "customer-price", resourceId = "#customerId")
     public PriceView replace(UUID customerId, String sku, List<TierInput> tiers, String note,

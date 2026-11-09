@@ -43,7 +43,6 @@ public enum ErrorCode {
     PRODUCT_CATEGORY_REQUIRED("A valid product category is required", 409),
     PRODUCT_SKU_REQUIRED("At least one sellable SKU is required", 409),
     PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
-    PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
     /** SCRUM-461, kltn-docs 02 BR-01: a new purchase order line takes only an active SKU. {@code fieldErrors[]} names each line. */
     SKU_NOT_PURCHASABLE("The SKU is not active for purchasing", 409),
     /** Review of #109, item 6: a quote, its acceptance or its order, or a new sample, on a SKU no longer ACTIVE. */
@@ -61,9 +60,6 @@ public enum ErrorCode {
     /** SCRUM-461: stock, a purchase order, an order or a design already points at the product. */
     PRODUCT_IN_USE("The product is referenced by stock, purchasing, orders or designs", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
-    /** kltn-docs 13 BR-05: the first tier of a customer's own price is its minimum order quantity. */
-    /** Direct checkout never falls back to another price below the list's first tier (P4): Sales quotes it. */
-    CUSTOMER_PRICE_BELOW_MOQ("The quantity is below this customer's price list minimum for the SKU; ask Sales for a quote", 409),
     CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
     /** P7: a customer group (customer.segment) that does not exist. */
     SEGMENT_NOT_FOUND("Customer group not found", 404),
@@ -186,7 +182,6 @@ public enum ErrorCode {
     PO_LINE_UNIT_NOT_MULTIPLE("The quantity must be a whole number of the line's unit", 409),
     PO_LINE_UNIT_INVALID("The unit is retired; order in an active unit", 409),
     PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
-    CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
@@ -331,8 +326,10 @@ public enum ErrorCode {
     QUOTE_EXPIRED("This quote is no longer valid", 409),
     /** BR-ORD-007: a quoted line is ordered at or above its minimum order quantity. */
     QUOTE_BELOW_MOQ("The quantity is below the minimum order quantity of the quote", 409),
-    /** Reorder: only an order placed from a quote is re-quoted; a price-list order is simply placed again. */
-    /** R1: a reorder line the price list cannot price waits for Sales; nothing is sent or accepted unpriced. */
+    /**
+     * R1: a line drafted without a price - only a reorder drafted before team plan 5-2 has one - waits for Sales;
+     * nothing is sent or accepted unpriced.
+     */
     QUOTE_NOT_PRICED("A line of this quote has no price yet; Sales enters it before the quote is sent", 409),
     /** 4B-2, QD-16: a quote drafted on blanks and designs before the customer's own SKUs is kept to read. */
     QUOTE_LINES_LEGACY("This quote was drafted on blanks and designs; quote the customer's own SKUs instead", 409),
@@ -411,7 +408,6 @@ public enum ErrorCode {
     CUSTOMER_SKU_REQUIRED("Only the customer's own SKUs are quoted and priced for them", 409),
     /** 4B-2 (kltn-docs 01 BR-03, BR-11): a SKU is sold in cartons, and this one has no single carton unit. */
     CARTON_SPEC_MISSING("This SKU has no carton specification; it is sold in cartons", 409),
-    ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
     /** A deposit order is released only once the deposit has arrived (kltn-docs 15 §4.2). */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /**
@@ -545,12 +541,6 @@ public enum ErrorCode {
     /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
     PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
             409),
-    /**
-     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
-     * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and
-     * the client asks the customer, then resends with {@code confirmDuplicate: true}.
-     */
-    DUPLICATE_ORDER_SUSPECTED("An order with the same items was placed recently; confirm to place another", 409),
     /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
     BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
     /**

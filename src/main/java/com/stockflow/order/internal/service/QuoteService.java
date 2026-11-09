@@ -72,8 +72,7 @@ import java.util.function.Consumer;
  * <p><b>Active SKUs only</b> (review of #109, item 6; BR-PRD-005): drafting, revising, sending, accepting and
  * converting each ask again whether every SKU on the quote is still ACTIVE, the answer held until the step
  * commits. An old quote is no exception. A line at fault is named; Sales puts an active SKU on it and sends
- * the quote again - nothing is substituted. A reorder draft is the one step that does not ask: it is a request
- * for Sales to look at, and its sending asks. Orders already placed carry on whatever happens to the product.</p>
+ * the quote again - nothing is substituted. Orders already placed carry on whatever happens to the product.</p>
  *
  * <p><b>The customer's own SKUs, by the carton</b> (4B-2; kltn-docs 14 BR-04, BR-07, BR-08, 13 BR-02): drafting,
  * revising, sending, accepting and converting each ask again that every SKU on the quote is one of this customer's own
@@ -232,7 +231,7 @@ class QuoteService implements Quotes {
         quotes.save(quote);
         quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.ACCEPTED, null, null, now,
                 user.userId());
-        notifySales(quote, CustomerActedOnQuote.Action.ACCEPTED, null, quote.sentBy(), now);
+        notifySales(quote, CustomerActedOnQuote.Action.ACCEPTED, quote.sentBy(), now);
         log.info("Quote {} accepted", quote.quoteNumber());
         return view(quote);
     }
@@ -248,7 +247,7 @@ class QuoteService implements Quotes {
         quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.CHANGES_REQUESTED,
                 quote.customerFeedback(), null, quote.respondedAt(), user.userId());
         // The feedback stays on the quote: the event carries facts, not what the customer typed (B-4).
-        notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, null, quote.sentBy(),
+        notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, quote.sentBy(),
                 quote.respondedAt());
         return view(quote);
     }
@@ -328,64 +327,6 @@ class QuoteService implements Quotes {
         quotes.recordTransition(quote.id(), quote.revision(), QuoteStatus.ACCEPTED, QuoteStatus.CONVERTED,
                 order.orderNumber(), null, now, user.userId());
         log.info("Quote {} converted into order {} ({})", quote.quoteNumber(), order.orderNumber(), order.status());
-        return view(quote);
-    }
-
-    @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "quote", resourceId = "#result?.id()")
-    public QuoteView reorder(CurrentUser user, Reorder command) {
-        UUID requestId = Objects.requireNonNull(command.requestId(), "requestId");
-        UUID orderId = Objects.requireNonNull(command.orderId(), "orderId");
-        Optional<UUID> own = portalCustomer(user);
-        OrderSummary order = orders.findById(orderId)
-                .filter(o -> own.isEmpty() || own.get().equals(o.customerId()))
-                .filter(o -> own.isEmpty() || o.status() != com.stockflow.order.api.OrderStatus.DRAFT)
-                .orElseThrow(() -> new NotFoundException("order", orderId));
-        quotes.lockRequest(requestId);
-        Optional<Quote> earlier = quotes.findByRequestId(requestId);
-        if (earlier.isPresent()) {
-            if (!earlier.get().customerId().equals(order.customerId())) {
-                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
-            }
-            return view(earlier.get());
-        }
-        Quote source = quotes.findByConvertedOrderId(orderId).orElseThrow(() -> new BusinessException(
-                ErrorCode.ORDER_NOT_QUOTED, "Order %s was bought at the price list".formatted(order.orderNumber())));
-        UUID customerId = source.customerId();
-        requireNewWorkFor(customerId);
-        Quote.Offer old = source.offer();
-        Instant now = clock.instant();
-        // The deal stays with its own quote and order: every line starts again from the customer's own prices today,
-        // and a line they cannot price is left unpriced for Sales (R1) - never the old price, never a zero.
-        Map<String, Integer> cartons = reorderedCartons(customerId, old);
-        List<Line> lines = cartons.entrySet().stream()
-                .map(entry -> new Line(entry.getKey(), entry.getValue(),
-                        listTiers(customerId, entry.getKey(), entry.getValue())))
-                .toList();
-        // The source quote's validity window, counted from now; Sales sets the real one before sending.
-        Instant validUntil = now.plus(java.time.Duration.between(source.sentAt(), old.validUntil()));
-        // R1b: a term the customer may use today. The old one is kept only while still allowed - never restored
-        // (a lost credit stays lost); otherwise the draft starts from the customer's default term, with no deposit
-        // share carried over. Send, acceptance and conversion check the term again.
-        com.stockflow.customer.api.CreditTerms current = customers.creditTerms(customerId);
-        boolean keepTerm = current.allows(CommercialTerm.valueOf(old.paymentTerm().name()));
-        com.stockflow.order.api.PaymentTerm term = keepTerm ? old.paymentTerm()
-                : com.stockflow.order.api.PaymentTerm.valueOf(current.defaultTerm().name());
-        Quote.Offer offer = offer(customerId, new Draft(term, keepTerm ? old.depositPercent() : null, validUntil,
-                old.terms(), lines), true);
-        requireTermAllowed(customerId, offer);
-        Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), requestId, customerId, offer);
-        quotes.save(quote);
-        String reason = keepTerm ? "Reorder of order " + order.orderNumber()
-                : "Reorder of order %s; its payment term %s is no longer allowed, drafted as %s"
-                        .formatted(order.orderNumber(), old.paymentTerm(), term);
-        quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, reason, null, now, user.userId());
-        if (own.isPresent()) {
-            // The customer asked: the draft waits for the Sales user who negotiated the order's quote.
-            notifySales(quote, CustomerActedOnQuote.Action.REORDER_REQUESTED, order.orderNumber(), source.sentBy(), now);
-        }
-        log.info("Quote {} drafted to reorder order {} (from quote {})", quote.quoteNumber(), order.orderNumber(),
-                source.quoteNumber());
         return view(quote);
     }
 
@@ -537,47 +478,6 @@ class QuoteService implements Quotes {
     }
 
     /**
-     * The cartons a reorder asks of each SKU: what the source quote accepted (or proposed), a legacy quote's designs as
-     * the SKUs issued for them, its units rounded up to whole cartons. In the source's order, one line per SKU.
-     */
-    private Map<String, Integer> reorderedCartons(UUID customerId, Quote.Offer old) {
-        Map<String, Integer> cartons = new LinkedHashMap<>();
-        if (!old.legacy()) {
-            old.lines().forEach(line -> cartons.merge(line.sku().code(), line.acceptedQuantity() == null
-                    ? line.quantity() : line.acceptedQuantity(), Math::addExact));
-            return cartons;
-        }
-        Map<UUID, com.stockflow.product.api.CustomerSku> issued = customerSkus.ofSnapshots(
-                old.lines().stream().map(QuoteLine::designSnapshotId).toList());
-        List<String> unissued = old.lines().stream().filter(line -> !issued.containsKey(line.designSnapshotId()))
-                .map(line -> "line " + line.lineNo()).toList();
-        if (!unissued.isEmpty()) {
-            throw new BusinessException(ErrorCode.CUSTOMER_SKU_REQUIRED, ("The design on %s of the order has no SKU of "
-                    + "the customer yet: quote it once its design is approved").formatted(String.join(", ", unissued)));
-        }
-        Map<String, UomConversion> cartonUnits = cartonUnits(issued.values().stream()
-                .map(com.stockflow.product.api.CustomerSku::sku).distinct().toList());
-        for (QuoteLine line : old.lines()) {
-            String sku = issued.get(line.designSnapshotId()).sku();
-            int units = line.acceptedQuantity() == null ? line.quantity() : line.acceptedQuantity();
-            int factor = cartonUnits.get(sku).factor();
-            cartons.merge(sku, Math.ceilDiv(units, factor), Math::addExact);
-        }
-        return cartons;
-    }
-
-    /**
-     * The customer's own tiers for a SKU on a reorder of {@code cartons}, or none when the customer has no price of its
-     * own for it or its first tier starts above (R1): Sales prices that line.
-     */
-    private List<Tier> listTiers(UUID customerId, String sku, int cartons) {
-        return ownPrice(customerId, sku).filter(schedule -> cartons >= schedule.moq())
-                .map(schedule -> schedule.tiers().stream()
-                        .map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList())
-                .orElse(List.of());
-    }
-
-    /**
      * The customer's own price for one of its SKUs (13 BR-05: tiers by cartons, a price per piece), if it has one. A
      * group or base price is a stock variant's price by the unit (13 §3) and is not offered for a SKU of the customer.
      */
@@ -585,18 +485,12 @@ class QuoteService implements Quotes {
         return catalog.customerPrice(customerId, sku);
     }
 
-    private Quote.Offer offer(UUID customerId, Draft draft) {
-        return offer(customerId, draft, false);
-    }
-
     /**
      * Builds and verifies the offer: every line is cartons of one of this customer's own SKUs, written in the SKU's
-     * carton unit at its factor now (14 BR-08). An edit replaces the lines (new ids); nothing was accepted on a draft.
-     *
-     * @param asGiven take each line's tiers as they are, none meaning not priced yet (a reorder, R1), instead
-     *                of filling omitted tiers from the customer's own price
+     * carton unit at its factor now (14 BR-08), its omitted tiers filled from the customer's own price. An edit replaces
+     * the lines (new ids); nothing was accepted on a draft.
      */
-    private Quote.Offer offer(UUID customerId, Draft draft, boolean asGiven) {
+    private Quote.Offer offer(UUID customerId, Draft draft) {
         Objects.requireNonNull(draft, "draft");
         if (draft.lines() == null || draft.lines().isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line");
@@ -618,7 +512,7 @@ class QuoteService implements Quotes {
         for (Line line : draft.lines()) {
             Sku sku = new Sku(line.sku());
             UomConversion carton = cartonUnits.get(sku.code());
-            List<PriceTier> tiers = !asGiven && (line.tiers() == null || line.tiers().isEmpty())
+            List<PriceTier> tiers = line.tiers() == null || line.tiers().isEmpty()
                     ? defaultTiers(customerId, sku, cartonsBySku.get(sku.code()))
                     : line.tiers().stream().map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
             String taxClass = classes.containsKey(sku.code()) ? classes.get(sku.code()).name() : null;
@@ -824,10 +718,9 @@ class QuoteService implements Quotes {
      * it delivers (gone, inactive or without e-mail: the active Sales team takes over, N1). Ids only in the stored
      * event: no customer name, no e-mail address.
      */
-    private void notifySales(Quote quote, CustomerActedOnQuote.Action action, String sourceOrderNumber, UUID salesUserId,
-                             Instant at) {
+    private void notifySales(Quote quote, CustomerActedOnQuote.Action action, UUID salesUserId, Instant at) {
         events.publishEvent(new CustomerActedOnQuote(quote.id(), quote.quoteNumber(), quote.customerId(), action,
-                sourceOrderNumber, salesUserId, at));
+                salesUserId, at));
     }
 
     /** Derived from the quote, so every conversion attempt of one quote names the same order request. */
