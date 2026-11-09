@@ -102,8 +102,8 @@ class PickListDamageTest {
         // The same report again is recognised from the line itself.
         assertThat(list.requireDamageable(line.id(), "HCM-A01-1-A", 5)).isTrue();
         assertThat(refusal(() -> list.requireDamageable(line.id(), "HCM-A01-1-A", 3)))
-                .as("another quantity on a superseded line is refused as a part of a carton")
-                .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+                .as("another quantity on a superseded line: the line is no longer open, whatever the quantity")
+                .isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
     }
 
     @Test
