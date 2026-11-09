@@ -32,7 +32,7 @@ import java.util.UUID;
  * Tells a production order's producer what it must know, through the producer's channel (4A-3, kltn-docs 17 §4.3 steps
  * 7, 10, 13; QD-7): the order was sent (its slip and print files), its sample was approved (print the batch), it stopped
  * (cancelled or closed). Each message goes once - a redelivered event or a retry finds it sent - through the delivery log
- * the purchase-order mail uses ({@link RecordedDelivery}); a transient failure is tried again by
+ * the purchase-order mail used before 4A-8 ({@link RecordedDelivery}); a transient failure is tried again by
  * {@link ProductionOrderMailRetry}.
  *
  * <pre>

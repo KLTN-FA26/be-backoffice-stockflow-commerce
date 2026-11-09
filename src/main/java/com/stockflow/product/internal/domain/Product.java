@@ -253,10 +253,10 @@ public final class Product extends AggregateRoot {
      * what {@code ck_products_discontinued} requires.
      *
      * <p><b>BR-PRD-005 is a warning, not a block</b>: discontinuing leaves the remaining stock and the
-     * orders and purchase orders already running to be processed (kltn-docs 01 step 12, 02 edge cases).
+     * orders and production orders already running to be processed (kltn-docs 01 step 12, BR-14).
      * Which of them still reference the product is read by the application service
      * ({@code SkuReferenceProbe}), which needs other modules; it is shown to the person, never refused.
-     * What a discontinued product cannot do is take new purchase order lines.</p>
+     * What a discontinued product cannot do is take new quote or order lines.</p>
      */
     public void discontinue(String reason, Instant now) {
         requireCanTransitionTo(ProductStatus.DISCONTINUED);

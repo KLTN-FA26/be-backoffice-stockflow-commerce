@@ -39,8 +39,8 @@ import java.util.function.Function;
 /**
  * Sends again the customer messages whose last attempt failed in a way worth retrying, once their back-off has passed.
  *
- * <p>The same shape as {@link PurchaseOrderNotificationRetry}: the incomplete publications of
- * {@link OrderNotificationListener}'s and {@link ReturnNotificationListener}'s handlers are read a bounded page at a time ({@link PendingPublicationReader}) and
+ * <p>The same shape as {@link ProductionOrderMailRetry} (and the purchase order retry before it, 4A-8): the
+ * incomplete publications of {@link OrderNotificationListener}'s and {@link ReturnNotificationListener}'s handlers are read a bounded page at a time ({@link PendingPublicationReader}) and
  * handed to the listener's proxy, which delivers them on its own threads and, on success, lets Spring Modulith mark
  * them complete. No second queue, no republishing to other listeners.</p>
  *

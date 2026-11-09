@@ -17,7 +17,7 @@ import java.util.ResourceBundle;
 
 /**
  * Words the messages a producer receives about a production order (4A-3, kltn-docs 17 §4.3 steps 7, 10, 13): the order
- * sent, its sample approved, the order stopped. Plain text in Vietnamese, as the purchase-order mail always was; the
+ * sent, its sample approved, the order stopped. Plain text in Vietnamese, as the purchase-order mail was; the
  * reply goes to the coordinator who drew the order up.
  *
  * <p>The links to the slip and the print files are signed here, when the message is written ({@link SignedLinks}), and

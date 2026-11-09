@@ -353,28 +353,12 @@ stockflow:
     connect-timeout: PT3S
     read-timeout: PT10S
 
-  procurement:
-    buyer:
-      company-name: ${PO_BUYER_COMPANY_NAME:}
-      company-address: ${PO_BUYER_COMPANY_ADDRESS:}
-      contact-name: ${PO_BUYER_CONTACT_NAME:}
-      phone: ${PO_BUYER_PHONE:}
-      email: ${PO_BUYER_EMAIL:}
-      receiving-address: ${PO_RECEIVING_ADDRESS:}
-    # Three-way match of supplier invoices (SCRUM-309, BR-INV-002): an invoice's unit price may stray this far, in
-    # percent either way, from the purchase order's net price before the match calls it a variance. Quantities have no
-    # tolerance: an invoice bills no more than was received and passed QC (kltn-docs 04 BR-02).
-    invoice-match:
-      price-tolerance-percent: ${INVOICE_PRICE_TOLERANCE_PERCENT:2}
-
   notification:
-    # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
-    supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
-    po-retry-interval: PT1M
     # How often messages to producers about their production orders that failed are tried again (4A-3).
     production-order-retry-interval: PT1M
     # -------------------------------------------------------------------------
-    # E-mail (SCRUM-352). Every message - supplier POs, staff notices, the portal invitation, customer order mail -
+    # E-mail (SCRUM-352). Every message - producers' production orders, staff notices, the portal invitation,
+    # customer order mail -
     # goes through one transport. resend: Resend's HTTP API (the dev and prod profiles' default); smtp: spring.mail
     # above (Mailpit locally); recording: kept in memory, never sent (the test profile). See EmailProperties.
     # -------------------------------------------------------------------------
@@ -387,7 +371,7 @@ stockflow:
       locale: vi
       sender-name: ${EMAIL_SENDER_NAME:StockFlow}
       customer:
-        # Off sends no customer order mail (recorded as skipped) and leaves staff and supplier mail alone. Off by
+        # Off sends no customer order mail (recorded as skipped) and leaves staff and producer mail alone. Off by
         # default: the business documents put e-mail to customers in a later phase (kltn-docs 00 §6, A10) and keep
         # only the in-app inbox for now, while the order and return mail here still describes flows they dropped
         # (guest orders, free replacement orders). The portal invitation is not customer order mail and still goes.
@@ -441,15 +425,14 @@ stockflow:
     access-key: ${MINIO_ACCESS_KEY:stockflow}
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
-    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files and supplier
-    # invoice scans cannot be deleted or overwritten for these periods. Needs a bucket with Object Lock
+    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files and a sales
+    # contract cannot be deleted or overwritten for these periods. Needs a bucket with Object Lock
     # (infra/aws); MinIO in development has none, so it is off unless the deployment turns it on.
     # The periods are placeholders until the business confirms them against the law that applies.
     object-lock:
       enabled: false
       mode: GOVERNANCE
       confirmed-design: P1095D
-      supplier-invoice: P3650D
       sales-contract: P3650D    # a sales contract as sent and as signed (4B-4)
     # Browser uploads straight to the object store (StagedUploads, docs/direct-uploads-fe-contract.md).
     staged-upload:
@@ -457,7 +440,7 @@ stockflow:
       session-ttl: PT1H         # how long an upload may wait to be attached; incoming/ expires after a day
       per-user-per-hour: 120    # slots one user may take in an hour
     # Files no record names any more (OrphanedFileSweeper): nightly, report-only until delete is turned on.
-    # Supplier invoices, published product images, exports and the quarantine prefix are never swept.
+    # Published product images, exports and the quarantine prefix are never swept.
     orphan-sweep:
       cron: "0 30 3 * * *"
       delete: false

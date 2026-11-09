@@ -16,7 +16,7 @@ public record ProductDiscontinuationResponse(
         @JsonUnwrapped
         ProductResponse product,
 
-        @Schema(description = "OPEN_PURCHASE_ORDER_LINES (goods on their way are still received) and/or "
+        @Schema(description = "OPEN_PRODUCTION_ORDER_LINES (goods still to come from a producer are received) and/or "
                 + "UNSHIPPED_ORDER_LINES (orders already placed carry on)")
         List<String> warnings,
 

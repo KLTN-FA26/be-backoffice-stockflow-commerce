@@ -16,8 +16,8 @@ import java.time.Instant;
  * The shared part of sending a document to a business partner (team plan QD-7): one message per reference and
  * generation, every attempt kept in {@code notification.delivery_log}, a transient failure thrown so the event
  * publication stays incomplete and is tried again ({@link PublicationRedelivery}), a permanent one recorded as final.
- * The purchase-order sender was its first user and is still one; production orders (4A-3) are the second, and the one
- * left when the purchase-order part goes (4A-8).
+ * The purchase-order sender was its first user; it went with purchasing (4A-8), and production orders (4A-3) are the
+ * one left.
  *
  * <pre>
  * 1. pending   transaction-scoped advisory lock on the reference (a second delivery of it at the same time throws)
@@ -50,21 +50,15 @@ final class RecordedDelivery {
     /**
      * One message as the log knows it.
      *
-     * @param reference    what names the message for good ({@code purchase-order:<id>}, {@code production-order:<id>:sent})
+     * @param reference    what names the message for good ({@code production-order:<id>:sent})
      * @param generation   a deliberate resend is a new generation; a retry of one generation is the same message
      * @param templateCode what kind of message it is, kept on each row
-     * @param sentReference what the SENT row carries as {@code external_reference} (unique): the reference itself, so
-     *                      the message goes once whatever its generations - unless a sender lets one message go again
-     *                      deliberately, and names each generation's sending apart (a producer's re-sent order, 4A-3)
+     * @param sentReference what the SENT row carries as {@code external_reference} (unique): the reference itself for
+     *                      a message that goes once whatever its generations, or one per generation for a message a
+     *                      sender lets go again deliberately (a producer's re-sent order, 4A-3)
      */
     record Delivery(String reference, int generation, String templateCode, NotificationChannel channel,
                     String recipient, String sentReference) {
-
-        /** A message that goes once, whatever its generations: the purchase order's. */
-        Delivery(String reference, int generation, String templateCode, NotificationChannel channel,
-                 String recipient) {
-            this(reference, generation, templateCode, channel, recipient, reference);
-        }
     }
 
     /** How long a failure worth retrying waits before the next attempt, given how many failures there were. */
@@ -84,11 +78,6 @@ final class RecordedDelivery {
     private final DeliveryAttemptRecorder attempts;
     private final Backoff backoff;
 
-    /** Retries as often as the caller's retry runs: the purchase order's. */
-    RecordedDelivery(DeliveryLogJpaRepository logs, Clock clock, DeliveryAttemptRecorder attempts) {
-        this(logs, clock, attempts, null);
-    }
-
     /**
      * @param backoff how long each failure worth retrying waits ({@code next_attempt_at}); the caller's retry honours
      *                it. Null: no wait
@@ -101,17 +90,12 @@ final class RecordedDelivery {
     }
 
     /**
-     * Locks the message for the caller's transaction and says whether it still has to go: not when it was sent, nor
-     * when this generation was settled.
+     * Locks the message for the caller's transaction and says whether it still has to go: not when it was sent under
+     * {@code sentReference}, nor when this generation was settled.
      *
      * @throws IllegalStateException when another delivery of the same message holds the lock; the event stays
      *         incomplete and is tried again
      */
-    boolean pending(String reference, int generation) {
-        return pending(reference, generation, reference);
-    }
-
-    /** {@link #pending(String, int)} for a message whose generation is sent under {@code sentReference}. */
     boolean pending(String reference, int generation, String sentReference) {
         if (!logs.tryLockDelivery(reference)) {
             throw new IllegalStateException("Delivery " + reference + " is already in progress");
