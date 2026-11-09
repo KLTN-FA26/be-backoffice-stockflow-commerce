@@ -176,6 +176,63 @@ SELECT pg_temp.expect_fail('QT28 a new quote line in a retired carton unit', $q$
     INSERT INTO ordering.quote_line (id, quote_id, line_no, sku, uom_conversion_id, cartons, units_per_carton)
     VALUES (gen_random_uuid(), md5('qa9:c:quote5')::uuid, 1, 'QA-QC-OWN', md5('qa9:c:carton')::uuid, 5, 50) $q$);
 
+\echo '--- VAT and fee lines (V20261108002100, 4B-3)'
+SELECT pg_temp.expect_true('QT29 the VAT rates of QD-9',
+    (SELECT string_agg(tax_class || ':' || rate, ',' ORDER BY tax_class) FROM ordering.tax_rate)
+        = 'EXEMPT:0.00,REDUCED:5.00,STANDARD:10.00');
+SELECT pg_temp.expect_ok('QT30 a carton line copies its product''s VAT class and rate (14 BR-21)', $q$
+    UPDATE ordering.quote_line SET tax_class = 'STANDARD', tax_rate = 10 WHERE id = md5('qa9:c:line')::uuid $q$);
+SELECT pg_temp.expect_fail('QT31 a VAT rate without its class', $q$
+    UPDATE ordering.quote_line SET tax_class = NULL WHERE id = md5('qa9:c:line')::uuid $q$);
+SELECT pg_temp.expect_ok('QT32 a plate fee for the SKU on the quote, waiting for Sales to price it (14 BR-17)', $q$
+    INSERT INTO ordering.quote_fee_line (id, quote_id, kind, sku, amount, tax_class, tax_rate)
+    VALUES (md5('qa9:c:plate')::uuid, md5('qa9:c:quote')::uuid, 'PLATE_FEE', 'QA-QC-OWN', NULL, 'STANDARD', 10) $q$);
+SELECT pg_temp.expect_fail('QT33 a second plate fee for the same SKU', $q$
+    INSERT INTO ordering.quote_fee_line (id, quote_id, kind, sku, amount, tax_class, tax_rate)
+    VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 'PLATE_FEE', 'QA-QC-OWN', 0, 'STANDARD', 10) $q$);
+SELECT pg_temp.expect_fail('QT34 a plate fee for a SKU that is not on the quote', $q$
+    INSERT INTO ordering.quote_fee_line (id, quote_id, kind, sku, amount, tax_class, tax_rate)
+    VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 'PLATE_FEE', 'QA-QC-BLANK', 0, 'STANDARD', 10) $q$);
+SELECT pg_temp.expect_fail('QT35 the SKU''s line removed, its plate fee left behind', $q$
+    DELETE FROM ordering.quote_line WHERE id = md5('qa9:c:line')::uuid $q$);
+SELECT pg_temp.expect_fail('QT36 a plate fee with a fraction of a dong', $q$
+    UPDATE ordering.quote_fee_line SET amount = 100.5 WHERE id = md5('qa9:c:plate')::uuid $q$);
+SELECT pg_temp.expect_fail('QT37 a shipping fee of nothing (14 BR-20)', $q$
+    INSERT INTO ordering.quote_fee_line (id, quote_id, kind, sku, amount, tax_class, tax_rate)
+    VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 'SHIPPING_FEE', NULL, 0, 'STANDARD', 10) $q$);
+SELECT pg_temp.expect_ok('QT38 a shipping fee of 300,000 at the standard rate, the plate fee waived', $q$
+    INSERT INTO ordering.quote_fee_line (id, quote_id, kind, sku, amount, tax_class, tax_rate)
+    VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 'SHIPPING_FEE', NULL, 300000, 'STANDARD', 10);
+    UPDATE ordering.quote_fee_line SET amount = 0 WHERE id = md5('qa9:c:plate')::uuid $q$);
+SELECT pg_temp.expect_fail('QT39 a second shipping fee', $q$
+    INSERT INTO ordering.quote_fee_line (id, quote_id, kind, sku, amount, tax_class, tax_rate)
+    VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 'SHIPPING_FEE', NULL, 1000, 'STANDARD', 10) $q$);
+SELECT pg_temp.expect_true('QT40 an order written with its total alone carries no VAT: before tax = total',
+    (SELECT net_amount = total_amount AND tax_amount = 0 FROM ordering.customer_order
+      WHERE id = md5('qa9:c:order')::uuid));
+SELECT pg_temp.expect_ok('QT41 the order''s VAT: 10% of 1,800,000, the total with it, before tax generated', $q$
+    UPDATE ordering.customer_order SET tax_amount = 180000, total_amount = 1980000
+     WHERE id = md5('qa9:c:order')::uuid $q$);
+SELECT pg_temp.expect_true('QT41b before tax 1,800,000',
+    (SELECT net_amount = 1800000 FROM ordering.customer_order WHERE id = md5('qa9:c:order')::uuid));
+SELECT pg_temp.expect_fail('QT42 more VAT than the total', $q$
+    UPDATE ordering.customer_order SET tax_amount = 1980001 WHERE id = md5('qa9:c:order')::uuid $q$);
+SELECT pg_temp.expect_fail('QT43 an order line''s VAT rate without its amount', $q$
+    UPDATE ordering.order_line SET tax_rate = 10 WHERE order_id = md5('qa9:c:order')::uuid $q$);
+SELECT pg_temp.expect_ok('QT44 the order''s plate fee and shipping fee, each with its VAT', $q$
+    INSERT INTO ordering.order_fee_line (id, order_id, kind, sku, amount, tax_rate, tax_amount, currency)
+    VALUES (gen_random_uuid(), md5('qa9:c:order')::uuid, 'PLATE_FEE', 'QA-QC-OWN', 500000, 10, 50000, 'VND'),
+           (gen_random_uuid(), md5('qa9:c:order')::uuid, 'SHIPPING_FEE', NULL, 300000, 10, 30000, 'VND') $q$);
+SELECT pg_temp.expect_fail('QT45 a plate fee that names no SKU', $q$
+    INSERT INTO ordering.order_fee_line (id, order_id, kind, sku, amount, tax_rate, tax_amount, currency)
+    VALUES (gen_random_uuid(), md5('qa9:c:order')::uuid, 'PLATE_FEE', NULL, 1, 10, 0, 'VND') $q$);
+SELECT pg_temp.expect_fail('QT46 a second shipping fee on the order', $q$
+    INSERT INTO ordering.order_fee_line (id, order_id, kind, sku, amount, tax_rate, tax_amount, currency)
+    VALUES (gen_random_uuid(), md5('qa9:c:order')::uuid, 'SHIPPING_FEE', NULL, 1, 10, 0, 'VND') $q$);
+SELECT pg_temp.expect_fail('QT47 a SKU''s cartons sold below zero', $q$
+    INSERT INTO reporting.product_sales_summary (id, sku, period, cartons_sold, created_at)
+    VALUES (gen_random_uuid(), 'QA-QC-OWN', '2026-11-09', -1, NOW()) $q$);
+
 \echo '--- who answers (V20261017000200 / 000300)'
 CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$
     SELECT EXISTS (SELECT 1 FROM identity.role_permission rp
