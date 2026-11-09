@@ -47,6 +47,8 @@ class FulfillmentModuleTest {
     @MockitoBean com.stockflow.product.api.CustomerSkus customerSkusMock;
     // Order's, not fulfillment's, since packing no longer checks designs (V20261108000500).
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
+    // Order (booted here) re-sends a production order's message through notification, which is not booted (4A-3).
+    @MockitoBean com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
 
     @Test
     @DisplayName("fulfillment starts and answers through its api with the other modules absent")

@@ -47,6 +47,9 @@ class ProcurementModuleTest {
     com.stockflow.payment.api.PaymentService paymentServiceMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.payment.api.ReturnSettlement returnSettlementMock;
+    /** Notification (booted here) reads a production order's text through this (4A-3). Order implements it and is
+     *  booted here since 4A-5; it stays a mock so this slice never writes a producer's message. */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
 
     @Test
     @DisplayName("procurement starts and answers through its api with the other modules absent")

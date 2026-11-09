@@ -37,6 +37,7 @@ class NotificationModuleTest {
      * test does for OrderPayables. Not a widening: no other module is booted.
      */
     @MockitoBean CustomerDirectory customerDirectory;
+    @MockitoBean com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectory;
 
     @Test
     @DisplayName("notification starts and answers through its api with the other modules absent")

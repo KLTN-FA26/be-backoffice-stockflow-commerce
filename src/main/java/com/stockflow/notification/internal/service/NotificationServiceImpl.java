@@ -182,13 +182,20 @@ class NotificationServiceImpl implements NotificationService {
     @Transactional(readOnly = true)
     public PageResponse<DeliveryAttemptSummary> purchaseOrderDeliveries(
             UUID purchaseOrderId, int page, int size) {
+        return attempts(List.of("purchase-order:" + purchaseOrderId,
+                "purchase-order:" + purchaseOrderId + ":cancellation"), page, size);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<DeliveryAttemptSummary> productionOrderDeliveries(UUID productionOrderId, int page, int size) {
+        return attempts(ProductionOrderMailListener.references(productionOrderId), page, size);
+    }
+
+    private PageResponse<DeliveryAttemptSummary> attempts(List<String> references, int page, int size) {
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id"));
         return Pages.toResponse(
-                logs.findByOperationReferenceIn(
-                                List.of(
-                                        "purchase-order:" + purchaseOrderId,
-                                        "purchase-order:" + purchaseOrderId + ":cancellation"),
-                                pageable)
+                logs.findByOperationReferenceIn(references, pageable)
                         .map(
                                 log ->
                                         new DeliveryAttemptSummary(
