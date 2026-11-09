@@ -65,5 +65,7 @@ stockflow:
     # Note what this costs: @RequiresPermission is NOT enforced under this profile, so a permission
     # mistake will not show up here. Run with the default profile before believing the matrix works.
     enabled: false
+    links:
+      base-url: ${STOCKFLOW_PUBLIC_BASE_URL:http://localhost:8080}
   inventory:
     reservation-sweep-interval: PT15S   # faster than production, so expiry is testable by hand

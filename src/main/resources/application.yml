@@ -596,6 +596,13 @@ stockflow:
       # cannot be read or parsed stops the application at startup.
       key-path: ${JWT_PRIVATE_KEY_PATH:}
       private-key: ${JWT_PRIVATE_KEY:}
+    links:
+      # Links a partner opens without signing in, for a limited time (SignedLinks; 4A-3: a producer's links to its
+      # production order slip and print files). key: the HMAC key, base64 of at least 32 bytes (openssl rand -base64 32);
+      # blank signs with a key made per process, so every link sent stops working at the next restart. base-url: where
+      # the application is reached from outside, every link starts with it; blank makes no link and says so in the mail.
+      key: ${STOCKFLOW_LINKS_KEY:}
+      base-url: ${STOCKFLOW_PUBLIC_BASE_URL:}
     secrets:
       # The AES-256 key stored secrets are sealed with (SecretCipher): a carrier's API key, webhook secret and webhook
       # header credential (kltn-docs 09 §4.1). Base64 of exactly 32 bytes: openssl rand -base64 32. Blank: the

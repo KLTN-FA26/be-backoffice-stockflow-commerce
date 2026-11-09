@@ -79,6 +79,10 @@ stockflow:
     # Off: the integration tests exercise the service layer directly, not HTTP, so the filter chain
     # would add a JWT setup step without testing anything these tests are about.
     enabled: false
+    links:
+      # A fixed key and address for tests only, so a link made in one call verifies in the next.
+      key: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+      base-url: http://localhost:8080
     secrets:
       # A fixed key for tests only (32 zero-to-31 bytes), so sealed carrier secrets open across a test's requests.
       key: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
