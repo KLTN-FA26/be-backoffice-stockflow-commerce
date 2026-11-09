@@ -379,6 +379,14 @@ public enum ErrorCode {
     PRODUCER_NOT_FOUND("Producer not found", 404),
     /** 4A-1: a producer's code identifies it for good. */
     PRODUCER_CODE_TAKEN("A producer has this code already", 409),
+    /** 4A-3: a link to a production order's files that was not made by this system, or names something else. */
+    PRODUCTION_ORDER_LINK_INVALID("This link is not valid", 403),
+    /** 4A-3: a link to a production order's files that has expired, or whose production order is no longer open. */
+    PRODUCTION_ORDER_LINK_EXPIRED("This link has expired, or its production order is no longer open", 410),
+    /** 4A-3: a production order sent before slips were kept, or not sent yet. */
+    PRODUCTION_ORDER_SLIP_NOT_FOUND("The production order has no slip", 404),
+    /** 4A-3: the stored slip no longer hashes to what was sent. */
+    PRODUCTION_ORDER_SLIP_MISMATCH("The stored slip no longer matches what was sent", 409),
     /** 4B-7 (17 §4.2 step 2): only a CONFIRMED order of a contract gets a shipping warehouse. */
     ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED("The shipping warehouse is chosen for a confirmed order of a contract", 409),
     /** 4B-7 (17 BR-22): the shipping warehouse changes only while nothing is held for the order. */

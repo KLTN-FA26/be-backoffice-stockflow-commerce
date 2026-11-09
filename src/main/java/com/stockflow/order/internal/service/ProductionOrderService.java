@@ -61,8 +61,8 @@ import java.util.stream.Collectors;
  *       and what other open production orders of the batch still bring. Received at the shipping warehouse; needed by
  *       the batch's window start (BR-26); a sample required when one of its SKUs was never produced (BR-24).</li>
  *   <li><b>Edit</b> while a draft (B33), <b>submit</b>, <b>approve</b> (Sales Manager, not the one who drew it up -
- *       BR-23; the print files are checked byte by byte first) which sends it, or <b>return</b> it with a reason.
- *       The sheet and the e-mail to the producer are 4A-3.</li>
+ *       BR-23; the print files are checked byte by byte first) which sends it - the slip drawn and its producer told
+ *       ({@link ProductionOrderDispatch}, 4A-3) - or <b>return</b> it with a reason.</li>
  *   <li><b>Cancel</b> before mass printing, <b>close</b> after it started (BR-06), with a reason.</li>
  * </ul>
  *
@@ -90,14 +90,15 @@ public class ProductionOrderService {
     private final WarehouseDirectory warehouses;
     private final CustomerSkus customerSkus;
     private final DesignService designs;
+    private final ProductionOrderDispatch dispatch;
     private final Clock clock;
     private final TransactionTemplate tx;
 
     ProductionOrderService(ProductionOrderRepository productionOrders, ProductionOrderSearch search,
                            OrderRepository orders, SalesContractRepository contracts, ProducerRepository producers,
                            ShippingWarehouseService shippingWarehouses, WarehouseDirectory warehouses,
-                           CustomerSkus customerSkus, DesignService designs, Clock clock,
-                           PlatformTransactionManager transactions) {
+                           CustomerSkus customerSkus, DesignService designs, ProductionOrderDispatch dispatch,
+                           Clock clock, PlatformTransactionManager transactions) {
         this.productionOrders = productionOrders;
         this.search = search;
         this.orders = orders;
@@ -107,6 +108,7 @@ public class ProductionOrderService {
         this.warehouses = warehouses;
         this.customerSkus = customerSkus;
         this.designs = designs;
+        this.dispatch = dispatch;
         this.clock = clock;
         this.tx = new TransactionTemplate(transactions);
     }
@@ -204,7 +206,8 @@ public class ProductionOrderService {
      * Approved by the Sales Manager - never the one who drew it up - so sent (BR-23), while the batch still lacks what it
      * makes (as on submission). The print files of every line are re-read and re-hashed first, before any row is locked
      * (a full download of each bundle, each in its own read-only transaction): a production order is not sent to print
-     * a file that changed.
+     * a file that changed. Its slip is drawn and stored then too, still with no lock held; the transaction keeps it and
+     * publishes {@code ProductionOrderSent} (4A-3), or the stored slip is deleted when it fails.
      *
      * @throws BusinessException {@code PRODUCTION_ORDER_SELF_APPROVAL}; {@code PRINT_FILE_MISMATCH};
      *         {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}; {@code PRODUCTION_ORDER_STATUS_INVALID};
@@ -223,6 +226,11 @@ public class ProductionOrderService {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID, ("Production order %s is %s and "
                     + "cannot be approved").formatted(read.code(), read.status()));
         }
+        // A stale request is refused before the files are downloaded and a slip drawn for a version nobody approves.
+        if (read.version() != version) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Production order %s changed since it was read"
+                    .formatted(read.code()));
+        }
         Map<UUID, String> snapshots = new LinkedHashMap<>();
         read.lines().forEach(line -> snapshots.put(line.designSnapshotId(), line.printFileChecksum()));
         for (Map.Entry<UUID, String> snapshot : snapshots.entrySet()) {
@@ -232,15 +240,20 @@ public class ProductionOrderService {
                         + "design %s no longer match what was approved").formatted(read.code(), snapshot.getKey()));
             }
         }
-        return tx.execute(status -> {
-            Locked locked = lockedWithOrder(id, version);
-            ProductionOrder production = locked.production();
-            production.requireWithin(lacking(locked));
-            production.approve(by, clock.instant());
-            ProductionOrder saved = productionOrders.save(production);
-            log.info("Production order {} approved and sent", saved.code());
-            return saved;
-        });
+        // 4A-3: the slip is drawn and stored with no lock held, from the version read - which the transaction checks.
+        Instant now = clock.instant();
+        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(read, by, now)) {
+            return tx.execute(status -> {
+                Locked locked = lockedWithOrder(id, version);
+                ProductionOrder production = locked.production();
+                production.requireWithin(lacking(locked));
+                production.approve(by, now);
+                ProductionOrder saved = productionOrders.save(production);
+                dispatch.sent(saved, slip);
+                log.info("Production order {} approved and sent", saved.code());
+                return saved;
+            });
+        }
     }
 
     /** Returned to the coordinator with a reason (BR-23). */
@@ -252,22 +265,26 @@ public class ProductionOrderService {
         return productionOrders.save(production);
     }
 
-    /** Cancelled before mass printing, with a reason (BR-06). Telling the producer is 4A-3. */
+    /** Cancelled before mass printing, with a reason (BR-06); a producer it was sent to is told to stop (4A-3). */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
     public ProductionOrder cancel(UUID id, long version, String reason, UUID by) {
         ProductionOrder production = locked(id, version);
         production.cancel(reason, by, clock.instant());
         log.info("Production order {} cancelled", production.code());
-        return productionOrders.save(production);
+        ProductionOrder saved = productionOrders.save(production);
+        dispatch.stopped(saved);
+        return saved;
     }
 
-    /** Closed after mass printing started, short or before anything came, with a reason (BR-06). */
+    /** Closed after mass printing started, short or before anything came, with a reason (BR-06); its producer is told. */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
     public ProductionOrder close(UUID id, long version, String reason, UUID by) {
         ProductionOrder production = locked(id, version);
         production.close(reason, by, clock.instant());
         log.info("Production order {} closed", production.code());
-        return productionOrders.save(production);
+        ProductionOrder saved = productionOrders.save(production);
+        dispatch.stopped(saved);
+        return saved;
     }
 
     // ---- reading ----------------------------------------------------------------------------------------------------

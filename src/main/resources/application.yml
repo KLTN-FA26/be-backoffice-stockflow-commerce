@@ -545,6 +545,11 @@ stockflow:
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
       free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}
+    production-order:
+      # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
+      # is checked again (the production order still open, the file still the approved one) and gets a presigned URL
+      # of minutes, so this may cover a production run; a later message (the approved sample) carries fresh links.
+      file-links-valid-for: ${PRODUCTION_ORDER_FILE_LINKS_VALID_FOR:P30D}
 
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
