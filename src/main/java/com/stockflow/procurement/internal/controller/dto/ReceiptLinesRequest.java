@@ -12,26 +12,20 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The whole count of a draft receipt, replacing the previous one. One line per PO line and lot (SCRUM-478: on a receipt
- * without a PO, per item and lot, and a line names its item by {@code sku} instead of {@code purchaseOrderLineId};
- * the service checks which one a receipt takes, and answers on that field);
- * {@code lotNumber} and {@code expiryDate} only for items tracked that way (BR-03).
+ * The whole count of a draft receipt against a production order, replacing the previous one (4A-5): one line per
+ * production order line, naming its {@code productionOrderLineId} and listing at least one carton in
+ * {@code packages} - an entry with an {@code lpn} recounts that carton, one without labels a new one, a carton left out
+ * is voided (SCRUM-473). Every carton holds the line's standard count, so a carton's {@code quantity} and the line's
+ * {@code quantity} may be left out (they are counted from the cartons) and, when given, must agree.
  *
- * <p>SCRUM-473: {@code quantity} stays the line's total in base units. {@code packages} are the labelled cartons
- * holding part or all of it, the whole list each time - an entry with an {@code lpn} recounts that carton, one
- * without labels a new one, a carton left out is voided - and {@code unitOfMeasure} is then the active packing unit
- * they are in. A line without cartons is loose, in the base unit.</p>
- *
- * <p>4A-5: on a receipt against a production order a line names its {@code productionOrderLineId} and lists at least
- * one carton; every carton holds the line's standard count, so a carton's {@code quantity} and the line's
- * {@code quantity} may be left out (they are counted from the cartons) and, when given, must agree. No
- * {@code lotNumber}, {@code expiryDate}, {@code purchaseOrderLineId} or {@code sku}: the lot is the production order's
- * code. A purchase receipt's line still needs its {@code quantity}.</p>
+ * <p>{@code lotNumber} and {@code expiryDate} are refused on their field when given: the lot is the production order's
+ * code (BR-03), finished goods carry no expiry date (BR-06). {@code sku}, when given, must be the production order
+ * line's. The purchase order line a line once named went with purchasing (4A-8).</p>
  */
 public record ReceiptLinesRequest(@NotEmpty @Size(max = 200) List<@Valid @NotNull Line> lines) {
 
     public record Line(
-            UUID purchaseOrderLineId,
+            UUID productionOrderLineId,
             @Positive Integer quantity,
             @Size(max = 64) String lotNumber,
             LocalDate expiryDate,
@@ -39,15 +33,11 @@ public record ReceiptLinesRequest(@NotEmpty @Size(max = 200) List<@Valid @NotNul
             @Size(max = 255) String note,
             @Size(max = 16) String unitOfMeasure,
             @Size(max = 500) List<@Valid @NotNull Package> packages,
-            @Size(max = 64) String sku,
-            UUID productionOrderLineId
+            @Size(max = 64) String sku
     ) {
     }
 
-    /**
-     * One carton: {@code lpn} to recount one labelled before, absent to label a new one. {@code quantity} may be left
-     * out on a production receipt, where it is the line's standard count.
-     */
+    /** One carton: {@code lpn} to recount one labelled before, absent to label a new one; {@code quantity} may be left out. */
     public record Package(@Size(max = 30) String lpn, @Positive Integer quantity) {
     }
 }

@@ -17,7 +17,7 @@ import java.util.UUID;
  * stock it becomes is counted in whole units, so the domain carries an int and this maps the column
  * as it is.
  *
- * <p>The PO line, item and lot are what the line IS and are never written again. What was counted —
+ * <p>The production order line, item and lot are what the line IS and are never written again. What was counted —
  * where, how many, expiry, note — is recounted while the receipt is a draft
  * ({@link #recount}); {@code tg_goods_receipt_lines_frozen} refuses it once the receipt is past DRAFT.</p>
  *
@@ -33,10 +33,10 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @JoinColumn(name = "receipt_id", nullable = false, updatable = false)
     private GoodsReceiptJpaEntity receipt;
 
-    @Column(name = "po_line_id", updatable = false)
-    private UUID poLineId;
-
-    /** 4A-5: the production order line a line of a production receipt counts; null on a purchase receipt. */
+    /**
+     * 4A-5: the production order line a line of a production receipt counts; null on a historical purchase receipt,
+     * whose {@code po_line_id} is left unmapped since purchasing went (4A-8) - 4A-9 drops it.
+     */
     @Column(name = "production_order_line_id", updatable = false)
     private UUID productionOrderLineId;
 
@@ -64,18 +64,10 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     protected GoodsReceiptLineJpaEntity() {
     }
 
-    public GoodsReceiptLineJpaEntity(UUID id, UUID poLineId, UUID inventoryItemId, UUID locationId,
+    public GoodsReceiptLineJpaEntity(UUID id, UUID productionOrderLineId, UUID inventoryItemId, UUID locationId,
                                      BigDecimal receivedQty, String lotNumber, LocalDate expiryDate, String note,
                                      UUID uomConversionId) {
-        this(id, poLineId, null, inventoryItemId, locationId, receivedQty, lotNumber, expiryDate, note,
-                uomConversionId);
-    }
-
-    public GoodsReceiptLineJpaEntity(UUID id, UUID poLineId, UUID productionOrderLineId, UUID inventoryItemId,
-                                     UUID locationId, BigDecimal receivedQty, String lotNumber, LocalDate expiryDate,
-                                     String note, UUID uomConversionId) {
         super(id);
-        this.poLineId = poLineId;
         this.productionOrderLineId = productionOrderLineId;
         this.inventoryItemId = inventoryItemId;
         this.locationId = locationId;
@@ -102,7 +94,6 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
         this.uomConversionId = uomConversionId;
     }
 
-    public UUID getPoLineId() { return poLineId; }
     public UUID getProductionOrderLineId() { return productionOrderLineId; }
     public UUID getInventoryItemId() { return inventoryItemId; }
     public UUID getLocationId() { return locationId; }
