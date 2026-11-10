@@ -18,9 +18,9 @@ import java.util.UUID;
  * options are created in the same transaction, SKUs by the code rule ({@code CODE-VALUE-VALUE}) and the
  * first combination as the default variant; anything refused (a SKU taken, a matrix over the limit)
  * leaves no product behind. Images are then added per variant ({@code /variants/{variantId}/media}).
- * Logistics and stock policy are not part of the catalog flow: they belong to the variant's inventory item
+ * Logistics are not part of the catalog flow: they belong to the variant's inventory item
  * ({@code /api/v1/inventory/items/{id}}) and are set by the warehouse side, which holds
- * {@code inventory-inventory-items:UPDATE} (warehouse manager, inventory planner). Catalog roles hold no grant on
+ * {@code inventory-inventory-items:UPDATE} (the warehouse manager). Catalog roles hold no grant on
  * that resource by design.
  *
  * <p>{@code code} is upper-cased by the server. {@code categoryId} is not {@code @NotNull}: a product

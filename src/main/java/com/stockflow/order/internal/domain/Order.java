@@ -764,7 +764,7 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * The carrier delivered it, as the Order Coordinator records when the carrier reports back
+     * The carrier delivered it, as the warehouse manager records when the carrier reports back
      * (kltn-docs 09 §4.3, 17 §4.3): SHIPPED or DELIVERY_FAILED (a retry) → DELIVERED. Payment opens the receivable of
      * a credit order from the event (15 §4.3 step 2), for what is still unbilled.
      *
@@ -1441,7 +1441,7 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * The carrier delivered one shipment (09 §4.3 step 1; the Order Coordinator records it, BR-02). A credit order
+     * The carrier delivered one shipment (09 §4.3 step 1; the warehouse manager records it, BR-02). A credit order
      * bills what the shipment carried, less what the customer paid ahead and has not been billed against
      * ({@code OrderDelivered}, one receivable per shipment). The order is DELIVERED once every shipment arrived.
      *
