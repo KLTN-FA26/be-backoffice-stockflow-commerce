@@ -52,7 +52,13 @@ public final class CartonRows {
     public static List<Carton> stock(JdbcTemplate jdbc, String sku, String location, int count, int factor,
                                      String lotNumber, java.time.LocalDate expiryDate, Instant receivedAt,
                                      String status) {
-        UUID unit = unit(jdbc, sku, factor);
+        return stockOfUnit(jdbc, sku, unit(jdbc, sku, factor), location, count, lotNumber, expiryDate, receivedAt, status);
+    }
+
+    /** {@code count} cartons of exactly this carton unit of the SKU, however many carton units the SKU has. */
+    public static List<Carton> stockOfUnit(JdbcTemplate jdbc, String sku, UUID unit, String location, int count,
+                                           String lotNumber, java.time.LocalDate expiryDate, Instant receivedAt,
+                                           String status) {
         int perCarton = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?", Integer.class,
                 unit);
         List<Carton> made = new ArrayList<>();

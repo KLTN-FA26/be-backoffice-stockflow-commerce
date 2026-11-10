@@ -34,6 +34,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -250,15 +251,29 @@ public final class ConfirmedOrders {
      * with a real one-page PDF scan. The order is PENDING_PAYMENT while an installment on signing is unpaid.
      */
     public Signed sign(UUID orderId, List<SalesContracts.Installment> plan) {
+        return sign(orderId, plan, 1);
+    }
+
+    /**
+     * The same with the cartons of every line split over {@code batches} delivery batches, the first three weeks out,
+     * each next one two weeks after the one before (4B-8); a line's cartons must divide by the number of batches.
+     */
+    public Signed sign(UUID orderId, List<SalesContracts.Installment> plan, int batches) {
         legalProfile(customerOf(orderId));
         SalesContracts contracts = bean(SalesContracts.class);
-        List<SalesContracts.BatchLine> batch = jdbc().queryForList("""
-                        SELECT id, cartons FROM ordering.order_line WHERE order_id = ? ORDER BY id""", orderId).stream()
-                .map(row -> new SalesContracts.BatchLine((UUID) row.get("id"), ((Number) row.get("cartons")).intValue()))
-                .toList();
+        List<Map<String, Object>> lines = jdbc().queryForList(
+                "SELECT id, cartons FROM ordering.order_line WHERE order_id = ? ORDER BY id", orderId);
         LocalDate today = today();
-        SalesContracts.ContractView drafted = asSales(() -> contracts.create(sales(), orderId, new SalesContracts.Draft(
-                null, List.of(new SalesContracts.Batch(today.plusDays(21), today.plusDays(23), batch)), plan)));
+        List<SalesContracts.Batch> schedule = new ArrayList<>();
+        for (int b = 0; b < batches; b++) {
+            final int part = b;
+            List<SalesContracts.BatchLine> batch = lines.stream().map(row -> new SalesContracts.BatchLine(
+                    (UUID) row.get("id"), ((Number) row.get("cartons")).intValue() / batches)).toList();
+            schedule.add(new SalesContracts.Batch(today.plusDays(21 + 14L * part), today.plusDays(23 + 14L * part),
+                    batch));
+        }
+        SalesContracts.ContractView drafted = asSales(() -> contracts.create(sales(), orderId,
+                new SalesContracts.Draft(null, schedule, plan)));
         SalesContracts.ContractView sent = asSales(() -> contracts.send(sales(), orderId, drafted.version()));
         byte[] scan = TestPdfs.blank();
         SalesContracts.ContractView signed = asSales(() -> contracts.sign(sales(), orderId, sent.version(),
@@ -274,6 +289,11 @@ public final class ConfirmedOrders {
     /** A new order of {@code lines} whose contract pays everything on signing, signed and not paid yet. */
     public Signed signed(UUID customerId, Line... lines) {
         return sign(draft(customerId, Arrays.asList(lines)), paidOnSigning());
+    }
+
+    /** A new order of {@code lines} paid on signing, delivered in {@code batches} batches, signed. */
+    public Signed signedInBatches(UUID customerId, int batches, Line... lines) {
+        return sign(draft(customerId, Arrays.asList(lines)), paidOnSigning(), batches);
     }
 
     /** A new order of {@code lines} with {@code plan}, signed. */

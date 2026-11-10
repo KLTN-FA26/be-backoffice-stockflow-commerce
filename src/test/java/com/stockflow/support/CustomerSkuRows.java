@@ -147,8 +147,22 @@ public final class CustomerSkuRows {
             UUID unit = CartonRows.unit(jdbc, sku, units);
             int factor = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?",
                     Integer.class, unit);
-            CartonRows.stock(jdbc, sku, "HCM-A02-1-A", units / factor, factor, null,
-                    java.time.Instant.now().minus(java.time.Duration.ofDays(2)));
+            java.time.Instant received = java.time.Instant.now().minus(java.time.Duration.ofDays(2));
+            if (units % factor == 0) {
+                CartonRows.stock(jdbc, sku, "HCM-A02-1-A", units / factor, factor, null, received);
+                return;
+            }
+            // A carton of exactly {@code units} pieces: the unit {@code ConfirmedOrders.Line#units} orders it in.
+            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
+                        default_purchase, active, version, created_at, default_shipping)
+                    VALUES (?, ?, ?, ?, FALSE, FALSE, TRUE, 0, NOW(), FALSE)
+                    ON CONFLICT (inventory_item_id, unit_of_measure) DO NOTHING""", Identifiers.newId(), item,
+                    "PK" + units, units);
+            UUID pack = jdbc.queryForObject("SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? "
+                    + "AND unit_of_measure = ?", UUID.class, item, "PK" + units);
+            CartonRows.stockOfUnit(jdbc, sku, pack, "HCM-A02-1-A", 1, null, null, received, "AVAILABLE");
         });
     }
 }
