@@ -56,16 +56,6 @@ class LocationDirectoryAdapter implements LocationDirectory {
     }
 
     @Override
-    public java.util.List<LocationId> quarantineAreas(java.util.UUID warehouseId) {
-        return warehouses.areasOf(warehouseId, com.stockflow.warehouse.api.StorageLocationView.AreaType.QUARANTINE)
-                .stream()
-                .filter(com.stockflow.warehouse.api.StorageLocationView::usable)
-                .map(view -> new LocationId(view.locationCode()))
-                .sorted(java.util.Comparator.comparing(LocationId::code))
-                .toList();
-    }
-
-    @Override
     public boolean isBin(LocationId location) {
         return warehouses.findLocation(location.code())
                 .map(view -> view.kind() == com.stockflow.warehouse.api.StorageLocationView.Kind.BIN)

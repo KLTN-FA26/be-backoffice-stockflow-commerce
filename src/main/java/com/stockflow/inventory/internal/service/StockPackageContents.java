@@ -68,7 +68,7 @@ class StockPackageContents {
 
     /**
      * After the rows are saved: every carton taken from is CONSUMED. One with units left in it was taken from in
-     * part - a pick of part of a hold, damage reported on some of its units - which no carton allows any more.
+     * part - a pick of part of a hold - which no carton allows any more.
      */
     public void settle(LockedCartons cartons, Instant now) {
         for (StockPackageId id : cartons.taken) {

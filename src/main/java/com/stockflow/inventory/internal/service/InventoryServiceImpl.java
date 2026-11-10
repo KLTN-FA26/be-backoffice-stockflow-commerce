@@ -671,10 +671,7 @@ class InventoryServiceImpl implements InventoryService {
         }
         policies.lock(view.sku().code());
         LocalDate today = BusinessCalendar.date(now);
-        // A damage report's impaired share restored onto a bin is restored as loose units (StockDamageService#restore),
-        // which no pick line can take (team plan 4C-4; kltn-docs 07 BR-04, BR-10): it is released and reallocated like
-        // any short allocation, to whole cartons, or INSUFFICIENT_STOCK leaves everything as it was (4C-4 B1). Keeping
-        // it where it is comes back when a restore puts units back into a carton (4C-3).
+        // Released and reallocated to whole cartons, or INSUFFICIENT_STOCK leaves everything as it was (4C-4 B1).
         String warehouse = view.location().warehouseCode();
         // 4B-7: the new bins come out of what other orders do not hold at this warehouse by SKU (20 BR-17). One pool
         // for both: every pickable carton but the short one's (4C-2 excludes a stock row, no longer a whole bin).
@@ -715,7 +712,7 @@ class InventoryServiceImpl implements InventoryService {
     /**
      * Sellable stock of the SKU on pickable, usable locations of one warehouse (module 06 BR-12), never at
      * {@code excluded}; read as projections, so nothing lands in the persistence context before the locked reads.
-     * The one definition, shared with the damage reported at picking: {@link PickableStock}.
+     * The one definition: {@link PickableStock}.
      */
     private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, StockItemId excluded) {
         return new PickableStock(repository, locations, cycleCounts).candidates(sku, warehouse, excluded, clock.instant());

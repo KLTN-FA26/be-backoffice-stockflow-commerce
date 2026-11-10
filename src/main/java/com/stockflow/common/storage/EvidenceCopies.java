@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The display copies of an evidence photo - a return photo, a damage photo - written next to the original when it is
+ * The display copies of an evidence photo - a return photo, a goods-receipt photo - written next to the original when it is
  * stored: a thumbnail for lists and a large copy for viewing, both re-encoded without metadata
  * ({@link ImageRenditions}). The original stays private and is downloaded only on purpose.
  *

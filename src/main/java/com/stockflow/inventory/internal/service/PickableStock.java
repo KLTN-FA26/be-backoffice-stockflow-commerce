@@ -21,8 +21,8 @@ import java.util.stream.Collectors;
  * The stock an order may be allocated in one warehouse (module 06 BR-12, docs 04c X-SHORT step 03): sellable rows on
  * pickable, usable locations, never a layer an open recount has frozen.
  *
- * <p>One definition for every path that allocates an order's units to bins: a release, a short pick reallocated
- * (X-SHORT), damaged units replaced at picking (SCRUM-277). Two copies of this filter would drift the day a third rule
+ * <p>One definition for every path that allocates an order's units to bins: a release, and a short pick reallocated
+ * (X-SHORT). Two copies of this filter would drift the day a third rule
  * joins it, and an allocation planned by the old copy would send a picker to a bin nobody may pick from.</p>
  *
  * <p>Read as projections, so nothing lands in the persistence context before the caller's locked reads. A plain

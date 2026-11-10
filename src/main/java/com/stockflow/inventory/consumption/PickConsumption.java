@@ -44,7 +44,7 @@ public interface PickConsumption {
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} when the line's
      *         hold is unknown; {@code LOCATION_NOT_FOUND} / {@code LOCATION_NOT_USABLE} for the bin;
      *         {@code STOCK_PACKAGE_TAKEN_WHOLE} when the hold is not that whole carton, emptied by this pick (loose
-     *         stock, part of a carton, units of it found damaged at packing); {@code INVALID_STOCK_PACKAGE_TRANSITION}
+     *         stock, part of a carton); {@code INVALID_STOCK_PACKAGE_TRANSITION}
      *         when the carton is not CONSUMED; {@code STOCK_STATUS_MISMATCH} when its row is not AVAILABLE stock;
      *         {@code OUT_OF_DATA_SCOPE}
      */

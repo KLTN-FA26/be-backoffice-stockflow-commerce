@@ -249,7 +249,9 @@ of the same warehouse whole, scanned by LPN: CONSUMED → IN_STOCK sealed, its r
 `stock_movement(PUT_BACK, PICK_LINE)` row naming the carton per line
 (`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/put-back`, docs 07 BR-05, §4.5 step 14; team plan 4C-4).
 A short pick is per carton with a reason (`NOT_FOUND` / `DAMAGED`): the line SHORT, the order on hold, a blind
-count of the carton (07 §4.4 step 9, BR-09).
+count of the carton (07 §4.4 step 9, BR-09). That is the only damage a picker reports: damaged goods are handled
+whole, by carton (short pick, the check station's removal into quarantine, a quarantined carton released or written
+off); the unit-level damage report with photos went with team plan 5-6 (`V20261114000400`).
 
 **The staging area (team plan 4C-5, 07 §1, §4.3; 20 §4.9).** A task has a `destination`, chosen while it is PENDING
 (as is its assignee, 07 BR-08; `tg_pick_pending_edits`): `DISPATCH` deducts each carton at the scan, as above;
@@ -263,7 +265,7 @@ area, by the assignee or whoever assigns the work. A cancelled order's staged ca
 by `unstage` (a second `MOVE`, nothing was deducted). Stock in a STAGING area is out of ATP even once a cancellation
 released it (ATP counts only whole cartons a release could allocate, and a staging area is never pickable), never
 allocated, never moved by hand (`StockOperationsServiceImpl.requireMovableBetween`, `tg_stock_movement_staging`),
-never reported damaged on the shelf, and written down by a count or an adjustment but never up. Lock order of the move to
+and written down by a count or an adjustment but never up. Lock order of the move to
 dispatch: pick → order → SKU locks → carton → row. A top-up (`POST …/top-up`, 07 §4.3 step 7) plans lines for holds no
 line has yet, in the same task; a STAGED or PICKED task goes back to PICKING with its order, and a task whose
 packing is complete is refused.

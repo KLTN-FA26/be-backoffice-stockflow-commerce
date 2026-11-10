@@ -128,8 +128,6 @@ public enum ErrorCode {
     /** No stock package (carton) with this id or LPN (SCRUM-473). */
     STOCK_PACKAGE_NOT_FOUND("No such stock package", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
-    /** SCRUM-475: no damage report with this id, or not in the caller's warehouses. */
-    DAMAGE_REPORT_NOT_FOUND("Damage report not found", 404),
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
     /** SCRUM-243: no return request by that id - or not the caller's own, which is not revealed. */
     RETURN_REQUEST_NOT_FOUND("Return request not found", 404),
@@ -169,8 +167,6 @@ public enum ErrorCode {
 
     /** The new password is the same as the current one. */
     PASSWORD_UNCHANGED("The new password must differ from the current one", 400),
-    /** BR-STK-003: damaged stock is reported with at least one photo. */
-    DAMAGE_PHOTO_REQUIRED("Damaged stock is reported with at least one photo", 400),
     /** SCRUM-427: commercial terms that contradict themselves (kltn-docs 18 §3). */
     CREDIT_PROFILE_INVALID("These commercial terms are inconsistent", 400),
 
@@ -312,23 +308,6 @@ public enum ErrorCode {
     QUOTE_NOT_OPEN("The quote is no longer open", 409),
     /** Review of #109: goods past their expiry cannot move to a new location; they are written off (EXPIRED). */
     STOCK_EXPIRED("This stock is past its expiry date and can only be written off", 409),
-    /**
-     * SCRUM-475: more units reported damaged than the stock row has free. Held units are reported where they are
-     * taken - a picker's damage report (SCRUM-277) - so their order learns of it in the same transaction.
-     */
-    DAMAGE_EXCEEDS_FREE_STOCK("More units reported damaged than this stock has free", 409),
-    /** SCRUM-475: the warehouse has no usable quarantine area that can take these damaged goods. */
-    DAMAGE_AREA_MISSING("This warehouse has no quarantine area that can take these damaged goods", 409),
-    /** SCRUM-475, four eyes: whoever reported damaged stock does not decide what happens to it. */
-    DAMAGE_SELF_DISPOSITION("A damage report cannot be decided by the person who reported it", 409),
-    /** SCRUM-475: a decision covers no more units than the damage report still has waiting. */
-    DAMAGE_DISPOSITION_EXCEEDS_PENDING("More units than this damage report still has waiting for a decision", 409),
-    /** SCRUM-277: damaged units an order still holds (its pick line is short) wait for the order to be reallocated. */
-    DAMAGED_STOCK_HELD("These damaged units are still allocated to an order; reallocate its short pick line first", 409),
-    /** A hand-over to the supplier names a RETURN_TO_SUPPLIER decision whose goods have not left yet. */
-    DAMAGE_RETURN_NOT_SHIPPABLE("Only goods decided for the supplier are handed to it, and once", 409),
-    /** SCRUM-475: restored goods go back onto an active bin of the warehouse they were damaged in. */
-    DAMAGE_RESTORE_LOCATION_INVALID("Restored goods go back onto an active bin of the same warehouse", 409),
     /** SCRUM-448: a quote moves only along 03-state-machines §18. */
     INVALID_QUOTE_TRANSITION("This quote cannot move to that status right now", 409),
     /** BR-ORD-008: a quote is answered only within its validity. */
@@ -580,8 +559,7 @@ public enum ErrorCode {
     PICK_ITEM_MISMATCH("The scanned code is not this line's carton LPN", 409),
     /**
      * Team plan 4C-4 (kltn-docs 07 BR-04, BR-10): the stock held for a pick line is in no carton, so no LPN could
-     * confirm it. A guard: allocation takes whole cartons only, and a damage report's share restored as loose units is
-     * reallocated to cartons (INSUFFICIENT_STOCK when there are none) rather than kept.
+     * confirm it. A guard: allocation takes whole cartons only, so nothing should reach it.
      */
     PICK_HOLD_NOT_IN_CARTON("The stock held for this line is in no carton; reallocate it to whole cartons", 409),
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),

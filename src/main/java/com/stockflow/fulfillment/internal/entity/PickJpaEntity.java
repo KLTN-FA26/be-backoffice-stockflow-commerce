@@ -180,8 +180,7 @@ public class PickJpaEntity extends BaseEntity {
     /**
      * Back to PICKING, for the same assignee, until the new lines are picked and the task completes again:
      * <ul>
-     *   <li>from PICKED, units a line brought to packing were found damaged there and what replaces them is picked again
-     *       (R8), or the order's remaining cartons were allocated and added to the task (a top-up, 07 §4.3 step 7).
+     *   <li>from PICKED, the order's remaining cartons were allocated and added to the task (a top-up, 07 §4.3 step 7).
      *       Packing waits meanwhile - it works on a PICKED task only;</li>
      *   <li>from STAGED, a top-up: the new cartons join the others in the staging area.</li>
      * </ul>
