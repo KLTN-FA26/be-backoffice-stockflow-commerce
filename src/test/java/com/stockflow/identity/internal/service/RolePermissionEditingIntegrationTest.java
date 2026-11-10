@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RolePermissionEditingIntegrationTest {
 
     private static final String ROLE = "INVENTORY_PLANNER";
-    private static final String PO_APPROVE = "procurement-purchase-orders:APPROVE";
+    private static final String PO_APPROVE = "production-orders:APPROVE";
 
     @Autowired
     private IdentityService identity;
@@ -148,7 +148,7 @@ class RolePermissionEditingIntegrationTest {
         long loaded = identity.roleMatrix(ROLE).version();
 
         assertThatThrownBy(() -> identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, loaded,
-                List.of("procurement-purchase-orders:READ", "no-such-screen:READ", "not a code"))))
+                List.of("procurement-goods-receipts:READ", "no-such-screen:READ", "not a code"))))
                 .isInstanceOfSatisfying(BusinessException.class, ex -> {
                     assertThat(ex.errorCode()).isEqualTo(ErrorCode.UNKNOWN_PERMISSION);
                     assertThat(ex.getMessage()).contains("no-such-screen:READ", "not a code");
