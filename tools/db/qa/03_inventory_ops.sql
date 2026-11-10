@@ -44,6 +44,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+-- Refused by the named rule: a statement that breaks something else proves nothing.
+CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM NOT LIKE '%' || rule || '%' THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but not by %: %', label, rule, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, rule;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -79,11 +96,11 @@ SELECT pg_temp.expect_fail('I4 an ADJUSTMENT with both sides', $q$
 SELECT pg_temp.expect_fail('I5 a STATUS_CHANGE that changes nothing', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, from_status, to_status, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'SOFA-3S-GREY', 'HCM-QC01', 'HCM-QC01', 1, 'QUARANTINE', 'QUARANTINE', 'QC_INSPECTION', gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I6 movement to a location that does not exist', $q$
+SELECT pg_temp.expect_fail_by('I6 movement to a location that does not exist', 'fk_stock_movement_to', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-NOWHERE', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW()) $q$);
 -- Loose reference type on purpose: a RECEIPT or MOVE_TASK line is refused earlier by the carton checks, which would hide the key.
-SELECT pg_temp.expect_fail('I7 movement of an unknown sku', $q$
+SELECT pg_temp.expect_fail_by('I7 movement of an unknown sku', 'fk_stock_movement_item', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'MOVE', 'NOPE', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW()) $q$);
 SELECT pg_temp.expect_fail('I8 ledger row edited', $q$ UPDATE inventory.stock_movement SET quantity = 3 WHERE id = md5('qa:mv:1')::uuid $q$);
