@@ -72,8 +72,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>Each test owns a fresh SKU of the demo customer's own and its stock, so nothing here touches the demo stock other
  * tests count on. Every order is a contract's, confirmed by its installment on signing ({@link ConfirmedOrders}).</p>
  */
-@org.junit.jupiter.api.Disabled("Round 3 of the 4B-10 tests: written for the packing station and loose stock; 4C-6 replaced them with the check station and "
-        + "LPN cartons, and a contract order is cartons of two or more, so every count has to be re-derived. See reports/C3-tests.md.")
+@org.junit.jupiter.api.Disabled("Round 4 of the C3 tests, still disabled: stock is written loose (stock() inserts stock_item rows "
+        + "outside any carton, which 4C-2 never allocates) and lines are confirmed by SKU scan + quantity, "
+        + "while a pick line is now one whole LPN carton confirmed by its LPN only (4C-2/4C-6); damaging N "
+        + "units of a line's bin has to be re-derived for whole cartons before these 12 tests can say anything."
+        + " See reports/C3-tests.md, Round 4.")
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
 @AutoConfigureMockMvc

@@ -85,8 +85,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>Its own context, hence its own database: shipped orders keep their stock.</p>
  */
-@org.junit.jupiter.api.Disabled("Round 3 of the 4B-10 tests: written for the packing station and loose stock; 4C-6 replaced them with the check station and "
-        + "LPN cartons, and a contract order is cartons of two or more, so every count has to be re-derived. See reports/C3-tests.md.")
+@org.junit.jupiter.api.Disabled("Round 4 of the C3 tests, still disabled: built on loose stock (stock() writes stock_item rows "
+        + "outside any carton), SKU-scan picking and the retired repack station (packing-start, /packages, "
+        + "scannedCode); 4C-6 replaced it with the carton check station, so the 20 tests need the "
+        + "CartonStationSupport flow and every package / vehicle count re-derived. The 4B-8 handover rules "
+        + "(LOAD_HANDOVER_BLOCKED, windows, batches) are covered in FtlDispatchIntegrationTest instead. See "
+        + "reports/C3-tests.md, Round 4.")
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class, RecordedEvents.class})
 @AutoConfigureMockMvc

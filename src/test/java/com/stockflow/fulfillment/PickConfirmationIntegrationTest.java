@@ -84,8 +84,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Every unit a test takes off the books is put back in {@link #cleanUp} (which also exercises the put-back as the
  * system).</p>
  */
-@org.junit.jupiter.api.Disabled("Round 3 of the 4B-10 tests: its orders were made by placeOrder and paid through the money ledger, both gone; "
-        + "they have to be contract orders of cartons of two or more (support/ConfirmedOrders) and every count re-derived. See reports/C3-tests.md.")
+@org.junit.jupiter.api.Disabled("Round 4 of the C3 tests, still disabled: its order()/pay() helpers are stubs (they used placeOrder "
+        + "and the money ledger, both gone) and its stock, bins and counts are the demo SOFA-3S-GREY in cartons"
+        + " of one, while a contract order is the customer's own SKU in cartons of two or more (14 BR-04, "
+        + "BR-08): the orders must come from support/ConfirmedOrders and every count be re-derived. See "
+        + "reports/C3-tests.md, Round 4.")
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class, PickConfirmationIntegrationTest.DeductionListener.class})
 @AutoConfigureMockMvc
