@@ -32,6 +32,7 @@ import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.order.internal.service.ShippingWarehouseService;
 import com.stockflow.order.internal.service.ShippingWarehouseService.BatchCoverage;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;

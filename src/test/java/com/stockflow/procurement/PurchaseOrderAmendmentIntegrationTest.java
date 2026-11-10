@@ -8,6 +8,7 @@ import com.stockflow.notification.api.NotificationService;
 import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
@@ -299,8 +300,10 @@ class PurchaseOrderAmendmentIntegrationTest {
     private ResultActions count(Clerk clerk, String receipt, UUID poLine, int quantity) throws Exception {
         return mvc.perform(put("/api/v1/goods-receipts/" + receipt + "/lines").header("Authorization", clerk.token())
                 .contentType(MediaType.APPLICATION_JSON).content("""
-                        {"lines":[{"purchaseOrderLineId":"%s","quantity":%d,"locationCode":"%s"}]}"""
-                        .formatted(poLine, quantity, RECEIVING)));
+                        {"lines":[{"purchaseOrderLineId":"%s","quantity":%d,"locationCode":"%s","unitOfMeasure":"%s",
+                                   "packages":%s}]}"""
+                        .formatted(poLine, quantity, RECEIVING, ReceiptCartons.DEMO_UNIT,
+                                ReceiptCartons.json(quantity, 1))));
     }
 
     private ResultActions postReceipt(Clerk clerk, String receipt) throws Exception {

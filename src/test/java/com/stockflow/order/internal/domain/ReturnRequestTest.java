@@ -8,7 +8,6 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
-import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.order.api.OrderStatus;
@@ -32,10 +31,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * The return state machine (SCRUM-243 / SCRUM-260, 03 §12) and every rule it protects, on the aggregate alone: the
- * window in calendar days (BR-RMA-001), printed goods only when defective (BR-RMA-002), quantities never above what was
- * delivered, the evidence and value rules of the review, parcels counted in one by one or late, QC's arithmetic and
- * whose goods the rejected units are, four eyes on every approval of value, and the withdrawal of a replacement.
+ * The return state machine (SCRUM-243 / SCRUM-260, 03 §12; reshaped by team plan 4D-3) and every rule it protects, on
+ * the aggregate alone: the window in calendar days (BR-RMA-001), printed goods only when defective (BR-RMA-002),
+ * quantities never above what was delivered, the evidence rules of the review, goods that always come back (17 BR-18)
+ * on a return receipt and are counted per SKU with their discrepancies, and a refund valued per unit with its VAT that
+ * waits for a second person. There is no inspection, replacement or credit any more.
  */
 class ReturnRequestTest {
 
@@ -76,12 +76,12 @@ class ReturnRequestTest {
 
     private static ReturnRequest openBySales(ReturnReason reason, ReturnRequest.Claim... claims) {
         return ReturnRequest.open("RMA-20261022-0002", UUID.randomUUID(), order(OrderStatus.DELIVERED),
-                ReturnChannel.BACK_OFFICE, reason, "Khách gọi điện báo", ReturnResolution.REPLACEMENT, List.of(claims),
+                ReturnChannel.BACK_OFFICE, reason, "Khách gọi điện báo", ReturnResolution.REFUND, List.of(claims),
                 Map.of(), Set.of(), SALES, NOW, POLICY);
     }
 
     private static ReturnRequest misprinted(int units) {
-        return open(ReturnReason.PRINT_DEFECT, ReturnResolution.REPLACEMENT,
+        return open(ReturnReason.PRINT_DEFECT, ReturnResolution.REFUND,
                 new ReturnRequest.Claim(PRINTED_LINE, units));
     }
 
@@ -107,29 +107,20 @@ class ReturnRequestTest {
         return request;
     }
 
+    private static final UUID RECEIPT = UUID.randomUUID();
+
+    /** Back: a return receipt took {@code arrived} cartons of one unit each of the printed cups into quarantine. */
     private static ReturnRequest received(int units, int arrived) {
         ReturnRequest request = awaiting(units);
-        request.receive(WAREHOUSE, NOW, "HCM-QC01",
-                List.of(new ReturnRequest.Receipt(line(request, PRINTED_LINE).id(), arrived, null, null)), List.of(),
-                null);
+        assertThat(request.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", arrived)), WAREHOUSE, NOW)).isTrue();
         return request;
     }
 
-    private static ReturnRequest inspected(int units, int accepted) {
+    /** Refund of every unit approved and back, proposed by SALES. */
+    private static ReturnRequest pending(int units) {
         ReturnRequest request = received(units, units);
-        UUID line = line(request, PRINTED_LINE).id();
-        request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line, accepted, units - accepted,
-                ReturnItemCondition.DEFECTIVE, 0, accepted, units - accepted, null, null)), null);
-        return request;
-    }
-
-    /** Every accepted unit replaced, approved by the accountant: RESOLVED with a replacement order. */
-    private static ReturnRequest replaced(int units) {
-        ReturnRequest request = inspected(units, units);
-        UUID line = line(request, PRINTED_LINE).id();
-        request.proposeResolution(SALES, NOW, List.of(new ReturnRequest.Remedy(line, units, 0)), null, null);
-        request.resolve(ACCOUNTANT, NOW, UUID.randomUUID(), "SO-20261022-000009", Map.of(line, UUID.randomUUID()),
-                ReturnRequest.MoneyOutcome.NONE);
+        request.proposeRefund(SALES, NOW, null, order(OrderStatus.RETURNED), "ok");
         return request;
     }
 
@@ -140,7 +131,7 @@ class ReturnRequestTest {
         @Test
         @DisplayName("a delivered order, within the window: REQUESTED, the line's SKU, price and print flag copied")
         void opens() {
-            ReturnRequest request = open(ReturnReason.PRINT_DEFECT, ReturnResolution.REPLACEMENT,
+            ReturnRequest request = open(ReturnReason.PRINT_DEFECT, ReturnResolution.REFUND,
                     new ReturnRequest.Claim(PRINTED_LINE, 20), new ReturnRequest.Claim(STOCK_LINE, 5));
             assertThat(request.status()).isEqualTo(ReturnStatus.REQUESTED);
             assertThat(line(request, PRINTED_LINE)).satisfies(l -> {
@@ -217,7 +208,7 @@ class ReturnRequestTest {
             assertThat(code(catchThrowable(() -> ReturnRequest.open("RMA-3", UUID.randomUUID(),
                     order(OrderStatus.CLOSED), ReturnChannel.BACK_OFFICE, ReturnReason.PRINT_DEFECT, null,
                     ReturnResolution.REFUND, List.of(new ReturnRequest.Claim(STOCK_LINE, 2)), Map.of(), Set.of(), SALES,
-                    NOW, POLICY, "goodwill", Map.of())))).isEqualTo(ErrorCode.RETURN_ORDER_NOT_RETURNABLE);
+                    NOW, POLICY, "goodwill")))).isEqualTo(ErrorCode.RETURN_ORDER_NOT_RETURNABLE);
         }
 
         @Test
@@ -232,7 +223,7 @@ class ReturnRequestTest {
             ReturnRequest late = ReturnRequest.open("RMA-4", UUID.randomUUID(), completed, ReturnChannel.BACK_OFFICE,
                     ReturnReason.PRINT_DEFECT, null, ReturnResolution.REFUND,
                     List.of(new ReturnRequest.Claim(PRINTED_LINE, 5)), Map.of(), Set.of(), SALES, monthLater, POLICY,
-                    "Lỗi in phát hiện khi khách mở pallet thứ 3", Map.of());
+                    "Lỗi in phát hiện khi khách mở pallet thứ 3");
             assertThat(late.status()).isEqualTo(ReturnStatus.REQUESTED);
             assertThat(late.windowOverride()).isEqualTo("Lỗi in phát hiện khi khách mở pallet thứ 3");
             assertThat(late.pullTransitions()).singleElement()
@@ -240,17 +231,7 @@ class ReturnRequestTest {
             assertThat(code(catchThrowable(() -> ReturnRequest.open("RMA-4", UUID.randomUUID(), completed,
                     ReturnChannel.PORTAL, ReturnReason.PRINT_DEFECT, null, ReturnResolution.REFUND,
                     List.of(new ReturnRequest.Claim(PRINTED_LINE, 5)), Map.of(), Set.of(), CUSTOMER, monthLater, POLICY,
-                    "please", Map.of())))).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        }
-
-        @Test
-        @DisplayName("a claim on a free replacement order is credited at the prices the replaced goods were paid at")
-        void replacementPrices() {
-            ReturnRequest request = ReturnRequest.open("RMA-5", UUID.randomUUID(), order(OrderStatus.DELIVERED),
-                    ReturnChannel.PORTAL, ReturnReason.PRINT_DEFECT, null, ReturnResolution.REFUND,
-                    List.of(new ReturnRequest.Claim(PRINTED_LINE, 5)), Map.of(), Set.of(), CUSTOMER, NOW, POLICY, null,
-                    Map.of(PRINTED_LINE, new BigDecimal("1800")));
-            assertThat(line(request, PRINTED_LINE).unitPrice()).isEqualByComparingTo("1800");
+                    "please")))).isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
 
         @Test
@@ -311,11 +292,6 @@ class ReturnRequestTest {
                     ReturnReason.CHANGED_MIND, null, ReturnResolution.REFUND,
                     List.of(new ReturnRequest.Claim(STOCK_LINE, 1)), Map.of(), Set.of(), CUSTOMER, NOW, lenient)
                     .status()).as("allowed for stock items by configuration").isEqualTo(ReturnStatus.REQUESTED);
-            assertThat(code(catchThrowable(() -> ReturnRequest.open("RMA-1", UUID.randomUUID(),
-                    order(OrderStatus.DELIVERED), ReturnChannel.PORTAL, ReturnReason.CHANGED_MIND, null,
-                    ReturnResolution.REPLACEMENT, List.of(new ReturnRequest.Claim(STOCK_LINE, 1)), Map.of(), Set.of(),
-                    CUSTOMER, NOW, lenient)))).as("refunded or credited, never exchanged")
-                    .isEqualTo(ErrorCode.RETURN_REASON_NOT_ACCEPTED);
         }
 
         @Test
@@ -391,49 +367,23 @@ class ReturnRequestTest {
         }
 
         @Test
-        @DisplayName("goods stay with the customer only up to the no-return value: accepted on the photos (INSPECTED)")
-        void noReturnNeeded() {
-            ReturnPolicy exact = new ReturnPolicy(POLICY.window(), POLICY.returnDeadline(), BigDecimal.valueOf(20_000),
-                    true, 10, false);
-            ReturnRequest atTheLimit = misprinted(10);
-            atTheLimit.addEvidence(photo(ReturnEvidence.Stage.CLAIM), exact);
-            atTheLimit.approve(SALES, NOW, null, false, null, exact);
-            assertThat(atTheLimit.status()).as("10 x 2 000 is not above 20 000").isEqualTo(ReturnStatus.INSPECTED);
-            ReturnRequest cheap = misprinted(10);
-            cheap.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
-            cheap.approve(SALES, NOW, null, false, null, POLICY);
-            assertThat(cheap.status()).isEqualTo(ReturnStatus.INSPECTED);
-            assertThat(cheap.returnDeadline()).isNull();
-            assertThat(line(cheap, PRINTED_LINE).acceptedQuantity()).isEqualTo(10);
-            assertThat(cheap.inspectedBy()).isEqualTo(SALES);
-        }
-
-        @Test
-        @DisplayName("above the no-return value the goods must come back (RETURN_GOODS_REQUIRED)")
-        void goodsRequired() {
-            ReturnPolicy tight = new ReturnPolicy(POLICY.window(), POLICY.returnDeadline(), BigDecimal.valueOf(10_000),
-                    true, 10, false);
-            ReturnRequest request = misprinted(6);
-            request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), tight);
-            assertThat(code(catchThrowable(() -> request.approve(SALES, NOW, null, false, null, tight))))
-                    .isEqualTo(ErrorCode.RETURN_GOODS_REQUIRED);
-            request.approve(SALES, NOW, null, false, null, POLICY);
-            assertThat(request.status()).isEqualTo(ReturnStatus.INSPECTED);
-        }
-
-        @Test
-        @DisplayName("a short delivery has nothing to send back, but is approved on the signed delivery note's photo")
-        void shortDelivery() {
-            ReturnRequest request = open(ReturnReason.SHORT_DELIVERY, ReturnResolution.REPLACEMENT,
-                    new ReturnRequest.Claim(STOCK_LINE, 4));
-            assertThat(code(catchThrowable(() -> request.approve(SALES, NOW, null, null, null, POLICY))))
-                    .isEqualTo(ErrorCode.RETURN_EVIDENCE_REQUIRED);
+        @DisplayName("the goods always come back (17 BR-18): approval that leaves them with the customer is refused")
+        void goodsAlwaysComeBack() {
+            ReturnRequest request = misprinted(1);
             request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
-            assertThat(code(catchThrowable(() -> request.approve(SALES, NOW, null, true, null, POLICY))))
-                    .isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            request.approve(SALES, NOW, null, null, null, POLICY);
-            assertThat(request.status()).isEqualTo(ReturnStatus.INSPECTED);
-            assertThat(request.returnRequired()).isFalse();
+            assertThat(code(catchThrowable(() -> request.approve(SALES, NOW, null, false, null, POLICY))))
+                    .isEqualTo(ErrorCode.RETURN_GOODS_REQUIRED);
+            assertThat(request.status()).isEqualTo(ReturnStatus.REQUESTED);
+            request.approve(SALES, NOW, null, true, null, POLICY);
+            assertThat(request.status()).isEqualTo(ReturnStatus.AWAITING_RETURN);
+            assertThat(request.returnRequired()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a short delivery has nothing to send back: it is no return (the delivery is corrected instead)")
+        void shortDelivery() {
+            assertThat(code(catchThrowable(() -> open(ReturnReason.SHORT_DELIVERY, ReturnResolution.REFUND,
+                    new ReturnRequest.Claim(STOCK_LINE, 4))))).isEqualTo(ErrorCode.RETURN_REASON_NOT_ACCEPTED);
         }
 
         @Test
@@ -492,439 +442,210 @@ class ReturnRequestTest {
     }
 
     @Nested
-    @DisplayName("receipt")
-    class Receipt {
+    @DisplayName("goods back on a return receipt (17 §4.10 step 39; 03 §4.2 step 12)")
+    class GoodsBack {
 
         @Test
-        @DisplayName("other goods than approved, more than approved, something of no line: discrepancies of the parcel")
-        void discrepancies() {
-            ReturnRequest request = open(ReturnReason.WRONG_ITEM, ReturnResolution.REPLACEMENT,
-                    new ReturnRequest.Claim(PRINTED_LINE, 10), new ReturnRequest.Claim(STOCK_LINE, 10));
-            request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
-            request.approve(SALES, NOW, null, null, null, POLICY);
+        @DisplayName("cartons of the approved SKU and count: RECEIVED with who, where and which receipt; no discrepancy")
+        void exact() {
+            ReturnRequest request = awaiting(10);
             request.pullDomainEvents();
-            UUID printed = line(request, PRINTED_LINE).id();
-            UUID stock = line(request, STOCK_LINE).id();
-            request.receive(WAREHOUSE, NOW, "HCM-QC01", List.of(
-                    new ReturnRequest.Receipt(printed, 8, null, null),
-                    new ReturnRequest.Receipt(stock, 12, "LID-80", "L-7")),
-                    List.of(new ReturnRequest.Unexpected("XYZ-1", 3, "hàng không phải của mình")), "thùng móp");
+            assertThat(request.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01", List.of(
+                    new ReturnRequest.ReturnedCarton("CUP-12OZ", 6), new ReturnRequest.ReturnedCarton("CUP-12OZ", 4)),
+                    WAREHOUSE, NOW)).isTrue();
             assertThat(request.status()).isEqualTo(ReturnStatus.RECEIVED);
-            assertThat(request.receivingLocation()).isEqualTo("HCM-QC01");
-            assertThat(request.parcelCount()).isEqualTo(1);
-            assertThat(line(request, STOCK_LINE).receivedSku()).isEqualTo("LID-80");
-            assertThat(line(request, STOCK_LINE).lotNumber()).isEqualTo("L-7");
-            assertThat(request.discrepancies()).extracting(d -> d.kind() + " " + d.sku() + " " + d.quantity())
-                    .as("a shortfall waits for the last parcel")
-                    .containsExactlyInAnyOrder("WRONG_ITEM LID-80 12", "EXCESS LID-80 2", "UNEXPECTED_ITEM XYZ-1 3");
-            assertThat(request.pullNewDiscrepancies()).hasSize(3);
+            assertThat(request.goodsReceiptId()).isEqualTo(RECEIPT);
+            assertThat(request.receivedBy()).isEqualTo(WAREHOUSE);
+            assertThat(request.receivedAt()).isEqualTo(NOW);
+            assertThat(request.receivingLocation()).isEqualTo("HCM-QUA01");
+            assertThat(line(request, PRINTED_LINE).receivedQuantity()).as("cartons of a SKU add up").isEqualTo(10);
+            assertThat(request.discrepancies()).isEmpty();
+            assertThat(request.pullTransitions()).last().satisfies(t -> {
+                assertThat(t.to()).isEqualTo(ReturnStatus.RECEIVED);
+                assertThat(t.reason()).isEqualTo("RECEIVED GR-RET-1");
+            });
             assertThat(request.pullDomainEvents()).singleElement().satisfies(event -> {
                 ReturnReceived received = (ReturnReceived) ((OrderEvent.ReturnChanged) event).payload();
-                assertThat(received.discrepancy()).isTrue();
-                assertThat(received.parcelNumber()).isEqualTo(1);
+                assertThat(received.discrepancy()).isFalse();
             });
         }
 
         @Test
-        @DisplayName("nothing of the return arrived: refused, the return waits (or expires)")
-        void nothing() {
-            ReturnRequest request = awaiting(5);
-            assertThat(code(catchThrowable(() -> request.receive(WAREHOUSE, NOW, "HCM-QC01",
-                    List.of(new ReturnRequest.Receipt(line(request, PRINTED_LINE).id(), 0, null, null)), List.of(),
-                    null)))).isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            assertThat(request.status()).isEqualTo(ReturnStatus.AWAITING_RETURN);
+        @DisplayName("fewer than approved, more than approved, a SKU the return does not claim: discrepancies for Sales")
+        void discrepancies() {
+            ReturnRequest request = open(ReturnReason.WRONG_ITEM, ReturnResolution.REFUND,
+                    new ReturnRequest.Claim(PRINTED_LINE, 10), new ReturnRequest.Claim(STOCK_LINE, 10));
+            request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
+            request.approve(SALES, NOW, null, null, null, POLICY);
+            request.goodsReceived(RECEIPT, "GR-RET-2", "HCM-QUA01", List.of(
+                    new ReturnRequest.ReturnedCarton("CUP-12OZ", 8), new ReturnRequest.ReturnedCarton("LID-90", 12),
+                    new ReturnRequest.ReturnedCarton("XYZ-1", 3)), WAREHOUSE, NOW);
+            assertThat(request.status()).isEqualTo(ReturnStatus.RECEIVED);
+            assertThat(request.discrepancies()).extracting(d -> d.kind() + " " + d.sku() + " " + d.quantity())
+                    .containsExactlyInAnyOrder("SHORT CUP-12OZ 2", "EXCESS LID-90 2", "UNEXPECTED_ITEM XYZ-1 3");
+            assertThat(request.pullNewDiscrepancies()).hasSize(3);
+            assertThat(request.pullNewDiscrepancies()).isEmpty();
+            assertThat(request.pullTransitions()).last().satisfies(t ->
+                    assertThat(t.reason()).startsWith("RECEIVED_WITH_DISCREPANCY"));
         }
 
         @Test
-        @DisplayName("a second parcel before QC: counted onto the first, at the same place, the same goods per line")
-        void secondParcel() {
-            ReturnRequest request = received(100, 60);
-            UUID line = line(request, PRINTED_LINE).id();
-            Instant later = NOW.plus(Duration.ofDays(3));
-            assertThat(code(catchThrowable(() -> request.receive(WAREHOUSE, later, "HCM-QC02",
-                    List.of(new ReturnRequest.Receipt(line, 40, null, null)), List.of(), null))))
-                    .as("the goods of one return wait for QC together")
-                    .isEqualTo(ErrorCode.RETURN_RECEIVING_LOCATION_INVALID);
-            assertThat(code(catchThrowable(() -> request.receive(WAREHOUSE, later, "HCM-QC01",
-                    List.of(new ReturnRequest.Receipt(line, 40, "CUP-16OZ", null)), List.of(), null))))
-                    .as("other goods for the line are an unexpected item").isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
+        @DisplayName("the same receipt again (the event delivered twice) changes nothing; another receipt is refused")
+        void idempotent() {
+            ReturnRequest request = received(5, 5);
             request.pullDomainEvents();
             request.pullTransitions();
-            request.receive(WAREHOUSE, later, "HCM-QC01", List.of(new ReturnRequest.Receipt(line, 45, null, null)),
-                    List.of(), "đợt 2");
-            assertThat(request.status()).isEqualTo(ReturnStatus.RECEIVED);
-            assertThat(request.parcelCount()).isEqualTo(2);
-            assertThat(line(request, PRINTED_LINE).receivedQuantity()).isEqualTo(105);
-            assertThat(request.receivedAt()).as("the first parcel names the stock layer").isEqualTo(NOW);
-            assertThat(request.pullTransitions()).as("no transition: the count grows").isEmpty();
-            assertThat(request.discrepancies()).extracting(d -> d.kind() + " " + d.quantity())
-                    .containsExactly("EXCESS 5");
-            assertThat(request.pullDomainEvents()).singleElement().satisfies(event ->
-                    assertThat(((ReturnReceived) ((OrderEvent.ReturnChanged) event).payload()).parcelNumber())
-                            .isEqualTo(2));
+            assertThat(request.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 5)), WAREHOUSE, NOW)).isFalse();
+            assertThat(request.pullDomainEvents()).isEmpty();
+            assertThat(request.pullTransitions()).isEmpty();
+            assertThat(code(catchThrowable(() -> request.goodsReceived(UUID.randomUUID(), "GR-RET-9", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 5)), WAREHOUSE, NOW))))
+                    .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("a return that is not awaiting goods takes none; no carton at all is a defect, not a receipt")
+        void notAwaiting() {
+            ReturnRequest requested = misprinted(5);
+            assertThat(code(catchThrowable(() -> requested.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 5)), WAREHOUSE, NOW))))
+                    .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+            ReturnRequest rejected = misprinted(5);
+            rejected.reject(SALES, NOW, "no");
+            assertThat(code(catchThrowable(() -> rejected.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 5)), WAREHOUSE, NOW))))
+                    .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+            ReturnRequest awaiting = awaiting(5);
+            assertThatThrownBy(() -> awaiting.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01", List.of(), WAREHOUSE,
+                    NOW)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new ReturnRequest.ReturnedCarton("CUP-12OZ", 0))
+                    .isInstanceOf(IllegalArgumentException.class);
         }
 
         @Test
         @DisplayName("goods after the deadline, or after the customer withdrew an approved return: counted in, RECEIVED")
         void lateGoods() {
-            ReturnRequest expired = awaiting(10);
+            ReturnRequest expired = awaiting(5);
             expired.expire(expired.returnDeadline());
-            assertThat(expired.receivingReopens()).isTrue();
-            expired.pullTransitions();
-            expired.receive(WAREHOUSE, expired.returnDeadline().plus(Duration.ofDays(2)), "HCM-QC01",
-                    List.of(new ReturnRequest.Receipt(line(expired, PRINTED_LINE).id(), 10, null, null)), List.of(),
-                    null);
+            assertThat(expired.closedAt()).isNotNull();
+            expired.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 5)), WAREHOUSE, NOW);
             assertThat(expired.status()).isEqualTo(ReturnStatus.RECEIVED);
-            assertThat(expired.closedAt()).isNull();
-            assertThat(expired.pullTransitions()).singleElement()
-                    .satisfies(t -> assertThat(t.reason()).isEqualTo("RECEIVED_AFTER_DEADLINE"));
+            assertThat(expired.closedAt()).as("reopened").isNull();
+            assertThat(expired.pullTransitions()).last().satisfies(t ->
+                    assertThat(t.reason()).startsWith("RECEIVED_AFTER_DEADLINE"));
 
-            ReturnRequest withdrawn = awaiting(10);
-            withdrawn.cancel(CUSTOMER, NOW, "không gửi nữa", true);
-            withdrawn.receive(WAREHOUSE, NOW.plus(Duration.ofDays(5)), "HCM-QC01",
-                    List.of(new ReturnRequest.Receipt(line(withdrawn, PRINTED_LINE).id(), 10, null, null)), List.of(),
-                    null);
+            ReturnRequest withdrawn = awaiting(5);
+            withdrawn.cancel(CUSTOMER, NOW, "changed my mind", true);
+            withdrawn.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 5)), WAREHOUSE, NOW);
             assertThat(withdrawn.status()).isEqualTo(ReturnStatus.RECEIVED);
-            assertThat(withdrawn.cancelledBy()).isNull();
             assertThat(withdrawn.cancellationReason()).isNull();
 
-            ReturnRequest neverApproved = misprinted(10);
+            ReturnRequest neverApproved = misprinted(5);
             neverApproved.cancel(CUSTOMER, NOW, null, true);
-            assertThat(neverApproved.receivingReopens()).isFalse();
-            assertThat(code(catchThrowable(() -> neverApproved.receive(WAREHOUSE, NOW, "HCM-QC01",
-                    List.of(new ReturnRequest.Receipt(line(neverApproved, PRINTED_LINE).id(), 10, null, null)),
-                    List.of(), null)))).as("Sales open a return for those goods").isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+            assertThat(code(catchThrowable(() -> neverApproved.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 5)), WAREHOUSE, NOW))))
+                    .as("a return nobody approved takes no goods").isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
         }
     }
 
     @Nested
-    @DisplayName("inspection")
-    class Inspection {
+    @DisplayName("the refund and four eyes (17 §4.10 step 40; 15 §4.5)")
+    class Refund {
 
         @Test
-        @DisplayName("every unit received is accepted or rejected, never more accepted than approved; where each goes")
-        void arithmetic() {
-            ReturnRequest request = received(10, 12);
-            UUID line = line(request, PRINTED_LINE).id();
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 10, 1, null, 0, 11, 0, null, null)), null)))).as("11 of 12")
-                    .isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 11, 1, null, 0, 12, 0, null, null)), null)))).as("more accepted than approved")
-                    .isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 10, 2, null, 0, 9, 3, null, null)), null)))).as("only rejected units go back")
-                    .isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 10, 2, null, 2, 8, 2, "HCM-A01-1-A", null)), null)))).as("printed goods never back on sale")
-                    .isEqualTo(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED);
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(), null))))
-                    .as("received units left uninspected").isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line, 10, 2,
-                    ReturnItemCondition.DEFECTIVE, 0, 10, 2, null, "lem mực")), null);
-            assertThat(request.status()).isEqualTo(ReturnStatus.INSPECTED);
-            assertThat(request.acceptedUnits()).isEqualTo(10);
-            assertThat(line(request, PRINTED_LINE).customerReturnQuantity()).isEqualTo(2);
-        }
-
-        @Test
-        @DisplayName("rejected units are the customer's: back to them, scrapped only with their recorded consent")
-        void customersGoods() {
+        @DisplayName("proposed per unit at the order's price with its VAT, waits for a second person: SETTLEMENT_PENDING")
+        void proposed() {
             ReturnRequest request = received(10, 10);
-            UUID line = line(request, PRINTED_LINE).id();
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 6, 4, ReturnItemCondition.GOOD, 0, 10, 0, null, null)), null))))
-                    .isEqualTo(ErrorCode.RETURN_DISPOSAL_CONSENT_REQUIRED);
-            request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line, 6, 4, ReturnItemCondition.GOOD,
-                    0, 10, 0, null, null, null, "Khách đồng ý huỷ qua email 24/10")), null);
-            assertThat(line(request, PRINTED_LINE).disposalConsent()).isEqualTo("Khách đồng ý huỷ qua email 24/10");
-            assertThat(line(request, PRINTED_LINE).rejectedScrapped()).isEqualTo(4);
-        }
-
-        @Test
-        @DisplayName("a plain stock item that passed QC goes back on sale at a bin - accepted units only")
-        void restock() {
-            ReturnRequest request = open(ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REFUND,
-                    new ReturnRequest.Claim(STOCK_LINE, 10));
-            request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
-            request.approve(SALES, NOW, null, null, null, POLICY);
-            UUID line = line(request, STOCK_LINE).id();
-            request.receive(WAREHOUSE, NOW, "HCM-QC01", List.of(new ReturnRequest.Receipt(line, 10, null, null)),
-                    List.of(), null);
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 10, 0, null, 4, 6, 0, null, null)), null)))).as("names the bin")
-                    .isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 6, 4, null, 8, 0, 2, "HCM-A01-1-A", null, null, "ok")), null))))
-                    .as("the customer's rejected units are not sold").isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 10, 0, ReturnItemCondition.DAMAGED, 4, 6, 0, "HCM-A01-1-A", null)), null))))
-                    .as("units QC graded damaged never go back on sale")
-                    .isEqualTo(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED);
-            request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line, 10, 0,
-                    ReturnItemCondition.GOOD, 4, 6, 0, "HCM-A01-1-A", null)), null);
-            assertThat(line(request, STOCK_LINE).restockQuantity()).isEqualTo(4);
-            assertThat(line(request, STOCK_LINE).receivedPlain()).isTrue();
-        }
-
-        @Test
-        @DisplayName("another SKU that came back goes on sale only when QC says it is plain stock (BR-RMA-002)")
-        void wrongItemRestock() {
-            ReturnRequest request = open(ReturnReason.WRONG_ITEM, ReturnResolution.REPLACEMENT,
-                    new ReturnRequest.Claim(STOCK_LINE, 10));
-            request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
-            request.approve(SALES, NOW, null, null, null, POLICY);
-            UUID line = line(request, STOCK_LINE).id();
-            request.receive(WAREHOUSE, NOW, "HCM-QC01", List.of(new ReturnRequest.Receipt(line, 10, "CUP-16OZ", null)),
-                    List.of(), null);
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
-                    line, 10, 0, ReturnItemCondition.GOOD, 10, 0, 0, "HCM-A01-1-A", null)), null))))
-                    .as("possibly someone else's printed cups").isEqualTo(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED);
-            request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line, 10, 0, ReturnItemCondition.GOOD,
-                    10, 0, 0, "HCM-A01-1-A", "ly trơn, nguyên thùng", Boolean.TRUE, null)), null);
-            assertThat(line(request, STOCK_LINE).restockQuantity()).isEqualTo(10);
-        }
-
-        @Test
-        @DisplayName("a line that came back short of what was approved is recorded at inspection")
-        void shortfallAtInspection() {
-            ReturnRequest request = received(10, 8);
-            request.pullNewDiscrepancies();
-            UUID line = line(request, PRINTED_LINE).id();
-            List<ReturnRequest.Inspection> verdict = List.of(new ReturnRequest.Inspection(line, 8, 0,
-                    ReturnItemCondition.DEFECTIVE, 0, 8, 0, null, null));
-            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, verdict, null))))
-                    .as("the next parcel may still come").isEqualTo(ErrorCode.RETURN_PARCELS_OUTSTANDING);
-            request.inspect(WAREHOUSE, NOW, verdict, null, true);
-            assertThat(request.pullNewDiscrepancies()).extracting(d -> d.kind() + " " + d.quantity())
-                    .containsExactly("SHORT 2");
-        }
-
-        @Test
-        @DisplayName("nothing defective: REJECTED at inspection; the customer reads the code, QC's words stay inside")
-        void noDefect() {
-            ReturnRequest request = received(5, 5);
-            request.pullDomainEvents();
-            request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line(request, PRINTED_LINE).id(), 0, 5,
-                    ReturnItemCondition.GOOD, 0, 0, 5, null, null)), "in đúng mẫu duyệt");
-            assertThat(request.status()).isEqualTo(ReturnStatus.REJECTED);
-            assertThat(request.rejectionReason()).isEqualTo("NO_DEFECT_FOUND");
-            assertThat(request.inspectionNote()).isEqualTo("in đúng mẫu duyệt");
-            assertThat(request.pullDomainEvents()).singleElement().satisfies(event ->
-                    assertThat(((ReturnRejected) ((OrderEvent.ReturnChanged) event).payload()).stage())
-                            .isEqualTo("INSPECTION"));
-        }
-    }
-
-    @Nested
-    @DisplayName("resolution and four eyes")
-    class Resolution {
-
-        @Test
-        @DisplayName("replacements only: they wait for a second person too, RESOLVED without money or a VAT note")
-        void replacementOnly() {
-            ReturnRequest request = inspected(10, 8);
-            UUID line = line(request, PRINTED_LINE).id();
-            assertThat(code(catchThrowable(() -> request.proposeResolution(SALES, NOW,
-                    List.of(new ReturnRequest.Remedy(line, 7, 0)), null, null))))
-                    .as("every accepted unit").isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
-            request.proposeResolution(SALES, NOW, List.of(new ReturnRequest.Remedy(line, 8, 0)), null, null);
+            Order order = order(OrderStatus.RETURNED);
+            request.proposeRefund(SALES, NOW, null, order, "defect confirmed");
             assertThat(request.status()).isEqualTo(ReturnStatus.SETTLEMENT_PENDING);
-            assertThat(code(catchThrowable(() -> request.resolve(SALES, NOW, UUID.randomUUID(), "SO-1",
-                    Map.of(line, UUID.randomUUID()), ReturnRequest.MoneyOutcome.NONE))))
-                    .as("free goods leave on two people's word").isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
-            UUID replacementOrder = UUID.randomUUID();
-            UUID replacementLine = UUID.randomUUID();
-            request.pullDomainEvents();
-            request.resolve(ACCOUNTANT, NOW, replacementOrder, "SO-20261022-000009", Map.of(line, replacementLine),
-                    ReturnRequest.MoneyOutcome.NONE);
-            assertThat(request.status()).isEqualTo(ReturnStatus.RESOLVED);
-            assertThat(request.vatAdjustmentRequired()).isFalse();
-            assertThat(line(request, PRINTED_LINE).replacementOrderLineId()).isEqualTo(replacementLine);
-            assertThat(request.pullDomainEvents()).singleElement().satisfies(event -> {
-                ReturnResolved resolved = (ReturnResolved) ((OrderEvent.ReturnChanged) event).payload();
-                assertThat(resolved.replacementOrderId()).isEqualTo(replacementOrder);
-                assertThat(resolved.replacementOrderNumber()).isEqualTo("SO-20261022-000009");
-                assertThat(resolved.moneyOrderId()).isEqualTo(request.orderId());
-            });
+            assertThat(request.moneyMode()).isEqualTo(ReturnResolution.REFUND);
+            BigDecimal worth = order.findLine(PRINTED_LINE).orElseThrow().grossOf(10).amount();
+            assertThat(worth).isGreaterThanOrEqualTo(new BigDecimal("20000"));
+            assertThat(request.settlementAmount()).isEqualByComparingTo(worth);
+            assertThat(line(request, PRINTED_LINE).refundQuantity()).isEqualTo(10);
+            assertThat(line(request, PRINTED_LINE).refundAmount()).isEqualByComparingTo(worth);
+            assertThat(request.proposedBy()).isEqualTo(SALES);
         }
 
         @Test
-        @DisplayName("money: SETTLEMENT_PENDING; never approved by its proposer; RESOLVED by another, with the VAT note")
+        @DisplayName("part of what came back: at most the units approved and back; at least one unit; a line left out gets none")
+        void partly() {
+            ReturnRequest request = open(ReturnReason.PRINT_DEFECT, ReturnResolution.REFUND,
+                    new ReturnRequest.Claim(PRINTED_LINE, 10), new ReturnRequest.Claim(STOCK_LINE, 5));
+            request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
+            request.approve(SALES, NOW, Map.of(line(request, PRINTED_LINE).id(), 8), null, null, POLICY);
+            request.goodsReceived(RECEIPT, "GR-RET-3", "HCM-QUA01", List.of(
+                    new ReturnRequest.ReturnedCarton("CUP-12OZ", 6), new ReturnRequest.ReturnedCarton("LID-90", 5)),
+                    WAREHOUSE, NOW);
+            UUID printed = line(request, PRINTED_LINE).id();
+            UUID stock = line(request, STOCK_LINE).id();
+            Order order = order(OrderStatus.RETURNED);
+            assertThat(code(catchThrowable(() -> request.proposeRefund(SALES, NOW, Map.of(printed, 7), order, null))))
+                    .as("8 approved but only 6 back").isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
+            assertThat(code(catchThrowable(() -> request.proposeRefund(SALES, NOW, Map.of(printed, 0, stock, 0), order,
+                    null)))).isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
+            request.proposeRefund(SALES, NOW, Map.of(printed, 6), order, null);
+            assertThat(line(request, PRINTED_LINE).refundQuantity()).isEqualTo(6);
+            assertThat(line(request, STOCK_LINE).refundQuantity()).isZero();
+            assertThat(request.settlementAmount())
+                    .isEqualByComparingTo(order.findLine(PRINTED_LINE).orElseThrow().grossOf(6).amount());
+        }
+
+        @Test
+        @DisplayName("only a return whose goods are back has a refund proposed")
+        void onlyAfterGoodsBack() {
+            ReturnRequest request = awaiting(5);
+            assertThat(code(catchThrowable(() -> request.proposeRefund(SALES, NOW, null,
+                    order(OrderStatus.RETURN_REQUESTED), null)))).isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("never approved by its proposer; RESOLVED by another with what payment settled, and the VAT note")
         void fourEyes() {
-            ReturnRequest request = inspected(10, 10);
-            UUID line = line(request, PRINTED_LINE).id();
-            assertThat(code(catchThrowable(() -> request.proposeResolution(SALES, NOW,
-                    List.of(new ReturnRequest.Remedy(line, 4, 6)), null, null))))
-                    .as("money needs a mode").isEqualTo(ErrorCode.VALIDATION_FAILED);
-            request.proposeResolution(SALES, NOW, List.of(new ReturnRequest.Remedy(line, 4, 6)),
-                    ReturnResolution.REFUND, "4 in lại, 6 hoàn tiền");
-            assertThat(request.status()).isEqualTo(ReturnStatus.SETTLEMENT_PENDING);
-            assertThat(request.settlementAmount()).isEqualByComparingTo("12000");
+            ReturnRequest request = pending(10);
             assertThat(code(catchThrowable(() -> request.requireSettlementApprover(SALES))))
                     .isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
-            assertThat(catchThrowable(() -> request.resolve(ACCOUNTANT, NOW, UUID.randomUUID(), "SO-1",
-                    Map.of(line, UUID.randomUUID()), new ReturnRequest.MoneyOutcome(BigDecimal.ONE, null, null, null))))
-                    .as("payment booked another amount").isInstanceOf(IllegalStateException.class);
-            request.resolve(ACCOUNTANT, NOW, UUID.randomUUID(), "SO-1", Map.of(line, UUID.randomUUID()),
-                    new ReturnRequest.MoneyOutcome(BigDecimal.valueOf(2_000), BigDecimal.valueOf(10_000), null,
-                            UUID.randomUUID()));
+            BigDecimal amount = request.settlementAmount();
+            assertThat(code(catchThrowable(() -> request.resolve(SALES, NOW,
+                    new ReturnRequest.MoneyOutcome(amount, BigDecimal.ZERO))))).isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
+            assertThatThrownBy(() -> request.resolve(ACCOUNTANT, NOW, ReturnRequest.MoneyOutcome.NONE))
+                    .as("payment settled another amount than the refund: a defect")
+                    .isInstanceOf(IllegalStateException.class);
+            request.pullDomainEvents();
+            BigDecimal offset = amount.divide(BigDecimal.valueOf(4), 4, java.math.RoundingMode.HALF_UP);
+            request.resolve(ACCOUNTANT, NOW, new ReturnRequest.MoneyOutcome(offset, amount.subtract(offset)));
             assertThat(request.status()).isEqualTo(ReturnStatus.RESOLVED);
-            assertThat(request.vatAdjustmentRequired()).isTrue();
             assertThat(request.settledBy()).isEqualTo(ACCOUNTANT);
-            assertThat(request.money().total()).isEqualByComparingTo("12000");
+            assertThat(request.vatAdjustmentRequired()).isTrue();
+            assertThat(request.closedAt()).isEqualTo(NOW);
+            assertThat(request.pullDomainEvents()).singleElement().satisfies(event -> {
+                ReturnResolved resolved = (ReturnResolved) ((OrderEvent.ReturnChanged) event).payload();
+                assertThat(resolved.vatAdjustmentRequired()).isTrue();
+            });
+            assertThat(code(catchThrowable(() -> request.requireSettlementApprover(ACCOUNTANT))))
+                    .as("resolved once").isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
         }
 
         @Test
-        @DisplayName("the approver sends it back: INSPECTED again, the proposal cleared")
+        @DisplayName("the approver sends it back: RECEIVED again, the proposal cleared, a reason required; a new proposal may follow")
         void sentBack() {
-            ReturnRequest request = inspected(10, 10);
-            UUID line = line(request, PRINTED_LINE).id();
-            request.proposeResolution(SALES, NOW, List.of(new ReturnRequest.Remedy(line, 0, 10)),
-                    ReturnResolution.CREDIT_NOTE, null);
-            assertThat(code(catchThrowable(() -> request.rejectSettlement(ACCOUNTANT, NOW, null))))
+            ReturnRequest request = pending(10);
+            assertThat(code(catchThrowable(() -> request.rejectSettlement(ACCOUNTANT, NOW, " "))))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
-            request.rejectSettlement(ACCOUNTANT, NOW, "Khách muốn in lại");
-            assertThat(request.status()).isEqualTo(ReturnStatus.INSPECTED);
+            request.rejectSettlement(ACCOUNTANT, NOW, "count the lids again");
+            assertThat(request.status()).isEqualTo(ReturnStatus.RECEIVED);
             assertThat(request.settlementAmount()).isZero();
             assertThat(request.moneyMode()).isNull();
-            assertThat(line(request, PRINTED_LINE).creditQuantity()).isZero();
-            request.proposeResolution(SALES, NOW, List.of(new ReturnRequest.Remedy(line, 10, 0)), null, null);
+            assertThat(request.proposedBy()).isNull();
+            assertThat(line(request, PRINTED_LINE).refundQuantity()).isZero();
+            request.proposeRefund(OTHER_SALES, NOW, Map.of(line(request, PRINTED_LINE).id(), 3),
+                    order(OrderStatus.RETURNED), null);
             assertThat(request.status()).isEqualTo(ReturnStatus.SETTLEMENT_PENDING);
-        }
-
-        @Test
-        @DisplayName("a change of mind is credited, never exchanged")
-        void changeOfMindNotExchanged() {
-            ReturnPolicy lenient = new ReturnPolicy(POLICY.window(), POLICY.returnDeadline(), POLICY.noReturnMaxValue(),
-                    true, 10, true);
-            ReturnRequest request = ReturnRequest.open("RMA-1", UUID.randomUUID(), order(OrderStatus.DELIVERED),
-                    ReturnChannel.PORTAL, ReturnReason.CHANGED_MIND, null, ReturnResolution.REFUND,
-                    List.of(new ReturnRequest.Claim(STOCK_LINE, 4)), Map.of(), Set.of(), CUSTOMER, NOW, lenient);
-            request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), lenient);
-            assertThat(code(catchThrowable(() -> request.approve(SALES, NOW, null, false, null, lenient))))
-                    .as("the goods come back").isEqualTo(ErrorCode.RETURN_GOODS_REQUIRED);
-            request.approve(SALES, NOW, null, null, null, lenient);
-            UUID line = line(request, STOCK_LINE).id();
-            request.receive(WAREHOUSE, NOW, "HCM-QC01", List.of(new ReturnRequest.Receipt(line, 4, null, null)),
-                    List.of(), null);
-            request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line, 4, 0, ReturnItemCondition.UNOPENED,
-                    4, 0, 0, "HCM-A01-1-A", null)), null);
-            assertThat(code(catchThrowable(() -> request.proposeResolution(SALES, NOW,
-                    List.of(new ReturnRequest.Remedy(line, 4, 0)), null, null))))
-                    .isEqualTo(ErrorCode.RETURN_REASON_NOT_ACCEPTED);
-        }
-    }
-
-    @Test
-    @DisplayName("goods stay with the customer up to the limit per order: other returns of it count")
-    void noReturnLimitPerOrder() {
-        // 2 000 000 VND accepted on photos alone; the stock line is 500 VND a unit.
-        ReturnRequest request = open(ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REFUND,
-                new ReturnRequest.Claim(STOCK_LINE, 10));
-        request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
-        assertThat(code(catchThrowable(() -> request.approve(SALES, NOW, null, false, null, POLICY,
-                new BigDecimal("1999000"))))).as("5 000 here on top of 1 999 000 elsewhere")
-                .isEqualTo(ErrorCode.RETURN_GOODS_REQUIRED);
-        request.approve(SALES, NOW, null, false, null, POLICY, new BigDecimal("1995000"));
-        assertThat(request.status()).isEqualTo(ReturnStatus.INSPECTED);
-    }
-
-    @Nested
-    @DisplayName("withdrawing a replacement")
-    class ReplacementWithdrawal {
-
-        @Test
-        @DisplayName("proposed with a reason on a resolved return that replaced goods; approved by another; credited")
-        void withdraw() {
-            ReturnRequest request = replaced(10);
-            assertThat(code(catchThrowable(() -> request.proposeReplacementWithdrawal(SALES, NOW, " "))))
-                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
-            request.proposeReplacementWithdrawal(SALES, NOW, "Khách muốn nhận tiền thay vì in lại");
-            assertThat(request.withdrawalStatus()).isEqualTo(ReturnRequest.WithdrawalStatus.PENDING);
-            assertThat(request.withdrawalAmount()).as("10 x 2 000").isEqualByComparingTo("20000");
-            assertThat(request.status()).as("the return stays resolved").isEqualTo(ReturnStatus.RESOLVED);
-            assertThat(code(catchThrowable(() -> request.proposeReplacementWithdrawal(SALES, NOW, "again"))))
-                    .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
-            assertThat(code(catchThrowable(() -> request.requireWithdrawalApprover(SALES))))
-                    .isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
-            assertThat(catchThrowable(() -> request.approveReplacementWithdrawal(ACCOUNTANT, NOW,
-                    new ReturnRequest.MoneyOutcome(BigDecimal.ZERO, BigDecimal.valueOf(20_000), BigDecimal.ZERO, null),
-                    null))).as("never refunded in cash here").isInstanceOf(IllegalStateException.class);
-            request.pullDomainEvents();
-            UUID transfer = UUID.randomUUID();
-            UUID paidOn = UUID.randomUUID();
-            request.approveReplacementWithdrawal(ACCOUNTANT, NOW, new ReturnRequest.MoneyOutcome(
-                    BigDecimal.valueOf(5_000), BigDecimal.ZERO, BigDecimal.valueOf(15_000), transfer), paidOn);
-            assertThat(request.withdrawalStatus()).isEqualTo(ReturnRequest.WithdrawalStatus.APPROVED);
-            assertThat(request.withdrawalMoney().total()).isEqualByComparingTo("20000");
-            assertThat(request.pullDomainEvents()).singleElement().satisfies(event -> {
-                ReturnReplacementWithdrawn withdrawn = (ReturnReplacementWithdrawn)
-                        ((OrderEvent.ReturnChanged) event).payload();
-                assertThat(withdrawn.paidOrderId()).isEqualTo(paidOn);
-                assertThat(withdrawn.lines()).singleElement().satisfies(line -> {
-                    assertThat(line.sku()).isEqualTo("CUP-12OZ");
-                    assertThat(line.quantity()).isEqualTo(10);
-                    assertThat(line.amount()).isEqualByComparingTo("20000");
-                });
-            });
-            assertThat(code(catchThrowable(() -> request.proposeReplacementWithdrawal(SALES, NOW, "once more"))))
-                    .as("withdrawn once").isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
-        }
-
-        @Test
-        @DisplayName("a replacement that shipped in part: the rest is withdrawn and credited; the credit flags the "
-                + "adjustment invoice")
-        void partWithdrawn() {
-            ReturnRequest request = replaced(10);
-            UUID line = line(request, PRINTED_LINE).id();
-            assertThat(request.vatAdjustmentRequired()).as("nothing given back yet").isFalse();
-            request.proposeReplacementWithdrawal(SALES, NOW, "In lại 4 chiếc không đạt, khách nhận tiền phần còn lại");
-            assertThat(request.withdrawalAmountFor(Map.of(line, 4))).as("4 x 2 000").isEqualByComparingTo("8000");
-            assertThat(catchThrowable(() -> request.approveReplacementWithdrawal(ACCOUNTANT, NOW,
-                    new ReturnRequest.MoneyOutcome(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.valueOf(20_000),
-                            UUID.randomUUID()), null, Map.of(line, 4))))
-                    .as("credited exactly what is withdrawn").isInstanceOf(IllegalStateException.class);
-            assertThat(code(catchThrowable(() -> request.approveReplacementWithdrawal(ACCOUNTANT, NOW,
-                    ReturnRequest.MoneyOutcome.NONE, null, Map.of(line, 0)))))
-                    .as("everything shipped").isEqualTo(ErrorCode.RETURN_REPLACEMENT_NOT_WITHDRAWABLE);
-            request.pullDomainEvents();
-            request.approveReplacementWithdrawal(ACCOUNTANT, NOW, new ReturnRequest.MoneyOutcome(BigDecimal.ZERO,
-                    BigDecimal.ZERO, BigDecimal.valueOf(8_000), UUID.randomUUID()), null, Map.of(line, 4));
-            assertThat(request.withdrawalAmount()).isEqualByComparingTo("8000");
-            assertThat(request.vatAdjustmentRequired()).isTrue();
-            assertThat(request.pullDomainEvents()).singleElement().satisfies(event -> assertThat(
-                    ((ReturnReplacementWithdrawn) ((OrderEvent.ReturnChanged) event).payload()).lines())
-                    .singleElement().satisfies(withdrawn -> assertThat(withdrawn.quantity()).isEqualTo(4)));
-        }
-
-        @Test
-        @DisplayName("sent back with a reason: the replacement ships; a new proposal may follow")
-        void sentBack() {
-            ReturnRequest request = replaced(4);
-            request.proposeReplacementWithdrawal(SALES, NOW, "Không in lại được");
-            assertThat(code(catchThrowable(() -> request.rejectReplacementWithdrawal(ACCOUNTANT, NOW, null))))
-                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
-            request.rejectReplacementWithdrawal(ACCOUNTANT, NOW, "Xưởng xác nhận in lại được");
-            assertThat(request.withdrawalStatus()).isEqualTo(ReturnRequest.WithdrawalStatus.REJECTED);
-            request.proposeReplacementWithdrawal(OTHER_SALES, NOW, "Khách huỷ đơn thay thế");
-            assertThat(request.withdrawalStatus()).isEqualTo(ReturnRequest.WithdrawalStatus.PENDING);
-            assertThat(request.withdrawalDecidedBy()).isNull();
-        }
-
-        @Test
-        @DisplayName("only a resolved return with a replacement has one to withdraw")
-        void nothingToWithdraw() {
-            assertThat(code(catchThrowable(() -> inspected(5, 5).proposeReplacementWithdrawal(SALES, NOW, "x"))))
-                    .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
-            ReturnRequest credited = inspected(5, 5);
-            UUID line = line(credited, PRINTED_LINE).id();
-            credited.proposeResolution(SALES, NOW, List.of(new ReturnRequest.Remedy(line, 0, 5)),
-                    ReturnResolution.CREDIT_NOTE, null);
-            credited.resolve(ACCOUNTANT, NOW, null, null, Map.of(), new ReturnRequest.MoneyOutcome(BigDecimal.ZERO,
-                    BigDecimal.ZERO, BigDecimal.valueOf(10_000), UUID.randomUUID()));
-            assertThat(code(catchThrowable(() -> credited.proposeReplacementWithdrawal(SALES, NOW, "x"))))
-                    .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+            assertThat(request.proposedBy()).isEqualTo(OTHER_SALES);
         }
     }
 
@@ -933,12 +654,14 @@ class ReturnRequestTest {
     class Evidence {
 
         @Test
-        @DisplayName("photos at their steps, at most the limit per step: the customer's never crowd out QC's")
+        @DisplayName("only the claim's photos are the return's, at most the limit; those of the goods back are the receipt's")
         void stages() {
             ReturnPolicy two = new ReturnPolicy(POLICY.window(), POLICY.returnDeadline(), POLICY.noReturnMaxValue(), true,
                     2, false);
             ReturnRequest request = misprinted(5);
             assertThat(code(catchThrowable(() -> request.addEvidence(photo(ReturnEvidence.Stage.INSPECTION), two))))
+                    .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+            assertThat(code(catchThrowable(() -> request.addEvidence(photo(ReturnEvidence.Stage.RECEIPT), two))))
                     .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
             request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), two);
             request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), two);
@@ -947,8 +670,10 @@ class ReturnRequestTest {
             assertThat(request.pullNewEvidence()).hasSize(2);
             assertThat(request.pullNewEvidence()).isEmpty();
             request.approve(SALES, NOW, null, null, null, two);
-            request.addEvidence(photo(ReturnEvidence.Stage.RECEIPT), two);
-            assertThat(request.pullNewEvidence()).as("the warehouse still has room").hasSize(1);
+            request.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 5)), WAREHOUSE, NOW);
+            assertThat(code(catchThrowable(() -> request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY))))
+                    .as("goods back: the claim takes no more photos").isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
         }
     }
 
@@ -957,7 +682,7 @@ class ReturnRequestTest {
     void stateMachine() {
         assertThat(java.util.Arrays.stream(ReturnStatus.values()).filter(ReturnStatus::isOpen))
                 .containsExactly(ReturnStatus.REQUESTED, ReturnStatus.AWAITING_RETURN, ReturnStatus.RECEIVED,
-                        ReturnStatus.INSPECTED, ReturnStatus.SETTLEMENT_PENDING);
+                        ReturnStatus.SETTLEMENT_PENDING);
         for (ReturnStatus end : List.of(ReturnStatus.RESOLVED, ReturnStatus.REJECTED)) {
             assertThat(java.util.Arrays.stream(ReturnStatus.values()).filter(end::canTransitionTo)).as(end.name())
                     .isEmpty();
@@ -967,8 +692,8 @@ class ReturnRequestTest {
                     .containsExactly(ReturnStatus.RECEIVED);
         }
         assertThat(ReturnStatus.REQUESTED.canTransitionTo(ReturnStatus.RECEIVED)).isFalse();
-        assertThat(ReturnStatus.INSPECTED.canTransitionTo(ReturnStatus.REJECTED)).isFalse();
-        assertThat(ReturnStatus.INSPECTED.canTransitionTo(ReturnStatus.RESOLVED)).as("never without approval").isFalse();
+        assertThat(ReturnStatus.RECEIVED.canTransitionTo(ReturnStatus.RESOLVED)).as("never without approval").isFalse();
+        assertThat(ReturnStatus.SETTLEMENT_PENDING.canTransitionTo(ReturnStatus.RECEIVED)).as("sent back").isTrue();
         assertThatThrownBy(() -> new ReturnDiscrepancy(UUID.randomUUID(), null, ReturnDiscrepancy.Kind.SHORT, "X", 1,
                 null, WAREHOUSE, NOW)).isInstanceOf(IllegalArgumentException.class);
     }
@@ -991,8 +716,18 @@ class ReturnRequestTest {
                 List.of(new ReturnRequest.Claim(ownLine, 1)), Map.of(), Set.of(), CUSTOMER, NOW, POLICY))))
                 .isEqualTo(ErrorCode.RETURN_CUSTOM_ITEM_NOT_DEFECTIVE);
         ReturnRequest misprint = ReturnRequest.open("RMA-20261022-0010", UUID.randomUUID(), order, ReturnChannel.PORTAL,
-                ReturnReason.PRINT_DEFECT, "Mực in bị lem", ReturnResolution.REPLACEMENT,
+                ReturnReason.PRINT_DEFECT, "Mực in bị lem", ReturnResolution.REFUND,
                 List.of(new ReturnRequest.Claim(ownLine, 10)), Map.of(), Set.of(), CUSTOMER, NOW, POLICY);
         assertThat(misprint.lines()).singleElement().satisfies(l -> assertThat(l.customPrinted()).isTrue());
+    }
+
+    @Test
+    @DisplayName("L2: a return line never receives fewer than nothing (ck_return_request_line_received); none is fine")
+    void aLineReceivesNoNegativeCount() {
+        ReturnLine line = line(misprinted(5), PRINTED_LINE);
+        assertThatThrownBy(() -> line.receive(-1)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(line.receivedQuantity()).as("nothing was written").isNull();
+        line.receive(0);
+        assertThat(line.receivedQuantity()).isZero();
     }
 }

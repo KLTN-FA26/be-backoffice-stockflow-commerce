@@ -56,13 +56,13 @@ public class CartonCheckStore {
     }
 
     /**
-     * The cartons the task picked, as the check receives them (08 §4.1 step 1, §5.2): every PICKED line of the task with
-     * its carton whole - nothing of it found damaged at the bench before 4C-6 - in walking order.
+     * The cartons the task picked, as the check receives them (08 §4.1 step 1, §5.2): every PICKED line of the task that
+     * took its carton whole, in walking order.
      */
     public List<CartonCheck.PickedCarton> pickedCartons(UUID pickId) {
         return pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pickId).stream()
                 .filter(line -> line.getStatus() == PickLineStatus.PICKED && line.getLpn() != null
-                        && line.getGoodQty() == line.getAllocatedQty())
+                        && line.getPickedQty() == line.getAllocatedQty())
                 .map(CartonCheckStore::picked).toList();
     }
 

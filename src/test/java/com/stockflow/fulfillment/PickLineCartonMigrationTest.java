@@ -202,13 +202,18 @@ class PickLineCartonMigrationTest {
         // Since V20261113000400 any line without an LPN is refused first, by ck_pick_line_lpn (rule 3 of 4C-4).
         assertThatThrownBy(() -> line(reservation, null, true)).isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("ck_pick_line_lpn");
-        // The one line that may name no carton - the units of a damage report - still cannot be a whole carton.
-        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code,
-                    sequence_no, allocated_qty, lpn, whole_carton, damage_report_id)
-                VALUES (?, ?, ?, ?, ?, ?, 1, 1, NULL, TRUE, ?)""",
-                Identifiers.newId(), pick, orderLine, reservation, sku, SHELF, Identifiers.newId())))
-                .isInstanceOf(DataAccessException.class).hasMessageContaining("ck_pick_line_whole_carton");
+        // With the lpn rule lifted for this transaction alone, a whole-carton line still cannot be written without a carton
+        // (no line may name none since V20261114000400 removed the damage reports' carton-less line).
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
+            jdbc.execute("ALTER TABLE fulfillment.pick_line DROP CONSTRAINT ck_pick_line_lpn");
+            jdbc.update("""
+                    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code,
+                        sequence_no, allocated_qty, lpn, whole_carton)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, 1, NULL, TRUE)""",
+                    Identifiers.newId(), pick, orderLine, reservation, sku, SHELF);
+        })).isInstanceOf(DataAccessException.class).hasMessageContaining("ck_pick_line_whole_carton");
+        assertThat(jdbc.queryForObject("select count(*) from pg_constraint where conname = 'ck_pick_line_lpn'",
+                Integer.class)).as("the lifted rule is back: the transaction rolled back").isOne();
     }
 
     /**
@@ -226,8 +231,8 @@ class PickLineCartonMigrationTest {
             jdbc.execute("ALTER TABLE fulfillment.pick_line DROP CONSTRAINT ck_pick_line_lpn");
             jdbc.execute("ALTER TABLE fulfillment.pick_line DISABLE TRIGGER tg_pick_line_carton");
             line(reservation, null, false);
-            // The line's deferred keys (fk_pick_line_damage_report, SCRUM-277) are checked now: PostgreSQL refuses an
-            // ALTER TABLE while a trigger event of the table is still pending.
+            // Deferred keys of the line are checked now: PostgreSQL refuses an ALTER TABLE while a trigger event of the
+            // table is still pending.
             jdbc.execute("SET CONSTRAINTS ALL IMMEDIATE");
             jdbc.execute("ALTER TABLE fulfillment.pick_line ENABLE TRIGGER tg_pick_line_carton");
             assertThat(jdbc.queryForObject("select lpn from fulfillment.pick_line where reservation_id = ?",

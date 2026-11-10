@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Boots <b>only</b> the procurement module and the modules it declares in {@code package-info.java} (product, inventory, warehouse, notification, identity and - for receiving against production orders, 4A-5 - order).
+ * Boots <b>only</b> the procurement module and the modules it declares in {@code package-info.java} (product, inventory, warehouse, notification, identity; order for receiving against production orders, 4A-5; fulfillment and order for return receipts, 4D-2).
  *
  * <p>The point is the boundary: if procurement gains a dependency its {@code package-info.java} does not declare, this
  * context cannot start and the build says so, instead of an import nobody noticed in review. Fix the declaration
@@ -45,8 +45,6 @@ class ProcurementModuleTest {
     com.stockflow.design.api.DesignService designServiceMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.payment.api.PaymentService paymentServiceMock;
-    @org.springframework.test.context.bean.override.mockito.MockitoBean
-    com.stockflow.payment.api.ReturnSettlement returnSettlementMock;
 
     @Test
     @DisplayName("procurement starts and answers through its api with the other modules absent")
@@ -56,12 +54,13 @@ class ProcurementModuleTest {
 
     /**
      * The negative half: a module procurement has no business with is genuinely not in this context. (Order is one of
-     * its dependencies since 4A-5; fulfillment, which depends on order, is not.)
+     * its dependencies since 4A-5 and fulfillment since 4D-2, for the cartons a shipment carried; reporting, which
+     * depends on both, is not.)
      */
     @Test
     @DisplayName("a module outside procurement's declared dependencies is not in this context")
     void unrelatedModulesAreAbsent() {
-        assertThatThrownBy(() -> context.getBean(com.stockflow.fulfillment.api.FulfillmentService.class))
+        assertThatThrownBy(() -> context.getBean(com.stockflow.reporting.api.ReportingService.class))
                 .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
         assertThat(context.getBean(com.stockflow.order.api.ProductionOrderReceiving.class)).isNotNull();
     }

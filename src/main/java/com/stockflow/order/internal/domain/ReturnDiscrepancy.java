@@ -5,11 +5,12 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * What a returned parcel held that the approval did not say ({@code ordering.return_request_discrepancy},
- * append-only): fewer ({@link Kind#SHORT}) or more ({@link Kind#EXCESS}) units of a line than approved, another SKU
- * than the line's ({@link Kind#WRONG_ITEM}), or something that belongs to no line ({@link Kind#UNEXPECTED_ITEM}, its
- * SKU as the warehouse read it - it may not even be ours). Recorded at receipt for Sales to follow up; the units
- * credited are decided at inspection, never from a discrepancy alone.
+ * What came back on a return's receipt that the approval did not say ({@code ordering.return_request_discrepancy},
+ * append-only; team plan 4D-3): fewer ({@link Kind#SHORT}) or more ({@link Kind#EXCESS}) units of a line than approved,
+ * or cartons of a SKU the return does not claim ({@link Kind#UNEXPECTED_ITEM}). Recorded when the return receipt is
+ * confirmed, for Sales to follow up with the customer outside the system (kltn-docs 03 edge cases); the units refunded
+ * are Sales' proposal, never a discrepancy's. {@link Kind#WRONG_ITEM} is historical: the warehouse counted loose units
+ * of another SKU in before 4D-3, a return receipt takes only cartons of the order.
  *
  * @param lineId null only for an unexpected item
  */

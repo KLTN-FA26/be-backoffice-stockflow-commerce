@@ -6,24 +6,26 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Published by the <b>order</b> module when a return is resolved (03 §12): every accepted unit is made good, by new
- * goods or by money.
+ * Published by the <b>order</b> module when the refund of a return is approved by a second person (team plan 4D-3;
+ * kltn-docs 17 §4.10 step 40, 15 §4.5 step 15): the goods that came back are refunded.
  *
  * <ul>
- *   <li>{@code replacementOrderId}: the free order the replacements ship as (released and fulfilled as any order);
- *       null when nothing is replaced.</li>
- *   <li>Money, booked by payment in the same transaction: {@code offsetAmount} reduced the order's open receivables,
- *       {@code refundedAmount} waits as PENDING refunds for the accountant, {@code creditedAmount} stays as the
- *       customer's credit. Their sum is the value of the accepted units not replaced, at the order's prices.</li>
+ *   <li>Money, settled by payment in the same transaction against the order's installments: {@code offsetAmount} was
+ *       taken off what they still owed, {@code refundedAmount} was paid already and is to be refunded - the accountant
+ *       records the transfer (15 §4.5 step 16). Their sum is what the goods refunded were worth with their VAT.
+ *       {@code creditedAmount} is always zero: nothing stays as the customer's credit (15 BR-05).</li>
+ *   <li>{@code replacementOrderId} / {@code replacementOrderNumber} are always null: an exchange is a new quote, not
+ *       a free order (17 §4.10 step 41).</li>
+ *   <li>Each line: {@code acceptedQuantity} the units of its SKU that came back, {@code creditQuantity} the units
+ *       refunded and {@code creditAmount} their value before VAT (what the sales rollups take off revenue);
+ *       {@code replacementQuantity} is always zero.</li>
  *   <li>{@code vatAdjustmentRequired}: money was given back for invoiced goods, so accounting issues an adjustment
- *       invoice (hóa đơn điều chỉnh giảm, Nghị định 123/2020/NĐ-CP, Thông tư 78/2021/TT-BTC) - the system has no
- *       e-invoicing and only says so.</li>
- *   <li>{@code paidOrderId}: the order the goods were paid on, whose money settled it - the returned order itself, or
- *       for a return on a free replacement order the order whose units it replaced. Null in events published before
- *       it was added: read it as {@code orderId}.</li>
+ *       invoice (hóa đơn điều chỉnh giảm, Nghị định 123/2020/NĐ-CP, Thông tư 78/2021/TT-BTC; 21 §4.4).</li>
+ *   <li>{@code paidOrderId}: the returned order itself.</li>
  * </ul>
  *
- * See {@code package-info.java} for the rules on changing this contract.
+ * <p>The shape is the one SCRUM-260 published, when a return could also be replaced or credited; the fields those
+ * filled stay, empty (see {@code package-info.java} for the rules on changing this contract).</p>
  */
 public record ReturnResolved(
         UUID returnRequestId,
@@ -63,7 +65,10 @@ public record ReturnResolved(
         return paidOrderId == null ? orderId : paidOrderId;
     }
 
-    /** Of the line's {@code acceptedQuantity}, {@code replacementQuantity} replaced and {@code creditQuantity} credited. */
+    /**
+     * Of the line's {@code acceptedQuantity} that came back, {@code creditQuantity} refunded, worth {@code creditAmount}
+     * before VAT; {@code replacementQuantity} is zero since 4D-3.
+     */
     public record Line(UUID orderLineId, String sku, int acceptedQuantity, int replacementQuantity, int creditQuantity,
                        BigDecimal creditAmount) {
     }

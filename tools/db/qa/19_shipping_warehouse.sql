@@ -97,13 +97,18 @@ SELECT pg_temp.expect_fail('SW10 a hold on a stock item naming a warehouse', $q$
                                              reserved_at, status, sku, warehouse_code)
     VALUES (gen_random_uuid(), '22222222-2222-4222-8222-222222222222', md5('qa19:contract')::uuid, gen_random_uuid(),
             gen_random_uuid(), 1, NOW(), 'HELD', 'SOFA-3S-GREY', 'HCM') $q$);
-SELECT pg_temp.expect_ok('SW11 allocated on a bin of HCM, where it is held (released to HCM)', $q$
+-- Stock is whole LPN cartons since 4C-1/4C-2: an allocation is one carton's row (the demo's 25 loose units became 25
+-- cartons of one on HCM-A01-2-B), taken whole.
+SELECT pg_temp.expect_ok('SW11 allocated on a carton of HCM, where it is held (released to HCM)', $q$
     INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
                                              reserved_at, status, sku, allocated_from_id)
-    VALUES (gen_random_uuid(), '11111111-1111-4111-8111-111111111111', md5('qa19:contract')::uuid, gen_random_uuid(),
-            gen_random_uuid(), 25, NOW(), 'HELD', 'SOFA-3S-GREY', md5('qa19:hold')::uuid);
-    -- 4C-2: a bin holds whole cartons, so the demo row has little on hand; the 25 are added to both.
-    UPDATE inventory.stock_item SET on_hand = on_hand + 25, reserved = reserved + 25 WHERE id = '11111111-1111-4111-8111-111111111111' $q$);
+    SELECT md5('qa19:alloc')::uuid, c.id, md5('qa19:contract')::uuid, gen_random_uuid(),
+           gen_random_uuid(), 1, NOW(), 'HELD', 'SOFA-3S-GREY', md5('qa19:hold')::uuid
+      FROM (SELECT s.id FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
+             WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
+               AND s.on_hand = 1 AND s.reserved = 0 ORDER BY p.lpn LIMIT 1) c;
+    UPDATE inventory.stock_item SET reserved = reserved + 1
+     WHERE id = (SELECT stock_item_id FROM inventory.stock_reservation WHERE id = md5('qa19:alloc')::uuid) $q$);
 
 \echo '--- released from where it ships (BR-22)'
 SELECT pg_temp.expect_fail('SW12 an order of a contract released with no shipping warehouse', $q$

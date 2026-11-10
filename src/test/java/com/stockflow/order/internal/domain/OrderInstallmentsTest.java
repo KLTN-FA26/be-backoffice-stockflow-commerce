@@ -87,24 +87,6 @@ class OrderInstallmentsTest {
     }
 
     @Test
-    @DisplayName("an order without a contract has no money in the system: nothing it is told holds its goods back")
-    void orderWithoutAContractIsNeverHeldForMoney() {
-        // A free replacement of a return (SCRUM-260): the one order confirmed without a contract.
-        Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 9), UUID.randomUUID(), UUID.randomUUID(),
-                List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(0), null)), NOW);
-        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        order.replacesReturn(UUID.randomUUID());
-        order.submitReplacement(SALES, NOW);
-        order.release(UUID.randomUUID(), "HCM", SALES, NOW);
-        order.startPicking(SALES, NOW);
-
-        order.requireHandoverAllowed(new BigDecimal("600000"));
-        assertThat(order.markPacked(NOW, SALES)).isTrue();
-        assertThat(order.markShipped(NOW, SALES, new BigDecimal("600000"))).isTrue();
-        assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
-    }
-
-    @Test
     @DisplayName("17 §4.6 step 21: delivered, it completes and closes only once its installments owe nothing")
     void completesAndClosesOnlyWhenNothingIsOwed() {
         Order order = signedWaitingOnSigning();

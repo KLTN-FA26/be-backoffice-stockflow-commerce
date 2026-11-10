@@ -509,13 +509,64 @@ class StockItemTest {
         }
 
         @Test
-        @DisplayName("quarantined stock reaches AVAILABLE through re-inspection, not putaway")
-        void quarantinedRowInCartonCannotBeMadeAvailable() {
+        @DisplayName("a released quarantined carton row becomes AVAILABLE when put away (05 §4.4, team plan 4D-1)")
+        void quarantinedRowInCartonIsPutAwayAsAvailable() {
             StockItem row = cartonRow(StockStatus.QUARANTINE, List.of());
 
-            assertThatThrownBy(() -> row.reclassifyInPackage(StockStatus.AVAILABLE))
+            row.reclassifyInPackage(StockStatus.AVAILABLE);
+
+            assertThat(row.status()).isEqualTo(StockStatus.AVAILABLE);
+        }
+
+        @Test
+        @DisplayName("a putaway takes only the status its task puts away: INBOUND for a receipt, QUARANTINE for a release")
+        void putAwayInPackageTakesItsOwnSource() {
+            StockItem inbound = cartonRow(StockStatus.INBOUND, List.of());
+            assertThatThrownBy(() -> inbound.putAwayInPackage(StockStatus.QUARANTINE))
                     .isInstanceOf(IllegalStateException.class);
-            assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
+            inbound.putAwayInPackage(StockStatus.INBOUND);
+            assertThat(inbound.status()).isEqualTo(StockStatus.AVAILABLE);
+
+            StockItem quarantined = cartonRow(StockStatus.QUARANTINE, List.of());
+            assertThatThrownBy(() -> quarantined.putAwayInPackage(StockStatus.INBOUND))
+                    .isInstanceOf(IllegalStateException.class);
+            quarantined.putAwayInPackage(StockStatus.QUARANTINE);
+            assertThat(quarantined.status()).isEqualTo(StockStatus.AVAILABLE);
+            assertThatThrownBy(() -> cartonRow(StockStatus.AVAILABLE, List.of()).putAwayInPackage(StockStatus.AVAILABLE))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("a free AVAILABLE or INBOUND carton row is quarantined in place; nothing else is")
+        void quarantineInPackage() {
+            StockItem available = cartonRow(StockStatus.AVAILABLE, List.of());
+            StockItemId id = available.id();
+            available.quarantineInPackage();
+            assertThat(available.status()).isEqualTo(StockStatus.QUARANTINE);
+            assertThat(available.id()).isEqualTo(id);
+            assertThat(available.stockPackageId()).isEqualTo(carton);
+
+            StockItem inbound = cartonRow(StockStatus.INBOUND, List.of());
+            inbound.quarantineInPackage();
+            assertThat(inbound.status()).isEqualTo(StockStatus.QUARANTINE);
+
+            assertThatThrownBy(available::quarantineInPackage).isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> cartonRow(StockStatus.BLOCKED, List.of()).quarantineInPackage())
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> availableWith(5).quarantineInPackage())
+                    .isInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        @DisplayName("a carton row held for an order is not quarantined under its hold (20 BR-21)")
+        void quarantineRefusesAHeldRow() {
+            Reservation hold = new Reservation(new ReservationId(UUID.randomUUID()), UUID.randomUUID(),
+                    UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW, NOW.plus(Duration.ofMinutes(30)),
+                    ReservationStatus.HELD, null, null);
+            StockItem row = cartonRow(StockStatus.AVAILABLE, List.of(hold));
+
+            assertThatThrownBy(row::quarantineInPackage).isInstanceOf(IllegalStateException.class);
+            assertThat(row.status()).isEqualTo(StockStatus.AVAILABLE);
         }
 
         @Test

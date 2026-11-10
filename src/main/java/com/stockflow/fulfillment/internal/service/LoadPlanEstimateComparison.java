@@ -151,9 +151,6 @@ class LoadPlanEstimateComparison {
         BigDecimal actualWeight = BigDecimal.ZERO;
         for (LoadPlanParcels.Parcel p : compared) {
             Set<UUID> lines = new LinkedHashSet<>(linesOfParcel.getOrDefault(p.packageId(), Set.of()));
-            if (p.row().getKit() != null) {
-                lines.add(p.row().getKit().orderLineId());
-            }
             lines.forEach(line -> actualByLine.merge(line, 1, Integer::sum));
             CargoPackage c = p.carton();
             if (c != null) {

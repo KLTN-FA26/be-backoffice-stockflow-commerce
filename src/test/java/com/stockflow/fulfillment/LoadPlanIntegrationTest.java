@@ -223,7 +223,7 @@ class LoadPlanIntegrationTest {
         return ftlOrder(sofas, DemoData.CUSTOMER_ID);
     }
     /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
-    private UUID[] packed(OrderSummary order, boolean kits) throws Exception {
+    private UUID[] packed(OrderSummary order) throws Exception {
         UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
@@ -288,23 +288,23 @@ class LoadPlanIntegrationTest {
 
     // ---- the whole flow ----------------------------------------------------------------------
 
-    @org.junit.jupiter.api.Disabled("4C-6: its body is built on two-part kits (two parcels per sofa, one vehicle carrying a kit); a carton shipment has one parcel per sofa and the planner no kit group - rewrite with 4C-7 when kits are removed")
     @Test
     @DisplayName("candidates → plan (idempotent) → calculation → FE #71 layout → manual edits refused (UNSUPPORTED, "
-            + "KIT_SPLIT, stale version) and accepted → one vehicle recalculated → LP-4 at acknowledgement and "
-            + "confirmation → BR-13 → CONFIRMED with a PLANNED dispatch load, the left-behind parcel free again → "
+            + "incomplete, stale version) and accepted → one vehicle recalculated → LP-4 at acknowledgement and "
+            + "confirmation → BR-13 → CONFIRMED with a PLANNED dispatch load, the left-behind carton free again → "
             + "piece check → reopened (load cancelled, LP-11) → BR-14 once a vehicle loads → cancelled")
     void theWholeFlow() throws Exception {
+        // Every shipping carton is a picked LPN carton of one sofa (4C-6, 4C-7): order A has two, order B one.
         OrderSummary orderA = ftlOrder(2);
         OrderSummary orderB = ftlOrder(1);
         // The coordinator's advisory estimate of order A before packing (PR EST); order B has none.
         String estimateId = data(oc(body(post(BASE + "/load-estimates"), "{\"sources\":[{\"type\":\"ORDER\",\"id\":\""
                 + orderA.orderId() + "\"}],\"vehicleTypeIds\":[\"" + truck5t + "\"]}")).andExpect(status().isCreated()))
                 .path("id").asText();
-        UUID shipmentA = packed(orderA, true)[0];
-        UUID shipmentB = packed(orderB, false)[0];
+        UUID shipmentA = packed(orderA)[0];
+        UUID shipmentB = packed(orderB)[0];
 
-        // Candidates: whole shipments waiting for dispatch with their sealed parcels, sizes in mm (LP-5, LP2-1).
+        // Candidates: whole shipments waiting for dispatch with their cartons, sizes in mm (LP-5, LP2-1).
         JsonNode candidates = data(dispatch(get(BASE + "/load-plan-candidates?warehouseId=" + HCM))
                 .andExpect(status().isOk()));
         Map<String, JsonNode> byShipment = new LinkedHashMap<>();
@@ -322,12 +322,12 @@ class LoadPlanIntegrationTest {
         JsonNode plan = create(createBody(requestId, List.of(shipmentA, shipmentB), List.of(truck5t)));
         assertThat(plan.path("status").asText()).isEqualTo("DRAFT");
         assertThat(plan.path("code").asText()).startsWith("LP-");
-        assertThat(plan.path("packageCount").asInt()).isEqualTo(5);
+        assertThat(plan.path("packageCount").asInt()).isEqualTo(3);
         assertThat(create(createBody(requestId, List.of(shipmentA, shipmentB), List.of(truck5t)))
                 .path("loadPlanId").asText()).isEqualTo(plan.path("loadPlanId").asText());
         String id = plan.path("loadPlanId").asText();
 
-        // Calculation: PLANNED, every parcel placed on one 5 t truck.
+        // Calculation: PLANNED, every carton placed on one 5 t truck.
         plan = step(plan, "/calculation", version(plan));
         assertThat(plan.path("status").asText()).isEqualTo("PLANNED");
         assertThat(plan.path("vehicles")).hasSize(1);
@@ -344,61 +344,49 @@ class LoadPlanIntegrationTest {
         assertThat(layout.path("innerMm").path("h").asInt()).isEqualTo(2050);
         assertThat(layout.path("maxPayloadKg").decimalValue()).isEqualByComparingTo("5000");
         assertThat(layout.path("gussets").isArray()).isTrue();
-        assertThat(layout.path("boxes")).hasSize(5);
-        assertThat(layout.path("usedWeightKg").decimalValue()).isEqualByComparingTo("197.5");
+        assertThat(layout.path("boxes")).hasSize(3);
+        assertThat(layout.path("usedWeightKg").decimalValue()).isEqualByComparingTo("157.5");
         assertThat(layout.path("usedVolumeMm3").asLong()).isPositive();
         JsonNode anyBox = layout.path("boxes").get(0);
         // The shared Layout of PR EST (Layouts.of): the FE #71 fields, plus loadSequence and the fill percentages.
         // Null fields are left out by the API's mapper; the FE schema defaults sourceRef and kitGroup to null.
         assertThat(anyBox.fieldNames()).toIterable().contains("xMm", "yMm", "zMm", "wMm", "hMm", "dMm", "ref",
                 "label", "partName", "origMm", "orientation", "rotatable", "weightKg", "loadSequence");
-        assertThat(anyBox.hasNonNull("sourceRef")).as("a sealed parcel has no source line").isFalse();
-        assertThat(layout.path("boxes").findValuesAsText("kitGroup")).hasSize(4);
+        assertThat(anyBox.hasNonNull("sourceRef")).as("a shipping carton has no source line").isFalse();
+        assertThat(layout.path("boxes").findValuesAsText("kitGroup")).as("no kits any more (4C-7)").isEmpty();
         assertThat(layout.path("volumeFillPct").decimalValue()).isPositive();
-        assertThat(anyBox.path("label").asText()).startsWith("PKG-");
+        assertThat(anyBox.path("label").asText()).isNotBlank();
         assertThat(anyBox.path("orientation").asText()).isIn("LWH", "LHW", "WLH", "WHL", "HLW", "HWL");
         assertThat(data(dispatch(get(PLANS + "/" + id + "/layouts")).andExpect(status().isOk()))).hasSize(1);
         dispatch(get(PLANS + "/" + id + "/vehicles/2/layout")).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_NOT_FOUND"));
 
-        // Which parcel is which: the kits' parts of order A, the carton of order B.
+        // Which carton is which: order A's two, order B's one (the plan lists every shipment's cartons).
+        List<String> cartonsOfA = new ArrayList<>();
         String carton = null;
-        Map<String, List<JsonNode>> kits = new LinkedHashMap<>();
         for (JsonNode p : plan.path("packages")) {
-            if (!p.hasNonNull("kitGroupId")) {
+            assertThat(p.hasNonNull("kitGroupId")).isFalse();
+            if (p.path("shipmentId").asText().equals(shipmentB.toString())) {
                 carton = p.path("packageId").asText();
             } else {
-                kits.computeIfAbsent(p.path("kitGroupId").asText(), k -> new ArrayList<>()).add(p);
+                cartonsOfA.add(p.path("packageId").asText());
             }
         }
-        assertThat(kits).hasSize(2);
-        List<String[]> parts = new ArrayList<>();      // [part1, part2] of each kit
-        kits.values().forEach(k -> {
-            k.sort((a, b) -> a.path("kitPartNo").asInt() - b.path("kitPartNo").asInt());
-            parts.add(new String[] {k.get(0).path("packageId").asText(), k.get(1).path("packageId").asText()});
-        });
-        assertThat(plan.path("packages").findValuesAsText("partName")).contains(sofaOf(DemoData.CUSTOMER_ID).sku() + " 1/2",
-                sofaOf(DemoData.CUSTOMER_ID).sku() + " 2/2", sofaOf(DemoData.CUSTOMER_ID).sku());
+        assertThat(cartonsOfA).hasSize(2);
+        assertThat(carton).isNotNull();
 
-        // A known floor layout: two sofas side by side, the carton behind, the cushions beside it.
-        String sofa1 = box(parts.get(0)[0], 0, 0, 0, 950, 900, 2150);
-        String sofa2 = box(parts.get(1)[0], 950, 0, 0, 950, 900, 2150);
+        // A known floor layout: order A's two sofas side by side, order B's carton behind them.
+        String sofa1 = box(cartonsOfA.get(0), 0, 0, 0, 950, 900, 2150);
+        String sofa2 = box(cartonsOfA.get(1), 950, 0, 0, 950, 900, 2150);
         String cartonOnFloor = box(carton, 0, 0, 2150, 950, 900, 2150);
-        String cushions1 = box(parts.get(0)[1], 950, 0, 2150, 900, 400, 950);
-        String cushions2 = box(parts.get(1)[1], 950, 0, 3100, 900, 400, 950);
-        String cushions1Floating = box(parts.get(0)[1], 950, 10, 2150, 900, 400, 950);
+        String cartonFloating = box(carton, 0, 10, 2150, 950, 900, 2150);
 
         // BR-11: a box 10 mm in the air is UNSUPPORTED - refused, nothing changed.
         JsonNode refused = body(dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan,
-                List.of(sofa1, sofa2, cartonOnFloor, cushions1Floating, cushions2), List.of())))
+                List.of(sofa1, sofa2, cartonFloating), List.of())))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("PLACEMENT_RULE_VIOLATION")));
-        assertThat(codes(refused)).containsKey(parts.get(0)[1] + ":UNSUPPORTED");
-        // LP-3: a kit's cushions on the tray without their sofa is KIT_SPLIT, for both parts.
-        refused = body(dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan,
-                List.of(sofa1, sofa2, cartonOnFloor, cushions2), List.of(parts.get(0)[1]))))
-                .andExpect(status().isUnprocessableEntity()));
-        assertThat(codes(refused)).containsOnlyKeys(parts.get(0)[0] + ":KIT_SPLIT", parts.get(0)[1] + ":KIT_SPLIT");
+        assertThat(codes(refused)).containsKey(carton + ":UNSUPPORTED");
         // Every package exactly once.
         dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2), List.of())))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
@@ -407,7 +395,7 @@ class LoadPlanIntegrationTest {
 
         // A valid edit: the carton of order B goes to the tray (MANUAL).
         JsonNode edited = data(dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan,
-                List.of(sofa1, sofa2, cushions1, cushions2), List.of(carton)))).andExpect(status().isOk()));
+                List.of(sofa1, sofa2), List.of(carton)))).andExpect(status().isOk()));
         assertThat(edited.path("version").asLong()).isGreaterThan(plan.path("version").asLong());
         assertThat(edited.path("unplacedCount").asInt()).isEqualTo(1);
         String cartonId = carton;
@@ -417,8 +405,8 @@ class LoadPlanIntegrationTest {
                     assertThat(p.path("vehicleSeq").isNumber()).isFalse();
                 });
         // A stale version is refused.
-        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2, cushions1, cushions2,
-                cartonOnFloor), List.of()))).andExpect(status().isConflict())
+        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2, cartonOnFloor),
+                List.of()))).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("OPTIMISTIC_LOCK"));
         plan = edited;
 
@@ -426,11 +414,11 @@ class LoadPlanIntegrationTest {
         plan = step(plan, "/vehicles/1/recalculation", "{\"expectedVersion\":" + plan.path("version").asLong()
                 + ",\"addPackageIds\":[\"" + carton + "\"]}");
         assertThat(plan.path("unplacedCount").asInt()).isZero();
-        assertThat(plan.path("placedCount").asInt()).isEqualTo(5);
+        assertThat(plan.path("placedCount").asInt()).isEqualTo(3);
 
         // Back to the floor layout with the carton on the tray.
         plan = data(dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan,
-                List.of(sofa1, sofa2, cushions1, cushions2), List.of(carton)))).andExpect(status().isOk()));
+                List.of(sofa1, sofa2), List.of(carton)))).andExpect(status().isOk()));
 
         // LP-4: order B does not allow partial shipments - acknowledging or confirming its left-behind carton is 409.
         dispatch(body(post(PLANS + "/" + id + "/unplaced-acknowledgement"), version(plan)))
@@ -454,7 +442,7 @@ class LoadPlanIntegrationTest {
         // Confirmed: one PLANNED dispatch load for the vehicle; the carton is free again.
         plan = step(plan, "/confirmation", version(plan));
         assertThat(plan.path("status").asText()).isEqualTo("CONFIRMED");
-        assertThat(plan.path("packageCount").asInt()).isEqualTo(4);
+        assertThat(plan.path("packageCount").asInt()).isEqualTo(2);
         assertThat(plan.path("vehicles").get(0).path("load").path("status").asText()).isEqualTo("PLANNED");
         UUID vehicleId = UUID.fromString(plan.path("vehicles").get(0).path("loadPlanVehicleId").asText());
         Map<String, Object> load = jdbc.queryForMap("SELECT id, status, carrier_id, code FROM "
@@ -469,14 +457,14 @@ class LoadPlanIntegrationTest {
                 .satisfies(c -> assertThat(c.path("packageCount").asInt()).isEqualTo(1));
         assertThat(again).noneMatch(c -> c.path("shipmentId").asText().equals(shipmentA.toString()));
         // BR-14: locked.
-        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2, cushions1, cushions2),
-                List.of()))).andExpect(status().isConflict())
+        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2), List.of())))
+                .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_PLAN_TRANSITION"));
 
         // The piece check: in = placed + unplaced, per shipment and order.
         JsonNode check = data(dispatch(get(PLANS + "/" + id + "/reconciliation")).andExpect(status().isOk()));
-        assertThat(check.path("pieceCheck").path("packagesIn").asInt()).isEqualTo(5);
-        assertThat(check.path("pieceCheck").path("placed").asInt()).isEqualTo(4);
+        assertThat(check.path("pieceCheck").path("packagesIn").asInt()).isEqualTo(3);
+        assertThat(check.path("pieceCheck").path("placed").asInt()).isEqualTo(2);
         assertThat(check.path("pieceCheck").path("unplaced").asInt()).isEqualTo(1);
         assertThat(check.path("pieceCheck").path("leftBehind").asInt()).isEqualTo(1);
         assertThat(check.path("pieceCheck").path("balanced").asBoolean()).isTrue();
@@ -503,11 +491,11 @@ class LoadPlanIntegrationTest {
         });
         assertThat(vs.path("cartonsByLine")).filteredOn(l -> l.path("orderLineId").asText()
                 .equals(orderA.lines().getFirst().lineId().toString())).singleElement().satisfies(l -> {
-                    assertThat(l.path("actual").asInt()).isEqualTo(4);
+                    assertThat(l.path("actual").asInt()).isEqualTo(2);
                     assertThat(l.path("estimated").asLong()).isPositive();
                 });
-        // Only order A's parcels are weighed against its estimate: 2 x 52.5 + 2 x 20, not order B's carton.
-        assertThat(vs.path("weightKg").path("actual").decimalValue()).isEqualByComparingTo("145");
+        // Only order A's cartons are weighed against its estimate: 2 x 52.5, not order B's carton.
+        assertThat(vs.path("weightKg").path("actual").decimalValue()).isEqualByComparingTo("105");
         assertThat(vs.path("volumeMm3").path("estimated").decimalValue()).isPositive();
 
         // Reopened (LP-11): the PLANNED load is cancelled with the reason.
@@ -549,7 +537,7 @@ class LoadPlanIntegrationTest {
                 + "?::uuid AND active", Integer.class, id)).isZero();
         JsonNode free = data(dispatch(get(BASE + "/load-plan-candidates?warehouseId=" + HCM)).andExpect(status().isOk()));
         assertThat(free).filteredOn(c -> c.path("shipmentId").asText().equals(shipmentA.toString())).singleElement()
-                .satisfies(c -> assertThat(c.path("packageCount").asInt()).isEqualTo(4));
+                .satisfies(c -> assertThat(c.path("packageCount").asInt()).isEqualTo(2));
         assertThat(data(dispatch(get(PLANS + "?warehouseId=" + HCM + "&status=CANCELLED")).andExpect(status().isOk()))
                 .path("items").findValuesAsText("loadPlanId")).contains(id);
     }
@@ -560,7 +548,7 @@ class LoadPlanIntegrationTest {
     @DisplayName("BR-09: two plans claiming one shipment at once - exactly one wins, the other is 409 "
             + "LOAD_PLAN_PACKAGE_TAKEN; the database refuses a second live row too; cancelling frees the parcel")
     void oneParcelOneLivePlan() throws Exception {
-        UUID shipment = packed(ftlOrder(1), false)[0];
+        UUID shipment = packed(ftlOrder(1))[0];
         JsonNode first = create(createBody(UUID.randomUUID(), List.of(), List.of(truck5t)));
         JsonNode second = create(createBody(UUID.randomUUID(), List.of(), List.of(truck5t)));
         String input = ",\"shipmentIds\":[\"" + shipment + "\"],\"vehicleTypeIds\":[\"" + truck5t + "\"]}";
@@ -621,8 +609,8 @@ class LoadPlanIntegrationTest {
             + "PLANNED load is cancelled, the carton is REMOVED (ORDER_CANCELLED) and the shipment cancelled")
     void anOrderCancelledOutOfAConfirmedPlan() throws Exception {
         OrderSummary cancelled = ftlOrder(1);
-        UUID[] doomed = packed(cancelled, false);
-        UUID[] kept = packed(ftlOrder(1), false);
+        UUID[] doomed = packed(cancelled);
+        UUID[] kept = packed(ftlOrder(1));
         JsonNode plan = create(createBody(UUID.randomUUID(), List.of(doomed[0], kept[0]), List.of(truck5t)));
         plan = step(plan, "/calculation", version(plan));
         plan = step(plan, "/confirmation", version(plan));
@@ -633,11 +621,9 @@ class LoadPlanIntegrationTest {
         UUID loadId = jdbc.queryForObject("SELECT l.id FROM fulfillment.dispatch_load l JOIN fulfillment.load_plan_vehicle v "
                 + "ON v.id = l.load_plan_vehicle_id WHERE v.load_plan_id = ?::uuid", UUID.class, id);
 
-        // The repack station's taking apart and reopening are retired (410); the freeze is the trigger's now.
-        packer(delete(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel)).andExpect(status().isGone())
-                .andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
-        packer(post(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel + "/reopening")).andExpect(status().isGone())
-                .andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
+        // The repack station's taking apart and reopening are gone (4C-7: 404); the freeze is the trigger's now.
+        packer(delete(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel)).andExpect(status().isNotFound());
+        packer(post(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel + "/reopening")).andExpect(status().isNotFound());
         Throwable byHand = catchThrowable(() -> jdbc.update(
                 "UPDATE fulfillment.package SET height_cm = 10 WHERE id = ?", parcel));
         assertThat(byHand).hasMessageContaining("tg_package_in_load_plan");
@@ -723,7 +709,7 @@ class LoadPlanIntegrationTest {
             + "it, and the listener does not trip over tg_package_in_load_plan")
     void claimAndOrderCancellationDoNotInterleave() throws Exception {
         OrderSummary order = ftlOrder(1);
-        UUID[] packedShipment = packed(order, false);
+        UUID[] packedShipment = packed(order);
         JsonNode plan = create(createBody(UUID.randomUUID(), List.of(), List.of(truck5t)));
         String token = token(dispatcher, "WAREHOUSE_STAFF");
         CountDownLatch locked = new CountDownLatch(1);
@@ -768,7 +754,7 @@ class LoadPlanIntegrationTest {
     @DisplayName("what fits no vehicle type is unplaced with its reason (a sofa on a pickup is TOO_LARGE); a PLANNED "
             + "plan whose inputs change goes back to DRAFT with no vehicle")
     void unplacedReasonsAndInputs() throws Exception {
-        UUID shipment = packed(ftlOrder(1), false)[0];
+        UUID shipment = packed(ftlOrder(1))[0];
         JsonNode plan = create(createBody(UUID.randomUUID(), List.of(shipment), List.of(pickup)));
         plan = step(plan, "/calculation", version(plan));
         assertThat(plan.path("status").asText()).isEqualTo("PLANNED");

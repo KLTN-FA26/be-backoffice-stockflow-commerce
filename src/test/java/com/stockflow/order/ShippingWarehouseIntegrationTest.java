@@ -603,21 +603,21 @@ class ShippingWarehouseIntegrationTest {
     }
 
     @Test
-    @DisplayName("20 BR-01, BR-17: a hold at a warehouse is promised from it only - its ATP falls, the other's does not")
+    @DisplayName("20 BR-01, BR-17: a hold at a warehouse is promised from it only - its ATP falls, the other's does not (B's 950 are 19 whole cartons: pieces short of a carton are no ATP, BR-21)")
     void atpPerWarehouse() {
         stock(a, 1_000);
-        stock(b, 990);
-        assertThat(atpByWarehouse()).containsEntry(a.code(), 1_000).containsEntry(b.code(), 990);
-        assertThat(systemAtp()).isEqualTo(1_990);
+        stock(b, 950);
+        assertThat(atpByWarehouse()).containsEntry(a.code(), 1_000).containsEntry(b.code(), 950);
+        assertThat(systemAtp()).isEqualTo(1_950);
 
         UUID orderId = confirmedOrder();
         assertThat(choose(orderId, a).fullyHeld()).isTrue();
 
         assertThat(atpByWarehouse()).as("A falls by the 1,000 held; B does not")
-                .containsEntry(a.code(), 0).containsEntry(b.code(), 990);
+                .containsEntry(a.code(), 0).containsEntry(b.code(), 950);
         assertThat(inventory.availableToPromise(new Sku(sku.sku()), a.code())).isZero();
-        assertThat(inventory.availableToPromise(new Sku(sku.sku()), b.code())).isEqualTo(990);
-        assertThat(systemAtp()).as("system-wide it falls too").isEqualTo(990);
+        assertThat(inventory.availableToPromise(new Sku(sku.sku()), b.code())).isEqualTo(950);
+        assertThat(systemAtp()).as("system-wide it falls too").isEqualTo(950);
 
         // A second order choosing A: A has nothing left, and what only B has is not A's to hold.
         UUID other = confirmedOrder();
@@ -633,7 +633,7 @@ class ShippingWarehouseIntegrationTest {
         assertThat(direct.cartonsHeld()).isZero();
         assertThat(direct.reservationIds()).isEmpty();
         assertThat(reservationsOf(other)).isEmpty();
-        assertThat(atp(b)).isEqualTo(990);
+        assertThat(atp(b)).isEqualTo(950);
 
         // BR-22: nothing is held for it, so its warehouse may still change - and B holds its whole cartons.
         Coverage atB = choose(other, b);
@@ -645,8 +645,9 @@ class ShippingWarehouseIntegrationTest {
         assertThat(orderRow(other)).containsEntry("shipping_warehouse_id", b.id());
         assertThat(reservationsOf(other)).singleElement().satisfies(r -> assertThat(r)
                 .containsEntry("warehouse_code", b.code()).containsEntry("quantity", 19 * PER_CARTON));
-        assertThat(atpByWarehouse()).containsEntry(a.code(), 0).containsEntry(b.code(), 40);
-        assertThat(systemAtp()).isEqualTo(40);
+        assertThat(atpByWarehouse()).as("B's 19 cartons are held now").containsEntry(a.code(), 0)
+                .containsEntry(b.code(), 0);
+        assertThat(systemAtp()).isZero();
     }
 
     @Test

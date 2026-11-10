@@ -97,8 +97,6 @@ public record OrderSummary(
      *                               2026-10-21): packing may complete part of it and part of it may be handed over
      * @param goodsLeftAt            SCRUM-392: when goods of the order first left on a load plan's vehicle, before a
      *                               shipment of it is handed over - from then it is not cancelled (review of #162)
-     * @param replacesReturnRequestId SCRUM-260: the return this free order ships replacement goods for; null for an
-     *                               ordinary order. Not a sale: the goods were paid on the original order
      * @param firstLabeledAt         4C-6: when the order's first shipping carton was labelled - from then it is not
      *                               cancelled and its delivery address does not change (kltn-docs 08 BR-04)
      */
@@ -106,8 +104,7 @@ public record OrderSummary(
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
                             Instant closedAt, BigDecimal effectiveTotal, BigDecimal amountDueBeforeHandover,
                             List<LineProgress> lines, List<Shipment> shipments,
-                            boolean allowPartialShipment, Instant goodsLeftAt, UUID replacesReturnRequestId,
-                            Instant firstLabeledAt) {
+                            boolean allowPartialShipment, Instant goodsLeftAt, Instant firstLabeledAt) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
@@ -119,11 +116,10 @@ public record OrderSummary(
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
                          Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
                          BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, boolean allowPartialShipment, Instant goodsLeftAt,
-                         UUID replacesReturnRequestId) {
+                         List<Shipment> shipments, boolean allowPartialShipment, Instant goodsLeftAt) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
                     completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, lines,
-                    shipments, allowPartialShipment, goodsLeftAt, replacesReturnRequestId, null);
+                    shipments, allowPartialShipment, goodsLeftAt, null);
         }
 
         /**
@@ -132,20 +128,6 @@ public record OrderSummary(
          */
         public boolean packedForGood() {
             return firstLabeledAt != null || packedAt != null;
-        }
-
-        /**
-         * Without the return a free replacement order ships goods for (callers written before SCRUM-260's replacement
-         * orders): an ordinary order.
-         */
-        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
-                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
-                         BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, boolean allowPartialShipment, Instant goodsLeftAt) {
-            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, lines,
-                    shipments, allowPartialShipment, goodsLeftAt, null);
         }
 
         /** Without goodsLeftAt (callers written before SCRUM-392): no goods left on a vehicle yet. */

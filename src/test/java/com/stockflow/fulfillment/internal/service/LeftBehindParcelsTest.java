@@ -63,10 +63,7 @@ class LeftBehindParcelsTest {
         cartons = new java.util.ArrayList<>();
         for (int i = 0; i < ids.size(); i++) {
             PackageJpaEntity parcel = new PackageJpaEntity(ids.get(i), UUID.randomUUID(), i + 1, "PKG-" + (i + 1));
-            parcel.apply(scenario.shipmentId(), com.stockflow.fulfillment.internal.domain.PackageType.CARTON,
-                    PackageStatus.SEALED, new java.math.BigDecimal("100"), new java.math.BigDecimal("100"),
-                    new java.math.BigDecimal("100"), new java.math.BigDecimal("100"), null, true, false, false, false,
-                    NOW, null, null, null);
+            FulfillmentFixtures.applyCarton(parcel, PackageStatus.SEALED, scenario.shipmentId(), new java.math.BigDecimal("100"), new java.math.BigDecimal("100"), new java.math.BigDecimal("100"), new java.math.BigDecimal("100"));
             cartons.add(parcel);
         }
         when(packages.findByShipmentIdOrderByPackageNoAsc(scenario.shipmentId())).thenAnswer(call -> List.copyOf(cartons));
@@ -115,15 +112,6 @@ class LeftBehindParcelsTest {
         ArgumentCaptor<ShipmentJpaEntity> saved = ArgumentCaptor.forClass(ShipmentJpaEntity.class);
         verify(shipments, org.mockito.Mockito.times(2)).saveAndFlush(saved.capture());
         assertThat(saved.getAllValues().get(1).getCode()).isEqualTo("SO-0042-S2");
-    }
-
-    @Test
-    @DisplayName("every label of the shipment is marked outdated: the moved parcel's and those whose n/N changed")
-    void labelsAreReprinted() {
-        leftBehind.splitOff(scenario.plan(), by, NOW);
-
-        assertThat(cartons).allSatisfy(p -> assertThat(p.getLabelOutdatedAt()).isEqualTo(NOW));
-        verify(packages, org.mockito.Mockito.times(3)).save(any(PackageJpaEntity.class));
     }
 
     @Test

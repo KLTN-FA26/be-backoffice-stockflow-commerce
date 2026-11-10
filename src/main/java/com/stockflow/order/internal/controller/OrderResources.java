@@ -74,15 +74,11 @@ public final class OrderResources {
      */
     public static final String RMAS = "sales-rmas";
 
-    /** Counting a returned parcel into quarantine: the warehouse's step (V20261101020000). */
-    public static final String RMA_RECEIPTS = "sales-rma-receipts";
-
-    /** QC's verdict on returned goods and where they go (V20261101020000). */
-    public static final String RMA_INSPECTIONS = "sales-rma-inspections";
-
     /**
-     * How accepted units are made good: UPDATE proposes (Sales, coordinator), APPROVE approves a resolution with money
-     * - four eyes, the Accountant (V20261101020000).
+     * The refund of goods that came back: UPDATE proposes (Sales, coordinator), APPROVE approves it - four eyes, the
+     * Accountant (V20261101020000). Counting a returned parcel in ({@code sales-rma-receipts}) and QC's verdict
+     * ({@code sales-rma-inspections}) went with team plan 4D-3: goods come back on a return receipt
+     * ({@code procurement-goods-receipts}) and nobody inspects them (V20261114000200).
      */
     public static final String RMA_RESOLUTIONS = "sales-rma-resolutions";
 

@@ -105,7 +105,10 @@ public record StockMovement(
         CONSUMPTION,
         /** Goods a customer sent back under a return request, into quarantine (SCRUM-260, OQ-12). */
         RETURN_IN,
-        /** Damaged goods handed back to their supplier, out of quarantine and off the books (V20261101030000). */
+        /**
+         * Legacy: damaged goods a damage report handed back to their supplier (V20261101030000). Damage reports went with
+         * team plan 5-6 (V20261114000400); the value stays for the lines written before.
+         */
         SUPPLIER_RETURN
     }
 
@@ -125,8 +128,9 @@ public record StockMovement(
          */
         PACKAGE,
         /**
-         * A damage report (V20261101030000): units found damaged moved to quarantine as DAMAGED, or a manager's
-         * decision restored them to a bin. A write-off references its posted {@code STOCK_ADJUSTMENT} instead.
+         * Legacy: a damage report (V20261101030000) moved units found damaged to quarantine as DAMAGED, or restored them
+         * to a bin. Damage reports went with team plan 5-6 (V20261114000400); the value stays for the lines written
+         * before.
          */
         DAMAGE_REPORT,
         /** A return line (SCRUM-260): goods counted in from the customer, and out of quarantine again. */
@@ -136,6 +140,12 @@ public record StockMovement(
          * team plan 4C-1): a MOVE that stays in place, into the carton this names, or that relabels a carton's units
          * of no lot as lot {@code UNTRACED}. Historical only: the application never repacks, it moves whole cartons.
          */
-        STOCK_PACKAGE
+        STOCK_PACKAGE,
+        /**
+         * A return receipt (team plan 4D-2; kltn-docs 03 §4.2, BR-14): a carton that came back, received whole into
+         * quarantine, one RECEIPT line per carton naming it ({@code ck_stock_movement_return_receipt}). The receipt
+         * itself, not a line of it: a return receipt has cartons, not lines.
+         */
+        GOODS_RECEIPT
     }
 }

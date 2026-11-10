@@ -261,15 +261,6 @@ class DispatchServiceTest {
         }
 
         @Test
-        @DisplayName("a parcel moved to another shipment since its label was printed is LABEL_OUTDATED: reprint it first")
-        void outdatedLabel() {
-            parcel.markLabelOutdated(NOW.minusSeconds(10));
-
-            assertThat(refusal(() -> service.scan(load.id(), UUID.randomUUID(), "PKG-1", actor)).errorCode())
-                    .isEqualTo(ErrorCode.LABEL_OUTDATED);
-        }
-
-        @Test
         @DisplayName("a parcel already loaded on another load is PACKAGE_ALREADY_LOADED, naming it")
         void alreadyOnAnotherLoad() {
             UUID otherId = UUID.randomUUID();

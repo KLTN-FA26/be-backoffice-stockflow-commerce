@@ -75,10 +75,8 @@ final class OrderPersistenceMapper {
         order.restoreContractSigned(entity.getContractSignedAt());
         order.restoreShippingWarehouse(entity.getShippingWarehouseId(), entity.getShippingWarehouseChosenAt(),
                 entity.getShippingWarehouseChosenBy());
-        order.restoreReplacement(entity.getReplacesReturnRequestId());
         order.restorePartialShipment(entity.isAllowPartialShipment());
         order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
-        order.restorePackingStarted(entity.getPackingStartedAt());
         order.restoreFirstLabeled(entity.getFirstLabeledAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
@@ -116,7 +114,6 @@ final class OrderPersistenceMapper {
         entity.addMissingFees(toFeeEntities(order));
         entity.applyTax(order.taxTotal().amount());
         applyState(order, entity);
-        entity.applyReplacement(order.replacesReturnRequestId());
         return entity;
     }
 
@@ -134,7 +131,6 @@ final class OrderPersistenceMapper {
         entity.applyPartialShipment(order.allowPartialShipment());
         entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
-        entity.applyPackingStarted(order.packingStartedAt());
         entity.applyFirstLabeled(order.firstLabeledAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
@@ -184,7 +180,7 @@ final class OrderPersistenceMapper {
                 new OrderSummary.Lifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(), null, null,
-                        List.of(), List.of(), entity.isAllowPartialShipment(), null, null, entity.getFirstLabeledAt()),
+                        List.of(), List.of(), entity.isAllowPartialShipment(), null, entity.getFirstLabeledAt()),
                 rowCharges(entity));
     }
 

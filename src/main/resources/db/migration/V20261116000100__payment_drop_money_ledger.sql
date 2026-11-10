@@ -163,12 +163,12 @@ ALTER TABLE ordering.customer_order ADD CONSTRAINT ck_order_cancellation_retaine
     cancellation_retained_amount IS NULL
     OR (status = 'CANCELLED' AND cancellation_retained_amount >= 0));
 
--- CONFIRMED by its signed contract (17 §4.1), or a free replacement of a return (SCRUM-260); the old terms are gone.
+-- CONFIRMED by its signed contract (17 §4.1); the old terms are gone, and so are free replacements of a return
+-- (V20261114000200, 4D-4, dropped replaces_return_request_id and recorded a confirmed replacement as paid in full).
 -- NOT VALID: orders confirmed on those terms before 4B-10 stay as they are (QD-1, see the header).
 ALTER TABLE ordering.customer_order ADD CONSTRAINT ck_order_confirmed_basis CHECK (
     status <> 'CONFIRMED'
-    OR contract_signed_at IS NOT NULL
-    OR replaces_return_request_id IS NOT NULL) NOT VALID;
+    OR contract_signed_at IS NOT NULL) NOT VALID;
 
 
 -- ---------------------------------------------------------------------------------------------

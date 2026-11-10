@@ -302,11 +302,11 @@ SELECT pg_temp.expect_ok('R47 a draft PO with history is deleted with it (cascad
     DELETE FROM procurement.purchase_orders WHERE id = md5('qa:po:2')::uuid $q$);
 
 \echo '--- receipt lifecycle (V20260929000250, V20261108000200, docs 03 §4-5)'
-SELECT pg_temp.expect_ok('QC1 an Area of type QUALITY_CONTROL (returns still receive into one)', $q$
+SELECT pg_temp.expect_ok('QC1 an Area of type QUARANTINE (where returned cartons land; QUALITY_CONTROL went with 4D-4)', $q$
     INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
     VALUES (md5('qa:loc:HCM-QC02')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC02', 'OVERSIZE', FALSE, FALSE, 'ACTIVE');
     INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
-    VALUES (md5('qa:area:HCM-QC02')::uuid, md5('demo:wh:HCM')::uuid, md5('qa:loc:HCM-QC02')::uuid, 'QC02', 'QUALITY_CONTROL',
+    VALUES (md5('qa:area:HCM-QC02')::uuid, md5('demo:wh:HCM')::uuid, md5('qa:loc:HCM-QC02')::uuid, 'QC02', 'QUARANTINE',
             'Khu kiểm tra chất lượng', 52, 2, 6, 6, 0, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('QC2 an Area type that does not exist', $q$
     UPDATE warehouse.area SET type = 'QC' WHERE id = md5('qa:area:HCM-QC02')::uuid $q$);

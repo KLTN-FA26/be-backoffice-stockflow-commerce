@@ -83,6 +83,12 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
     }
 
     @Override
+    public boolean existsPendingForPackage(com.stockflow.inventory.internal.domain.StockPackageId stockPackageId) {
+        return jpa.existsByStockPackageIdAndStatus(stockPackageId.value(),
+                com.stockflow.inventory.internal.domain.AdjustmentStatus.PENDING_APPROVAL);
+    }
+
+    @Override
     public Page<StockAdjustment> search(Criteria criteria, Pageable pageable) {
         Specification<StockAdjustmentJpaEntity> spec = Specification
                 .<StockAdjustmentJpaEntity>where(Specs.eq("status", criteria.status()))

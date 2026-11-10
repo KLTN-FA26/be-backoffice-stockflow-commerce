@@ -45,7 +45,8 @@ public record StorageLocationView(UUID id, Kind kind, UUID warehouseId, String l
     /**
      * What an area is for; null for a bin. Production issues blanks only to a {@code PRODUCTION} area. {@code STAGING}
      * holds cartons picked for an order that may not leave yet (kltn-docs 07 §1, 20 §4.9); there is no PACKING area any
-     * more - picked cartons are checked and labelled in the {@code DISPATCH} area (06 BR-22, V20261113000600).
+     * more - picked cartons are checked and labelled in the {@code DISPATCH} area (06 BR-22, V20261113000600) - nor a
+     * QUALITY_CONTROL one: returned goods and faults wait in {@code QUARANTINE} (team plan 4D-4, V20261114000200).
      */
-    public enum AreaType { RECEIVING, QUALITY_CONTROL, QUARANTINE, DISPATCH, STAGING, OVERFLOW, PRODUCTION, NON_STORAGE }
+    public enum AreaType { RECEIVING, QUARANTINE, DISPATCH, STAGING, OVERFLOW, PRODUCTION, NON_STORAGE }
 }

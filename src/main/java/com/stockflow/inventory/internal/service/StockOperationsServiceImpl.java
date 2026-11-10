@@ -14,7 +14,6 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
@@ -113,6 +112,8 @@ class StockOperationsServiceImpl implements StockOperations {
     private final StockPackageRepository stockPackages;
     private final UomConversionRepository units;
     private final CycleCountRepository countLines;
+    /** Asked whether a carton is on its way into a bin before it is written off (team plan 4D-1). */
+    private final com.stockflow.warehouse.api.PutawayTasks putawayTasks;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
@@ -120,7 +121,9 @@ class StockOperationsServiceImpl implements StockOperations {
                                InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
                                InventoryEventPublisher events, StockPackageRepository stockPackages,
                                UomConversionRepository units, SlotsUnderCount underCount,
-                               CycleCountRepository countLines) {
+                               CycleCountRepository countLines,
+                               com.stockflow.warehouse.api.PutawayTasks putawayTasks) {
+        this.putawayTasks = putawayTasks;
         this.underCount = underCount;
         this.countLines = countLines;
         this.stockPackages = stockPackages;
@@ -136,113 +139,6 @@ class StockOperationsServiceImpl implements StockOperations {
         this.clock = clock;
         this.policies = policies;
         this.lots = lots;
-    }
-
-    // ------------------------------------------------------------------ loose stock: returns only
-
-    @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.referenceId()")
-    public StockMove reclassify(ReclassifyStockCommand command) {
-        return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
-                command.toLocation(), command.quantity(), StockStatus.valueOf(command.disposition().name()),
-                StockMovement.ReferenceType.valueOf(command.reference().name()), command.referenceId(),
-                command.actorId(), blankToNull(command.reason()));
-    }
-
-    /**
-     * The last loose move: a customer return's decision ({@code ReturnRequestService}), whose goods
-     * {@link #receiveReturn} still counts in loose. Nothing else moves loose units since team plan 4C-2 - a person
-     * moves cartons whole ({@link #moveStockPackages}), putaway puts cartons away - and this goes too when returns are
-     * received by carton (team plan 4D-2, kltn-docs 20 §4.4). {@code receivedAt} picks the stock layer when the source
-     * holds several.
-     */
-    private StockMove relocate(Sku sku, String lotNumber, Instant receivedAt, String fromCode, String toCode,
-                               int qty, StockStatus target, StockMovement.ReferenceType referenceType,
-                               UUID referenceId, UUID actorId, String reason) {
-        // BR-SEC-002 (SCRUM-457): both ends in a warehouse the caller is assigned to. First, so a
-        // replay cannot reveal a move made in someone else's warehouse.
-        WarehouseScope.requireLocation(fromCode);
-        WarehouseScope.requireLocation(toCode);
-        // Match policy edits/reservations: take the SKU lock before any stock-row locks.
-        policies.lock(sku.code());
-
-        // Replay first: a retried move must not move the goods again. Loose lines only - this moves loose stock,
-        // and a carton moved whole under the same reference is not this move's earlier attempt (SCRUM-473).
-        Optional<StockMovement> done = ledger.findLooseByReference(StockMovement.MovementType.MOVE, referenceType,
-                referenceId);
-        if (done.isPresent()) {
-            return toMove(done.get());
-        }
-
-        return moveLayer(sku, lotNumber, receivedAt, new LocationId(fromCode), new LocationId(toCode), qty, target,
-                referenceType, referenceId, actorId, reason);
-    }
-
-    /** What {@link #relocate} does once scope, the SKU lock and the replay lookup are behind it. */
-    private StockMove moveLayer(Sku sku, String lotNumber, Instant receivedAt, LocationId from, LocationId to,
-                                int qty, StockStatus target, StockMovement.ReferenceType referenceType,
-                                UUID referenceId, UUID actorId, String reason) {
-        requireMovableBetween(from, to);
-        Quantity quantity = Quantity.of(qty);
-
-        StockItem sourceView = findLayer(sku, from, lotNumber, receivedAt)
-                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
-                        "No %s%s at %s".formatted(sku, lotSuffix(lotNumber), from)));
-        Optional<StockItem> destinationView = findLayer(sku, to, lotNumber, sourceView.receivedAt())
-                .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
-
-        // Lock in id order, as reserve() does: two moves crossing the same pair in opposite
-        // directions would otherwise deadlock.
-        List<StockItem> toLock = destinationView.isPresent()
-                ? List.of(sourceView, destinationView.get()) : List.of(sourceView);
-        StockItem source = null;
-        StockItem destination = null;
-        for (StockItem view : toLock.stream()
-                .sorted(Comparator.comparing(item -> item.id().value().toString())).toList()) {
-            StockItem locked = stockItems.findByIdForUpdate(view.id()).orElseThrow(() ->
-                    new IllegalStateException("Stock item %s vanished mid-move".formatted(view.id())));
-            if (locked.id().equals(sourceView.id())) {
-                source = locked;
-            } else {
-                destination = locked;
-            }
-        }
-        Objects.requireNonNull(source, "source");
-
-        if (target != null && source.status() != StockStatus.INBOUND && source.status() != StockStatus.QUARANTINE) {
-            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                    "%s%s at %s is %s; only INBOUND or QUARANTINE stock takes a receiving decision".formatted(
-                            sku, lotSuffix(lotNumber), from, source.status()));
-        }
-        StockStatus arriving = target != null ? target : source.status();
-        if (destination != null && !destination.canReceiveFrom(source, arriving)) {
-            throw new BusinessException(
-                    destination.status() == arriving
-                            ? ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT
-                            : ErrorCode.STOCK_STATUS_MISMATCH,
-                    "%s holds %s%s as %s; this stock would arrive as %s".formatted(to, sku,
-                            lotSuffix(lotNumber), destination.status(), arriving));
-        }
-
-        StockStatus before = source.status();
-        requireLoose(source);
-        source.moveOut(quantity);
-        stockItems.save(source);
-        if (destination == null) {
-            stockItems.save(StockItem.arrivedAs(source, to, quantity, arriving));
-        } else {
-            destination.moveIn(quantity);
-            stockItems.saveMerged(destination);
-        }
-
-        Instant now = clock.instant();
-        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
-                sku, blankToNull(lotNumber), from, to, quantity.value(), before, arriving,
-                referenceType, referenceId, reason, actorId, now).ofLot(source.lotId());
-        ledger.append(line);
-        log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
-                before, arriving);
-        return toMove(line);
     }
 
     /**
@@ -295,7 +191,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.referenceId()")
     public List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command) {
         return relocatePackages(command.lpns(), command.toLocationCode(), null, command.reference(),
-                command.referenceId(), command.actorId(), null);
+                command.referenceId(), command.actorId(), null, false);
     }
 
     @Override
@@ -303,7 +199,7 @@ class StockOperationsServiceImpl implements StockOperations {
     public List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command) {
         return relocatePackages(command.lpns(), command.toLocationCode(),
                 StockStatus.valueOf(command.disposition().name()), command.reference(), command.referenceId(),
-                command.actorId(), blankToNull(command.reason()));
+                command.actorId(), blankToNull(command.reason()), command.quarantineRelease());
     }
 
     /**
@@ -333,10 +229,14 @@ class StockOperationsServiceImpl implements StockOperations {
      * the chosen bin. It has nowhere to move to, so it is reclassified where it stands, and its ledger line is a
      * {@code STATUS_CHANGE} from the bin to the bin ({@code MOVE} names two different places). Every other move to
      * the place a carton is in is still refused.</p>
+     *
+     * <p>A putaway takes INBOUND rows to AVAILABLE; the putaway of a carton released from quarantine
+     * ({@code quarantineRelease}, team plan 4D-1) takes QUARANTINE rows, and only those, so neither task can put away
+     * the other's goods.</p>
      */
     private List<StockPackageView> relocatePackages(List<String> lpns, String toCode, StockStatus target,
                                                     MoveReference reference, UUID referenceId, UUID actorId,
-                                                    String reason) {
+                                                    String reason, boolean quarantineRelease) {
         WarehouseScope.requireLocation(toCode);
         Map<String, StockPackage> seen = stockPackages.findByLpns(lpns).stream()
                 .collect(Collectors.toMap(StockPackage::lpn, Function.identity()));
@@ -418,6 +318,9 @@ class StockOperationsServiceImpl implements StockOperations {
                             List.of(), Map.of("lpn", lpnOf.get(row.stockPackageId())));
                 }
             }
+            if (target == null) {
+                requireQuarantineByDecision(rows, lpnOf, to);
+            }
         }
         if (target != null) {
             Map<StockPackageId, String> lpnOf = cartons.stream()
@@ -428,10 +331,19 @@ class StockOperationsServiceImpl implements StockOperations {
                             "%s holds %s; only INBOUND or QUARANTINE stock takes a receiving decision"
                                     .formatted(lpnOf.get(row.stockPackageId()), row.status()));
                 }
-                if (target == StockStatus.AVAILABLE && row.status() != StockStatus.INBOUND) {
+                StockStatus putAwayFrom = quarantineRelease ? StockStatus.QUARANTINE : StockStatus.INBOUND;
+                if (target == StockStatus.AVAILABLE && row.status() != putAwayFrom) {
                     throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                            "%s holds %s; only INBOUND stock is put away as AVAILABLE"
-                                    .formatted(lpnOf.get(row.stockPackageId()), row.status()));
+                            "%s holds %s; this putaway takes %s stock to AVAILABLE"
+                                    .formatted(lpnOf.get(row.stockPackageId()), row.status(), putAwayFrom));
+                }
+                // Quarantined stock leaves quarantine by its release's putaway or an approved adjustment only (20
+                // BR-21; ck_stock_movement_quarantine_exit says it again).
+                if (target != StockStatus.AVAILABLE && row.status() == StockStatus.QUARANTINE
+                        && target != StockStatus.QUARANTINE) {
+                    throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                            "%s is in quarantine; it is released or written off, not %s"
+                                    .formatted(lpnOf.get(row.stockPackageId()), target));
                 }
             }
         }
@@ -447,7 +359,9 @@ class StockOperationsServiceImpl implements StockOperations {
         for (StockItem row : rows) {
             StockStatus before = row.status();
             row.followPackageTo(to);
-            if (target != null) {
+            if (target == StockStatus.AVAILABLE) {
+                row.putAwayInPackage(quarantineRelease ? StockStatus.QUARANTINE : StockStatus.INBOUND);
+            } else if (target != null) {
                 row.reclassifyInPackage(target);
             }
             stockItems.save(row);
@@ -469,6 +383,135 @@ class StockOperationsServiceImpl implements StockOperations {
                 .map(carton -> view(carton, unitsById.get(carton.uomConversionId()),
                         onHand.getOrDefault(carton.id(), 0)))
                 .toList();
+    }
+
+    /**
+     * A carton moved by hand keeps its stock status, so a hand move must not do what only a decision does (kltn-docs
+     * 20 §4.8, BR-21; team plan 4D-1): sellable stock carried into a QUARANTINE area would sit there still on sale,
+     * and quarantined stock carried out to a bin would stand on a pickable shelf undecided. The first is the
+     * manager's quarantine, the second the putaway of a release; moves inside quarantine stay free.
+     */
+    private void requireQuarantineByDecision(List<StockItem> rows, Map<StockPackageId, String> lpnOf, LocationId to) {
+        boolean intoQuarantine = locations.isQuarantineArea(to);
+        for (StockItem row : rows) {
+            if (row.onHand().isZero()) {
+                continue;
+            }
+            if (intoQuarantine && row.status() == StockStatus.AVAILABLE) {
+                throw new BusinessException(ErrorCode.LOCATION_AREA_MISMATCH,
+                        "%s is on sale; it goes into quarantine by being quarantined, not moved".formatted(
+                                lpnOf.get(row.stockPackageId())), List.of(),
+                        Map.of("lpn", lpnOf.get(row.stockPackageId())));
+            }
+            if (!intoQuarantine && row.status() == StockStatus.QUARANTINE) {
+                throw new BusinessException(ErrorCode.STOCK_PACKAGE_QUARANTINED,
+                        "%s is in quarantine; it leaves by its release's putaway, not a hand move".formatted(
+                                lpnOf.get(row.stockPackageId())), List.of(),
+                        Map.of("lpn", lpnOf.get(row.stockPackageId())));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ quarantine (team plan 4D-1)
+
+    /**
+     * Kltn-docs 20 §4.8 step 1, BR-21: a warehouse manager quarantines a whole carton found faulty after it was
+     * received. It moves to {@code toCode}, which must be a usable QUARANTINE area of its own warehouse, and its units
+     * become QUARANTINE in place, keeping their rows and the carton sealed; one {@code STATUS_CHANGE} ledger line per
+     * row records both, from where it stood to the area (BR-16), referencing the carton itself
+     * ({@code STOCK_PACKAGE}), with the reason. No four eyes: nothing changes in quantity (decided 2026-11-05).
+     *
+     * <p>Only a free carton (BR-21): a carton with units held for an order is refused, {@code STOCK_PACKAGE_HELD} -
+     * its hold is released or reallocated first (20 §6, "thùng lỗi nằm trong phần đang giữ"). The table says the same
+     * ({@code ck_stock_item_quarantine_unheld}). Its stock must be AVAILABLE, or INBOUND (found faulty while being put
+     * away; closing its putaway task is the caller's, {@code CartonQuarantineService}); a carton already quarantined
+     * is {@code STOCK_PACKAGE_QUARANTINED}. A carton a cycle count holds is refused as a hand move is
+     * ({@code STOCK_SLOT_UNDER_COUNT}): the count would be of books that changed under it.</p>
+     *
+     * <p>Checkout's SKU reservations (on no carton) are not looked at: a quarantine can leave fewer sellable units
+     * than live SKU reservations, exactly as a write-off can, and the shortfall shows when the order is released
+     * (INSUFFICIENT_STOCK, then AWAITING_STOCK). Refusing the quarantine would keep a faulty carton on sale.</p>
+     *
+     * <p>Lock order as for any carton write: the SKU, the carton, its rows by id.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-quarantine", resourceId = "#lpn")
+    public StockPackageView quarantine(String lpn, String toCode, String reason, UUID actorId) {
+        String normal = StockPackageView.normalLpn(lpn);
+        WarehouseScope.requireLocation(toCode);
+        StockPackage seen = stockPackages.findByLpns(List.of(normal)).stream().findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + normal));
+        WarehouseScope.requireLocation(seen.location().code());
+        LocationId to = new LocationId(toCode);
+        requireUsable(to);
+        if (!locations.isQuarantineArea(to)) {
+            throw new BusinessException(ErrorCode.LOCATION_AREA_MISMATCH,
+                    "%s is not a QUARANTINE area; a carton is quarantined into one".formatted(to));
+        }
+        if (!seen.location().warehouseCode().equals(to.warehouseCode())) {
+            throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
+                    "%s is in another warehouse than %s".formatted(to, normal));
+        }
+        UomConversion unit = units.findAll(List.of(seen.uomConversionId())).stream().findFirst().orElseThrow(() ->
+                new IllegalStateException("Stock package %s is in no known unit".formatted(normal)));
+        policies.lock(unit.sku());
+
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("Stock package %s vanished".formatted(normal)));
+        if (carton.status() != StockPackageStatus.IN_STOCK) {
+            throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
+                    "%s is %s; only a carton in stock is quarantined".formatted(normal, carton.status()));
+        }
+        List<StockItemId> rowIds = stockItems.findIdsInStockPackages(List.of(carton.id()));
+        requireNotUnderCount(List.of(carton), rowIds, to);
+        List<StockItem> rows = new ArrayList<>();
+        for (StockItemId id : rowIds) {
+            rows.add(stockItems.findByIdForUpdate(id).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-quarantine".formatted(id))));
+        }
+        List<StockItem> live = rows.stream().filter(row -> row.onHand().value() > 0).toList();
+        if (live.isEmpty()) {
+            throw new IllegalStateException("Stock package %s is in stock with nothing in it".formatted(normal));
+        }
+        if (rows.stream().anyMatch(row -> !row.reserved().isZero())) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_HELD,
+                    "%s is held for an order; release or reallocate it before it is quarantined".formatted(normal),
+                    List.of(), Map.of("lpn", normal));
+        }
+        if (live.stream().allMatch(row -> row.status() == StockStatus.QUARANTINE)) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_QUARANTINED, "%s is already in quarantine"
+                    .formatted(normal), List.of(), Map.of("lpn", normal));
+        }
+        for (StockItem row : rows) {
+            if (row.status() != StockStatus.AVAILABLE && row.status() != StockStatus.INBOUND) {
+                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                        "%s holds %s stock; only AVAILABLE or INBOUND stock is quarantined".formatted(normal,
+                                row.status()));
+            }
+        }
+
+        LocationId from = carton.location();
+        if (!from.equals(to)) {
+            carton.moveTo(to);
+            stockPackages.save(carton);
+        }
+        Instant now = clock.instant();
+        int onHand = 0;
+        for (StockItem row : rows) {
+            StockStatus before = row.status();
+            row.followPackageTo(to);
+            row.quarantineInPackage();
+            stockItems.save(row);
+            if (row.onHand().value() > 0) {
+                onHand += row.onHand().value();
+                ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.STATUS_CHANGE,
+                        row.sku(), row.lotNumber(), from, to, row.onHand().value(), before, StockStatus.QUARANTINE,
+                        StockMovement.ReferenceType.STOCK_PACKAGE, carton.id().value(), reason, actorId, now)
+                        .ofLot(row.lotId()).leaving(carton.id()).arriving(carton.id()));
+            }
+        }
+        log.info("Quarantined carton {} ({} x {}) from {} into {}", normal, onHand, unit.sku(), from, to);
+        return view(carton, unit, onHand);
     }
 
     /** Cartons as they stand now, by LPN. */
@@ -742,61 +785,6 @@ class StockOperationsServiceImpl implements StockOperations {
 
     // ------------------------------------------------------------------ returns
 
-    /**
-     * SCRUM-260: a returned parcel's goods into quarantine (OQ-12: never straight into sellable stock). The lines of one
-     * parcel are counted at one time, and two of them may carry the same SKU and lot (two designs printed on one blank,
-     * a wrong item that is another line's SKU): they share the layer the first one opened, as the natural key
-     * (SKU, location, lot, receipt time) says they must.
-     */
-    @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "stock-return-receipt", resourceId = "#command.returnLineId()")
-    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
-        WarehouseScope.requireLocation(command.locationCode());
-        policies.lock(command.sku().code());
-        // One ledger line per parcel of the line: a retried parcel finds the line's total already reached.
-        long booked = ledger.sumQuantityByReference(List.of(StockMovement.MovementType.RETURN_IN),
-                StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId());
-        if (booked >= command.lineTotal()) {
-            return toMove(ledger.findByReference(StockMovement.MovementType.RETURN_IN,
-                    StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId()).orElseThrow());
-        }
-        if (booked + command.quantity() != command.lineTotal()) {
-            throw new IllegalStateException("Return line %s has %d unit(s) booked; %d more do not make %d".formatted(
-                    command.returnLineId(), booked, command.quantity(), command.lineTotal()));
-        }
-        LocationId location = new LocationId(command.locationCode());
-        switch (locations.stateOf(location)) {
-            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
-            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
-                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
-            case USABLE -> { }
-        }
-        String lot = blankToNull(command.lotNumber());
-        Quantity quantity = Quantity.of(command.quantity());
-        Optional<StockItem> layer = findLayer(command.sku(), location, lot, command.receivedAt());
-        if (layer.isPresent()) {
-            StockItem item = stockItems.findByIdForUpdate(layer.get().id()).orElseThrow();
-            requireLoose(item);
-            if (item.status() != StockStatus.QUARANTINE) {
-                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                        "%s holds %s%s as %s; returned goods arrive in quarantine".formatted(location, command.sku(),
-                                lotSuffix(lot), item.status()));
-            }
-            item.moveIn(quantity);
-            // The same receipt, not a replenishment: the policy trigger lets a FIFO layer grow only when told so.
-            stockItems.saveMerged(item);
-        } else {
-            stockItems.save(StockItem.receive(command.sku(), location, lot, null, quantity, command.receivedAt(), null));
-        }
-        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RETURN_IN,
-                command.sku(), lot, null, location, quantity.value(), StockStatus.QUARANTINE,
-                StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId(), "Returned by the customer",
-                command.actorId(), clock.instant()).forOrder(command.orderId());
-        ledger.append(line);
-        log.info("Returned {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
-        return toMove(line);
-    }
-
     // ------------------------------------------------------------------ adjustments
 
     @Override
@@ -806,6 +794,9 @@ class StockOperationsServiceImpl implements StockOperations {
         // (ck_stock_adjustment_count_variance), which reaches the client as a 500.
         if (command.reason() == StockAdjustmentReason.COUNT_VARIANCE) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A count variance comes from a cycle count");
+        }
+        if (command.lpn() != null) {
+            return requestCartonWriteOff(command);
         }
         WarehouseScope.requireLocation(command.locationCode());
         LocationId location = new LocationId(command.locationCode());
@@ -821,6 +812,73 @@ class StockOperationsServiceImpl implements StockOperations {
                 AdjustmentReason.valueOf(command.reason().name()), command.note(), command.requestedBy(), now)
                 .atLayer(command.receivedAt());
         return toSummary(adjustments.save(adjustment));
+    }
+
+    /**
+     * A person asks for a whole carton to be written off, named by its LPN (kltn-docs 20 BR-14: adjusted whole, never
+     * in part; §4.8 step 3: a quarantined carton that cannot be used leaves stock as an approved {@code DAMAGED}
+     * adjustment - BR-21, team plan 4D-1). The delta must be minus what the carton holds
+     * ({@code STOCK_PACKAGE_TAKEN_WHOLE} otherwise); a location or SKU given with the LPN must be the carton's. The
+     * adjustment names the carton, so its approval drains and consumes the carton whole
+     * ({@link StockPackageContents#adjust}). A carton with an open putaway task (a release, or a receipt's carton not
+     * yet put away) is already decided the other way: {@code STOCK_PACKAGE_DECISION_PENDING}.
+     */
+    private StockAdjustmentSummary requestCartonWriteOff(RequestAdjustmentCommand command) {
+        String normal = StockPackageView.normalLpn(command.lpn());
+        StockPackage carton = stockPackages.findByLpns(List.of(normal)).stream().findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + normal));
+        WarehouseScope.requireLocation(carton.location().code());
+        if (carton.status() != StockPackageStatus.IN_STOCK) {
+            throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
+                    "%s is %s; there is nothing in it to write off".formatted(normal, carton.status()));
+        }
+        if (command.locationCode() != null && !command.locationCode().isBlank()
+                && !new LocationId(command.locationCode()).equals(carton.location())) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
+                    "%s is at %s, not %s".formatted(normal, carton.location(), command.locationCode()));
+        }
+        UomConversion unit = units.findAll(List.of(carton.uomConversionId())).stream().findFirst().orElseThrow(() ->
+                new IllegalStateException("Stock package %s is in no known unit".formatted(normal)));
+        Sku sku = new Sku(unit.sku());
+        if (command.sku() != null && !command.sku().equals(sku)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "%s holds %s, not %s".formatted(normal, sku,
+                    command.sku()));
+        }
+        // Under the SKU lock, as a release and an approval take it: a release opened at the same moment either is
+        // seen below or sees this request pending.
+        policies.lock(unit.sku());
+        int onHand = stockPackages.onHandOf(List.of(carton.id())).getOrDefault(carton.id(), 0);
+        if (command.quantityDelta() != -onHand) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,
+                    "%s holds %d; it is written off whole (quantityDelta %d), never in part".formatted(normal, onHand,
+                            -onHand), List.of(), Map.of("lpn", normal));
+        }
+        requireNoOpenPutaway(carton);
+        String lot = stockItems.findIdsInStockPackage(carton.id()).stream()
+                .map(stockItems::findById).flatMap(Optional::stream)
+                .filter(row -> row.onHand().value() > 0).map(StockItem::lotNumber).filter(Objects::nonNull)
+                .findFirst().orElse(null);
+        Instant now = clock.instant();
+        StockAdjustment adjustment = StockAdjustment.request(
+                        adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), carton.location(), sku, lot,
+                        command.quantityDelta(), AdjustmentReason.valueOf(command.reason().name()), command.note(),
+                        command.requestedBy(), now)
+                .inPackage(carton.id());
+        log.info("Write-off of carton {} ({} x {}, {}) asked", normal, onHand, sku, command.reason());
+        return toSummary(adjustments.save(adjustment));
+    }
+
+    /**
+     * A carton with an open putaway task is on its way into a bin: a release from quarantine, or a receipt's carton
+     * not yet put away. Writing it off as well would leave the task pointing at a carton that is gone, and the release
+     * already decided the carton is usable (kltn-docs 20 §4.8 step 3: release or write off, one of the two).
+     */
+    private void requireNoOpenPutaway(StockPackage carton) {
+        putawayTasks.openTaskOf(carton.id().value()).ifPresent(task -> {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,
+                    "%s has an open putaway task (%s); put it away, or write it off once that is done"
+                            .formatted(carton.lpn(), task.source()), List.of(), Map.of("lpn", carton.lpn()));
+        });
     }
 
     /**
@@ -931,6 +989,12 @@ class StockOperationsServiceImpl implements StockOperations {
     private StockAdjustmentSummary approveCarton(StockAdjustment adjustment, UUID approverId) {
         Instant now = clock.instant();
         adjustment.approveForCarton(approverId, now);
+        if (adjustment.reason() != AdjustmentReason.COUNT_VARIANCE && adjustment.quantityDelta() < 0) {
+            // Asked through requestCartonWriteOff; a release may have been opened since (under this SKU lock, so it
+            // is seen here or waits for this write-off).
+            stockPackages.findAllById(List.of(adjustment.stockPackageId())).stream().findFirst()
+                    .ifPresent(this::requireNoOpenPutaway);
+        }
         List<StockPackageContents.RowChange> changes = cartons.adjust(adjustment.stockPackageId(),
                 adjustment.quantityDelta(), adjustment.reason() == AdjustmentReason.COUNT_VARIANCE, now);
         StockAdjustment saved = adjustments.save(adjustment);

@@ -117,7 +117,7 @@ class PickListShortPickTest {
         PickLine picked = PickLineFixtures.picked("SOFA", "HCM-A01-1-A", 2, OTHER_LPN);
         assertThat(refusal(() -> picking(picked).reportShort(picked.id(), "HCM-A01-1-A", ShortPickReason.NOT_FOUND)))
                 .as("a picked carton is not short").isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
-        PickLine history = PickLineFixtures.line("SOFA", "HCM-A01-1-A", 2, 0, PickLineStatus.OPEN, 0, null, null, 0);
+        PickLine history = PickLineFixtures.line("SOFA", "HCM-A01-1-A", 2, 0, PickLineStatus.OPEN, 0, null, null);
         assertThat(refusal(() -> picking(history).reportShort(history.id(), "HCM-A01-1-A", ShortPickReason.NOT_FOUND)))
                 .as("a line with no carton to report").isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
         assertThat(line.status()).isEqualTo(PickLineStatus.OPEN);
@@ -177,15 +177,15 @@ class PickListShortPickTest {
     @DisplayName("rehydration: a short reason belongs only to a line short of its whole carton, SHORT or reallocated")
     void rehydrationRule() {
         // short_qty = allocated_qty and status SHORT/CANCELLED, as ck_pick_line_short_reason says
-        PickLineFixtures.line("SOFA", "HCM-A01-1-A", 5, 0, PickLineStatus.SHORT, 5, ShortPickReason.NOT_FOUND, LPN, 0);
-        PickLineFixtures.line("SOFA", "HCM-A01-1-A", 5, 0, PickLineStatus.CANCELLED, 5, ShortPickReason.DAMAGED, LPN, 0);
+        PickLineFixtures.line("SOFA", "HCM-A01-1-A", 5, 0, PickLineStatus.SHORT, 5, ShortPickReason.NOT_FOUND, LPN);
+        PickLineFixtures.line("SOFA", "HCM-A01-1-A", 5, 0, PickLineStatus.CANCELLED, 5, ShortPickReason.DAMAGED, LPN);
         for (Object[] bad : new Object[][] {
                 {PickLineStatus.SHORT, 3},          // a part of the carton
                 {PickLineStatus.OPEN, 0},           // not short at all
                 {PickLineStatus.PICKED, 0}}) {
             org.assertj.core.api.Assertions.assertThatThrownBy(() -> PickLineFixtures.line("SOFA", "HCM-A01-1-A", 5,
                             (PickLineStatus) bad[0] == PickLineStatus.PICKED ? 5 : 0, (PickLineStatus) bad[0],
-                            (Integer) bad[1], ShortPickReason.NOT_FOUND, LPN, 0))
+                            (Integer) bad[1], ShortPickReason.NOT_FOUND, LPN))
                     .as(String.valueOf(bad[0]))
                     .isInstanceOf(IllegalArgumentException.class);
         }

@@ -122,12 +122,10 @@ class PickConsumptionServiceTest {
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts =
             mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class);
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
-    private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports =
-            mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class);
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
             new InventoryEventPublisher(publisher), locations, policies,
             new StockPackageContents(stockPackages, stockItems), Clock.fixed(NOW, ZoneOffset.UTC),
-            cycleCounts, damageReports, stockPackages);
+            cycleCounts, stockPackages);
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
 
@@ -641,21 +639,6 @@ class PickConsumptionServiceTest {
             assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
                     .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
             assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
-            assertThat(ledgerRows).isEmpty();
-            verify(stockPackages, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("units found damaged at packing make it no carton: STOCK_PACKAGE_TAKEN_WHOLE, nothing written")
-        void damagedAtPackingIsRefused() {
-            UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
-            when(damageReports.damagedAfterPick(hold)).thenReturn(1);
-
-            assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
-                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
-            assertThat(picked.row().onHand()).isEqualTo(Quantity.ZERO);
             assertThat(ledgerRows).isEmpty();
             verify(stockPackages, never()).save(any());
         }

@@ -154,9 +154,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "fulfilment_started_at")
     private Instant fulfilmentStartedAt;
 
-    /** V20261022000800: when the order's first package was opened. */
-    @Column(name = "packing_started_at")
-    private Instant packingStartedAt;
 
     /** V20261113000700 (4C-6): when the order's first shipping label was printed - its lock (08 BR-04). */
     @Column(name = "first_labeled_at")
@@ -203,10 +200,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     @Column(name = "shipping_warehouse_chosen_by")
     private UUID shippingWarehouseChosenBy;
-
-    /** V20261101020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
-    @Column(name = "replaces_return_request_id", updatable = false)
-    private UUID replacesReturnRequestId;
 
     /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
     @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
@@ -316,11 +309,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
 
-    public void applyPackingStarted(Instant packingStarted) {
-        this.packingStartedAt = packingStarted;
-    }
-
-    public Instant getPackingStartedAt() { return packingStartedAt; }
 
     public void applyFirstLabeled(Instant firstLabeled) {
         this.firstLabeledAt = firstLabeled;
@@ -419,13 +407,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public void applyPlaced(Instant at) {
         this.placedAt = at;
     }
-
-    /** Written on insert only (the column is not updatable): an order replaces a return from the day it is placed. */
-    public void applyReplacement(UUID returnRequestId) {
-        this.replacesReturnRequestId = returnRequestId;
-    }
-
-    public UUID getReplacesReturnRequestId() { return replacesReturnRequestId; }
 
     public Instant getGoodsLeftAt() { return goodsLeftAt; }
     public Instant getContractSignedAt() { return contractSignedAt; }

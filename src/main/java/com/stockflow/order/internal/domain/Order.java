@@ -139,22 +139,11 @@ public final class Order extends AggregateRoot {
      */
     private Instant fulfilmentStartedAt;
     /**
-     * When fulfillment opened the order's first package, in the same transaction under this order's row lock
-     * ({@link #recordPackingStarted}). Every order ships as a full truckload (kltn-docs 09 BR-08): there is no
-     * delivery mode to choose or lock.
-     */
-    private Instant packingStartedAt;
-    /**
      * 4C-6: when the order's first shipping carton was labelled at the check station, in that transaction under this
      * order's row lock ({@link #recordFirstLabel}). From then the order is not cancelled and its delivery address does
      * not change (kltn-docs 08 BR-04, 17 BR-12, BR-16): the label printed on the carton carries it.
      */
     private Instant firstLabeledAt;
-    /**
-     * SCRUM-260: the return request whose accepted units this order replaces with new goods, free of charge; null for
-     * an ordinary order.
-     */
-    private UUID replacesReturnRequestId;
     private final List<OrderShipment> shipments = new ArrayList<>();
     /** Status changes not saved yet, with who and why; drained by the repository. */
     private final List<OrderTransition> transitions = new ArrayList<>();
@@ -754,25 +743,6 @@ public final class Order extends AggregateRoot {
         this.fulfilmentStartedAt = at;
     }
 
-    /**
-     * Fulfillment opened a package of the order: packing started. Idempotent.
-     *
-     * @return whether this was the first package
-     */
-    public boolean recordPackingStarted(Instant at) {
-        java.util.Objects.requireNonNull(at, "at");
-        if (status == OrderStatus.CANCELLED) {
-            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
-                    "Order %s is cancelled; nothing of it is packed".formatted(orderNumber));
-        }
-        if (packingStartedAt != null) {
-            return false;
-        }
-        packingStartedAt = at;
-        return true;
-    }
-
-    public Instant packingStartedAt() { return packingStartedAt; }
 
     /**
      * The check station printed the order's first shipping label (kltn-docs 08 §4.3 step 7, BR-04): from now the order
@@ -814,11 +784,6 @@ public final class Order extends AggregateRoot {
     /** Rehydration of when the first shipping label was printed. */
     public void restoreFirstLabeled(Instant at) {
         this.firstLabeledAt = at;
-    }
-
-    /** Rehydration of when packing started. */
-    public void restorePackingStarted(Instant packingStarted) {
-        this.packingStartedAt = packingStarted;
     }
 
     /** Rehydration of the partial-shipment decision. */
@@ -947,16 +912,11 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "The retained share is between 0 and 100 percent, to two decimals");
         }
-        // SCRUM-260: a replacement ships goods a resolved return promised. Cancelled any other way, the return would
-        // stay "replaced" while the customer got neither the goods nor the money - so only its withdrawal through the
-        // return cancels it, and that credits the units in the same transaction (ck_order_replacement_cancellation).
-        if ((replacesReturnRequestId != null) != (code == CancellationReasonCode.REPLACEMENT_WITHDRAWN)) {
-            throw replacesReturnRequestId != null
-                    ? new BusinessException(ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED,
-                            ("Order %s ships replacements for a return: withdraw it through the return, which credits "
-                                    + "the units instead").formatted(orderNumber))
-                    : new BusinessException(ErrorCode.VALIDATION_FAILED,
-                            "Only a replacement order is withdrawn through its return");
+        // SCRUM-260's free replacement orders went with team plan 4D-3 (an exchange is a new quote, 17 §4.10 step 41):
+        // nothing is withdrawn through a return any more, and the code stays only for the history it names.
+        if (code == CancellationReasonCode.REPLACEMENT_WITHDRAWN) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "REPLACEMENT_WITHDRAWN is historical: no order replaces a return's goods any more");
         }
         if (!status.canTransitionTo(OrderStatus.CANCELLED)) {
             throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
@@ -1325,14 +1285,10 @@ public final class Order extends AggregateRoot {
                     status == OrderStatus.ON_HOLD ? "resolve the hold before closing the rest"
                             : "only a partly fulfilled order has a rest to close");
         }
-        // A free replacement's rest is closed only by withdrawing it through its return, which credits the units the
-        // customer will not get (review 2026-10-25); closed any other way, they would be lost to the customer.
-        if ((replacesReturnRequestId != null) != (code == CancellationReasonCode.REPLACEMENT_WITHDRAWN)) {
-            throw new BusinessException(replacesReturnRequestId != null ? ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED
-                    : ErrorCode.VALIDATION_FAILED, replacesReturnRequestId != null
-                    ? ("Order %s replaces goods of a return: withdraw the rest of it through that return, which credits "
-                            + "the units").formatted(orderNumber)
-                    : "Only a replacement order is closed as withdrawn");
+        // Historical since team plan 4D-3: no order replaces a return's goods any more.
+        if (code == CancellationReasonCode.REPLACEMENT_WITHDRAWN) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "REPLACEMENT_WITHDRAWN is historical: no order replaces a return's goods any more");
         }
         // Validated before anything changes: a refused fee leaves the order as it was.
         Money closedPrints = Money.zero(total().currency());
@@ -1588,10 +1544,10 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Every return of the order ended without money back - refused, withdrawn, expired, or made good with new goods
-     * only (lead's decision 2026-10-21 for a refusal; the same for the others, since the customer keeps what was
-     * delivered and owes what they owed): RETURN_REQUESTED → DELIVERED, back to waiting for its return window and its
-     * money before it completes. The delivery date is unchanged, so the window is not reopened.
+     * Every return of the order ended before its goods came back - refused, withdrawn, expired (lead's decision
+     * 2026-10-21 for a refusal; the same for the others, since the customer keeps what was delivered and owes what they
+     * owed): RETURN_REQUESTED → DELIVERED (17 §5.1), back to waiting for its return window and its money before it
+     * completes. The delivery date is unchanged, so the window is not reopened.
      *
      * @return whether this changed the order
      */
@@ -1604,75 +1560,35 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Every return of the order ended and at least one gave money back (SCRUM-260; 15 §4.4: refunded, or the
-     * receivable reduced): RETURN_REQUESTED → RETURNED → REFUNDED when what was given back covers what the order is
-     * worth, PARTIALLY_REFUNDED otherwise. Both steps are kept in the history; from here the order closes after
-     * {@code close-after-days}.
+     * The goods of a return came back (team plan 4D-3; 17 §4.10 step 39, §5.1: "Returned - hàng trả đã về kho"): a
+     * return receipt took them into quarantine. RETURN_REQUESTED → RETURNED; an order RETURNED already (another return,
+     * or the carrier brought the goods back) stays as it is.
      *
      * @return whether this changed the order
      */
-    public boolean settleReturn(boolean full, UUID by, Instant at, String reason) {
+    public boolean goodsReturned(UUID by, Instant at, String reason) {
         if (status != OrderStatus.RETURN_REQUESTED) {
             return false;
         }
         transitionTo(OrderStatus.RETURNED, by, reason, at);
-        markRefunded(!full, by, at);
         return true;
     }
 
-    /** The returned goods arrived (RMA received, 17 §4.6 step 19): RETURN_REQUESTED → RETURNED. */
-    public void markReturned(UUID by, Instant at) {
-        if (status != OrderStatus.RETURN_REQUESTED) {
-            throw new InvalidOrderTransitionException(orderNumber, status, OrderStatus.RETURNED);
+    /**
+     * Everything the order's settlements made refundable was refunded, and no return of it is open (team plan 4D-3; 17
+     * §4.10 step 40, 15 §4.5 step 17: "hoàn đủ"): RETURNED → REFUNDED when what came back covers what the order is
+     * worth, PARTIALLY_REFUNDED otherwise. From here the order closes after {@code close-after-days}.
+     *
+     * @return whether this changed the order
+     */
+    public boolean refunded(boolean full, UUID by, Instant at, String reason) {
+        if (status != OrderStatus.RETURNED) {
+            return false;
         }
-        transitionTo(OrderStatus.RETURNED, by, null, at);
-    }
-
-    /** The refund of returned goods is done (15 §4.4): RETURNED → REFUNDED or PARTIALLY_REFUNDED. */
-    public void markRefunded(boolean partial, UUID by, Instant at) {
-        transitionTo(partial ? OrderStatus.PARTIALLY_REFUNDED : OrderStatus.REFUNDED, by, null, at);
+        transitionTo(full ? OrderStatus.REFUNDED : OrderStatus.PARTIALLY_REFUNDED, by, reason, at);
         this.refundedAt = at;
+        return true;
     }
-
-    // ---- a replacement for returned goods ------------------------------------------------------------------------------
-
-    /**
-     * SCRUM-260: this order ships new goods for units a return accepted, at no charge. Set on the draft, before it is
-     * submitted; {@code ck_order_replacement_free} says again that such an order costs nothing.
-     */
-    public void replacesReturn(UUID returnRequestId) {
-        if (status != OrderStatus.DRAFT) {
-            throw new IllegalStateException("Only a draft becomes a replacement order");
-        }
-        if (total().amount().signum() != 0) {
-            throw new IllegalStateException("A replacement order of %s costs nothing, not %s".formatted(orderNumber,
-                    total()));
-        }
-        this.replacesReturnRequestId = java.util.Objects.requireNonNull(returnRequestId, "returnRequestId");
-    }
-
-    /**
-     * A replacement order is placed (SCRUM-260): every line holds its stock, there is nothing to pay - so it is
-     * CONFIRMED at once ({@code ck_order_confirmed_basis} names the replacement), ready for the coordinator to release it
-     * to a warehouse, as any order. Announced as {@code OrderPlaced}. The confirmation names {@code by}, who settled the return: nobody
-     * checked out this order, so the history says who caused it.
-     */
-    public void submitReplacement(UUID by, Instant now) {
-        if (replacesReturnRequestId == null) {
-            throw new IllegalStateException("Order %s replaces no return".formatted(orderNumber));
-        }
-        requireEveryLineReserved();
-        transitionTo(OrderStatus.CONFIRMED, by, "REPLACEMENT_FOR_RETURN", now);
-        registerPlaced();
-    }
-
-    /** Rehydration of the return a replacement order makes good. */
-    public void restoreReplacement(UUID returnRequestId) {
-        this.replacesReturnRequestId = returnRequestId;
-    }
-
-    /** The return this order ships replacements for; null for an ordinary order. */
-    public UUID replacesReturnRequestId() { return replacesReturnRequestId; }
 
     private void requireNotCancelled(String what) {
         if (status == OrderStatus.CANCELLED) {

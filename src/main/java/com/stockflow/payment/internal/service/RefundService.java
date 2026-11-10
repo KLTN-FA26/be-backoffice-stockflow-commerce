@@ -6,6 +6,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.contracts.OrderRefundRecorded;
 import com.stockflow.payment.api.InstallmentOrders;
 import com.stockflow.payment.api.InstallmentOrder;
 import com.stockflow.payment.internal.domain.OrderSettlement;
@@ -15,6 +16,7 @@ import com.stockflow.payment.internal.domain.SettlementBook;
 import com.stockflow.payment.internal.repository.RefundSearch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,8 +42,9 @@ import java.util.UUID;
  * for one order are decided one after the other against the same settlements; {@code tg_refund_record_total} says the
  * cap again at commit.</p>
  *
- * <p>The order's own status does not move: a cancelled order stays CANCELLED (17 §5.1 - CANCELLED is final, and
- * REFUNDED / PARTIALLY_REFUNDED follow RETURNED only). The refund's standing is computed ({@link RefundStanding}).</p>
+ * <p>The refund's standing is computed ({@link RefundStanding}), and every record or void announces it
+ * ({@link OrderRefundRecorded}). A cancelled order stays CANCELLED (17 §5.1 - CANCELLED is final); a RETURNED order the
+ * standing shows refunded in full moves on to REFUNDED / PARTIALLY_REFUNDED in the order module (4D-3).</p>
  */
 @Service
 @Transactional
@@ -62,12 +65,15 @@ public class RefundService {
     private final SettlementBook book;
     private final RefundSearch search;
     private final InstallmentOrders orders;
+    private final ApplicationEventPublisher events;
     private final Clock clock;
 
-    RefundService(SettlementBook book, RefundSearch search, InstallmentOrders orders, Clock clock) {
+    RefundService(SettlementBook book, RefundSearch search, InstallmentOrders orders, ApplicationEventPublisher events,
+                  Clock clock) {
         this.book = book;
         this.search = search;
         this.orders = orders;
+        this.events = events;
         this.clock = clock;
     }
 
@@ -107,7 +113,7 @@ public class RefundService {
         }
         log.info("Order {}: refund {} of {} {} recorded", order.orderNumber(), record.reference(), record.amount(),
                 record.currency());
-        return detail(order.orderId(), null);
+        return announced(detail(order.orderId(), null), order.orderId(), command.recordedBy(), now);
     }
 
     /**
@@ -122,7 +128,7 @@ public class RefundService {
         record.voidRecord(reason, voidedBy, clock.instant());
         book.saveVoided(record);
         log.info("Order {}: refund {} voided", record.orderNumber(), record.reference());
-        return detail(record.orderId(), null);
+        return announced(detail(record.orderId(), null), record.orderId(), voidedBy, clock.instant());
     }
 
     // ---- reading ----------------------------------------------------------------------------------------------------
@@ -155,6 +161,16 @@ public class RefundService {
     public PageResponse<com.stockflow.payment.internal.domain.OrderRefund> orderRefunds(UUID customerId, Boolean outstanding, int page,
                                                                int size) {
         return Pages.toResponse(search.orderRefunds(customerId, outstanding, Pages.of(page, size)));
+    }
+
+    /**
+     * 4D-3 (17 §4.10 step 40): the order hears where its refund stands after commit, so a returned order refunded in
+     * full moves on to REFUNDED / PARTIALLY_REFUNDED.
+     */
+    private OrderRefundDetail announced(OrderRefundDetail detail, UUID orderId, UUID by, Instant at) {
+        events.publishEvent(new OrderRefundRecorded(orderId, detail.orderNumber(), detail.standing().refundable(),
+                detail.standing().refunded(), detail.currency(), by, at));
+        return detail;
     }
 
     private RefundStanding standingOf(UUID orderId) {

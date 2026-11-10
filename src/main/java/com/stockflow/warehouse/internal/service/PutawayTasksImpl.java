@@ -60,6 +60,12 @@ class PutawayTasksImpl implements PutawayTasks {
 
     @Override
     @Transactional(readOnly = true)
+    public Optional<PutawayTaskView> openTaskOf(UUID stockPackageId) {
+        return tasks.findOpenByStockPackage(stockPackageId).map(PutawayTasksImpl::toView);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<PutawayTaskView> tasksOfReceipt(UUID goodsReceiptId) {
         return tasks.findByReceipt(goodsReceiptId).stream().map(PutawayTasksImpl::toView).toList();
     }
@@ -83,6 +89,6 @@ class PutawayTasksImpl implements PutawayTasks {
 
     private static PutawayTaskView toView(PutawayTask t) {
         return new PutawayTaskView(t.id(), t.goodsReceiptId(), t.goodsReceiptLineId(), t.sku(), t.quantity(),
-                t.stockPackageId(), t.targetLocationId(), t.status().name());
+                t.stockPackageId(), t.targetLocationId(), t.status().name(), t.source());
     }
 }

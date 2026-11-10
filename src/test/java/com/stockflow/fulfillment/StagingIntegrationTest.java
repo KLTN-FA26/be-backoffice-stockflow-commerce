@@ -624,9 +624,10 @@ class StagingIntegrationTest {
     // ---- review L3, L5: nothing but picking changes a staging area ------------------------------
 
     @Test
-    @DisplayName("a shelf damage report on a staged carton, or on a released one left in staging, and a positive adjustment there "
-            + "are STAGING_MOVE_NOT_ALLOWED, with no ledger line and no report")
-    void damageAndSurplusAtAStagingAreaAreRefused() throws Exception {
+    @DisplayName("a positive adjustment in a staging area - of a staged carton, or a released one left there - is "
+            + "STAGING_MOVE_NOT_ALLOWED, with no ledger line (the shelf damage report is gone with 5-6: a damaged carton is "
+            + "a short pick or removed whole)")
+    void surplusAtAStagingAreaIsRefused() throws Exception {
         OrderSummary order = confirmedOrder(1);
         UUID task = stagingTask(order);
         start(task);
@@ -639,15 +640,10 @@ class StagingIntegrationTest {
         int ledgerBefore = jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE sku = ?",
                 Integer.class, SOFA.code());
 
-        shelfDamage(row).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("STAGING_MOVE_NOT_ALLOWED"));
-
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
         Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(pickStatus(task)));
         assertThat(jdbc.queryForObject("SELECT reserved FROM inventory.stock_item WHERE id = ?::uuid", Integer.class, row))
                 .as("released, left in staging").isZero();
-        shelfDamage(row).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("STAGING_MOVE_NOT_ALLOWED"));
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE source_stock_item_id = ?::uuid",
-                Integer.class, row)).isZero();
 
         String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE id = ?::uuid", String.class, row);
         Throwable surplus = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
@@ -664,19 +660,6 @@ class StagingIntegrationTest {
         }
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE sku = ?", Integer.class,
                 SOFA.code())).as("nothing was written for the refused calls").isEqualTo(ledgerBefore);
-    }
-
-    private ResultActions shelfDamage(String row) throws Exception {
-        byte[] jpeg = {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 16, 'J', 'F', 'I', 'F', 0, 1, 1, 0, 0, 1, 0,
-                1, 0, 0};
-        String report = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"stockItemId\":\"" + row
-                + "\",\"quantity\":1,\"reason\":\"BROKEN\"}";
-        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                .multipart("/api/v1/inventory/damage-reports")
-                .file(new org.springframework.mock.web.MockMultipartFile("report", "", "application/json",
-                        report.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
-                .file(new org.springframework.mock.web.MockMultipartFile("photos", "broken.jpg", "image/jpeg", jpeg))
-                .header("Authorization", picker()));
     }
 
     // ---- review M1: the move to dispatch locks in the order every multi-SKU writer keeps ---------

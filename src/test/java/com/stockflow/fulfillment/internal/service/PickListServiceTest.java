@@ -74,9 +74,7 @@ class PickListServiceTest {
     private final com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages =
             mock(com.stockflow.fulfillment.internal.repository.PackageJpaRepository.class);
     private final PickListService service = new PickListService(picks, pickLines, orders, inventory, itemControls,
-            consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations,
-            mock(com.stockflow.inventory.consumption.PickDamageReporting.class),
-            org.springframework.transaction.support.TransactionOperations.withoutTransaction(), packs, packages);
+            consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations, packs, packages);
 
     private final UUID picker = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(picker, "picker",
@@ -774,18 +772,6 @@ class PickListServiceTest {
                 assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", scan, actor))
                         .errorCode()).as("scan %s", scan).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
             }
-            assertThat(row.getStatus()).isEqualTo(PickLineStatus.PICKED);
-            verifyNoInteractions(consumption);
-        }
-
-        @Test
-        @DisplayName("a carton part of which went to quarantine at packing is STOCK_PACKAGE_TAKEN_WHOLE: inventory is not asked")
-        void partlyDamagedCarton() {
-            row.recordDamageAfterPick(1);
-            binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
-
-            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor))
-                    .errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
             assertThat(row.getStatus()).isEqualTo(PickLineStatus.PICKED);
             verifyNoInteractions(consumption);
         }

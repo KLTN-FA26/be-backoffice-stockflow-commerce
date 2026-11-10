@@ -8,7 +8,6 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
-import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.contracts.ShipmentStatusChanged;
@@ -63,7 +62,6 @@ class CustomerEmailComposer {
     static final String RETURN_RESOLVED = "return.resolved";
     static final String RETURN_CANCELLED = "return.cancelled";
     static final String RETURN_EXPIRED = "return.expired";
-    static final String RETURN_WITHDRAWN = "return.withdrawn";
 
     static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
@@ -296,8 +294,9 @@ class CustomerEmailComposer {
     }
 
     /**
-     * A parcel is in; QC comes next. A parcel that does not match the approval is said to be followed up. One message
-     * per parcel when the goods come in several: the second is a message of its own, not a repeat of the first.
+     * The goods are back on their return receipt (team plan 4D-3); the refund comes next. Goods that do not match the
+     * approval are said to be followed up. A return comes back on one receipt; events published per parcel before keep
+     * one message per parcel, the second a message of its own, not a repeat of the first.
      */
     Optional<CustomerMessage> returnReceived(ReturnReceived event) {
         int parcel = event.parcelNumber();
@@ -326,8 +325,9 @@ class CustomerEmailComposer {
     }
 
     /**
-     * Settled: the replacement order, the amount taken off what the customer owes, refunded and kept as credit - each
-     * only when there is one - and the adjustment invoice a Vietnamese buyer needs for its books when one is due.
+     * Refunded (team plan 4D-3): what was taken off what the customer owes on the order and what is to be refunded -
+     * each only when there is one - and the adjustment invoice a Vietnamese buyer needs for its books when one is due.
+     * A return is refunded only: nothing is replaced or kept as credit any more.
      */
     Optional<CustomerMessage> returnResolved(ReturnResolved event) {
         return Optional.of(new CustomerMessage(RETURN_RESOLVED, event.returnRequestId().toString(),
@@ -336,11 +336,6 @@ class CustomerEmailComposer {
                     ResourceBundle m = bundle();
                     List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
                     List<String> outro = new ArrayList<>();
-                    if (filled(event.replacementOrderNumber())) {
-                        facts.add(new Fact(m.getString("email.customer.fact.replacement-order"),
-                                event.replacementOrderNumber()));
-                        outro.add(m.getString("email.return.resolved.replacement"));
-                    }
                     if (positive(event.offsetAmount())) {
                         facts.add(new Fact(m.getString("email.customer.fact.offset"),
                                 money(event.offsetAmount(), event.currency())));
@@ -351,20 +346,13 @@ class CustomerEmailComposer {
                                 money(event.refundedAmount(), event.currency())));
                         outro.add(m.getString("email.customer.refund"));
                     }
-                    if (positive(event.creditedAmount())) {
-                        facts.add(new Fact(m.getString("email.customer.fact.credit"),
-                                money(event.creditedAmount(), event.currency())));
-                        outro.add(m.getString("email.return.resolved.credit"));
-                    }
                     if (event.vatAdjustmentRequired()) {
                         outro.add(m.getString("email.return.resolved.vat-adjustment"));
                     }
                     Table lines = table(m, event.lines(),
-                            List.of("email.customer.table.sku", "email.customer.table.accepted-quantity",
-                                    "email.customer.table.replacement-quantity",
-                                    "email.customer.table.credit-quantity"),
+                            List.of("email.customer.table.sku", "email.customer.table.received-quantity",
+                                    "email.customer.table.refund-quantity"),
                             line -> List.of(text(line.sku()), Integer.toString(line.acceptedQuantity()),
-                                    Integer.toString(line.replacementQuantity()),
                                     Integer.toString(line.creditQuantity())));
                     return content(m, RETURN_RESOLVED, addressee, event.rmaNumber(), facts, lines, outro);
                 }));
@@ -393,33 +381,6 @@ class CustomerEmailComposer {
                                 : "email.return.cancelled.by-staff"));
                     }
                     return content(m, code, addressee, event.rmaNumber(), facts, null, outro);
-                }));
-    }
-
-    /**
-     * The replacement order will not ship after all - the customer asked for the money, or the goods cannot be made
-     * again - and its units are credited instead: what was set off against what the customer owes, what is kept as
-     * their credit.
-     */
-    Optional<CustomerMessage> returnReplacementWithdrawn(ReturnReplacementWithdrawn event) {
-        return Optional.of(new CustomerMessage(RETURN_WITHDRAWN, event.returnRequestId().toString(),
-                event.customerId(), null,
-                addressee -> {
-                    ResourceBundle m = bundle();
-                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
-                    List<String> outro = new ArrayList<>();
-                    if (positive(event.offsetAmount())) {
-                        facts.add(new Fact(m.getString("email.customer.fact.offset"),
-                                money(event.offsetAmount(), event.currency())));
-                        outro.add(m.getString("email.return.resolved.offset"));
-                    }
-                    if (positive(event.creditedAmount())) {
-                        facts.add(new Fact(m.getString("email.customer.fact.credit"),
-                                money(event.creditedAmount(), event.currency())));
-                        outro.add(m.getString("email.return.resolved.credit"));
-                    }
-                    outro.add(m.getString("email.return.resolved.vat-adjustment"));
-                    return content(m, RETURN_WITHDRAWN, addressee, event.rmaNumber(), facts, null, outro);
                 }));
     }
 

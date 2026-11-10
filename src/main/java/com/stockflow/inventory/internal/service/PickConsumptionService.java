@@ -83,18 +83,15 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final StockPackageContents cartons;
     private final Clock clock;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
-    private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports;
     private final StockPackageRepository stockPackages;
 
     PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
                            LocationDirectory locations, InventoryPolicyRepository policies,
                            StockPackageContents cartons, Clock clock,
                            com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
-                           com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports,
                            StockPackageRepository stockPackages) {
         this.stockPackages = stockPackages;
         this.cycleCounts = cycleCounts;
-        this.damageReports = damageReports;
         this.stockItems = stockItems;
         this.ledger = ledger;
         this.events = events;
@@ -223,10 +220,8 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                         "%s is in another warehouse than carton %s".formatted(target, command.lpn()));
             }
         }
-        // Only a whole carton comes back (team plan 4C-4; 07 §4.5 step 14): never loose units - a line picked loose
-        // before 4C-1, or a carton some of whose units went to quarantine damaged at packing (R8). V20261113000400
-        // stopped on any such put-back still waiting, and fulfillment refuses the second kind first; 4C-2's loose
-        // fallback (StockItem#putBackBeside) is gone with them.
+        // Only a whole carton comes back (team plan 4C-4; 07 §4.5 step 14): never loose units of a line picked loose
+        // before 4C-1. V20261113000400 stopped on any such put-back still waiting.
         if (rowView.stockPackageId() == null) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Pick line %s took loose stock; only a "
                     + "whole carton is put back (kltn-docs 07 §4.5 step 14)").formatted(command.pickLineId()));
@@ -239,12 +234,9 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                     .formatted(command.pickLineId(), command.lpn(), cartonView.lpn()));
         }
         Reservation consumed = rowView.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
-        int damagedAtPacking = damageReports.damagedAfterPick(command.reservationId());
-        if (consumed.status() != com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED
-                || damagedAtPacking > 0) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s is %s, %d of its units "
-                    + "found damaged at packing; only a whole carton taken by the pick goes back").formatted(
-                    command.reservationId(), consumed.status(), damagedAtPacking));
+        if (consumed.status() != com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s is %s; only a whole carton "
+                    + "taken by the pick goes back").formatted(command.reservationId(), consumed.status()));
         }
         // CONSUMED -> IN_STOCK, sealed, at the bin, its row following it with its units back as the same receipt layer
         // (4C-2's StockPackageContents#restock: STOCK_PACKAGE_TAKEN_WHOLE unless the hold is what was counted into the

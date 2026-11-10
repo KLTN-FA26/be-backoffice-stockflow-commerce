@@ -39,7 +39,6 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -59,7 +58,6 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -568,18 +566,11 @@ class CartonCheckStationIntegrationTest {
         for (String lpn : mine) {
             scan(packer, "WAREHOUSE_STAFF", task, lpn).andExpect(status().isOk());
         }
-        // Damage after the pick on a carton the station holds is refused: it is removed here, not reported there.
+        // Damage after the pick is no endpoint any more (5-6): a damaged carton is removed here, whole.
         String damagedLine = jdbc.queryForObject("SELECT id::text FROM fulfillment.pick_line WHERE lpn = ?", String.class,
                 damaged);
-        String report = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"damagedQuantity\":1,\"reason\":\"BROKEN\","
-                + "\"note\":\"cracked\"}";
-        asPacker(multipart(BASE + "/tasks/" + task + "/pick-lines/" + damagedLine + "/damage-after-pick")
-                .file(new MockMultipartFile("report", "", "application/json", report.getBytes(StandardCharsets.UTF_8)))
-                .file(new MockMultipartFile("photos", "broken.jpg", "image/jpeg", new byte[] {(byte) 0xFF, (byte) 0xD8,
-                        (byte) 0xFF, (byte) 0xE0, 0, 16, 'J', 'F', 'I', 'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0})))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));
-        assertThat(jdbc.queryForObject("SELECT packing_damaged_qty FROM fulfillment.pick_line WHERE id = ?::uuid",
-                Integer.class, damagedLine)).isZero();
+        asPacker(post(BASE + "/tasks/" + task + "/pick-lines/" + damagedLine + "/damage-after-pick"))
+                .andExpect(status().is4xxClientError());
         asPacker(body(post(url(task, "/cartons/" + damaged + "/removal")), "{\"note\":\"corner crushed\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.cartons[?(@.lpn=='" + damaged + "')].status")
@@ -849,8 +840,8 @@ class CartonCheckStationIntegrationTest {
     // ---- the carton spec ---------------------------------------------------------------------------
 
     @Test
-    @DisplayName("the repack station's seven parcel writes answer 410 REPACK_RETIRED and write nothing (until 4C-7)")
-    void repackParcelWritesAreRetired() throws Exception {
+    @DisplayName("the repack station's seven parcel writes are gone with 4C-7: no handler answers (404), nothing is written")
+    void repackParcelWritesAreGone() throws Exception {
         OrderSummary order = order(1);
         UUID task = pickedTask(order);
         start(packer, "WAREHOUSE_STAFF", task).andExpect(status().isOk());
@@ -870,12 +861,10 @@ class CartonCheckStationIntegrationTest {
                 post(url(task, "/packages/" + parcel + "/reopening")),
                 delete(url(task, "/packages/" + parcel)));
         for (MockHttpServletRequestBuilder write : writes) {
-            asPacker(write).andExpect(status().isGone()).andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
+            asPacker(write).andExpect(status().isNotFound());
         }
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package p JOIN fulfillment.pack k ON k.id = "
                 + "p.pack_id WHERE k.pick_id = ?", Long.class, task)).as("no parcel row, no renumbering").isEqualTo(rows);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package_scan WHERE package_id = ?", Long.class,
-                parcel)).isZero();
         // the station itself is unaffected
         scan(packer, "WAREHOUSE_STAFF", task, lpns(task).getFirst()).andExpect(status().isOk());
     }

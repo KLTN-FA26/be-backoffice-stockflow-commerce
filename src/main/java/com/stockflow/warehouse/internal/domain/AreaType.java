@@ -7,11 +7,13 @@ package com.stockflow.warehouse.internal.domain;
  * charging bay is on the map only so it can be drawn and walked around.</p>
  */
 public enum AreaType {
-    /** WH/Input: goods just received, before QC or putaway. */
+    /** WH/Input: goods just received, before putaway. */
     RECEIVING,
-    /** WH/Quality Control: goods of a QC-required SKU waiting for inspection (docs 03, 3-step flow). */
-    QUALITY_CONTROL,
-    /** After QC: goods put on hold or rejected, waiting for a decision or the return to the supplier. */
+    /**
+     * Goods on hold: cartons a warehouse manager quarantined, and goods that came back on a return receipt, waiting for
+     * a release or a write-off (kltn-docs 20 §4.8, 03 BR-14). The QUALITY_CONTROL area of the QC era became one
+     * (team plan 4D-4, V20261114000200).
+     */
     QUARANTINE,
     /**
      * The dispatch area: picked cartons are brought here, checked and labelled where they stand, grouped by shipment and

@@ -9,7 +9,6 @@ import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.OrderHold;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 
@@ -184,16 +183,6 @@ class InventoryServiceImpl implements InventoryService {
     @Transactional(readOnly = true)
     public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
         return operations.receivingPackagesOf(receiptLineIds);
-    }
-
-    @Override
-    public StockMove reclassify(ReclassifyStockCommand command) {
-        return operations.reclassify(command);
-    }
-
-    @Override
-    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
-        return operations.receiveReturn(command);
     }
 
     @Override
@@ -684,16 +673,13 @@ class InventoryServiceImpl implements InventoryService {
         }
         policies.lock(view.sku().code());
         LocalDate today = BusinessCalendar.date(now);
-        // A damage report's impaired share restored onto a bin is restored as loose units (StockDamageService#restore),
-        // which no pick line can take (team plan 4C-4; kltn-docs 07 BR-04, BR-10): it is released and reallocated like
-        // any short allocation, to whole cartons, or INSUFFICIENT_STOCK leaves everything as it was (4C-4 B1). Keeping
-        // it where it is comes back when a restore puts units back into a carton (4C-3).
+        // Released and reallocated to whole cartons, or INSUFFICIENT_STOCK leaves everything as it was (4C-4 B1).
         String warehouse = view.location().warehouseCode();
-        // 4B-7: the new bins come out of what other orders do not hold at this warehouse by SKU (20 BR-17).
-        requireRoomBesideHoldsAt(view.sku(), warehouse, shortHold.quantity().value(), 0,
-                pickableCandidates(view.sku(), warehouse, view.id()));
-        List<StockAllocator.AllocationLine> lines = plan(view.sku(),
-                pickableCandidates(view.sku(), warehouse, view.id()), shortHold.quantity(), warehouse, today);
+        // 4B-7: the new bins come out of what other orders do not hold at this warehouse by SKU (20 BR-17). One pool
+        // for both: every pickable carton but the short one's (4C-2 excludes a stock row, no longer a whole bin).
+        List<StockAllocator.Candidate> pool = pickableCandidates(view.sku(), warehouse, view.id());
+        requireRoomBesideHoldsAt(view.sku(), warehouse, shortHold.quantity().value(), 0, pool);
+        List<StockAllocator.AllocationLine> lines = plan(view.sku(), pool, shortHold.quantity(), warehouse, today);
         UUID origin = shortHold.allocatedFrom() != null ? shortHold.allocatedFrom() : shortHold.id().value();
 
         Set<StockItemId> ids = new java.util.TreeSet<>(Comparator.comparing(id -> id.value().toString()));
@@ -728,7 +714,7 @@ class InventoryServiceImpl implements InventoryService {
     /**
      * Sellable stock of the SKU on pickable, usable locations of one warehouse (module 06 BR-12), never at
      * {@code excluded}; read as projections, so nothing lands in the persistence context before the locked reads.
-     * The one definition, shared with the damage reported at picking: {@link PickableStock}.
+     * The one definition: {@link PickableStock}.
      */
     private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, StockItemId excluded) {
         return new PickableStock(repository, locations, cycleCounts).candidates(sku, warehouse, excluded, clock.instant());

@@ -58,6 +58,19 @@ public interface PaymentService {
     java.util.Optional<OrderSettlementResult> settleRemainderClosure(SettleRemainderClosureCommand command);
 
     /**
+     * 4D-3 (17 §4.10 step 40; 15 §4.5 step 15, BR-14): goods that came back on a return are refunded. What they were
+     * worth comes off what the order's installments still owe - after delivery first, the latest first - and what was
+     * paid already is to be refunded; the accountant records the refund made (15 §4.5 step 16). No fee. In the
+     * caller's transaction, after the order's lock (orders, then installments); once per return.
+     *
+     * @return empty for an order without installments (no signed contract)
+     */
+    java.util.Optional<OrderSettlementResult> settleReturn(SettleReturnCommand command);
+
+    /** 4D-3 (15 §5.3): what the order's settlements made refundable and what was refunded; zero for none. */
+    RefundProgress refundProgress(UUID orderId);
+
+    /**
      * The account customers transfer to (SCRUM-193), from this deployment's configuration; empty while any of its parts
      * is not set, so a customer is never shown half an account - or a demo one.
      */

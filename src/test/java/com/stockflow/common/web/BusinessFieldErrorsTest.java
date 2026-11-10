@@ -54,7 +54,7 @@ class BusinessFieldErrorsTest {
     @Test
     @DisplayName("SCRUM-193: a refusal's details travel in the envelope, and are absent when there are none")
     void detailsTravel() {
-        var response = handler.handleBusiness(new BusinessException(ErrorCode.RETURN_REFUND_EXCEEDS_PAID, "over",
+        var response = handler.handleBusiness(new BusinessException(ErrorCode.CONFLICT, "over",
                 List.of(), java.util.Map.of("refundable", new java.math.BigDecimal("1250000"), "currency", "VND")));
         assertThat(response.getBody().details()).containsEntry("currency", "VND")
                 .containsEntry("refundable", new java.math.BigDecimal("1250000"));

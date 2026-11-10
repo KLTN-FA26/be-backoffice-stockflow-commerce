@@ -365,200 +365,6 @@ public final class PickList {
         return lines.stream().anyMatch(line -> line.status() == PickLineStatus.SHORT);
     }
 
-    // ------------------------------------------------------------------ damage found at the bin (SCRUM-277)
-
-    /**
-     * The picker is at the line's bin and finds {@code damaged} of the allocated units damaged (docs 03 §5,
-     * SCRUM-277). Checked before anything is written; the caller then has inventory move the damaged units to
-     * quarantine and makes the line give way to {@link #replaceDamaged}. The same report again - the line already
-     * superseded by a damage report of that many units at that bin - is answered as done.
-     *
-     * <p>A line is one carton and a carton is taken whole (4C-2), so the damaged units are the whole carton: anything
-     * else is refused here, before inventory refuses it too. A damaged carton is better reported as a short pick with
-     * reason {@link ShortPickReason#DAMAGED} (07 §4.4 step 9); this unit-level report goes with team plan 5-6.</p>
-     *
-     * @return true when the line was reported damaged already, exactly so
-     * @throws BusinessException {@code NOT_FOUND}; {@code PICK_TASK_STATE_CONFLICT} unless the task is PICKING;
-     *         {@code PICK_LINE_NOT_OPEN}; {@code PICK_LOCATION_MISMATCH}; {@code STOCK_PACKAGE_TAKEN_WHOLE} unless the
-     *         line's whole allocation
-     */
-    public boolean requireDamageable(UUID lineId, String scannedLocation, int damaged) {
-        if (alreadyReportedDamaged(lineId, scannedLocation, damaged)) {
-            return true;
-        }
-        PickLine line = requireLine(lineId);
-        if (status != PickStatus.PICKING) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "Damage is reported while the task is PICKING; it is " + status);
-        }
-        if (line.status() != PickLineStatus.OPEN) {
-            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, "The line is " + line.status());
-        }
-        if (line.reservationId() == null) {
-            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, "The line takes no allocated stock");
-        }
-        if (!sameCode(scannedLocation, line.locationCode())) {
-            throw new BusinessException(ErrorCode.PICK_LOCATION_MISMATCH,
-                    "This line is picked from " + line.locationCode());
-        }
-        if (damaged != line.allocatedQty()) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("The line is carton %s of %d; a carton is "
-                    + "reported damaged whole, never %d of it").formatted(line.lpn(), line.allocatedQty(), damaged));
-        }
-        return false;
-    }
-
-    /**
-     * Inventory moved the damaged carton's units to quarantine and made the order whole (SCRUM-277). The line gives way
-     * - CANCELLED, its damaged units and the report kept - to the lines that pick what replaced it:
-     * <ul>
-     *   <li>one OPEN line per allocation that replaced the carton elsewhere, after the last stop, in its hold's carton;
-     *       or</li>
-     *   <li>when nothing could replace it, one SHORT line for the units, against the impaired allocation: the
-     *       coordinator reallocates it like any short line (X-SHORT). It is on the loose DAMAGED row in quarantine,
-     *       never in a carton.</li>
-     * </ul>
-     * Nothing is retained at the bin: the line was the whole carton ({@link #requireDamageable}), so there is no
-     * "rest of it" to pick there any more (the branch for good units left at the bin went with 4C-4).
-     *
-     * @return the new lines
-     * @throws BusinessException {@code PICK_LINE_NOT_OPEN} unless the line is OPEN;
-     *         {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} for a replacement outside the task's warehouse
-     */
-    public List<PickLine> replaceDamaged(UUID lineId, int damaged, UUID reportId, List<Hold> replacements,
-                                         UUID impairedReservationId, Supplier<UUID> ids) {
-        PickLine line = requireLine(lineId);
-        if (line.status() != PickLineStatus.OPEN) {
-            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, "Only an OPEN line is reported damaged; it is "
-                    + line.status());
-        }
-        if (replacements.stream().anyMatch(hold -> !warehouseId.equals(hold.warehouseId()))) {
-            throw new BusinessException(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE,
-                    "Task %s is picked in warehouse %s; the replacement is elsewhere".formatted(taskId, warehouseId));
-        }
-        if (damaged != line.allocatedQty() || (impairedReservationId == null) == replacements.isEmpty()) {
-            throw new IllegalArgumentException("The whole carton is damaged, and either replaced or impaired, never both "
-                    + "or neither");
-        }
-        requireCartons(replacements);
-        line.supersedeForDamage(damaged, reportId);
-        int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0);
-        List<PickLine> added = new ArrayList<>();
-        for (Hold hold : replacements) {
-            added.add(PickLine.fromDamage(ids.get(), line.orderLineId(), hold.reservationId(), hold.sku(),
-                    hold.locationCode(), hold.lotNumber(), ++sequence, hold.quantity(), false, reportId, hold.lpn(),
-                    hold.wholeCarton()));
-        }
-        if (impairedReservationId != null) {
-            added.add(PickLine.fromDamage(ids.get(), line.orderLineId(), impairedReservationId, line.sku(),
-                    line.locationCode(), line.lotNumber(), ++sequence, damaged, true, reportId, null, false));
-        }
-        lines.addAll(added);
-        return added;
-    }
-
-    /**
-     * Whether the line was superseded by a damage report of exactly these units at this bin: the same report sent
-     * again, answered as done whatever happened to the task and its order since.
-     *
-     * @throws BusinessException {@code NOT_FOUND} for a line of another task
-     */
-    public boolean alreadyReportedDamaged(UUID lineId, String scannedLocation, int damaged) {
-        PickLine line = requireLine(lineId);
-        return line.status() == PickLineStatus.CANCELLED && line.damageReportId() != null
-                && line.damagedQty() == damaged && sameCode(scannedLocation, line.locationCode());
-    }
-
-    // ------------------------------------------------------------------ damage found at packing (R8)
-
-    /**
-     * {@code damaged} of the units a picked line took are found damaged off the shelf - broken in the tote while the
-     * task is still picked, or seen at the bench once it is complete. Checked before anything is written; the caller
-     * has inventory take them back into quarantine and make the order whole, then calls
-     * {@link #replaceDamagedAfterPick}. Whether those units are out of every parcel is the packing session's to say.
-     *
-     * <p>Always the whole carton the line picked (team plan 4C-4 review M1; kltn-docs 08: a damaged carton is removed
-     * whole). Part of a carton reported damaged would leave its good units deducted, in no carton - a CONSUMED carton
-     * cannot reopen (4C-2) - and, were the order cancelled, a put-back that can never succeed (it returns whole cartons
-     * only): those units would be off the books with no way back. So the line's units are damaged all at once or not
-     * at all, and a line damaged at packing has nothing left to put back.</p>
-     *
-     * @throws BusinessException {@code NOT_FOUND}; {@code PICK_TASK_STATE_CONFLICT} unless the task is PICKING or
-     *         PICKED;
-     *         {@code PICK_LINE_NOT_OPEN} unless the line was picked, on a hold; {@code STOCK_PACKAGE_TAKEN_WHOLE}
-     *         unless {@code damaged} is everything the line picked, none of it reported damaged before
-     */
-    public void requireDamageableAfterPick(UUID lineId, int damaged) {
-        PickLine line = requireLine(lineId);
-        if (status != PickStatus.PICKED && status != PickStatus.PICKING) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "Picked units are reported damaged while the task is picked or complete; it is " + status);
-        }
-        if (line.status() != PickLineStatus.PICKED || line.reservationId() == null) {
-            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN,
-                    "Only a picked line of allocated stock brought units to packing; it is " + line.status());
-        }
-        if (damaged != line.pickedQty() || line.packingDamagedQty() != 0) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("The line brought carton %s of %d unit(s) "
-                    + "to packing, %d of them reported damaged already; a carton is reported damaged whole, never %d of "
-                    + "it").formatted(line.lpn(), line.pickedQty(), line.packingDamagedQty(), damaged));
-        }
-    }
-
-    /**
-     * Inventory took the damaged units back into quarantine and made the order whole (R8). The picked line keeps them
-     * on record ({@link PickLine#packingDamagedQty}); what replaces them is picked again, after the last stop: one OPEN
-     * line per allocation that replaced them, or, when nothing could, one SHORT line for them against the impaired
-     * allocation, for the coordinator to reallocate (X-SHORT). The caller puts a complete task back to PICKING.
-     *
-     * @return the new lines
-     * @throws BusinessException {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} for a replacement outside the task's
-     *         warehouse
-     */
-    public List<PickLine> replaceDamagedAfterPick(UUID lineId, int damaged, UUID reportId, List<Hold> replacements,
-                                                  UUID impairedReservationId, Supplier<UUID> ids) {
-        requireDamageableAfterPick(lineId, damaged);
-        PickLine line = requireLine(lineId);
-        if (replacements.stream().anyMatch(hold -> !warehouseId.equals(hold.warehouseId()))) {
-            throw new BusinessException(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE,
-                    "Task %s is picked in warehouse %s; the replacement is elsewhere".formatted(taskId, warehouseId));
-        }
-        if ((impairedReservationId == null) == replacements.isEmpty()
-                || replacements.stream().mapToInt(Hold::quantity).sum() != (replacements.isEmpty() ? 0 : damaged)) {
-            throw new IllegalArgumentException("The damaged units are either replaced in full or impaired, never both");
-        }
-        requireCartons(replacements);
-        line.damagedAfterPick(damaged);
-        int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0);
-        List<PickLine> added = new ArrayList<>();
-        for (Hold hold : replacements) {
-            added.add(PickLine.fromDamage(ids.get(), line.orderLineId(), hold.reservationId(), hold.sku(),
-                    hold.locationCode(), hold.lotNumber(), ++sequence, hold.quantity(), false, reportId, hold.lpn(),
-                    hold.wholeCarton()));
-        }
-        if (impairedReservationId != null) {
-            added.add(PickLine.fromDamage(ids.get(), line.orderLineId(), impairedReservationId, line.sku(),
-                    line.locationCode(), line.lotNumber(), ++sequence, damaged, true, reportId, null, false));
-        }
-        lines.addAll(added);
-        return added;
-    }
-
-    /**
-     * Whether {@code reportId} is a damage report made at packing on this task: it made lines here and superseded none
-     * (a report made at picking supersedes the line it was made on).
-     */
-    public boolean madeAfterPick(UUID reportId) {
-        return !madeByDamage(reportId).isEmpty() && lines.stream()
-                .noneMatch(line -> reportId.equals(line.damageReportId()) && line.damagedQty() > 0);
-    }
-
-    /** The lines a damage report made, in walking order: how the same report again is answered. */
-    public List<PickLine> madeByDamage(UUID reportId) {
-        return lines.stream().filter(line -> reportId.equals(line.damageReportId()) && line.damagedQty() == 0)
-                .sorted(Comparator.comparingInt(PickLine::sequenceNo)).toList();
-    }
-
     // ------------------------------------------------------------------ cancelling and putting back
 
     /**
@@ -583,13 +389,12 @@ public final class PickList {
      * scanning its LPN: the carton keeps its LPN and its count. Only for a task cancelled after picking started, only
      * for a PICKED or STAGED line, only onto an active bin of the task's own warehouse - stock never changes warehouse,
      * a put-back least of all. A STAGED line's carton was never deducted: it is moved back from the staging area
-     * ({@link PutBack#fromStaging}). A line whose units were all found damaged at packing has nothing to put back; one
-     * with only some of them is not a whole carton any more and cannot go back as one (unit-level damage at packing goes
-     * with team plan 5-6). Whether the carton fits the bin (BR-12, else an OVERFLOW area) is team plan 5-4's.
+     * ({@link PutBack#fromStaging}). Only a carton the line took whole goes back (a line picked loose before 4C-4 took
+     * part of one). Whether the carton fits the bin (BR-12, else an OVERFLOW area) is team plan 5-4's.
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code PUT_BACK_NOT_REQUIRED}, also for a loose line of before
      *         4C-4 (V20261113000400 stops on any still waiting); {@code PICK_ITEM_MISMATCH} for anything but the line's
-     *         LPN; {@code STOCK_PACKAGE_TAKEN_WHOLE} for a carton part of which went to quarantine at packing;
+     *         LPN; {@code STOCK_PACKAGE_TAKEN_WHOLE} for a line that did not take its whole carton;
      *         {@code PUT_BACK_LOCATION_INVALID}
      */
     public PutBack putBack(UUID lineId, String scannedLpn, PutBackTarget target, UUID actor, Instant now) {
@@ -614,17 +419,16 @@ public final class PickList {
         boolean staged = line.status() == PickLineStatus.STAGED;
         boolean queued = removedDamaged ? line.status() == PickLineStatus.PICKED
                 : status == PickStatus.CANCELLED && needsPutBack && (line.status() == PickLineStatus.PICKED || staged);
-        if (!queued || line.goodQty() == 0 || line.lpn() == null) {
+        if (!queued || line.pickedQty() == 0 || line.lpn() == null) {
             throw new BusinessException(ErrorCode.PUT_BACK_NOT_REQUIRED,
                     "Task %s, line %s: nothing to put back".formatted(status, line.status()));
         }
         if (!lpnMatches(line, scannedLpn)) {
             throw new BusinessException(ErrorCode.PICK_ITEM_MISMATCH, "This line puts back carton " + line.lpn());
         }
-        if (line.goodQty() != line.allocatedQty()) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%d of carton %s went to quarantine "
-                    + "damaged at packing; the rest is not a whole carton and does not go back onto a bin")
-                    .formatted(line.packingDamagedQty(), line.lpn()));
+        if (line.pickedQty() != line.allocatedQty()) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("The line took %d of carton %s's %d; only a "
+                    + "whole carton goes back onto a bin").formatted(line.pickedQty(), line.lpn(), line.allocatedQty()));
         }
         if (removedDamaged) {
             if (target == null || !target.quarantine() || !target.usable()

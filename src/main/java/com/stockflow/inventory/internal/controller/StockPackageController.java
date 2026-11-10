@@ -5,13 +5,20 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.inventory.internal.controller.dto.PutawayTaskResponse;
+import com.stockflow.inventory.internal.controller.dto.QuarantineStockPackageRequest;
 import com.stockflow.inventory.internal.controller.dto.StockPackageDetailResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageLabelRequest;
 import com.stockflow.inventory.internal.controller.dto.StockPackageLocationLineResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageResponse;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.service.CartonQuarantineService;
+import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.StockPackageLabel;
 import com.stockflow.inventory.internal.service.StockPackageLabelPdfRenderer;
 import com.stockflow.inventory.internal.service.StockPackageLabels;
@@ -36,12 +43,15 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.Clock;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Cartons (SCRUM-473): looking one up by its LPN, what a location holds by carton, a list of cartons, and printing
  * LPN labels (text, QR, Code 128) for the cartons of a receipt line or a reprint by LPN. Looking up is
  * {@code inventory-stock-packages:READ}, which staff, planners and managers hold; printing and reprinting is
- * {@code CREATE}, which only warehouse staff and managers hold.
+ * {@code CREATE}, which only warehouse staff and managers hold. Quarantining a carton and releasing it are
+ * {@code UPDATE}, which only the warehouse manager holds (kltn-docs 20 BR-21; team plan 4D-1; seeded by
+ * V20261020000700 for the manager's corrections).
  *
  * <p>Like location labels, the print answers a binary on success and the JSON envelope on error.</p>
  */
@@ -54,7 +64,7 @@ import java.util.List;
         label = "Cartons",
         route = "/inventory/stock-packages",
         apiPath = "/api/v1/inventory/stock-packages",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE})
 class StockPackageController {
 
     private static final DateTimeFormatter FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmm");
@@ -63,10 +73,15 @@ class StockPackageController {
     private final StockPackageLabelPdfRenderer renderer;
     private final StockPackageLookup lookup;
     private final StockPackageWebMapper mapper;
+    private final CartonQuarantineService quarantine;
+    private final PutawayService putaway;
     private final Clock clock;
 
     StockPackageController(StockPackageLabels labels, StockPackageLabelPdfRenderer renderer, StockPackageLookup lookup,
-                           StockPackageWebMapper mapper, Clock clock) {
+                           StockPackageWebMapper mapper, CartonQuarantineService quarantine, PutawayService putaway,
+                           Clock clock) {
+        this.quarantine = quarantine;
+        this.putaway = putaway;
         this.labels = labels;
         this.renderer = renderer;
         this.lookup = lookup;
@@ -109,6 +124,39 @@ class StockPackageController {
     @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.READ)
     public ApiResponse<StockPackageDetailResponse> carton(@PathVariable String lpn) {
         return ApiResponse.ok(mapper.toResponse(lookup.byLpn(lpn)));
+    }
+
+    /** Two steps, as the label print: the quarantine commits, then the carton is read as it now stands. */
+    @PostMapping("/{lpn}/quarantine")
+    @Operation(summary = "Quarantine a whole carton (warehouse manager)",
+            description = "The carton moves whole into a QUARANTINE area of its warehouse and its stock becomes "
+                    + "QUARANTINE: out of ATP and never allocated. One STATUS_CHANGE ledger line with the reason; no "
+                    + "approval. Only a free carton: one held for an order is 409 STOCK_PACKAGE_HELD (reallocate it "
+                    + "first). 404 STOCK_PACKAGE_NOT_FOUND, 409 STOCK_PACKAGE_QUARANTINED, LOCATION_AREA_MISMATCH "
+                    + "(not a QUARANTINE area), MOVE_ACROSS_WAREHOUSES, STOCK_SLOT_UNDER_COUNT, "
+                    + "STOCK_PACKAGE_DECISION_PENDING (still waiting for its putaway task).")
+    @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.UPDATE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<StockPackageDetailResponse> quarantine(@PathVariable String lpn,
+                                                              @Valid @RequestBody QuarantineStockPackageRequest request,
+                                                              @AuthenticatedUser CurrentUser actor) {
+        quarantine.quarantine(lpn, request.locationCode(), request.reason().trim(), actor.userId());
+        return ApiResponse.ok(mapper.toResponse(lookup.byLpn(lpn)));
+    }
+
+    @PostMapping("/{lpn}/quarantine-release")
+    @Operation(summary = "Release a quarantined carton to a putaway task (warehouse manager)",
+            description = "Opens a putaway task of source QUARANTINE_RELEASE for the carton and answers it; sending "
+                    + "it again answers the same task. The carton stays QUARANTINE, out of ATP, until the task puts it "
+                    + "into a bin, which makes it AVAILABLE. 404 STOCK_PACKAGE_NOT_FOUND, 409 "
+                    + "STOCK_PACKAGE_NOT_QUARANTINED, STOCK_PACKAGE_DECISION_PENDING (a write-off of it awaits "
+                    + "approval).")
+    @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.UPDATE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<PutawayTaskResponse> releaseFromQuarantine(@PathVariable String lpn,
+                                                                  @AuthenticatedUser CurrentUser actor) {
+        UUID task = quarantine.release(lpn, actor.userId());
+        return ApiResponse.ok(PutawayController.toResponse(putaway.get(task)));
     }
 
     /**

@@ -12,6 +12,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.SQLRestriction;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -20,9 +21,15 @@ import java.util.UUID;
 
 /**
  * {@code procurement.goods_receipts}. Not the domain model; see {@code GoodsReceipt}.
+ *
+ * <p>Every receipt but a RETURN one (team plan 4D-2): a return receipt shares the table and the numbering, but is
+ * another document - cartons scanned by LPN, no lines, DRAFT to CLOSED - mapped by {@code ReturnReceiptJpaEntity}.
+ * Without the restriction a return receipt read here would be taken for a purchase receipt with no purchase order and
+ * no reason, which {@code GoodsReceipt} refuses to be.</p>
  */
 @Entity
 @Table(name = "goods_receipts", schema = "procurement")
+@SQLRestriction("receipt_type <> 'RETURN'")
 public class GoodsReceiptJpaEntity extends BaseEntity {
 
     @Column(name = "receipt_number", nullable = false, length = 30, updatable = false)

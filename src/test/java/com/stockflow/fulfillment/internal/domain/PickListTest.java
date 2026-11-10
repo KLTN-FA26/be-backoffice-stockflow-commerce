@@ -290,7 +290,7 @@ class PickListTest {
         @DisplayName("a line of before cartons, with no LPN, can be confirmed by no scan")
         void lineWithoutCartonCannotBeConfirmed() {
             PickLine history = PickLineFixtures.line("SOFA-3S-GREY", "HCM-A01-2-B", 2, 0, PickLineStatus.OPEN, 0, null,
-                    null, 0);
+                    null);
             var list = picking(history);
 
             assertThat(refusal(() -> list.confirm(history.id(), "HCM-A01-2-B", "SOFA-3S-GREY", PICKER, NOW)))
@@ -462,37 +462,12 @@ class PickListTest {
         @DisplayName("a loose line of before cartons has no carton to put back: PUT_BACK_NOT_REQUIRED")
         void looseHistoryLine() {
             PickLine loose = PickLineFixtures.line("SOFA-3S-GREY", "HCM-A01-2-B", 2, 2, PickLineStatus.PICKED, 0, null,
-                    null, 0);
+                    null);
             var list = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, List.of(loose));
 
             assertThat(refusal(() -> list.putBack(loose.id(), "SOFA-3S-GREY", bin, PICKER, NOW)))
                     .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
             assertThat(loose.status()).isEqualTo(PickLineStatus.PICKED);
-        }
-
-        @Test
-        @DisplayName("a carton part of which went to quarantine at packing does not go back: STOCK_PACKAGE_TAKEN_WHOLE")
-        void partlyDamagedCartonIsRefused() {
-            PickLine some = PickLineFixtures.pickedPartlyDamaged("CUP-12", "HCM-A01-2-B", 10, LPN, 3);
-            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, List.of(some));
-
-            Throwable thrown = catchThrowable(() -> list.putBack(some.id(), LPN, bin, PICKER, NOW));
-
-            assertThat(thrown).isInstanceOfSatisfying(BusinessException.class, refusal -> {
-                assertThat(refusal.errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-                assertThat(refusal.getMessage()).contains(LPN).contains("3");
-            });
-            assertThat(some.status()).isEqualTo(PickLineStatus.PICKED);
-        }
-
-        @Test
-        @DisplayName("a carton all of which was found damaged has nothing to put back")
-        void allDamagedCartonHasNothingToPutBack() {
-            PickLine all = PickLineFixtures.pickedPartlyDamaged("CUP-12", "HCM-A01-2-B", 10, LPN, 10);
-            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, List.of(all));
-
-            assertThat(refusal(() -> list.putBack(all.id(), LPN, bin, PICKER, NOW)))
-                    .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
         }
 
         @Test

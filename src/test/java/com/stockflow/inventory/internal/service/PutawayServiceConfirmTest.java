@@ -18,6 +18,7 @@ import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
 import com.stockflow.inventory.internal.domain.StockMovement;
+import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
@@ -89,7 +90,7 @@ class PutawayServiceConfirmTest {
     private final StockOperations operations = mock(StockOperations.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final PutawayService service = new PutawayService(tasks, warehouses, stockPackages, ledger, items,
-            occupancy, operations, events);
+            occupancy, operations, events, mock(StockItemRepository.class));
 
     private final UUID binId = UUID.randomUUID();
     private final StockPackageId carton = new StockPackageId(UUID.randomUUID());

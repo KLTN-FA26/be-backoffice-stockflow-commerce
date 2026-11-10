@@ -46,7 +46,7 @@ class PickListStagingTest {
     private static PickLine staged(String sku, String location, int quantity, String lpn) {
         return new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), sku, location, "L1", 1, quantity,
                 quantity, PickLineStatus.STAGED, PICKER, NOW, null, location, lpn, 0, null, null, null, 0, null, lpn,
-                true, 0, null, 0, NOW, STAGING);
+                true, NOW, STAGING);
     }
 
     @Nested
@@ -191,7 +191,7 @@ class PickListStagingTest {
             boolean stagedLine = status == PickLineStatus.STAGED;
             return new PickLine(UUID.randomUUID(), orderLine, reservation, "SOFA", "HCM-A01-2-B", "L1", sequence, 4,
                     4, status, PICKER, NOW, status == PickLineStatus.PICKED ? NOW : null, "HCM-A01-2-B", LPN, 0, null,
-                    null, null, 0, null, LPN, true, 0, null, 0, stagedLine ? NOW : null, stagedLine ? STAGING : null);
+                    null, null, 0, null, LPN, true, stagedLine ? NOW : null, stagedLine ? STAGING : null);
         }
 
         @Test
@@ -310,11 +310,11 @@ class PickListStagingTest {
     void lineInvariants() {
         assertThatThrownBy(() -> new PickLine(UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), "SOFA", "HCM-A01-2-B", "L1", 1, 4, 4, PickLineStatus.STAGED, PICKER, NOW, NOW,
-                "HCM-A01-2-B", LPN, 0, null, null, null, 0, null, LPN, true, 0, null, 0, NOW, STAGING))
+                "HCM-A01-2-B", LPN, 0, null, null, null, 0, null, LPN, true, NOW, STAGING))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new PickLine(UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), "SOFA", "HCM-A01-2-B", "L1", 1, 4, 0, PickLineStatus.OPEN, null, null, null,
-                null, null, 0, null, null, null, 0, null, LPN, true, 0, null, 0, NOW, null))
+                null, null, 0, null, null, null, 0, null, LPN, true, NOW, null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

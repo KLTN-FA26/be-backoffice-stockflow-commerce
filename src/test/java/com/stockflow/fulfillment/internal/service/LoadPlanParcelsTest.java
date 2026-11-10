@@ -1,7 +1,6 @@
 package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.fulfillment.internal.domain.KitPart;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
@@ -72,19 +71,6 @@ class LoadPlanParcelsTest {
     }
 
     @Test
-    @DisplayName("a kit part carries its kit's group, so the parts of a kit stay on one vehicle (LP-3)")
-    void kitPartCarriesItsGroup() {
-        UUID group = UUID.randomUUID();
-        PackageJpaEntity p = new PackageJpaEntity(UUID.randomUUID(), UUID.randomUUID(), 1, "PKG-1",
-                new KitPart(group, 1, 2, UUID.randomUUID()));
-        p.apply(UUID.randomUUID(), com.stockflow.fulfillment.internal.domain.PackageType.CARTON, PackageStatus.SEALED,
-                new BigDecimal("5"), new BigDecimal("30"), new BigDecimal("30"), new BigDecimal("30"), null, true, false,
-                false, false, NOW, null, null, null);
-
-        assertThat(LoadPlanParcels.carton(p, "SKU-K 1/2").kitGroup()).isEqualTo(group.toString());
-    }
-
-    @Test
     @DisplayName("a parcel with a missing or zero size or weight has no carton: it cannot be planned (09 BR-09)")
     void unmeasuredParcelHasNoCarton() {
         UUID s = UUID.randomUUID();
@@ -101,9 +87,7 @@ class LoadPlanParcelsTest {
         UUID s = UUID.randomUUID();
         PackageJpaEntity good = parcel(s, 1, "40", "40", "30", "5");
         PackageJpaEntity open = parcel(s, 2, "40", "40", "30", "5");
-        open.apply(s, com.stockflow.fulfillment.internal.domain.PackageType.CARTON, PackageStatus.OPEN,
-                new BigDecimal("5"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("30"), null, true, false,
-                false, false, null, null, null, null);
+        FulfillmentFixtures.applyCarton(open, PackageStatus.OPEN, s, new BigDecimal("5"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("30"));
         PackageJpaEntity unmeasured = parcel(s, 3, null, null, null, null);
 
         assertThat(new LoadPlanParcels.Parcel(good, null, null, LoadPlanParcels.carton(good, "A"), "A").plannable())
@@ -178,26 +162,6 @@ class LoadPlanParcelsTest {
         assertThat(described.get(single.getId()).order()).isSameAs(order);
         assertThat(described.get(single.getId()).row().getShipmentId()).isEqualTo(shipmentId);
         assertThat(described.get(single.getId()).plannable()).isTrue();
-    }
-
-    @Test
-    @DisplayName("a kit part is named SKU n/N so the parts of a kit keep their own row")
-    void kitPartName() {
-        UUID shipmentId = UUID.randomUUID();
-        OrderSummary.LineSummary line = FulfillmentFixtures.stockLine("SKU-KIT");
-        PackageJpaEntity part = new PackageJpaEntity(UUID.randomUUID(), UUID.randomUUID(), 1, "PKG-1",
-                new KitPart(UUID.randomUUID(), 2, 3, line.lineId()));
-        part.apply(shipmentId, com.stockflow.fulfillment.internal.domain.PackageType.CARTON, PackageStatus.SEALED,
-                new BigDecimal("5"), new BigDecimal("30"), new BigDecimal("30"), new BigDecimal("30"), null, true, false,
-                false, false, NOW, null, null, null);
-        OrderSummary order = FulfillmentFixtures.orderWith(UUID.randomUUID(), OrderStatus.PACKED, List.of(line), null);
-        ShipmentJpaEntity shipment = ShipmentJpaEntity.of(com.stockflow.fulfillment.internal.domain.Shipment.ready(
-                shipmentId, "SO-1-S1", order.orderId(), null, FulfillmentFixtures.WAREHOUSE, UUID.randomUUID(),
-                3, null, UUID.randomUUID(), NOW));
-        when(shipments.findAllById(any())).thenReturn(List.of(shipment));
-        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-
-        assertThat(parcels.describe(List.of(part)).get(part.getId()).partName()).isEqualTo("SKU-KIT 2/3");
     }
 
     @Test

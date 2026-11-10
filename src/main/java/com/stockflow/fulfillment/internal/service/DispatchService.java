@@ -217,13 +217,6 @@ class DispatchService implements Dispatching {
             return detail(header, load);
         }
         PackageJpaEntity parcel = parcelScanned(code);
-        if (parcel.getLabelOutdatedAt() != null && load.activeParcels().stream()
-                .noneMatch(l -> l.packageId().equals(parcel.getId()))) {
-            // Review of #162: it moved to another shipment since its label was printed (a left-behind parcel split
-            // off): the label names the old shipment and n/N - reprint it first.
-            throw new BusinessException(ErrorCode.LABEL_OUTDATED, ("Package %s moved to another shipment since its "
-                    + "label was printed: reprint its label before loading it").formatted(parcel.getLabelCode()));
-        }
         DispatchLoad.ShipmentFacts shipment = null;
         if (parcel.getShipmentId() != null) {
             ShipmentJpaEntity row = shipments.findById(parcel.getShipmentId()).orElseThrow();
@@ -984,8 +977,7 @@ class DispatchService implements Dispatching {
         Map<UUID, Set<UUID>> parcelsByShipment = here.stream().collect(Collectors.groupingBy(
                 PackageJpaEntity::getShipmentId, Collectors.mapping(PackageJpaEntity::getId, Collectors.toSet())));
         Map<UUID, String> labels = here.stream().collect(Collectors.toMap(PackageJpaEntity::getId,
-                p -> p.getKit() == null ? p.getLabelCode() : "%s (kit part %d/%d)".formatted(p.getLabelCode(),
-                        p.getKit().partNo(), p.getKit().partCount())));
+                PackageJpaEntity::getLabelCode));
         load.handOver(new DispatchLoad.Handover(request.carrierRepresentative(), request.vehiclePlate(),
                 request.driverPhone(), request.signatureRef(), Boolean.TRUE.equals(request.signed()), request.note()),
                 parcelsByShipment, labels, by, now);
@@ -1163,8 +1155,7 @@ class DispatchService implements Dispatching {
                             : address.phone(),
                     address == null ? null : addressLine(address), own.size(), shipmentWeight,
                     own.stream().map(p -> new ManifestParcel(p.getLabelCode(), p.getWeightKg(), p.getLengthCm(),
-                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()), p.getKit(),
-                            p.getLabelOutdatedAt())).toList()));
+                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()))).toList()));
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);
@@ -1246,7 +1237,7 @@ class DispatchService implements Dispatching {
             List<LoadParcel> own = parcels.getOrDefault(member.shipmentId(), List.of()).stream().map(p -> {
                 DispatchLoad.Loaded l = onVehicle.get(p.getId());
                 return new LoadParcel(p.getId(), p.getLabelCode(), p.getWeightKg(), l != null,
-                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy(), p.getKit(), p.getLabelOutdatedAt());
+                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy());
             }).toList();
             expected += own.size();
             lines.add(new LoadShipment(row.getId(), row.getCode(), row.getOrderId(),

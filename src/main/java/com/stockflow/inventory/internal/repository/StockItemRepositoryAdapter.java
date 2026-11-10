@@ -258,35 +258,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public void saveHandOver(StockItem from, StockItem to, ReservationId moved) {
-        boolean merged = jpa.existsById(to.id().value());
-        if (!merged) {
-            StockItemJpaEntity fresh = StockItemPersistenceMapper.toNewEntity(to);
-            fresh.getReservations().removeIf(r -> r.getId().equals(moved.value()));
-            jpa.save(fresh);
-        }
-        entityManager.flush();
-        int updated = entityManager.createNativeQuery(
-                        "update inventory.stock_reservation set stock_item_id = :to where id = :id and stock_item_id = :from")
-                .setParameter("to", to.id().value())
-                .setParameter("id", moved.value())
-                .setParameter("from", from.id().value())
-                .executeUpdate();
-        if (updated != 1) {
-            throw new IllegalStateException("Reservation %s is no longer on stock item %s".formatted(moved, from.id()));
-        }
-        for (StockItem item : List.of(from, to)) {
-            jpa.findByIdWithReservations(item.id().value()).ifPresent(entityManager::refresh);
-        }
-        save(from);
-        if (merged) {
-            saveMerged(to);
-        } else {
-            save(to);
-        }
-    }
-
-    @Override
     public List<com.stockflow.inventory.internal.domain.HeldStock> findHeldForOrder(UUID orderId) {
         return jpa.findHeldForOrder(orderId);
     }

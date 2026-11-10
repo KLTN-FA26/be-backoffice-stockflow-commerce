@@ -29,8 +29,9 @@ public enum ReleaseReason {
     /** A picker found fewer units at the bin than were allocated there; the units were allocated elsewhere (X-SHORT). */
     SHORT_PICKED,
     /**
-     * A picker found the held units damaged (SCRUM-277): they went to quarantine, and the order holds the same
-     * quantity again elsewhere, or as an impaired allocation on the damaged units until it is reallocated.
+     * Legacy: a picker reported the held units damaged (SCRUM-277) and they went to quarantine; V20261114000400 released
+     * the holds still left on them when unit-level damage reports were removed (team plan 5-6). Kept because stored
+     * holds carry it; a damaged carton is reported short now (07 §4.4 step 9).
      */
     DAMAGED;
 
@@ -42,9 +43,8 @@ public enum ReleaseReason {
             case MANUAL_OVERRIDE -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
             // The legacy production reasons announce nothing an order acts on (a production hold was no order's;
             // SCRAPPED closed a cancelled order's printed goods, BR-PRD-10).
-            // SHORT_PICKED: the order keeps its stock, on another bin; nothing for it to act on. DAMAGED: the order
-            // keeps its units elsewhere or impaired, and learns of it
-            // in the picker's own transaction (or from StockDamageReported); nothing to act on here either.
+            // SHORT_PICKED: the order keeps its stock, on another bin; nothing for it to act on. DAMAGED is legacy:
+            // nothing releases a hold with it any more.
             case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION, SUBCONTRACTED, SHORT_PICKED, DAMAGED ->
                     com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
         };

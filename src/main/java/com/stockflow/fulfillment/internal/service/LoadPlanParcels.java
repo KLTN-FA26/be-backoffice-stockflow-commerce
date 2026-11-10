@@ -136,9 +136,8 @@ class LoadPlanParcels {
                 && positive(row.getWeightKg()))) {
             return null;
         }
-        String group = row.getKit() == null ? null : row.getKit().groupId().toString();
         return new CargoPackage(row.getId().toString(), null, mm(row.getLengthCm()), mm(row.getWidthCm()),
-                mm(row.getHeightCm()), row.getWeightKg(), row.isRotatable(), partName, group,
+                mm(row.getHeightCm()), row.getWeightKg(), row.isRotatable(), partName, null,
                 row.getShipmentId() == null ? null : row.getShipmentId().toString(), false);
     }
 
@@ -169,10 +168,6 @@ class LoadPlanParcels {
 
     private static String partName(PackageJpaEntity row, List<ParcelContents.Line> lines,
                                    Map<UUID, String> skuByLine) {
-        if (row.getKit() != null) {
-            String sku = skuByLine.getOrDefault(row.getKit().orderLineId(), row.getLabelCode());
-            return sku + " " + row.getKit().partNo() + "/" + row.getKit().partCount();
-        }
         TreeSet<String> skus = new TreeSet<>();
         lines.forEach(l -> skus.add(skuByLine.getOrDefault(l.orderLineId(), "?")));
         return skus.isEmpty() ? row.getLabelCode() : String.join(" + ", skus);

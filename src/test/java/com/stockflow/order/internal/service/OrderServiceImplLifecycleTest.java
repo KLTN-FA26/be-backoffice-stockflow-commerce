@@ -215,18 +215,6 @@ class OrderServiceImplLifecycleTest {
     }
 
     @Test
-    @DisplayName("packing started is recorded once")
-    void factsAreRecordedOnce() {
-        Order order = loaded(OrderFixtures.released());
-
-        service.recordPackingStarted(order.id().value());
-        service.recordPackingStarted(order.id().value());
-
-        assertThat(order.packingStartedAt()).isEqualTo(NOW);
-        verify(repository, org.mockito.Mockito.times(1)).save(order);
-    }
-
-    @Test
     @DisplayName("a package completed closes a pending cancellation request: it can no longer be decided")
     void packedClosesThePendingRequest() {
         Order order = loaded(OrderFixtures.released());

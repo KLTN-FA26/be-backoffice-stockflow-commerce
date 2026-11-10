@@ -44,8 +44,9 @@ final class CartonStationSupport {
     }
 
     /**
-     * A heavy sofa carton (500 kg): a 1.25 t truck carries two of them, so a shipment of four needs two trucks with two
-     * cartons each, as the two-part kits of the old repack station did.
+     * A heavy sofa carton (say 1 200 kg): a 2.5 t truck (4 300 mm inside, a sofa carton is 2 150 mm long) carries two of
+     * them by weight and by length - not three - so a shipment of four cartons needs two trucks with two cartons each.
+     * (A sofa carton is too long for two to stand side by side in a 1.25 t truck, which carries one: four trucks.)
      */
     static void giveSofaCartonsAWeight(TransactionTemplate tx, JdbcTemplate jdbc, String kg) {
         tx.executeWithoutResult(s -> jdbc.update("""

@@ -72,15 +72,6 @@ public class PickLineJpaEntity extends BaseEntity {
     private String lpn;
     @Column(name = "whole_carton", nullable = false, updatable = false)
     private boolean wholeCarton;
-    /** SCRUM-277: units found damaged at the bin, on the line a damage report superseded. */
-    @Column(name = "damaged_qty", nullable = false)
-    private int damagedQty;
-    /** SCRUM-277: the damage report that superseded or made the line. */
-    @Column(name = "damage_report_id")
-    private UUID damageReportId;
-    /** R8: units of a picked line found damaged at the packing bench. */
-    @Column(name = "packing_damaged_qty", nullable = false)
-    private int packingDamagedQty;
     /** 4C-5: when the carton was moved to the staging area; {@code ck_pick_line_staged}. */
     @Column(name = "staged_at")
     private Instant stagedAt;
@@ -140,17 +131,6 @@ public class PickLineJpaEntity extends BaseEntity {
         this.shortReason = shortReason;
     }
 
-    /** What a damage report recorded on the line (SCRUM-277); {@code ck_pick_line_damaged} bounds it. */
-    public void recordDamage(int damagedQty, UUID damageReportId) {
-        this.damagedQty = damagedQty;
-        this.damageReportId = damageReportId;
-    }
-
-    /** Units of the picked line found damaged at packing (R8); {@code ck_pick_line_packing_damaged} bounds it. */
-    public void recordDamageAfterPick(int packingDamagedQty) {
-        this.packingDamagedQty = packingDamagedQty;
-    }
-
     /** When and where the carton was staged (4C-5); {@code ck_pick_line_staged} keeps the two together. */
     public void recordStaged(Instant stagedAt, String stagedLocationCode) {
         this.stagedAt = stagedAt;
@@ -159,12 +139,6 @@ public class PickLineJpaEntity extends BaseEntity {
 
     public Instant getStagedAt() { return stagedAt; }
     public String getStagedLocationCode() { return stagedLocationCode; }
-
-    public int getPackingDamagedQty() { return packingDamagedQty; }
-    /** What the line picked less what was found damaged at packing: what reached packing and is still there. */
-    public int getGoodQty() { return pickedQty - packingDamagedQty; }
-    public int getDamagedQty() { return damagedQty; }
-    public UUID getDamageReportId() { return damageReportId; }
 
     public UUID getPickId() { return pickId; }
     public UUID getOrderLineId() { return orderLineId; }

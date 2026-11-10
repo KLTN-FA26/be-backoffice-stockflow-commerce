@@ -73,8 +73,7 @@ import java.util.stream.Collectors;
  * Cancelling an order takes the order's lock in its own transaction and reaches the pick only afterwards, in the
  * listener.</p>
  *
- * <p>The repack station of before 4C-6 ({@link PackingService}) shares the session row and the shipments; until team
- * plan 4C-7 removes it, its parcels are not part of a check and a check's cartons are not its parcels.</p>
+ * <p>The repack station of before 4C-6 is gone (team plan 4C-7): every parcel a session makes is a shipping carton.</p>
  */
 @Service
 @Transactional
@@ -102,12 +101,17 @@ class CartonCheckService implements CartonChecks {
     private final Clock clock;
     /** The carton spec, the volumetric divisor, and whether a load plan holds a carton. */
     private final CartonMeasures measures;
+    private final LoadPlanReleases loadPlans;
+    private final PlanVehicles planVehicles;
 
     @SuppressWarnings("java:S107")
     CartonCheckService(PickJpaRepository picks, PackJpaRepository packs, PackageJpaRepository packages,
                        ShipmentJpaRepository shipments, CartonCheckStore store, OrderService orders,
                        CartonMeasures measures, PaymentService payments, IdentityService identities,
-                       WarehouseService warehouses, ShipmentTimeline timeline, Clock clock) {
+                       WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
+                       LoadPlanReleases loadPlans, PlanVehicles planVehicles) {
+        this.loadPlans = loadPlans;
+        this.planVehicles = planVehicles;
         this.picks = picks;
         this.packs = packs;
         this.packages = packages;
@@ -382,18 +386,38 @@ class CartonCheckService implements CartonChecks {
     }
 
     /**
-     * The order was cancelled (08 BR-04, 17 §4.6 step 32): every carton not in a shipment, or in a shipment the
-     * cancellation cancelled, is REMOVED - it goes back onto a bin through the put-back queue - and the session is
-     * CANCELLED. Called by the cancellation listener under the pick's lock, after the repack station's cleanup.
+     * The order was cancelled (08 BR-04, BR-05; 17 §4.6 step 32): a shipment still waiting for dispatch is cancelled -
+     * out of its load plan first, then off its loads (G4-5, SCRUM-287) - and every carton not in a shipment, or in one
+     * the cancellation cancelled, is REMOVED: it goes back onto a bin through the put-back queue. The session is
+     * CANCELLED. Called by the cancellation listener under the pick's lock.
      */
     public void cancelForOrder(PickJpaEntity pick, PackJpaEntity pack) {
+        Instant now = clock.instant();
+        for (ShipmentJpaEntity row : shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())) {
+            Shipment shipment = row.toDomain();
+            if (shipment.status() != ShipmentStatus.READY_TO_DISPATCH) {
+                continue;
+            }
+            if (planVehicles.partlyGone(row.getId())) {
+                // SCRUM-392 (LP-3): a vehicle of its load plan already left with some of its cartons - they are with
+                // the carrier. The order refuses its cancellation once goods left (goodsLeftAt, review of #162), so
+                // this is only a net: left as it is for a person to resolve.
+                log.error("Order {} cancelled, but shipment {} already left in part on a load plan's vehicle: "
+                        + "not cancelled - resolve it by hand", pick.getOrderNumber(), row.getCode());
+                continue;
+            }
+            loadPlans.releaseShipment(row.getId(), now);
+            planVehicles.withdraw(row.getId(), now);
+            shipment.cancel("The order was cancelled", null, now);
+            row.apply(shipment);
+            shipments.save(row);
+            timeline.record(shipment, ShipmentStatus.READY_TO_DISPATCH, null, pick.getOrderNumber(), null, null);
+        }
         CartonCheck check = store.load(pack, pick.getOrderId(), pick.getOrderNumber());
-        // The listener cancelled the shipments still waiting for dispatch first (PackingService#cancelForOrder, which also
-        // takes them out of load plans and loads); their cartons are removed with the rest.
         Set<UUID> cancelled = shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId()).stream()
                 .filter(row -> row.getStatus() == ShipmentStatus.CANCELLED).map(ShipmentJpaEntity::getId)
                 .collect(Collectors.toSet());
-        List<CartonCheck.Carton> removed = check.cancel(clock.instant(), cancelled);
+        List<CartonCheck.Carton> removed = check.cancel(now, cancelled);
         store.save(check, pack);
         if (removed.stream().anyMatch(c -> c.labelVersion() > 0)) {
             // The order refuses a cancellation once a carton is labelled (08 BR-04): a labelled carton here means it

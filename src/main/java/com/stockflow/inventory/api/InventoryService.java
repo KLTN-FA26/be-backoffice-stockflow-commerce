@@ -121,9 +121,7 @@ public interface InventoryService {
     /**
      * X-SHORT reallocation: the allocation came up short - its carton was not found whole. It is released, and the
      * same quantity is allocated again in the same warehouse, as whole cartons in the SKU's removal order, from any
-     * pickable carton but that one, its bin's other cartons included (07 BR-03, BR-09). A damage report's impaired
-     * share restored onto a bin is reallocated like any other: it is restored as loose units, and a pick line takes a
-     * carton (team plan 4C-4). Joins the caller's transaction. Idempotent on the command's request id.
+     * pickable carton but that one, its bin's other cartons included (07 BR-03, BR-09). Joins the caller's transaction. Idempotent on the command's request id.
      *
      * @return the new allocations, in pick order
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (unknown, or another
@@ -204,23 +202,6 @@ public interface InventoryService {
      * one is absent.
      */
     Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds);
-
-    /**
-     * Move units and change their status in one step (a return's decision, putaway); see
-     * {@link ReclassifyStockCommand}. Same locking and errors as {@link #move}.
-     */
-    StockMove reclassify(ReclassifyStockCommand command);
-
-    /**
-     * Count goods a customer returned (SCRUM-260) in at a quarantine location as QUARANTINE stock, writing a RETURN_IN
-     * ledger line that names the return line and the order (see {@link ReceiveReturnCommand}). Joins the caller's
-     * transaction: the return's receipt and the stock it creates commit together. Lines of one parcel received at one
-     * time and of the same SKU and lot share one stock layer. Idempotent on the return line.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE};
-     *         {@code STOCK_STATUS_MISMATCH} when the layer at that location is not in quarantine
-     */
-    StockMove receiveReturn(ReceiveReturnCommand command);
 
     /**
      * Move labelled cartons whole (SCRUM-473; kltn-docs 11 BR-04): each carton and its rows change location together,

@@ -31,9 +31,8 @@ class OrderCancellationListenerTest {
     private final PickJpaRepository picks = mock(PickJpaRepository.class);
     private final PackJpaRepository packs = mock(PackJpaRepository.class);
     private final PickListService pickLists = mock(PickListService.class);
-    private final PackingService packing = mock(PackingService.class);
     private final CartonCheckService cartonChecks = mock(CartonCheckService.class);
-    private final OrderCancellationListener listener = new OrderCancellationListener(picks, packs, pickLists, packing,
+    private final OrderCancellationListener listener = new OrderCancellationListener(picks, packs, pickLists,
             cartonChecks);
 
     private final UUID orderId = UUID.randomUUID();
@@ -52,7 +51,7 @@ class OrderCancellationListenerTest {
         listener.on(event);
 
         verify(picks, never()).save(any());
-        verifyNoInteractions(pickLists, packing, packs, cartonChecks);
+        verifyNoInteractions(pickLists, packs, cartonChecks);
     }
 
     @Test
@@ -68,7 +67,7 @@ class OrderCancellationListenerTest {
         assertThat(pick.isNeedsPutBack()).isFalse();
         verify(picks).save(pick);
         verify(pickLists).cancelOpenLines(pick);
-        verifyNoInteractions(packing, cartonChecks);
+        verifyNoInteractions(cartonChecks);
     }
 
     @Test
@@ -84,7 +83,7 @@ class OrderCancellationListenerTest {
     }
 
     @Test
-    @DisplayName("a pack is voided with its parcels and labels, then cancelled (08 BR-05)")
+    @DisplayName("a pack is cancelled with its cartons removed (08 BR-05; the repack station is gone, 4C-7)")
     void packIsCancelledAfterItsParcelsAreVoided() {
         PickJpaEntity pick = pick(PickStatus.PICKED);
         PackJpaEntity pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.IN_PROGRESS, null);
@@ -93,7 +92,6 @@ class OrderCancellationListenerTest {
 
         listener.on(event);
 
-        verify(packing).cancelForOrder(pick, pack);
         // 4C-6: the check's cartons are removed (ORDER_CANCELLED) and its session cancelled, under the pick's lock.
         verify(cartonChecks).cancelForOrder(pick, pack);
         assertThat(pack.getStatus()).isEqualTo(PackStatus.CANCELLED);
@@ -109,6 +107,6 @@ class OrderCancellationListenerTest {
         listener.on(event);
 
         verify(picks, never()).save(any());
-        verifyNoInteractions(pickLists, packing, packs, cartonChecks);
+        verifyNoInteractions(pickLists, packs, cartonChecks);
     }
 }

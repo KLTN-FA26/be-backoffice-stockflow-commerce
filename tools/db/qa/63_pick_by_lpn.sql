@@ -99,29 +99,6 @@ SELECT pg_temp.expect_fail('PL4 a line naming a carton but holding no stock (no 
     SELECT gen_random_uuid(), md5('qa63:pick')::uuid, md5('qa63:ol')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 1, c.lpn
       FROM qa63_carton c WHERE c.n = 3 $q$);
 
-\echo '--- the one line that has no carton: the units of a damage report, on a loose DAMAGED row in quarantine'
--- The impaired allocation of SCRUM-277: damaged units nothing could replace, held on a loose DAMAGED row (no carton to name).
-INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-VALUES (md5('qa63:dmg')::uuid, 'SOFA-3S-GREY', 'HCM-QC01', 'UNTRACED', 1, 0, 'DAMAGED', NOW(), NOW());
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-VALUES (md5('qa63:res:imp')::uuid, md5('qa63:dmg')::uuid, md5('qa63:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD');
-SELECT pg_temp.expect_ok('PL5 a SHORT line a damage report made, with no LPN: held on loose damaged stock', $q$
-    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
-                                       short_qty, status, damage_report_id)
-    VALUES (md5('qa63:pl:imp')::uuid, md5('qa63:pick')::uuid, md5('qa63:ol')::uuid, md5('qa63:res:imp')::uuid,
-            'SOFA-3S-GREY', 'HCM-A01-2-B', 9, 1, 1, 'SHORT', md5('qa63:dr')::uuid);
-    INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku, lot_number,
-        source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity, reason_code,
-        order_id, pick_line_id, reservation_id, impaired_reservation_id, reported_by, reported_at)
-    SELECT md5('qa63:dr')::uuid, 'DMG-QA63-0001', gen_random_uuid(), 'PICKING', md5('demo:wh:HCM')::uuid, 'SOFA-3S-GREY',
-           'UNTRACED', c.row_id, 'HCM-A01-2-B', md5('qa63:dmg')::uuid, 'HCM-QC01', 1, 'BROKEN', md5('qa63:order')::uuid,
-           md5('qa63:pl:imp')::uuid, md5('qa63:res:1')::uuid, md5('qa63:res:imp')::uuid, md5('demo:user:editor')::uuid, NOW()
-      FROM qa63_carton c WHERE c.n = 1;
-    INSERT INTO inventory.stock_damage_photo (id, damage_report_id, storage_key, original_name, content_type, size_bytes,
-                                              checksum, sort_order)
-    VALUES (gen_random_uuid(), md5('qa63:dr')::uuid, 'qc-evidence/qa63/broken.jpg', 'broken.jpg', 'image/jpeg', 20,
-            repeat('a', 64), 1) $q$);
-
 \echo '--- a short pick says why, and is short of the whole carton (07 §4.4 step 9, BR-09)'
 SELECT pg_temp.expect_ok('PS1 a carton short because it is not at the bin: NOT_FOUND, short of all of it',
     pg_temp.line_sql(2, 'SHORT', ', short_qty, short_reason', ', 1, ''NOT_FOUND'''));
@@ -158,14 +135,13 @@ SELECT pg_temp.expect_ok('PS10 a task goes PICKING, PICKED, CANCELLED as it did'
 SELECT pg_temp.expect_ok('PB1 a whole put-back: the line returns all it allocated', pg_temp.line_sql(5, 'PUT_BACK',
     ', picked_qty, picked_by, picked_at, consumed_at, put_back_qty, put_back_by, put_back_at, put_back_location_code',
     ', 1, md5(''demo:user:editor'')::uuid, NOW(), NOW(), 1, md5(''demo:user:editor'')::uuid, NOW(), ''HCM-A01-1-A'''));
-SELECT pg_temp.expect_fail_by('PB2 a put-back of a part of the allocation (the rest damaged at packing)',
-    'ck_pick_line_packing_damaged_whole', $q$
+SELECT pg_temp.expect_fail('PB2 a put-back of a part of what the line picked (the carton goes back whole; there is no damage at packing any more)', $q$
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
-                                       allocated_qty, picked_qty, packing_damaged_qty, status, lpn, whole_carton,
+                                       allocated_qty, picked_qty, status, lpn, whole_carton,
                                        picked_by, picked_at, consumed_at, put_back_qty, put_back_by, put_back_at,
                                        put_back_location_code)
     SELECT gen_random_uuid(), md5('qa63:pick')::uuid, md5('qa63:ol')::uuid, md5('qa63:res:6')::uuid, 'SOFA-3S-GREY',
-           'HCM-A01-2-B', 6, 3, 3, 1, 'PUT_BACK', c.lpn, TRUE, md5('demo:user:editor')::uuid, NOW(), NOW(), 2,
+           'HCM-A01-2-B', 6, 3, 3, 'PUT_BACK', c.lpn, TRUE, md5('demo:user:editor')::uuid, NOW(), NOW(), 2,
            md5('demo:user:editor')::uuid, NOW(), 'HCM-A01-1-A'
       FROM qa63_carton c WHERE c.n = 6 $q$);
 SELECT pg_temp.expect_fail_by('PB3 a put-back of nothing', 'ck_pick_line_put_back', $q$
@@ -177,27 +153,10 @@ SELECT pg_temp.expect_fail_by('PB3 a put-back of nothing', 'ck_pick_line_put_bac
            md5('demo:user:editor')::uuid, NOW(), 'HCM-A01-1-A'
       FROM qa63_carton c WHERE c.n = 6 $q$);
 
-\echo '--- damage found at packing takes the whole carton a line picked, or nothing (review M1; kltn-docs 08)'
-SELECT pg_temp.expect_fail_by('PD1 two units of a picked carton of 3 damaged at packing', 'ck_pick_line_packing_damaged_whole', $q$
-    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
-                                       allocated_qty, picked_qty, packing_damaged_qty, status, lpn, whole_carton,
-                                       picked_by, picked_at, consumed_at)
-    SELECT gen_random_uuid(), md5('qa63:pick')::uuid, md5('qa63:ol')::uuid, md5('qa63:res:6')::uuid, 'SOFA-3S-GREY',
-           'HCM-A01-2-B', 6, 3, 3, 2, 'PICKED', c.lpn, TRUE, md5('demo:user:editor')::uuid, NOW(), NOW()
-      FROM qa63_carton c WHERE c.n = 6 $q$);
-SELECT pg_temp.expect_ok('PD2 nothing damaged', $q$
-    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
-                                       allocated_qty, picked_qty, packing_damaged_qty, status, lpn, whole_carton,
-                                       picked_by, picked_at, consumed_at)
-    SELECT gen_random_uuid(), md5('qa63:pick')::uuid, md5('qa63:ol')::uuid, md5('qa63:res:6')::uuid, 'SOFA-3S-GREY',
-           'HCM-A01-2-B', 6, 3, 3, 0, 'PICKED', c.lpn, TRUE, md5('demo:user:editor')::uuid, NOW(), NOW()
-      FROM qa63_carton c WHERE c.n = 6 $q$);
-SELECT pg_temp.expect_ok('PD3 ... or the whole carton damaged (what is picked, all of it)', $q$
-    UPDATE fulfillment.pick_line SET packing_damaged_qty = 3
-     WHERE reservation_id = md5('qa63:res:6')::uuid AND status = 'PICKED' $q$);
-SELECT pg_temp.expect_fail_by('PD4 and then not back to a part of it', 'ck_pick_line_packing_damaged_whole', $q$
-    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1
-     WHERE reservation_id = md5('qa63:res:6')::uuid AND status = 'PICKED' $q$);
+\echo '--- no damage at packing any more (5-6, V20261114000400): a damaged carton is a short pick or removed whole'
+SELECT pg_temp.expect_true('PD1 no packing-damage or damage-report column is left on a pick line', (
+    SELECT count(*) FROM information_schema.columns WHERE table_schema = 'fulfillment' AND table_name = 'pick_line'
+       AND column_name IN ('damaged_qty', 'damage_report_id', 'packing_damaged_qty')) = 0);
 
 \echo '--- the ledger line of a put-back names the carton it goes back into'
 SELECT pg_temp.expect_fail_by('LG1 a pick line put-back in the ledger with no carton', 'ck_stock_movement_put_back_carton', $q$
@@ -210,7 +169,7 @@ SELECT pg_temp.expect_ok('LG2 ... naming its carton, which is at the bin it goes
                                           reference_id, occurred_at, to_stock_package_id)
     SELECT gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-A01-2-B', 1, 'AVAILABLE', 'PICK_LINE', gen_random_uuid(),
            NOW(), c.package_id FROM qa63_carton c WHERE c.n = 7 $q$);
-SELECT pg_temp.expect_ok('LG3 a damage report puts units back into quarantine from nowhere: no carton to name', $q$
+SELECT pg_temp.expect_ok('LG3 a ledger line of what a damage report once put back into quarantine from nowhere is still valid history', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
                                           reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-QC01', 1, 'DAMAGED', 'DAMAGE_REPORT',
@@ -268,8 +227,7 @@ SELECT pg_temp.expect_fail('CB9 a second live line on a hold that already has on
 \echo '--- the rules are in the database, validated where nothing written before breaks them'
 SELECT pg_temp.expect_true('CK1 the four rules exist',
     (SELECT count(*) FROM pg_constraint WHERE conname IN ('ck_pick_line_lpn', 'ck_pick_line_short_reported',
-        'ck_pick_line_put_back_whole', 'ck_pick_line_short_reason', 'ck_pick_line_packing_damaged_whole',
-        'ck_stock_movement_put_back_carton')) = 6);
+        'ck_pick_line_put_back_whole', 'ck_pick_line_short_reason', 'ck_stock_movement_put_back_carton')) = 5);
 SELECT pg_temp.expect_true('CK2 a task cannot be SHORT, the other statuses are still allowed',
     (SELECT pg_get_constraintdef(oid) NOT LIKE '%SHORT%' AND pg_get_constraintdef(oid) LIKE '%PENDING%'
             AND pg_get_constraintdef(oid) LIKE '%PICKING%' AND pg_get_constraintdef(oid) LIKE '%PICKED%'
@@ -280,10 +238,10 @@ SELECT pg_temp.expect_true('CK3 short_reason is a VARCHAR(16)',
       WHERE table_schema = 'fulfillment' AND table_name = 'pick_line' AND column_name = 'short_reason'));
 -- NOT VALID is for history only: a database whose orders were all picked by carton - the demo seed - has every rule
 -- validated, so every stored row is checked, not only the new ones.
-SELECT pg_temp.expect_true('CK4 on the demo seed (no loose history) all five NOT VALID rules are validated',
-    (SELECT bool_and(convalidated) AND count(*) = 5 FROM pg_constraint
+SELECT pg_temp.expect_true('CK4 on the demo seed (no loose history) all four NOT VALID rules are validated',
+    (SELECT bool_and(convalidated) AND count(*) = 4 FROM pg_constraint
       WHERE conname IN ('ck_pick_line_lpn', 'ck_pick_line_short_reported', 'ck_pick_line_put_back_whole',
-                        'ck_pick_line_packing_damaged_whole', 'ck_stock_movement_put_back_carton')));
+                        'ck_stock_movement_put_back_carton')));
 
 ROLLBACK;
 \echo 'PASS 63_pick_by_lpn'

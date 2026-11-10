@@ -1,6 +1,5 @@
 package com.stockflow.fulfillment.internal.controller.dto;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -24,14 +23,7 @@ public record ManifestResponse(String loadCode, String status, String warehouseN
                            String deliveryAddress, int packageCount, BigDecimal weightKg, List<Parcel> packages) {
     }
 
-    /**
-     * @param kit             the kit it is a part of (SCRUM-287 LP2-6): printed "Bộ partNo/partCount"; absent otherwise
-     * @param labelOutdated   its label no longer matches the parcel: reprint it before it is loaded
-     * @param labelOutdatedAt since when; null when {@code labelOutdated} is false
-     */
     public record Parcel(String labelCode, BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                         BigDecimal heightCm, boolean loaded,
-                         @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit, boolean labelOutdated,
-                         Instant labelOutdatedAt) {
+                         BigDecimal heightCm, boolean loaded) {
     }
 }
