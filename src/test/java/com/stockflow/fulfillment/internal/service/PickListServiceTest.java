@@ -1134,10 +1134,10 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("review L1: a top-up of a task whose pack is PACKED or CANCELLED is PICK_TASK_STATE_CONFLICT, nothing planned")
+        @DisplayName("review L1: a top-up of a task whose pack is COMPLETED or CANCELLED is PICK_TASK_STATE_CONFLICT, nothing planned")
         void topUpRefusedAfterPacking() {
             for (com.stockflow.fulfillment.internal.domain.PackStatus status : List.of(
-                    com.stockflow.fulfillment.internal.domain.PackStatus.PACKED,
+                    com.stockflow.fulfillment.internal.domain.PackStatus.COMPLETED,
                     com.stockflow.fulfillment.internal.domain.PackStatus.CANCELLED)) {
                 aTopUpIsPossibleWith(OrderStatus.PICKING);
                 when(packs.findByPickId(task.getId())).thenReturn(Optional.of(
