@@ -10,11 +10,21 @@ BEGIN;
 -- Since 5-5 enforce_sku_policy refuses live stock with no lot and a layer raised in place, for every SKU: the demo
 -- rows are lot-less zero rows that 4C-1 emptied, so this fixture - and only this statement pair - writes them back by
 -- hand under a lot of their own, with the trigger off. Everything checked after it runs with the trigger on.
+-- Since the whole-carton rule (ck_stock_item_whole_cartons, V20261117000100) a row with units must sit in a carton, so
+-- the two demo rows are filled the only way the table allows: each in a carton of its own size (25 and 8 sofas).
 ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
-UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa03x:demo:u25')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_DEMO25', 25),
+       (md5('qa03x:demo:u8')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_DEMO8', 8);
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+VALUES (md5('qa03x:demo:p25')::uuid, 'QA-DEMO-25', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa03x:demo:u25')::uuid, 25, 25, 'HCM-A01-2-B', 'IN_STOCK'),
+       (md5('qa03x:demo:p8')::uuid, 'QA-DEMO-8', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa03x:demo:u8')::uuid, 8, 8, 'HCM-A02-1-A', 'IN_STOCK');
+UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa03x:demo:p25')::uuid
  WHERE id = '11111111-1111-4111-8111-111111111111';
-UPDATE inventory.stock_item SET on_hand = 8, lot_number = 'QA-LOT', lot_id = NULL
+UPDATE inventory.stock_item SET on_hand = 8, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa03x:demo:p8')::uuid
  WHERE id = '22222222-2222-4222-8222-222222222222';
+SET CONSTRAINTS ALL IMMEDIATE;
+SET CONSTRAINTS ALL DEFERRED;
 ALTER TABLE inventory.stock_item ENABLE TRIGGER trg_stock_sku_policy;
 
 -- Inserts a warehouse whether or not the pre-C2 column "code" still exists (C2 drops it).

@@ -121,32 +121,37 @@ SELECT pg_temp.expect_fail_by('E4 a source that is not an order', 'ck_load_estim
     VALUES (gen_random_uuid(), 'QUOTE', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED') $q$);
 SELECT pg_temp.expect_fail_by('E5 a mode the planner does not know', 'ck_load_estimate_mode', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'CHEAPEST', 'SUPERSEDED') $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'CHEAPEST', 'SUPERSEDED') $q$);
 SELECT pg_temp.expect_fail_by('E6 a status other than CURRENT or SUPERSEDED', 'ck_load_estimate_status', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'DRAFT') $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'DRAFT') $q$);
 SELECT pg_temp.expect_fail_by('E7 incomplete with nothing missing', 'ck_load_estimate_incomplete', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, incomplete)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED', TRUE) $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', TRUE) $q$);
 SELECT pg_temp.expect_fail_by('E8 something missing but not flagged incomplete', 'ck_load_estimate_incomplete', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, missing)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED', '["SOFA-3S-GREY"]'::jsonb) $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '["SOFA-3S-GREY"]'::jsonb) $q$);
 SELECT pg_temp.expect_ok('E9 ... flagged, it is accepted', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, missing, incomplete)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED', '["SOFA-3S-GREY"]'::jsonb, TRUE) $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '["SOFA-3S-GREY"]'::jsonb, TRUE) $q$);
 SELECT pg_temp.expect_fail_by('E10 lines that are an object, not a list', 'ck_load_estimate_lines', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, lines)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED', '{}'::jsonb) $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '{}'::jsonb) $q$);
 SELECT pg_temp.expect_fail_by('E11 a layout that is a list, not an object', 'ck_load_estimate_layout', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, layout)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED', '[]'::jsonb) $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '[]'::jsonb) $q$);
 SELECT pg_temp.expect_fail_by('E12 vehicle type ids that are an object', 'ck_load_estimate_vehicle_type_ids', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, vehicle_type_ids)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED', '{}'::jsonb) $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '{}'::jsonb) $q$);
 SELECT pg_temp.expect_fail_by('E13 warnings that are an object', 'ck_load_estimate_warnings', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, warnings)
-    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED', '{}'::jsonb) $q$);
--- load_estimate.warehouse_id carries no foreign key in the schema (reported, not fixed here); orphan_check.sql counts it.
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '{}'::jsonb) $q$);
+SELECT pg_temp.expect_fail_by('E14 a warehouse that does not exist', 'fk_load_estimate_warehouse', $q$
+    INSERT INTO fulfillment.load_estimate (id, source_type, source_id, warehouse_id, mode, status)
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED') $q$);
+SELECT pg_temp.expect_fail_by('E15 an order that does not exist', 'fk_load_estimate_order', $q$
+    INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status)
+    VALUES (gen_random_uuid(), 'ORDER', gen_random_uuid(), 'SINGLE_TYPE', 'SUPERSEDED') $q$);
 
 \echo '--- placement of a carton in a planned vehicle (ck_load_placement_*, tg_load_placement_check)'
 SELECT pg_temp.expect_ok('L1 carton 1 stands in the vehicle at its own measures (600 x 400 x 400 mm)', $q$
@@ -225,5 +230,18 @@ SELECT pg_temp.expect_ok('U11 the parcel is unloaded', $q$
     UPDATE fulfillment.dispatch_load_unload SET unloaded_at = NOW(), unloaded_by = md5('demo:user:editor')::uuid
      WHERE id = md5('qa80:un:1')::uuid $q$);
 SELECT pg_temp.expect_ok('U12 ... and then the load is DISPATCHED', pg_temp.dispatch_sql());
+
+\echo '--- stock is kept in whole cartons (ck_stock_item_whole_cartons, V20261117000100)'
+SELECT pg_temp.expect_fail_by('W1 a live loose row: units on it, no carton', 'ck_stock_item_whole_cartons', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA80-LOOSE', 1, 0, 'AVAILABLE', NOW(), NOW()) $q$);
+SELECT pg_temp.expect_ok('W2 a loose row at zero (history of a lot) is allowed', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA80-LOOSE', 0, 0, 'AVAILABLE', NOW(), NOW()) $q$);
+SELECT pg_temp.expect_fail_by('W3 a carton row emptied into a loose one: the carton link dropped while units remain', 'ck_stock_item_whole_cartons', $q$
+    UPDATE inventory.stock_item SET stock_package_id = NULL WHERE stock_package_id IS NOT NULL AND on_hand > 0 $q$);
+SELECT pg_temp.expect_true('W4 the lot no longer carries purchase / supplier columns (V20261117000200)', (
+    SELECT count(*) FROM information_schema.columns WHERE table_schema = 'inventory' AND table_name = 'stock_lot'
+       AND column_name IN ('purchase_order_id', 'purchase_order_number', 'supplier_id', 'supplier_name')) = 0);
 
 ROLLBACK;

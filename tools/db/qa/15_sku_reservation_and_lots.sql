@@ -45,9 +45,15 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
                                      placed_at, version, created_at)
 SELECT md5('qa15:other')::uuid, 'SO-QA-15B', c.id, gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
+-- One carton of 2 (the allocation below takes it whole; stock is kept in whole cartons only: ck_stock_item_whole_cartons).
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa15:u')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_QA15', 2);
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+VALUES (md5('qa15:p')::uuid, 'QA-QA15-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa15:u')::uuid, 2, 2, 'HCM-B01-2-B', 'IN_STOCK');
 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at,
-                                  received_at)
-VALUES (md5('qa15:layer')::uuid, 'SOFA-3S-GREY', 'HCM-B01-2-B', 'QA15-LOT', 6, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '3 days');
+                                  received_at, stock_package_id)
+VALUES (md5('qa15:layer')::uuid, 'SOFA-3S-GREY', 'HCM-B01-2-B', 'QA15-LOT', 2, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '3 days',
+        md5('qa15:p')::uuid);
 
 \echo '--- SKU reservations (V20261023000100)'
 SELECT pg_temp.expect_ok('SR1 a checkout reservation of a SKU, on no stock row', $q$
