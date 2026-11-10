@@ -158,6 +158,12 @@ public final class Order extends AggregateRoot {
      */
     private Instant packingStartedAt;
     /**
+     * 4C-6: when the order's first shipping carton was labelled at the check station, in that transaction under this
+     * order's row lock ({@link #recordFirstLabel}). From then the order is not cancelled and its delivery address does
+     * not change (kltn-docs 08 BR-04, 17 BR-12, BR-16): the label printed on the carton carries it.
+     */
+    private Instant firstLabeledAt;
+    /**
      * SCRUM-260: the return request whose accepted units this order replaces with new goods, free of charge; null for
      * an ordinary order.
      */
@@ -1045,6 +1051,34 @@ public final class Order extends AggregateRoot {
     }
 
     public Instant packingStartedAt() { return packingStartedAt; }
+
+    /**
+     * The check station printed the order's first shipping label (kltn-docs 08 §4.3 step 7, BR-04): from now the order
+     * is not cancelled and its delivery address, printed on the label, does not change (17 BR-12, BR-16). Only an order
+     * the warehouse may still work on gets a label - a cancelled one has its cartons removed instead. Idempotent.
+     *
+     * @return whether this was the first label
+     * @throws BusinessException {@code ORDER_CANCELLED}
+     */
+    public boolean recordFirstLabel(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status == OrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+                    "Order %s is cancelled; none of its cartons is labelled".formatted(orderNumber));
+        }
+        if (firstLabeledAt != null) {
+            return false;
+        }
+        firstLabeledAt = at;
+        return true;
+    }
+
+    public Instant firstLabeledAt() { return firstLabeledAt; }
+
+    /** Rehydration of when the first shipping label was printed. */
+    public void restoreFirstLabeled(Instant at) {
+        this.firstLabeledAt = at;
+    }
 
     /** Rehydration of when packing started. */
     public void restorePackingStarted(Instant packingStarted) {
@@ -2177,11 +2211,15 @@ public final class Order extends AggregateRoot {
                 id.value(), orderNumber.value(), wouldHaveBeen.name(), now)));
     }
 
-    /** 03 §9: a packed order is not cancelled - by anyone, on any path; it goes through a return (RMA). */
+    /**
+     * Kltn-docs 08 BR-04, 17 BR-12: from its first labelled carton an order is not cancelled - by anyone, on any path; it
+     * goes through a return (RMA). An order the repack station packed before the check station existed is locked from
+     * then (03 §9, decision 2026-10-17); V20261113000700 carried that over as its first label.
+     */
     public void requireNotPacked() {
-        if (packedAt != null) {
-            throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
-                    "Order %s is packed; it can no longer be cancelled - raise a return instead".formatted(orderNumber));
+        if (packedForGood()) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE, ("Order %s has a labelled carton; it can no "
+                    + "longer be cancelled - raise a return instead").formatted(orderNumber));
         }
     }
 
@@ -2246,9 +2284,12 @@ public final class Order extends AggregateRoot {
         }
     }
 
-    /** Whether a package of the order binds it to a return instead of a cancellation (03 §9). */
+    /**
+     * Whether a labelled carton (08 BR-04), or a package completed by the repack station (03 §9), binds the order to a
+     * return instead of a cancellation.
+     */
     public boolean packedForGood() {
-        return packedAt != null;
+        return firstLabeledAt != null || packedAt != null;
     }
 
     /** Rehydration of the agreed amount's terms. */
