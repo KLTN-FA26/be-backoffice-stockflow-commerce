@@ -75,6 +75,18 @@ class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
+    public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleReturn(
+            com.stockflow.payment.api.SettleReturnCommand command) {
+        return settlements.settleReturn(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.stockflow.payment.api.RefundProgress refundProgress(UUID orderId) {
+        return settlements.refundProgress(orderId);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public com.stockflow.payment.api.OrderLedger ledgerOf(UUID orderId) {
         java.math.BigDecimal collected = book.collectedFor(orderId);

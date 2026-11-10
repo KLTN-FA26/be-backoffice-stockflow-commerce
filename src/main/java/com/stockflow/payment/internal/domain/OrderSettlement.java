@@ -15,7 +15,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * What a cancellation, or a closure of the rest, did with a contract order's money (4B-9; kltn-docs 15 §4.5, §4.6,
+ * What a cancellation, a closure of the rest, or a return did with a contract order's money (4B-9; kltn-docs 15 §4.5, §4.6,
  * BR-14..BR-16; 17 §4.8 steps 30 and 33). Worked out here, from the order's installments locked by the caller, and
  * never changed after ({@code tg_order_settlement}).
  *
@@ -24,7 +24,8 @@ import java.util.UUID;
  * installments still owe - those tied to a delivery batch that never came first, then the latest, after delivery before
  * before delivery before on signing (§4.6 step 19) - and what cannot come off, because it was paid already, is surplus.
  * Either way the surplus pays the fee first (BR-15); the rest is refundable; what it did not cover is owed on a
- * cancellation fee item, due from that day.</p>
+ * cancellation fee item, due from that day. <b>Return</b> ({@link #returned}, team plan 4D-3): what the goods refunded
+ * were worth comes off the installments as a closure's does, with no fee; the rest is refundable.</p>
  *
  * <p>The arithmetic is stated a second time in {@code ck_order_settlement_*}: a settlement row that does not add up
  * cannot be written.</p>
@@ -33,8 +34,11 @@ public final class OrderSettlement {
 
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
 
-    /** 17 §4.8: the two ways money is settled before an order ends. */
-    public enum Kind { ORDER_CANCELLED, REMAINDER_CLOSED }
+    /**
+     * 17 §4.8: the two ways money is settled before an order ends; and, after it was delivered, goods that came back on
+     * a return its Sales and a second person decided to refund (17 §4.10 step 40, 15 §4.5 step 15 - team plan 4D-3).
+     */
+    public enum Kind { ORDER_CANCELLED, REMAINDER_CLOSED, GOODS_RETURNED }
 
     /**
      * The fee kept (17 §4.8 step 30): a share of the money collected, or an amount agreed with the customer with its
@@ -198,9 +202,48 @@ public final class OrderSettlement {
                     .formatted(closed.toPlainString()));
         }
         BigDecimal collected = collected(ofOrder);
-        BigDecimal left = closed;
         List<Reduction> reductions = new ArrayList<>();
         List<Installment> changed = new ArrayList<>();
+        BigDecimal left = takeOff(ofOrder, closed, at, reductions, changed);
+        return settle(first, ofOrder, Kind.REMAINDER_CLOSED, closureId, collected, closed, reductions, left,
+                terms.on(collected), terms, by, at, day, "Fee for the rest closed", changed);
+    }
+
+    /**
+     * Goods that came back on a return are refunded (17 §4.10 step 40; 15 §4.5 step 15, BR-14; team plan 4D-3):
+     * {@code returned} - what the goods refunded were worth with their VAT - comes off what the installments still
+     * owe, in the closure's order (after delivery first, the latest first), so the customer never pays for goods they
+     * gave back; what cannot come off was paid already and is refundable. No fee: a return is taken only for a
+     * defect (17 §4.10), never charged for. The same arithmetic as {@link #closeRemainder} with no fee, kept apart so
+     * the settlement says what it was for and is made once per return.
+     *
+     * @param returnRequestId the return whose goods are refunded: one settlement per return
+     */
+    public static Outcome returned(List<Installment> ofOrder, UUID returnRequestId, BigDecimal returned, UUID by,
+                                   Instant at, LocalDate day) {
+        Installment first = contractRow(ofOrder);
+        Objects.requireNonNull(returnRequestId, "returnRequestId");
+        Objects.requireNonNull(returned, "returned");
+        if (returned.signum() <= 0 || returned.stripTrailingZeros().scale() > 0) {
+            throw new IllegalArgumentException("A return refunds goods worth a positive whole amount, not " + returned);
+        }
+        BigDecimal collected = collected(ofOrder);
+        List<Reduction> reductions = new ArrayList<>();
+        List<Installment> changed = new ArrayList<>();
+        BigDecimal left = takeOff(ofOrder, returned, at, reductions, changed);
+        return settle(first, ofOrder, Kind.GOODS_RETURNED, returnRequestId, collected, returned, reductions, left,
+                BigDecimal.ZERO, Fee.none(), by, at, day, "Fee", changed);
+    }
+
+    /**
+     * Takes {@code amount} off what the installments still owe, in {@link #CLOSURE_ORDER}; collects each cut in
+     * {@code reductions} and each installment lowered in {@code changed}.
+     *
+     * @return what could not come off: it was paid already
+     */
+    private static BigDecimal takeOff(List<Installment> ofOrder, BigDecimal amount, Instant at,
+                                      List<Reduction> reductions, List<Installment> changed) {
+        BigDecimal left = amount;
         List<Installment> owing = ofOrder.stream()
                 .filter(i -> !i.isFeeItem() && i.status().takesMoney() && i.outstanding().signum() > 0)
                 .sorted(CLOSURE_ORDER).toList();
@@ -214,8 +257,7 @@ public final class OrderSettlement {
             changed.add(installment);
             left = left.subtract(taken);
         }
-        return settle(first, ofOrder, Kind.REMAINDER_CLOSED, closureId, collected, closed, reductions, left,
-                terms.on(collected), terms, by, at, day, "Fee for the rest closed", changed);
+        return left;
     }
 
     /**
