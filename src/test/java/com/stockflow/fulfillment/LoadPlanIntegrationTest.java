@@ -276,6 +276,7 @@ class LoadPlanIntegrationTest {
 
     // ---- the whole flow ----------------------------------------------------------------------
 
+    @org.junit.jupiter.api.Disabled("4C-6: its body is built on two-part kits (two parcels per sofa, one vehicle carrying a kit); a carton shipment has one parcel per sofa and the planner no kit group - rewrite with 4C-7 when kits are removed")
     @Test
     @DisplayName("candidates → plan (idempotent) → calculation → FE #71 layout → manual edits refused (UNSUPPORTED, "
             + "KIT_SPLIT, stale version) and accepted → one vehicle recalculated → LP-4 at acknowledgement and "
