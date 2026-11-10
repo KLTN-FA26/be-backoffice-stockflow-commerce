@@ -27,8 +27,9 @@ import java.util.UUID;
  * (4A-3; kltn-docs 00 §6 "Đơn sản xuất được gửi về kho", 17 §4.3 step 7, BR-25): INFO, with the cartons, their volume
  * and the need-by date, in the in-app inbox only - 00 §6 sends no e-mail for it. Who is told is decided when it is
  * delivered: the ACTIVE staff who can see that warehouse (assigned to it, or of every warehouse) and hold
- * {@link #AUDIENCE} - those who confirm what arrives, the warehouse manager in today's role matrix. A permission, not a
- * role name (house rule P8): who is told follows the matrix as it is edited. A redelivered event tells nobody twice
+ * {@link #AUDIENCE} - those who start the goods receipt when the cartons arrive: the warehouse manager and warehouse
+ * staff in today's role matrix. A permission, not a role name (house rule P8): who is told follows the matrix as it is
+ * edited. A redelivered event tells nobody twice
  * ({@code production-order-sent:<id>}).
  *
  * <p>The WARN when the warehouse's expected free space turns negative (C42) waits for the capacity table, as the
@@ -41,8 +42,13 @@ class ProductionOrderArrivalNotificationListener {
 
     static final String CATEGORY = "PRODUCTION_ORDER";
     static final String SOURCE_TYPE = "PRODUCTION_ORDER";
-    /** Who confirms the goods a warehouse receives: told what is coming. */
-    static final String AUDIENCE = "procurement-goods-receipts:APPROVE";
+    /**
+     * Who receives the goods at a warehouse: told what is coming. {@code CREATE} - starting a receipt against a
+     * production order - and not {@code APPROVE}, the over-tolerance decision of purchase receipts: 4A-8 removed that
+     * action from the catalog with purchasing and 4A-9 deletes its grants, after which nobody would be told. 00 §6 names
+     * the warehouse manager; the staff who count the cartons are told as well, as they hold the same grant.
+     */
+    static final String AUDIENCE = "procurement-goods-receipts:CREATE";
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
     private final StaffDirectory staff;
@@ -67,7 +73,8 @@ class ProductionOrderArrivalNotificationListener {
         String warehouse = warehouses.findWarehouse(event.receivingWarehouseId()).map(WarehouseView::name)
                 .orElse(event.receivingWarehouseId().toString());
         int told = inbox.post(managers, message(event, warehouse));
-        log.info("Production order {} sent: {} warehouse manager(s) told", LogSafe.text(event.code()), told);
+        log.info("Production order {} sent: {} person(s) at its receiving warehouse told", LogSafe.text(event.code()),
+                told);
     }
 
     static InboxMessage message(ProductionOrderSent event, String warehouse) {
