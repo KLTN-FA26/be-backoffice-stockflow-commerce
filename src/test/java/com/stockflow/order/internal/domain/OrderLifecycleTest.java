@@ -161,23 +161,13 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("a cancelled order is not packed, and nothing of it starts packing (ORDER_CANCELLED)")
+        @DisplayName("a cancelled order is not packed (ORDER_CANCELLED)")
         void cancelledIsNotPacked() {
             Order order = picking(PaymentTerm.PREPAID);
             order.cancel(CancellationReasonCode.OUT_OF_STOCK, null, null, STAFF, NOW);
             assertThat(code(catchThrowable(() -> order.markPacked(NOW, STAFF)))).isEqualTo(ErrorCode.ORDER_CANCELLED);
-            assertThat(code(catchThrowable(() -> order.recordPackingStarted(NOW)))).isEqualTo(ErrorCode.ORDER_CANCELLED);
         }
 
-        @Test
-        @DisplayName("the first package opened records when packing started, once; the status does not move")
-        void packingStarted() {
-            Order order = picking(PaymentTerm.PREPAID);
-            assertThat(order.recordPackingStarted(NOW)).isTrue();
-            assertThat(order.recordPackingStarted(NOW.plusSeconds(60))).as("idempotent").isFalse();
-            assertThat(order.packingStartedAt()).isEqualTo(NOW);
-            assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
-        }
     }
 
     @Nested
@@ -745,8 +735,8 @@ class OrderLifecycleTest {
         void returnPath() {
             Order order = delivered(PaymentTerm.PREPAID);
             order.requestReturn(STAFF, NOW);
-            order.markReturned(STAFF, NOW);
-            order.markRefunded(true, STAFF, NOW);
+            order.goodsReturned(STAFF, NOW, null);
+            order.refunded(false, STAFF, NOW, null);
             assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
             assertThat(order.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30))).isTrue();
             assertThat(order.requestReturn(STAFF, NOW, "a claim after it closed")).as("BR-05: a closed order stays")
@@ -764,7 +754,8 @@ class OrderLifecycleTest {
 
             Order credit = delivered(PaymentTerm.CREDIT);
             credit.requestReturn(STAFF, NOW);
-            credit.settleReturn(false, STAFF, NOW, "RETURN_SETTLED");
+            credit.goodsReturned(STAFF, NOW, null);
+            credit.refunded(false, STAFF, NOW, "REFUNDED");
             assertThat(credit.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
             assertThat(credit.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30)))
                     .as("the rest of the receivable is still owed").isFalse();

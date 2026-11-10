@@ -47,6 +47,7 @@ import java.util.UUID;
 import static com.stockflow.fulfillment.internal.service.FulfillmentFixtures.refusal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -73,13 +74,15 @@ class CartonCheckServiceTest {
     private final ShipmentTimeline timeline = mock(ShipmentTimeline.class);
     private final com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepository planMembers =
             mock(com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepository.class);
+    private final LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
+    private final PlanVehicles planVehicles = mock(PlanVehicles.class);
     private final CartonMeasures measures = new CartonMeasures(itemControls,
             mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class),
             mock(PackageJpaRepository.class), planMembers,
             mock(com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository.class), 6000);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
-            Clock.fixed(NOW, ZoneOffset.UTC));
+            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -497,9 +500,65 @@ class CartonCheckServiceTest {
 
         private ShipmentJpaEntity shipment(UUID id, com.stockflow.fulfillment.internal.domain.ShipmentStatus status) {
             ShipmentJpaEntity row = mock(ShipmentJpaEntity.class);
+            com.stockflow.fulfillment.internal.domain.Shipment domain =
+                    mock(com.stockflow.fulfillment.internal.domain.Shipment.class);
+            when(domain.status()).thenReturn(status);
+            when(row.toDomain()).thenReturn(domain);
             when(row.getId()).thenReturn(id);
             when(row.getStatus()).thenReturn(status);
             return row;
+        }
+
+        /** A shipment of the session waiting for dispatch, as a row the service can cancel for real. */
+        private ShipmentJpaEntity waiting(UUID id) {
+            return ShipmentJpaEntity.of(com.stockflow.fulfillment.internal.domain.Shipment.ready(id, "SO-1-S1", orderId,
+                    pack.getId(), WAREHOUSE, UUID.randomUUID(), 1, null, UUID.randomUUID(), NOW));
+        }
+
+        @Test
+        @DisplayName("4C-7: the order's shipments waiting for dispatch are cancelled here - out of their load plan and "
+                + "off the vehicle, timeline written - and their cartons removed with them")
+        void cancelsTheShipmentsWaitingForDispatch() {
+            started();
+            service.check(pick.getId(), "LPN-1", actor);
+            service.label(pick.getId(), null, actor);
+            var done = service.complete(pick.getId(), PackingCompletion.whole(), actor);
+            ShipmentJpaEntity waiting = waiting(done.shipmentId());
+            when(shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())).thenReturn(List.of(waiting));
+            when(planVehicles.partlyGone(done.shipmentId())).thenReturn(false);
+
+            service.cancelForOrder(pick, pack);
+
+            verify(loadPlans).releaseShipment(done.shipmentId(), NOW);
+            verify(planVehicles).withdraw(done.shipmentId(), NOW);
+            assertThat(waiting.getStatus()).isEqualTo(com.stockflow.fulfillment.internal.domain.ShipmentStatus.CANCELLED);
+            verify(shipments).save(waiting);
+            verify(timeline).record(any(), eq(com.stockflow.fulfillment.internal.domain.ShipmentStatus.READY_TO_DISPATCH),
+                    any(), eq(pick.getOrderNumber()), any(), any());
+            assertThat(check.carton("LPN-1").orElseThrow().status())
+                    .isEqualTo(com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED);
+            assertThat(check.status()).isEqualTo(PackStatus.CANCELLED);
+        }
+
+        @Test
+        @DisplayName("a shipment a load plan's vehicle already left with in part is not cancelled (goods are with the "
+                + "carrier): left for a person to resolve, its cartons stay")
+        void leavesAShipmentThatLeftInPart() {
+            started();
+            service.check(pick.getId(), "LPN-1", actor);
+            service.label(pick.getId(), null, actor);
+            var done = service.complete(pick.getId(), PackingCompletion.whole(), actor);
+            ShipmentJpaEntity gone = waiting(done.shipmentId());
+            when(shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())).thenReturn(List.of(gone));
+            when(planVehicles.partlyGone(done.shipmentId())).thenReturn(true);
+
+            service.cancelForOrder(pick, pack);
+
+            verify(loadPlans, never()).releaseShipment(any(), any());
+            verify(shipments, never()).save(gone);
+            assertThat(gone.getStatus()).isEqualTo(com.stockflow.fulfillment.internal.domain.ShipmentStatus.READY_TO_DISPATCH);
+            assertThat(check.carton("LPN-1").orElseThrow().status())
+                    .isEqualTo(com.stockflow.fulfillment.internal.domain.PackageStatus.LABELED);
         }
 
         @Test

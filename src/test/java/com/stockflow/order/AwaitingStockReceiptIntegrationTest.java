@@ -460,7 +460,7 @@ class AwaitingStockReceiptIntegrationTest {
             Await.until("one putaway task per carton", Duration.ofSeconds(20),
                     () -> putawayTasks.tasksOfReceipt(receipt.id()).size() == cartonsOfReceipt);
             for (PutawayTaskView task : putawayTasks.tasksOfReceipt(receipt.id())) {
-                putaway.confirm(task.id(), a.bin(), lpns.get(task.stockPackageId()), null, clerk);
+                putaway.confirm(task.id(), a.bin(), lpns.get(task.stockPackageId()), clerk);
             }
             Await.until("the receipt to close", Duration.ofSeconds(20),
                     () -> receiptStatus(receipt.id()).equals("CLOSED"));

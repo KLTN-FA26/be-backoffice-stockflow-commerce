@@ -16,8 +16,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 4B-9 (kltn-docs 15 §4.5, §4.6, BR-14..BR-16; 17 §4.8 steps 30 and 33; D30, D32): the money a cancellation or a
- * closure of the rest settles, worked through dong by dong.
+ * 4B-9 (kltn-docs 15 §4.5, §4.6, BR-14..BR-16; 17 §4.8 steps 30 and 33; D30, D32): the money a cancellation, a
+ * closure of the rest or - since 4D-3 - goods returned settles, worked through dong by dong.
  *
  * <p>The contract of every scenario: 1,000 pieces at 2,000 with 10% VAT (goods 2,200,000), a mould / print fee line of
  * 500,000 + 10% (550,000) and a shipping fee line of 300,000 + 10% (330,000) - 3,080,000 with tax - paid 30% on signing
@@ -339,6 +339,94 @@ class OrderSettlementTest {
             assertThat(second.feeItem().transferReference()).endsWith(" FEE2");
             assertThat(first.feeItem().reducedAmount()).as("a closure never lowers a fee item")
                     .isEqualByComparingTo("0");
+        }
+    }
+
+    @Nested
+    @DisplayName("goods returned (17 §4.10 step 40; 15 §4.5 step 15, BR-14; team plan 4D-3)")
+    class GoodsReturned {
+
+        @Test
+        @DisplayName("what the goods were worth comes off what is still owed, after delivery first: nothing was paid "
+                + "for them, so nothing is refundable and there is no fee")
+        void comesOffWhatIsStillOwed() {
+            List<Installment> plan = plan(924_000, 1_232_000);
+            UUID returnId = UUID.randomUUID();
+            OrderSettlement.Outcome outcome = OrderSettlement.returned(plan, returnId, dong(330_000), STAFF, AT, DAY);
+            OrderSettlement s = outcome.settlement();
+
+            assertThat(s.kind()).isEqualTo(OrderSettlement.Kind.GOODS_RETURNED);
+            assertThat(s.sourceId()).as("one settlement per return").isEqualTo(returnId);
+            assertThat(s.closed()).as("the goods returned, with VAT").isEqualByComparingTo(dong(330_000));
+            assertThat(s.reduced()).isEqualByComparingTo(dong(330_000));
+            assertThat(s.surplus()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.refundable()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.fee()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.feeOwed()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(outcome.feeItem()).isNull();
+            assertThat(s.collected()).isEqualByComparingTo(dong(2_156_000));
+            Installment after = plan.get(2);
+            assertThat(after.reducedAmount()).isEqualByComparingTo(dong(330_000));
+            assertThat(after.status()).as("still owed in part").isNotEqualTo(InstallmentStatus.CANCELLED);
+            assertThat(s.reductions()).singleElement().satisfies(r -> {
+                assertThat(r.installmentId()).isEqualTo(after.id());
+                assertThat(r.amount()).isEqualByComparingTo(dong(330_000));
+            });
+            assertThat(outcome.changed()).containsExactly(after);
+        }
+
+        @Test
+        @DisplayName("more than the last installment still owes goes on to the one before it, never to a paid one")
+        void spillsOverToTheInstallmentBefore() {
+            List<Installment> plan = plan(924_000, 300_000);
+            OrderSettlement s = OrderSettlement.returned(plan, UUID.randomUUID(), dong(1_500_000), STAFF, AT, DAY)
+                    .settlement();
+
+            assertThat(plan.get(2).reducedAmount()).isEqualByComparingTo(dong(924_000));
+            assertThat(plan.get(1).reducedAmount()).isEqualByComparingTo(dong(576_000));
+            assertThat(plan.get(0).reducedAmount()).as("paid in full: nothing to take off").isEqualByComparingTo(
+                    BigDecimal.ZERO);
+            assertThat(s.reduced()).isEqualByComparingTo(dong(1_500_000));
+            assertThat(s.refundable()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.reductions()).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("what cannot come off was paid already: it is refundable, up to what was collected")
+        void whatWasPaidIsRefundable() {
+            List<Installment> plan = plan(924_000, 1_232_000);
+            OrderSettlement s = OrderSettlement.returned(plan, UUID.randomUUID(), dong(1_000_000), STAFF, AT, DAY)
+                    .settlement();
+
+            assertThat(s.reduced()).as("the 924,000 still owed after delivery").isEqualByComparingTo(dong(924_000));
+            assertThat(s.surplus()).isEqualByComparingTo(dong(76_000));
+            assertThat(s.refundable()).isEqualByComparingTo(dong(76_000));
+
+            Installment onSigning = installment(1, InstallmentMilestone.ON_SIGNING, 924_000, 0);
+            onSigning.reach(AT, DAY);
+            onSigning.pay(dong(924_000), AT);
+            OrderSettlement paidInFull = OrderSettlement.returned(List.of(onSigning), UUID.randomUUID(), dong(220_000),
+                    STAFF, AT, DAY).settlement();
+            assertThat(paidInFull.reduced()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(paidInFull.refundable()).isEqualByComparingTo(dong(220_000));
+            assertThat(onSigning.reducedAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("a return refunds goods worth a positive whole number of dong, and a fee item is never reduced")
+        void amountsAndFeeItems() {
+            List<Installment> plan = plan(924_000, 300_000);
+            assertThatThrownBy(() -> OrderSettlement.returned(plan, UUID.randomUUID(), BigDecimal.ZERO, STAFF, AT, DAY))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> OrderSettlement.returned(plan, UUID.randomUUID(), new BigDecimal("100.50"), STAFF,
+                    AT, DAY)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> OrderSettlement.returned(plan, null, dong(1_000), STAFF, AT, DAY))
+                    .isInstanceOf(NullPointerException.class);
+            Installment fee = Installment.openFee(plan.get(0), Installment.FIRST_FEE_SEQ, "Fee", dong(50_000), AT, DAY);
+            List<Installment> withFee = new java.util.ArrayList<>(plan);
+            withFee.add(fee);
+            OrderSettlement.returned(withFee, UUID.randomUUID(), dong(100_000), STAFF, AT, DAY);
+            assertThat(fee.reducedAmount()).isEqualByComparingTo(BigDecimal.ZERO);
         }
     }
 

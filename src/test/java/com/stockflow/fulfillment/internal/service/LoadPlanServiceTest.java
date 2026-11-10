@@ -12,7 +12,6 @@ import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanRequest;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanResult;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanner;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
-import com.stockflow.fulfillment.internal.domain.PackageType;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanJpaEntity;
@@ -157,9 +156,7 @@ class LoadPlanServiceTest {
         int no = 1;
         for (UUID id : ids) {
             PackageJpaEntity row = new PackageJpaEntity(id, UUID.randomUUID(), no, "PKG-" + no++);
-            row.apply(planned.shipmentId(), PackageType.CARTON, PackageStatus.SEALED, new BigDecimal("100"),
-                    new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), null, true, false, false, false,
-                    NOW, null, null, null);
+            FulfillmentFixtures.applyCarton(row, PackageStatus.SEALED, planned.shipmentId(), new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"));
             out.put(id, new LoadPlanParcels.Parcel(row, null, null, LoadPlanParcels.carton(row, "CUBE"), "CUBE"));
         }
         return out;

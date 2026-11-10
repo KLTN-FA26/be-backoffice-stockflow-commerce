@@ -4,7 +4,6 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
-import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import org.junit.jupiter.api.DisplayName;
@@ -34,10 +33,10 @@ class ReturnEmailComposerTest {
     }
 
     @Test
-    @DisplayName("claim received: RMA and order numbers, the reason and the wish in words, the lines; goods not sent yet")
+    @DisplayName("claim received: RMA and order numbers, the reason in words, the lines; goods not sent yet")
     void requested() {
         var event = new ReturnRequested(returnId, RMA, UUID.randomUUID(), ORDER, customer, "PRINT_DEFECT",
-                "REPLACEMENT", "PORTAL", List.of(new ReturnRequested.Line(UUID.randomUUID(), "CUP-PET-500", 120)),
+                "REFUND", "PORTAL", List.of(new ReturnRequested.Line(UUID.randomUUID(), "CUP-PET-500", 120)),
                 customer, AT);
         CustomerMessage message = composer.returnRequested(event).orElseThrow();
 
@@ -46,7 +45,7 @@ class ReturnEmailComposerTest {
         EmailContent content = message.draft().write("Công ty TNHH In Ly An Phát");
         assertThat(content.subject()).isEqualTo("Đã tiếp nhận yêu cầu đổi trả " + RMA);
         assertThat(content.facts()).extracting(EmailContent.Fact::value).containsExactly(RMA, ORDER,
-                "Lỗi in (nhoè, mờ, lệch hoặc sai màu)", "In lại / đổi hàng mới", "14:05 25/10/2026");
+                "Lỗi in (nhoè, mờ, lệch hoặc sai màu)", "14:05 25/10/2026");
         assertThat(content.table().rows()).containsExactly(List.of("CUP-PET-500", "120"));
         assertThat(all(content)).contains("Vui lòng chưa gửi hàng về").doesNotContain("null");
     }
@@ -116,34 +115,19 @@ class ReturnEmailComposerTest {
     }
 
     @Test
-    @DisplayName("a replacement withdrawn: what was set off and kept as credit, and the adjustment invoice")
-    void replacementWithdrawn() {
-        var event = new ReturnReplacementWithdrawn(returnId, RMA, UUID.randomUUID(), ORDER, customer, UUID.randomUUID(),
-                new BigDecimal("500000"), new BigDecimal("1500000"), "VND",
-                List.of(new ReturnReplacementWithdrawn.Line(UUID.randomUUID(), "CUP-PET-500", 10,
-                        new BigDecimal("2000000"))), UUID.randomUUID(), UUID.randomUUID(), AT);
-        CustomerMessage message = composer.returnReplacementWithdrawn(event).orElseThrow();
-        assertThat(message.reference()).isEqualTo("customer-mail:return.withdrawn:" + returnId);
-        String text = all(message.draft().write(null));
-        assertThat(text).contains("Đơn hàng thay thế của yêu cầu đổi trả " + RMA + " đã được rút lại",
-                "Số tiền trừ vào công nợ: 500.000 ₫", "Số tiền ghi có vào tài khoản: 1.500.000 ₫", "hoá đơn điều chỉnh")
-                .doesNotContain("null");
-    }
-
-    @Test
-    @DisplayName("settled: replacement order, amounts in dong only where non-zero, and the adjustment invoice when due")
+    @DisplayName("refunded: amounts in dong only where non-zero (4D-3: no replacement order, no credit), the units back and refunded, and the adjustment invoice when due")
     void resolved() {
-        var event = new ReturnResolved(returnId, RMA, UUID.randomUUID(), ORDER, customer, UUID.randomUUID(),
-                "SO-20261025-0007", new BigDecimal("300000"), new BigDecimal("1250000"), BigDecimal.ZERO, "VND", true,
+        var event = new ReturnResolved(returnId, RMA, UUID.randomUUID(), ORDER, customer, null, null,
+                new BigDecimal("300000"), new BigDecimal("1250000"), BigDecimal.ZERO, "VND", true,
                 List.of(new ReturnResolved.Line(UUID.randomUUID(), "CUP-PET-500", 80, 30, 50,
                         new BigDecimal("1550000"))), UUID.randomUUID(), AT);
         EmailContent content = composer.returnResolved(event).orElseThrow().draft().write(null);
         String text = all(content);
 
-        assertThat(text).contains("Đơn hàng thay thế: SO-20261025-0007", "Số tiền trừ vào công nợ: 300.000 ₫",
-                "Số tiền hoàn lại: 1.250.000 ₫", "không phải thanh toán thêm", "hoá đơn điều chỉnh")
-                .doesNotContain("ghi có vào tài khoản", "null");
-        assertThat(content.table().rows()).containsExactly(List.of("CUP-PET-500", "80", "30", "50"));
+        assertThat(text).contains("Số tiền trừ vào công nợ: 300.000 ₫", "Số tiền hoàn lại: 1.250.000 ₫",
+                "không phải thanh toán thêm", "hoá đơn điều chỉnh")
+                .doesNotContain("Đơn hàng thay thế", "ghi có vào tài khoản", "null");
+        assertThat(content.table().rows()).as("units back, units refunded").containsExactly(List.of("CUP-PET-500", "80", "50"));
     }
 
     @Test

@@ -127,15 +127,28 @@ final class FulfillmentFixtures {
 
     // ---- parcels and load plans ------------------------------------------------------------------------
 
+    /**
+     * Puts a shipping carton row (4C-6) into the state the old parcel fixtures meant: {@code SEALED} reads as LABELED
+     * (a shipment's parcel), {@code OPEN} as TO_CHECK (not plannable), measured as given and in {@code shipmentId}.
+     */
+    static void applyCarton(com.stockflow.fulfillment.internal.entity.PackageJpaEntity row,
+                            com.stockflow.fulfillment.internal.domain.PackageStatus status, UUID shipmentId,
+                            BigDecimal weight, BigDecimal length, BigDecimal width, BigDecimal height) {
+        boolean labeled = status == com.stockflow.fulfillment.internal.domain.PackageStatus.SEALED
+                || status == com.stockflow.fulfillment.internal.domain.PackageStatus.LABELED;
+        UUID staff = UUID.randomUUID();
+        row.applyCarton(labeled ? com.stockflow.fulfillment.internal.domain.PackageStatus.LABELED
+                        : com.stockflow.fulfillment.internal.domain.PackageStatus.TO_CHECK,
+                labeled ? NOW : null, labeled ? staff : null, labeled ? NOW : null, labeled ? staff : null,
+                labeled ? 1 : 0, weight, length, width, height, null, true, shipmentId, null, null, null, null);
+    }
+
     /** A sealed carton of the shipment, {@code l x w x h} cm and {@code kg} (null sizes: not measured). */
     static com.stockflow.fulfillment.internal.entity.PackageJpaEntity parcel(UUID shipmentId, int no, String l,
                                                                               String w, String h, String kg) {
         var parcel = new com.stockflow.fulfillment.internal.entity.PackageJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
                 no, "PKG-" + no);
-        parcel.apply(shipmentId, com.stockflow.fulfillment.internal.domain.PackageType.CARTON,
-                com.stockflow.fulfillment.internal.domain.PackageStatus.SEALED, kg == null ? null : new BigDecimal(kg),
-                l == null ? null : new BigDecimal(l), w == null ? null : new BigDecimal(w),
-                h == null ? null : new BigDecimal(h), null, true, false, false, false, NOW, null, null, null);
+        FulfillmentFixtures.applyCarton(parcel, com.stockflow.fulfillment.internal.domain.PackageStatus.SEALED, shipmentId, kg == null ? null : new BigDecimal(kg), l == null ? null : new BigDecimal(l), w == null ? null : new BigDecimal(w), h == null ? null : new BigDecimal(h));
         return parcel;
     }
 

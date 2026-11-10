@@ -144,9 +144,7 @@ class DispatchVehicleHandoverTest {
         int no = 1;
         for (LoadPlan.Member m : plan.members()) {
             PackageJpaEntity parcel = new PackageJpaEntity(m.packageId(), UUID.randomUUID(), no, "PKG-" + no++);
-            parcel.apply(shipmentId, com.stockflow.fulfillment.internal.domain.PackageType.CARTON, PackageStatus.SEALED,
-                    new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), null, true,
-                    false, false, false, NOW, null, null, null);
+            FulfillmentFixtures.applyCarton(parcel, PackageStatus.SEALED, shipmentId, new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"));
             out.add(parcel);
         }
         org.mockito.Mockito.doAnswer(call -> {
