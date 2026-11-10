@@ -13,7 +13,6 @@ import com.stockflow.inventory.consumption.StageCommand;
 import com.stockflow.inventory.consumption.StagedPick;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -171,9 +170,9 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         // BR-SEC-002: the bin is in a warehouse the caller is assigned to. First, so a replay cannot tell
         // anything about another warehouse.
         WarehouseScope.requireLocation(target.code());
-        // The carton the hold emptied, in the order every carton writer locks (V20261020000100): the SKU, then the
-        // carton FOR UPDATE, then its row by id. The row is read once unlocked to learn the SKU and the carton; a pick
-        // line's hold never changes row once consumed.
+        // The carton the hold emptied, in the order every carton writer locks (V20261020000100): the SKU here, then the
+        // carton FOR UPDATE and its row by id in StockPackageContents#restock. The row is read once unlocked to learn
+        // the SKU and the carton; a pick line's hold never changes row once consumed.
         StockItem rowView = stockItems.findIdByReservationId(ReservationId.of(command.reservationId()))
                 .flatMap(stockItems::findById)
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
@@ -189,51 +188,41 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                     "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(target));
             case USABLE -> { }
         }
+        // Only a whole carton comes back (team plan 4C-4; 07 §4.5 step 14): never loose units - a line picked loose
+        // before 4C-1, or a carton some of whose units went to quarantine damaged at packing (R8). V20261113000400
+        // stopped on any such put-back still waiting, and fulfillment refuses the second kind first; 4C-2's loose
+        // fallback (StockItem#putBackBeside) is gone with them.
         if (rowView.stockPackageId() == null) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Pick line %s took loose stock; only a "
                     + "whole carton is put back (kltn-docs 07 §4.5 step 14)").formatted(command.pickLineId()));
         }
-        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(rowView.stockPackageId())).stream()
-                .findFirst().orElseThrow(() -> new IllegalStateException(
-                        "No stock package " + rowView.stockPackageId().value()));
-        StockItem row = stockItems.findByIdForUpdate(rowView.id()).orElseThrow(() ->
-                new IllegalStateException("Stock item %s vanished mid put-back".formatted(rowView.id())));
-        Reservation consumed = row.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
-        if (!carton.lpn().equalsIgnoreCase(command.lpn().trim())) {
+        StockPackage cartonView = stockPackages.findById(rowView.stockPackageId()).orElseThrow(() ->
+                new IllegalStateException("No stock package " + rowView.stockPackageId().value()));
+        if (!cartonView.lpn().equalsIgnoreCase(command.lpn().trim())) {
             // tg_pick_line_carton keeps a line's LPN its hold's carton: a mismatch is a caller's bug, not a request.
             throw new IllegalStateException("Pick line %s names carton %s; its hold is in %s"
-                    .formatted(command.pickLineId(), command.lpn(), carton.lpn()));
+                    .formatted(command.pickLineId(), command.lpn(), cartonView.lpn()));
         }
-        // The whole carton came off the shelf on this hold, and all of it is still here: none of it went to quarantine
-        // damaged at packing (R8). Anything else is not a carton any more and cannot go back as one.
+        Reservation consumed = rowView.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
         int damagedAtPacking = damageReports.damagedAfterPick(command.reservationId());
         if (consumed.status() != com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED
-                || carton.receivedQty() == null || consumed.quantity().value() != carton.receivedQty()
                 || damagedAtPacking > 0) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s is %s %s of carton %s "
-                    + "(%s counted in), %d of them found damaged at packing; only a whole carton taken by the pick goes "
-                    + "back").formatted(command.reservationId(), consumed.status(), consumed.quantity(), carton.lpn(),
-                    carton.receivedQty(), damagedAtPacking));
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s is %s, %d of its units "
+                    + "found damaged at packing; only a whole carton taken by the pick goes back").formatted(
+                    command.reservationId(), consumed.status(), damagedAtPacking));
         }
-        Quantity quantity = consumed.quantity();
-        // CONSUMED -> IN_STOCK, sealed, at the bin (4C-2's transition; INVALID_STOCK_PACKAGE_TRANSITION otherwise); the
-        // row follows it and takes its units back as the layer they left - same lot and receipt time, so FIFO still
-        // sees them in their place. Rejoining their own receipt, not replenishment: a FIFO SKU's policy trigger refuses
-        // the raised on_hand unless the row is named as a same-receipt merge (V20261017000450). The carton's contents
-        // are checked against it at commit (V20261020000200): IN_STOCK, unopened, holding what was counted in.
-        carton.restock(target);
-        row.followPackageTo(target);
-        row.putBack(quantity);
-        stockItems.saveMerged(row);
-        stockPackages.save(carton);
-
+        // CONSUMED -> IN_STOCK, sealed, at the bin, its row following it with its units back as the same receipt layer
+        // (4C-2's StockPackageContents#restock: STOCK_PACKAGE_TAKEN_WHOLE unless the hold is what was counted into the
+        // carton, INVALID_STOCK_PACKAGE_TRANSITION unless CONSUMED). It saves the carton before the row, so the carton
+        // stands at its new place before the ledger line names it there (check_stock_movement_package).
+        StockItem row = cartons.restock(rowView.stockPackageId(), rowView.id(), target, consumed.quantity().value());
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
-                row.sku(), row.lotNumber(), null, target, quantity.value(), StockStatus.AVAILABLE,
+                row.sku(), row.lotNumber(), null, target, consumed.quantity().value(), StockStatus.AVAILABLE,
                 StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now)
-                .ofLot(row.lotId()).forOrder(consumed.orderId()).arriving(carton.id()));
-        log.info("Pick line {} put back: carton {} ({} x {}) onto {}", command.pickLineId(), carton.lpn(), quantity,
-                row.sku(), target);
+                .ofLot(row.lotId()).forOrder(consumed.orderId()).arriving(row.stockPackageId()));
+        log.info("Pick line {} put back: carton {} ({} x {}) onto {}", command.pickLineId(), cartonView.lpn(),
+                consumed.quantity(), row.sku(), target);
     }
 
     /**

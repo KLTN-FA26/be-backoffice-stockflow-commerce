@@ -7,9 +7,10 @@
 -- bypassed the code is still refused. Each rule names the code that states it first.
 --
 --   1. tg_stock_package_transition (StockPackage):
---        * CONSUMED -> IN_STOCK is allowed, sealed, and only that transition seals a carton again: a carton that left
---          stock whole comes back whole - put back after its order was cancelled, or received again as a return (20 §4.6
---          steps 5-6, §5.5). StockPackage.restock.
+--        * CONSUMED -> IN_STOCK is allowed, sealed, and LOST -> IN_STOCK must be sealed; only these seal a carton
+--          again: a carton that left stock whole comes back whole - put back after its order was cancelled, received
+--          again as a return, or found again by a count (20 §4.6 steps 5-6, §5.5). StockPackage.restock / found;
+--          StockPackageContents refuses a carton found with less than its count (STOCK_PACKAGE_TAKEN_WHOLE).
 --        * a carton in stock is never opened (unopened TRUE -> FALSE while IN_STOCK): nothing takes part of a carton.
 --          StockPackageContents.settle / adjust refuse it first (STOCK_PACKAGE_TAKEN_WHOLE).
 --        * a carton is counted at its standard count and goes into stock only at it (03 BR-13): received_qty, when
@@ -67,13 +68,14 @@ BEGIN
         RAISE EXCEPTION 'stock package % was counted at %; only a carton of its standard count % goes into stock',
             NEW.lpn, NEW.received_qty, NEW.nominal_qty USING ERRCODE = 'check_violation';
     END IF;
-    -- Sealed again only when it comes back whole from CONSUMED; otherwise once opened, it stays open.
-    IF NEW.unopened AND NOT OLD.unopened AND NOT (OLD.status = 'CONSUMED' AND NEW.status = 'IN_STOCK') THEN
+    -- Sealed again only when it comes back whole from CONSUMED or LOST; otherwise once opened, it stays open.
+    IF NEW.unopened AND NOT OLD.unopened AND NOT (OLD.status IN ('CONSUMED', 'LOST') AND NEW.status = 'IN_STOCK') THEN
         RAISE EXCEPTION 'stock package % was opened; it cannot be unopened again', NEW.lpn
             USING ERRCODE = 'check_violation';
     END IF;
-    -- A carton comes back from CONSUMED whole, so sealed: nothing in stock is an opened carton.
-    IF OLD.status = 'CONSUMED' AND NEW.status = 'IN_STOCK' AND NOT NEW.unopened THEN
+    -- A carton comes back from CONSUMED or LOST whole, so sealed: nothing in stock is an opened carton. Whole is
+    -- check_stock_package_contents' at commit: a sealed carton in stock holds what was counted into it.
+    IF OLD.status IN ('CONSUMED', 'LOST') AND NEW.status = 'IN_STOCK' AND NOT NEW.unopened THEN
         RAISE EXCEPTION 'stock package % comes back into stock whole, sealed', NEW.lpn
             USING ERRCODE = 'check_violation';
     END IF;
@@ -88,7 +90,8 @@ $$;
 
 COMMENT ON FUNCTION inventory.check_stock_package_transition() IS
     'Carton lifecycle (kltn-docs 20 §5.5): RECEIVING->IN_STOCK|VOID, IN_STOCK->CONSUMED|LOST, CONSUMED|LOST->IN_STOCK; '
-    'counted only at the standard count; never opened in stock; sealed again only on CONSUMED->IN_STOCK.';
+    'counted only at the standard count; never opened in stock; sealed again only on CONSUMED|LOST->IN_STOCK, '
+    'and always sealed when it comes back.';
 
 
 -- ---------------------------------------------------------------------------------------------

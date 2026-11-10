@@ -18,7 +18,6 @@ import org.springframework.stereotype.Repository;
 import java.time.LocalDate;
 import java.time.Instant;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -136,10 +135,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
-        if (skus.isEmpty()) return java.util.Map.of();
-        return jpa.availableTotals(skus, today).stream().collect(java.util.stream.Collectors.toMap(
-                StockItemJpaRepository.AvailableTotal::getSku, StockItemJpaRepository.AvailableTotal::getQuantity));
+    public List<Allocatable> findAllocatable(Collection<String> skus, LocalDate today) {
+        if (skus.isEmpty()) {
+            return List.of();      // "in ()" is not valid SQL, and there is nothing to ask
+        }
+        return jpa.findAllocatable(skus, today).stream()
+                .map(row -> new Allocatable(new StockItemId(row.id()), row.sku(), row.locationCode(), row.units()))
+                .toList();
     }
 
     @Override
@@ -153,30 +155,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     public Map<String, Integer> findAllocatedBySku(Sku sku) {
         return jpa.findAllocatedRowsBySku(sku.code()).stream()
                 .collect(java.util.stream.Collectors.toMap(AllocatedRow::locationCode, row -> (int) row.quantity()));
-    }
-
-    @Override
-    public Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today) {
-        if (skus.isEmpty()) {
-            return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask
-        }
-        Map<Sku, Integer> totals = new HashMap<>();
-        for (SkuAtpRow row : jpa.sumAvailableBySkus(skus.stream().map(Sku::code).toList(), today)) {
-            totals.put(new Sku(row.sku()), Math.toIntExact(row.atp()));
-        }
-        return totals;
-    }
-
-    @Override
-    public Map<String, Long> unheldAt(Collection<String> skus, Collection<String> locationCodes, LocalDate today) {
-        if (skus.isEmpty() || locationCodes.isEmpty()) {
-            return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask
-        }
-        Map<String, Long> totals = new HashMap<>();
-        for (SkuAtpRow row : jpa.sumAvailableAtLocations(skus, locationCodes, today)) {
-            totals.put(row.sku(), row.atp());
-        }
-        return totals;
     }
 
     @Override

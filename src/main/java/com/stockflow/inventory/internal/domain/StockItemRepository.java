@@ -62,12 +62,16 @@ public interface StockItemRepository {
     /** Sellable stock for one SKU across all locations. Used by the query side, never before a lock. */
     List<StockItem> findAvailableBySku(Sku sku);
 
-    /** Aggregated query port: no reservation history is needed for storefront availability. */
-    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
-        return skus.stream().collect(java.util.stream.Collectors.toMap(code -> code,
-                code -> findAvailableBySku(new Sku(code)).stream()
-                        .filter(item -> item.expiryDate() == null || !item.expiryDate().isBefore(today))
-                        .mapToLong(item -> item.available().value()).sum()));
+    /**
+     * The stock rows of these SKUs a release could allocate: AVAILABLE, unexpired, each the whole content of a sealed
+     * carton in stock that nothing holds (team plan 4C-2; kltn-docs 07 BR-03). Available to promise is counted from
+     * these, so checkout never promises loose units or an opened carton that no release would hand out. Where they
+     * stand is the caller's to judge (pickable bins are the warehouse module's).
+     */
+    List<Allocatable> findAllocatable(Collection<String> skus, LocalDate today);
+
+    /** A row {@link #findAllocatable} returns: the carton's units at its location. */
+    record Allocatable(StockItemId id, String sku, String locationCode, int units) {
     }
 
     /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
@@ -79,17 +83,6 @@ public interface StockItemRepository {
      */
     Map<String, Integer> findAllocatedBySku(Sku sku);
 
-    /** Sellable units ({@code onHand − reserved} of AVAILABLE stock) per SKU; absent when none. */
-    Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today);
-
-    /**
-     * {@link #sumAvailableBySkus}, by SKU code, counting only the rows standing at {@code locationCodes}: what the
-     * sellable figures must leave out when those locations are staging areas (kltn-docs 20 BR-20). Empty when either
-     * collection is. The default answers nothing, for a store that has no staging areas.
-     */
-    default Map<String, Long> unheldAt(Collection<String> skus, Collection<String> locationCodes, LocalDate today) {
-        return Map.of();
-    }
 
     /**
      * The loose stock rows of {@code sku} at {@code location}: rows in a stock package are left out. A row in a

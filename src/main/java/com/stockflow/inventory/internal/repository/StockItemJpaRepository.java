@@ -31,19 +31,6 @@ import java.util.UUID;
 interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>,
         JpaSpecificationExecutor<StockItemJpaEntity> {
 
-    interface AvailableTotal {
-        String getSku();
-        Long getQuantity();
-    }
-
-    @Query("""
-            select s.sku as sku, sum(s.onHand-s.reserved) as quantity from StockItemJpaEntity s
-            where s.sku in :skus and s.status=com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
-              and s.onHand>s.reserved and (s.expiryDate is null or s.expiryDate>=:today)
-            group by s.sku
-            """)
-    List<AvailableTotal> availableTotals(@Param("skus") java.util.Set<String> skus,
-                                        @Param("today") LocalDate today);
 
     /**
      * Load one aggregate with its children in a single query.
@@ -101,39 +88,24 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     List<AvailabilityRow> findAvailabilityBySku(@Param("sku") String sku);
 
     /**
-     * Available to promise for many SKUs in one grouped scan, without loading a single entity.
-     *
-     * <p>Same filter as {@link #findAvailabilityBySku}: AVAILABLE stock with something left after
-     * reservations, so the difference is never negative.</p>
+     * The rows of many SKUs a release could allocate, without loading a single entity: AVAILABLE, unexpired, each the
+     * whole content of a sealed carton in stock that nothing holds - the same test as {@code wholeCarton} in
+     * {@link #findAvailabilityBySku}, which is what {@code StockAllocator} plans on (team plan 4C-2). Loose units and
+     * an opened carton are on hand but never allocated, so they are not promised either.
      */
     @Query("""
-            select new com.stockflow.inventory.internal.repository.SkuAtpRow(
-                s.sku, sum(s.onHand - s.reserved))
+            select new com.stockflow.inventory.internal.repository.AllocatableRow(
+                s.id, s.sku, s.locationCode, s.onHand)
             from StockItemJpaEntity s
+            join StockPackageJpaEntity p on p.id = s.stockPackageId
             where s.sku in :skus
               and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
-              and s.onHand > s.reserved
+              and s.reserved = 0 and s.onHand > 0
               and (s.expiryDate is null or s.expiryDate >= :today)
-            group by s.sku
+              and p.status = com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
+              and p.unopened = true and s.onHand = p.receivedQty
             """)
-    List<SkuAtpRow> sumAvailableBySkus(@Param("skus") Collection<String> skus,
-                                     @Param("today") LocalDate today);
-
-    /** {@link #sumAvailableBySkus} at these locations only: the staging areas' share, which ATP leaves out (4C-5). */
-    @Query("""
-            select new com.stockflow.inventory.internal.repository.SkuAtpRow(
-                s.sku, sum(s.onHand - s.reserved))
-            from StockItemJpaEntity s
-            where s.sku in :skus
-              and s.locationCode in :locations
-              and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
-              and s.onHand > s.reserved
-              and (s.expiryDate is null or s.expiryDate >= :today)
-            group by s.sku
-            """)
-    List<SkuAtpRow> sumAvailableAtLocations(@Param("skus") Collection<String> skus,
-                                            @Param("locations") Collection<String> locations,
-                                            @Param("today") LocalDate today);
+    List<AllocatableRow> findAllocatable(@Param("skus") Collection<String> skus, @Param("today") LocalDate today);
 
     /** Subtotals for the warehouse roll-up; every status, because on-hand counts them all. */
     @Query("""
