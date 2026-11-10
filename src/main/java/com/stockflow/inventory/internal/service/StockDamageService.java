@@ -223,6 +223,14 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                         "No stock item " + command.stockItemId()));
         // BR-SEC-002 first: another warehouse's stock is not this caller's to report, nor to learn about.
         WarehouseScope.requireLocation(view.location().code());
+        // Review L3 (team plan 4C-5, kltn-docs 11 BR-09, 20 BR-20): a carton in a staging area was picked for an order and
+        // leaves it only by dispatch or put-back; moving its units to quarantine here would be refused by the ledger
+        // (tg_stock_movement_staging) as an unexplained integrity error. Damage found there is a short pick of its line.
+        if (locations.isStagingArea(view.location())) {
+            throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED, ("%s is a staging area: its cartons leave it "
+                    + "by dispatch or put-back; report damage there as a short pick of the line").formatted(view.location()),
+                    List.of(), java.util.Map.of("locationCode", view.location().code()));
+        }
         StockDamageReport.requireExplained(command.reason(), command.note());
         return view;
     }
