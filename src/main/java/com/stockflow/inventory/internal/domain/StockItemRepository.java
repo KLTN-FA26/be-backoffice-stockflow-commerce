@@ -81,18 +81,6 @@ public interface StockItemRepository {
      */
     Map<String, Integer> findAllocatedBySku(Sku sku);
 
-
-    /**
-     * The loose stock rows of {@code sku} at {@code location}: rows in a stock package are left out. A row in a
-     * carton is keyed by the carton, not the bin (V20261020000200), and loose units merged into an unopened one
-     * would break its counted quantity at commit.
-     *
-     * <p>There is deliberately no lookup of "every row of a SKU at a bin": a bin may hold a loose layer and
-     * several cartons of the very same receipt, and a caller that found one by (SKU, bin, lot, receipt time)
-     * would take or fill the others by chance. Stock in a carton is reached through its carton.</p>
-     */
-    List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location);
-
     /**
      * What is left in a stock package: the sum of its rows' {@code on_hand}, as this transaction has written them
      * (pending changes are flushed first). A carton holds no quantity of its own (V20261020000100).

@@ -55,15 +55,31 @@ final class PickableStock {
     }
 
     /**
-     * Units of each SKU a release could allocate, across every warehouse (a checkout reservation is promised against
-     * the whole system): whole sealed cartons nothing holds, on pickable bins, none a recount has frozen -
-     * what {@link #candidates} offers the planner, summed (team plan 4C-2; kltn-docs 07 BR-03, 20 §5.6). Loose units
-     * and an opened carton are on hand but never allocated, so they are not promised. Absent keys mean zero.
+     * Units of each SKU a release could allocate, across every warehouse: whole sealed cartons nothing holds, on
+     * pickable, usable locations, none a recount has frozen - what {@link #candidates} offers the planner, summed (team
+     * plan 4C-2; kltn-docs 07 BR-03, 20 §5.6). Loose units, an opened carton and a carton in a receiving, staging or
+     * quarantine area are on hand but never allocated, so they are not promised. Absent keys mean zero.
      */
     Map<String, Long> allocatableBySku(Collection<String> skus) {
+        return allocatable(skus).stream().collect(Collectors.groupingBy(StockItemRepository.Allocatable::sku,
+                Collectors.summingLong(StockItemRepository.Allocatable::units)));
+    }
+
+    /**
+     * The same units of one SKU, per warehouse code (review P-1): a warehouse promises - and a hold at it takes - only
+     * what a release there could allocate. Absent keys mean zero.
+     */
+    Map<String, Long> allocatableByWarehouse(Sku sku) {
+        return allocatable(List.of(sku.code())).stream().collect(Collectors.groupingBy(
+                row -> new com.stockflow.inventory.internal.domain.LocationId(row.locationCode()).warehouseCode(),
+                Collectors.summingLong(StockItemRepository.Allocatable::units)));
+    }
+
+    /** The one filter: the rows of whole free cartons, less the frozen ones and those on no pickable location. */
+    private List<StockItemRepository.Allocatable> allocatable(Collection<String> skus) {
         List<StockItemRepository.Allocatable> rows = stockItems.findAllocatable(skus);
         if (rows.isEmpty()) {
-            return Map.of();
+            return List.of();
         }
         Set<StockItemId> frozen = cycleCounts.frozen(skus).stream()
                 .map(layer -> new StockItemId(layer.stockItemId())).collect(Collectors.toSet());
@@ -71,7 +87,6 @@ final class PickableStock {
                 .map(StockItemRepository.Allocatable::locationCode).distinct().toList());
         return rows.stream()
                 .filter(row -> !frozen.contains(row.id()) && pickable.containsKey(row.locationCode()))
-                .collect(Collectors.groupingBy(StockItemRepository.Allocatable::sku,
-                        Collectors.summingLong(StockItemRepository.Allocatable::units)));
+                .toList();
     }
 }

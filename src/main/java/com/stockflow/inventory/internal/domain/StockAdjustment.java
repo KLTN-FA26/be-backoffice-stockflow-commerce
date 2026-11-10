@@ -111,8 +111,16 @@ public final class StockAdjustment extends AggregateRoot {
 
     public UUID reservationId() { return reservationId; }
 
-    /** The adjustment changes the contents of this carton (set once, when asked for). */
+    /**
+     * The adjustment changes the contents of this carton (set once, when asked for). A carton is adjusted for the
+     * reasons a person gives by hand, or as a count's variance (kltn-docs 20 BR-04; review P-2): SCRAP, SAMPLE and the
+     * rest wrote down loose units. {@code tg_stock_adjustment_whole_carton} states it again.
+     */
     public StockAdjustment inPackage(StockPackageId stockPackageId) {
+        if (reason != AdjustmentReason.COUNT_VARIANCE && !reason.askableByHand()) {
+            throw new BusinessException(ErrorCode.STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON,
+                    "A carton is adjusted for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER, not " + reason);
+        }
         this.stockPackageId = stockPackageId;
         return this;
     }
@@ -174,27 +182,6 @@ public final class StockAdjustment extends AggregateRoot {
         }
         return new StockAdjustment(Identifiers.newId(), number, location, sku, lotNumber, quantityDelta,
                 reason, note, requestedBy, now, AdjustmentStatus.PENDING_APPROVAL, null, null, null, null, null, 0L);
-    }
-
-    /**
-     * Approve and post onto {@code stockItem}, which the caller has locked. Loose stock only: a carton's adjustment
-     * is approved with {@link #approveForCarton}.
-     *
-     * @throws BusinessException {@code ADJUSTMENT_SELF_APPROVAL} when the approver asked for it;
-     *         {@code INVALID_ADJUSTMENT_TRANSITION} when it was already decided
-     */
-    public void approveAndPost(UUID approverId, StockItem stockItem, Instant now) {
-        requireApprovableBy(approverId);
-        if (stockPackageId != null) {
-            throw new IllegalStateException("Adjustment %s is about carton %s; it is approved for the carton"
-                    .formatted(number, stockPackageId.value()));
-        }
-        if (!stockItem.sku().equals(sku) || !stockItem.location().equals(location)
-                || !Objects.equals(stockItem.lotNumber(), lotNumber)) {
-            throw new IllegalArgumentException("Adjustment %s is for another stock item".formatted(number));
-        }
-        stockItem.adjustBy(quantityDelta);
-        posted(approverId, now);
     }
 
     /**

@@ -32,9 +32,6 @@ import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReceivingPackagePlan;
-import com.stockflow.inventory.internal.domain.ReleaseReason;
-import com.stockflow.inventory.internal.domain.Reservation;
-import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockAdjustment;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -788,11 +785,10 @@ class StockOperationsServiceImpl implements StockOperations {
     // ------------------------------------------------------------------ adjustments
 
     /**
-     * By LPN: a carton written off whole ({@link #requestCartonWriteOff}). Without one, a loose layer - a row in no
-     * carton, emptied when stock went into cartons (team plan 4C-1/4C-2) - can only be written down, and it holds
-     * nothing, so nothing is added to it ({@code STOCK_NOT_IN_CARTON}, review M-5): a carton found is restocked by a
-     * count of it. A carton is adjusted whole ({@link #requestPackageAdjustment}); the lookup reaches no carton's row
-     * ({@link #findLayer}).
+     * By LPN only: a carton written off whole ({@link #requestCartonWriteOff}). Stock is kept in whole cartons (team
+     * plan 4C-1/4C-2, {@code ck_stock_item_whole_cartons}), so there is no loose stock to adjust - a request naming
+     * none is {@code STOCK_NOT_IN_CARTON} (review P-3; the loose path went with it). A carton found is restocked by a
+     * count of it; a carton is adjusted either way by {@link #requestPackageAdjustment}.
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#result?.adjustmentId()")
@@ -808,32 +804,11 @@ class StockOperationsServiceImpl implements StockOperations {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Stock does not expire; write it off as DAMAGED, LOST or OTHER");
         }
-        if (command.lpn() != null) {
-            return requestCartonWriteOff(command);
+        if (command.lpn() == null || command.lpn().isBlank()) {
+            throw new BusinessException(ErrorCode.STOCK_NOT_IN_CARTON, ("%s at %s: name the carton by its LPN; stock is "
+                    + "kept in whole cartons").formatted(command.sku(), command.locationCode()));
         }
-        requireNoLooseSurplus(command.quantityDelta(), command.sku() + " at " + command.locationCode());
-        WarehouseScope.requireLocation(command.locationCode());
-        // Every SKU is lot-tracked (01 BR-17, team plan 5-5): a layer is named by its lot. Without one the lookup
-        // below would answer STOCK_ITEM_NOT_FOUND, as if the stock did not exist, when the request is what is short.
-        if (blankToNull(command.lotNumber()) == null) {
-            throw new BusinessException(ErrorCode.STOCK_ADJUSTMENT_LOT_REQUIRED,
-                    "%s at %s: name the lot to adjust".formatted(command.sku(), command.locationCode()),
-                    List.of(new com.stockflow.common.api.FieldError("lotNumber",
-                            "required: every SKU is lot-tracked", "NotBlank")));
-        }
-        LocationId location = new LocationId(command.locationCode());
-        requireNoSurplusInStaging(location, command.quantityDelta());
-        // The stock item must exist now; FOUND stock adds to a lot already recorded at the location.
-        findLayer(command.sku(), location, command.lotNumber(), command.receivedAt())
-                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
-                        "No %s%s at %s".formatted(command.sku(), lotSuffix(command.lotNumber()), location)));
-        Instant now = clock.instant();
-        StockAdjustment adjustment = StockAdjustment.request(
-                adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), location, command.sku(),
-                StockLots.orUntraced(command.lotNumber()), command.quantityDelta(),
-                AdjustmentReason.valueOf(command.reason().name()), command.note(), command.requestedBy(), now)
-                .atLayer(command.receivedAt());
-        return toSummary(adjustments.save(adjustment));
+        return requestCartonWriteOff(command);
     }
 
     /**
@@ -846,6 +821,12 @@ class StockOperationsServiceImpl implements StockOperations {
      * yet put away) is already decided the other way: {@code STOCK_PACKAGE_DECISION_PENDING}.
      */
     private StockAdjustmentSummary requestCartonWriteOff(RequestAdjustmentCommand command) {
+        AdjustmentReason reason = AdjustmentReason.valueOf(command.reason().name());
+        if (!reason.askableByHand()) {
+            // Review P-2: said first, so SCRAP or SAMPLE hears why instead of reaching tg_stock_adjustment_whole_carton.
+            throw new BusinessException(ErrorCode.STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON,
+                    "A carton is adjusted for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER, not " + reason);
+        }
         String normal = StockPackageView.normalLpn(command.lpn());
         StockPackage carton = stockPackages.findByLpns(List.of(normal)).stream().findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + normal));
@@ -1026,49 +1007,10 @@ class StockOperationsServiceImpl implements StockOperations {
         if (adjustment.stockPackageId() != null) {
             return approveCarton(adjustment, approverId);
         }
-        StockItem view = findLayer(adjustment.sku(), adjustment.location(), adjustment.lotNumber(),
-                        adjustment.receivedAt())
-                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
-                        "The stock of adjustment %s no longer exists".formatted(adjustment.number())));
-        StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
-        Instant now = clock.instant();
-        // A decided adjustment is refused by approveAndPost as it stands, before its hold is looked at.
-        if (adjustment.reservationId() != null
-                && adjustment.status() == com.stockflow.inventory.internal.domain.AdjustmentStatus.PENDING_APPROVAL) {
-            // Legacy (BR-PRD-10, while in-house production existed): a cancelled order's printed goods were kept under
-            // its hold until this decision, so nobody could take them. They leave the hold as they leave stock - once:
-            // the hold closes here, and a second approval is refused by the adjustment's own state. Nothing asks for
-            // such an adjustment any more; one still pending is decided as it was asked.
-            ReservationId held = ReservationId.of(adjustment.reservationId());
-            Reservation hold = item.findReservation(held).filter(r -> r.status().isActive())
-                    .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
-                            "The hold of adjustment %s is no longer live".formatted(adjustment.number())));
-            if (hold.quantity().value() != -adjustment.quantityDelta()) {
-                throw new BusinessException(ErrorCode.CONFLICT, "Adjustment %s takes %d unit(s); its hold covers %s"
-                        .formatted(adjustment.number(), -adjustment.quantityDelta(), hold.quantity()));
-            }
-            item.releaseReservation(held, ReleaseReason.SCRAPPED, now);
-        }
-        requireLoose(item);
-        int delta = adjustment.quantityDelta();
-        // An adjustment asked before review M-5 could still add loose units; it is refused here, as it is asked.
-        requireNoLooseSurplus(delta, "adjustment " + adjustment.number());
-        // A layer is never raised (inventory.enforce_sku_policy: "reconcile via a new stock layer"): every SKU leaves
-        // stock first in, first out (kltn-docs 01 BR-17, team plan 5-5), and loose units found have no provable
-        // receipt - putting them on an old layer would make them as old as it and first out. They land on a new layer
-        // beside it, received now; the adjustment still names the layer it was asked against.
-        StockItem target = delta > 0 ? StockItem.newLayerBeside(item, now) : item;
-        adjustment.approveAndPost(approverId, target, now);
-        stockItems.save(target);
-        StockAdjustment saved = adjustments.save(adjustment);
-
-        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.ADJUSTMENT,
-                adjustment.sku(), adjustment.lotNumber(),
-                delta < 0 ? adjustment.location() : null, delta > 0 ? adjustment.location() : null,
-                Math.abs(delta), target.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT, adjustment.id(),
-                ledgerReason(adjustment), approverId, now).ofLot(target.lotId()));
-        log.info("Posted adjustment {}: {} {} at {}", adjustment.number(), delta, adjustment.sku(), adjustment.location());
-        return toSummary(saved);
+        // An adjustment of no carton was asked against loose stock, which holds nothing since stock is kept in whole
+        // cartons (ck_stock_item_whole_cartons): there is nothing to post. Rejected, it is decided (review P-3).
+        throw new BusinessException(ErrorCode.STOCK_NOT_IN_CARTON, ("Adjustment %s names no carton; stock is kept in "
+                + "whole cartons, so reject it").formatted(adjustment.number()));
     }
 
     /**
@@ -1188,57 +1130,7 @@ class StockOperationsServiceImpl implements StockOperations {
                 .orElse(true);
     }
 
-    /**
-     * {@link #findOne}, or the one loose layer received at {@code receivedAt} when it is given. Loose stock only:
-     * a move, a reclassification or an adjustment named by (SKU, location, lot, receipt time) cannot tell one
-     * carton of a receipt from another, so stock in a carton is moved and adjusted through its carton.
-     */
-    private Optional<StockItem> findLayer(Sku sku, LocationId location, String lotNumber, Instant receivedAt) {
-        if (receivedAt == null) {
-            return findOne(sku, location, lotNumber);
-        }
-        String lot = StockLots.orUntraced(lotNumber);
-        return stockItems.findLooseBySkuAndLocation(sku, location).stream()
-                .filter(item -> Objects.equals(item.lotNumber(), lot) && receivedAt.equals(item.receivedAt()))
-                .findFirst();
-    }
 
-    /**
-     * A move or an adjustment named by (SKU, location, lot, receipt time) reaches loose stock only ({@link #findLayer});
-     * stated here as well, so a lookup changed later cannot take units out of a carton without opening it (#141).
-     */
-    /**
-     * Stock is kept in whole cartons (review M-5, {@code ck_stock_item_whole_cartons}): units are never added to a row
-     * in no carton. Said here so the person hears why, rather than a 500 from the table.
-     */
-    private static void requireNoLooseSurplus(int delta, String what) {
-        if (delta > 0) {
-            throw new BusinessException(ErrorCode.STOCK_NOT_IN_CARTON, ("%s: %d unit(s) in no carton; stock is kept in "
-                    + "whole cartons - restock a carton found by counting it, by its LPN").formatted(what, delta));
-        }
-    }
-
-    private static void requireLoose(StockItem item) {
-        if (!item.isLoose()) {
-            throw new IllegalStateException("Stock row %s is in stock package %s; it is changed through its carton"
-                    .formatted(item.id(), item.stockPackageId()));
-        }
-    }
-
-    private Optional<StockItem> findOne(Sku sku, LocationId location, String lotNumber) {
-        String lot = StockLots.orUntraced(lotNumber);
-        var matches =
-                stockItems.findLooseBySkuAndLocation(sku, location).stream()
-                .filter(item -> Objects.equals(item.lotNumber(), lot))
-                        .toList();
-        if (matches.size() > 1) {
-            // The existing move/adjustment request has no receipt/serial selector. Never pick
-            // an arbitrary layer now that canonical policy permits several at one location.
-            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-        }
-        return matches.stream()
-                .findFirst();
-    }
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();

@@ -531,6 +531,11 @@ public enum ErrorCode {
      * in no carton. A carton found is restocked through a count (by its LPN), never as loose units.
      */
     STOCK_NOT_IN_CARTON("Stock is kept in whole cartons; adjust a carton by its LPN", 422),
+    /**
+     * Review P-2 (kltn-docs 20 BR-04): a carton is adjusted by hand for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER;
+     * SCRAP and SAMPLE wrote down loose units. tg_stock_adjustment_whole_carton states it in the table.
+     */
+    STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON("A carton is adjusted for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER", 422),
     /** Team plan 4D-1 (kltn-docs 20 §4.8): the carton is quarantined already. */
     STOCK_PACKAGE_QUARANTINED("The carton is already in quarantine", 409),
     /** Team plan 4D-1 (kltn-docs 05 BR-01, BR-14): only a quarantined carton is released to a putaway task. */

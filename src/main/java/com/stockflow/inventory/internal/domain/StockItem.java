@@ -621,61 +621,6 @@ public final class StockItem extends AggregateRoot {
         requireInCartonWhenStocked();
     }
 
-    /**
-     * An empty new layer beside {@code source} - same SKU, location, lot, lot id and status - received at
-     * {@code receivedAt}, for units a correction found on top of {@code source} (SCRUM-164). Every SKU is FIFO
-     * (kltn-docs 01 BR-17) and a layer is never raised (the policy trigger refuses it): loose units found have no
-     * provable receipt, so they are as young as the day they were found rather than as old as the layer they were
-     * counted against.
-     */
-    public static StockItem newLayerBeside(StockItem source, Instant receivedAt) {
-        Objects.requireNonNull(receivedAt, "receivedAt");
-        return new StockItem(StockItemId.newId(), source.sku, source.location, source.lotNumber, Quantity.ZERO, source.status, List.of(), 0L, receivedAt, source.lotId);
-    }
-
-    /**
-     * A new stock item at {@code destination} for units moved out of {@code source}: same SKU, lot
-     * and status. Status travels with the goods — moving quarantined stock to a bin does not
-     * make it sellable, only QC does (see {@link #receive}).
-     */
-    public static StockItem arrivedFrom(
-            StockItem source, LocationId destination, Quantity quantity) {
-        if (source.location.equals(destination)) {
-            throw new IllegalArgumentException("A move needs two different locations");
-        }
-        StockItem arrived =
-                new StockItem(
-                        StockItemId.newId(),
-                        source.sku,
-                        destination,
-                        source.lotNumber,
-                        Quantity.ZERO,
-                        source.status,
-                        List.of(),
-                        0L,
-                        source.receivedAt,
-                        source.lotId);
-        arrived.moveIn(quantity);
-        return arrived;
-    }
-
-    /**
-     * Units moved out of {@code source} that change status on the way (SCRUM-435): a putaway turns
-     * INBOUND goods into AVAILABLE ones, a return's decision puts QUARANTINE goods back on sale. The layer
-     * (receipt time) travels with the goods.
-     */
-    public static StockItem arrivedAs(StockItem source, LocationId destination, Quantity quantity,
-                                      StockStatus status) {
-        if (source.location.equals(destination)) {
-            throw new IllegalArgumentException("A move needs two different locations");
-        }
-        StockItem arrived = new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber,
-                Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L,
-                source.receivedAt, source.lotId);
-        arrived.moveIn(quantity);
-        return arrived;
-    }
-
     /** Whether units of {@code other} may be merged into this stock item by a move. */
     public boolean canReceiveFrom(StockItem other) {
         return canReceiveFrom(other, other.status);
