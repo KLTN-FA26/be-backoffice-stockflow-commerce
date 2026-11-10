@@ -14,9 +14,14 @@
 --      "allow_credit AND credit_limit > 0" before an installment after delivery: they ask for the limit only, as the
 --      application does (CreditCheck.approvedCredit, SalesContractService).
 --
--- customer_order needs nothing: payment_term defaults to 'PREPAID', the money columns to 0 and the deposit, balance and
--- credit-days columns to NULL, which every ck_order_* accepts; an order is confirmed through its contract
--- (ck_order_confirmed_basis: contract_signed_at). Kept on purpose: the columns themselves and their data (4B-11).
+--   4. ordering.customer_order: payment_term defaults to 'PREPAID', the money columns to 0 and the deposit, balance and
+--      credit-days columns to NULL, which every ck_order_* accepts but one: ck_order_confirmed_basis let an order be
+--      CONFIRMED without a contract only as a PREPAID order paid in full (paid_in_full_at), which is how a free
+--      replacement order of a return (SCRUM-260) was confirmed. paid_in_full_at is no longer written, so the CHECK
+--      names the replacement itself (replaces_return_request_id; ck_order_replacement_free keeps it free). Orders
+--      confirmed on the old terms keep passing it.
+--
+-- Kept on purpose: the columns themselves and their data (4B-11 drops them).
 
 -- 1. The quote's payment term ------------------------------------------------------------------------------------------
 ALTER TABLE ordering.quote ALTER COLUMN payment_term SET DEFAULT 'PREPAID';
@@ -200,3 +205,13 @@ BEGIN
     RETURN NULL;
 END
 $function$;
+
+-- 4. A CONFIRMED order: by its contract, or a free replacement - or, for the orders before 4B-10, its old terms -----
+ALTER TABLE ordering.customer_order DROP CONSTRAINT ck_order_confirmed_basis;
+ALTER TABLE ordering.customer_order ADD CONSTRAINT ck_order_confirmed_basis CHECK (
+    status <> 'CONFIRMED'
+    OR contract_signed_at IS NOT NULL
+    OR replaces_return_request_id IS NOT NULL
+    OR (payment_term = 'PREPAID' AND paid_in_full_at IS NOT NULL)
+    OR (payment_term = 'DEPOSIT' AND deposit_received_at IS NOT NULL)
+    OR payment_term = 'CREDIT');
