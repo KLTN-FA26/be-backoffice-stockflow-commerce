@@ -264,7 +264,7 @@ class FtlDispatchIntegrationTest {
 
     private void scan(UUID task, String parcel) throws Exception {
         packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"lpn\":\"" + SOFA_BARCODE + "\"}"))
+                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"quantity\":1}"))
                 .andExpect(status().isOk());
     }
 

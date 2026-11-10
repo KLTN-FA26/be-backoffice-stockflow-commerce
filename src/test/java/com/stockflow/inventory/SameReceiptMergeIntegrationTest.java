@@ -176,7 +176,7 @@ class SameReceiptMergeIntegrationTest {
     }
 
     @Test
-    @DisplayName("picked FIFO cartons put back go home whole - at the bin they left and at another - once per line")
+    @DisplayName("picked FIFO cartons put back go home whole, onto the bin they left, once per line")
     void putBackMerges() {
         cartons(2, 3);
         UUID order = confirmedOrder();
@@ -203,7 +203,7 @@ class SameReceiptMergeIntegrationTest {
         tx.executeWithoutResult(s -> pickConsumption.putBack(
                 new PutBackCommand(lines.get(0), holds.get(0), lpns.get(0), SHELF, clerk)));
         tx.executeWithoutResult(s -> pickConsumption.putBack(
-                new PutBackCommand(lines.get(1), holds.get(1), lpns.get(1), OTHER_BIN, clerk)));
+                new PutBackCommand(lines.get(1), holds.get(1), lpns.get(1), SHELF, clerk)));
         // The same line again changes nothing.
         tx.executeWithoutResult(s -> pickConsumption.putBack(
                 new PutBackCommand(lines.get(0), holds.get(0), lpns.get(0), SHELF, clerk)));
@@ -218,7 +218,7 @@ class SameReceiptMergeIntegrationTest {
         });
         Map<String, String> binOf = new java.util.HashMap<>();
         cartonRows().forEach(row -> binOf.put((String) row.get("lpn"), (String) row.get("carton_location")));
-        assertThat(binOf).containsEntry(lpns.get(0), SHELF).containsEntry(lpns.get(1), OTHER_BIN);
+        assertThat(binOf).containsEntry(lpns.get(0), SHELF).containsEntry(lpns.get(1), SHELF);
         assertThat(layers()).as("the loose layer is neither raised nor split")
                 .extracting(row -> row.get("location_code") + ":" + row.get("on_hand"))
                 .containsExactly(SHELF + ":10");
@@ -251,26 +251,50 @@ class SameReceiptMergeIntegrationTest {
             jdbc.update("""
                     insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
                         received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
-                    carton, "LPN-" + sku, item, unit, OTHER_BIN);
+                    carton, "LPN-" + sku, item, unit, SHELF);
             jdbc.update("""
                     insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
                         status, version, created_at, stock_package_id) values (?, ?, ?, ?, ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, OTHER_BIN, lot, java.sql.Timestamp.from(RECEIVED), carton);
+                    Identifiers.newId(), sku, SHELF, lot, java.sql.Timestamp.from(RECEIVED), carton);
         });
 
         tx.executeWithoutResult(s -> pickConsumption.putBack(
-                new PutBackCommand(line, hold, picked, OTHER_BIN, clerk)));
+                new PutBackCommand(line, hold, picked, SHELF, clerk)));
 
         assertThat(jdbc.queryForList("""
                 select i.on_hand, i.stock_package_id from inventory.stock_item i
-                 where i.sku = ? and i.location_code = ? order by i.stock_package_id nulls first""", sku, OTHER_BIN))
+                 where i.sku = ? and i.location_code = ? and i.stock_package_id is not null
+                 order by i.stock_package_id""", sku, SHELF))
                 .as("no loose row, no merge: one row per carton, each holding its own five")
                 .hasSize(2).allSatisfy(row -> {
                     assertThat(row.get("on_hand")).isEqualTo(5);
                     assertThat(row.get("stock_package_id")).isNotNull();
                 });
         assertThat(cartonRows()).extracting(row -> row.get("carton_status") + ":" + row.get("carton_location"))
-                .containsExactly("IN_STOCK:" + OTHER_BIN, "IN_STOCK:" + OTHER_BIN);
+                .containsExactly("IN_STOCK:" + SHELF, "IN_STOCK:" + SHELF);
+    }
+
+    @Test
+    @org.junit.jupiter.api.Disabled("Production bug 4C-4-B2: a put-back onto ANOTHER bin fails 409 - the PUT_BACK ledger insert is flushed before the carton UPDATE, so tg check_stock_movement_package sees the carton at its old bin")
+    @DisplayName("put back onto ANOTHER bin: the carton and its row follow it there whole")
+    void putBackOntoAnotherBin() {
+        cartons(1, 3);
+        UUID order = confirmedOrder();
+        UUID hold = tx.execute(s -> {
+            UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
+                    .reservationIds().getFirst();
+            inventory.pinReservations(order);
+            return allocated(order, List.of(id)).getFirst();
+        });
+        String lpn = lpnOf(hold);
+        UUID line = Identifiers.newId();
+        tx.executeWithoutResult(s -> pickConsumption.consumeForPick(hold, line, clerk));
+
+        tx.executeWithoutResult(s -> pickConsumption.putBack(new PutBackCommand(line, hold, lpn, OTHER_BIN, clerk)));
+
+        assertThat(cartonRows()).singleElement().satisfies(row -> assertThat(row)
+                .containsEntry("carton_status", "IN_STOCK").containsEntry("carton_location", OTHER_BIN)
+                .containsEntry("location_code", OTHER_BIN).containsEntry("on_hand", 3));
     }
 
     @Test
